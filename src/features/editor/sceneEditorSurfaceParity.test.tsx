@@ -483,6 +483,7 @@ import { loadEditorDocument } from "./document/loadEditorDocument";
 import { useEditorSessionStore } from "./editorSessionStore";
 import { useInlineAiStore } from "./inlineAi/inlineAiStore";
 import { useExternalWriteStore } from "../concurrency/externalWriteStore";
+import { useProjectStore } from "../project/projectStore";
 import { useTreeStore, type TreeNodeData } from "../tree/treeStore";
 
 const SCENE: TreeNodeData = {
@@ -650,6 +651,7 @@ beforeEach(() => {
     nodePreviews: {},
     charCounts: {},
   });
+  useProjectStore.setState({ currentProjectId: "project-1" });
 });
 
 afterEach(() => {

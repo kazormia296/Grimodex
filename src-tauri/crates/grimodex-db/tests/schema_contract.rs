@@ -127,6 +127,7 @@ fn immutable_history_contract_contains_retraction_guards() {
     for trigger_name in [
         "narrative_revision_immutable_after_apply_update",
         "narrative_revision_envelope_immutable_update",
+        "narrative_proposal_revisions_v2_immutable_update_guard",
         "narrative_source_basis_immutable_update",
         "narrative_source_basis_immutable_delete",
         "narrative_revision_immutable_after_apply_delete",

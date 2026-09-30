@@ -277,13 +277,24 @@ pub(crate) fn restore_projection_patch(
                 updated_at = ?9
           WHERE id = ?10 AND version = ?11",
         params![
-            before_snapshot.get("constraintSetDigest").and_then(Value::as_str),
+            before_snapshot
+                .get("constraintSetDigest")
+                .and_then(Value::as_str),
             before_snapshot.get("solverVersion").and_then(Value::as_str),
-            before_snapshot.get("calendarDigest").and_then(Value::as_str),
-            before_snapshot.get("projectedValueDigest").and_then(Value::as_str),
-            before_snapshot.get("targetResultVersion").and_then(Value::as_i64),
+            before_snapshot
+                .get("calendarDigest")
+                .and_then(Value::as_str),
+            before_snapshot
+                .get("projectedValueDigest")
+                .and_then(Value::as_str),
+            before_snapshot
+                .get("targetResultVersion")
+                .and_then(Value::as_i64),
             before_snapshot.get("applicationId").and_then(Value::as_str),
-            before_snapshot.get("status").and_then(Value::as_str).unwrap_or("current"),
+            before_snapshot
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("current"),
             next_version,
             now,
             projection_id,

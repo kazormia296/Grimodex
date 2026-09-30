@@ -17,9 +17,7 @@ pub(crate) fn ensure_no_external_plot_thread_dependencies(
         |row| row.get(0),
     )?;
     if marker_count > 0 {
-        anyhow::bail!(
-            "NEX_UNDO_EXTERNAL_DEPENDENCY: plot thread '{thread_id}' still has markers"
-        );
+        anyhow::bail!("NEX_UNDO_EXTERNAL_DEPENDENCY: plot thread '{thread_id}' still has markers");
     }
 
     let branch_count: i64 = conn.query_row(
@@ -29,9 +27,7 @@ pub(crate) fn ensure_no_external_plot_thread_dependencies(
         |row| row.get(0),
     )?;
     if branch_count > 0 {
-        anyhow::bail!(
-            "NEX_UNDO_EXTERNAL_DEPENDENCY: plot thread '{thread_id}' still has branches"
-        );
+        anyhow::bail!("NEX_UNDO_EXTERNAL_DEPENDENCY: plot thread '{thread_id}' still has branches");
     }
 
     Ok(())
@@ -44,10 +40,7 @@ pub(crate) fn undo_created_plot_thread(
 ) -> anyhow::Result<()> {
     ensure_no_external_plot_thread_dependencies(conn, thread_id)?;
     let current = collect_plot_thread_snapshot(conn, thread_id)?;
-    let live_version = current
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let live_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
     if live_version != expected_version {
         anyhow::bail!(
             "NEX_COMMIT_PLOT_THREAD_EDITED: thread '{thread_id}' was modified after commit"
@@ -82,9 +75,7 @@ pub(crate) fn restore_plot_thread_patch(
         );
     }
 
-    let description = before_snapshot
-        .get("description")
-        .and_then(Value::as_str);
+    let description = before_snapshot.get("description").and_then(Value::as_str);
     let next_version = live_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("plot thread version overflow during undo"))?;
@@ -111,17 +102,12 @@ pub(crate) fn undo_created_plot_marker(
     expected_semantic_key: &str,
 ) -> anyhow::Result<()> {
     let current = collect_plot_marker_snapshot(conn, marker_id)?;
-    let live_version = current
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let live_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
     let live_semantic_key = current
         .get("semanticKey")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if live_version != expected_version
-        || live_semantic_key != expected_semantic_key
-    {
+    if live_version != expected_version || live_semantic_key != expected_semantic_key {
         anyhow::bail!(
             "NEX_COMMIT_PLOT_MARKER_EDITED: marker '{marker_id}' was modified after commit"
         );
@@ -144,17 +130,12 @@ pub(crate) fn undo_created_plot_branch(
     expected_semantic_key: &str,
 ) -> anyhow::Result<()> {
     let current = collect_plot_branch_snapshot(conn, branch_id)?;
-    let live_version = current
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let live_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
     let live_semantic_key = current
         .get("semanticKey")
         .and_then(Value::as_str)
         .unwrap_or("");
-    if live_version != expected_version
-        || live_semantic_key != expected_semantic_key
-    {
+    if live_version != expected_version || live_semantic_key != expected_semantic_key {
         anyhow::bail!(
             "NEX_COMMIT_PLOT_BRANCH_EDITED: branch '{branch_id}' was modified after commit"
         );
@@ -189,10 +170,7 @@ pub(crate) fn reapply_plot_thread_create_snapshot(
         .unwrap_or("a0");
     let start_node_id = snapshot.get("startNodeId").and_then(Value::as_str);
     let end_node_id = snapshot.get("endNodeId").and_then(Value::as_str);
-    let previous_version = snapshot
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let previous_version = snapshot.get("version").and_then(Value::as_i64).unwrap_or(0);
     let replay_version = previous_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("plot thread version overflow during redo"))?;
@@ -245,10 +223,7 @@ pub(crate) fn reapply_plot_marker_create_snapshot(
         .get("semanticKey")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("plot marker snapshot missing semanticKey"))?;
-    let previous_version = snapshot
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let previous_version = snapshot.get("version").and_then(Value::as_i64).unwrap_or(0);
     let replay_version = previous_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("plot marker version overflow during redo"))?;
@@ -306,10 +281,7 @@ pub(crate) fn reapply_plot_branch_create_snapshot(
         .get("semanticKey")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("plot branch snapshot missing semanticKey"))?;
-    let previous_version = snapshot
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let previous_version = snapshot.get("version").and_then(Value::as_i64).unwrap_or(0);
     let replay_version = previous_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("plot branch version overflow during redo"))?;

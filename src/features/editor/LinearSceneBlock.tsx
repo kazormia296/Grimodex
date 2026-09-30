@@ -118,9 +118,12 @@ import { getTreeIndex } from "@/features/tree/treeIndex";
 import {
   createDocumentSaveSession,
   runCoordinatedDocumentSave,
+  type DocumentSaveContext,
 } from "@/features/editor/document/documentSaveCoordinator";
 import {
+  createLoadedTimelapseDescriptor,
   handleSceneEditorTransaction,
+  type LoadedTimelapseDescriptor,
   type SceneBeatIndexState,
 } from "@/features/editor/sceneEditorTransactionPipeline";
 import { EditorStickySurface } from "@/features/editor/stickies/EditorStickySurface";
@@ -254,6 +257,9 @@ function MountedSceneBlock({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<ReturnType<typeof useEditor>>(null);
+  const loadedTimelapseDescriptorRef = useRef<LoadedTimelapseDescriptor | null>(
+    null,
+  );
   const isApplyingExternalUpdate = useRef(false);
   const isApplyingProgrammaticProjectionUpdate = useRef(false);
   const externalUpdateDepthRef = useRef(0);
@@ -302,6 +308,10 @@ function MountedSceneBlock({
   // 「0 chars」の一瞬の表示と、高さ崩壊によるスクロールのガタつきを防ぐ)。
   const [isLoading, setIsLoading] = useState(true);
   const [loadReady, setLoadReady] = useState(false);
+  // Keep the authority that actually produced the loaded body.  The current
+  // Project store can advance before React rerenders this block during a
+  // workspace switch, so fence admission must not derive it from props/store.
+  const [loadedProjectId, setLoadedProjectId] = useState<string | null>(null);
   const [loadedInputProjectionKey, setLoadedInputProjectionKey] = useState("");
   const loadReadyRef = useRef(false);
   const inputProjectionReadyRef = useRef(false);
@@ -341,97 +351,114 @@ function MountedSceneBlock({
     return extensions;
   }, [isFileBacked]);
 
-  const coreSave = useCallback(async (): Promise<EditorSaveAttemptResult> => {
-    const ed = editorRef.current;
-    if (!ed) return { persisted: false, committed: false };
-    if (loadFailedRef.current) {
-      debugLog.warn(
+  const coreSave = useCallback(
+    async (
+      context: DocumentSaveContext = {},
+    ): Promise<EditorSaveAttemptResult> => {
+      const ed = editorRef.current;
+      if (!ed) return { persisted: false, committed: false };
+      if (loadFailedRef.current) {
+        debugLog.warn(
+          "LinearSceneBlock",
+          `save skipped: load failed ${sceneId.slice(0, 8)}`,
+        );
+        return { persisted: false, committed: false };
+      }
+      const inlineAi = useInlineAiStore.getState();
+      if (
+        isInlineAiSaveBlocked({
+          inlineAiStatus: inlineAi.status,
+          activeEditor: inlineAi.activeEditor,
+          editor: ed,
+        })
+      ) {
+        guardInlineAiPending();
+        throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
+      }
+      debugLog.info(
         "LinearSceneBlock",
-        `save skipped: load failed ${sceneId.slice(0, 8)}`,
+        `save ${sceneId.slice(0, 8)}`,
+        JSON.stringify({ docLen: getDocText(ed.state.doc).length }),
       );
-      return { persisted: false, committed: false };
-    }
-    const inlineAi = useInlineAiStore.getState();
-    if (
-      isInlineAiSaveBlocked({
-        inlineAiStatus: inlineAi.status,
-        activeEditor: inlineAi.activeEditor,
-        editor: ed,
-      })
-    ) {
-      guardInlineAiPending();
-      throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
-    }
-    debugLog.info(
-      "LinearSceneBlock",
-      `save ${sceneId.slice(0, 8)}`,
-      JSON.stringify({ docLen: getDocText(ed.state.doc).length }),
-    );
-    // save 開始時の編集世代 (doc 捕捉と同期区間なので取りこぼし無し)。
-    const editGenAtStart = editGenerationRef.current;
-    // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
-    // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
-    // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
-    const docAtStart = ed.state.doc;
-    const persistedContent = docAtStart.toJSON();
-    const persisted = await persistSceneBody(sceneId, docAtStart, {
-      baseVersion: sceneVersionRef.current,
-    });
-    if (persisted.foreshadowRows.length > 0) {
-      runProgrammaticProjectionUpdate(() => {
-        refreshForeshadowPayoffMarkVersions((apply) => {
-          const tr = ed.state.tr;
-          apply(tr);
-          if (tr.steps.length > 0) ed.view.dispatch(tr);
-        }, persisted.foreshadowRows);
+      // save 開始時の編集世代 (doc 捕捉と同期区間なので取りこぼし無し)。
+      const editGenAtStart = editGenerationRef.current;
+      // 本文保存の全副作用カスケード (file-backed writeBack / foreshadow・
+      // annotation anchor / beat キャッシュ / 帰属 / semantic index) は
+      // persistSceneBody が正本。タブエディタ (EditorPane) と同一経路。
+      const docAtStart = ed.state.doc;
+      const persistedContent = docAtStart.toJSON();
+      const timelapseDescriptor = loadedTimelapseDescriptorRef.current;
+      const persisted = await persistSceneBody(sceneId, docAtStart, {
+        baseVersion: sceneVersionRef.current,
+        ...(timelapseDescriptor?.document
+          ? { timelapseDocument: timelapseDescriptor.document }
+          : {}),
+        ...(timelapseDescriptor
+          ? { timelapseDocumentIdentity: timelapseDescriptor.documentIdentity }
+          : {}),
+        ...(context.preexistingDraft ? { preexistingDraft: true } : {}),
       });
-    }
-    if (persisted?.contentVersion !== undefined) {
-      sceneVersionRef.current = persisted.contentVersion;
-      announcePersistedBinding(
-        documentKey,
-        editorInstanceIdRef.current,
-        {
-          kind: "tree",
-          id: sceneId,
-          nodeType: treeNodeType,
-          storage: isFileBacked ? "file" : "database",
-          loadedVersion: persisted.contentVersion,
-        },
-        persistedContent,
-      );
-    }
-    // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
-    // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
-    // (editGenerationRef のコメント参照)。
-    const committed = editGenerationRef.current === editGenAtStart;
-    if (committed) {
-      isDirtyRef.current = false;
-      useEditorSessionStore
-        .getState()
-        .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
-    }
-    return { persisted: true, committed };
-  }, [
-    documentKey,
-    isFileBacked,
-    runProgrammaticProjectionUpdate,
-    sceneId,
-    treeNodeType,
-  ]);
+      if (persisted.foreshadowRows.length > 0) {
+        runProgrammaticProjectionUpdate(() => {
+          refreshForeshadowPayoffMarkVersions((apply) => {
+            const tr = ed.state.tr;
+            apply(tr);
+            if (tr.steps.length > 0) ed.view.dispatch(tr);
+          }, persisted.foreshadowRows);
+        });
+      }
+      if (persisted?.contentVersion !== undefined) {
+        sceneVersionRef.current = persisted.contentVersion;
+        announcePersistedBinding(
+          documentKey,
+          editorInstanceIdRef.current,
+          {
+            kind: "tree",
+            id: sceneId,
+            nodeType: treeNodeType,
+            storage: isFileBacked ? "file" : "database",
+            loadedVersion: persisted.contentVersion,
+          },
+          persistedContent,
+        );
+      }
+      // 保存成功時のみ dirty 解除 (失敗時は saveFn の catch 側に飛ぶので残る)。
+      // かつ保存 (await) 中に編集が入っていた場合は世代不一致 → dirty 維持
+      // (editGenerationRef のコメント参照)。
+      const committed = editGenerationRef.current === editGenAtStart;
+      if (committed) {
+        isDirtyRef.current = false;
+        useEditorSessionStore
+          .getState()
+          .setDocumentDirty(documentKey, false, editorInstanceIdRef.current);
+      }
+      return { persisted: true, committed };
+    },
+    [
+      documentKey,
+      isFileBacked,
+      runProgrammaticProjectionUpdate,
+      sceneId,
+      treeNodeType,
+    ],
+  );
 
-  const saveFn = useCallback(async () => {
-    const result = await runCoordinatedDocumentSave(documentKey, coreSave, {
-      session: documentSaveSession,
-      didPersist: (attempt) => attempt.persisted,
-    });
-    if (shouldClearRetainedEditorRecoveryDraft(result)) {
-      clearRetainedEditorRecoveryDraft(
-        documentKey,
-        editorInstanceIdRef.current,
-      );
-    }
-  }, [coreSave, documentKey, documentSaveSession]);
+  const saveFn = useCallback(
+    async (context?: DocumentSaveContext) => {
+      const result = await runCoordinatedDocumentSave(documentKey, coreSave, {
+        session: documentSaveSession,
+        didPersist: (attempt) => attempt.persisted,
+        ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
+      });
+      if (shouldClearRetainedEditorRecoveryDraft(result)) {
+        clearRetainedEditorRecoveryDraft(
+          documentKey,
+          editorInstanceIdRef.current,
+        );
+      }
+    },
+    [coreSave, documentKey, documentSaveSession],
+  );
 
   const { schedule, cancel, pause, resume } = useAutoSave(
     saveFn,
@@ -580,11 +607,8 @@ function MountedSceneBlock({
       onTransaction({ transaction }) {
         handleSceneEditorTransaction({
           transaction,
-          id: sceneId,
-          isEntryMode: false,
-          isCodexMode: false,
-          isSnippetMode: false,
-          isChronicleEventMode: false,
+          timelapseDescriptor: loadedTimelapseDescriptorRef.current,
+          beatSceneId: sceneId,
           isApplyingExternalUpdate: isApplyingExternalUpdate.current,
           beatIndexRef: sceneBeatIndexRef,
         });
@@ -607,10 +631,13 @@ function MountedSceneBlock({
 
   editorRef.current = editor;
 
+  const loadedFenceDocumentKey = inputProjectionReady ? documentKey : null;
+  const loadedFenceProjectId = inputProjectionReady ? loadedProjectId : null;
   const editorReadOnly = useLicenseEditableSync(
     editor,
     !inputProjectionReady,
-    documentKey,
+    loadedFenceDocumentKey,
+    loadedFenceProjectId,
   );
   const editorWritable = inputProjectionReady && !editorReadOnly;
   editorWritableRef.current = editorWritable;
@@ -916,10 +943,13 @@ function MountedSceneBlock({
 
     async function load() {
       cancel();
+      const loadProjectId = currentProjectId;
       // 再走 (reloadNonce bump) 中の in-flight 窓でも保存を禁止する。
       // 初回 mount は初期値 true なので no-op。ロード成功時のみ false に戻る。
       // 「未ロード/再ロード窓の保存禁止」は本文消失の最終防衛線 (59ab7c94)。
       loadFailedRef.current = true;
+      loadedTimelapseDescriptorRef.current = null;
+      setLoadedProjectId(null);
       publishLoadReady(false);
       setLoadedInputProjectionKey("");
       // State/effect propagation is asynchronous. Close the native input
@@ -1038,6 +1068,17 @@ function MountedSceneBlock({
         // reset. Earlier publication creates a window where user edits are
         // later cleared as if they belonged to document hydration.
         loadFailedRef.current = false;
+        loadedTimelapseDescriptorRef.current = createLoadedTimelapseDescriptor(
+          loadProjectId,
+          {
+            kind: "tree",
+            id: sceneId,
+            nodeType: treeNodeType,
+            storage: isFileBacked ? "file" : "database",
+            loadedVersion: sceneVersionRef.current,
+          },
+        );
+        setLoadedProjectId(loadProjectId);
         setLoadedInputProjectionKey(inputTargetProjectionKey);
         publishLoadReady(true);
       }
@@ -1058,6 +1099,8 @@ function MountedSceneBlock({
     publishLoadReady,
     beginApplyingExternalUpdate,
     runProgrammaticProjectionUpdate,
+    currentProjectId,
+    treeNodeType,
   ]);
 
   // Report block-axis size changes. contentBoxSize is logical (resolved

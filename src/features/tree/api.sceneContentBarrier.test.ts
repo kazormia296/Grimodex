@@ -1,6 +1,8 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from "vitest";
-import { vi } from "vitest";
+import { afterEach, vi } from "vitest";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 // リニアモード解除時の本文消失バグの回帰テスト。
 // unmount cleanup からの autosave flush は await されない (fire-and-forget) ため、
@@ -67,6 +69,27 @@ vi.mock("@/lib/tauri", () => ({
   },
 }));
 
+vi.mock("@/features/timelapse/bodyWriteMode", () => ({
+  runTimelapseBodyWrite: (
+    _input: unknown,
+    callbacks: {
+      commit: (coverage: undefined) => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => callbacks.commit(undefined).then(callbacks.project),
+  runTimelapseBodyReplacement: (
+    _input: unknown,
+    callbacks: {
+      commit: () => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => callbacks.commit().then(callbacks.project),
+  runTimelapseMutation: (
+    _projectId: string,
+    operation: () => Promise<unknown>,
+  ) => operation(),
+}));
+
 import {
   saveSceneContent,
   loadSceneContent,
@@ -95,6 +118,16 @@ beforeEach(() => {
   state.resolveUpdate = undefined;
   state.rejectUpdate = undefined;
   state.rows = [{ content: DOC, unplacedBeatsDoc: "[]" }];
+  publishCurrentProjectId("project-1");
+  setCurrentWorkspaceIdentity({
+    path: "/workspace/scene-content-test",
+    openRevision: 1,
+  });
+});
+
+afterEach(() => {
+  publishCurrentProjectId(null);
+  setCurrentWorkspaceIdentity(null);
 });
 
 describe("scene content の read-after-write バリア", () => {

@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/narrative/contracts/chronicle-v2/contract.schema.json",
+  "title": "Chronicle evaluation contract v2 with scoped temporal Gold",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractVersion",
+    "caseId",
+    "authorship",
+    "coverage",
+    "sourceDocuments",
+    "observationGold",
+    "temporalGold",
+    "proposalPolicy"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "contractVersion": { "const": "chronicle-evaluation-v2/3" },
+    "caseId": { "type": "string", "minLength": 1 },
+    "authorship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "derivation",
+        "independentSourceAnnotation",
+        "candidateOutputContamination",
+        "reviewRequired",
+        "formalCertification",
+        "reviewScope",
+        "excludedInputs"
+      ],
+      "properties": {
+        "status": { "const": "draft-for-human-review" },
+        "derivation": { "const": "source-text-only" },
+        "independentSourceAnnotation": { "const": true },
+        "candidateOutputContamination": { "const": false },
+        "reviewRequired": { "const": true },
+        "formalCertification": { "const": false },
+        "reviewScope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sourceAndGoldReviewed",
+            "eventObservationPolicy",
+            "atomicObservationClaimIds",
+            "temporalRelationScope",
+            "temporalRelationIds",
+            "temporalUnscoredClaimIds",
+            "excludedTemporalScopes"
+          ],
+          "properties": {
+            "sourceAndGoldReviewed": { "const": true },
+            "eventObservationPolicy": {
+              "const": "four-atomic-claims-user-approved"
+            },
+            "atomicObservationClaimIds": {
+              "const": [
+                "chain-break",
+                "gate-fall",
+                "guards-ring-bell",
+                "guards-evacuate-passersby"
+              ]
+            },
+            "temporalRelationScope": {
+              "const": "night-half-to-first-two-claims-user-approved"
+            },
+            "temporalRelationIds": {
+              "const": ["night-half-chain-break", "night-half-gate-fall"]
+            },
+            "temporalUnscoredClaimIds": {
+              "const": ["guards-ring-bell", "guards-evacuate-passersby"]
+            },
+            "excludedTemporalScopes": {
+              "const": [
+                "absolute-date-conversion",
+                "downstream-sentence-time-inheritance",
+                "structured-entity-properties",
+                "proposal-importance"
+              ]
+            }
+          }
+        },
+        "excludedInputs": {
+          "type": "array",
+          "prefixItems": [
+            { "const": "deleted-provider-response" },
+            { "const": "candidate-observation-wording" },
+            { "const": "v1-scorer-decision" }
+          ],
+          "items": false,
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observation", "proposal"],
+      "properties": {
+        "observation": { "enum": ["exhaustive", "targeted"] },
+        "proposal": { "enum": ["exhaustive", "targeted"] }
+      }
+    },
+    "sourceDocuments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "title", "text"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "text": { "type": "string" }
+        }
+      }
+    },
+    "observationGold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claims"],
+      "properties": {
+        "claims": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": { "$ref": "#/$defs/claim" }
+        }
+      }
+    },
+    "temporalGold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverage", "relations", "unscoredClaimIds"],
+      "properties": {
+        "coverage": { "const": "targeted" },
+        "relations": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            { "$ref": "#/$defs/temporalRelationChainBreak" },
+            { "$ref": "#/$defs/temporalRelationGateFall" }
+          ],
+          "items": false
+        },
+        "unscoredClaimIds": {
+          "const": ["guards-ring-bell", "guards-evacuate-passersby"]
+        }
+      }
+    },
+    "proposalPolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "scoredClaimIds", "reason"],
+          "properties": {
+            "mode": { "const": "unscored" },
+            "scoredClaimIds": { "const": [] },
+            "reason": { "const": "importance-not-annotated" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "scoredClaimIds", "expectedDecisions", "reason"],
+          "properties": {
+            "mode": { "const": "scored" },
+            "scoredClaimIds": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 },
+              "minItems": 1,
+              "uniqueItems": true
+            },
+            "expectedDecisions": {
+              "type": "object",
+              "additionalProperties": {
+                "enum": ["propose", "suppress"]
+              }
+            },
+            "reason": { "const": "explicit-fixture-policy" }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "predicate",
+        "participants",
+        "actuality",
+        "attribution",
+        "narrativeFrame",
+        "requiredDirectRegions",
+        "allowedContextRegions",
+        "granularity"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "predicate": {
+          "enum": ["chain-break", "gate-fall", "ring-bell", "evacuate"]
+        },
+        "participants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["entity", "role"],
+            "properties": {
+              "entity": {
+                "enum": [
+                  "north-gate-chain",
+                  "gate-leaf",
+                  "guard",
+                  "bell",
+                  "passerby",
+                  "street",
+                  "square"
+                ]
+              },
+              "role": {
+                "enum": ["agent", "causer", "destination", "theme"]
+              }
+            }
+          }
+        },
+        "actuality": {
+          "enum": [
+            "actual",
+            "attempted",
+            "dreamed",
+            "hypothetical",
+            "negated",
+            "planned",
+            "rumored"
+          ]
+        },
+        "attribution": {
+          "enum": ["character", "narrator", "reported", "unknown"]
+        },
+        "narrativeFrame": {
+          "enum": [
+            "dream",
+            "flashback",
+            "hypothetical",
+            "plan",
+            "reported-speech",
+            "story-world"
+          ]
+        },
+        "requiredDirectRegions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["documentId", "start", "end"],
+            "properties": {
+              "documentId": { "type": "string", "minLength": 1 },
+              "start": { "type": "integer", "minimum": 0 },
+              "end": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "allowedContextRegions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["documentId", "start", "end"],
+            "properties": {
+              "documentId": { "type": "string", "minLength": 1 },
+              "start": { "type": "integer", "minimum": 0 },
+              "end": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "granularity": { "const": "atomic" }
+      }
+    },
+    "temporalRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "targetClaimId",
+        "relation",
+        "expression",
+        "requiredRegion"
+      ],
+      "properties": {
+        "id": {
+          "enum": ["night-half-chain-break", "night-half-gate-fall"]
+        },
+        "targetClaimId": {
+          "enum": ["chain-break", "gate-fall"]
+        },
+        "relation": { "const": "occurs-at" },
+        "expression": { "const": "夜半" },
+        "requiredRegion": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["documentId", "start", "end"],
+          "properties": {
+            "documentId": { "const": "scene-north-gate" },
+            "start": { "const": 0 },
+            "end": { "const": 2 }
+          }
+        }
+      }
+    },
+    "temporalRelationChainBreak": {
+      "allOf": [
+        { "$ref": "#/$defs/temporalRelation" },
+        {
+          "type": "object",
+          "properties": {
+            "id": { "const": "night-half-chain-break" },
+            "targetClaimId": { "const": "chain-break" }
+          }
+        }
+      ]
+    },
+    "temporalRelationGateFall": {
+      "allOf": [
+        { "$ref": "#/$defs/temporalRelation" },
+        {
+          "type": "object",
+          "properties": {
+            "id": { "const": "night-half-gate-fall" },
+            "targetClaimId": { "const": "gate-fall" }
+          }
+        }
+      ]
+    }
+  }
+}

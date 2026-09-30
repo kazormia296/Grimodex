@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use grimodex_core::narrative_scope_authority_basis::NarrativeScopeAuthorityBasisV2;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRunPayload {
@@ -42,6 +44,21 @@ pub struct CreateTaskSeed {
 pub struct RunRefPayload {
     pub run_id: String,
     pub project_id: String,
+    /// Product-only fail-closed cancellation contract for a Chronicle Run
+    /// that Native most recently classified as durably blocked. Generic
+    /// coordinator cancellation leaves this absent.
+    #[serde(default)]
+    pub chronicle_blocked_discard: Option<ChronicleBlockedDiscardExpectation>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleBlockedDiscardExpectation {
+    pub next_task_id: String,
+    pub blocked_code: String,
+    pub run_spec_digest: String,
+    pub snapshot_digest: String,
+    pub catalog_digest: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -68,6 +85,176 @@ pub struct FinishTaskPayload {
     pub output_json: Option<Value>,
     #[serde(default)]
     pub artifacts: Vec<ArtifactInput>,
+    /// Explicit C2A Chronicle stage persistence mode. `None` preserves the
+    /// existing generic/V1 finish path; `Some` is a typed all-or-nothing
+    /// companion contract and cannot be inferred from artifact JSON.
+    #[serde(default)]
+    pub chronicle_stage_bundle: Option<ChronicleStageC1ExecutionBinding>,
+    /// Independently terminalized Chronicle stage receipts.  Unlike the C1
+    /// closure above this is a task-local, typed receipt batch: Native
+    /// verifies it against the finishing Task/Attempt and exact AI audit
+    /// evidence, then retains only the receipt/model-binding rows.  It makes
+    /// an Observation stage recoverable if the process exits before a later
+    /// synthesis task can aggregate the ephemeral closure.
+    #[serde(default)]
+    pub chronicle_stage_receipts: Vec<ChronicleStageTerminalReceipt>,
+    /// Typed historical Scope-authority companion. Generic ArtifactInput JSON
+    /// cannot mint its reserved artifact kind; Native re-derives this value
+    /// from the durable Run and project tree before persistence.
+    #[serde(default)]
+    pub historical_scope_authority_basis: Option<NarrativeScopeAuthorityBasisV2>,
+    /// Chronicle's terminal ProposalSet must be saved in this Task's same
+    /// immediate transaction.  It is deliberately a typed FinishTask
+    /// companion rather than a second renderer-issued save command: a crash
+    /// can therefore leave either neither the review ledger nor both the
+    /// ledger and completed plan Task, never an orphaned ProposalSet.
+    #[serde(default)]
+    pub chronicle_plan_proposal_set: Option<ChroniclePlanProposalSetFinish>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageC1ExecutionBinding {
+    /// The Task/Attempt currently being finished. It owns aggregation of the
+    /// ephemeral closure and is deliberately distinct from the selected model
+    /// Stage execution below in the multi-window production DAG.
+    pub project_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub stage_execution_owner_task_id: String,
+    pub stage_execution_owner_attempt_id: String,
+    pub stage_execution_owner_stage_execution_id: String,
+    pub context_set_digest: String,
+    pub component_contract_digest: String,
+    pub final_request_digest: String,
+    pub stage_provenance_closure_digest: String,
+    /// The C1 closure is a typed, ephemeral proof input.  It is validated in
+    /// the same transaction as the output/raw-observation companions and is
+    /// deliberately never inserted into the durable artifact table.
+    pub closure: ChronicleStageProvenanceClosure,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageProvenanceClosure {
+    pub kind: String,
+    pub version: u64,
+    pub project_id: String,
+    pub run_id: String,
+    pub owner_task_id: String,
+    pub owner_attempt_id: String,
+    pub receipts: Vec<ChronicleStageTerminalReceipt>,
+    pub receipt_refs: Vec<ChronicleStageReceiptRef>,
+    pub stage_provenance_closure_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageReceiptRef {
+    pub stage_execution_id: String,
+    pub stage_execution_receipt_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageTerminalReceipt {
+    pub kind: String,
+    pub version: u64,
+    pub stage_execution: ChronicleStageExecution,
+    pub context_set_version: String,
+    pub context_set_digest: String,
+    pub component_contract_digest: String,
+    pub final_request_digest: String,
+    pub model_execution_binding: ChronicleStageModelBinding,
+    pub model_binding_digest: String,
+    pub response_digest: Option<String>,
+    /// Digest of the durable `chronicle.raw-observations@1` payload when this
+    /// terminal belongs to the synthesis owner; null for unrelated stages.
+    #[serde(default)]
+    pub raw_observations_digest: Option<String>,
+    /// Digest of the exact typed output payload accepted by Native.
+    #[serde(default)]
+    pub parsed_output_digest: Option<String>,
+    pub parse_status: ChronicleStageParseStatus,
+    pub terminal_status: ChronicleStageTerminalStatus,
+    pub stage_execution_receipt_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageExecution {
+    pub project_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub stage_id: ChronicleStageId,
+    pub stage_execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_stage_execution_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageModelBinding {
+    pub kind: String,
+    pub version: u64,
+    pub provider: Option<String>,
+    pub endpoint_binding_id: Option<String>,
+    pub requested_model: Option<String>,
+    pub effective_model: Option<String>,
+    pub model_fingerprint: Option<String>,
+    pub api_variant: Option<String>,
+    pub reasoning_mode: Option<String>,
+    pub generation_mode: ChronicleStageGenerationMode,
+    pub resolution_status: ChronicleStageResolutionStatus,
+}
+
+// The stage ids mirror their canonical wire names; the shared prefix is part
+// of the contract vocabulary, not a naming accident.
+#[allow(clippy::enum_variant_names)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageId {
+    #[serde(rename = "narrative_observation_extract")]
+    NarrativeObservationExtract,
+    #[serde(rename = "narrative_event_synthesize")]
+    NarrativeEventSynthesize,
+    #[serde(rename = "narrative_structured_repair")]
+    NarrativeStructuredRepair,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageParseStatus {
+    Parsed,
+    Invalid,
+    NotAttempted,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageTerminalStatus {
+    Succeeded,
+    Failed,
+    Cancelled,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageGenerationMode {
+    ProviderDefault,
+    Explicit,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageResolutionStatus {
+    Fingerprinted,
+    ProviderReported,
+    RequestedOnly,
+    Unresolved,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -114,6 +301,16 @@ pub struct SaveProposalSetPayload {
     pub proposals: Vec<ProposalSeed>,
 }
 
+/// Native-validated terminal ledger input for `chronicle.plan-proposals@1`.
+/// The nested payload remains the generic proposal-set shape for its proposal
+/// rows, but only this typed FinishTask route may bind it to the Chronicle
+/// plan Task/Attempt and make the Run complete.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChroniclePlanProposalSetFinish {
+    pub proposal_set: SaveProposalSetPayload,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProposalSeed {
@@ -150,6 +347,102 @@ pub struct AppendRevisionPayload {
     pub expected_current_revision_id: String,
     #[serde(default)]
     pub created_by: Option<String>,
+}
+
+/// Trusted Native identity of the Chronicle Human Derivation Adapter. The
+/// renderer may request an adapter/version, but the writer validates it
+/// against the registered C2A contract before persisting any revision.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NarrativeAdapterIdentity {
+    pub id: String,
+    pub version: String,
+}
+
+/// Exact public C2A ingress for a Native-verified Human-derived revision.
+/// Project and actor identity deliberately do not live in this request:
+/// project is a separate trusted Native argument and the writer fixes the
+/// actor to `human` plus the supplied review surface.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateHumanDerivedRevisionRequest {
+    pub proposal_id: String,
+    pub expected_current_revision_id: String,
+    pub parent_revision_id: String,
+    pub expected_parent_envelope_digest: String,
+    pub proposal_payload: Value,
+    pub adapter: NarrativeAdapterIdentity,
+    pub surface_id: String,
+}
+
+/// Trusted Native authority for a scope-affecting Human derivation.  This is
+/// deliberately not deserializable: the renderer-shaped request cannot carry
+/// a completed reveal basis, and C3 must resolve this authority before calling
+/// the dormant C2A writer.
+#[derive(Debug, Clone)]
+pub struct TrustedHumanDerivationScope {
+    /// Native's trusted project boundary.  This is checked against the
+    /// separate `trusted_project_id` argument and is never decoded from the
+    /// renderer request.
+    pub project_id: String,
+    /// The parent CAS this resolver result was computed for.
+    pub parent_revision_id: String,
+    pub expected_parent_envelope_digest: String,
+    /// The edited proposal's disclosure document.  The writer binds this to
+    /// the request before handing the basis to the pure Core derivation.
+    pub edited_document_ref: String,
+    /// Stable source identity observed while resolving the reveal basis.
+    /// These fields are checked against the persisted parent source basis;
+    /// the live source is intentionally not re-resolved here so a stale
+    /// parent remains an immutable, auditable observation.
+    pub source_key: String,
+    pub source_revision_token: String,
+    pub source_revision_digest: String,
+    pub scene_ref: String,
+    pub reveal_basis: TrustedRevealBasis,
+}
+
+/// Native-only Scope V2 material produced by the live project authority
+/// adapter.  The renderer-shaped Human request cannot carry this value.
+#[derive(Debug, Clone)]
+pub(crate) struct TrustedScopeV2Projection {
+    pub scope: Value,
+    pub digest: String,
+    pub source_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustedScopeBoundary {
+    pub reference: String,
+    pub inclusive: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TrustedScopeInterval {
+    pub from: Option<TrustedScopeBoundary>,
+    pub until: Option<TrustedScopeBoundary>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustedUnresolvedConstraint {
+    pub reason: String,
+    pub constraint_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum TrustedRevealBasis {
+    NotSecret,
+    Resolved {
+        document_ref: String,
+        audience_ref: String,
+        reading_order: TrustedScopeInterval,
+        story_time: TrustedScopeInterval,
+    },
+    Unresolved {
+        document_ref: String,
+        audience: TrustedUnresolvedConstraint,
+        reading_order: TrustedUnresolvedConstraint,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -260,6 +553,39 @@ pub struct ListResumableRunsPayload {
     pub limit: Option<i64>,
 }
 
+/// Exact, limit-free authority query for one durable Review Run.
+///
+/// Unlike [`ListResumableRunsPayload`], all three coordinates are required so
+/// callers cannot mistake absence from a bounded discovery page for terminal
+/// Review state.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IsRunResumableForReviewPayload {
+    pub run_id: String,
+    pub project_id: String,
+    pub surface_path_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct IsRunResumableForReviewResult {
+    pub run_id: String,
+    pub project_id: String,
+    pub surface_path_id: String,
+    pub resumable: bool,
+}
+
+/// Project-scoped discovery input for interrupted current Chronicle DAGs.
+/// This is deliberately separate from [`ListResumableRunsPayload`], whose
+/// contract is Review restoration for Runs that already own a ProposalSet.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListChronicleTaskResumeCandidatesPayload {
+    pub project_id: String,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitApplicationRef {
@@ -303,4 +629,118 @@ pub struct HumanFieldLockPayload {
 
 pub(crate) fn default_object_json() -> Value {
     Value::Object(Default::default())
+}
+
+// ─────────────────────── Gate C2-T1 Transport Assembly ───────────────────
+// Wire payloads for the C2 commands promoted from pub(crate) to pub during
+// Transport Assembly: Lane D's Attention typed writer and Lane O's
+// Maintenance Inbox read model.
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceAttentionSetPayload {
+    pub project_id: String,
+    pub finding_key: String,
+    /// One of `AttentionDisposition::as_str()`'s three values
+    /// (`"snoozed"`/`"dismissed"`/`"flagged"`); validated by
+    /// `AttentionDisposition::try_from` in the N-API handler, not here, so
+    /// the fail-closed error path stays the same as every other Gate C2
+    /// disposition/reason-code string.
+    pub disposition: String,
+    pub material_basis_digest: String,
+    #[serde(default)]
+    pub snoozed_until: Option<String>,
+    /// Who is recording this disposition. Required (SCHEMA 25): the nullable
+    /// `setBy` this replaced let an Attention row exist with nobody
+    /// accountable for it.
+    pub actor_id: String,
+    /// Caller-supplied request identity. A retry carrying the same
+    /// `requestId` and the same decision is a replay, not a second decision.
+    pub request_id: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// OCC token: the `version` the caller believes the row is at, or `0`
+    /// when it believes no row exists yet.
+    pub expected_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceAttentionClearPayload {
+    pub project_id: String,
+    pub finding_key: String,
+    pub actor_id: String,
+    pub request_id: String,
+    pub expected_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceInboxListPayload {
+    pub project_id: String,
+}
+
+// ─────────────────────── Gate C2 Run Kind Policy IPC ───────────────────
+// Wire payloads for the five named operations
+// (`policies/narrative/narrative-run-kind-policy.json`'s `apiSplit`)
+// replacing the old two-value `rebuildNarrativeDependencyIndex(mode:
+// verify|repair)` shape.
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyNarrativeDependencyGraphPayload {
+    pub project_id: String,
+    /// Main-issued process-local owner for manual Verify. Renderer callers
+    /// never choose this identity; the Electron main scheduler adds it after
+    /// the request has passed its authority checks.
+    #[serde(default)]
+    pub attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebuildNarrativeDerivedStatePayload {
+    pub project_id: String,
+    /// Main-issued process-local owner for manual Rebuild, see Verify above.
+    #[serde(default)]
+    pub attempt_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetNarrativeBackfillStatusPayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryNarrativeLegacyBackfillPayload {
+    pub project_id: String,
+}
+
+/// `apply: false` (default) seals and returns a repair plan preview
+/// without executing it -- the policy's `change-count-preview`
+/// precondition. `apply: true` executes: `plan_digest` must match the
+/// digest a preview call just returned (binds the confirmation to the
+/// exact plan the human saw, not a blind re-seal that could differ if
+/// the Durable Graph changed in between) and `lease_owner` identifies
+/// the caller claiming the exclusive Repair lease.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairNarrativeDependencyDeclarationsPayload {
+    pub project_id: String,
+    pub verify_run_id: String,
+    #[serde(default)]
+    pub apply: bool,
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+    #[serde(default)]
+    pub lease_owner: Option<String>,
+    /// The policy's `stable-request-id` precondition. Together with the
+    /// sealed plan digest this makes a retry of an already-approved repair
+    /// replay instead of deactivating the same edges twice.
+    pub request_id: String,
+    /// Who approved this destructive operation. Recorded on the
+    /// `dependency-repair` Run as its audit identity.
+    pub actor_id: String,
 }

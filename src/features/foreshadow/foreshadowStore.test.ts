@@ -67,6 +67,7 @@ function makeDeleteReceipt(
     version: number;
     changeEventUid: string;
     undoJournalId: string;
+    maintenanceTransactionId: string;
   }> = {},
 ) {
   return {
@@ -75,6 +76,7 @@ function makeDeleteReceipt(
     version: 1,
     changeEventUid: "delete-event-1",
     undoJournalId: "delete-journal-1",
+    maintenanceTransactionId: "delete-maintenance-tx-1",
     ...overrides,
   };
 }
@@ -126,6 +128,12 @@ vi.mock("@/lib/debugLog", () => ({
 }));
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
+}));
+vi.mock("@/lib/nativeMutationMetadata", () => ({
+  getNativeMutationMetadata: vi.fn(() => ({
+    maintenanceTransactionId: "foreshadow-test-transaction",
+    undoJournalId: "foreshadow-test-journal",
+  })),
 }));
 vi.mock("@/features/agent-writes/undoJournal", () => ({
   applyUndoJournal: vi.fn(),
@@ -405,7 +413,7 @@ describe("foreshadowStore", () => {
         "f-1",
       ]);
       expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
-      expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+      expect(recordChangeEvent).not.toHaveBeenCalled();
     });
 
     it("unknown 後の明示リトライは同じ request ID を再利用し、成功後は解放する", async () => {
@@ -444,7 +452,7 @@ describe("foreshadowStore", () => {
           .items.filter(({ id }) => id === firstPayload.id),
       ).toHaveLength(1);
       expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
-      expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+      expect(recordChangeEvent).not.toHaveBeenCalled();
 
       await useForeshadowStore.getState().create(input);
       const [afterSuccessPayload] = mockCreateForeshadow.mock.calls[2];

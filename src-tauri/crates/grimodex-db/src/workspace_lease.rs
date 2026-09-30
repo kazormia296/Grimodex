@@ -74,10 +74,7 @@ pub fn try_acquire_shared(workspace: &Path) -> Result<WorkspaceLease, LeaseError
 ///
 /// Used for exclusive→shared handoff after a verified live replace, so a brief
 /// contending exclusive holder can finish without forcing a blind rollback.
-pub fn acquire_shared(
-    workspace: &Path,
-    timeout: Duration,
-) -> Result<WorkspaceLease, LeaseError> {
+pub fn acquire_shared(workspace: &Path, timeout: Duration) -> Result<WorkspaceLease, LeaseError> {
     let file = open_lock_file(workspace).map_err(LeaseError::Io)?;
     let deadline = Instant::now() + timeout;
     loop {
@@ -132,9 +129,7 @@ pub fn acquire_exclusive(
 }
 
 /// Upgrade path helper: drop shared and take exclusive with timeout.
-pub fn acquire_exclusive_for_migration(
-    workspace: &Path,
-) -> Result<WorkspaceLease, LeaseError> {
+pub fn acquire_exclusive_for_migration(workspace: &Path) -> Result<WorkspaceLease, LeaseError> {
     acquire_exclusive(workspace, Duration::from_secs(10))
 }
 

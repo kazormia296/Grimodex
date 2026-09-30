@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, CommitApplicationRef,
     CommitOperation, CreateRunPayload, CreateTaskSeed, EntityBindingSeed, GetCommitStatusPayload,
@@ -11,8 +14,7 @@ use grimodex_db::{
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.execute(
         "INSERT INTO projects (id, title) VALUES (?, 'Project')",
         &[Value::String("project-1".to_string())],
@@ -121,11 +123,7 @@ fn seed_approved_proposals(
     pairs
 }
 
-fn entry_create(
-    entry_id: &str,
-    name: &str,
-    narrative_entity_id: &str,
-) -> Value {
+fn entry_create(entry_id: &str, name: &str, narrative_entity_id: &str) -> Value {
     json!({
         "entryId": entry_id,
         "typeSlug": "character",
@@ -184,12 +182,14 @@ fn build_prepare(
 ) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
-        .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
-            kind: kind.clone(),
-            payload: payload.clone(),
-            proposal_id: proposal_id.clone(),
-            revision_id: revision_id.clone(),
-        })
+        .map(
+            |(proposal_id, revision_id, kind, payload)| CommitOperation {
+                kind: kind.clone(),
+                payload: payload.clone(),
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+            },
+        )
         .collect();
     let applications: Vec<CommitApplicationRef> = ops
         .iter()
@@ -251,7 +251,6 @@ fn prepare_then_apply(db: &Database, prepare: PrepareCommitPayload) -> anyhow::R
         },
     )
 }
-
 
 fn codex_review_envelope(review_payload: Value, kind: &str, operation_payload: Value) -> Value {
     json!({
@@ -374,10 +373,7 @@ fn two_entries_and_relation_atomic_commit() {
         applied["entityBindings"]["ent:alice"]["codexEntryId"],
         "entry-a"
     );
-    assert_eq!(
-        applied["entityBindings"]["ent:bob"]["source"],
-        "created"
-    );
+    assert_eq!(applied["entityBindings"]["ent:bob"]["source"], "created");
 
     let entry_count: i64 = db
         .with_conn(|conn| {
@@ -421,7 +417,8 @@ fn relation_failure_rolls_back_entries() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    ).expect_err("should fail");
+    )
+    .expect_err("should fail");
     assert!(err.to_string().contains("NEX_CODEX_SELF_RELATION"));
 
     let entry_count: i64 = db
@@ -430,6 +427,98 @@ fn relation_failure_rolls_back_entries() {
         })
         .unwrap();
     assert_eq!(entry_count, 0);
+}
+
+#[test]
+fn change_feed_failure_rolls_back_domain_and_canonical_event() {
+    let db = migrated_db();
+    let items = [(
+        "codex.entry.create",
+        entry_create("entry-feed-fail", "Rollback", "ent:feed-fail"),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-feed-fail", "set-feed-fail", &items);
+    let prepare = build_prepare(
+        "req-feed-fail",
+        "digest-feed-fail",
+        "set-feed-fail",
+        "run-feed-fail",
+        ops_from_pairs(&pairs, &items),
+        vec![],
+    );
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare.clone())
+        .expect("prepare");
+    let before_change_events: i64 = db
+        .with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER test_reject_narrative_change_event
+                 BEFORE INSERT ON narrative_change_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'TEST_CHANGE_FEED_APPEND_FAILED');
+                 END;",
+            )?;
+            Ok(conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?)
+        })
+        .expect("install feed failpoint");
+
+    let error = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id,
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+            request_id: prepare.request_id,
+            session_id: prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect_err("feed append must fail the whole commit");
+    assert!(
+        error.to_string().contains("TEST_CHANGE_FEED_APPEND_FAILED"),
+        "unexpected error: {error}"
+    );
+
+    db.with_conn(|conn| {
+        let commit_status: String = conn.query_row(
+            "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+            [prepared["preparedCommitId"].as_str().unwrap()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(commit_status, "failed");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM codex_entries", [], |row| row
+                .get::<_, i64>(0))?,
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_applications",
+                [],
+                |row| row.get::<_, i64>(0)
+            )?,
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions",
+                [],
+                |row| row.get::<_, i64>(0)
+            )?,
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM narrative_change_events", [], |row| {
+                row.get::<_, i64>(0)
+            })?,
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row
+                .get::<_, i64>(0))?,
+            before_change_events
+        );
+        Ok(())
+    })
+    .expect("verify atomic rollback");
 }
 
 #[test]
@@ -555,7 +644,8 @@ fn semantic_duplicate_relation_is_rejected() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    ).expect_err("duplicate");
+    )
+    .expect_err("duplicate");
     assert!(err
         .to_string()
         .contains("NEX_CODEX_RELATION_SEMANTIC_DUPLICATE"));
@@ -617,7 +707,8 @@ fn commit_map_conflict_and_payload_mismatch_are_rejected() {
                 },
             ],
         ),
-    ).expect_err("endpoint mismatch");
+    )
+    .expect_err("endpoint mismatch");
     assert!(err.to_string().contains("NEX_COMMIT_MAP_ENDPOINT_MISMATCH"));
 
     // Conflicting seed bindings for the same NarrativeEntityId.
@@ -681,7 +772,8 @@ fn revision_payload_mismatch_is_rejected() {
             mismatched,
             vec![],
         ),
-    ).expect_err("payload mismatch");
+    )
+    .expect_err("payload mismatch");
     assert!(err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"));
 }
 
@@ -689,14 +781,8 @@ fn revision_payload_mismatch_is_rejected() {
 fn undo_deletes_relation_before_entries() {
     let db = migrated_db();
     let items = [
-        (
-            "codex.entry.create",
-            entry_create("entry-u1", "A", "ent:a"),
-        ),
-        (
-            "codex.entry.create",
-            entry_create("entry-u2", "B", "ent:b"),
-        ),
+        ("codex.entry.create", entry_create("entry-u1", "A", "ent:a")),
+        ("codex.entry.create", entry_create("entry-u2", "B", "ent:b")),
         (
             "codex.relation.create",
             relation_create("rel-u", "ent:a", "ent:b", None),
@@ -716,18 +802,42 @@ fn undo_deletes_relation_before_entries() {
     );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
-    let undone = narrative_extraction::narrative_extraction_undo_commit(
+    let schema20_undone = narrative_extraction::narrative_extraction_undo_commit(
         &db,
         UndoCommitPayload {
             project_id: "project-1".to_string(),
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id.clone()),
-            request_id: None,
+            request_id: Some("schema20-initial-undo".to_string()),
         },
     )
-    .expect("undo");
-    assert_eq!(undone["status"], "undone");
+    .expect("initial undo");
+    assert_eq!(schema20_undone["status"], "undone");
+
+    // Simulate a SCHEMA 20 commit that was already undone before 20→21. Its
+    // receipt changeEventUid points at the latest Undo event, while the root
+    // apply event remains in the canonical ledger. Redo must recover that
+    // root by commit identity instead of treating the receipt UID as apply.
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_change_transactions WHERE commit_id = ?1",
+            [&commit_id],
+        )?;
+        conn.execute(
+            "UPDATE narrative_apply_commits
+                SET receipt_json = json_remove(
+                    receipt_json,
+                    '$.maintenanceTransactionId',
+                    '$.maintenanceOriginalTransactionId',
+                    '$.maintenanceEventIds'
+                )
+              WHERE id = ?1",
+            [&commit_id],
+        )?;
+        Ok(())
+    })
+    .expect("simulate pre-feed already-undone commit");
 
     let redone = narrative_extraction::narrative_extraction_redo_commit(
         &db,
@@ -736,7 +846,7 @@ fn undo_deletes_relation_before_entries() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id.clone()),
-            request_id: None,
+            request_id: Some("schema20-redo".to_string()),
         },
     )
     .expect("redo");
@@ -749,7 +859,7 @@ fn undo_deletes_relation_before_entries() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("schema20-second-undo".to_string()),
         },
     )
     .expect("second undo");
@@ -767,6 +877,44 @@ fn undo_deletes_relation_before_entries() {
         .unwrap();
     assert_eq!(entry_count, 0);
     assert_eq!(relation_count, 0);
+
+    let feed_rows: Vec<(String, Option<String>, String, String)> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT t.id, t.original_transaction_id, t.cause_kind, e.mutation_kind
+                   FROM narrative_change_transactions t
+                   INNER JOIN narrative_change_events e
+                     ON e.project_id = t.project_id AND e.transaction_id = t.id
+                  WHERE t.project_id = 'project-1' AND t.commit_id = ?1
+                  ORDER BY t.source_change_event_sequence, e.event_ordinal",
+            )?;
+            let rows = statement
+                .query_map([applied["commitId"].as_str().unwrap()], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .expect("read maintenance feed");
+    assert_eq!(
+        feed_rows.len(),
+        12,
+        "historical forward/undo plus new redo/undo x three entities"
+    );
+    let forward_transaction_id = feed_rows[0].0.as_str();
+    let expectations = [
+        (0..3, ("forward", "create"), None),
+        (3..6, ("undo", "delete"), Some(forward_transaction_id)),
+        (6..9, ("redo", "restore"), Some(forward_transaction_id)),
+        (9..12, ("undo", "delete"), Some(forward_transaction_id)),
+    ];
+    for (index, expected, expected_origin) in expectations {
+        for row in &feed_rows[index] {
+            assert_eq!(row.2, expected.0);
+            assert_eq!(row.3, expected.1);
+            assert_eq!(row.1.as_deref(), expected_origin);
+        }
+    }
 }
 
 #[test]
@@ -815,7 +963,7 @@ fn external_dependency_blocks_undo() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("codex-external-relation-undo".to_string()),
         },
     )
     .expect_err("external dep");
@@ -871,7 +1019,7 @@ fn external_tag_dependency_blocks_undo() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("codex-external-tag-undo".to_string()),
         },
     )
     .expect_err("tag dep");
@@ -920,18 +1068,18 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
         ),
     );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
-    let undo_payload = UndoCommitPayload {
+    let replay_payload = |request_id: String| UndoCommitPayload {
         project_id: "project-1".to_string(),
         session_id: "sess".to_string(),
         surface: None,
-        commit_id: Some(commit_id),
-        request_id: None,
+        commit_id: Some(commit_id.clone()),
+        request_id: Some(request_id),
     };
 
     for cycle in 1..=2 {
         let undone = narrative_extraction::narrative_extraction_undo_commit(
             &db,
-            undo_payload.clone(),
+            replay_payload(format!("codex-patch-undo-{cycle}")),
         )
         .unwrap_or_else(|err| panic!("undo cycle {cycle}: {err}"));
         assert_eq!(undone["status"], "undone");
@@ -953,7 +1101,7 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
 
         let redone = narrative_extraction::narrative_extraction_redo_commit(
             &db,
-            undo_payload.clone(),
+            replay_payload(format!("codex-patch-redo-{cycle}")),
         )
         .unwrap_or_else(|err| panic!("redo cycle {cycle}: {err}"));
         assert_eq!(redone["status"], "redone");
@@ -974,7 +1122,7 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
 
     let undone_final = narrative_extraction::narrative_extraction_undo_commit(
         &db,
-        undo_payload,
+        replay_payload("codex-patch-undo-final".to_string()),
     )
     .expect("final undo");
     assert_eq!(undone_final["status"], "undone");
@@ -1011,10 +1159,7 @@ fn envelope_revise_and_decide_prepare_apply_succeeds() {
             decision: "approved".to_string(),
             decision_json: Some(json!({ "source": "envelope-test" })),
             created_by: Some("reviewer".to_string()),
-            reconciliation_envelope: Some(test_envelope(
-                "run-env-apply",
-                "run-env-apply-task",
-            )),
+            reconciliation_envelope: Some(test_envelope("run-env-apply", "run-env-apply-task")),
             inherit_reconciliation_envelope: None,
         },
     )
@@ -1112,7 +1257,8 @@ fn envelope_revision_rejects_operation_payload_mismatch() {
             mismatched_ops,
             vec![],
         ),
-    ).expect_err("envelope vs operation payload mismatch");
+    )
+    .expect_err("envelope vs operation payload mismatch");
     assert!(
         err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         "unexpected error: {err}"
@@ -1154,6 +1300,7 @@ fn partial_apply_review_bundle_and_resumable_runs() {
         RunRefPayload {
             run_id: "run-partial".to_string(),
             project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("review bundle");
@@ -1300,12 +1447,7 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
         "codex.entry.create",
         entry_create("entry-applied-guard", "Guard", "ent:applied-guard"),
     )];
-    let pairs = seed_approved_proposals(
-        &db,
-        "run-applied-guard",
-        "set-applied-guard",
-        &items,
-    );
+    let pairs = seed_approved_proposals(&db, "run-applied-guard", "set-applied-guard", &items);
     let proposal_id = pairs[0].0.clone();
     let revision_id = pairs[0].1.clone();
 
@@ -1388,11 +1530,9 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
     );
 
     enable_manual_apply(&db);
-    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
-        &db,
-        apply_payload.clone(),
-    )
-    .expect("prepare");
+    let prepared =
+        narrative_extraction::narrative_extraction_prepare_commit(&db, apply_payload.clone())
+            .expect("prepare");
     assert_eq!(prepared["ok"], true);
 
     let applied = narrative_extraction::narrative_extraction_apply_commit(
@@ -1460,6 +1600,54 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
         .unwrap();
     assert_eq!(entry_count, 1);
 
+    let (feed_transactions, feed_events, correlated_to_canonical): (i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_change_transactions
+                      WHERE project_id = 'project-1'
+                        AND source_domain = 'narrative.commit.apply'
+                        AND request_id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_change_events e
+                       INNER JOIN narrative_change_transactions t
+                         ON t.project_id = e.project_id AND t.id = e.transaction_id
+                      WHERE t.project_id = 'project-1'
+                        AND t.source_domain = 'narrative.commit.apply'
+                        AND t.request_id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_change_transactions t
+                       INNER JOIN change_events c
+                         ON c.project_id = t.project_id
+                        AND c.event_uid = t.source_change_event_uid
+                        AND c.sequence = t.source_change_event_sequence
+                      WHERE t.project_id = 'project-1'
+                        AND t.source_domain = 'narrative.commit.apply'
+                        AND t.request_id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("inspect retry feed");
+    assert_eq!(
+        feed_transactions, 1,
+        "retry must not duplicate feed transaction"
+    );
+    assert_eq!(feed_events, 1, "retry must not duplicate feed event");
+    assert_eq!(
+        correlated_to_canonical, 1,
+        "feed must reference the audit ledger"
+    );
+
     // Re-prepare with the same ops fails once applied — status-first avoids this.
     // For codex.entry.create, ensure_entry_id_available rejects the duplicate entry id
     // before ensure_proposal_not_applied runs; proposal consumption is still proven below.
@@ -1475,12 +1663,14 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
             surface: Some("narrative-extraction".to_string()),
             operations: ops
                 .iter()
-                .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
-                    kind: kind.clone(),
-                    payload: payload.clone(),
-                    proposal_id: proposal_id.clone(),
-                    revision_id: revision_id.clone(),
-                })
+                .map(
+                    |(proposal_id, revision_id, kind, payload)| CommitOperation {
+                        kind: kind.clone(),
+                        payload: payload.clone(),
+                        proposal_id: proposal_id.clone(),
+                        revision_id: revision_id.clone(),
+                    },
+                )
                 .collect(),
             applications: ops
                 .iter()
@@ -1519,5 +1709,132 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
             .to_string()
             .contains("NEX_PROPOSAL_ALREADY_APPLIED"),
         "proposal must be marked applied: {revision_err}"
+    );
+}
+
+/// Gate C2 Lane H (`application_contributions.rs`, wired in C2-T1):
+/// applying a Commit must record one `narrative_application_contributions`
+/// row per field `field_authority::affected_fields` reports for the
+/// operation, all under the real `narrative_proposal_applications.id` --
+/// not a fabricated identifier -- and all `target_state = 'unchanged'`
+/// (this write just landed, so it matches exactly what was applied).
+#[test]
+fn apply_commit_records_application_contributions_per_affected_field() {
+    let db = migrated_db();
+    let items = [(
+        "codex.entry.create",
+        entry_create("entry-contrib", "Contrib Hero", "ent:contrib"),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-contrib", "set-contrib", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-contrib",
+            "digest-contrib",
+            "set-contrib",
+            "run-contrib",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+
+    let proposal_id = pairs[0].0.clone();
+    let revision_id = pairs[0].1.clone();
+    let application_id: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM narrative_proposal_applications
+                  WHERE proposal_id = ?1 AND revision_id = ?2",
+                [&proposal_id, &revision_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("find application id");
+
+    let mut rows: Vec<(String, String, String)> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT target_object_identity, field_path, target_state
+                   FROM narrative_application_contributions
+                  WHERE project_id = 'project-1' AND application_id = ?1
+                  ORDER BY field_path ASC",
+            )?;
+            let rows = statement
+                .query_map([&application_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .expect("read application contributions");
+    rows.sort();
+
+    let expected_fields = [
+        "/aliases",
+        "/content",
+        "/name",
+        "/parentId",
+        "/summary",
+        "/type",
+    ];
+    assert_eq!(
+        rows.len(),
+        expected_fields.len(),
+        "one contribution row per codex.entry.create affected field: {rows:?}"
+    );
+    for (identity, field_path, target_state) in &rows {
+        assert_eq!(identity, "codex-entry:entry-contrib");
+        assert!(
+            expected_fields.contains(&field_path.as_str()),
+            "unexpected field path: {field_path}"
+        );
+        assert_eq!(target_state, "unchanged");
+    }
+
+    // SCHEMA 29 provenance. `baseline_sequence` is the canonical
+    // `change_events.sequence` this commit's own write landed on -- the
+    // self-stale guard's lower bound, without which a later evaluation would
+    // read the Apply's own event as proof the Source moved and mark the
+    // Application stale the moment it was applied. It only exists once the
+    // canonical append has returned, which is why the Contribution loop runs
+    // after it; this pins that ordering.
+    let (commit_ids, baselines): (Vec<String>, Vec<Option<i64>>) = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT commit_id, baseline_sequence
+                   FROM narrative_application_contributions
+                  WHERE project_id = 'project-1' AND application_id = ?1",
+            )?;
+            let rows = statement
+                .query_map([&application_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows.into_iter().unzip())
+        })
+        .expect("read contribution provenance");
+
+    let canonical_sequence: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT sequence FROM change_events
+                  WHERE project_id = 'project-1' AND op_type = 'narrative.commit.apply'
+                  ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read the canonical apply event sequence");
+
+    assert!(
+        commit_ids.iter().all(|id| !id.is_empty()),
+        "every Contribution must name the Commit that produced it"
+    );
+    assert!(
+        baselines
+            .iter()
+            .all(|baseline| *baseline == Some(canonical_sequence)),
+        "every Contribution must carry this commit's own canonical sequence          ({canonical_sequence}), got {baselines:?}"
     );
 }

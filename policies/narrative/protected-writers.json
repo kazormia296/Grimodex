@@ -1,10 +1,59 @@
 [
   {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_attempts",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_message_versions",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_input_refs",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_generation_qualification_refs",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_chat_input_captures",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "nir1-generation",
+    "table": "nir1_chat_input_submission_keys",
+    "protection": "table",
+    "writer": "nir1_generation.storage",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "foreshadow",
     "table": "foreshadows",
     "protection": "table",
     "versionColumn": "version",
     "writer": "foreshadow.aggregate",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "idempotency",
+    "table": "idempotency_requests",
+    "protection": "table",
+    "writer": "idempotency.receipt",
     "enforcement": "active"
   },
   {
@@ -81,22 +130,34 @@
     "enforcement": "active"
   },
   {
-    "aggregate": "temporal-scene",
+    "aggregate": "tree-node",
     "table": "tree_nodes",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "tree.node",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "project-lifecycle",
+    "table": "projects",
     "protection": "columns",
     "columns": [
-      "story_time_order",
-      "story_time_label",
-      "chronicle_start_time",
-      "chronicle_start_minute",
-      "chronicle_start_granularity",
-      "chronicle_end_time",
-      "chronicle_end_minute",
-      "chronicle_end_granularity",
-      "chronicle_precision"
+      "id",
+      "title",
+      "genre",
+      "pov",
+      "tense",
+      "language",
+      "style_guide",
+      "ai_instructions",
+      "outline",
+      "target_readers",
+      "phase_resolution_mode",
+      "ai_policy",
+      "created_at",
+      "updated_at"
     ],
-    "versionColumn": "version",
-    "writer": "temporal.scene",
+    "writer": "project.lifecycle",
     "enforcement": "active"
   },
   {
@@ -112,6 +173,55 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.entry",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "codex-catalog",
+    "table": "codex_types",
+    "protection": "table",
+    "writer": "codex.catalog",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "codex-catalog",
+    "table": "codex_tags",
+    "protection": "table",
+    "writer": "codex.catalog",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "codex-tags",
+    "table": "codex_entry_tags",
+    "protection": "table",
+    "writer": "codex.entry",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "snippet",
+    "table": "snippets",
+    "protection": "columns",
+    "columns": [
+      "id",
+      "project_id",
+      "title",
+      "content",
+      "tags_cache",
+      "content_source",
+      "scene_id",
+      "source_chat_message_id",
+      "created_at",
+      "updated_at",
+      "version"
+    ],
+    "versionColumn": "version",
+    "writer": "snippet.entry",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "snippet-tags",
+    "table": "snippet_entry_tags",
+    "protection": "table",
+    "writer": "snippet.entry",
     "enforcement": "active"
   },
   {
@@ -131,6 +241,13 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "phase",
+    "table": "codex_phase_detail_overrides",
+    "protection": "table",
+    "writer": "codex.phase",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "detail-definition",
     "table": "codex_detail_definitions",
     "protection": "table",
@@ -141,6 +258,14 @@
   {
     "aggregate": "detail-value",
     "table": "codex_detail_values",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "codex.detail",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "detail-semantic-binding",
+    "table": "codex_detail_semantic_bindings",
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.detail",
@@ -255,6 +380,217 @@
     "table": "narrative_field_authority",
     "protection": "table",
     "writer": "narrative.field-authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_transactions",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_events",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_object_heads",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_cursors",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_sets",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-attention",
+    "table": "narrative_maintenance_attention",
+    "protection": "table",
+    "writer": "narrative.maintenance-attention",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-extraction-task",
+    "table": "narrative_extraction_tasks",
+    "protection": "table",
+    "writer": "narrative.extraction-task",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-extraction-attempt",
+    "table": "narrative_extraction_attempts",
+    "protection": "table",
+    "writer": "narrative.extraction-attempt",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-extraction-artifact",
+    "table": "narrative_extraction_artifacts",
+    "protection": "table",
+    "writer": "narrative.extraction-artifact",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-stage-provenance",
+    "table": "narrative_extraction_stage_model_bindings",
+    "protection": "table",
+    "writer": "narrative.stage-provenance",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-stage-provenance",
+    "table": "narrative_extraction_stage_receipts",
+    "protection": "table",
+    "writer": "narrative.stage-provenance",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_scope_registries",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_scene_scope_bindings",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-authority",
+    "table": "narrative_application_contributions",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_semantic_epochs",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_extraction_runs",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_dependency_edges",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_dependency_edge_states",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_consumer_freshness",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-authority",
+    "table": "narrative_semantic_index_metadata",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-nir1-index",
+    "table": "narrative_nir1_chronicle_vectors",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-finding",
+    "table": "narrative_maintenance_finding_lifecycle",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-finding",
+    "table": "narrative_maintenance_finding_observations",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-repair",
+    "table": "narrative_maintenance_repair_leases",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-timelapse",
+    "table": "change_events",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-c2zc-timelapse",
+    "table": "state_snapshots",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-dependency-declaration",
+    "table": "narrative_dependency_declaration_sets",
+    "protection": "table",
+    "writer": "narrative.dependency-declaration",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-dependency-declaration",
+    "table": "narrative_dependency_declaration_entries",
+    "protection": "table",
+    "writer": "narrative.dependency-declaration",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-dependency-declaration",
+    "table": "narrative_dependency_declaration_heads",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "narrative.dependency-declaration",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "schema-data-migration",
+    "table": "schema_data_migrations",
+    "protection": "table",
+    "writer": "schema.migration",
     "enforcement": "active"
   }
 ]

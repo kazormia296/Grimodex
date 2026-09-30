@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "nir1-capacity/1",
+  "diagnosticOnly": true,
+  "fixtures": [
+    {"id": "materials-N", "qualifiedMaterials": 8192, "qualifiedRevisions": 17, "modes": ["full-build", "restore"]},
+    {"id": "materials-N+1", "qualifiedMaterials": 8193, "qualifiedRevisions": 17, "refusal": "qualified-materials"},
+    {"id": "revisions-N", "qualifiedMaterials": 2048, "qualifiedRevisions": 1024, "modes": ["full-build", "restore"]},
+    {"id": "revisions-N+1", "qualifiedMaterials": 2050, "qualifiedRevisions": 1025, "refusal": "qualified-revisions"},
+    {"id": "D2064/report-heavy", "ineligibleCandidates": 2064, "modes": ["full-build", "restore"]},
+    {"id": "candidates-N+1", "ineligibleCandidates": 2065, "refusal": "candidate-rows"},
+    {"id": "input-bytes-N", "qualifiedMaterials": 16, "qualifiedRevisions": 8, "ineligibleCandidates": 10, "sourceInputBytes": 16777216, "modes": ["full-build", "restore"]},
+    {"id": "input-bytes-N+1", "qualifiedMaterials": 16, "qualifiedRevisions": 8, "ineligibleCandidates": 10, "sourceInputBytes": 16777217, "refusal": "input-bytes"}
+  ],
+  "qualification": {
+    "rssBytes": 402653184,
+    "rustHeapBytes": 335544320,
+    "temporaryLogicalBytesUpperBound": 1073741824,
+    "meaning": "Fresh-process boundary-fixture qualification; not absolute runtime process or filesystem allocation caps."
+  }
+}

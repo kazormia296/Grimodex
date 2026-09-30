@@ -283,7 +283,12 @@ impl TemporalConstraintPayload {
                     "absolute-window constraint needs a literal or a resolved value"
                 );
             }
-            Self::RelativeOffset { left, right, offset, .. } => {
+            Self::RelativeOffset {
+                left,
+                right,
+                offset,
+                ..
+            } => {
                 anyhow::ensure!(
                     VALID_ENDPOINTS.contains(&left.endpoint.as_str())
                         && VALID_ENDPOINTS.contains(&right.endpoint.as_str()),
@@ -299,7 +304,10 @@ impl TemporalConstraintPayload {
                     "invalid relative-offset arithmetic '{}'",
                     offset.arithmetic
                 );
-                anyhow::ensure!(offset.min <= offset.max, "relative-offset range is inverted");
+                anyhow::ensure!(
+                    offset.min <= offset.max,
+                    "relative-offset range is inverted"
+                );
             }
             Self::IntervalRelation { relation, .. } => {
                 anyhow::ensure!(
@@ -318,12 +326,17 @@ impl TemporalConstraintPayload {
                     "duration range is invalid"
                 );
             }
-            Self::Symbolic { relation, label, .. } => {
+            Self::Symbolic {
+                relation, label, ..
+            } => {
                 anyhow::ensure!(
                     VALID_SYMBOLIC_RELATIONS.contains(&relation.as_str()),
                     "invalid symbolic relation '{relation}'"
                 );
-                anyhow::ensure!(!label.trim().is_empty(), "symbolic constraint label is empty");
+                anyhow::ensure!(
+                    !label.trim().is_empty(),
+                    "symbolic constraint label is empty"
+                );
             }
         }
         Ok(())
@@ -333,7 +346,9 @@ impl TemporalConstraintPayload {
     /// two extraction passes proposing the same edge collapse to one row.
     fn semantic_key(&self) -> String {
         match self {
-            Self::AbsoluteWindow { node_id, endpoint, .. } => {
+            Self::AbsoluteWindow {
+                node_id, endpoint, ..
+            } => {
                 format!("absolute-window\t{node_id}\t{endpoint}")
             }
             Self::RelativeOffset { left, right, .. } => format!(

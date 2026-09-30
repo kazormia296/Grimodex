@@ -7,16 +7,23 @@ overrides:
   postcss: ^8.5.18
   markdown-it: ^14.2.0
   "@babel/core": ^7.29.7
+  browserslist: ^4.28.7
   undici: ^7.29.0
   "brace-expansion@1.1.14": 5.0.9
   "brace-expansion@2.1.2": 5.0.9
   "brace-expansion@5.0.6": 5.0.9
-  "js-yaml@4.2.0": 4.3.1
-  "nanoid@3.3.16": 3.3.17
+  "js-yaml@4.2.0": 4.3.2
+  "nanoid@3.3.16": 3.3.18
   "linkify-it@5.0.1": 5.0.2
-  "fast-uri@3.1.3": 3.1.5
-  "miniflare>sharp": 0.35.3
-  "postcss>nanoid": 3.3.17
+  "fast-uri@3.1.3": 3.1.7
+  "miniflare>sharp": 0.35.4
+  "sharp@0.35.3": 0.35.4
+  "@xmldom/xmldom@0.8.13": 0.8.15
+  "@tiptap/react>@tiptap/extension-bubble-menu": 3.30.5
+  "@tiptap/react>@tiptap/extension-floating-menu": 3.30.5
+  "prosemirror-transform@1.12.0": 1.12.1
+  "postcss>nanoid": 3.3.18
+  tar: 7.5.21
 
 patchedDependencies:
   "@paper-design/shaders@0.0.77": patches/@paper-design__shaders@0.0.77.patch

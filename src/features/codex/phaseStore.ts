@@ -54,7 +54,7 @@ export interface PhaseState {
         | "contextModeOverride"
       >
     >,
-    opts?: { baseVersion?: number },
+    opts?: { baseVersion?: number; preexistingDraft?: boolean },
   ): Promise<CodexEntryPhase | null>;
   deletePhase(id: string): Promise<void>;
   upsertDetailOverride(
@@ -359,6 +359,7 @@ export const usePhaseStore = create<PhaseState>()((set, get) => ({
     try {
       updated = await phaseApi.updatePhase(id, data, {
         baseVersion: opts?.baseVersion ?? before?.version ?? 0,
+        ...(opts?.preexistingDraft ? { preexistingDraft: true } : {}),
       });
     } catch (error) {
       if (error instanceof PhaseVersionConflictError) {

@@ -3,19 +3,18 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { invoke } from "@/lib/tauri";
-import {
-  getRecorderSessionId,
-  recordChangeEvent,
-} from "@/features/timelapse/recorder";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { getProject } from "@/features/project/api";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import {
   foreshadows,
   foreshadowSetups,
@@ -43,12 +42,72 @@ import { deriveLabel } from "./deriveLabel";
 import { normalizeForeshadowRow } from "./normalizeForeshadowRow";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { instantEpochMilliseconds } from "@/lib/time";
-import {
-  getCreateResultMetadata,
-  isCreateResultEntityPresent,
-} from "@/lib/createResultMetadata";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export { normalizeForeshadowRow } from "./normalizeForeshadowRow";
+
+export type ForeshadowChangeOrigin =
+  | "human"
+  | "ai-apply"
+  | "import"
+  | "undo"
+  | "redo"
+  | "restore";
+
+export interface ForeshadowMutationLineage {
+  requestId?: string;
+  origin?: ForeshadowChangeOrigin;
+  /** Required when origin is ai-apply because that origin has two routes. */
+  authorityRoute?: "interactive-agent-command" | "interpreter-projection";
+  originalTransactionId?: string;
+  undoJournalId?: string;
+}
+
+export function foreshadowMutationIdentity(
+  projectId: string,
+  options: ForeshadowMutationLineage = {},
+  stableRequestId?: string,
+): Record<string, unknown> {
+  const requestId = options.requestId ?? stableRequestId ?? crypto.randomUUID();
+  const identity = {
+    projectId,
+    requestId,
+    sessionId: getRecorderSessionId(),
+    eventUid: requestId,
+    origin: options.origin ?? "human",
+    originalTransactionId: options.originalTransactionId ?? null,
+    ...(options.undoJournalId ? { undoJournalId: options.undoJournalId } : {}),
+  };
+  // Direct forward/restore writes now carry the same authority evidence as
+  // the other canonical Native writers. History cycles are replayed through
+  // agent_apply_undo_journal and retain the legacy inverse lineage shape.
+  if (options.origin === "undo" || options.origin === "redo") {
+    return identity;
+  }
+  const origin = options.origin ?? "human";
+  const authority =
+    origin === "ai-apply"
+      ? (() => {
+          const authorityRoute = options.authorityRoute;
+          if (!authorityRoute) {
+            throw new Error(
+              "ai-apply foreshadow writes require an explicit authorityRoute",
+            );
+          }
+          return createCanonicalWriteContext("ai-apply", undefined, requestId, {
+            authorityRoute,
+          });
+        })()
+      : createCanonicalWriteContext(origin, undefined, requestId);
+  return {
+    ...identity,
+    authorityRoute: authority.authorityRoute,
+    caller: authority.caller,
+    controls: authority.controls,
+    provenance: authority.provenance,
+    writesAuthorityProtectedField: authority.writesAuthorityProtectedField,
+  };
+}
 
 /** Max chars of a scene-prefix excerpt used when `foreshadows.notes` is empty. */
 const SETUP_EXCERPT_FALLBACK_MAX_CHARS = 200;
@@ -130,26 +189,6 @@ function normalizeSetupRow(raw: unknown): ForeshadowSetupRow {
 
 // ── Foreshadow CRUD ───────────────────────────────────────────────
 
-/**
- * Timelapse record for a foreshadow (伏線) UI mutation. Uses the SAME
- * `foreshadow` domain the Rust AI path emits via its undo journal
- * (`agent_writes.rs`) — the plain `foreshadow.rs` UI commands do NOT append
- * change_events, so the UI path and AI path are disjoint (no double-record).
- */
-function recordForeshadow(
-  opType: string,
-  entityId: string | null,
-  payload: Record<string, unknown>,
-): void {
-  recordChangeEvent({
-    domain: "foreshadow",
-    opType,
-    entityType: "foreshadow",
-    entityId,
-    payload,
-  });
-}
-
 export async function createForeshadow(
   data: Omit<NewForeshadow, "createdAt" | "updatedAt" | "id"> & {
     id?: string;
@@ -157,14 +196,13 @@ export async function createForeshadow(
   options: {
     /** Reuse after an uncertain response; use a fresh value for deliberate restore. */
     requestId?: string;
-  } = {},
+  } & ForeshadowMutationLineage = {},
 ): Promise<ForeshadowRow> {
   const id = data.id ?? crypto.randomUUID();
   const created = await invoke("foreshadow_create", {
     payload: {
+      ...foreshadowMutationIdentity(data.projectId, options, id),
       id,
-      requestId: options.requestId ?? id,
-      projectId: data.projectId,
       title: data.title,
       intent: data.intent ?? null,
       notes: data.notes ?? null,
@@ -179,15 +217,6 @@ export async function createForeshadow(
     },
   });
   const norm = normalizeForeshadowRow(created);
-  if (
-    isCreateResultEntityPresent(norm) &&
-    getCreateResultMetadata(norm)?.replayed !== true
-  ) {
-    recordForeshadow("create", norm.id, {
-      foreshadowId: norm.id,
-      title: norm.title,
-    });
-  }
   return norm;
 }
 
@@ -913,6 +942,8 @@ export async function updateForeshadow(
     >
   >,
   baseVersion: number,
+  projectId: string,
+  options: ForeshadowMutationLineage = {},
 ): Promise<ForeshadowRow> {
   const tauriPatch: Record<string, unknown> = {};
   if (patch.title !== undefined) tauriPatch.title = patch.title;
@@ -934,18 +965,14 @@ export async function updateForeshadow(
   if (patch.loadBearing !== undefined)
     tauriPatch.loadBearing = patch.loadBearing;
   tauriPatch.baseVersion = baseVersion;
+  Object.assign(tauriPatch, foreshadowMutationIdentity(projectId, options));
 
-  const updated = normalizeForeshadowRow(
+  return normalizeForeshadowRow(
     await invoke("foreshadow_update", {
       id,
       patch: tauriPatch,
     }),
   );
-  recordForeshadow("update", id, {
-    foreshadowId: id,
-    fields: Object.keys(patch),
-  });
-  return updated;
 }
 
 export interface ForeshadowDeleteReceipt {
@@ -954,18 +981,21 @@ export interface ForeshadowDeleteReceipt {
   version: number;
   changeEventUid: string;
   undoJournalId: string;
+  maintenanceTransactionId: string;
 }
 
 export async function deleteForeshadow(
   id: string,
   baseVersion: number,
   projectId: string,
+  options: ForeshadowMutationLineage = {},
 ): Promise<ForeshadowDeleteReceipt> {
   const receipt = await invoke<ForeshadowDeleteReceipt>("foreshadow_delete", {
-    id,
-    projectId,
-    baseVersion,
-    sessionId: getRecorderSessionId(),
+    payload: {
+      ...foreshadowMutationIdentity(projectId, options),
+      id,
+      baseVersion,
+    },
   });
   return receipt;
 }
@@ -976,9 +1006,21 @@ export async function createForeshadowSetup(
   data: Omit<NewForeshadowSetup, "createdAt" | "updatedAt">,
   baseVersion: number,
 ): Promise<{ setup: ForeshadowSetupRow; foreshadow: ForeshadowRow }> {
+  const projectId = getCurrentProjectId();
   const foreshadow = normalizeForeshadowRow(
     await invoke("foreshadow_setup_create_ai", {
+      ...foreshadowMutationIdentity(
+        projectId,
+        {
+          origin: data.attribution === "ai" ? "ai-apply" : "human",
+          ...(data.attribution === "ai"
+            ? { authorityRoute: "interactive-agent-command" as const }
+            : {}),
+        },
+        data.id,
+      ),
       id: data.id,
+      projectId,
       foreshadowId: data.foreshadowId,
       baseVersion,
       sceneId: data.sceneId,
@@ -1042,7 +1084,10 @@ export async function updateSetup(
   >,
   baseVersion: number,
 ): Promise<ForeshadowRow> {
-  const tauriPatch: Record<string, unknown> = { baseVersion };
+  const tauriPatch: Record<string, unknown> = {
+    baseVersion,
+    ...foreshadowMutationIdentity(getCurrentProjectId()),
+  };
   if (patch.strength !== undefined) tauriPatch.strength = patch.strength;
   if (patch.aiStrength !== undefined) tauriPatch.aiStrength = patch.aiStrength;
   if (patch.aiReasoning !== undefined) {
@@ -1071,7 +1116,12 @@ export async function deleteSetup(
   const receipt = await invoke<OrphanResolveReceipt>(
     "foreshadow_resolve_orphan",
     {
-      payload: { setupId: id, action: "delete", baseVersion },
+      payload: {
+        ...foreshadowMutationIdentity(getCurrentProjectId()),
+        setupId: id,
+        action: "delete",
+        baseVersion,
+      },
     },
   );
   return receipt.foreshadow ? normalizeForeshadowRow(receipt.foreshadow) : null;
@@ -1086,6 +1136,7 @@ export async function reanchorOrphanSetup(
     "foreshadow_resolve_orphan",
     {
       payload: {
+        ...foreshadowMutationIdentity(getCurrentProjectId()),
         setupId,
         action: "reanchor",
         baseVersion,
@@ -1107,6 +1158,7 @@ export async function reinsertOrphanSetup(
     "foreshadow_resolve_orphan",
     {
       payload: {
+        ...foreshadowMutationIdentity(getCurrentProjectId()),
         setupId,
         action: "reinsert",
         baseVersion,
@@ -1144,9 +1196,12 @@ export async function addCodexLink(
 ): Promise<ForeshadowRow> {
   return normalizeForeshadowRow(
     await invoke("foreshadow_link_codex", {
-      foreshadowId,
-      codexId: codexEntryId,
-      baseVersion,
+      payload: {
+        ...foreshadowMutationIdentity(getCurrentProjectId()),
+        foreshadowId,
+        codexId: codexEntryId,
+        baseVersion,
+      },
     }),
   );
 }
@@ -1158,9 +1213,12 @@ export async function removeCodexLink(
 ): Promise<ForeshadowRow> {
   return normalizeForeshadowRow(
     await invoke("foreshadow_unlink_codex", {
-      foreshadowId,
-      codexId: codexEntryId,
-      baseVersion,
+      payload: {
+        ...foreshadowMutationIdentity(getCurrentProjectId()),
+        foreshadowId,
+        codexId: codexEntryId,
+        baseVersion,
+      },
     }),
   );
 }
@@ -1198,9 +1256,12 @@ export async function setSetupStrength(
 ): Promise<ForeshadowRow> {
   return normalizeForeshadowRow(
     await invoke("foreshadow_set_setup_strength", {
-      setupId,
-      strength,
-      baseVersion,
+      payload: {
+        ...foreshadowMutationIdentity(getCurrentProjectId()),
+        setupId,
+        strength,
+        baseVersion,
+      },
     }),
   );
 }
@@ -1337,7 +1398,7 @@ export async function proposePastSetups(
 ): Promise<ProposedSetup[]> {
   // 分析・提案系の LLM 呼び出し — kouetsu views と同じく analysis で gate する
   // (presentation から独立した correctness 層、policyGuard.ts 参照)。
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1413,7 +1474,7 @@ export interface EvaluateStrengthRequest {
 export async function evaluateSetupStrength(
   req: EvaluateStrengthRequest,
 ): Promise<AiEvaluation | null> {
-  if (blockIfPolicyOff("analysis")) return null;
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return null;
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1502,7 +1563,7 @@ export async function auditChapter(
     // New pipeline owns chapter-level discovery; legacy audit returns empty.
     return [];
   }
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   let _auditProject;
   try {
     _auditProject = await getProject(useTreeStore.getState().projectId);

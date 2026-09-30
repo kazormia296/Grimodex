@@ -2,6 +2,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { createEvent, deleteEvent, linkScenesToEvent, listEvents } from "./api";
@@ -157,7 +158,7 @@ ${custom}
 export async function proposeEvents(
   req: ExtractEventsRequest,
 ): Promise<EventProposal[]> {
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   const nonEmpty = req.scenes.filter((s) => s.bodyText.trim().length > 0);
   if (nonEmpty.length === 0) return [];
   const allowedSceneIds = new Set(nonEmpty.map((s) => s.sceneId));
@@ -250,7 +251,11 @@ export async function importExtractedEvents(
   }
 }
 
-import type { ChronicleReviewProposal } from "./chronicleExtractionStore";
+import {
+  selectChronicleProposalsForAtomicApply,
+  useChronicleExtractionStore,
+  type ChronicleReviewProposal,
+} from "./chronicleExtractionStore";
 
 /** Feature flag: Run-based Chronicle extraction is the only product path (PR6). */
 export const USE_NARRATIVE_EXTRACTION_RUN = true;
@@ -258,6 +263,7 @@ export const USE_NARRATIVE_EXTRACTION_RUN = true;
 export type { ChronicleReviewProposal } from "./chronicleExtractionStore";
 export type { StartChronicleExtractionRequest } from "./chronicleExtractionStore";
 export type { ChronicleExtractionReviewProjection } from "./chronicleExtractionStore";
+export type { ResumeChronicleExtractionRequest } from "./chronicleExtractionApi";
 
 export async function startChronicleExtraction(
   ...args: Parameters<
@@ -268,6 +274,39 @@ export async function startChronicleExtraction(
 > {
   const mod = await import("./chronicleExtractionApi");
   return mod.startChronicleExtraction(...args);
+}
+
+export async function discoverChronicleTaskResumeCandidates(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").discoverChronicleTaskResumeCandidates
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").discoverChronicleTaskResumeCandidates
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.discoverChronicleTaskResumeCandidates(...args);
+}
+
+export async function discardChronicleTaskResumeCandidate(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").discardChronicleTaskResumeCandidate
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").discardChronicleTaskResumeCandidate
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.discardChronicleTaskResumeCandidate(...args);
+}
+
+export async function resumeChronicleExtraction(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").resumeChronicleExtraction
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").resumeChronicleExtraction
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.resumeChronicleExtraction(...args);
 }
 
 export async function getChronicleExtractionReview(
@@ -290,6 +329,33 @@ export async function restoreChronicleExtractionReview(
 > {
   const mod = await import("./chronicleExtractionApi");
   return mod.restoreChronicleExtractionReview(...args);
+}
+
+/**
+ * Settle a historical partial Apply under the same exclusive renderer CAS as
+ * a normal Apply. Lease acquisition is synchronous, before the dynamic import
+ * yields, so review decisions cannot start in the gap.
+ */
+export function abandonChroniclePartialReview(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").abandonChroniclePartialReview
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").abandonChroniclePartialReview
+> {
+  const state = useChronicleExtractionStore.getState();
+  if (!state.tryBeginApplyMutation()) {
+    return Promise.reject(
+      new Error(
+        "NEX_CHRONICLE_PARTIAL_REVIEW_MUTATION_BUSY: Apply or review persistence is already in flight",
+      ),
+    );
+  }
+  return import("./chronicleExtractionApi")
+    .then((mod) => mod.abandonChroniclePartialReview(...args))
+    .finally(() => {
+      useChronicleExtractionStore.getState().endApplyMutation();
+    });
 }
 
 export async function buildChronicleExtractionReviewProjection(
@@ -353,14 +419,8 @@ export async function applyChronicleExtractionReview(args: {
   readonly projectId: string;
   readonly proposals: readonly ChronicleReviewProposal[];
 }): Promise<number> {
-  const approved = args.proposals.filter(
-    (proposal) =>
-      proposal.applicability === "applicable" &&
-      proposal.status === "approved" &&
-      proposal.payload &&
-      (proposal.match.status !== "probable-duplicate" ||
-        proposal.probableDuplicateChoice === "create-as-new"),
-  );
+  const approved = selectChronicleProposalsForAtomicApply(args.proposals);
+  if (approved.length === 0) return 0;
 
   if (
     commitCoordinatorOverride &&
@@ -368,13 +428,13 @@ export async function applyChronicleExtractionReview(args: {
   ) {
     return commitCoordinatorOverride.applyChronicleExtractionCommit({
       projectId: args.projectId,
-      proposals: approved,
+      proposals: args.proposals,
     });
   }
 
   const mod = await import("./chronicleExtractionApi");
   return mod.applyChronicleExtractionCommit({
     projectId: args.projectId,
-    proposals: approved,
+    proposals: args.proposals,
   });
 }

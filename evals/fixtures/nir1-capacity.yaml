@@ -1,0 +1,41 @@
+cases:
+  - id: eval-nir1-capacity-diagnostics
+    suiteId: nir1-capacity-diagnostics
+    requirementIds:
+      - GDX-ISOLATION-001
+      - GDX-TRACE-001
+    fixture:
+      runId: nir1-capacity-diagnostics
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-09-18T12:00:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        conversationId: nir1-capacity-diagnostics-conversation
+        workspaceId: nir1-capacity-diagnostics-workspace
+        artifactRoot: nir1-capacity-diagnostics-artifacts
+      teardown: [conversation, workspace, artifacts]
+    input:
+      prompt: Run the diagnostic-only NIR-1 B capacity probe without activating Graph query or product dispatch.
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence:
+        - capacity-manifest
+        - diagnostic-report
+        - unratified-capacity-decision
+      outputValidators:
+        - schema
+        - artifact-link
+        - no-stale-claim
+        - no-side-effect

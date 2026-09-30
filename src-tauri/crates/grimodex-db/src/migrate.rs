@@ -1,4 +1,5 @@
-use rusqlite::{params, Connection, ErrorCode};
+use anyhow::Context;
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use std::time::Duration;
 
 use super::codex_relation_keys::build_codex_relation_semantic_key;
@@ -10,7 +11,429 @@ enum ConvergedPreviousFinalize {
     NeedsFullMigration,
 }
 
+type ForeignKeyViolation = (String, Option<i64>, String, i64);
+
 impl Database {
+    /// First workspace schema that owns the `schema_data_migrations` table.
+    /// Restore compatibility may treat a missing table as provably
+    /// pre-cutover only for an older, non-negative `user_version`.
+    pub(crate) const SCHEMA_DATA_MIGRATIONS_INTRODUCED_SCHEMA_VERSION: i32 = 23;
+
+    /// C2-ZC's activation marker is deliberately kept behind the schema-owner
+    /// module.  `schema_data_migrations` is not a general-purpose runtime
+    /// table: C2-ZB and every later schema/data contract must serialize its
+    /// writes through this owner so a cutover cannot race a migration
+    /// checkpoint or silently acquire a second marker-writing authority.
+    pub(crate) const C2_ZC_CUTOVER_MIGRATION_ID: &'static str =
+        "narrative-c2-canonical-freshness-v1";
+    pub(crate) const C2_ZC_CUTOVER_MIGRATION_ID_PREFIX: &'static str =
+        "narrative-c2-canonical-freshness-";
+    pub(crate) const C2_ZC_CUTOVER_CONTRACT_VERSION: i64 = 1;
+
+    pub(crate) fn read_c2zc_cutover_marker(conn: &Connection) -> anyhow::Result<Option<i64>> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            anyhow::bail!("NEX_C2ZC_CUTOVER_MARKER_MISSING: schema_data_migrations is unavailable");
+        }
+        conn.query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [Self::C2_ZC_CUTOVER_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    /// Read every marker in the C2-ZC cutover namespace without interpreting
+    /// its version. Import boundaries must reject current, future, and
+    /// foreign versions before native migration can repair or publish them.
+    pub(crate) fn read_c2zc_cutover_marker_rows(
+        conn: &Connection,
+    ) -> anyhow::Result<Vec<(String, i64)>> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(Vec::new());
+        }
+        let like_pattern = format!("{}%", Self::C2_ZC_CUTOVER_MIGRATION_ID_PREFIX);
+        let mut statement = conn.prepare(
+            "SELECT migration_id, contract_version
+               FROM schema_data_migrations
+              WHERE migration_id = ?1 OR migration_id LIKE ?2
+              ORDER BY migration_id ASC",
+        )?;
+        let rows = statement.query_map(
+            [Self::C2_ZC_CUTOVER_MIGRATION_ID, like_pattern.as_str()],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    fn migrate_chat_input_capture_lifecycle_v41(conn: &Connection) -> anyhow::Result<()> {
+        if grimodex_core::workspace_schema::has_v41_chat_input_capture_lifecycle(conn)? {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "v41 chat-message lifecycle migration requires an autocommit connection"
+        );
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        let foreign_key_violations_before = Self::foreign_key_violations(conn)?;
+        if foreign_keys_enabled {
+            conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+        }
+        if let Err(error) = conn.execute_batch("SAVEPOINT chat_message_lifecycle_v41") {
+            if foreign_keys_enabled {
+                let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
+            }
+            return Err(error.into());
+        }
+
+        let repair = (|| -> anyhow::Result<()> {
+            Self::rebuild_chat_message_source_fks_v41(conn)?;
+
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS nir1_chat_input_capture_transition_guard;
+                 DROP TRIGGER IF EXISTS nir1_chat_input_capture_new_human_invalidate;
+                 DROP TRIGGER IF EXISTS nir1_chat_input_capture_project_delete;
+                 DROP TRIGGER IF EXISTS nir1_chat_input_capture_session_delete;
+                 DROP TRIGGER IF EXISTS nir1_chat_input_capture_message_delete;
+                 DROP TRIGGER IF EXISTS chat_message_source_provenance_delete;",
+            )?;
+
+            let restricted_parent_keys: i64 = conn.query_row(
+                "SELECT count(*) FROM pragma_foreign_key_list('nir1_chat_input_captures')
+                  WHERE on_delete='RESTRICT'
+                    AND ((\"from\"='project_id' AND \"table\"='projects' AND \"to\"='id')
+                      OR (\"from\"='chat_session_id' AND \"table\"='chat_sessions' AND \"to\"='id')
+                      OR (\"from\"='message_id' AND \"table\"='chat_messages' AND \"to\"='id')
+                      OR (\"from\"='message_version_id' AND \"table\"='nir1_generation_message_versions' AND \"to\"='id'))",
+                [],
+                |row| row.get(0),
+            )?;
+            if restricted_parent_keys != 4 {
+                conn.execute_batch(
+                    "DROP INDEX IF EXISTS idx_nir1_chat_input_captures_current;
+                     CREATE TABLE nir1_chat_input_captures_v41 (
+                        capture_id         TEXT PRIMARY KEY,
+                        project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                        chat_session_id    TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE RESTRICT,
+                        scene_id           TEXT NOT NULL,
+                        submission_id      TEXT NOT NULL,
+                        submission_digest  TEXT NOT NULL
+                            CHECK(length(submission_digest) = 71
+                              AND submission_digest GLOB 'sha256:*'
+                              AND substr(submission_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                        message_id         TEXT NOT NULL UNIQUE
+                            REFERENCES chat_messages(id) ON DELETE RESTRICT,
+                        message_version_id TEXT NOT NULL UNIQUE
+                            REFERENCES nir1_generation_message_versions(id) ON DELETE RESTRICT,
+                        owner_json         TEXT NOT NULL
+                            CHECK(octet_length(owner_json) <= 65536
+                              AND json_valid(owner_json) AND json_type(owner_json) = 'object'),
+                        state              TEXT NOT NULL
+                            CHECK(state IN ('current','superseded','cancelled','closed')),
+                        created_at_ms      INTEGER NOT NULL,
+                        UNIQUE(chat_session_id, submission_id)
+                     );
+                     INSERT INTO nir1_chat_input_captures_v41
+                        (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                         submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                     SELECT capture_id,project_id,chat_session_id,scene_id,submission_id,
+                            submission_digest,message_id,message_version_id,owner_json,state,created_at_ms
+                       FROM nir1_chat_input_captures;
+                     DROP TABLE nir1_chat_input_captures;
+                     ALTER TABLE nir1_chat_input_captures_v41 RENAME TO nir1_chat_input_captures;",
+                )?;
+            }
+
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_nir1_chat_input_captures_current
+                    ON nir1_chat_input_captures(project_id, chat_session_id)
+                    WHERE state='current';",
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_TRANSITION_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_NEW_HUMAN_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_PROJECT_DELETE_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_SESSION_DELETE_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_MESSAGE_DELETE_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::CHAT_MESSAGE_SOURCE_PROVENANCE_DELETE_TRIGGER_SQL,
+            )?;
+            anyhow::ensure!(
+                grimodex_core::workspace_schema::has_v41_chat_input_capture_lifecycle(conn)?,
+                "workspace chat-message lifecycle failed v41 checkpoint"
+            );
+            let foreign_key_violations_after = Self::foreign_key_violations(conn)?;
+            anyhow::ensure!(
+                foreign_key_violations_before == foreign_key_violations_after,
+                "v41 chat-message lifecycle rebuild changed foreign-key violations"
+            );
+            Ok(())
+        })();
+        let migration_result = match repair {
+            Ok(()) => match conn.execute_batch("RELEASE chat_message_lifecycle_v41") {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO chat_message_lifecycle_v41;
+                         RELEASE chat_message_lifecycle_v41;",
+                    ) {
+                        tracing::error!(
+                            target: "narrative.migrate",
+                            %unwind,
+                            "failed to unwind v41 chat-message lifecycle after RELEASE failed"
+                        );
+                    }
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO chat_message_lifecycle_v41;
+                     RELEASE chat_message_lifecycle_v41;",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind v41 chat-message lifecycle migration"
+                    );
+                }
+                Err(error)
+            }
+        };
+        let restore_foreign_keys = if foreign_keys_enabled {
+            conn.execute_batch("PRAGMA foreign_keys=ON;")
+                .map_err(anyhow::Error::from)
+        } else {
+            Ok(())
+        };
+        match (migration_result, restore_foreign_keys) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
+    fn rebuild_chat_message_source_fks_v41(conn: &Connection) -> anyhow::Result<()> {
+        let mut needs_rebuild = false;
+        for table in ["codex_entries", "snippets"] {
+            let action: Option<String> = conn
+                .query_row(
+                    "SELECT on_delete FROM pragma_foreign_key_list(?1)
+                      WHERE \"from\"='source_chat_message_id'
+                        AND \"table\"='chat_messages' AND \"to\"='id'",
+                    [table],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match action.as_deref() {
+                Some("RESTRICT") => {}
+                Some("SET NULL") => needs_rebuild = true,
+                other => anyhow::bail!(
+                    "v41 expected {table}.source_chat_message_id -> chat_messages ON DELETE SET NULL or RESTRICT, got {other:?}"
+                ),
+            }
+        }
+        if !needs_rebuild {
+            return Ok(());
+        }
+
+        let triggers = Self::stored_trigger_definitions(conn)?;
+        for (name, _) in &triggers {
+            let quoted_name = name.replace('"', "\"\"");
+            conn.execute_batch(&format!("DROP TRIGGER \"{quoted_name}\";"))?;
+        }
+        Self::rebuild_chat_message_source_fk_v41(conn, "codex_entries")?;
+        Self::rebuild_chat_message_source_fk_v41(conn, "snippets")?;
+        for (_, sql) in triggers {
+            conn.execute_batch(&sql)?;
+        }
+        Ok(())
+    }
+
+    fn stored_trigger_definitions(conn: &Connection) -> anyhow::Result<Vec<(String, String)>> {
+        let mut statement = conn.prepare(
+            "SELECT name,sql FROM sqlite_master
+              WHERE type='trigger' AND sql IS NOT NULL ORDER BY name",
+        )?;
+        let triggers = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(triggers)
+    }
+
+    fn rename_create_table_sql(
+        create_sql: &str,
+        table: &str,
+        replacement_table: &str,
+    ) -> anyhow::Result<String> {
+        let prefix = [
+            format!("CREATE TABLE IF NOT EXISTS {table}"),
+            format!("CREATE TABLE IF NOT EXISTS \"{table}\""),
+            format!("CREATE TABLE {table}"),
+            format!("CREATE TABLE \"{table}\""),
+        ]
+        .into_iter()
+        .find(|prefix| create_sql.starts_with(prefix))
+        .with_context(|| format!("v41 cannot rebuild unexpected {table} DDL"))?;
+        Ok(create_sql.replacen(&prefix, &format!("CREATE TABLE {replacement_table}"), 1))
+    }
+
+    fn rebuild_chat_message_source_fk_v41(conn: &Connection, table: &str) -> anyhow::Result<()> {
+        let action: Option<String> = conn
+            .query_row(
+                "SELECT on_delete FROM pragma_foreign_key_list(?1)
+                  WHERE \"from\"='source_chat_message_id'
+                    AND \"table\"='chat_messages' AND \"to\"='id'",
+                [table],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match action.as_deref() {
+            Some("RESTRICT") => return Ok(()),
+            Some("SET NULL") => {}
+            other => anyhow::bail!(
+                "v41 expected {table}.source_chat_message_id -> chat_messages ON DELETE SET NULL or RESTRICT, got {other:?}"
+            ),
+        }
+
+        let temporary_table = format!("{table}_v41");
+        let temporary_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+            [&temporary_table],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !temporary_exists,
+            "v41 temporary table name collision: {temporary_table}"
+        );
+        let original_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get(0),
+        )?;
+        let foreign_key_clause = "REFERENCES chat_messages(id) ON DELETE SET NULL";
+        anyhow::ensure!(
+            original_sql.matches(foreign_key_clause).count() == 1,
+            "v41 expected one canonical source-message FK in {table} DDL"
+        );
+        let new_sql = Self::rename_create_table_sql(&original_sql, table, &temporary_table)?
+            .replacen(
+                foreign_key_clause,
+                "REFERENCES chat_messages(id) ON DELETE RESTRICT",
+                1,
+            );
+
+        let table_objects = {
+            let mut statement = conn.prepare(
+                "SELECT sql FROM sqlite_master
+                  WHERE tbl_name=?1 AND type IN ('index','trigger') AND sql IS NOT NULL
+                  ORDER BY type, name",
+            )?;
+            let objects = statement
+                .query_map([table], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            objects
+        };
+        let columns = {
+            let mut statement = conn.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            columns
+        };
+        anyhow::ensure!(
+            !columns.is_empty(),
+            "v41 cannot rebuild empty table {table}"
+        );
+        let column_list = columns
+            .iter()
+            .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        conn.execute_batch(&new_sql)?;
+        conn.execute_batch(&format!(
+            "INSERT INTO \"{temporary_table}\" (rowid, {column_list})
+             SELECT rowid, {column_list} FROM \"{table}\";
+             DROP TABLE \"{table}\";
+             ALTER TABLE \"{temporary_table}\" RENAME TO \"{table}\";"
+        ))?;
+        for object_sql in table_objects {
+            conn.execute_batch(&object_sql)?;
+        }
+        Ok(())
+    }
+
+    fn foreign_key_violations(conn: &Connection) -> anyhow::Result<Vec<ForeignKeyViolation>> {
+        let mut statement = conn.prepare("PRAGMA foreign_key_check")?;
+        let mut violations = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        violations.sort_unstable();
+        Ok(violations)
+    }
+
+    pub(crate) fn record_c2zc_cutover_marker(
+        conn: &Connection,
+        applied_at: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !applied_at.trim().is_empty() && applied_at.trim() == applied_at,
+            "NEX_C2ZC_CUTOVER_MARKER_TIMESTAMP_INVALID: appliedAt must be non-empty and unpadded"
+        );
+        let current = Self::read_c2zc_cutover_marker(conn)?;
+        if let Some(version) = current {
+            anyhow::ensure!(
+                version == Self::C2_ZC_CUTOVER_CONTRACT_VERSION,
+                "NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED: marker contract version {version} is not current"
+            );
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                Self::C2_ZC_CUTOVER_MIGRATION_ID,
+                Self::C2_ZC_CUTOVER_CONTRACT_VERSION,
+                applied_at,
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn migrate(&self) -> anyhow::Result<()> {
         self.migrate_impl(false)
     }
@@ -176,7 +599,7 @@ impl Database {
                                           CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
                 children_budget         TEXT NOT NULL DEFAULT 'compact'
                                           CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
-                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE RESTRICT,
                 notes                   TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
@@ -320,7 +743,7 @@ impl Database {
                 tags_cache              TEXT,
                 content_source          TEXT CHECK(content_source IS NULL OR content_source IN ('human','ai')),
                 scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE RESTRICT,
                 usage_count             INTEGER NOT NULL DEFAULT 0,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -1093,8 +1516,9 @@ impl Database {
             -- Title uses the language-neutral schema default 'Untitled Project' (a placeholder
             -- the user renames) so an English user landing on the bootstrap project does not see
             -- a hardcoded Japanese title. Language stays the documented 'ja' fallback.
-            INSERT OR IGNORE INTO projects (id, title, language, created_at, updated_at)
-              VALUES ('default-project', 'Untitled Project', 'ja', datetime('now'), datetime('now'));",
+            INSERT INTO projects (id, title, language, created_at, updated_at)
+              SELECT 'default-project', 'Untitled Project', 'ja', datetime('now'), datetime('now')
+               WHERE NOT EXISTS (SELECT 1 FROM projects);",
         )?;
 
         // Foreshadow register tables (added post-initial schema)
@@ -1681,6 +2105,8 @@ impl Database {
                 ON change_events(project_id, timestamp);
             CREATE INDEX IF NOT EXISTS idx_change_events_scene_ts
                 ON change_events(scene_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_change_events_project_domain_op_entity_seq
+                ON change_events(project_id, domain, op_type, entity_id, sequence);
             CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_seq
                 ON change_events(project_id, sequence);
 
@@ -1699,7 +2125,9 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_state_snap_project_seq
                 ON state_snapshots(project_id, anchor_sequence);
             CREATE INDEX IF NOT EXISTS idx_state_snap_domain_seq
-                ON state_snapshots(project_id, domain, anchor_sequence);",
+                ON state_snapshots(project_id, domain, anchor_sequence);
+            CREATE INDEX IF NOT EXISTS idx_state_snap_project_domain_type_entity_seq
+                ON state_snapshots(project_id, domain, entity_id, entity_type, anchor_sequence);",
         )?;
         Self::add_column_if_missing(&conn, "change_events", "event_uid", "TEXT")?;
         // The unique index MUST be created here, AFTER add_column_if_missing.
@@ -1712,6 +2140,7 @@ impl Database {
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_change_events_project_uid
                 ON change_events(project_id, event_uid);",
         )?;
+        Self::repair_timelapse_query_indexes(&conn)?;
 
         // Complete AI-use audit ledger. Project/scene/message identifiers are
         // intentionally not foreign keys: mutable content deletion must not
@@ -2224,6 +2653,10 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_tree_nodes_parent ON tree_nodes(parent_id);
              CREATE INDEX IF NOT EXISTS idx_tree_nodes_location ON tree_nodes(location_id);
              CREATE INDEX IF NOT EXISTS idx_tree_nodes_pov ON tree_nodes(pov_character_id);
+             CREATE INDEX IF NOT EXISTS idx_change_events_project_domain_op_entity_seq
+                 ON change_events(project_id, domain, op_type, entity_id, sequence);
+             CREATE INDEX IF NOT EXISTS idx_state_snap_project_domain_type_entity_seq
+                 ON state_snapshots(project_id, domain, entity_id, entity_type, anchor_sequence);
              CREATE INDEX IF NOT EXISTS idx_ai_usage_scene_node ON ai_usage(scene_node_id);
              CREATE INDEX IF NOT EXISTS idx_map_node_positions_ai_branch ON map_node_positions(ai_branch_id);
              CREATE INDEX IF NOT EXISTS idx_map_node_positions_snippet ON map_node_positions(snippet_id);
@@ -3101,16 +3534,4905 @@ impl Database {
             "TEXT NOT NULL DEFAULT ''",
         )?;
 
-        // Stamp only after every fresh/rescue migration above has succeeded.
-        // Headless MCP uses this as its schema-skew gate; advancing earlier
-        // could make a partially migrated database look compatible after a
-        // crash or later migration failure.
-        anyhow::ensure!(
-            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
-            "workspace schema did not satisfy current schema invariants after migration"
-        );
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        // SCHEMA_VERSION 21: Narrative Maintenance Change Feed foundation.
+        // This is not a second audit ledger. Every feed transaction is linked
+        // to one canonical change_events row and exists only for downstream
+        // freshness / dependency invalidation. Existing SCHEMA 18 projection
+        // dependencies/freshness and SCHEMA 20 immutable Applications remain
+        // authoritative for their respective domains.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_change_transactions (
+                id                           TEXT NOT NULL,
+                project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                request_id                   TEXT NOT NULL CHECK(length(request_id) > 0),
+                source_domain                TEXT NOT NULL CHECK(length(source_domain) > 0),
+                source_change_event_uid      TEXT NOT NULL CHECK(length(source_change_event_uid) > 0),
+                source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0),
+                cause_kind                   TEXT NOT NULL
+                    CHECK(cause_kind IN ('forward','undo','redo')),
+                original_transaction_id      TEXT,
+                commit_id                    TEXT,
+                journal_id                   TEXT,
+                application_ids_json         TEXT NOT NULL DEFAULT '[]'
+                    CHECK(json_valid(application_ids_json)
+                      AND json_type(application_ids_json) = 'array'),
+                payload_digest               TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                created_at                   TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, id),
+                UNIQUE(project_id, source_domain, request_id),
+                UNIQUE(project_id, source_change_event_uid),
+                FOREIGN KEY(project_id, source_change_event_uid)
+                    REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT,
+                FOREIGN KEY(project_id, original_transaction_id)
+                    REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_events (
+                id                         TEXT NOT NULL,
+                project_id                 TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                transaction_id             TEXT NOT NULL,
+                canonical_change_event_uid TEXT NOT NULL,
+                canonical_sequence         INTEGER NOT NULL CHECK(canonical_sequence > 0),
+                event_ordinal              INTEGER NOT NULL CHECK(event_ordinal >= 0),
+                object_key_json            TEXT NOT NULL CHECK(json_valid(object_key_json)),
+                change_kind                TEXT NOT NULL
+                    CHECK(change_kind IN ('content','metadata','order','association','catalog','calendar','policy','schema','unknown')),
+                mutation_kind              TEXT NOT NULL
+                    CHECK(mutation_kind IN ('create','update','delete','restore')),
+                before_version             INTEGER,
+                before_digest              TEXT,
+                after_version              INTEGER,
+                after_digest               TEXT,
+                changed_paths_json         TEXT NOT NULL
+                    CHECK(json_valid(changed_paths_json)
+                      AND json_type(changed_paths_json) = 'array'),
+                text_impact_json           TEXT CHECK(text_impact_json IS NULL OR json_valid(text_impact_json)),
+                structural_impact_json     TEXT CHECK(structural_impact_json IS NULL OR json_valid(structural_impact_json)),
+                occurred_at                TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, id),
+                UNIQUE(project_id, canonical_change_event_uid, event_ordinal),
+                FOREIGN KEY(project_id, transaction_id)
+                    REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE,
+                FOREIGN KEY(project_id, canonical_change_event_uid)
+                    REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_object_heads (
+                project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                object_identity               TEXT NOT NULL,
+                after_version                 INTEGER,
+                after_digest                  TEXT,
+                event_id                      TEXT NOT NULL,
+                canonical_sequence            INTEGER NOT NULL CHECK(canonical_sequence > 0),
+                event_ordinal                 INTEGER NOT NULL CHECK(event_ordinal >= 0),
+                updated_at                    TEXT NOT NULL,
+                PRIMARY KEY(project_id, object_identity),
+                FOREIGN KEY(project_id, event_id)
+                    REFERENCES narrative_change_events(project_id, id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_cursors (
+                project_id                    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_id                   TEXT NOT NULL CHECK(length(consumer_id) > 0),
+                acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0
+                    CHECK(acknowledged_through_sequence >= 0),
+                lease_owner                   TEXT,
+                lease_expires_at              TEXT,
+                last_error                    TEXT,
+                updated_at                    TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_sets (
+                id                         TEXT NOT NULL,
+                project_id                 TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                from_sequence_exclusive    INTEGER NOT NULL CHECK(from_sequence_exclusive >= 0),
+                through_sequence_inclusive INTEGER NOT NULL
+                    CHECK(through_sequence_inclusive > from_sequence_exclusive),
+                event_ids_json             TEXT NOT NULL
+                    CHECK(json_valid(event_ids_json) AND json_type(event_ids_json) = 'array'),
+                affected_objects_json      TEXT NOT NULL
+                    CHECK(json_valid(affected_objects_json) AND json_type(affected_objects_json) = 'array'),
+                digest                     TEXT NOT NULL CHECK(length(digest) > 0),
+                created_at                 TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, from_sequence_exclusive, through_sequence_inclusive, digest)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_transactions_project_sequence
+                ON narrative_change_transactions(project_id, source_change_event_sequence);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_events_project_sequence
+                ON narrative_change_events(project_id, canonical_sequence, event_ordinal);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_object_heads_project_sequence
+                ON narrative_change_object_heads(project_id, canonical_sequence, event_ordinal);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_cursors_project
+                ON narrative_change_cursors(project_id, consumer_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_sets_project_range
+                ON narrative_change_sets(project_id, from_sequence_exclusive, through_sequence_inclusive);",
+        )?;
+        // Interrupted/prerelease SCHEMA 21 builds may have created the feed
+        // transaction table before all nullable correlation fields landed.
+        // SQLite's CREATE TABLE IF NOT EXISTS cannot repair that partial
+        // shape, so keep the shadow migrator able to converge it safely.
+        Self::add_column_if_missing(&conn, "narrative_change_transactions", "journal_id", "TEXT")?;
 
+        // SCHEMA_VERSION 22: every feed transaction identifies the authority
+        // that originated it. SQLite cannot add a NOT NULL column without a
+        // default to a populated table, so rebuild the SCHEMA 21 parent while
+        // preserving its child events and deterministic transaction identity.
+        Self::migrate_narrative_change_transactions_v22(&conn)?;
+        Self::backfill_narrative_change_object_heads(&conn)?;
+
+        // SCHEMA_VERSION 23: Gate C2-01 Semantic Build Graph persistence.
+        // ADR 005 fixes the contract this schema implements: Dependency Edge,
+        // Edge State, Consumer Freshness, Application Contribution, Reverse
+        // Lookup, Incremental Evaluator, Cursor, and Backfill
+        // persistence/runtime, and nothing else. narrative_consumer_freshness
+        // is the one durable Freshness authority (semantic-core-authorities
+        // concern `evidence-freshness`); narrative_maintenance_finding_observations
+        // is epoch-bound rebuildable diagnostic history and is never read as
+        // the current value; narrative_maintenance_attention is durable
+        // user state that never backflows into the Change Feed or into
+        // Freshness. A Semantic Epoch is the generation boundary a restore,
+        // migration, or full rebuild advances; see
+        // `docs/adr/006-narrative-mutation-authority-routes.md`'s
+        // `semantic-epoch-event` control.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_data_migrations (
+                migration_id     TEXT NOT NULL,
+                contract_version INTEGER NOT NULL CHECK(contract_version > 0),
+                applied_at       TEXT NOT NULL,
+                PRIMARY KEY(migration_id)
+            );",
+        )?;
+
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_semantic_epochs (
+                id                             TEXT NOT NULL,
+                project_id                     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                epoch_number                   INTEGER NOT NULL CHECK(epoch_number >= 0),
+                reason                         TEXT NOT NULL
+                    CHECK(reason IN ('initial','restore','migration','integrity-repair','manual-rebuild')),
+                triggered_by_change_event_uid  TEXT,
+                created_at                     TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, epoch_number)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_edges (
+                id                          TEXT NOT NULL,
+                project_id                  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind               TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key                TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                source_object_identity      TEXT NOT NULL CHECK(length(source_object_identity) > 0),
+                read_set_json                TEXT NOT NULL DEFAULT '[]'
+                    CHECK(json_valid(read_set_json) AND json_type(read_set_json) = 'array'),
+                generated_by_transaction_id TEXT,
+                created_at                  TEXT NOT NULL,
+                owning_run_id               TEXT,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_edge_states (
+                edge_id               TEXT NOT NULL,
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                evidence_freshness    TEXT NOT NULL
+                    CHECK(evidence_freshness IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')),
+                reason_code           TEXT
+                    CHECK(reason_code IS NULL OR reason_code IN (
+                        'source-revision-changed','source-missing','evidence-overlap','context-overlap',
+                        'exact-content-relocated','quote-not-found','quote-ambiguous','read-set-drift',
+                        'normalizer-incompatible','component-incompatible','target-modified'
+                    )),
+                build_action          TEXT NOT NULL
+                    CHECK(build_action IN ('none','revalidate-exact','reanchor-candidate','resolve-only','recompile-only','rebuild-required','refresh-available','manual')),
+                evaluated_at_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                evaluated_at          TEXT NOT NULL,
+                PRIMARY KEY(edge_id),
+                FOREIGN KEY(edge_id) REFERENCES narrative_dependency_edges(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS narrative_consumer_freshness (
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind         TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key          TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                evidence_freshness    TEXT NOT NULL
+                    CHECK(evidence_freshness IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')),
+                build_action          TEXT NOT NULL
+                    CHECK(build_action IN ('none','revalidate-exact','reanchor-candidate','resolve-only','recompile-only','rebuild-required','refresh-available','manual')),
+                semantic_epoch_id     TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                last_evaluated_run_id TEXT,
+                updated_at            TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_application_contributions (
+                id                     TEXT NOT NULL,
+                project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                application_id         TEXT NOT NULL CHECK(length(application_id) > 0),
+                commit_id              TEXT NOT NULL CHECK(length(commit_id) > 0),
+                proposal_id            TEXT NOT NULL CHECK(length(proposal_id) > 0),
+                revision_id            TEXT NOT NULL CHECK(length(revision_id) > 0),
+                operation_id           TEXT
+                    CHECK(operation_id IS NULL OR length(operation_id) > 0),
+                target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0),
+                field_path             TEXT NOT NULL CHECK(length(field_path) > 0),
+                target_state           TEXT NOT NULL
+                    CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')),
+                maintenance_ownership  TEXT NOT NULL DEFAULT 'maintained'
+                    CHECK(maintenance_ownership IN ('maintained','user-owned','detached')),
+                baseline_sequence      INTEGER
+                    CHECK(baseline_sequence IS NULL OR baseline_sequence > 0),
+                target_state_sequence  INTEGER
+                    CHECK(target_state_sequence IS NULL OR target_state_sequence > 0),
+                target_state_updated_at TEXT,
+                created_at             TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_finding_observations (
+                id                           TEXT NOT NULL,
+                project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id                       TEXT NOT NULL,
+                semantic_epoch_id            TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                edge_id                      TEXT,
+                finding_key                  TEXT NOT NULL CHECK(length(finding_key) > 0),
+                reason_code                  TEXT NOT NULL CHECK(reason_code IN (
+                        'source-revision-changed','source-missing','evidence-overlap','context-overlap',
+                        'exact-content-relocated','quote-not-found','quote-ambiguous','read-set-drift',
+                        'normalizer-incompatible','component-incompatible','target-modified'
+                    )),
+                evidence_freshness_snapshot  TEXT NOT NULL
+                    CHECK(evidence_freshness_snapshot IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')),
+                material_basis_digest        TEXT NOT NULL CHECK(length(material_basis_digest) > 0),
+                observed_at                  TEXT NOT NULL,
+                finding_identity             TEXT,
+                rule_id                      TEXT NOT NULL DEFAULT 'narrative.consumer-freshness',
+                rule_version                 INTEGER NOT NULL DEFAULT 1 CHECK(rule_version > 0),
+                observation_digest           TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_finding_lifecycle (
+                id                         TEXT NOT NULL,
+                project_id                 TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                finding_identity           TEXT NOT NULL CHECK(length(finding_identity) > 0),
+                finding_key                TEXT NOT NULL CHECK(length(finding_key) > 0),
+                rule_id                    TEXT NOT NULL CHECK(length(rule_id) > 0),
+                rule_version               INTEGER NOT NULL CHECK(rule_version > 0),
+                lifecycle_state            TEXT NOT NULL CHECK(lifecycle_state IN ('new','recurring','changed','resolved')),
+                observation_digest         TEXT,
+                material_basis_digest      TEXT,
+                run_id                     TEXT NOT NULL,
+                semantic_epoch_id         TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                observed_at                TEXT NOT NULL,
+                PRIMARY KEY(id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_attention (
+                project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                finding_key            TEXT NOT NULL CHECK(length(finding_key) > 0),
+                finding_identity       TEXT,
+                identity_resolution_status TEXT NOT NULL DEFAULT 'resolved'
+                    CHECK(identity_resolution_status IN ('resolved','unresolved','legacy-unresolved')),
+                disposition            TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')),
+                material_basis_digest  TEXT NOT NULL CHECK(length(material_basis_digest) > 0),
+                snoozed_until          TEXT,
+                set_at                 TEXT NOT NULL,
+                set_by                 TEXT,
+                PRIMARY KEY(project_id, finding_key)
+            );
+            -- SCHEMA 24 (Gate C2 Lane K/N Run Kind Policy). A Semantic Index
+            -- retains the cache fields fixed in
+            -- semantic-core-authorities.json's semanticIndexAllowedFields;
+            -- index_key distinguishes multiple indexes a project may build
+            -- (e.g. embeddings vs. a future secondary index) under one row
+            -- shape.
+            CREATE TABLE IF NOT EXISTS narrative_semantic_index_metadata (
+                project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                index_key              TEXT NOT NULL CHECK(length(index_key) > 0),
+                generation              INTEGER NOT NULL CHECK(generation >= 0),
+                built_at                TEXT NOT NULL,
+                source_digest           TEXT NOT NULL CHECK(length(source_digest) > 0),
+                dependency_set_digest   TEXT NOT NULL CHECK(length(dependency_set_digest) > 0),
+                dirty_cache_flag        INTEGER NOT NULL CHECK(dirty_cache_flag IN (0, 1)),
+                producer_id             TEXT,
+                producer_version        TEXT,
+                PRIMARY KEY(project_id, index_key)
+            );
+            -- SCHEMA 24 (Gate C2 Lane N Repair). Durable claim covering the
+            -- human-approval interval between a Verify-derived sealed repair
+            -- plan being shown to a human and its approved execution; not a
+            -- general workspace write lock (SQLite's own BEGIN IMMEDIATE
+            -- already serializes the DML itself). One active claim per
+            -- project by construction (PRIMARY KEY(project_id)); a stale
+            -- claim past expires_at may be reclaimed by a fresh one.
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_repair_leases (
+                project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                lease_owner             TEXT NOT NULL CHECK(length(lease_owner) > 0),
+                verify_run_id           TEXT NOT NULL CHECK(length(verify_run_id) > 0),
+                repair_plan_digest      TEXT NOT NULL CHECK(length(repair_plan_digest) > 0),
+                semantic_epoch_id       TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                claimed_at              TEXT NOT NULL,
+                expires_at              TEXT NOT NULL,
+                PRIMARY KEY(project_id)
+            );
+            -- Durable wake outbox: a Semantic Epoch rotation commits its wake
+            -- identity in the same transaction, so a lost observer event (or
+            -- an idempotent replay that suppresses re-emission) can never
+            -- strand a rotated Epoch without a maintenance wake. Rows stay
+            -- pending until main acknowledges the delivered wake.
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_wake_outbox (
+                id          TEXT NOT NULL PRIMARY KEY,
+                project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                operation   TEXT NOT NULL CHECK(length(operation) > 0),
+                reason      TEXT NOT NULL CHECK(length(reason) > 0),
+                created_at  TEXT NOT NULL,
+                acked_at    TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_wake_outbox_pending
+                ON narrative_maintenance_wake_outbox(project_id)
+                WHERE acked_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_narrative_semantic_epochs_project
+                ON narrative_semantic_epochs(project_id, epoch_number);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edges_source
+                ON narrative_dependency_edges(project_id, source_object_identity);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edges_consumer
+                ON narrative_dependency_edges(project_id, consumer_kind, consumer_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edge_states_project
+                ON narrative_dependency_edge_states(project_id, evidence_freshness);
+            CREATE INDEX IF NOT EXISTS idx_narrative_consumer_freshness_epoch
+                ON narrative_consumer_freshness(project_id, semantic_epoch_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_target
+                ON narrative_application_contributions(project_id, target_object_identity);
+            CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_field
+                ON narrative_application_contributions(project_id, target_object_identity, field_path);
+            CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_application
+                ON narrative_application_contributions(project_id, application_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_finding_observations_key
+                ON narrative_maintenance_finding_observations(project_id, finding_key, semantic_epoch_id);",
+        )?;
+
+        // SCHEMA 35: explicit producer identity never upgrades legacy NULL
+        // metadata to authority. Vectors remain a rebuildable derived cache.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_semantic_index_metadata",
+            "producer_id",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_semantic_index_metadata",
+            "producer_version",
+            "TEXT",
+        )?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_nir1_chronicle_vectors (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                revision_id TEXT NOT NULL,
+                generation INTEGER NOT NULL CHECK(generation > 0),
+                envelope_digest TEXT NOT NULL,
+                statement_digest TEXT NOT NULL,
+                serializer_ref TEXT NOT NULL,
+                model_id TEXT NOT NULL,
+                artifact_sha256 TEXT NOT NULL,
+                tokenizer_sha256 TEXT NOT NULL,
+                embedding_dim INTEGER NOT NULL CHECK(embedding_dim > 0),
+                chunker_version TEXT NOT NULL,
+                audit_operation_id TEXT NOT NULL,
+                audit_execution_id TEXT NOT NULL,
+                embedding BLOB NOT NULL CHECK(length(embedding) = embedding_dim * 4),
+                PRIMARY KEY(project_id, revision_id)
+            );",
+        )?;
+
+        // SCHEMA_VERSION 33 / NIR-0 D1: sealed Dependency Declaration Set
+        // storage.  V1 `narrative_dependency_edges` remains unchanged and
+        // remains the canonical Freshness input until a later shadow/cutover
+        // lane.  A declaration set is complete only inside the writer's one
+        // transaction; `sealed` is the sole durable state.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_sets (
+                id                    TEXT NOT NULL,
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind         TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key          TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                producer_id           TEXT NOT NULL CHECK(length(producer_id) > 0),
+                producer_generation   INTEGER NOT NULL CHECK(producer_generation >= 0),
+                dependency_set_digest TEXT NOT NULL
+                    CHECK(length(dependency_set_digest) = 71
+                      AND dependency_set_digest GLOB 'sha256:*'
+                      AND substr(dependency_set_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                state                 TEXT NOT NULL CHECK(state = 'sealed'),
+                created_at            TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, consumer_kind, consumer_key,
+                       producer_generation)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_entries (
+                id                    TEXT NOT NULL,
+                declaration_set_id    TEXT NOT NULL
+                    REFERENCES narrative_dependency_declaration_sets(id) ON DELETE CASCADE,
+                source_object_identity TEXT NOT NULL CHECK(length(source_object_identity) > 0),
+                dependency_key        TEXT NOT NULL
+                    CHECK(length(dependency_key) = 71 AND dependency_key GLOB 'sha256:*'
+                      AND substr(dependency_key, 8) NOT GLOB '*[^0-9a-f]*'),
+                dependency_role       TEXT NOT NULL CHECK(length(dependency_role) > 0),
+                role_contract_version TEXT NOT NULL
+                    CHECK(length(role_contract_version) > 0),
+                selector_json         TEXT NOT NULL
+                    CHECK(json_valid(selector_json) AND json_type(selector_json) = 'object'),
+                selector_digest        TEXT NOT NULL
+                    CHECK(length(selector_digest) = 71 AND selector_digest GLOB 'sha256:*'
+                      AND substr(selector_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                created_at            TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(declaration_set_id, source_object_identity, dependency_key)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_heads (
+                project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind           TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key             TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                active_declaration_set_id TEXT NOT NULL
+                    REFERENCES narrative_dependency_declaration_sets(id),
+                producer_id              TEXT NOT NULL CHECK(length(producer_id) > 0),
+                producer_generation     INTEGER NOT NULL CHECK(producer_generation >= 0),
+                version                 INTEGER NOT NULL CHECK(version >= 1),
+                updated_at              TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_sets_consumer
+                ON narrative_dependency_declaration_sets(project_id, consumer_kind, consumer_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_entries_set
+                ON narrative_dependency_declaration_entries(declaration_set_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_entries_source
+                ON narrative_dependency_declaration_entries(source_object_identity);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_heads_set
+                ON narrative_dependency_declaration_heads(active_declaration_set_id);",
+        )?;
+
+        // SCHEMA_VERSION 34 / NIR-0 C2A: durable, non-authoritative Chronicle
+        // stage audit metadata.  The pure closure remains an input-side
+        // contract, but a successful task completion stores the verified
+        // model bindings and terminal receipts atomically with the task output
+        // and extraction artifacts. The C1 closure remains ephemeral and is
+        // never retained as a durable row (ADR 011 §2.1/plan 34f).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_extraction_stage_model_bindings (
+                id                  TEXT NOT NULL PRIMARY KEY,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id              TEXT NOT NULL,
+                task_id             TEXT NOT NULL,
+                attempt_id          TEXT NOT NULL,
+                stage_execution_id  TEXT NOT NULL,
+                binding_json        TEXT NOT NULL
+                    CHECK(json_valid(binding_json)
+                      AND json_type(binding_json) = 'object'),
+                binding_digest      TEXT NOT NULL
+                    CHECK(length(binding_digest) = 71
+                      AND binding_digest GLOB 'sha256:*'
+                      AND substr(binding_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                created_at          TEXT NOT NULL,
+                UNIQUE(project_id, stage_execution_id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_stage_receipts (
+                id                    TEXT NOT NULL PRIMARY KEY,
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id               TEXT NOT NULL,
+                task_id              TEXT NOT NULL,
+                attempt_id           TEXT NOT NULL,
+                stage_execution_id   TEXT NOT NULL,
+                receipt_json         TEXT NOT NULL
+                    CHECK(json_valid(receipt_json)
+                      AND json_type(receipt_json) = 'object'),
+                receipt_digest       TEXT NOT NULL
+                    CHECK(length(receipt_digest) = 71
+                      AND receipt_digest GLOB 'sha256:*'
+                      AND substr(receipt_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                model_binding_digest TEXT NOT NULL
+                    CHECK(length(model_binding_digest) = 71
+                      AND model_binding_digest GLOB 'sha256:*'
+                      AND substr(model_binding_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                terminal_status      TEXT NOT NULL
+                    CHECK(terminal_status IN ('succeeded', 'failed', 'cancelled', 'skipped')),
+                created_at           TEXT NOT NULL,
+                UNIQUE(project_id, stage_execution_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_stage_model_bindings_owner
+                ON narrative_extraction_stage_model_bindings(project_id, run_id, task_id, attempt_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_stage_receipts_owner
+                ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id);
+            ",
+        )?;
+
+        // SCHEMA_VERSION 36 / NIR-1 A1: the existing tree/project Scope
+        // authority remains the
+        // owner of membership and order. These narrow rows hold only the
+        // typed scene-scope extension, its registry, and Native/OCC metadata;
+        // no prose or material closure is copied here.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_scope_registries (
+                project_id                TEXT NOT NULL PRIMARY KEY
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                registry_version          TEXT NOT NULL
+                    CHECK(length(registry_version) > 0),
+                timeline_refs_json        TEXT NOT NULL
+                    CHECK(json_valid(timeline_refs_json)
+                      AND json_type(timeline_refs_json) = 'array'),
+                worldline_refs_json       TEXT NOT NULL
+                    CHECK(json_valid(worldline_refs_json)
+                      AND json_type(worldline_refs_json) = 'array'),
+                narrative_layer_refs_json TEXT NOT NULL
+                    CHECK(json_valid(narrative_layer_refs_json)
+                      AND json_type(narrative_layer_refs_json) = 'array'),
+                version                   INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                source_token              TEXT NOT NULL
+                    CHECK(length(source_token) = 71
+                      AND source_token GLOB 'sha256:*'
+                      AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
+                updated_at                TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS narrative_scene_scope_bindings (
+                project_id            TEXT NOT NULL
+                    REFERENCES projects(id) ON DELETE CASCADE,
+                scene_id              TEXT NOT NULL
+                    REFERENCES tree_nodes(id) ON DELETE CASCADE,
+                scene_incarnation_id  TEXT NOT NULL CHECK(length(scene_incarnation_id) > 0),
+                compatibility_marker  TEXT NOT NULL
+                    CHECK(compatibility_marker IN ('legacy-absent', 'explicit', 'unknown')),
+                query_identity_json   TEXT NOT NULL
+                    CHECK(json_valid(query_identity_json)
+                      AND json_type(query_identity_json) = 'object'),
+                material_constraint_json TEXT NOT NULL
+                    CHECK(json_valid(material_constraint_json)
+                      AND json_type(material_constraint_json) = 'object'),
+                knowledge_holder_json  TEXT NOT NULL
+                    CHECK(json_valid(knowledge_holder_json)
+                      AND json_type(knowledge_holder_json) = 'object'),
+                audience_json          TEXT NOT NULL
+                    CHECK(json_valid(audience_json)
+                      AND json_type(audience_json) = 'object'),
+                version                INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+                source_token           TEXT NOT NULL
+                    CHECK(length(source_token) = 71
+                      AND source_token GLOB 'sha256:*'
+                      AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
+                updated_at             TEXT NOT NULL,
+                PRIMARY KEY(project_id, scene_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_scene_scope_bindings_scene
+                ON narrative_scene_scope_bindings(scene_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_scene_scope_bindings_project
+                ON narrative_scene_scope_bindings(project_id, version);
+            ",
+        )?;
+        // SCHEMA_VERSION 37 / NIR-1 D2b: immutable references to existing
+        // message/artifact bodies and one durable attempt terminal. These
+        // rows record observations; they do not authorize dispatch or history.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS nir1_generation_attempts (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                binding_json TEXT NOT NULL CHECK(json_valid(binding_json)),
+                payload_digest TEXT NOT NULL,
+                input_digest TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                expires_at_ms INTEGER NOT NULL CHECK(expires_at_ms > created_at_ms),
+                claimed_at_ms INTEGER,
+                terminal_json TEXT CHECK(terminal_json IS NULL OR json_valid(terminal_json)),
+                terminal_digest TEXT,
+                completed_at_ms INTEGER,
+                output_version_id TEXT,
+                CHECK((terminal_json IS NULL AND terminal_digest IS NULL AND completed_at_ms IS NULL)
+                   OR (terminal_json IS NOT NULL AND terminal_digest IS NOT NULL AND completed_at_ms IS NOT NULL)),
+                CHECK(output_version_id IS NULL OR terminal_json IS NOT NULL)
+            );
+            CREATE INDEX IF NOT EXISTS idx_nir1_generation_attempts_session
+                ON nir1_generation_attempts(project_id, session_id, id);
+            CREATE INDEX IF NOT EXISTS idx_nir1_generation_attempts_pending
+                ON nir1_generation_attempts(project_id, id) WHERE terminal_json IS NULL;
+            CREATE TABLE IF NOT EXISTS nir1_generation_message_versions (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                message_id TEXT NOT NULL UNIQUE,
+                origin TEXT NOT NULL CHECK(origin IN ('human', 'generated')),
+                body_digest TEXT NOT NULL,
+                parent_attempt_id TEXT REFERENCES nir1_generation_attempts(id),
+                created_at_ms INTEGER NOT NULL,
+                invalidated INTEGER NOT NULL DEFAULT 0 CHECK(invalidated IN (0, 1)),
+                CHECK((origin = 'human' AND parent_attempt_id IS NULL)
+                   OR (origin = 'generated' AND parent_attempt_id IS NOT NULL))
+            );
+            CREATE INDEX IF NOT EXISTS idx_nir1_generation_message_versions_session
+                ON nir1_generation_message_versions(project_id, session_id, id);
+            CREATE TABLE IF NOT EXISTS nir1_generation_input_refs (
+                attempt_id TEXT NOT NULL REFERENCES nir1_generation_attempts(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                reference_json TEXT NOT NULL CHECK(json_valid(reference_json)),
+                PRIMARY KEY(attempt_id, ordinal)
+            );
+            CREATE TABLE IF NOT EXISTS nir1_generation_qualification_refs (
+                attempt_id TEXT NOT NULL REFERENCES nir1_generation_attempts(id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+                reference_json TEXT NOT NULL CHECK(json_valid(reference_json)),
+                PRIMARY KEY(attempt_id, ordinal)
+            );",
+        )?;
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS nir1_generation_invalidate_message_delete;
+             DROP TRIGGER IF EXISTS nir1_generation_invalidate_message_update;
+             DROP TRIGGER IF EXISTS nir1_generation_invalidate_message_insert;",
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_GENERATION_MESSAGE_DELETE_TRIGGER_SQL,
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_GENERATION_MESSAGE_UPDATE_TRIGGER_SQL,
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_GENERATION_MESSAGE_INSERT_TRIGGER_SQL,
+        )?;
+
+        // SCHEMA_VERSION 38 / NIR-1 current Human capture authority. This is
+        // additive storage only: no legacy chat row is promoted or backfilled.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS nir1_chat_input_captures (
+                capture_id         TEXT PRIMARY KEY,
+                project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                chat_session_id    TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                scene_id           TEXT NOT NULL,
+                submission_id      TEXT NOT NULL,
+                submission_digest  TEXT NOT NULL
+                    CHECK(length(submission_digest) = 71
+                      AND submission_digest GLOB 'sha256:*'
+                      AND substr(submission_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                message_id         TEXT NOT NULL UNIQUE
+                    REFERENCES chat_messages(id) ON DELETE CASCADE,
+                message_version_id TEXT NOT NULL UNIQUE
+                    REFERENCES nir1_generation_message_versions(id) ON DELETE RESTRICT,
+                owner_json         TEXT NOT NULL
+                    CHECK(octet_length(owner_json) <= 65536
+                      AND json_valid(owner_json) AND json_type(owner_json) = 'object'),
+                state              TEXT NOT NULL
+                    CHECK(state IN ('current','superseded','cancelled','closed')),
+                created_at_ms      INTEGER NOT NULL,
+                UNIQUE(chat_session_id, submission_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_nir1_chat_input_captures_current
+                ON nir1_chat_input_captures(project_id, chat_session_id)
+                WHERE state='current';",
+        )?;
+        conn.execute_batch("DROP TRIGGER IF EXISTS nir1_chat_input_capture_transition_guard;")?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_TRANSITION_TRIGGER_SQL,
+        )?;
+
+        // SCHEMA_VERSION 39 keeps submission identity after the captured chat
+        // row (and its cascading capture) is deleted. No FK may erase a key.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS nir1_chat_input_submission_keys (
+                submission_id      TEXT PRIMARY KEY,
+                capture_id         TEXT NOT NULL UNIQUE,
+                submission_digest  TEXT NOT NULL
+                    CHECK(length(submission_digest) = 71
+                      AND submission_digest GLOB 'sha256:*'
+                      AND substr(submission_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                created_at_ms      INTEGER NOT NULL
+            );
+            DROP TRIGGER IF EXISTS nir1_chat_input_submission_key_no_update;
+            DROP TRIGGER IF EXISTS nir1_chat_input_submission_key_no_delete;",
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_CHAT_INPUT_SUBMISSION_KEY_UPDATE_TRIGGER_SQL,
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_CHAT_INPUT_SUBMISSION_KEY_DELETE_TRIGGER_SQL,
+        )?;
+        // SCHEMA_VERSION 40: revoke a session's old current Human capture as
+        // part of every distinct later Human row insert, including Drizzle/WAL.
+        // SCHEMA_VERSION 41 replaces parent cascades with authenticated Native
+        // cleanup triggers and RESTRICT FKs after preserving existing rows.
+        conn.execute_batch("DROP TRIGGER IF EXISTS nir1_chat_input_capture_new_human_invalidate;")?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_NEW_HUMAN_TRIGGER_SQL,
+        )?;
+        let duplicate_submission_ids: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM nir1_chat_input_captures
+                 GROUP BY submission_id HAVING count(*) > 1
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !duplicate_submission_ids,
+            "NIR1_CHAT_SUBMISSION_KEY_MIGRATION_CONFLICT"
+        );
+        let conflicting_submission_keys: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                  FROM nir1_chat_input_captures c
+                  JOIN nir1_chat_input_submission_keys k USING (submission_id)
+                 WHERE c.capture_id <> k.capture_id
+                    OR c.submission_digest <> k.submission_digest
+                    OR c.created_at_ms <> k.created_at_ms
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !conflicting_submission_keys,
+            "NIR1_CHAT_SUBMISSION_KEY_MIGRATION_CONFLICT"
+        );
+        conn.execute(
+            "INSERT INTO nir1_chat_input_submission_keys
+                (submission_id,capture_id,submission_digest,created_at_ms)
+             SELECT c.submission_id,c.capture_id,c.submission_digest,c.created_at_ms
+               FROM nir1_chat_input_captures c
+              WHERE NOT EXISTS (
+                    SELECT 1 FROM nir1_chat_input_submission_keys k
+                     WHERE k.submission_id = c.submission_id
+              )",
+            [],
+        )?;
+        Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
+        Self::repair_timelapse_creation_baseline_triggers(&conn)?;
+
+        // Epoch markers used to advance the durable Project object head with
+        // their synthetic reset state; the writer no longer does, and any
+        // head still pointing at a marker event is deleted so the next real
+        // Project mutation chains from genuine domain state instead of
+        // reporting a discontinuity against the sentinel.
+        conn.execute(
+            "DELETE FROM narrative_change_object_heads
+              WHERE EXISTS (
+                    SELECT 1
+                      FROM narrative_change_events e
+                     WHERE e.project_id = narrative_change_object_heads.project_id
+                       AND e.id = narrative_change_object_heads.event_id
+                       AND json_extract(e.object_key_json, '$.kind') = 'project'
+                       AND json_extract(e.structural_impact_json, '$.event')
+                               IN ('project-restored', 'semantic-epoch-reset'))",
+            [],
+        )?;
+
+        // New Run columns: run_kind distinguishes cursor-bound Runs (the
+        // Freshness evaluator) from non-cursor-bound Runs (interpretation,
+        // Semantic Index rebuild, manual rebuild, backfill); the Cursor
+        // table remains the reservation authority, not the Run row.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_extraction_runs",
+            "run_kind",
+            "TEXT NOT NULL DEFAULT 'interpretation' CHECK(run_kind IN ('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill'))",
+        )?;
+        Self::add_column_if_missing(&conn, "narrative_extraction_runs", "consumer_id", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_extraction_runs",
+            "semantic_epoch_id",
+            "TEXT REFERENCES narrative_semantic_epochs(id)",
+        )?;
+        Self::add_column_if_missing(&conn, "narrative_extraction_runs", "work_key", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_extraction_runs",
+            "terminal_reason_code",
+            "TEXT CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*')",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_extraction_runs",
+            "superseded_by_run_id",
+            "TEXT REFERENCES narrative_extraction_runs(id)",
+        )?;
+
+        // SCHEMA 24 (Gate C2 Lane N Verify/Rebuild): the last Source
+        // revision token/digest a Dependency Edge was evaluated against.
+        // Mutation-time incremental evaluation gets this from the Change
+        // Feed event that triggered it; a full Rebuild has no such event to
+        // source it from, so the evaluator's own last-known baseline must be
+        // durable. NULL for an Edge that has never been evaluated yet —
+        // `evaluator::evaluate_edge`'s own first-observation branch already
+        // treats a missing stored baseline as Stale/RebuildRequired rather
+        // than defaulting to fresh.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_dependency_edge_states",
+            "observed_source_revision_token",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_dependency_edge_states",
+            "observed_source_digest",
+            "TEXT",
+        )?;
+        // SCHEMA 24 (Gate C2 Lane N Verify): a digest of the Consumer's
+        // current dependency set (Lane M's compute_dependency_set_digest),
+        // stamped at the same time as evidence_freshness/build_action so
+        // Verify can detect drift between what the Consumer was last
+        // evaluated against and its Dependency Edges as they exist now.
+        // NULL for rows written before this column existed.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_consumer_freshness",
+            "dependency_set_digest",
+            "TEXT",
+        )?;
+
+        // Run/Task/Attempt each own a separate status vocabulary and CHECK
+        // constraint; adding one requires the rebuild pattern since SQLite
+        // cannot ALTER TABLE ADD a multi-value CHECK to a populated table.
+        Self::migrate_narrative_extraction_status_v23(&conn)?;
+        // Cursor reservation columns for the Change Feed consumer that
+        // drives the Freshness evaluator Run; existing pre-C2 consumers keep
+        // using only acknowledged_through_sequence/lease.
+        Self::migrate_narrative_change_cursors_v23(&conn)?;
+        // SCHEMA 24 (Gate C2 Lane K/N Run Kind Policy,
+        // narrative-run-kind-policy.json): run_kind gains
+        // 'dependency-verify'/'dependency-repair'. dependency-backfill and
+        // dependency-rebuild-derived reuse the existing 'backfill'/
+        // 'semantic-index-rebuild' values and need no CHECK change.
+        Self::migrate_run_kind_v24(&conn)?;
+        // SCHEMA 25: Maintenance Attention gains the controls its route in
+        // ADR 006 now requires — a row version for OCC, a request identity
+        // for idempotent replay, and a mandatory actor. Without them two
+        // windows setting a disposition on the same finding silently
+        // last-write-wins, and a retried set could not be told apart from a
+        // second deliberate one.
+        Self::migrate_narrative_maintenance_attention_v25(&conn)?;
+        // SCHEMA 26: a system Run records the *request* that asked for it,
+        // separately from the work_key that says what the work is. Two
+        // different concepts the policy already distinguishes
+        // (`sameWorkKeyReuse` vs `sameRequestIdReuse`) but the schema could
+        // not express, so a retried request and a second deliberate one
+        // looked identical. Nullable: Runs created before this, and
+        // interpretation Runs that have no request identity, keep NULL.
+        Self::migrate_narrative_run_request_identity_v26(&conn)?;
+
+        // SCHEMA 27: a Repair lease names the Run currently entitled to
+        // apply it, so the mutation transaction can prove it still holds
+        // the lease rather than assuming the claim it made minutes earlier
+        // survived a slow backup.
+        Self::migrate_narrative_repair_lease_run_binding_v27(&conn)?;
+
+        // SCHEMA 28: Application Contributions are addressed by the ratified
+        // Object Addressing kind. Two writers had been storing two different
+        // vocabularies for one object, so a backfilled row and a live row
+        // describing the same entity could never join.
+        Self::migrate_narrative_contribution_target_identity_v28(&conn)?;
+
+        // SCHEMA 28: repair Dependency Edges the pre-#535 Backfill wrote
+        // double-prefixed. Re-running the Backfill cannot do it -- the work
+        // key reuses a completed Run without comparing its sealed spec, so
+        // the v2 transform never executes on a workspace that already ran v1.
+        Self::migrate_narrative_dependency_edge_identity_v28(&conn)?;
+
+        // SCHEMA 29's rebuild and SCHEMA 28's completion marker both write
+        // `narrative_application_contributions`, and `migrate_impl` otherwise
+        // runs in autocommit -- so without this savepoint a failure between
+        // them is durable. Two distinct hazards live in that window:
+        //
+        //   * the marker step opens with three unconditional DELETEs of C2
+        //     derived state, while the rebuild fails closed on an orphaned
+        //     Contribution. Marker-first would pay the whole discard and then
+        //     refuse to open, leaving Consumer Freshness -- the durable
+        //     Freshness authority -- empty on a workspace nothing can rebuild
+        //     until the orphan is repaired by hand.
+        //   * the rebuild's own DROP+RENAME is a batch. Interrupted between
+        //     them, the table is simply gone; the next open recreates it empty
+        //     from `CREATE TABLE IF NOT EXISTS`, the rebuild's own guard sees
+        //     the v29 columns and returns, and the checkpoint passes -- losing
+        //     every Contribution attribution row while reporting health.
+        //
+        // Making the pair atomic answers both, and makes their relative order
+        // a matter of taste rather than of data. They are ordered rebuild-first
+        // anyway, so the only step that can refuse runs before the only step
+        // that destroys.
+        conn.execute_batch("SAVEPOINT narrative_c2_schema_30")?;
+        let c2_result = (|| -> anyhow::Result<()> {
+            Self::migrate_narrative_application_contributions_v29(&conn)?;
+            Self::finish_narrative_c2_identity_data_migration_v28(&conn)?;
+            // SCHEMA 30: a Dependency Edge records the Run that declared it,
+            // instead of that being inferrable only from `consumer_kind`.
+            //
+            // `restore_rebuild` has to answer "which Run is this Edge's
+            // `snapshot:<runId>` Source expected to name?" before it can
+            // resolve that Source at all. It answered by reading
+            // `consumer_key`, which is only correct while every Consumer is a
+            // Run. Gate C2-2's finer grain breaks that, and breaks it
+            // silently: `resolve_snapshot_document` requires an exact match,
+            // and `build_edge_comparison_input` turns the resulting error into
+            // `current_source_exists = false`, so present Sources would be
+            // reported missing.
+            //
+            // Storing it per Edge rather than deriving it through
+            // `narrative_proposal_revisions -> narrative_proposals ->
+            // narrative_proposal_sets.run_id` is deliberate: it is a
+            // *provenance* fact, so it stays true after the Proposal it came
+            // from is deleted, exactly like the Contribution provenance
+            // SCHEMA 29 added. Nullable, because an Edge whose declaring Run
+            // cannot be identified must say so rather than name a wrong one.
+            Self::migrate_narrative_dependency_edge_owning_run_v30(&conn)?;
+            // ...and with every Edge naming its Run, the Edges the live
+            // Producer declared under a Run can move onto the Revisions that
+            // actually read those Sources.
+            Self::migrate_narrative_consumer_grain_v30(&conn)?;
+            Ok(())
+        })();
+        match c2_result {
+            Ok(()) => conn.execute_batch("RELEASE narrative_c2_schema_30")?,
+            Err(error) => {
+                // `?` here would replace the migration's own error with
+                // whatever the unwind failed on, losing the only description
+                // of why the workspace could not be upgraded.
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2_schema_30; RELEASE narrative_c2_schema_30",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind the Gate C2 schema savepoint"
+                    );
+                }
+                return Err(error);
+            }
+        }
+
+        // After the rebuild, never with the other Contribution indexes in the
+        // base DDL batch. That batch runs against whatever shape the table
+        // already has, and on a SCHEMA 23-28 workspace that shape has no
+        // `commit_id` -- the index would fail with "no such column" and the
+        // workspace would stop opening. A fresh database does not show it,
+        // because its base DDL creates the column in the same statement.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_commit
+                ON narrative_application_contributions(project_id, commit_id);",
+        )?;
+
+        // NIR1 replays accepted Task/Attempt/Artifact bindings for every
+        // candidate. Install these non-unique lookup indexes after the v23
+        // table rebuilds, which would otherwise discard them on upgrade.
+        Self::repair_nir1_extraction_query_indexes(&conn)?;
+
+        // SCHEMA 31: versioned Finding identity and append-only lifecycle.
+        // This is deliberately after the C2-2 re-key so the backfill can
+        // derive identities from the durable Edge subject and never from a
+        // transient Run or Semantic Epoch.
+        Self::migrate_narrative_finding_identity_v31(&conn)?;
+
+        // SCHEMA 41 is an independent transactional physical repair because
+        // rebuilding protected source-reference tables requires foreign-key
+        // enforcement to be disabled before its savepoint begins. The helper
+        // preserves and checks all FK relationships, then restores the
+        // connection setting before the C2-ZB data migration starts.
+        Self::migrate_chat_input_capture_lifecycle_v41(&conn)?;
+
+        // SCHEMA 32 / C2-ZB: move legacy Backfill Run Edges onto their
+        // durable Application identities. The savepoint is schema-owned and
+        // spans every project's read-only preflight, all graph/derived-state
+        // writes, touched-project migration Epochs, and the completion marker.
+        // `user_version` remains unchanged until the checkpoint below.
+        conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
+        let c2zb_result = (|| -> anyhow::Result<()> {
+            // A1 owns the SCHEMA 36 boundary. A schema-35 user_version is the
+            // durable marker for the ordinary pre-A1 upgrade path; current /
+            // post-A1 workspaces retain fail-closed missing-row semantics.
+            if current < 36 {
+                // A1 migration compatibility is Native-owned: every pre-A1
+                // scene gets one persisted legacy marker and a fresh
+                // incarnation id. This runs in the schema savepoint so a
+                // failed migration cannot leave partial scope state behind.
+                crate::narrative_extraction::backfill_scene_scope_storage_in_tx(&conn)?;
+            }
+            let c2zb_marker_due = crate::narrative_extraction::c2zb_application_rekey::migrate_narrative_application_rekey_v32(
+                &conn,
+            )?;
+
+            // The schema migration engine is the sole writer of
+            // schema_data_migrations. Keep the C2-ZB marker inside the same
+            // savepoint, after all data re-key writes and before the
+            // checkpoint/user_version stamp, so marker-trigger failures and
+            // deferred-constraint failures can unwind the whole migration.
+            // The marker is written exactly once, when the data phase ran: an
+            // existing marker is either a current-version no-op or fails
+            // closed upstream, and its contract_version/applied_at provenance
+            // is never rewritten here.
+            if c2zb_marker_due {
+                conn.execute(
+                    "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                     VALUES (?1, ?2, ?3)",
+                    params![
+                        crate::narrative_extraction::c2zb_application_rekey::C2_ZB_MIGRATION_ID,
+                        crate::narrative_extraction::c2zb_application_rekey::C2_ZB_CONTRACT_VERSION,
+                        chrono::Utc::now()
+                            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                            .to_string(),
+                    ],
+                )
+                .context("recording the C2-ZB Application re-key marker")?;
+            }
+
+            // The marker is part of the checkpoint, not a substitute for it.
+            // Keep both the invariant check and the user_version stamp inside
+            // the same savepoint as every C2-ZB write. A trigger, interrupted
+            // connection, or any other post-rekey failure must roll back the
+            // edge/history/derived-state changes, marker, and schema version
+            // together so the next open can retry the complete migration.
+            anyhow::ensure!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
+                "workspace schema did not satisfy current schema invariants after migration"
+            );
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            Ok(())
+        })();
+        match c2zb_result {
+            Ok(()) => {
+                if let Err(error) = conn.execute_batch("RELEASE narrative_c2_schema_32") {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO narrative_c2_schema_32; RELEASE narrative_c2_schema_32",
+                    ) {
+                        tracing::error!(
+                            target: "narrative.migrate",
+                            %unwind,
+                            "failed to unwind the C2-ZB schema savepoint after RELEASE failed"
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2_schema_32; RELEASE narrative_c2_schema_32",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind the C2-ZB schema savepoint"
+                    );
+                }
+                return Err(error);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn repair_narrative_v2_monotonicity_trigger(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch("SAVEPOINT narrative_c2a_trigger_repair")?;
+        let repair = conn.execute_batch(
+            r#"
+            DROP TRIGGER IF EXISTS narrative_proposal_revisions_v2_monotonicity_guard;
+            CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard
+                BEFORE INSERT ON narrative_proposal_revisions
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM narrative_proposals p
+                      JOIN narrative_proposal_revisions current_revision
+                        ON current_revision.id = p.current_revision_id
+                     WHERE p.id = NEW.proposal_id
+                       AND current_revision.origin_kind = 'enveloped'
+                       AND json_extract(current_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                AND (
+                    NEW.origin_kind <> 'enveloped'
+                    OR NEW.reconciliation_envelope_json IS NULL
+                    OR json_extract(NEW.reconciliation_envelope_json,
+                                    '$.schemaVersion') IS NOT 2
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                END;
+            DROP TRIGGER IF EXISTS narrative_proposals_v2_pointer_monotonicity_guard;
+            CREATE TRIGGER narrative_proposals_v2_pointer_monotonicity_guard
+                BEFORE UPDATE OF current_revision_id ON narrative_proposals
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM narrative_proposal_revisions old_revision
+                     WHERE old_revision.id = OLD.current_revision_id
+                       AND old_revision.origin_kind = 'enveloped'
+                       AND json_extract(old_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM narrative_proposal_revisions new_revision
+                     WHERE new_revision.id = NEW.current_revision_id
+                       AND new_revision.origin_kind = 'enveloped'
+                       AND json_extract(new_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                END;
+            DROP TRIGGER IF EXISTS narrative_proposal_revisions_v2_immutable_update_guard;
+            CREATE TRIGGER narrative_proposal_revisions_v2_immutable_update_guard
+                BEFORE UPDATE ON narrative_proposal_revisions
+                WHEN OLD.origin_kind = 'enveloped'
+                 AND json_extract(OLD.reconciliation_envelope_json,
+                                  '$.schemaVersion') = 2
+                 AND (
+                    OLD.id IS NOT NEW.id
+                    OR OLD.proposal_id IS NOT NEW.proposal_id
+                    OR OLD.revision_number IS NOT NEW.revision_number
+                    OR OLD.payload_json IS NOT NEW.payload_json
+                    OR OLD.plan_fragment_json IS NOT NEW.plan_fragment_json
+                    OR OLD.plan_fragment_digest IS NOT NEW.plan_fragment_digest
+                    OR OLD.origin_kind IS NOT NEW.origin_kind
+                    OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json
+                    OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest
+                    OR OLD.created_at IS NOT NEW.created_at
+                    OR OLD.created_by IS NOT NEW.created_by
+                 )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_V2_IMMUTABLE');
+                END;
+            "#,
+        );
+        match repair {
+            Ok(()) => {
+                if let Err(error) = conn.execute_batch("RELEASE narrative_c2a_trigger_repair") {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO narrative_c2a_trigger_repair;
+                         RELEASE narrative_c2a_trigger_repair",
+                    ) {
+                        tracing::error!(
+                            target: "narrative.migrate",
+                            %unwind,
+                            "failed to unwind C2A trigger repair after release failure"
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2a_trigger_repair;
+                     RELEASE narrative_c2a_trigger_repair",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind C2A trigger repair"
+                    );
+                }
+                return Err(error.into());
+            }
+        }
+        Ok(())
+    }
+
+    /// SCHEMA 34 in-version repair: a body lifecycle becomes replayable only
+    /// after its canonical Change Event has a sequence. Narrative Change Feed
+    /// events are the first central write point that can see both that sequence
+    /// and the already-inserted trusted body, so these triggers append the
+    /// creation baseline inside the caller-owned transaction. Scene and
+    /// Snippet lifecycles remain tail-bound; the Codex trigger has one narrow
+    /// pre-Feed root-recovery exception, guarded by the complete protected
+    /// commit provenance and an exact immutable body snapshot.
+    fn repair_timelapse_creation_baseline_triggers(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch("SAVEPOINT timelapse_creation_baseline_trigger_repair")?;
+        let repair = conn.execute_batch(
+            r#"
+            DROP TRIGGER IF EXISTS timelapse_scene_creation_baseline;
+            CREATE TRIGGER timelapse_scene_creation_baseline
+                AFTER INSERT ON narrative_change_events
+                WHEN NEW.mutation_kind IN ('create', 'restore')
+                 AND json_extract(NEW.object_key_json, '$.kind') = 'scene'
+                 AND NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_id = NEW.project_id
+                       AND key = 'timelapse.enabled'
+                       AND value = 'false'
+                 )
+                BEGIN
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                             FROM change_events canonical
+                             WHERE canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                               AND canonical.sequence BETWEEN 1 AND 9007199254740991
+                               AND canonical.sequence = (
+                                    SELECT MAX(sequence)
+                                      FROM change_events
+                                     WHERE project_id = NEW.project_id
+                               )
+                               AND canonical.timestamp BETWEEN 0 AND 9007199254740991
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN tree_nodes node
+                                ON node.project_id = NEW.project_id
+                               AND node.id = json_extract(NEW.object_key_json, '$.sceneId')
+                               AND node.node_type = 'scene'
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'editor'
+                               AND snapshot.entity_id = node.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND (
+                                    (snapshot.entity_type IS NOT NULL
+                                     AND snapshot.entity_type <> 'scene')
+                                    OR snapshot.anchor_timestamp IS NOT canonical.timestamp
+                                    OR snapshot.payload IS NOT node.content
+                                    OR snapshot.encoding IS NOT 'json'
+                               )
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM narrative_change_events sibling
+                             WHERE sibling.project_id = NEW.project_id
+                               AND sibling.canonical_sequence = NEW.canonical_sequence
+                               AND sibling.mutation_kind IN ('create', 'restore')
+                               AND sibling.id <> NEW.id
+                               AND json_extract(sibling.object_key_json, '$.kind') = 'scene'
+                               AND json_extract(sibling.object_key_json, '$.sceneId') =
+                                   json_extract(NEW.object_key_json, '$.sceneId')
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE')
+                    END;
+                    INSERT INTO state_snapshots
+                        (project_id, domain, entity_type, entity_id,
+                         anchor_sequence, anchor_timestamp, payload, encoding, created_at)
+                    SELECT NEW.project_id, 'editor', 'scene', node.id,
+                           NEW.canonical_sequence, canonical.timestamp,
+                           node.content, 'json', canonical.timestamp
+                      FROM tree_nodes node
+                      JOIN change_events canonical
+                        ON canonical.project_id = NEW.project_id
+                       AND canonical.event_uid = NEW.canonical_change_event_uid
+                       AND canonical.sequence = NEW.canonical_sequence
+                     WHERE node.project_id = NEW.project_id
+                       AND node.id = json_extract(NEW.object_key_json, '$.sceneId')
+                       AND node.node_type = 'scene'
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'editor'
+                               AND snapshot.entity_id = node.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                       );
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN tree_nodes node
+                                ON node.project_id = NEW.project_id
+                               AND node.id = json_extract(NEW.object_key_json, '$.sceneId')
+                               AND node.node_type = 'scene'
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'editor'
+                               AND (snapshot.entity_type = 'scene'
+                                    OR snapshot.entity_type IS NULL)
+                               AND snapshot.entity_id = node.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND snapshot.anchor_timestamp = canonical.timestamp
+                               AND snapshot.payload = node.content
+                               AND snapshot.encoding = 'json'
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING')
+                    END;
+                END;
+
+            DROP TRIGGER IF EXISTS timelapse_codex_creation_baseline;
+            CREATE TRIGGER timelapse_codex_creation_baseline
+                AFTER INSERT ON narrative_change_events
+                WHEN NEW.mutation_kind IN ('create', 'restore')
+                 AND json_extract(NEW.object_key_json, '$.kind') = 'codex-entry'
+                 AND NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_id = NEW.project_id
+                       AND key = 'timelapse.enabled'
+                       AND value = 'false'
+                 )
+                BEGIN
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                             FROM change_events canonical
+                             WHERE canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                               AND canonical.sequence BETWEEN 1 AND 9007199254740991
+                               AND canonical.timestamp BETWEEN 0 AND 9007199254740991
+                               AND (
+                                    canonical.sequence = (
+                                        SELECT MAX(sequence)
+                                          FROM change_events
+                                         WHERE project_id = NEW.project_id
+                                    )
+                                    OR (
+                                        NEW.mutation_kind = 'create'
+                                        AND EXISTS (
+                                        SELECT 1
+                                          FROM narrative_change_transactions tx
+                                          JOIN narrative_apply_commits apply_commit
+                                            ON apply_commit.project_id = tx.project_id
+                                           AND apply_commit.id = tx.commit_id
+                                          JOIN narrative_commit_journals commit_journal
+                                            ON commit_journal.project_id = tx.project_id
+                                           AND commit_journal.id = tx.journal_id
+                                           AND commit_journal.commit_id = apply_commit.id
+                                          JOIN change_events apply_event
+                                            ON apply_event.project_id = tx.project_id
+                                           AND apply_event.event_uid = tx.source_change_event_uid
+                                           AND apply_event.sequence = tx.source_change_event_sequence
+                                          JOIN codex_entries entry
+                                            ON entry.project_id = tx.project_id
+                                           AND entry.id = json_extract(
+                                                NEW.object_key_json, '$.entryId'
+                                           )
+                                          JOIN json_each(
+                                               CASE
+                                                   WHEN json_valid(commit_journal.after_json)
+                                                   THEN commit_journal.after_json
+                                                   ELSE '{}'
+                                               END,
+                                               '$.entities'
+                                          ) journal_entity
+                                         WHERE tx.project_id = NEW.project_id
+                                           AND tx.id = NEW.transaction_id
+                                           AND tx.source_domain = 'narrative.commit.apply'
+                                           AND tx.source_change_event_uid = NEW.canonical_change_event_uid
+                                           AND tx.source_change_event_sequence = NEW.canonical_sequence
+                                           AND tx.cause_kind = 'forward'
+                                           AND tx.origin = 'ai-apply'
+                                           AND tx.original_transaction_id IS NULL
+                                           AND tx.undo_journal_id IS NULL
+                                           AND tx.commit_id IS NOT NULL
+                                           AND tx.journal_id IS NOT NULL
+                                           AND tx.request_id = apply_commit.request_id
+                                           AND apply_commit.status = 'undone'
+                                           AND (
+                                                apply_commit.session_id IS NULL
+                                                OR apply_event.session_id = apply_commit.session_id
+                                           )
+                                           AND apply_event.domain = 'narrative'
+                                           AND apply_event.op_type = 'narrative.commit.apply'
+                                           AND apply_event.entity_type = 'narrative_apply_commit'
+                                           AND apply_event.entity_id = apply_commit.id
+                                           AND json_valid(apply_commit.receipt_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.status'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.changeEventUid'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = apply_commit.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = apply_commit.request_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = apply_commit.plan_digest
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = commit_journal.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.journalId'
+                                           ) = tx.journal_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.status'
+                                           ) = 'undone'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceTransactionId'
+                                           ) IS NULL
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceOriginalTransactionId'
+                                           ) IS NULL
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_commit.receipt_json)
+                                                    THEN apply_commit.receipt_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.maintenanceEventIds'
+                                           ) IS NULL
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM change_events undo_event
+                                                 WHERE undo_event.project_id = apply_commit.project_id
+                                                   AND undo_event.event_uid = json_extract(
+                                                        CASE
+                                                            WHEN json_valid(apply_commit.receipt_json)
+                                                            THEN apply_commit.receipt_json
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.changeEventUid'
+                                                   )
+                                                   AND undo_event.domain = 'narrative'
+                                                   AND undo_event.op_type = 'narrative.commit.undo'
+                                                   AND undo_event.entity_type = 'narrative_apply_commit'
+                                                   AND undo_event.entity_id = apply_commit.id
+                                                   AND undo_event.sequence > apply_event.sequence
+                                                   AND json_valid(undo_event.payload)
+                                                   AND json_type(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.commitId'
+                                                   ) = 'text'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.commitId'
+                                                   ) = apply_commit.id
+                                                   AND json_type(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.applyRequestId'
+                                                   ) = 'text'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(undo_event.payload)
+                                                            THEN undo_event.payload
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.applyRequestId'
+                                                   ) = apply_commit.request_id
+                                                   AND undo_event.sequence = (
+                                                        SELECT MAX(latest_undo.sequence)
+                                                          FROM change_events latest_undo
+                                                         WHERE latest_undo.project_id = apply_commit.project_id
+                                                           AND latest_undo.domain = 'narrative'
+                                                           AND latest_undo.op_type = 'narrative.commit.undo'
+                                                           AND latest_undo.entity_type = 'narrative_apply_commit'
+                                                           AND latest_undo.entity_id = apply_commit.id
+                                                   )
+                                           )
+                                           AND json_valid(apply_event.payload)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = 'text'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.commitId'
+                                           ) = apply_commit.id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.requestId'
+                                           ) = apply_commit.request_id
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(apply_event.payload)
+                                                    THEN apply_event.payload
+                                                    ELSE '{}'
+                                                END,
+                                                '$.planDigest'
+                                           ) = apply_commit.plan_digest
+                                           AND json_valid(tx.application_ids_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(tx.application_ids_json)
+                                                    THEN tx.application_ids_json
+                                                    ELSE '[]'
+                                                END,
+                                                '$'
+                                           ) = 'array'
+                                           AND json_array_length(
+                                                CASE
+                                                    WHEN json_valid(tx.application_ids_json)
+                                                    THEN tx.application_ids_json
+                                                    ELSE '[]'
+                                                END
+                                           ) = (
+                                                SELECT COUNT(*)
+                                                  FROM narrative_proposal_applications application
+                                                 WHERE application.commit_id = apply_commit.id
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(tx.application_ids_json)
+                                                           THEN tx.application_ids_json
+                                                           ELSE '[]'
+                                                       END
+                                                  ) transaction_application
+                                                 WHERE transaction_application.type IS NOT 'text'
+                                                    OR NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM narrative_proposal_applications application
+                                                         WHERE application.id = transaction_application.value
+                                                           AND application.commit_id = apply_commit.id
+                                                    )
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications application
+                                                 WHERE application.commit_id = apply_commit.id
+                                                   AND NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM json_each(
+                                                               CASE
+                                                                   WHEN json_valid(tx.application_ids_json)
+                                                                   THEN tx.application_ids_json
+                                                                   ELSE '[]'
+                                                               END
+                                                          ) transaction_application
+                                                         WHERE transaction_application.value IS application.id
+                                                   )
+                                           )
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                           )
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                           ) = 1
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) journal_candidate
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(journal_candidate.value)
+                                                            THEN journal_candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) = 'codex_entry'
+                                                   AND NOT EXISTS (
+                                                        SELECT 1
+                                                          FROM narrative_proposal_applications application
+                                                         WHERE application.commit_id = apply_commit.id
+                                                           AND application.applied_entity_kind = 'codex_entry'
+                                                           AND application.applied_entity_id = json_extract(
+                                                                CASE
+                                                                    WHEN json_valid(journal_candidate.value)
+                                                                    THEN journal_candidate.value
+                                                                    ELSE '{}'
+                                                                END,
+                                                                '$.entityId'
+                                                           )
+                                                           AND EXISTS (
+                                                                SELECT 1
+                                                                  FROM json_each(
+                                                                       CASE
+                                                                           WHEN json_valid(tx.application_ids_json)
+                                                                           THEN tx.application_ids_json
+                                                                           ELSE '[]'
+                                                                       END
+                                                                  ) transaction_application
+                                                                 WHERE transaction_application.value IS application.id
+                                                           )
+                                                   )
+                                           )
+                                           AND EXISTS (
+                                                SELECT 1
+                                                  FROM narrative_proposal_applications target_application
+                                                 WHERE target_application.commit_id = apply_commit.id
+                                                   AND target_application.applied_entity_kind = 'codex_entry'
+                                                   AND target_application.applied_entity_id = entry.id
+                                                   AND EXISTS (
+                                                        SELECT 1
+                                                          FROM json_each(
+                                                               CASE
+                                                                   WHEN json_valid(tx.application_ids_json)
+                                                                   THEN tx.application_ids_json
+                                                                   ELSE '[]'
+                                                               END
+                                                          ) transaction_application
+                                                         WHERE transaction_application.value IS target_application.id
+                                                   )
+                                           )
+                                           AND json_valid(commit_journal.after_json)
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(commit_journal.after_json)
+                                                    THEN commit_journal.after_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entities'
+                                           ) = 'array'
+                                           AND json_array_length(
+                                                CASE
+                                                    WHEN json_valid(commit_journal.after_json)
+                                                    THEN commit_journal.after_json
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entities'
+                                           ) > 0
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) candidate
+                                                 WHERE json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$'
+                                                    ) IS NOT 'object'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                    ) IS NOT 'text'
+                                                    OR json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                    ) NOT IN (
+                                                        'event',
+                                                        'codex_entry',
+                                                        'codex_relation',
+                                                        'codex_detail_value',
+                                                        'codex_phase',
+                                                        'codex_semantic_binding',
+                                                        'temporal_node',
+                                                        'temporal_constraint',
+                                                        'temporal_scene_chronicle',
+                                                        'temporal_event_chronicle',
+                                                        'temporal_scene_story_order',
+                                                        'temporal_projection',
+                                                        'plot_thread',
+                                                        'plot_thread_marker',
+                                                        'plot_thread_branch',
+                                                        'foreshadow'
+                                                    )
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                    ) IS NOT 'text'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.version'
+                                                    ) IS NOT 'integer'
+                                                    OR json_type(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.opKind'
+                                                    ) IS NOT 'text'
+                                           )
+                                           AND NOT EXISTS (
+                                                SELECT 1
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) entity_a
+                                                  JOIN json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) entity_b
+                                                    ON entity_a.key < entity_b.key
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_a.value)
+                                                            THEN entity_a.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) IS json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_b.value)
+                                                            THEN entity_b.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   )
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_a.value)
+                                                            THEN entity_a.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   ) IS json_extract(
+                                                        CASE
+                                                            WHEN json_valid(entity_b.value)
+                                                            THEN entity_b.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   )
+                                           )
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM json_each(
+                                                       CASE
+                                                           WHEN json_valid(commit_journal.after_json)
+                                                           THEN commit_journal.after_json
+                                                           ELSE '{}'
+                                                       END,
+                                                       '$.entities'
+                                                  ) candidate
+                                                 WHERE json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityKind'
+                                                   ) = 'codex_entry'
+                                                   AND json_extract(
+                                                        CASE
+                                                            WHEN json_valid(candidate.value)
+                                                            THEN candidate.value
+                                                            ELSE '{}'
+                                                        END,
+                                                        '$.entityId'
+                                                   ) = entry.id
+                                           ) = 1
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityKind'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityKind'
+                                           ) = 'codex_entry'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.entityId'
+                                           ) = entry.id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.opKind'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.opKind'
+                                           ) = 'create'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.version'
+                                           ) = 'integer'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.version'
+                                           ) = entry.version
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot'
+                                           ) = 'object'
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.id'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.id'
+                                           ) = entry.id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.projectId'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.projectId'
+                                           ) = entry.project_id
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.content'
+                                           ) = 'text'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.content'
+                                           ) = entry.content
+                                           AND json_type(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.version'
+                                           ) = 'integer'
+                                           AND json_extract(
+                                                CASE
+                                                    WHEN json_valid(journal_entity.value)
+                                                    THEN journal_entity.value
+                                                    ELSE '{}'
+                                                END,
+                                                '$.snapshot.version'
+                                           ) = entry.version
+                                           AND NEW.change_kind = 'metadata'
+                                           AND NEW.before_version IS NULL
+                                           AND NEW.before_digest IS NULL
+                                           AND NEW.after_version = entry.version
+                                           AND NEW.changed_paths_json = '["/"]'
+                                           AND NEW.occurred_at = tx.created_at
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM state_snapshots snapshot
+                                                 WHERE snapshot.project_id = entry.project_id
+                                                   AND snapshot.domain = 'codex'
+                                                   AND snapshot.entity_id = entry.id
+                                                   AND snapshot.anchor_sequence = canonical.sequence
+                                           ) = 1
+                                           AND (
+                                                SELECT COUNT(*)
+                                                  FROM state_snapshots snapshot
+                                                 WHERE snapshot.project_id = entry.project_id
+                                                   AND snapshot.domain = 'codex'
+                                                   AND snapshot.entity_id = entry.id
+                                                   AND (snapshot.entity_type = 'codex_entry'
+                                                        OR snapshot.entity_type IS NULL)
+                                                   AND snapshot.anchor_sequence = canonical.sequence
+                                                   AND snapshot.anchor_timestamp = canonical.timestamp
+                                                   AND snapshot.payload = entry.content
+                                                   AND snapshot.encoding = 'json'
+                                           ) = 1
+                                    )
+                               )
+                        )
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN codex_entries entry
+                                ON entry.project_id = NEW.project_id
+                               AND entry.id = json_extract(NEW.object_key_json, '$.entryId')
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'codex'
+                               AND snapshot.entity_id = entry.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND (
+                                    (snapshot.entity_type IS NOT NULL
+                                     AND snapshot.entity_type <> 'codex_entry')
+                                    OR snapshot.anchor_timestamp IS NOT canonical.timestamp
+                                    OR snapshot.payload IS NOT entry.content
+                                    OR snapshot.encoding IS NOT 'json'
+                               )
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM narrative_change_events sibling
+                             WHERE sibling.project_id = NEW.project_id
+                               AND sibling.canonical_sequence = NEW.canonical_sequence
+                               AND sibling.mutation_kind IN ('create', 'restore')
+                               AND sibling.id <> NEW.id
+                               AND json_extract(sibling.object_key_json, '$.kind') = 'codex-entry'
+                               AND json_extract(sibling.object_key_json, '$.entryId') =
+                                   json_extract(NEW.object_key_json, '$.entryId')
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE')
+                    END;
+                    INSERT INTO state_snapshots
+                        (project_id, domain, entity_type, entity_id,
+                         anchor_sequence, anchor_timestamp, payload, encoding, created_at)
+                    SELECT NEW.project_id, 'codex', 'codex_entry', entry.id,
+                           NEW.canonical_sequence, canonical.timestamp,
+                           entry.content, 'json', canonical.timestamp
+                      FROM codex_entries entry
+                      JOIN change_events canonical
+                        ON canonical.project_id = NEW.project_id
+                       AND canonical.event_uid = NEW.canonical_change_event_uid
+                       AND canonical.sequence = NEW.canonical_sequence
+                     WHERE entry.project_id = NEW.project_id
+                       AND entry.id = json_extract(NEW.object_key_json, '$.entryId')
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'codex'
+                               AND snapshot.entity_id = entry.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                       );
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN codex_entries entry
+                                ON entry.project_id = NEW.project_id
+                               AND entry.id = json_extract(NEW.object_key_json, '$.entryId')
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'codex'
+                               AND (snapshot.entity_type = 'codex_entry'
+                                    OR snapshot.entity_type IS NULL)
+                               AND snapshot.entity_id = entry.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND snapshot.anchor_timestamp = canonical.timestamp
+                               AND snapshot.payload = entry.content
+                               AND snapshot.encoding = 'json'
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING')
+                    END;
+                END;
+
+            DROP TRIGGER IF EXISTS timelapse_snippet_creation_baseline;
+            CREATE TRIGGER timelapse_snippet_creation_baseline
+                AFTER INSERT ON narrative_change_events
+                WHEN NEW.mutation_kind IN ('create', 'restore')
+                 AND json_extract(NEW.object_key_json, '$.kind') = 'component'
+                 AND substr(
+                        json_extract(NEW.object_key_json, '$.componentId'),
+                        1,
+                        length('snippet:')
+                     ) = 'snippet:'
+                 AND NOT EXISTS (
+                    SELECT 1
+                      FROM project_settings
+                     WHERE project_id = NEW.project_id
+                       AND key = 'timelapse.enabled'
+                       AND value = 'false'
+                 )
+                BEGIN
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                             FROM change_events canonical
+                             WHERE canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                               AND canonical.sequence BETWEEN 1 AND 9007199254740991
+                               AND canonical.sequence = (
+                                    SELECT MAX(sequence)
+                                      FROM change_events
+                                     WHERE project_id = NEW.project_id
+                               )
+                               AND canonical.timestamp BETWEEN 0 AND 9007199254740991
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_INVALID_ANCHOR')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN snippets snippet
+                                ON snippet.project_id = NEW.project_id
+                               AND snippet.id = substr(
+                                    json_extract(NEW.object_key_json, '$.componentId'),
+                                    length('snippet:') + 1
+                               )
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'snippet'
+                               AND snapshot.entity_id = snippet.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND (
+                                    (snapshot.entity_type IS NOT NULL
+                                     AND snapshot.entity_type <> 'snippet')
+                                    OR snapshot.anchor_timestamp IS NOT canonical.timestamp
+                                    OR snapshot.payload IS NOT snippet.content
+                                    OR snapshot.encoding IS NOT 'json'
+                               )
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_SNAPSHOT_MISMATCH')
+                    END;
+                    SELECT CASE
+                        WHEN EXISTS (
+                            SELECT 1
+                              FROM narrative_change_events sibling
+                             WHERE sibling.project_id = NEW.project_id
+                               AND sibling.canonical_sequence = NEW.canonical_sequence
+                               AND sibling.mutation_kind IN ('create', 'restore')
+                               AND sibling.id <> NEW.id
+                               AND json_extract(sibling.object_key_json, '$.kind') = 'component'
+                               AND json_extract(sibling.object_key_json, '$.componentId') =
+                                   json_extract(NEW.object_key_json, '$.componentId')
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_DUPLICATE_LIFECYCLE')
+                    END;
+                    INSERT INTO state_snapshots
+                        (project_id, domain, entity_type, entity_id,
+                         anchor_sequence, anchor_timestamp, payload, encoding, created_at)
+                    SELECT NEW.project_id, 'snippet', 'snippet', snippet.id,
+                           NEW.canonical_sequence, canonical.timestamp,
+                           snippet.content, 'json', canonical.timestamp
+                      FROM snippets snippet
+                      JOIN change_events canonical
+                        ON canonical.project_id = NEW.project_id
+                       AND canonical.event_uid = NEW.canonical_change_event_uid
+                       AND canonical.sequence = NEW.canonical_sequence
+                     WHERE snippet.project_id = NEW.project_id
+                       AND snippet.id = substr(
+                            json_extract(NEW.object_key_json, '$.componentId'),
+                            length('snippet:') + 1
+                       )
+                       AND NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'snippet'
+                               AND snapshot.entity_id = snippet.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                       );
+                    SELECT CASE
+                        WHEN NOT EXISTS (
+                            SELECT 1
+                              FROM state_snapshots snapshot
+                              JOIN snippets snippet
+                                ON snippet.project_id = NEW.project_id
+                               AND snippet.id = substr(
+                                    json_extract(NEW.object_key_json, '$.componentId'),
+                                    length('snippet:') + 1
+                               )
+                              JOIN change_events canonical
+                                ON canonical.project_id = NEW.project_id
+                               AND canonical.event_uid = NEW.canonical_change_event_uid
+                               AND canonical.sequence = NEW.canonical_sequence
+                             WHERE snapshot.project_id = NEW.project_id
+                               AND snapshot.domain = 'snippet'
+                               AND (snapshot.entity_type = 'snippet'
+                                    OR snapshot.entity_type IS NULL)
+                               AND snapshot.entity_id = snippet.id
+                               AND snapshot.anchor_sequence = NEW.canonical_sequence
+                               AND snapshot.anchor_timestamp = canonical.timestamp
+                               AND snapshot.payload = snippet.content
+                               AND snapshot.encoding = 'json'
+                        )
+                        THEN RAISE(ABORT, 'TIMELAPSE_CREATION_BASELINE_BODY_MISSING')
+                    END;
+                END;
+            "#,
+        );
+        match repair {
+            Ok(()) => {
+                if let Err(error) =
+                    conn.execute_batch("RELEASE timelapse_creation_baseline_trigger_repair")
+                {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO timelapse_creation_baseline_trigger_repair;
+                         RELEASE timelapse_creation_baseline_trigger_repair",
+                    ) {
+                        tracing::error!(
+                            target: "timelapse.migrate",
+                            %unwind,
+                            "failed to unwind timelapse trigger repair after release failure"
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO timelapse_creation_baseline_trigger_repair;
+                     RELEASE timelapse_creation_baseline_trigger_repair",
+                ) {
+                    tracing::error!(
+                        target: "timelapse.migrate",
+                        %unwind,
+                        "failed to unwind timelapse trigger repair"
+                    );
+                }
+                return Err(error.into());
+            }
+        }
+        Ok(())
+    }
+
+    fn backfill_narrative_change_object_heads(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_change_object_heads'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+
+        let rows = conn
+            .prepare(
+                "SELECT project_id, object_key_json, after_version, after_digest,
+                        id, canonical_sequence, event_ordinal, occurred_at
+                   FROM narrative_change_events
+                  ORDER BY project_id, canonical_sequence, event_ordinal",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        for (
+            project_id,
+            object_key_json,
+            after_version,
+            after_digest,
+            event_id,
+            canonical_sequence,
+            event_ordinal,
+            occurred_at,
+        ) in rows
+        {
+            let mut object_key: serde_json::Value = serde_json::from_str(&object_key_json)?;
+            // SCHEMA 21 accepted the project aggregate marker without an
+            // explicit projectId. Preserve that historical row by deriving
+            // the identity from its already-scoped project column.
+            if object_key.get("kind").and_then(serde_json::Value::as_str) == Some("project")
+                && object_key.get("projectId").is_none()
+            {
+                if let Some(object) = object_key.as_object_mut() {
+                    object.insert(
+                        "projectId".to_string(),
+                        serde_json::Value::String(project_id.clone()),
+                    );
+                }
+            }
+            let identity = crate::canonical_feed_snapshots::object_key_identity(&object_key)?;
+            conn.execute(
+                "INSERT INTO narrative_change_object_heads (
+                    project_id, object_identity, after_version, after_digest, event_id,
+                    canonical_sequence, event_ordinal, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(project_id, object_identity) DO UPDATE SET
+                    after_version = excluded.after_version,
+                    after_digest = excluded.after_digest,
+                    event_id = excluded.event_id,
+                    canonical_sequence = excluded.canonical_sequence,
+                    event_ordinal = excluded.event_ordinal,
+                    updated_at = excluded.updated_at
+                  WHERE excluded.canonical_sequence > narrative_change_object_heads.canonical_sequence
+                     OR (excluded.canonical_sequence = narrative_change_object_heads.canonical_sequence
+                         AND excluded.event_ordinal > narrative_change_object_heads.event_ordinal)",
+                rusqlite::params![
+                    project_id,
+                    identity,
+                    after_version,
+                    after_digest,
+                    event_id,
+                    canonical_sequence,
+                    event_ordinal,
+                    occurred_at,
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn migrate_narrative_change_transactions_v22(conn: &Connection) -> anyhow::Result<()> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_change_transactions'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(());
+        }
+
+        let origin_shape = conn
+            .prepare(
+                "SELECT type, \"notnull\", dflt_value
+                   FROM pragma_table_info('narrative_change_transactions')
+                  WHERE name = 'origin'",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let undo_journal_shape = conn
+            .prepare(
+                "SELECT type, \"notnull\", dflt_value
+                   FROM pragma_table_info('narrative_change_transactions')
+                  WHERE name = 'undo_journal_id'",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let table_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'table' AND name = 'narrative_change_transactions'",
+            [],
+            |row| row.get(0),
+        )?;
+        let compact_table_sql = table_sql
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        let schema_ready = origin_shape.as_slice() == [("TEXT".to_string(), true, None)]
+            && undo_journal_shape.as_slice() == [("TEXT".to_string(), false, None)]
+            && compact_table_sql.contains(
+                "check(originin('human','ai-apply','import','undo','redo','restore','migration'))",
+            );
+        if schema_ready {
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 22 Change Feed origin migration requires autocommit"
+        );
+        let row_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions",
+            [],
+            |row| row.get(0),
+        )?;
+        let had_origin = !origin_shape.is_empty();
+        let origin_expression = if had_origin {
+            "CASE
+                WHEN origin IN ('human','ai-apply','import','undo','redo','restore','migration')
+                    THEN origin
+                WHEN cause_kind = 'undo' THEN 'undo'
+                WHEN cause_kind = 'redo' THEN 'redo'
+                ELSE 'migration'
+             END"
+        } else {
+            "CASE cause_kind
+                WHEN 'undo' THEN 'undo'
+                WHEN 'redo' THEN 'redo'
+                ELSE 'migration'
+             END"
+        };
+        let undo_journal_expression = if undo_journal_shape.is_empty() {
+            "NULL"
+        } else {
+            "undo_journal_id"
+        };
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_change_transactions_v22;
+                     CREATE TABLE narrative_change_transactions_v22 (
+                        id                           TEXT NOT NULL,
+                        project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        request_id                   TEXT NOT NULL CHECK(length(request_id) > 0),
+                        source_domain                TEXT NOT NULL CHECK(length(source_domain) > 0),
+                        source_change_event_uid      TEXT NOT NULL CHECK(length(source_change_event_uid) > 0),
+                        source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0),
+                        cause_kind                   TEXT NOT NULL
+                            CHECK(cause_kind IN ('forward','undo','redo')),
+                        origin                       TEXT NOT NULL
+                            CHECK(origin IN ('human','ai-apply','import','undo','redo','restore','migration')),
+                        original_transaction_id      TEXT,
+                        commit_id                    TEXT,
+                        journal_id                   TEXT,
+                        undo_journal_id              TEXT,
+                        application_ids_json         TEXT NOT NULL DEFAULT '[]'
+                            CHECK(json_valid(application_ids_json)
+                              AND json_type(application_ids_json) = 'array'),
+                        payload_digest               TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                        created_at                   TEXT NOT NULL,
+                        PRIMARY KEY(id),
+                        UNIQUE(project_id, id),
+                        UNIQUE(project_id, source_domain, request_id),
+                        UNIQUE(project_id, source_change_event_uid),
+                        FOREIGN KEY(project_id, source_change_event_uid)
+                            REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT,
+                        FOREIGN KEY(project_id, original_transaction_id)
+                            REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE
+                     );",
+                )?;
+                conn.execute_batch(&format!(
+                    "INSERT INTO narrative_change_transactions_v22
+                        (id, project_id, request_id, source_domain,
+                         source_change_event_uid, source_change_event_sequence,
+                         cause_kind, origin, original_transaction_id, commit_id,
+                         journal_id, undo_journal_id, application_ids_json,
+                         payload_digest, created_at)
+                     SELECT id, project_id, request_id, source_domain,
+                            source_change_event_uid, source_change_event_sequence,
+                            cause_kind, {origin_expression}, original_transaction_id,
+                            commit_id, journal_id, {undo_journal_expression}, application_ids_json,
+                            payload_digest, created_at
+                       FROM narrative_change_transactions;"
+                ))?;
+                conn.execute_batch(
+                    "DROP TABLE narrative_change_transactions;
+                     ALTER TABLE narrative_change_transactions_v22
+                        RENAME TO narrative_change_transactions;
+                     CREATE INDEX idx_narrative_change_transactions_project_sequence
+                        ON narrative_change_transactions(project_id, source_change_event_sequence);",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let row_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            row_count_after == row_count_before,
+            "SCHEMA 22 Change Feed origin migration changed transaction row count"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" IN ('narrative_change_transactions','narrative_change_events')",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 22 Change Feed origin migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA_VERSION 23: Run, Task, and Attempt each get their own status
+    /// CHECK constraint instead of sharing one untyped `status TEXT`
+    /// column — `policies/narrative/narrative-execution-state.json` is the
+    /// contract this enforces physically. Attempt also gains typed failure
+    /// columns (`failure_code`/`retry_disposition`/`policy_version`/
+    /// `next_attempt_at`) per `narrative-failure-policy.json`. SQLite cannot
+    /// ALTER TABLE ADD a CHECK constraint to a populated table, so this
+    /// rebuilds all three tables in one transaction.
+    fn migrate_narrative_extraction_status_v23(conn: &Connection) -> anyhow::Result<()> {
+        let runs_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_extraction_runs'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !runs_exists {
+            return Ok(());
+        }
+        let runs_sql = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'narrative_extraction_runs'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        let compact_runs_sql = Self::compact(&runs_sql);
+        let schema_ready = compact_runs_sql.contains(
+            "check(statusin('pending','running','completed','failed','cancelled','superseded'))",
+        );
+        if schema_ready {
+            return Ok(());
+        }
+
+        // Fail closed on any status value the new CHECK does not allow,
+        // rather than silently coercing it — NEX_EXECUTION_STATUS_INVALID
+        // is a manual-intervention failure code, not something this
+        // migration should assign itself.
+        let invalid_run_statuses: Vec<String> = conn
+            .prepare(
+                "SELECT DISTINCT status FROM narrative_extraction_runs
+                  WHERE status NOT IN ('pending','running','completed','failed','cancelled','superseded')",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        anyhow::ensure!(
+            invalid_run_statuses.is_empty(),
+            "SCHEMA 23 execution-state migration found narrative_extraction_runs rows with an \
+             unrecognized status (NEX_EXECUTION_STATUS_INVALID): {invalid_run_statuses:?}"
+        );
+        let invalid_task_statuses: Vec<String> = conn
+            .prepare(
+                "SELECT DISTINCT status FROM narrative_extraction_tasks
+                  WHERE status NOT IN ('queued','running','completed','failed','cancelled')",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        anyhow::ensure!(
+            invalid_task_statuses.is_empty(),
+            "SCHEMA 23 execution-state migration found narrative_extraction_tasks rows with an \
+             unrecognized status (NEX_EXECUTION_STATUS_INVALID): {invalid_task_statuses:?}"
+        );
+        let invalid_attempt_statuses: Vec<String> = conn
+            .prepare(
+                "SELECT DISTINCT status FROM narrative_extraction_attempts
+                  WHERE status NOT IN ('running','completed','failed')",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        anyhow::ensure!(
+            invalid_attempt_statuses.is_empty(),
+            "SCHEMA 23 execution-state migration found narrative_extraction_attempts rows with an \
+             unrecognized status (NEX_EXECUTION_STATUS_INVALID): {invalid_attempt_statuses:?}"
+        );
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 23 execution-state migration requires autocommit"
+        );
+        let run_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs",
+            [],
+            |row| row.get(0),
+        )?;
+        let task_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_tasks",
+            [],
+            |row| row.get(0),
+        )?;
+        let attempt_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_attempts",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_extraction_runs_v23;
+                     CREATE TABLE narrative_extraction_runs_v23 (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        surface_path_id TEXT NOT NULL,
+                        scope_json TEXT NOT NULL,
+                        spec_json TEXT NOT NULL,
+                        spec_digest TEXT NOT NULL,
+                        snapshot_digest TEXT,
+                        catalog_digest TEXT,
+                        registry_digest TEXT,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')),
+                        coverage_json TEXT NOT NULL DEFAULT '{}',
+                        outcome_summary_json TEXT,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 0,
+                        run_kind TEXT NOT NULL DEFAULT 'interpretation'
+                            CHECK(run_kind IN ('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill')),
+                        consumer_id TEXT,
+                        semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id),
+                        work_key TEXT,
+                        terminal_reason_code TEXT
+                            CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'),
+                        superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id)
+                     );
+                     INSERT INTO narrative_extraction_runs_v23
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                         outcome_summary_json, created_at, started_at, completed_at, version,
+                         run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
+                         superseded_by_run_id)
+                     SELECT id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                            snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                            outcome_summary_json, created_at, started_at, completed_at, version,
+                            'interpretation', NULL, NULL, NULL, NULL, NULL
+                       FROM narrative_extraction_runs;
+                     DROP TABLE narrative_extraction_runs;
+                     ALTER TABLE narrative_extraction_runs_v23 RENAME TO narrative_extraction_runs;
+
+                     DROP TABLE IF EXISTS narrative_extraction_tasks_v23;
+                     CREATE TABLE narrative_extraction_tasks_v23 (
+                        id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        task_kind TEXT NOT NULL,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('queued','running','completed','failed','cancelled')),
+                        input_json TEXT NOT NULL DEFAULT '{}',
+                        output_json TEXT,
+                        priority INTEGER NOT NULL DEFAULT 0,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        lease_owner TEXT,
+                        lease_expires_at TEXT,
+                        heartbeat_at TEXT,
+                        error_message TEXT,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 0
+                     );
+                     INSERT INTO narrative_extraction_tasks_v23
+                        (id, run_id, task_kind, status, input_json, output_json, priority,
+                         attempt_count, lease_owner, lease_expires_at, heartbeat_at, error_message,
+                         created_at, started_at, completed_at, version)
+                     SELECT id, run_id, task_kind, status, input_json, output_json, priority,
+                            attempt_count, lease_owner, lease_expires_at, heartbeat_at, error_message,
+                            created_at, started_at, completed_at, version
+                       FROM narrative_extraction_tasks;
+                     DROP TABLE narrative_extraction_tasks;
+                     ALTER TABLE narrative_extraction_tasks_v23 RENAME TO narrative_extraction_tasks;
+
+                     DROP TABLE IF EXISTS narrative_extraction_attempts_v23;
+                     CREATE TABLE narrative_extraction_attempts_v23 (
+                        id TEXT PRIMARY KEY,
+                        task_id TEXT NOT NULL,
+                        attempt_number INTEGER NOT NULL,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('running','completed','failed')),
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        error_message TEXT,
+                        output_json TEXT,
+                        failure_code TEXT
+                            CHECK(failure_code IS NULL OR failure_code GLOB 'NEX_*'),
+                        retry_disposition TEXT
+                            CHECK(retry_disposition IS NULL OR retry_disposition IN ('retryable','terminal','superseded','manual')),
+                        policy_version TEXT,
+                        next_attempt_at TEXT,
+                        CHECK((next_attempt_at IS NULL) OR (retry_disposition IS NOT NULL AND retry_disposition = 'retryable'))
+                     );
+                     INSERT INTO narrative_extraction_attempts_v23
+                        (id, task_id, attempt_number, status, started_at, completed_at,
+                         error_message, output_json, failure_code, retry_disposition,
+                         policy_version, next_attempt_at)
+                     SELECT id, task_id, attempt_number, status, started_at, completed_at,
+                            error_message, output_json,
+                            CASE WHEN status = 'failed' THEN 'NEX_LEGACY_UNCLASSIFIED' ELSE NULL END,
+                            CASE WHEN status = 'failed' THEN 'terminal' ELSE NULL END,
+                            CASE WHEN status = 'failed' THEN 'legacy' ELSE NULL END,
+                            NULL
+                       FROM narrative_extraction_attempts;
+                     DROP TABLE narrative_extraction_attempts;
+                     ALTER TABLE narrative_extraction_attempts_v23 RENAME TO narrative_extraction_attempts;",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let run_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs",
+            [],
+            |row| row.get(0),
+        )?;
+        let task_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_tasks",
+            [],
+            |row| row.get(0),
+        )?;
+        let attempt_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_attempts",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            run_count_after == run_count_before
+                && task_count_after == task_count_before
+                && attempt_count_after == attempt_count_before,
+            "SCHEMA 23 execution-state migration changed row counts (runs {run_count_before}->{run_count_after}, \
+             tasks {task_count_before}->{task_count_after}, attempts {attempt_count_before}->{attempt_count_after})"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" IN ('narrative_extraction_runs','narrative_extraction_tasks','narrative_extraction_attempts')",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 23 execution-state migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA_VERSION 23: the Change Feed consumer cursor gains reservation
+    /// columns so the Freshness evaluator Run can reserve an unacknowledged
+    /// range instead of only acknowledging a completed one. Pre-C2 consumers
+    /// keep using only `acknowledged_through_sequence`/lease; the new
+    /// columns stay NULL for them.
+    fn migrate_narrative_change_cursors_v23(conn: &Connection) -> anyhow::Result<()> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_change_cursors'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(());
+        }
+        let table_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'narrative_change_cursors'",
+            [],
+            |row| row.get(0),
+        )?;
+        let compact_table_sql = Self::compact(&table_sql);
+        let schema_ready = compact_table_sql.contains(
+            "check((active_run_idisnullandreserved_through_sequenceisnull)or(active_run_idisnotnullandreserved_through_sequenceisnotnullandsemantic_epoch_idisnotnull))",
+        );
+        if schema_ready {
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 23 cursor reservation migration requires autocommit"
+        );
+        let row_count_before: i64 =
+            conn.query_row("SELECT COUNT(*) FROM narrative_change_cursors", [], |row| {
+                row.get(0)
+            })?;
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_change_cursors_v23;
+                     CREATE TABLE narrative_change_cursors_v23 (
+                        project_id                    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        consumer_id                   TEXT NOT NULL CHECK(length(consumer_id) > 0),
+                        acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0
+                            CHECK(acknowledged_through_sequence >= 0),
+                        lease_owner                   TEXT,
+                        lease_expires_at              TEXT,
+                        last_error                    TEXT,
+                        updated_at                    TEXT NOT NULL,
+                        semantic_epoch_id             TEXT REFERENCES narrative_semantic_epochs(id),
+                        reserved_through_sequence     INTEGER,
+                        active_run_id                 TEXT REFERENCES narrative_extraction_runs(id),
+                        PRIMARY KEY(project_id, consumer_id),
+                        CHECK(
+                            (active_run_id IS NULL AND reserved_through_sequence IS NULL)
+                            OR (active_run_id IS NOT NULL AND reserved_through_sequence IS NOT NULL
+                                AND semantic_epoch_id IS NOT NULL)
+                        ),
+                        CHECK(
+                            reserved_through_sequence IS NULL
+                            OR reserved_through_sequence >= acknowledged_through_sequence
+                        )
+                     );
+                     INSERT INTO narrative_change_cursors_v23
+                        (project_id, consumer_id, acknowledged_through_sequence, lease_owner,
+                         lease_expires_at, last_error, updated_at)
+                     SELECT project_id, consumer_id, acknowledged_through_sequence, lease_owner,
+                            lease_expires_at, last_error, updated_at
+                       FROM narrative_change_cursors;
+                     DROP TABLE narrative_change_cursors;
+                     ALTER TABLE narrative_change_cursors_v23 RENAME TO narrative_change_cursors;
+                     CREATE INDEX IF NOT EXISTS idx_narrative_change_cursors_project
+                        ON narrative_change_cursors(project_id, consumer_id);",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let row_count_after: i64 =
+            conn.query_row("SELECT COUNT(*) FROM narrative_change_cursors", [], |row| {
+                row.get(0)
+            })?;
+        anyhow::ensure!(
+            row_count_after == row_count_before,
+            "SCHEMA 23 cursor reservation migration changed row count"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" = 'narrative_change_cursors'",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 23 cursor reservation migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA_VERSION 24 (`policies/narrative/narrative-run-kind-policy.json`):
+    /// `narrative_extraction_runs.run_kind` gains `'dependency-verify'` and
+    /// `'dependency-repair'`. `dependency-backfill`/`dependency-rebuild-derived`
+    /// reuse the existing `'backfill'`/`'semantic-index-rebuild'` values and
+    /// need no CHECK change. SQLite cannot `ALTER TABLE ADD` a wider
+    /// multi-value `CHECK` to a populated table, so this rebuilds
+    /// `narrative_extraction_runs` alone (Task/Attempt are untouched — their
+    /// status vocabularies do not change at SCHEMA 24) using the same
+    /// rebuild-and-verify pattern `migrate_narrative_extraction_status_v23`
+    /// established.
+    fn migrate_run_kind_v24(conn: &Connection) -> anyhow::Result<()> {
+        let runs_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_extraction_runs'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !runs_exists {
+            return Ok(());
+        }
+        let runs_sql = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'narrative_extraction_runs'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        let compact_runs_sql = Self::compact(&runs_sql);
+        let schema_ready = compact_runs_sql.contains(
+            "check(run_kindin('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill','dependency-verify','dependency-repair'))",
+        );
+        if schema_ready {
+            return Ok(());
+        }
+
+        // Fail closed on any run_kind value the new CHECK does not allow,
+        // rather than silently coercing it — a workspace that already has a
+        // run_kind this migration does not recognize means an assumption
+        // about the closed vocabulary was wrong, not something to paper
+        // over.
+        let invalid_run_kinds: Vec<String> = conn
+            .prepare(
+                "SELECT DISTINCT run_kind FROM narrative_extraction_runs
+                  WHERE run_kind NOT IN (
+                    'interpretation','freshness-evaluation','semantic-index-rebuild',
+                    'manual-rebuild','backfill','dependency-verify','dependency-repair'
+                  )",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        anyhow::ensure!(
+            invalid_run_kinds.is_empty(),
+            "SCHEMA 24 run_kind migration found narrative_extraction_runs rows with an \
+             unrecognized run_kind: {invalid_run_kinds:?}"
+        );
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 24 run_kind migration requires autocommit"
+        );
+        let row_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_extraction_runs_v24;
+                     CREATE TABLE narrative_extraction_runs_v24 (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        surface_path_id TEXT NOT NULL,
+                        scope_json TEXT NOT NULL,
+                        spec_json TEXT NOT NULL,
+                        spec_digest TEXT NOT NULL,
+                        snapshot_digest TEXT,
+                        catalog_digest TEXT,
+                        registry_digest TEXT,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')),
+                        coverage_json TEXT NOT NULL DEFAULT '{}',
+                        outcome_summary_json TEXT,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 0,
+                        run_kind TEXT NOT NULL DEFAULT 'interpretation'
+                            CHECK(run_kind IN (
+                                'interpretation','freshness-evaluation','semantic-index-rebuild',
+                                'manual-rebuild','backfill','dependency-verify','dependency-repair'
+                            )),
+                        consumer_id TEXT,
+                        semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id),
+                        work_key TEXT,
+                        terminal_reason_code TEXT
+                            CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'),
+                        superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id)
+                     );
+                     INSERT INTO narrative_extraction_runs_v24
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                         outcome_summary_json, created_at, started_at, completed_at, version,
+                         run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
+                         superseded_by_run_id)
+                     SELECT id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                            snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                            outcome_summary_json, created_at, started_at, completed_at, version,
+                            run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
+                            superseded_by_run_id
+                       FROM narrative_extraction_runs;
+                     DROP TABLE narrative_extraction_runs;
+                     ALTER TABLE narrative_extraction_runs_v24 RENAME TO narrative_extraction_runs;",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let row_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            row_count_after == row_count_before,
+            "SCHEMA 24 run_kind migration changed row count ({row_count_before} -> {row_count_after})"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" = 'narrative_extraction_runs'",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 24 run_kind migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA 25: give `narrative_maintenance_attention` the controls its
+    /// ADR 006 route requires — `version` (OCC), `request_id` +
+    /// `payload_digest` (the provenance of the write that last touched the
+    /// row), a mandatory `actor_id`, and an optional `reason`.
+    ///
+    /// Replay itself is resolved from the shared `idempotency_requests`
+    /// ledger, not from these columns: `clear` deletes the row, so a row
+    /// that is gone cannot answer "have I already applied this requestId?".
+    /// See `attention.rs`'s `clear_attention_in_tx`.
+    ///
+    /// `actor_id` replaces the nullable `set_by`: an Attention row is durable
+    /// user state, so "who decided this" is not optional. Pre-existing rows
+    /// inherit `set_by` where it was set and the explicit sentinel
+    /// `'unknown-legacy-actor'` where it was NULL, rather than being dropped
+    /// or silently attributed to whoever migrates.
+    ///
+    /// Rebuild rather than ALTER TABLE ADD: `actor_id`/`request_id`/
+    /// `payload_digest` are NOT NULL with a non-empty CHECK, which SQLite
+    /// cannot add to a populated table in place.
+    fn migrate_narrative_maintenance_attention_v25(conn: &Connection) -> anyhow::Result<()> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_maintenance_attention'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(());
+        }
+        let table_sql = conn.query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'table' AND name = 'narrative_maintenance_attention'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        if Self::compact(&table_sql).contains("actor_idtextnotnull") {
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 25 attention migration requires autocommit"
+        );
+        let row_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_attention",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_maintenance_attention_v25;
+                     CREATE TABLE narrative_maintenance_attention_v25 (
+                        project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        finding_key            TEXT NOT NULL CHECK(length(finding_key) > 0),
+                        disposition            TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')),
+                        material_basis_digest  TEXT NOT NULL CHECK(length(material_basis_digest) > 0),
+                        snoozed_until          TEXT,
+                        set_at                 TEXT NOT NULL,
+                        actor_id               TEXT NOT NULL CHECK(length(actor_id) > 0),
+                        request_id             TEXT NOT NULL CHECK(length(request_id) > 0),
+                        payload_digest         TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                        reason                 TEXT,
+                        version                INTEGER NOT NULL CHECK(version > 0),
+                        PRIMARY KEY(project_id, finding_key)
+                     );
+                     INSERT INTO narrative_maintenance_attention_v25
+                        (project_id, finding_key, disposition, material_basis_digest,
+                         snoozed_until, set_at, actor_id, request_id, payload_digest,
+                         reason, version)
+                     SELECT project_id, finding_key, disposition, material_basis_digest,
+                            snoozed_until, set_at,
+                            COALESCE(NULLIF(TRIM(COALESCE(set_by, '')), ''), 'unknown-legacy-actor'),
+                            'legacy-migration-v25',
+                            'legacy-migration-v25',
+                            NULL,
+                            1
+                       FROM narrative_maintenance_attention;
+                     DROP TABLE narrative_maintenance_attention;
+                     ALTER TABLE narrative_maintenance_attention_v25
+                        RENAME TO narrative_maintenance_attention;",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let row_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_attention",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            row_count_after == row_count_before,
+            "SCHEMA 25 attention migration changed row count ({row_count_before} -> {row_count_after})"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" = 'narrative_maintenance_attention'",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 25 attention migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA 26: request identity on a system Run, kept distinct from
+    /// `work_key`.
+    ///
+    /// `work_key` answers "is this the same work?" and drives
+    /// `sameWorkKeyReuse`. These answer "is this the same *request*?" and
+    /// drive `sameRequestIdReuse: idempotent-replay`. Collapsing them makes a
+    /// retried request indistinguishable from a second deliberate one, which
+    /// for `dependency-repair` means a destructive operation could run twice.
+    ///
+    /// Plain ADD COLUMN: all four are nullable, so no rebuild is needed and
+    /// existing Runs simply carry NULL.
+    fn migrate_narrative_run_request_identity_v26(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_extraction_runs'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        for (column, declaration) in [
+            ("request_id", "TEXT"),
+            ("idempotency_domain", "TEXT"),
+            ("request_payload_digest", "TEXT"),
+            ("actor_id", "TEXT"),
+        ] {
+            Self::add_column_if_missing(conn, "narrative_extraction_runs", column, declaration)?;
+        }
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_runs_request_identity
+                ON narrative_extraction_runs(project_id, idempotency_domain, request_id)
+             WHERE request_id IS NOT NULL AND idempotency_domain IS NOT NULL;",
+        )?;
+        Ok(())
+    }
+
+    /// SCHEMA 27: bind a Repair lease to the Run that holds it.
+    ///
+    /// The lease already records owner, Verify Run, plan digest and Epoch,
+    /// which is enough to say *what* was approved but not *which execution*
+    /// is currently entitled to apply it. `repair.rs` compare-and-swaps the
+    /// whole row — this column included — at the top of the transaction that
+    /// deletes Edges, and releases it under the same predicate, so a worker
+    /// whose lease expired and was re-claimed by someone else cannot mutate
+    /// the graph or delete the new holder's lease.
+    ///
+    /// Plain ADD COLUMN: nullable, so a lease claimed before this migration
+    /// simply carries NULL and fails the CAS, which is the safe direction.
+    /// Every Source identity prefix as of SCHEMA 28, longest first so
+    /// `project:codex-catalog:` is tested before anything shorter could
+    /// shadow it.
+    ///
+    /// Frozen here rather than read from `dependency_edges.rs` for the same
+    /// reason the Contribution prefix table below is: a migration has to keep
+    /// describing the same transition after the live rule changes. A test
+    /// asserts this list still agrees with
+    /// `canonical_source_object_identity`, so the two can only diverge
+    /// deliberately.
+    const SOURCE_IDENTITY_PREFIXES_V28: &'static [&'static str] = &[
+        "project:codex-catalog:",
+        "project:scene:",
+        "projection:",
+        "snapshot:",
+        "artifact:",
+        "capture:",
+        "evidence:",
+    ];
+
+    /// The Dependency Edge Consumer kind whose `consumer_key` is a Run id,
+    /// frozen as of SCHEMA 28. Mirrors `dependency_edges.rs`'s
+    /// `RUN_CONSUMER_KIND`; frozen for the same reason the prefix tables are,
+    /// and pinned to it by a test.
+    const RUN_CONSUMER_KIND_V28: &'static str = "narrative-extraction-run";
+
+    /// Legacy `kind:` prefix -> canonical `kind:` prefix, frozen as of
+    /// SCHEMA 28. Kinds already canonical in both old vocabularies
+    /// (`scene:`, `foreshadow:`, `codex-entry:`, ...) are absent on purpose:
+    /// leaving them out is what makes this re-runnable, since a canonical
+    /// prefix is never itself a key. Every entry ends in `:`, and no entry is
+    /// a prefix of another, so a row matches at most one.
+    ///
+    /// An associated const rather than a local one so the schema checkpoint's
+    /// copy of the left column can be pinned against it.
+    const LEGACY_TARGET_IDENTITY_PREFIXES_V28: &'static [(&'static str, &'static str)] = &[
+        // Writer-row vocabulary (`applied_entity_kind`), via Backfill.
+        ("codex_entry:", "codex-entry:"),
+        ("codex_relation:", "codex-relation:"),
+        ("codex_phase:", "codex-phase:"),
+        ("codex_entry_phase:", "codex-phase:"),
+        ("codex_detail_definition:", "codex-detail-definition:"),
+        ("codex_detail_value:", "codex-detail-value:"),
+        (
+            "codex_semantic_binding:",
+            "component:codex_semantic_binding:",
+        ),
+        ("plot_thread:", "plot-thread:"),
+        ("plot_thread_marker:", "plot-marker:"),
+        ("plot_thread_branch:", "plot-branch:"),
+        ("foreshadow_setup:", "foreshadow-setup:"),
+        ("foreshadow_payoff:", "foreshadow-payoff:"),
+        ("temporal_node:", "temporal-node:"),
+        ("temporal_constraint:", "temporal-constraint:"),
+        ("temporal_projection:", "temporal-projection:"),
+        // Temporal annotation rows address the object they annotate.
+        ("temporal_event_chronicle:", "chronicle-event:"),
+        ("temporal_scene_chronicle:", "scene:"),
+        ("temporal_scene_story_order:", "scene:"),
+        // Written by *both* old vocabularies, canonical in neither.
+        ("event:", "chronicle-event:"),
+        // Field Authority vocabulary, via Apply. The only other FA kind that
+        // was not already canonical.
+        (
+            "codex-detail-semantic-binding:",
+            "component:codex_semantic_binding:",
+        ),
+    ];
+
+    /// Collapses a run of repeats of one Source prefix down to a single one,
+    /// which is the exact shape the pre-#535 Backfill produced by re-deriving
+    /// an already-qualified key: `project:scene:project:scene:s1`. Returns
+    /// `None` when the identity is already well-formed.
+    fn collapse_doubled_source_prefix(identity: &str) -> Option<String> {
+        let prefix = Self::SOURCE_IDENTITY_PREFIXES_V28
+            .iter()
+            .find(|prefix| identity.starts_with(**prefix))?;
+        let mut rest = &identity[prefix.len()..];
+        let mut collapsed = false;
+        while let Some(next) = rest.strip_prefix(*prefix) {
+            rest = next;
+            collapsed = true;
+        }
+        if !collapsed || rest.is_empty() {
+            return None;
+        }
+        Some(format!("{prefix}{rest}"))
+    }
+
+    /// SCHEMA 28: repair `narrative_dependency_edges.source_object_identity`
+    /// rows the pre-#535 Legacy Backfill wrote double-prefixed.
+    ///
+    /// `record_legacy_dependency_edges_in_tx` used to re-derive the identity
+    /// from a `source_key` that was already fully qualified, producing
+    /// `project:scene:project:scene:s1`. `restore_rebuild.rs`'s
+    /// `infer_source_kind` matches on the leading prefix and then hands the
+    /// remainder to a resolver that strips its own prefix again, so every one
+    /// of those Edges resolves to nothing and evaluates as `source-missing`.
+    ///
+    /// Fixing the writer does not fix them, and neither does re-running the
+    /// Backfill: `find_reusable_system_run` matches on
+    /// `(project_id, run_kind, work_key, status)` only -- it never compares
+    /// the sealed spec -- so a Run left `completed` under
+    /// `LEGACY_BACKFILL_ALGORITHM_VERSION = "1"` is reused and the v2
+    /// transform never executes.
+    ///
+    /// `narrative_dependency_edges` is `UNIQUE(project_id, consumer_kind,
+    /// consumer_key, source_object_identity)`, so collapsing an identity can
+    /// collide with a correct Edge the same Consumer already declared. The
+    /// malformed row loses in that case: both rows describe the same Source
+    /// read, and only the canonical one was ever resolvable, so it carries
+    /// nothing the survivor lacks. Its Edge State row is deleted explicitly
+    /// rather than left to the FK's `ON DELETE CASCADE`, which does nothing
+    /// unless `PRAGMA foreign_keys` happens to be on.
+    /// The C2 identity data migration's id in `schema_data_migrations`.
+    pub(crate) const C2_IDENTITY_MIGRATION_ID: &'static str = "narrative-c2-identity-v28";
+
+    /// Which revision of that migration's side effects a workspace has seen.
+    ///
+    /// Bump this whenever the migration gains a side effect, even within one
+    /// `SCHEMA_VERSION`. That is the whole point: revision 1 rewrote
+    /// identities but left Freshness decided on the old ones in place on the
+    /// non-collision path, and no amount of looking at today's rows can tell
+    /// a workspace that stopped there from one that never needed the repair.
+    pub(crate) const C2_IDENTITY_CONTRACT_VERSION: i64 = 2;
+
+    /// Closes out the SCHEMA 28 identity repair: discard the C2 derived state
+    /// wholesale, correct Contributions left pointing at an unresolvable
+    /// target, and record that this contract revision has been applied.
+    ///
+    /// **Why a durable marker rather than inspecting the rows.** The earlier
+    /// check asked "are any repairable identities left?", which conflates two
+    /// different workspaces: one the migration never touched, and one an
+    /// earlier SCHEMA 28 build already rewrote. Those are indistinguishable
+    /// from the current rows, because the distinguishing evidence -- what
+    /// *else* that build did -- was never written down. A workspace migrated
+    /// by revision 1 has canonical Edge identities *and* Consumer Freshness
+    /// that was decided against the identities they replaced, and the identity
+    /// probe calls it healthy.
+    ///
+    /// **Why the discard is unconditional rather than targeted.** Revision 1's
+    /// invalidation only covered Consumers whose identity that same pass
+    /// changed. Re-running it now finds nothing to change, so a targeted pass
+    /// would clear nothing. There is no record of which Consumers the earlier
+    /// pass touched, so the conservative reading is the only sound one: put
+    /// every C2 derived state back to absent, which is exactly the "not yet
+    /// evaluated" state Rebuild-Derived exists to fill. C2 is still shadow
+    /// infrastructure with no production reader, so the cost is recomputation,
+    /// while the alternative is serving a stale `source-missing` as truth.
+    ///
+    /// `narrative_consumer_freshness` is the durable Freshness authority, not
+    /// a cache, which is precisely why it cannot be left to sort itself out.
+    fn finish_narrative_c2_identity_data_migration_v28(conn: &Connection) -> anyhow::Result<()> {
+        if Self::has_c2_identity_data_migration_marker(conn)? {
+            return Ok(());
+        }
+
+        // Rebuildable derived state. Absent *is* the initial state, so
+        // deleting is a reset, not data loss.
+        for table in [
+            "narrative_dependency_edge_states",
+            "narrative_consumer_freshness",
+            "narrative_maintenance_finding_observations",
+        ] {
+            if Self::table_exists_for_v28(conn, table)? {
+                conn.execute(&format!("DELETE FROM {table}"), [])
+                    .with_context(|| format!("clearing C2 derived state in '{table}'"))?;
+            }
+        }
+
+        // An earlier revision marked these `unresolved:` but left the state
+        // the Apply had written. `unchanged` asserts the field still matches
+        // what was applied to an object that cannot be found, which is a
+        // claim this migration is in a position to withdraw.
+        if Self::table_exists_for_v28(conn, "narrative_application_contributions")? {
+            conn.execute(
+                "UPDATE narrative_application_contributions
+                    SET target_state = 'missing'
+                  WHERE substr(target_object_identity, 1, ?1) = ?2
+                    AND target_state <> 'missing'",
+                params![
+                    Self::UNRESOLVED_TARGET_PREFIX_V28.len() as i64,
+                    Self::UNRESOLVED_TARGET_PREFIX_V28
+                ],
+            )
+            .context("correcting unresolved Contribution target states")?;
+        }
+
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(migration_id)
+             DO UPDATE SET contract_version = excluded.contract_version,
+                 applied_at = excluded.applied_at",
+            params![
+                Self::C2_IDENTITY_MIGRATION_ID,
+                Self::C2_IDENTITY_CONTRACT_VERSION,
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            ],
+        )
+        .context("recording the C2 identity data migration marker")?;
+        Ok(())
+    }
+
+    /// Whether this workspace has seen the current revision of the C2
+    /// identity data migration's side effects.
+    pub(crate) fn has_c2_identity_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+        if !Self::table_exists_for_v28(conn, "schema_data_migrations")? {
+            return Ok(false);
+        }
+        let applied: Option<i64> = conn
+            .query_row(
+                "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Self::C2_IDENTITY_MIGRATION_ID],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(applied.is_some_and(|version| version >= Self::C2_IDENTITY_CONTRACT_VERSION))
+    }
+
+    /// The `unresolved:` prefix as of SCHEMA 28, frozen for the same reason
+    /// the identity prefix tables are. A test pins it to the live constant.
+    const UNRESOLVED_TARGET_PREFIX_V28: &'static str = "unresolved:";
+
+    fn table_exists_for_v28(conn: &Connection, table: &str) -> anyhow::Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+             )",
+            params![table],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
+
+    fn migrate_narrative_dependency_edge_identity_v28(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_dependency_edges'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+
+        let rows: Vec<(String, String, String, String, String)> = conn
+            .prepare(
+                "SELECT id, project_id, consumer_kind, consumer_key, source_object_identity
+                   FROM narrative_dependency_edges
+                  ORDER BY id ASC",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut affected_consumers: std::collections::BTreeSet<(String, String, String)> =
+            std::collections::BTreeSet::new();
+
+        for (id, project_id, consumer_kind, consumer_key, identity) in rows {
+            let repaired = match Self::collapse_doubled_source_prefix(&identity) {
+                Some(repaired) => repaired,
+                None => match Self::canonicalize_bare_projection_identity(
+                    conn,
+                    &project_id,
+                    &consumer_kind,
+                    &consumer_key,
+                    &identity,
+                )? {
+                    Some(repaired) => repaired,
+                    None => continue,
+                },
+            };
+            let canonical_exists: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM narrative_dependency_edges
+                     WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3
+                       AND source_object_identity = ?4 AND id <> ?5
+                 )",
+                params![project_id, consumer_kind, consumer_key, repaired, id],
+                |row| row.get(0),
+            )?;
+            affected_consumers.insert((
+                project_id.clone(),
+                consumer_kind.clone(),
+                consumer_key.clone(),
+            ));
+
+            if canonical_exists {
+                conn.execute(
+                    "DELETE FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                    params![id],
+                )
+                .with_context(|| format!("dropping Edge State for superseded Edge '{id}'"))?;
+                conn.execute(
+                    "DELETE FROM narrative_dependency_edges WHERE id = ?1",
+                    params![id],
+                )
+                .with_context(|| {
+                    format!("dropping malformed Edge '{id}' superseded by '{repaired}'")
+                })?;
+                continue;
+            }
+
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET source_object_identity = ?2
+                  WHERE id = ?1",
+                params![id, repaired],
+            )
+            .with_context(|| {
+                format!("repairing Edge source identity '{identity}' to '{repaired}'")
+            })?;
+        }
+
+        Self::invalidate_derived_freshness_for_consumers_v28(conn, &affected_consumers)
+    }
+
+    /// Recovers the Source kind for an Edge whose identity carries no prefix
+    /// at all, so a legitimately-bare `domain-projection` key can be
+    /// canonicalized like the writers now do.
+    ///
+    /// A bare key is not necessarily corruption: `resolve_domain_projection`
+    /// falls back to `.unwrap_or(source_key)`, so
+    /// `{"sourceKind":"domain-projection","sourceKey":"projection-1"}` was a
+    /// valid envelope that the pre-#535 Producer copied verbatim into an
+    /// Edge. `infer_source_kind` only recognises `projection:`-prefixed
+    /// identities, so those Edges read as an unknown Source forever, and
+    /// re-running the Backfill does not help: the Edge upsert key includes
+    /// `source_object_identity`, so the canonical row is *added* beside the
+    /// bare one rather than replacing it, and worst-edge aggregation then
+    /// drags the whole Consumer to `source-missing`.
+    ///
+    /// The kind is read back from the rows that declared the Source, scoped
+    /// to the Edge's own Run: a Proposal Revision's Source Basis for a live
+    /// Producer Edge, or a legacy Application's projection dependencies for a
+    /// backfilled one. Rewrites only when every declaration agrees the Source
+    /// is a projection. No declaration, or a disagreement, leaves the row
+    /// untouched -- it stays visibly unresolvable rather than being guessed
+    /// into pointing at some other object.
+    fn canonicalize_bare_projection_identity(
+        conn: &Connection,
+        project_id: &str,
+        consumer_kind: &str,
+        consumer_key: &str,
+        identity: &str,
+    ) -> anyhow::Result<Option<String>> {
+        if Self::SOURCE_IDENTITY_PREFIXES_V28
+            .iter()
+            .any(|prefix| identity.starts_with(prefix))
+        {
+            return Ok(None);
+        }
+
+        // Both writers key an Edge under `(RUN_CONSUMER_KIND, run_id)`, so
+        // the Edge names its own Run and the declaration can be read back
+        // from that Run alone. A Consumer of any other kind has no Run to
+        // narrow to and falls back to the project.
+        let run_id = (consumer_kind == Self::RUN_CONSUMER_KIND_V28).then_some(consumer_key);
+
+        let mut kinds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (table_probe, sql, run_scoped_sql) in [
+            (
+                "narrative_revision_source_basis",
+                "SELECT DISTINCT b.source_kind
+                   FROM narrative_revision_source_basis b
+                   JOIN narrative_proposal_revisions r ON r.id = b.revision_id
+                   JOIN narrative_proposals p ON p.id = r.proposal_id
+                   JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                  WHERE s.project_id = ?1 AND b.source_key = ?2",
+                "SELECT DISTINCT b.source_kind
+                   FROM narrative_revision_source_basis b
+                   JOIN narrative_proposal_revisions r ON r.id = b.revision_id
+                   JOIN narrative_proposals p ON p.id = r.proposal_id
+                   JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                  WHERE s.project_id = ?1 AND b.source_key = ?2 AND s.run_id = ?3",
+            ),
+            (
+                "narrative_projection_dependencies",
+                "SELECT DISTINCT d.source_kind
+                   FROM narrative_projection_dependencies d
+                   JOIN narrative_proposal_applications a ON a.id = d.application_id
+                   JOIN narrative_apply_commits c ON c.id = a.commit_id
+                  WHERE c.project_id = ?1 AND d.source_key = ?2",
+                "SELECT DISTINCT d.source_kind
+                   FROM narrative_projection_dependencies d
+                   JOIN narrative_proposal_applications a ON a.id = d.application_id
+                   JOIN narrative_apply_commits c ON c.id = a.commit_id
+                  WHERE c.project_id = ?1 AND d.source_key = ?2 AND c.run_id = ?3",
+            ),
+        ] {
+            if !conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                 )",
+                params![table_probe],
+                |row| row.get::<_, bool>(0),
+            )? {
+                continue;
+            }
+            let found = match run_id {
+                Some(run_id) => conn
+                    .prepare(run_scoped_sql)?
+                    .query_map(params![project_id, identity, run_id], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?,
+                None => conn
+                    .prepare(sql)?
+                    .query_map(params![project_id, identity], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
+            kinds.extend(found);
+        }
+
+        let projection_only = !kinds.is_empty()
+            && kinds
+                .iter()
+                .all(|kind| matches!(kind.as_str(), "domain-projection" | "projection"));
+        if !projection_only {
+            return Ok(None);
+        }
+        Ok(Some(format!("projection:{identity}")))
+    }
+
+    /// Drops the Freshness state that was computed against an Edge identity
+    /// this migration has just changed.
+    ///
+    /// Rewriting the identity is not enough on its own.
+    /// `narrative_consumer_freshness` is not a cache -- it is the durable
+    /// authority for a Consumer's current Freshness -- and
+    /// `narrative_dependency_edge_states` holds the last evaluation of each
+    /// Edge. A workspace that ran Rebuild-Derived before this migration has
+    /// `source-missing` recorded in both, decided from an identity that no
+    /// longer exists, and nothing else would ever revisit it: the Semantic
+    /// Epoch does not rotate here. The moment C2-T2 wires the read path,
+    /// that stale verdict would be served as the truth.
+    ///
+    /// Deleting rather than re-evaluating: evaluation needs a Run and an
+    /// Epoch, which a migration has no business minting. Absent rows are
+    /// already the "not yet evaluated" state the Rebuild-Derived path is
+    /// built to fill, so removing them asks for the recompute instead of
+    /// faking its answer. Finding Observations keyed on the same Consumer go
+    /// too, since `finding_key` is `<consumer_kind>:<consumer_key>` and those
+    /// diagnostics describe the same superseded evaluation.
+    fn invalidate_derived_freshness_for_consumers_v28(
+        conn: &Connection,
+        consumers: &std::collections::BTreeSet<(String, String, String)>,
+    ) -> anyhow::Result<()> {
+        for (project_id, consumer_kind, consumer_key) in consumers {
+            conn.execute(
+                "DELETE FROM narrative_dependency_edge_states
+                  WHERE edge_id IN (
+                        SELECT id FROM narrative_dependency_edges
+                         WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3
+                  )",
+                params![project_id, consumer_kind, consumer_key],
+            )
+            .with_context(|| {
+                format!(
+                    "clearing Edge States for repaired Consumer '{consumer_kind}:{consumer_key}'"
+                )
+            })?;
+
+            for (table, sql) in [
+                (
+                    "narrative_consumer_freshness",
+                    "DELETE FROM narrative_consumer_freshness
+                      WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+                ),
+                (
+                    "narrative_maintenance_finding_observations",
+                    "DELETE FROM narrative_maintenance_finding_observations
+                      WHERE project_id = ?1 AND finding_key = ?2 || ':' || ?3",
+                ),
+            ] {
+                if !conn.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                     )",
+                    params![table],
+                    |row| row.get::<_, bool>(0),
+                )? {
+                    continue;
+                }
+                conn.execute(sql, params![project_id, consumer_kind, consumer_key])
+                    .with_context(|| {
+                        format!("clearing {table} for repaired Consumer '{consumer_kind}:{consumer_key}'")
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The Consumer kind `repository.rs` declares Proposal Revision Edges
+    /// under. Frozen here for the same reason `RUN_CONSUMER_KIND_V28` is: a
+    /// migration must keep meaning what it meant when it ran.
+    const PROPOSAL_REVISION_CONSUMER_KIND_V30: &'static str = "proposal-revision";
+
+    /// The only prefix `canonical_source_object_identity` ever *adds* to a
+    /// `source_key`. Every other Source kind rejects a bare key outright, so
+    /// a stored identity either equals its Source Basis key or is that key
+    /// with this in front. The re-key below matches on exactly those two
+    /// shapes rather than re-implementing the canonicaliser.
+    const DECORATED_SOURCE_PREFIX_V30: &'static str = "projection:";
+
+    /// Gate C2-2: move the Edges the live Producer declared under a Run onto
+    /// the Revisions that actually read those Sources.
+    ///
+    /// Not a re-derivation from nothing. `narrative_revision_source_basis`
+    /// already stores, per Revision, the exact `(source_kind, source_key,
+    /// revision_token)` list the Producer built each Edge from -- so the
+    /// finer attribution is read out of durable data rather than guessed.
+    /// That is what the roadmap's "without fabricating cross-run identity"
+    /// requires, and it is why the re-key is possible at all: nothing here
+    /// has to decide which Proposal of a Run "probably" read a Source.
+    ///
+    /// One Run Edge can become several Revision Edges. The Run-grained
+    /// writer upserted per Source, so two Revisions reading the same Scene
+    /// collapsed into one row; both get their own now.
+    ///
+    /// Edges with no matching Source Basis row are left under the Run. Those
+    /// are `legacy_backfill.rs`'s, declared for Applications that have no
+    /// Revision to attribute a read to -- a Run is still their legitimate
+    /// Consumer, and the contract keeps `narrative-extraction-run` declared
+    /// for exactly them.
+    ///
+    /// Derived state for the touched Consumers is discarded rather than
+    /// re-pointed: it was evaluated against a Consumer identity that no
+    /// longer exists, and re-evaluating needs a Run and an Epoch that a
+    /// migration has no business minting. Absent rows are the "not yet
+    /// evaluated" state `dependency-rebuild-derived` exists to fill.
+    fn migrate_narrative_consumer_grain_v30(conn: &Connection) -> anyhow::Result<()> {
+        if Self::has_c2_consumer_grain_data_migration_marker(conn)? {
+            return Ok(());
+        }
+        if !Self::table_exists_for_v28(conn, "narrative_dependency_edges")?
+            || !Self::table_exists_for_v28(conn, "narrative_revision_source_basis")?
+        {
+            Self::record_c2_consumer_grain_marker_v30(conn)?;
+            return Ok(());
+        }
+
+        // (edge_id, project_id, identity, owning_run_id, revision_id, token)
+        let matches: Vec<(String, String, String, String, String, String)> = conn
+            .prepare(
+                "SELECT e.id, e.project_id, e.source_object_identity, e.owning_run_id,
+                        sb.revision_id, sb.revision_token
+                   FROM narrative_dependency_edges e
+                   JOIN narrative_proposal_sets ps
+                     ON ps.run_id = e.owning_run_id AND ps.project_id = e.project_id
+                   JOIN narrative_proposals p ON p.proposal_set_id = ps.id
+                   JOIN narrative_proposal_revisions r ON r.proposal_id = p.id
+                   JOIN narrative_revision_source_basis sb ON sb.revision_id = r.id
+                  WHERE e.consumer_kind = ?1
+                    AND e.owning_run_id IS NOT NULL
+                    AND (e.source_object_identity = sb.source_key
+                         OR e.source_object_identity = ?2 || sb.source_key)
+                  ORDER BY e.id ASC, sb.revision_id ASC",
+            )?
+            .query_map(
+                params![
+                    Self::RUN_CONSUMER_KIND_V28,
+                    Self::DECORATED_SOURCE_PREFIX_V30
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?
+            .collect::<Result<_, _>>()?;
+
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let mut touched_runs: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
+        let mut rekeyed_edge_ids: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+
+        for (edge_id, project_id, identity, owning_run_id, revision_id, token) in matches {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges (
+                     id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, generated_by_transaction_id, created_at, owning_run_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)
+                 ON CONFLICT(project_id, consumer_kind, consumer_key, source_object_identity)
+                 DO NOTHING",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    project_id,
+                    Self::PROPOSAL_REVISION_CONSUMER_KIND_V30,
+                    revision_id,
+                    identity,
+                    serde_json::to_string(&[token])?,
+                    now,
+                    owning_run_id,
+                ],
+            )
+            .context("re-keying a Dependency Edge onto its Proposal Revision")?;
+            touched_runs.insert((project_id, owning_run_id));
+            rekeyed_edge_ids.insert(edge_id);
+        }
+
+        // A Run Edge may carry *two* declarations at once. Both Producers
+        // wrote under `(RUN_CONSUMER_KIND, run_id)` and the writer upserts on
+        // `(project_id, consumer_kind, consumer_key, source_object_identity)`,
+        // so a Revision and an Application of the same Run reading the same
+        // Source collapsed into one row -- with nothing on it saying it came
+        // from both. Deleting such a row because it matched a Revision would
+        // silently drop the Application's dependency, which is not this
+        // migration's to remove: the contract keeps `narrative-extraction-run`
+        // declared precisely for Applications that have no Revision to
+        // attribute a read to, and re-keying those is C2-Z's work.
+        //
+        // So the Run Edge is kept whenever the same `(Run, Source)` is also
+        // declared in `narrative_projection_dependencies`. The Revision Edges
+        // are added either way; the cost of keeping it is a duplicate
+        // Consumer, and the cost of not keeping it is a lost dependency.
+        let application_declared: std::collections::BTreeSet<String> =
+            if Self::table_exists_for_v28(conn, "narrative_projection_dependencies")? {
+                conn.prepare(
+                    "SELECT e.id
+                   FROM narrative_dependency_edges e
+                   JOIN narrative_apply_commits c ON c.run_id = e.owning_run_id
+                   JOIN narrative_proposal_applications a ON a.commit_id = c.id
+                   JOIN narrative_projection_dependencies pd ON pd.application_id = a.id
+                  WHERE e.consumer_kind = ?1
+                    AND (e.source_object_identity = pd.source_key
+                         OR e.source_object_identity = ?2 || pd.source_key)",
+                )?
+                .query_map(
+                    params![
+                        Self::RUN_CONSUMER_KIND_V28,
+                        Self::DECORATED_SOURCE_PREFIX_V30
+                    ],
+                    |row| row.get::<_, String>(0),
+                )?
+                .collect::<Result<_, _>>()?
+            } else {
+                std::collections::BTreeSet::new()
+            };
+
+        for edge_id in &rekeyed_edge_ids {
+            if application_declared.contains(edge_id) {
+                continue;
+            }
+            conn.execute(
+                "DELETE FROM narrative_dependency_edges WHERE id = ?1",
+                params![edge_id],
+            )
+            .context("removing a Run-grained Edge that was re-keyed")?;
+        }
+
+        let consumers: std::collections::BTreeSet<(String, String, String)> = touched_runs
+            .into_iter()
+            .map(|(project_id, run_id)| {
+                (project_id, Self::RUN_CONSUMER_KIND_V28.to_string(), run_id)
+            })
+            .collect();
+        Self::invalidate_derived_freshness_for_consumers_v28(conn, &consumers)?;
+
+        Self::record_c2_consumer_grain_marker_v30(conn)
+    }
+
+    fn record_c2_consumer_grain_marker_v30(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(migration_id)
+             DO UPDATE SET contract_version = excluded.contract_version,
+                 applied_at = excluded.applied_at",
+            params![
+                Self::C2_CONSUMER_GRAIN_MIGRATION_ID,
+                Self::C2_CONSUMER_GRAIN_CONTRACT_VERSION,
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            ],
+        )
+        .context("recording the C2 Consumer grain data migration marker")?;
+        Ok(())
+    }
+
+    /// SCHEMA 31: give every Finding a stable, rule-versioned identity and
+    /// retain explicit lifecycle records. Existing observations are
+    /// backfilled from their durable Edge subject when available; legacy rows
+    /// without an Edge retain a NULL identity rather than using finding_key as
+    /// a false edge subject.
+    /// Neither Run nor Semantic Epoch participates in either digest.
+    fn migrate_narrative_finding_identity_v31(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch("SAVEPOINT narrative_c2_schema_31")?;
+        let result = (|| -> anyhow::Result<()> {
+            if Self::table_exists_for_v28(conn, "narrative_maintenance_finding_observations")? {
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_finding_observations",
+                    "finding_identity",
+                    "TEXT",
+                )?;
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_finding_observations",
+                    "rule_id",
+                    "TEXT NOT NULL DEFAULT 'narrative.consumer-freshness'",
+                )?;
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_finding_observations",
+                    "rule_version",
+                    "INTEGER NOT NULL DEFAULT 1 CHECK(rule_version > 0)",
+                )?;
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_finding_observations",
+                    "observation_digest",
+                    "TEXT NOT NULL DEFAULT ''",
+                )?;
+                Self::backfill_narrative_finding_observations_v31(conn)?;
+            }
+
+            if Self::table_exists_for_v28(conn, "narrative_maintenance_attention")? {
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_attention",
+                    "finding_identity",
+                    "TEXT",
+                )?;
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_attention",
+                    "identity_resolution_status",
+                    "TEXT NOT NULL DEFAULT 'resolved' CHECK(identity_resolution_status IN ('resolved','unresolved','legacy-unresolved'))",
+                )?;
+                // Only exact one-candidate mappings move. Ambiguous and
+                // conflicting rows remain at their old key; restore/verify
+                // reports them rather than silently choosing a target.
+                let unresolved =
+                    crate::narrative_extraction::rehome_orphaned_attention_in_tx(conn)?;
+                if !unresolved.is_empty() {
+                    tracing::warn!(
+                        target: "narrative.migrate",
+                        count = unresolved.len(),
+                        "preserved ambiguous or conflicting orphaned Attention rows"
+                    );
+                }
+                // Existing, non-orphan Attention rows can be converted only
+                // when their old digest identifies one observation on the
+                // current Edge. Orphan rows were handled above; leaving
+                // ambiguous/conflicting rows byte-for-byte intact is the
+                // fail-closed migration policy.
+                if Self::table_exists_for_v28(conn, "narrative_maintenance_finding_observations")?
+                    && Self::table_exists_for_v28(conn, "narrative_dependency_edges")?
+                {
+                    Self::backfill_narrative_attention_identity_v31(conn)?;
+                }
+                Self::mark_legacy_unresolved_attention_v31(conn)?;
+            }
+
+            if Self::table_exists_for_v28(conn, "narrative_maintenance_finding_observations")? {
+                Self::backfill_narrative_finding_observation_material_bases_v31(conn)?;
+            }
+
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS narrative_maintenance_finding_lifecycle (
+                    id                         TEXT NOT NULL,
+                    project_id                 TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    finding_identity           TEXT NOT NULL CHECK(length(finding_identity) > 0),
+                    finding_key                TEXT NOT NULL CHECK(length(finding_key) > 0),
+                    rule_id                    TEXT NOT NULL CHECK(length(rule_id) > 0),
+                    rule_version               INTEGER NOT NULL CHECK(rule_version > 0),
+                    lifecycle_state            TEXT NOT NULL CHECK(lifecycle_state IN ('new','recurring','changed','resolved')),
+                    observation_digest         TEXT,
+                    material_basis_digest      TEXT,
+                    run_id                     TEXT NOT NULL,
+                    semantic_epoch_id         TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                    observed_at                TEXT NOT NULL,
+                    PRIMARY KEY(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_narrative_finding_lifecycle_identity
+                    ON narrative_maintenance_finding_lifecycle(project_id, finding_identity, observed_at);
+                CREATE INDEX IF NOT EXISTS idx_narrative_finding_lifecycle_key
+                    ON narrative_maintenance_finding_lifecycle(project_id, finding_key, observed_at);",
+            )?;
+            Self::seed_narrative_finding_lifecycle_v31(conn)?;
+            Self::record_c2_finding_identity_marker_v31(conn)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => conn
+                .execute_batch("RELEASE narrative_c2_schema_31")
+                .map_err(Into::into),
+            Err(error) => {
+                let _ = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2_schema_31; RELEASE narrative_c2_schema_31",
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn stable_finding_identity_digest_v31(stable_subject: &str) -> anyhow::Result<String> {
+        crate::narrative_extraction::stable_finding_identity(
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+            stable_subject,
+        )
+    }
+
+    fn observation_digest_v31(
+        stable_subject: &str,
+        edge_id: Option<&str>,
+        reason_code: &str,
+        freshness: &str,
+    ) -> anyhow::Result<String> {
+        crate::narrative_extraction::observation_digest(
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+            &crate::narrative_extraction::ObservationDigestInput {
+                stable_subject,
+                edge_id,
+                failure_code: None,
+                reason_code,
+                evidence_freshness: freshness,
+                evidence_detail_digest: None,
+            },
+        )
+    }
+
+    fn material_basis_digest_v31(
+        stable_subject: &str,
+        edge_id: Option<&str>,
+        reason_code: &str,
+        freshness: &str,
+    ) -> anyhow::Result<String> {
+        crate::narrative_extraction::material_basis_digest(
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+            &crate::narrative_extraction::MaterialBasisInput {
+                stable_subject,
+                edge_id,
+                failure_code: None,
+                reason_code,
+                evidence_freshness: freshness,
+                evidence_detail_digest: None,
+            },
+        )
+    }
+
+    fn backfill_narrative_finding_observations_v31(conn: &Connection) -> anyhow::Result<()> {
+        let rows: Vec<(String, Option<String>, String, String, String)> = conn
+            .prepare(
+                "SELECT id, edge_id, finding_key, reason_code,
+                        evidence_freshness_snapshot
+                   FROM narrative_maintenance_finding_observations
+                  WHERE finding_identity IS NULL OR finding_identity = ''",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        for (id, edge_id, _finding_key, reason_code, freshness) in rows {
+            let Some(edge_id) = edge_id.as_deref() else {
+                // This is a diagnostic-only legacy row. `finding_key` is a
+                // consumer label and is not a valid subject for an
+                // edge-scoped identity, so leave finding_identity NULL.
+                continue;
+            };
+            let finding_identity = Self::stable_finding_identity_digest_v31(edge_id)?;
+            let observation_digest =
+                Self::observation_digest_v31(edge_id, Some(edge_id), &reason_code, &freshness)?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET finding_identity = ?1, observation_digest = ?2
+                  WHERE id = ?3",
+                params![finding_identity, observation_digest, id],
+            )?;
+        }
+        // A prerelease row may have had an identity but no digest. Fill only
+        // the missing digest, preserving any already-published identity.
+        let rows: Vec<(String, Option<String>, String, String, String)> = conn
+            .prepare(
+                "SELECT id, edge_id, finding_key, reason_code,
+                        evidence_freshness_snapshot
+                   FROM narrative_maintenance_finding_observations
+                  WHERE observation_digest IS NULL OR observation_digest = ''",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        for (id, edge_id, finding_key, reason_code, freshness) in rows {
+            let (stable_subject, edge_ref) = match edge_id.as_deref() {
+                Some(edge_id) => (edge_id, Some(edge_id)),
+                None => {
+                    // Keep a deterministic diagnostic digest for a legacy
+                    // row while refusing to claim it has a valid identity.
+                    (finding_key.as_str(), None)
+                }
+            };
+            let observation_digest =
+                Self::observation_digest_v31(stable_subject, edge_ref, &reason_code, &freshness)?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET observation_digest = ?1
+                  WHERE id = ?2",
+                params![observation_digest, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn backfill_narrative_attention_identity_v31(conn: &Connection) -> anyhow::Result<()> {
+        let attention_rows: Vec<(String, String, String)> = conn
+            .prepare(
+                "SELECT project_id, finding_key, COALESCE(finding_identity, '')
+                   FROM narrative_maintenance_attention
+                  WHERE EXISTS (
+                    SELECT 1 FROM narrative_dependency_edges e
+                     WHERE e.project_id = narrative_maintenance_attention.project_id
+                       AND e.consumer_kind || ':' || e.consumer_key =
+                           narrative_maintenance_attention.finding_key
+                  )",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        for (project_id, finding_key, _) in attention_rows {
+            let candidates: Vec<(String, String, String, String)> = conn
+                .prepare(
+                    "SELECT DISTINCT o.edge_id,
+                            COALESCE(NULLIF(o.finding_identity, ''), ''),
+                            o.reason_code, o.evidence_freshness_snapshot
+                       FROM narrative_maintenance_attention a
+                       JOIN narrative_maintenance_finding_observations o
+                         ON o.project_id = a.project_id
+                        AND o.finding_key = a.finding_key
+                        AND o.material_basis_digest = a.material_basis_digest
+                       JOIN narrative_dependency_edges e
+                         ON e.project_id = o.project_id
+                        AND e.id = o.edge_id
+                        AND e.consumer_kind || ':' || e.consumer_key = a.finding_key
+                      WHERE a.project_id = ?1 AND a.finding_key = ?2
+                        AND o.edge_id IS NOT NULL
+                      ORDER BY o.edge_id",
+                )?
+                .query_map(params![project_id, finding_key], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?;
+            if candidates.len() != 1 {
+                continue;
+            }
+            let (edge_id, observed_identity, reason_code, freshness) = candidates[0].clone();
+            let identity = Self::stable_finding_identity_digest_v31(&edge_id)?;
+            if !observed_identity.is_empty() && observed_identity != identity {
+                continue;
+            }
+            let material_basis_digest = Self::material_basis_digest_v31(
+                &edge_id,
+                Some(&edge_id),
+                &reason_code,
+                &freshness,
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_attention
+                    SET finding_identity = ?1, material_basis_digest = ?2
+                  WHERE project_id = ?3 AND finding_key = ?4",
+                params![identity, material_basis_digest, project_id, finding_key],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn backfill_narrative_finding_observation_material_bases_v31(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        let rows: Vec<(String, Option<String>, String, String, String)> = conn
+            .prepare(
+                "SELECT id, edge_id, finding_key, reason_code,
+                        evidence_freshness_snapshot
+                   FROM narrative_maintenance_finding_observations
+                  ORDER BY id",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        for (id, edge_id, finding_key, reason_code, freshness) in rows {
+            let stable_subject = edge_id.as_deref().unwrap_or(finding_key.as_str());
+            let material_basis_digest = Self::material_basis_digest_v31(
+                stable_subject,
+                edge_id.as_deref(),
+                &reason_code,
+                &freshness,
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET material_basis_digest = ?1
+                  WHERE id = ?2",
+                params![material_basis_digest, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn mark_legacy_unresolved_attention_v31(conn: &Connection) -> anyhow::Result<()> {
+        // A pre-C2-3 Attention with no exact Observation -> Edge proof is a
+        // durable diagnostic state, not a silently stale disposition. Keep
+        // its key and digest untouched, but make the unresolved reason
+        // visible to Verify/read-model consumers.
+        conn.execute(
+            "UPDATE narrative_maintenance_attention
+                SET identity_resolution_status = CASE
+                    WHEN finding_identity IS NULL OR finding_identity = ''
+                    THEN 'legacy-unresolved'
+                    ELSE 'resolved'
+                END",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn seed_narrative_finding_lifecycle_v31(conn: &Connection) -> anyhow::Result<()> {
+        // The latest durable Observation is the baseline established by the
+        // migration itself. Marking it `new` makes the first equivalent live
+        // publish explicitly `recurring`, while preserving append-only
+        // history and excluding rows whose Edge-scoped identity is unknown.
+        conn.execute(
+            "INSERT INTO narrative_maintenance_finding_lifecycle
+                (id, project_id, finding_identity, finding_key, rule_id, rule_version,
+                 lifecycle_state, observation_digest, material_basis_digest, run_id,
+                 semantic_epoch_id, observed_at)
+             SELECT lower(hex(randomblob(16))), project_id, finding_identity, finding_key,
+                    rule_id, rule_version, 'new', observation_digest, material_basis_digest,
+                    run_id, semantic_epoch_id, observed_at
+               FROM (
+                    SELECT o.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY o.project_id, o.finding_identity
+                               ORDER BY o.observed_at DESC, o.rowid DESC
+                           ) AS rank_in_identity
+                      FROM narrative_maintenance_finding_observations o
+                     WHERE o.finding_identity IS NOT NULL
+                       AND o.finding_identity <> ''
+                       AND o.observation_digest IS NOT NULL
+                       AND o.observation_digest <> ''
+               ) latest
+              WHERE rank_in_identity = 1
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM narrative_maintenance_finding_lifecycle l
+                     WHERE l.project_id = latest.project_id
+                       AND l.finding_identity = latest.finding_identity
+                )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn record_c2_finding_identity_marker_v31(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(migration_id)
+             DO UPDATE SET contract_version = excluded.contract_version,
+                 applied_at = excluded.applied_at",
+            params![
+                Self::C2_FINDING_IDENTITY_MIGRATION_ID,
+                Self::C2_FINDING_IDENTITY_CONTRACT_VERSION,
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) const C2_FINDING_IDENTITY_MIGRATION_ID: &'static str =
+        "narrative-c2-finding-identity-v31";
+    pub(crate) const C2_FINDING_IDENTITY_CONTRACT_VERSION: i64 = 1;
+
+    fn has_c2_consumer_grain_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+        if !Self::table_exists_for_v28(conn, "schema_data_migrations")? {
+            return Ok(false);
+        }
+        let applied: Option<i64> = conn
+            .query_row(
+                "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+                [Self::C2_CONSUMER_GRAIN_MIGRATION_ID],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(applied.is_some_and(|version| version >= Self::C2_CONSUMER_GRAIN_CONTRACT_VERSION))
+    }
+
+    /// Mirrors `grimodex_core::workspace_schema`'s constants of the same
+    /// name; a test pins them.
+    const C2_CONSUMER_GRAIN_MIGRATION_ID: &'static str = "narrative-c2-consumer-grain-v30";
+    const C2_CONSUMER_GRAIN_CONTRACT_VERSION: i64 = 1;
+
+    /// SCHEMA 30: `narrative_dependency_edges.owning_run_id` -- the Run that
+    /// declared this Edge.
+    ///
+    /// The backfill is exact rather than a guess. Every Edge that exists when
+    /// this runs was written by one of two Producers
+    /// (`repository.rs`'s `record_run_dependency_edges_in_tx` and
+    /// `legacy_backfill.rs`'s `record_legacy_dependency_edges_in_tx`), and
+    /// both key the Edge under `(RUN_CONSUMER_KIND, run_id)` -- so for those
+    /// rows `consumer_key` *is* the declaring Run's id, and copying it across
+    /// restates a fact rather than inventing one. That is also precisely the
+    /// equivalence this column exists to stop depending on, which is why the
+    /// copy happens once, here, instead of at every read.
+    ///
+    /// Rows under any other `consumer_kind` keep NULL. None exist today --
+    /// `ConsumerKind` has one variant -- but a row written by a newer build
+    /// and read by this one must not have a Run id inferred for it from a
+    /// `consumer_key` that no longer means that.
+    fn migrate_narrative_dependency_edge_owning_run_v30(conn: &Connection) -> anyhow::Result<()> {
+        if !Self::table_exists_for_v28(conn, "narrative_dependency_edges")? {
+            return Ok(());
+        }
+        Self::add_column_if_missing(conn, "narrative_dependency_edges", "owning_run_id", "TEXT")?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = consumer_key
+              WHERE owning_run_id IS NULL AND consumer_kind = ?1",
+            params![Self::RUN_CONSUMER_KIND_V28],
+        )
+        .context("backfilling narrative_dependency_edges.owning_run_id for SCHEMA 30")?;
+        Ok(())
+    }
+
+    /// SCHEMA 29: give `narrative_application_contributions` the provenance,
+    /// value-baseline and ownership columns Application Contribution
+    /// ownership needs (PR #534 out-of-scope item 4).
+    ///
+    /// The columns, since neither DDL below may carry SQL comments (the
+    /// schema-contract generator collapses newlines, so a `--` comment would
+    /// swallow the rest of the statement and the browser mock could not
+    /// execute the recorded DDL):
+    ///
+    /// * `commit_id` / `proposal_id` / `revision_id` / `operation_id` --
+    ///   which Prepared Commit, Proposal Revision and operation produced this
+    ///   field write. `operation_id` is nullable because a pre-Gate-C2
+    ///   Application has no `narrative_apply_operations` row to point at.
+    /// * `maintenance_ownership` -- the axis ratified as
+    ///   `maintenanceOwnershipStates` in
+    ///   `policies/narrative/semantic-state-vocabulary.json`, whose JSON
+    ///   Schema pins the three values with a `const` and which
+    ///   `validate-semantic-core-boundary.mjs` cross-checks, so the CHECK
+    ///   must list exactly those.
+    /// * `baseline_sequence` -- the canonical `change_events.sequence` this
+    ///   Application's own write landed on: the self-stale guard's lower
+    ///   bound, so an Application is never marked `modified` by its own
+    ///   event.
+    /// * `target_state_sequence` / `target_state_updated_at` -- what last
+    ///   moved `target_state`, making at-least-once Change Feed delivery
+    ///   idempotent here.
+    ///
+    /// There is deliberately no per-field `committed_value_digest`. An earlier
+    /// revision of SCHEMA 29 carried one, on the assumption that
+    /// `affected_fields`'s field paths are JSON pointers into the canonical
+    /// snapshot. They are not -- they are Field Authority *coordinates*, and
+    /// they diverge from the snapshot shape three different ways:
+    ///
+    /// * nesting -- a `chronicle-event`'s scalars live under `/eventData`,
+    ///   so `/title` resolves against nothing;
+    /// * casing -- `canonical_plot_thread_snapshot` selects the row verbatim,
+    ///   so its key is `sort_order` while the coordinate is `/sortOrder`;
+    /// * absence -- a temporal constraint's `/nodes` has no counterpart in
+    ///   `collect_constraint_snapshot`'s `json_object` at all.
+    ///
+    /// Whole families of kinds therefore digested to NULL, and a NULL could
+    /// not be told apart from the legitimate "this field has no canonical
+    /// representation". (Other kinds did digest cleanly -- a codex entry
+    /// create resolved every one of its paths -- which is what let the gap go
+    /// unnoticed.)
+    ///
+    /// It is left out rather than repaired because nothing needs it. A
+    /// superseding Application is visible in this table, and a human edit is
+    /// visible in the Change Feed's `origin` and `changed_paths` -- at object
+    /// grain, since `changed_paths` collapses to `"/"` on create and delete
+    /// and the event digests cover the whole snapshot, which is enough for
+    /// every consumer that exists today.
+    ///
+    /// It is also recoverable. `narrative_commit_journals.after_json` keeps
+    /// each Application's full entity snapshot, so a nullable
+    /// `ALTER TABLE ADD COLUMN` plus a backfill from the journal reintroduces
+    /// the column without a rebuild. Two caveats for whoever does that:
+    /// `ColumnContract` compares by `ordinal`, so the fresh DDL has to append
+    /// the column in the same position `ADD COLUMN` puts it, or
+    /// `validate_migrated_schema` rejects the import; and a Redo rewrites
+    /// `after_json` in place, so the journal holds the latest replay rather
+    /// than the original apply. Reintroducing it also means fixing the
+    /// coordinate-to-pointer projection above, which is the actual work.
+    ///
+    /// A rebuild rather than a stack of `ADD COLUMN`s, because `commit_id`,
+    /// `proposal_id` and `revision_id` are NOT NULL with no defensible
+    /// default: they have to come from the Application row each Contribution
+    /// already points at, which `ADD COLUMN` cannot express.
+    ///
+    /// **Fails closed on an orphan.** `application_id` has no foreign key, so
+    /// a Contribution can outlive its `narrative_proposal_applications` row.
+    /// Such a row cannot be given provenance, and dropping it would silently
+    /// discard attribution history, so the migration stops instead --
+    /// matching how SCHEMA 23 refuses to coerce an unrecognized Attempt
+    /// status.
+    ///
+    /// `operation_id` is deliberately *not* reconstructed: it cannot be
+    /// identified rather than guessed, because `narrative_apply_operations`
+    /// carries no unique key this table could join on. It stays NULL, which
+    /// is the honest answer.
+    ///
+    /// `baseline_sequence` *is* reconstructed, and the earlier claim that "no
+    /// single canonical event corresponds to it" was simply wrong. Every
+    /// Apply appends exactly one `narrative.commit.apply` row to
+    /// `change_events` carrying its `commit_id`, and `commit.rs` stores that
+    /// row's `sequence` as the live path's baseline -- so the join below
+    /// reads the same number the live path would have written, on the same
+    /// scale the projection compares against (`narrative_change_events.
+    /// canonical_sequence` is the source change event's `sequence`).
+    ///
+    /// It is a grouped derived table rather than the correlated subquery this
+    /// first used. `change_events` is the canonical audit log and grows with
+    /// every edit a person makes; it carries no index on `entity_id` or
+    /// `op_type`, so a correlated lookup rescans the whole project's history
+    /// once per Contribution row. On a workspace with a long history that is
+    /// minutes of work at open time. The derived table scans it once.
+    /// `MIN` is a formality -- a commit has exactly one apply event -- that
+    /// keeps the aggregate well defined.
+    ///
+    /// Writing NULL here was not a missing nicety. The projection admits an
+    /// event when `COALESCE(baseline_sequence, -1) < sequence`, so NULL means
+    /// "every event ever recorded postdates this Application". On a migrated
+    /// workspace the consumer cursor does not exist either, so the first pump
+    /// starts at 0 and replays the project's whole history: a human edit made
+    /// *before* the Application would be read as evidence the field was
+    /// changed *after* it, and the row would report `modified` -- or
+    /// `missing`, for a delete -- while holding exactly what the Application
+    /// wrote. NULL now survives only where it is true: an Application with no
+    /// canonical apply event, which predates the Change Feed entirely, and
+    /// for which every Feed event genuinely is later.
+    ///
+    /// `maintenance_ownership` starts at `maintained` here and is then
+    /// re-projected from the Field Authority ledger by
+    /// [`Self::reproject_contribution_ownership_v29`], which runs as part of
+    /// this migration rather than "its own step, not this one" -- the column
+    /// asserts who may keep maintaining a field, and shipping every migrated
+    /// row as `maintained` asserts that of fields the author already owns.
+    fn migrate_narrative_application_contributions_v29(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_application_contributions'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        let already_migrated: Vec<String> = conn
+            .prepare("PRAGMA table_info(narrative_application_contributions)")?
+            .query_map([], |row| row.get::<_, String>("name"))?
+            .collect::<Result<_, _>>()?;
+        if already_migrated.iter().any(|name| name == "commit_id") {
+            return Ok(());
+        }
+
+        let orphans: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_application_contributions c
+               LEFT JOIN narrative_proposal_applications a ON a.id = c.application_id
+              WHERE a.id IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            orphans == 0,
+            "NEX_CONTRIBUTION_ORPHAN: {orphans} Application Contribution row(s) have no \
+             narrative_proposal_applications row to take commit/proposal/revision provenance \
+             from; SCHEMA 29 will not invent it or drop the attribution"
+        );
+
+        conn.execute_batch(
+            "CREATE TABLE narrative_application_contributions_v29 (
+                id                     TEXT NOT NULL,
+                project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                application_id         TEXT NOT NULL CHECK(length(application_id) > 0),
+                commit_id              TEXT NOT NULL CHECK(length(commit_id) > 0),
+                proposal_id            TEXT NOT NULL CHECK(length(proposal_id) > 0),
+                revision_id            TEXT NOT NULL CHECK(length(revision_id) > 0),
+                operation_id           TEXT
+                    CHECK(operation_id IS NULL OR length(operation_id) > 0),
+                target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0),
+                field_path             TEXT NOT NULL CHECK(length(field_path) > 0),
+                target_state           TEXT NOT NULL
+                    CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')),
+                maintenance_ownership  TEXT NOT NULL DEFAULT 'maintained'
+                    CHECK(maintenance_ownership IN ('maintained','user-owned','detached')),
+                baseline_sequence      INTEGER
+                    CHECK(baseline_sequence IS NULL OR baseline_sequence > 0),
+                target_state_sequence  INTEGER
+                    CHECK(target_state_sequence IS NULL OR target_state_sequence > 0),
+                target_state_updated_at TEXT,
+                created_at             TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+             );
+             INSERT INTO narrative_application_contributions_v29 (
+                id, project_id, application_id, commit_id, proposal_id, revision_id,
+                operation_id, target_object_identity, field_path, target_state,
+                maintenance_ownership, baseline_sequence,
+                target_state_sequence, target_state_updated_at, created_at
+             )
+             SELECT c.id, c.project_id, c.application_id,
+                    a.commit_id, a.proposal_id, a.revision_id,
+                    NULL, c.target_object_identity, c.field_path, c.target_state,
+                    'maintained', apply_event.sequence, NULL, NULL, c.created_at
+               FROM narrative_application_contributions c
+               JOIN narrative_proposal_applications a ON a.id = c.application_id
+               LEFT JOIN (
+                    SELECT project_id, entity_id, MIN(sequence) AS sequence
+                      FROM change_events
+                     WHERE op_type = 'narrative.commit.apply'
+                     GROUP BY project_id, entity_id
+               ) apply_event
+                 ON apply_event.project_id = c.project_id
+                AND apply_event.entity_id = a.commit_id;
+             DROP TABLE narrative_application_contributions;
+             ALTER TABLE narrative_application_contributions_v29
+                RENAME TO narrative_application_contributions;
+             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_target
+                ON narrative_application_contributions(project_id, target_object_identity);
+             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_field
+                ON narrative_application_contributions(project_id, target_object_identity, field_path);
+             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_application
+                ON narrative_application_contributions(project_id, application_id);
+             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_commit
+                ON narrative_application_contributions(project_id, commit_id);",
+        )
+        .context("rebuilding narrative_application_contributions for SCHEMA 29")?;
+        Self::reproject_contribution_ownership_v29(conn)
+            .context("re-projecting Contribution ownership from Field Authority for SCHEMA 29")?;
+        Ok(())
+    }
+
+    /// Replays the Field Authority ledger onto the freshly rebuilt
+    /// Contribution rows, so `maintenance_ownership` starts out agreeing with
+    /// the ledger that already decides who holds each field.
+    ///
+    /// Without this the rebuild ships every pre-existing row as `maintained`
+    /// -- "maintenance may keep proposing and applying to this field" -- for
+    /// fields a person had already written or explicitly locked. Nothing
+    /// self-corrects it: ownership is only ever stamped forward, on the next
+    /// human write, so a field the author took and never touched again would
+    /// have reported the wrong owner for the life of the workspace.
+    ///
+    /// Reuses `mark_fields_user_owned_in_tx` rather than restating its UPDATE
+    /// as migration SQL. The kind vocabularies differ on the two sides and
+    /// the translation between them lives in one function; a second copy here
+    /// would be a second thing to keep in step, which is the failure this
+    /// branch has already had to fix twice.
+    fn reproject_contribution_ownership_v29(conn: &Connection) -> anyhow::Result<()> {
+        if !Self::table_exists_for_v28(conn, "narrative_field_authority")? {
+            return Ok(());
+        }
+        crate::narrative_extraction::application_contributions::
+            reproject_user_ownership_from_authority_in_tx(conn, None)
+    }
+
+    /// Moves one Contribution onto its canonical identity.
+    ///
+    /// `narrative_application_contributions` is `UNIQUE(project_id,
+    /// application_id, target_object_identity, field_path)`. Two rows only
+    /// collide here if they already described the same field of the same
+    /// object under different spellings, in which case they were always one
+    /// record; the rewritten row is dropped rather than duplicated.
+    fn rewrite_contribution_identity(
+        conn: &Connection,
+        id: &str,
+        identity: &str,
+        rewritten: &str,
+    ) -> anyhow::Result<()> {
+        let collides: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM narrative_application_contributions AS other
+                  JOIN narrative_application_contributions AS row_to_move
+                    ON row_to_move.id = ?1
+                 WHERE other.id <> row_to_move.id
+                   AND other.project_id = row_to_move.project_id
+                   AND other.application_id = row_to_move.application_id
+                   AND other.field_path = row_to_move.field_path
+                   AND other.target_object_identity = ?2
+             )",
+            params![id, rewritten],
+            |row| row.get(0),
+        )?;
+        if collides {
+            conn.execute(
+                "DELETE FROM narrative_application_contributions WHERE id = ?1",
+                params![id],
+            )
+            .with_context(|| format!("dropping Contribution '{id}' superseded by '{rewritten}'"))?;
+            return Ok(());
+        }
+        conn.execute(
+            "UPDATE narrative_application_contributions
+                SET target_object_identity = ?2
+              WHERE id = ?1",
+            params![id, rewritten],
+        )
+        .with_context(|| {
+            format!("rewriting Contribution target identity '{identity}' to '{rewritten}'")
+        })?;
+        Ok(())
+    }
+
+    /// SCHEMA 28: rewrite `narrative_application_contributions
+    /// .target_object_identity` into the ratified Object Addressing
+    /// vocabulary.
+    ///
+    /// Two writers had been filling this column from two different
+    /// vocabularies -- `commit.rs` from the Field Authority ledger's
+    /// (`event:e1`), `legacy_backfill.rs` from the writer-row one
+    /// (`codex_entry:e1`) -- and neither was the one
+    /// `policies/narrative/change-feed-writers.json` declares for the
+    /// `narrative-extraction.apply` writer. Both now emit the canonical form,
+    /// but existing rows still carry the old ones, and re-running the
+    /// Backfill will not repair them: its work key reuses
+    /// `RunningAndCompleted`, so a project that already ran it is skipped
+    /// regardless of `LEGACY_BACKFILL_ALGORITHM_VERSION`.
+    ///
+    /// Rewrites rather than deletes and re-derives. The Backfill can only
+    /// ever restore its own one-row-per-Application sentinel; the per-field
+    /// rows a live Apply wrote are not reproducible from anything it reads,
+    /// so deleting them would lose real history.
+    ///
+    /// The prefix table is deliberately duplicated here instead of calling
+    /// `application_contributions.rs`. A migration describes one fixed
+    /// transition between two schema versions and has to keep meaning that
+    /// after the live mapping changes again; binding it to today's function
+    /// would silently redefine what SCHEMA 28 did.
+    fn migrate_narrative_contribution_target_identity_v28(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_application_contributions'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+
+        const LEGACY_TARGET_IDENTITY_PREFIXES: &[(&str, &str)] =
+            Database::LEGACY_TARGET_IDENTITY_PREFIXES_V28;
+
+        let rows: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT id, target_object_identity
+                   FROM narrative_application_contributions",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (id, identity) in rows {
+            // `codex.detail.value.set` is the one operation whose two writers
+            // disagree about the *object*, not just its spelling: `commit.rs`
+            // records the detail-value row, while `affected_fields` reports
+            // the owning Codex Entry plus `/details/<definitionId>`.
+            // Hyphenating the kind would leave the two pointing at different
+            // objects with different ids, so the row is projected onto its
+            // Entry. Every other kind was checked and already agrees.
+            let detail_value_id = identity
+                .strip_prefix("codex_detail_value:")
+                .or_else(|| identity.strip_prefix("codex-detail-value:"));
+            if let Some(detail_value_id) = detail_value_id {
+                let entry_id: Option<String> = conn
+                    .query_row(
+                        "SELECT entry_id FROM codex_detail_values WHERE id = ?1",
+                        params![detail_value_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                // A deleted detail value cannot be projected. Say so rather
+                // than guess: `unresolved:` is not a canonical object key, so
+                // nothing joins it, and it is greppable for manual review.
+                // Such a row also stops being `unchanged`: its target does not
+                // exist, so the field this Application wrote cannot still
+                // match what was applied. `missing` is exactly that state.
+                let (rewritten, target_state) = match entry_id {
+                    Some(entry_id) => (format!("codex-entry:{entry_id}"), None),
+                    None => (
+                        format!("unresolved:codex-detail-value:{detail_value_id}"),
+                        Some("missing"),
+                    ),
+                };
+                if rewritten != identity {
+                    Self::rewrite_contribution_identity(conn, &id, &identity, &rewritten)?;
+                }
+                if let Some(target_state) = target_state {
+                    conn.execute(
+                        "UPDATE narrative_application_contributions
+                            SET target_state = ?2
+                          WHERE id = ?1 AND target_state = 'unchanged'",
+                        params![id, target_state],
+                    )
+                    .with_context(|| {
+                        format!("marking unresolvable Contribution '{id}' as {target_state}")
+                    })?;
+                }
+                continue;
+            }
+
+            let Some(rewritten) =
+                LEGACY_TARGET_IDENTITY_PREFIXES
+                    .iter()
+                    .find_map(|(legacy, canonical)| {
+                        identity
+                            .strip_prefix(legacy)
+                            .map(|rest| format!("{canonical}{rest}"))
+                    })
+            else {
+                continue;
+            };
+            Self::rewrite_contribution_identity(conn, &id, &identity, &rewritten)?;
+        }
+        Ok(())
+    }
+
+    fn migrate_narrative_repair_lease_run_binding_v27(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_maintenance_repair_leases'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        Self::add_column_if_missing(
+            conn,
+            "narrative_maintenance_repair_leases",
+            "active_run_id",
+            "TEXT",
+        )?;
         Ok(())
     }
 
@@ -4723,6 +10045,141 @@ impl Database {
         Ok(())
     }
 
+    /// Repair the timelapse eligibility indexes even when a prerelease build
+    /// created the right name with the wrong column order. `CREATE INDEX IF NOT
+    /// EXISTS` cannot repair that case, and leaving the checkpoint false would
+    /// otherwise make every current-schema open replay the migration forever.
+    fn repair_timelapse_query_indexes(conn: &Connection) -> anyhow::Result<()> {
+        Self::repair_query_indexes(
+            conn,
+            "timelapse_query_index_repair",
+            &[
+                (
+                    "change_events",
+                    "idx_change_events_project_domain_op_entity_seq",
+                    &["project_id", "domain", "op_type", "entity_id", "sequence"],
+                ),
+                (
+                    "state_snapshots",
+                    "idx_state_snap_project_domain_type_entity_seq",
+                    &[
+                        "project_id",
+                        "domain",
+                        "entity_id",
+                        "entity_type",
+                        "anchor_sequence",
+                    ],
+                ),
+            ],
+        )
+    }
+
+    fn repair_nir1_extraction_query_indexes(conn: &Connection) -> anyhow::Result<()> {
+        Self::repair_query_indexes(
+            conn,
+            "nir1_extraction_query_index_repair",
+            &[
+                (
+                    "narrative_extraction_tasks",
+                    "idx_narrative_tasks_run_kind_status",
+                    &["run_id", "task_kind", "status"],
+                ),
+                (
+                    "narrative_extraction_attempts",
+                    "idx_narrative_attempts_task_number_status",
+                    &["task_id", "attempt_number", "status"],
+                ),
+                (
+                    "narrative_extraction_artifacts",
+                    "idx_narrative_artifacts_run_task_attempt_kind",
+                    &[
+                        "run_id",
+                        "task_id",
+                        "attempt_id",
+                        "artifact_kind",
+                        "payload_storage",
+                    ],
+                ),
+            ],
+        )
+    }
+
+    fn repair_query_indexes(
+        conn: &Connection,
+        savepoint: &str,
+        indexes: &[(&str, &str, &[&str])],
+    ) -> anyhow::Result<()> {
+        conn.execute_batch(&format!("SAVEPOINT {savepoint}"))?;
+        let repair = (|| -> anyhow::Result<()> {
+            for &(table, name, columns) in indexes {
+                let index_table = conn
+                    .query_row(
+                        "SELECT tbl_name FROM sqlite_master
+                          WHERE type = 'index' AND name = ?1",
+                        [name],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                anyhow::ensure!(
+                    index_table
+                        .as_deref()
+                        .is_none_or(|index_table| index_table == table),
+                    "TIMELAPSE_QUERY_INDEX_NAME_COLLISION: index '{name}' belongs to '{index_table:?}', expected '{table}'"
+                );
+                let properties = conn
+                    .query_row(
+                        &format!(
+                            "SELECT \"unique\", partial
+                               FROM pragma_index_list('{table}')
+                              WHERE name = ?1"
+                        ),
+                        [name],
+                        |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+                    )
+                    .optional()?;
+                let actual_columns = if properties.is_some() {
+                    conn.prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                        .query_map([name], |row| row.get::<_, String>(0))?
+                        .collect::<Result<Vec<_>, _>>()?
+                } else {
+                    Vec::new()
+                };
+                if properties != Some((false, false)) || actual_columns != columns {
+                    conn.execute(&format!("DROP INDEX IF EXISTS \"{name}\""), [])?;
+                }
+                conn.execute(
+                    &format!(
+                        "CREATE INDEX IF NOT EXISTS \"{name}\" ON \"{table}\"({})",
+                        columns.join(", ")
+                    ),
+                    [],
+                )?;
+            }
+            Ok(())
+        })();
+        match repair {
+            Ok(()) => match conn.execute_batch(&format!("RELEASE {savepoint}")) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let _ = conn
+                        .execute_batch(&format!("ROLLBACK TO {savepoint}; RELEASE {savepoint}"));
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                if let Err(unwind) =
+                    conn.execute_batch(&format!("ROLLBACK TO {savepoint}; RELEASE {savepoint}"))
+                {
+                    tracing::error!(
+                        %unwind,
+                        "failed to unwind query index repair"
+                    );
+                }
+                Err(error)
+            }
+        }
+    }
+
     /// Add a column to an existing table if it does not already exist.
     /// `column_def` is the SQL fragment after the column name, e.g. `"TEXT NOT NULL DEFAULT '[]'"`.
     /// Use for additive schema changes — SQLite ALTER TABLE only supports a narrow subset, so
@@ -4746,13 +10203,36 @@ impl Database {
         ))?;
         Ok(())
     }
+
+    /// Lowercased, whitespace-stripped `sqlite_master.sql` for idempotency
+    /// checks that need to detect a specific CHECK/constraint clause
+    /// regardless of the formatting SQLite echoes it back with.
+    fn compact(sql: &str) -> String {
+        sql.chars()
+            .filter(|character| !character.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use crate::narrative_extraction::change_feed::{
+        append_narrative_change_transaction_in_tx, AppendNarrativeChangeTransactionInput,
+        NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+    };
+    use rusqlite::{
+        hooks::{AuthAction, AuthContext, Authorization},
+        params, Connection,
+    };
+    use serde_json::json;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use std::time::{Duration, Instant};
 
     fn temp_database_path(label: &str) -> std::path::PathBuf {
@@ -4760,6 +10240,1284 @@ mod tests {
             std::env::temp_dir().join(format!("grimodex-migrate-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create migration test directory");
         dir.join("grimodex.db")
+    }
+
+    fn set_chat_message_source_fk_set_null_for_test(
+        conn: &Connection,
+        table: &str,
+    ) -> anyhow::Result<()> {
+        let original_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get(0),
+        )?;
+        let clause = "REFERENCES chat_messages(id) ON DELETE RESTRICT";
+        anyhow::ensure!(original_sql.matches(clause).count() == 1);
+        let legacy_table = format!("{table}_v40_test");
+        let legacy_sql = Database::rename_create_table_sql(&original_sql, table, &legacy_table)?
+            .replacen(clause, "REFERENCES chat_messages(id) ON DELETE SET NULL", 1);
+        let objects = {
+            let mut statement = conn.prepare(
+                "SELECT sql FROM sqlite_master
+                  WHERE tbl_name=?1 AND type IN ('index','trigger') AND sql IS NOT NULL
+                  ORDER BY type,name",
+            )?;
+            let objects = statement
+                .query_map([table], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            objects
+        };
+        let columns = {
+            let mut statement = conn.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            columns
+        };
+        let column_list = columns
+            .iter()
+            .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        conn.execute_batch(&legacy_sql)?;
+        conn.execute_batch(&format!(
+            "INSERT INTO \"{legacy_table}\" (rowid, {column_list})
+             SELECT rowid, {column_list} FROM \"{table}\";
+             DROP TABLE \"{table}\";
+             ALTER TABLE \"{legacy_table}\" RENAME TO \"{table}\";"
+        ))?;
+        for object in objects {
+            conn.execute_batch(&object)?;
+        }
+        Ok(())
+    }
+
+    fn table_objects(conn: &Connection, table: &str) -> anyhow::Result<Vec<(String, String)>> {
+        let mut statement = conn.prepare(
+            "SELECT type,name FROM sqlite_master
+              WHERE tbl_name=?1 AND type IN ('index','trigger')
+              ORDER BY type,name",
+        )?;
+        let objects = statement
+            .query_map([table], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(objects)
+    }
+
+    fn append_migration_change_event(
+        db: &Database,
+        project_id: &str,
+        event_uid: &str,
+        object_key: serde_json::Value,
+        structural_event: Option<&str>,
+    ) -> anyhow::Result<String> {
+        db.with_conn(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            append_change_events_in_tx(
+                conn,
+                project_id,
+                "migration-test-session",
+                &[AppendChangeEvent {
+                    event_uid: event_uid.to_string(),
+                    scene_id: None,
+                    domain: "narrative.commit".to_string(),
+                    op_type: "narrative.commit.apply".to_string(),
+                    entity_type: None,
+                    entity_id: None,
+                    payload: "{}".to_string(),
+                    timestamp: 1_790_000_000_000,
+                }],
+            )?;
+            let input = AppendNarrativeChangeTransactionInput {
+                project_id: project_id.to_string(),
+                request_id: format!("migration-{event_uid}"),
+                source_domain: "narrative.commit.apply".to_string(),
+                source_change_event_uid: event_uid.to_string(),
+                cause_kind: NarrativeChangeCauseKind::Forward,
+                origin: match structural_event {
+                    Some("project-restored") => NarrativeChangeOrigin::Restore,
+                    Some("semantic-epoch-reset") => NarrativeChangeOrigin::Migration,
+                    _ => NarrativeChangeOrigin::Human,
+                },
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: None,
+                application_ids: Vec::new(),
+                occurred_at: "2026-09-29T00:00:00.000Z".to_string(),
+                events: vec![NarrativeChangeEventInput {
+                    object_key,
+                    change_kind: if structural_event.is_some() {
+                        "schema"
+                    } else {
+                        "metadata"
+                    }
+                    .to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: None,
+                    before_digest: Some("sha256:before".to_string()),
+                    after_version: None,
+                    after_digest: Some("sha256:after".to_string()),
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: structural_event
+                        .map(|event| json!({ "event": event, "requiresFullRebuild": true })),
+                }],
+            };
+            let result = append_narrative_change_transaction_in_tx(conn, &input)?;
+            let event_id =
+                result.event_ids.into_iter().next().ok_or_else(|| {
+                    anyhow::anyhow!("migration fixture did not append a feed event")
+                })?;
+            conn.execute_batch("COMMIT")?;
+            Ok(event_id)
+        })
+    }
+
+    #[test]
+    fn schema_41_removes_epoch_marker_heads_and_preserves_live_heads() -> anyhow::Result<()> {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('migration-marker-project', 'Marker')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('migration-live-project', 'Live')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name)
+                 VALUES ('migration-live-entry', 'default-project', 'character', 'Live')",
+                [],
+            )?;
+            Ok(())
+        })?;
+
+        let restored_marker = append_migration_change_event(
+            &db,
+            "default-project",
+            "migration-project-restored",
+            json!({ "kind": "project", "projectId": "default-project" }),
+            Some("project-restored"),
+        )?;
+        let epoch_marker = append_migration_change_event(
+            &db,
+            "migration-marker-project",
+            "migration-semantic-epoch-reset",
+            json!({ "kind": "project", "projectId": "migration-marker-project" }),
+            Some("semantic-epoch-reset"),
+        )?;
+        let live_project = append_migration_change_event(
+            &db,
+            "migration-live-project",
+            "migration-live-project-change",
+            json!({ "kind": "project", "projectId": "migration-live-project" }),
+            None,
+        )?;
+        let live_object = append_migration_change_event(
+            &db,
+            "default-project",
+            "migration-live-object-change",
+            json!({ "kind": "codex-entry", "entryId": "migration-live-entry" }),
+            None,
+        )?;
+
+        db.with_conn(|conn| {
+            // Pre-v41 writers materialized reset markers as heads; the current writer skips them.
+            for event_id in [&restored_marker, &epoch_marker] {
+                let (identity, sequence, ordinal): (String, i64, i64) = conn.query_row(
+                    "SELECT object_key_json, canonical_sequence, event_ordinal
+                       FROM narrative_change_events WHERE id = ?1",
+                    [event_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_change_object_heads (
+                        project_id, object_identity, after_version, after_digest, event_id,
+                        canonical_sequence, event_ordinal, updated_at
+                     ) VALUES (
+                        (SELECT project_id FROM narrative_change_events WHERE id = ?1),
+                        ?2, NULL, 'sha256:synthetic', ?1, ?3, ?4, '2026-09-29T00:00:00.000Z'
+                     )",
+                    rusqlite::params![event_id, identity, sequence, ordinal],
+                )?;
+            }
+            let before: i64 = conn.query_row(
+                "SELECT count(*) FROM narrative_change_object_heads",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(before, 4);
+            conn.pragma_update(None, "user_version", 40)?;
+            Ok(())
+        })?;
+
+        db.migrate_for_restore_preflight()
+            .expect("run the full migration path from the v40 checkpoint");
+        db.with_conn(|conn| {
+            for removed in [&restored_marker, &epoch_marker] {
+                let count: i64 = conn.query_row(
+                    "SELECT count(*) FROM narrative_change_object_heads WHERE event_id = ?1",
+                    [removed],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "stale epoch-marker head must be removed");
+            }
+            for preserved in [&live_project, &live_object] {
+                let count: i64 = conn.query_row(
+                    "SELECT count(*) FROM narrative_change_object_heads WHERE event_id = ?1",
+                    [preserved],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1, "live object head must be preserved");
+            }
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, 41);
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn restore_preflight_preserves_a_custom_only_project_inventory() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute("DELETE FROM projects", [])?;
+            conn.execute(
+                "INSERT INTO projects (id, title, language)
+                 VALUES ('custom-project', 'Custom project', 'en')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed custom-only project");
+
+        db.migrate_for_restore_preflight()
+            .expect("restore preflight must preserve custom-only inventory");
+
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(ids, vec!["custom-project"]);
+            Ok(())
+        })
+        .expect("read custom-only project inventory");
+    }
+
+    #[test]
+    fn schema_39_backfills_submission_keys_and_preserves_tombstones_after_message_delete() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id,title)
+                 VALUES ('migration-capture-session','default-project','migration fixture')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('migration-capture-message','migration-capture-session','user',
+                         'captured body','2026-09-26T10:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed v38 captured message");
+        let version = crate::nir1_generation::bind_human_message(
+            &db,
+            "default-project",
+            "migration-capture-session",
+            "migration-capture-message",
+            1_790_000_000_000,
+        )
+        .expect("bind existing Human version");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO nir1_chat_input_captures
+                    (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                     submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                 VALUES ('migration-capture-id','default-project','migration-capture-session',
+                         'migration-scene','migration-submission',?1,
+                         'migration-capture-message',?2,'{}','current',?3)",
+                params![
+                    format!("sha256:{}", "a".repeat(64)),
+                    version.id,
+                    version.created_at_ms,
+                ],
+            )?;
+            conn.execute_batch(
+                "DROP TABLE nir1_chat_input_submission_keys;
+                 PRAGMA user_version=38;",
+            )?;
+            Ok(())
+        })
+        .expect("shape schema 38 with a current capture");
+
+        db.migrate().expect("migrate v38 key ledger");
+        db.with_conn(|conn| {
+            let binding: (String, String, i64) = conn.query_row(
+                "SELECT capture_id,submission_digest,created_at_ms
+                   FROM nir1_chat_input_submission_keys
+                  WHERE submission_id='migration-submission'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(binding.0, "migration-capture-id");
+            assert_eq!(binding.1, format!("sha256:{}", "a".repeat(64)));
+            assert_eq!(binding.2, version.created_at_ms);
+            conn.execute(
+                "DELETE FROM chat_messages WHERE id='migration-capture-message'",
+                [],
+            )?;
+            let capture_count: i64 = conn.query_row(
+                "SELECT count(*) FROM nir1_chat_input_captures
+                  WHERE capture_id='migration-capture-id'",
+                [],
+                |row| row.get(0),
+            )?;
+            let key_count: i64 = conn.query_row(
+                "SELECT count(*) FROM nir1_chat_input_submission_keys
+                  WHERE submission_id='migration-submission'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(capture_count, 0, "message deletion removes its capture");
+            assert_eq!(key_count, 1, "durable key remains after message deletion");
+            Ok(())
+        })
+        .expect("verify migrated key tombstone");
+    }
+
+    #[test]
+    fn schema_40_adds_session_scoped_human_capture_retirement_without_backfill() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id,title)
+                 VALUES ('migration-v40-session','default-project','v40 fixture')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('migration-v40-a','migration-v40-session','user','A',
+                         '2026-09-26T10:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed existing Human capture");
+        let version = crate::nir1_generation::bind_human_message(
+            &db,
+            "default-project",
+            "migration-v40-session",
+            "migration-v40-a",
+            1_790_000_000_000,
+        )
+        .expect("bind existing Human version");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO nir1_chat_input_captures
+                    (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                     submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                 VALUES ('migration-v40-capture','default-project','migration-v40-session',
+                         'migration-v40-scene','migration-v40-submission',?1,
+                         'migration-v40-a',?2,'{}','current',?3)",
+                params![
+                    format!("sha256:{}", "a".repeat(64)),
+                    version.id,
+                    version.created_at_ms,
+                ],
+            )?;
+            conn.execute_batch(
+                "DROP TRIGGER nir1_chat_input_capture_new_human_invalidate;
+                 PRAGMA user_version=39;",
+            )?;
+            Ok(())
+        })
+        .expect("shape a v39 database with an existing current capture");
+
+        db.migrate()
+            .expect("upgrade v39 capture workspace to current schema");
+        db.with_conn(|conn| {
+            let before_insert: String = conn.query_row(
+                "SELECT state FROM nir1_chat_input_captures
+                  WHERE capture_id='migration-v40-capture'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                before_insert, "current",
+                "migration must not backfill or revoke"
+            );
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('migration-v40-b','migration-v40-session','user','B',
+                         '2026-09-26T10:01:00.000Z')",
+                [],
+            )?;
+            let after_insert: String = conn.query_row(
+                "SELECT state FROM nir1_chat_input_captures
+                  WHERE capture_id='migration-v40-capture'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(after_insert, "superseded");
+            let schema_version: i32 =
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            assert_eq!(schema_version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("verify v40 trigger behavior");
+    }
+
+    #[test]
+    fn schema_41_migrates_v39_and_v40_capture_rows_without_losing_tombstones() -> anyhow::Result<()>
+    {
+        for legacy_version in [39, 40] {
+            let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+            db.migrate().expect("create current schema");
+            let session_id = format!("migration-v{legacy_version}-session");
+            let message_id = format!("migration-v{legacy_version}-message");
+            let capture_id = format!("migration-v{legacy_version}-capture");
+            let submission_id = format!("migration-v{legacy_version}-submission");
+            let codex_id = format!("migration-v{legacy_version}-codex");
+            let snippet_id = format!("migration-v{legacy_version}-snippet");
+            let empty_session_id = format!("migration-v{legacy_version}-empty-session");
+            let empty_message_id = format!("migration-v{legacy_version}-empty-message");
+            let delete_session_id = format!("migration-v{legacy_version}-delete-session");
+            let delete_message_id = format!("migration-v{legacy_version}-delete-message");
+            let delete_capture_id = format!("migration-v{legacy_version}-delete-capture");
+            let delete_submission_id = format!("migration-v{legacy_version}-delete-submission");
+            let history_session_id = format!("migration-v{legacy_version}-history-session");
+            let history_message_id = format!("migration-v{legacy_version}-history-message");
+            let history_capture_id = format!("migration-v{legacy_version}-history-capture");
+            let history_submission_id = format!("migration-v{legacy_version}-history-submission");
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO chat_sessions(id,project_id,title) VALUES (?1,'default-project','fixture')",
+                    [&session_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                     VALUES (?1,?2,'user','captured body','2026-09-26T10:00:00.000Z')",
+                    params![message_id, session_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_entries(id,project_id,type,name,source_chat_message_id)
+                     VALUES (?1,'default-project','character','Migration fixture',?2)",
+                    params![codex_id, message_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO snippets(id,project_id,title,content,source_chat_message_id)
+                     VALUES (?1,'default-project','Migration fixture','{}',?2)",
+                    params![snippet_id, message_id],
+                )?;
+                for (session_id, message_id) in [
+                    (empty_session_id.as_str(), empty_message_id.as_str()),
+                    (delete_session_id.as_str(), delete_message_id.as_str()),
+                    (history_session_id.as_str(), history_message_id.as_str()),
+                ] {
+                    conn.execute(
+                        "INSERT INTO chat_sessions(id,project_id,title) VALUES (?1,'default-project','fixture')",
+                        [session_id],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                         VALUES (?1,?2,'user','captured body','2026-09-26T10:00:00.000Z')",
+                        params![message_id, session_id],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("seed legacy parent rows");
+            let version = crate::nir1_generation::bind_human_message(
+                &db,
+                "default-project",
+                &session_id,
+                &message_id,
+                1_790_000_000_000,
+            )
+            .expect("bind legacy Human version");
+            let delete_version = crate::nir1_generation::bind_human_message(
+                &db,
+                "default-project",
+                &delete_session_id,
+                &delete_message_id,
+                1_790_000_000_001,
+            )
+            .expect("bind legacy session-delete Human version");
+            let history_version = crate::nir1_generation::bind_human_message(
+                &db,
+                "default-project",
+                &history_session_id,
+                &history_message_id,
+                1_790_000_000_002,
+            )
+            .expect("bind legacy history-clear Human version");
+            let digest = format!("sha256:{}", "a".repeat(64));
+            let source_shapes = db.with_conn(|conn| {
+                let codex_rowid: i64 = conn.query_row(
+                    "SELECT rowid FROM codex_entries WHERE id=?1",
+                    [&codex_id],
+                    |row| row.get(0),
+                )?;
+                let snippet_rowid: i64 = conn.query_row(
+                    "SELECT rowid FROM snippets WHERE id=?1",
+                    [&snippet_id],
+                    |row| row.get(0),
+                )?;
+                let codex_objects = table_objects(conn, "codex_entries")?;
+                let snippet_objects = table_objects(conn, "snippets")?;
+                let triggers = Database::stored_trigger_definitions(conn)?;
+                conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+                for (name, _) in &triggers {
+                    let quoted_name = name.replace('"', "\"\"");
+                    conn.execute_batch(&format!("DROP TRIGGER \"{quoted_name}\";"))?;
+                }
+                set_chat_message_source_fk_set_null_for_test(conn, "codex_entries")?;
+                set_chat_message_source_fk_set_null_for_test(conn, "snippets")?;
+                for (name, sql) in triggers {
+                    if name != "chat_message_source_provenance_delete" {
+                        conn.execute_batch(&sql)?;
+                    }
+                }
+                conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+                Ok((codex_rowid, snippet_rowid, codex_objects, snippet_objects))
+            })?;
+            db.with_conn(|conn| {
+                for (capture_id, session_id, submission_id, message_id, version) in [
+                    (
+                        capture_id.as_str(),
+                        session_id.as_str(),
+                        submission_id.as_str(),
+                        message_id.as_str(),
+                        &version,
+                    ),
+                    (
+                        delete_capture_id.as_str(),
+                        delete_session_id.as_str(),
+                        delete_submission_id.as_str(),
+                        delete_message_id.as_str(),
+                        &delete_version,
+                    ),
+                    (
+                        history_capture_id.as_str(),
+                        history_session_id.as_str(),
+                        history_submission_id.as_str(),
+                        history_message_id.as_str(),
+                        &history_version,
+                    ),
+                ] {
+                    conn.execute(
+                        "INSERT INTO nir1_chat_input_captures
+                            (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                             submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                         VALUES (?1,'default-project',?2,'legacy-scene',?3,?4,?5,?6,'{}','current',?7)",
+                        params![capture_id, session_id, submission_id, digest, message_id, version.id, version.created_at_ms],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO nir1_chat_input_submission_keys
+                            (submission_id,capture_id,submission_digest,created_at_ms)
+                         VALUES (?1,?2,?3,?4)",
+                        params![submission_id, capture_id, digest, version.created_at_ms],
+                    )?;
+                }
+                conn.execute_batch(
+                    "DROP TRIGGER nir1_chat_input_capture_transition_guard;
+                     DROP TRIGGER nir1_chat_input_capture_new_human_invalidate;
+                     DROP TRIGGER nir1_chat_input_capture_project_delete;
+                     DROP TRIGGER nir1_chat_input_capture_session_delete;
+                     DROP TRIGGER nir1_chat_input_capture_message_delete;
+                     DROP INDEX idx_nir1_chat_input_captures_current;
+                     ALTER TABLE nir1_chat_input_captures RENAME TO nir1_chat_input_captures_v41;
+                     CREATE TABLE nir1_chat_input_captures (
+                        capture_id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        chat_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                        scene_id TEXT NOT NULL,
+                        submission_id TEXT NOT NULL,
+                        submission_digest TEXT NOT NULL
+                            CHECK(length(submission_digest)=71 AND submission_digest GLOB 'sha256:*'
+                              AND substr(submission_digest,8) NOT GLOB '*[^0-9a-f]*'),
+                        message_id TEXT NOT NULL UNIQUE REFERENCES chat_messages(id) ON DELETE CASCADE,
+                        message_version_id TEXT NOT NULL UNIQUE REFERENCES nir1_generation_message_versions(id) ON DELETE RESTRICT,
+                        owner_json TEXT NOT NULL CHECK(octet_length(owner_json)<=65536
+                          AND json_valid(owner_json) AND json_type(owner_json)='object'),
+                        state TEXT NOT NULL CHECK(state IN ('current','superseded','cancelled','closed')),
+                        created_at_ms INTEGER NOT NULL,
+                        UNIQUE(chat_session_id,submission_id)
+                     );
+                     INSERT INTO nir1_chat_input_captures SELECT * FROM nir1_chat_input_captures_v41;
+                     DROP TABLE nir1_chat_input_captures_v41;
+                     CREATE UNIQUE INDEX idx_nir1_chat_input_captures_current
+                       ON nir1_chat_input_captures(project_id,chat_session_id) WHERE state='current';",
+                )?;
+                conn.execute_batch(
+                    grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_TRANSITION_TRIGGER_SQL,
+                )?;
+                if legacy_version == 40 {
+                    conn.execute_batch(
+                        grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_NEW_HUMAN_TRIGGER_SQL,
+                    )?;
+                }
+                conn.pragma_update(None, "user_version", legacy_version)?;
+                Ok(())
+            })
+            .expect("shape legacy v39/v40 capture schema");
+            db.with_conn(|conn| {
+                let user_version: i32 =
+                    conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                let capture_cascades: i64 = conn.query_row(
+                    "SELECT count(*) FROM pragma_foreign_key_list('nir1_chat_input_captures')
+                      WHERE on_delete='CASCADE'
+                        AND ((\"from\"='project_id' AND \"table\"='projects')
+                          OR (\"from\"='chat_session_id' AND \"table\"='chat_sessions')
+                          OR (\"from\"='message_id' AND \"table\"='chat_messages'))",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let source_set_nulls: i64 = conn.query_row(
+                    "SELECT
+                       (SELECT count(*) FROM pragma_foreign_key_list('codex_entries')
+                         WHERE \"from\"='source_chat_message_id' AND on_delete='SET NULL')
+                       +
+                       (SELECT count(*) FROM pragma_foreign_key_list('snippets')
+                         WHERE \"from\"='source_chat_message_id' AND on_delete='SET NULL')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let provenance_trigger: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='chat_message_source_provenance_delete'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let parent_delete_triggers: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+                       'nir1_chat_input_capture_project_delete',
+                       'nir1_chat_input_capture_session_delete',
+                       'nir1_chat_input_capture_message_delete')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let human_invalidation_trigger: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='nir1_chat_input_capture_new_human_invalidate'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let transition_guard: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='nir1_chat_input_capture_transition_guard'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(user_version, legacy_version);
+                assert_eq!(capture_cascades, 3);
+                assert_eq!(source_set_nulls, 2);
+                assert_eq!(provenance_trigger, 0);
+                assert_eq!(parent_delete_triggers, 0);
+                assert_eq!(transition_guard, 1);
+                assert_eq!(
+                    human_invalidation_trigger,
+                    if legacy_version == 40 { 1 } else { 0 }
+                );
+                Ok(())
+            })
+            .expect("verify genuine v39/v40 lifecycle fixture before upgrade");
+
+            db.migrate().expect("upgrade legacy capture schema to v41");
+            db.migrate().expect("v41 migration is idempotent");
+            db.with_conn(|conn| {
+                let schema_version: i32 =
+                    conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                assert_eq!(schema_version, 41);
+                let capture: (String, String, String, String) = conn.query_row(
+                    "SELECT capture_id,submission_id,message_id,message_version_id
+                       FROM nir1_chat_input_captures WHERE capture_id=?1",
+                    [&capture_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                assert_eq!(
+                    capture,
+                    (
+                        capture_id.clone(),
+                        submission_id.clone(),
+                        message_id.clone(),
+                        version.id.clone()
+                    )
+                );
+                let tombstone: (String, String, String, i64) = conn.query_row(
+                    "SELECT submission_id,capture_id,submission_digest,created_at_ms
+                       FROM nir1_chat_input_submission_keys WHERE submission_id=?1",
+                    [&submission_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                assert_eq!(
+                    tombstone,
+                    (
+                        submission_id.clone(),
+                        capture_id.clone(),
+                        digest.clone(),
+                        version.created_at_ms,
+                    )
+                );
+                let source_refs: (Option<String>, Option<String>) = conn.query_row(
+                    "SELECT
+                        (SELECT source_chat_message_id FROM codex_entries WHERE id=?1),
+                        (SELECT source_chat_message_id FROM snippets WHERE id=?2)",
+                    params![codex_id, snippet_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(
+                    source_refs,
+                    (Some(message_id.clone()), Some(message_id.clone()))
+                );
+                let source_rowids: (i64, i64) = conn.query_row(
+                    "SELECT
+                        (SELECT rowid FROM codex_entries WHERE id=?1),
+                        (SELECT rowid FROM snippets WHERE id=?2)",
+                    params![codex_id, snippet_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(source_rowids, (source_shapes.0, source_shapes.1));
+                assert_eq!(table_objects(conn, "codex_entries")?, source_shapes.2);
+                assert_eq!(table_objects(conn, "snippets")?, source_shapes.3);
+                let violations: i64 =
+                    conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })?;
+                assert_eq!(violations, 0);
+                let new_human_trigger: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='nir1_chat_input_capture_new_human_invalidate'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(new_human_trigger, 1);
+                let provenance_trigger: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='chat_message_source_provenance_delete'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(provenance_trigger, 1);
+                Ok(())
+            })
+            .expect("verify migrated data, v40 invalidation and FK integrity");
+            db.execute_renderer(
+                "DELETE FROM chat_messages WHERE id=?1",
+                &[serde_json::Value::String(message_id.clone())],
+                "run",
+            )
+            .expect("migrated renderer delete cleans capture and source references");
+            db.with_conn(|conn| {
+                let cleanup: (i64, i64, i64, Option<String>, Option<String>, i64) = conn.query_row(
+                    "SELECT
+                        (SELECT count(*) FROM chat_messages WHERE id=?1),
+                        (SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?2),
+                        (SELECT count(*) FROM nir1_chat_input_submission_keys WHERE submission_id=?3),
+                        (SELECT source_chat_message_id FROM codex_entries WHERE id=?4),
+                        (SELECT source_chat_message_id FROM snippets WHERE id=?5),
+                        (SELECT invalidated FROM nir1_generation_message_versions WHERE id=?6)",
+                    params![message_id, capture_id, submission_id, codex_id, snippet_id, version.id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )?;
+                assert_eq!(cleanup, (0, 0, 1, None, None, 1));
+                Ok(())
+            })
+            .expect("verify v41 native cleanup and durable tombstone");
+
+            db.execute_renderer(
+                "DELETE FROM chat_messages WHERE id=?1",
+                &[serde_json::Value::String(empty_message_id.clone())],
+                "run",
+            )
+            .expect("upgraded renderer deletion of a message without a capture");
+            let empty_message_cleanup: (i64, i64, i64) = db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT
+                        (SELECT count(*) FROM chat_sessions WHERE id=?1),
+                        (SELECT count(*) FROM chat_messages WHERE id=?2),
+                        (SELECT count(*) FROM nir1_chat_input_captures WHERE message_id=?2)",
+                    params![empty_session_id, empty_message_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })?;
+            assert_eq!(empty_message_cleanup, (1, 0, 0));
+
+            db.execute_renderer(
+                "DELETE FROM chat_sessions WHERE id=?1",
+                &[serde_json::Value::String(delete_session_id.clone())],
+                "run",
+            )
+            .expect("upgraded renderer session deletion cleans a migrated capture");
+            let session_cleanup: (i64, i64, i64, i64) = db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT
+                        (SELECT count(*) FROM chat_sessions WHERE id=?1),
+                        (SELECT count(*) FROM chat_messages WHERE id=?2),
+                        (SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?3),
+                        (SELECT count(*) FROM nir1_chat_input_submission_keys WHERE submission_id=?4)",
+                    params![delete_session_id, delete_message_id, delete_capture_id, delete_submission_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?)
+            })?;
+            assert_eq!(session_cleanup, (0, 0, 0, 1));
+
+            db.execute_renderer(
+                "DELETE FROM chat_messages WHERE session_id=?1",
+                &[serde_json::Value::String(history_session_id.clone())],
+                "run",
+            )
+            .expect("upgraded renderer history clear cleans a migrated capture");
+            let history_cleanup: (i64, i64, i64, i64) = db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT
+                        (SELECT count(*) FROM chat_sessions WHERE id=?1),
+                        (SELECT count(*) FROM chat_messages WHERE id=?2),
+                        (SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?3),
+                        (SELECT count(*) FROM nir1_chat_input_submission_keys WHERE submission_id=?4)",
+                    params![history_session_id, history_message_id, history_capture_id, history_submission_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?)
+            })?;
+            assert_eq!(history_cleanup, (1, 0, 0, 1));
+            let final_fk_violations: i64 = db.with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })?,
+                )
+            })?;
+            assert_eq!(final_fk_violations, 0);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn restore_preflight_keeps_current_missing_scene_scope_binding_fail_closed() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scope-current', 'Current scope')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('scope-scene', 'scope-current', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                "scope-current",
+                "scope-scene",
+                "2026-09-14T00:00:00.000Z",
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-current' AND scene_id = 'scope-scene'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed a current A1 workspace with a missing binding");
+
+        db.migrate()
+            .expect("ordinary current migration must retain the missing row");
+        db.migrate_for_restore_preflight()
+            .expect("current restore preflight must retain the missing row");
+
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-current' AND scene_id = 'scope-scene'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                count, 0,
+                "current A1 state must not be backfilled as legacy"
+            );
+            let error = crate::narrative_extraction::read_narrative_scene_scope(
+                conn,
+                "scope-current",
+                "scope-scene",
+            )
+            .expect_err("a missing current binding must remain unavailable");
+            assert!(error
+                .to_string()
+                .contains("NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE"));
+            Ok(())
+        })
+        .expect("inspect the fail-closed current scope");
+    }
+
+    #[test]
+    fn generation_storage_upgrade_preserves_missing_a1_scope_binding() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scope-v36', 'Existing A1 project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('scope-v36-scene', 'scope-v36', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            conn.execute_batch(
+                "DROP TRIGGER nir1_generation_invalidate_message_delete;
+                 DROP TRIGGER nir1_generation_invalidate_message_update;
+                 DROP TRIGGER nir1_generation_invalidate_message_insert;
+                 DROP TABLE nir1_generation_input_refs;
+                 DROP TABLE nir1_generation_qualification_refs;
+                 DROP TABLE nir1_generation_message_versions;
+                 DROP TABLE nir1_generation_attempts;",
+            )?;
+            conn.pragma_update(None, "user_version", 36)?;
+            assert!(
+                !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
+            Ok(())
+        })
+        .expect("seed schema 36 without generation storage or a scene scope row");
+
+        db.migrate().expect("upgrade generation storage");
+        db.with_conn(|conn| {
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            let error = crate::narrative_extraction::read_narrative_scene_scope(
+                conn,
+                "scope-v36",
+                "scope-v36-scene",
+            )
+            .expect_err("schema 36 missing authority must not be reclassified as legacy");
+            assert!(error
+                .to_string()
+                .contains("NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE"));
+            Ok(())
+        })
+        .expect("verify generation storage and retained unavailable A1 authority");
+    }
+
+    #[test]
+    fn migration_backfills_scene_scope_rows_from_schema_35_pre_a1_workspace() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('scope-legacy', 'Legacy scope')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('scope-legacy-scene', 'scope-legacy', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            conn.execute_batch(
+                "DROP TABLE narrative_scene_scope_bindings;
+                 DROP TABLE narrative_scope_registries;",
+            )?;
+            // This fixture is specifically pre-A1, independently of the
+            // immediately previous schema supported by the current binary.
+            conn.pragma_update(None, "user_version", 35)?;
+            Ok(())
+        })
+        .expect("seed a pre-A1 schema marker without A1 storage");
+
+        db.migrate().expect("migrate the pre-A1 schema");
+
+        db.with_conn(|conn| {
+            let marker: String = conn.query_row(
+                "SELECT compatibility_marker FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'scope-legacy' AND scene_id = 'scope-legacy-scene'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(marker, "legacy-absent");
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("pre-A1 scenes must receive the legacy compatibility marker");
+    }
+
+    #[test]
+    fn restore_preflight_seeds_default_project_for_a_fresh_database() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+
+        db.migrate_for_restore_preflight()
+            .expect("fresh restore preflight must create the bootstrap project");
+
+        db.with_conn(|conn| {
+            let mut statement =
+                conn.prepare("SELECT id, title, language FROM projects ORDER BY id ASC")?;
+            let projects = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                projects,
+                vec![(
+                    "default-project".to_string(),
+                    "Untitled Project".to_string(),
+                    "ja".to_string(),
+                )]
+            );
+            Ok(())
+        })
+        .expect("read fresh bootstrap project");
+    }
+
+    fn seed_finding_identity_migration_fixture(db: &Database, ambiguous: bool) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-finding-identity', 'Finding Identity')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-finding-identity', 'project-finding-identity', 1,
+                         'initial', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            let edge_count = if ambiguous { 2 } else { 1 };
+            for index in 1..=edge_count {
+                let edge_id = format!("edge-finding-identity-{index}");
+                let source_identity = format!("project:scene:scene-{index}");
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key,
+                         source_object_identity, read_set_json, created_at, owning_run_id)
+                     VALUES (?1, 'project-finding-identity', 'proposal-revision',
+                             'revision-finding-identity', ?2, '[]',
+                             '2026-08-15T00:00:00.000Z', 'run-old')",
+                    params![edge_id, source_identity],
+                )?;
+                let observation_id = format!("observation-finding-identity-{index}");
+                conn.execute(
+                    "INSERT INTO narrative_maintenance_finding_observations
+                        (id, project_id, run_id, semantic_epoch_id, edge_id,
+                         finding_key, reason_code, evidence_freshness_snapshot,
+                         material_basis_digest, observed_at, finding_identity,
+                         rule_id, rule_version, observation_digest)
+                     VALUES (?1, 'project-finding-identity', 'run-old',
+                             'epoch-finding-identity', ?2,
+                             'proposal-revision:revision-finding-identity',
+                             'source-missing', 'source-missing', 'legacy-material',
+                             '2026-08-15T00:00:00.000Z', '',
+                             'narrative.consumer-freshness', 1, '')",
+                    params![observation_id, edge_id],
+                )?;
+            }
+            conn.execute(
+                "INSERT INTO narrative_maintenance_attention
+                    (project_id, finding_key, finding_identity, disposition,
+                     material_basis_digest, snoozed_until, set_at, actor_id,
+                     request_id, payload_digest, reason, version)
+                 VALUES ('project-finding-identity',
+                         'proposal-revision:revision-finding-identity', NULL,
+                         'dismissed', 'legacy-material', NULL,
+                         '2026-08-15T00:00:00.000Z', 'author-1',
+                         'request-finding-identity', 'payload-finding-identity',
+                         NULL, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed Finding identity migration fixture");
+    }
+
+    #[test]
+    fn schema_31_converts_unique_observation_and_attention_material_basis() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        seed_finding_identity_migration_fixture(&db, false);
+
+        db.with_conn(Database::migrate_narrative_finding_identity_v31)
+            .expect("run SCHEMA 31 identity migration");
+
+        let expected_material = crate::narrative_extraction::material_basis_digest(
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+            &crate::narrative_extraction::MaterialBasisInput {
+                stable_subject: "edge-finding-identity-1",
+                edge_id: Some("edge-finding-identity-1"),
+                failure_code: None,
+                reason_code: "source-missing",
+                evidence_freshness: "source-missing",
+                evidence_detail_digest: None,
+            },
+        )
+        .expect("compute current material basis");
+        db.with_conn(|conn| {
+            let observation_material: String = conn.query_row(
+                "SELECT material_basis_digest
+                   FROM narrative_maintenance_finding_observations
+                  WHERE id = 'observation-finding-identity-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let (attention_identity, attention_material): (Option<String>, String) = conn
+                .query_row(
+                    "SELECT finding_identity, material_basis_digest
+                       FROM narrative_maintenance_attention
+                      WHERE project_id = 'project-finding-identity'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+            assert_eq!(observation_material, expected_material);
+            assert_eq!(attention_material, expected_material);
+            assert_eq!(
+                attention_identity,
+                Some(
+                    crate::narrative_extraction::stable_finding_identity(
+                        crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+                        crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+                        "edge-finding-identity-1",
+                    )
+                    .expect("stable identity")
+                )
+            );
+            Ok(())
+        })
+        .expect("verify SCHEMA 31 identity conversion");
+    }
+
+    #[test]
+    fn schema_31_preserves_ambiguous_attention_material_and_identity() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        seed_finding_identity_migration_fixture(&db, true);
+
+        db.with_conn(Database::migrate_narrative_finding_identity_v31)
+            .expect("run SCHEMA 31 identity migration");
+
+        db.with_conn(|conn| {
+            let (identity, material): (Option<String>, String) = conn.query_row(
+                "SELECT finding_identity, material_basis_digest
+                   FROM narrative_maintenance_attention
+                  WHERE project_id = 'project-finding-identity'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(identity, None);
+            assert_eq!(material, "legacy-material");
+            Ok(())
+        })
+        .expect("verify ambiguous Attention remains untouched");
+    }
+
+    #[test]
+    fn schema_31_does_not_map_attention_through_a_non_current_observation_edge() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-finding-chain', 'Finding Chain')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-finding-chain', 'project-finding-chain', 1,
+                         'initial', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-current', 'project-finding-chain', 'proposal-revision',
+                         'revision-current', 'project:scene:current', '[]',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-historical', 'project-finding-chain', 'proposal-revision',
+                         'revision-historical', 'project:scene:historical', '[]',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            // The Observation retains the old finding key, but its Edge is
+            // no longer the current Edge for that Consumer. A finding-key /
+            // digest-only migration must not use this row as identity proof.
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('observation-historical', 'project-finding-chain', 'run-old',
+                         'epoch-finding-chain', 'edge-historical',
+                         'proposal-revision:revision-current', 'source-missing',
+                         'source-missing', 'legacy-material',
+                         '2026-08-15T00:00:00.000Z', '',
+                         'narrative.consumer-freshness', 1, '')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_attention
+                    (project_id, finding_key, finding_identity, disposition,
+                     material_basis_digest, snoozed_until, set_at, actor_id,
+                     request_id, payload_digest, reason, version)
+                 VALUES ('project-finding-chain', 'proposal-revision:revision-current',
+                         NULL, 'dismissed', 'legacy-material', NULL,
+                         '2026-08-15T00:00:00.000Z', 'author-1',
+                         'request-finding-chain', 'payload-finding-chain', NULL, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed non-current observation chain");
+
+        db.with_conn(Database::migrate_narrative_finding_identity_v31)
+            .expect("run SCHEMA 31 identity migration");
+
+        db.with_conn(|conn| {
+            let (identity, status, material): (Option<String>, String, String) = conn.query_row(
+                "SELECT finding_identity, identity_resolution_status, material_basis_digest
+                   FROM narrative_maintenance_attention
+                  WHERE project_id = 'project-finding-chain'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(identity, None);
+            assert_eq!(status, "legacy-unresolved");
+            assert_eq!(material, "legacy-material");
+            Ok(())
+        })
+        .expect("historical observation must not resolve current Attention");
     }
 
     #[test]
@@ -4808,6 +11566,252 @@ mod tests {
         drop(db);
         std::fs::remove_dir_all(path.parent().expect("test directory"))
             .expect("remove migration test directory");
+    }
+
+    #[test]
+    fn current_schema_migrate_repairs_wrong_shape_timelapse_indexes() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "DROP INDEX idx_change_events_project_domain_op_entity_seq;
+                 CREATE INDEX idx_change_events_project_domain_op_entity_seq
+                     ON change_events(project_id, domain, entity_id, op_type, sequence);
+                 DROP INDEX idx_state_snap_project_domain_type_entity_seq;
+                 CREATE INDEX idx_state_snap_project_domain_type_entity_seq
+                     ON state_snapshots(project_id, domain, entity_type, entity_id, anchor_sequence);",
+            )?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "wrong-shape indexes must invalidate the current checkpoint"
+            );
+            Ok(())
+        })
+        .expect("seed wrong-shape indexes");
+
+        let first_index_dropped = Arc::new(AtomicBool::new(false));
+        let first_index_dropped_for_hook = Arc::clone(&first_index_dropped);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
+                AuthAction::DropIndex {
+                    index_name: "idx_change_events_project_domain_op_entity_seq",
+                    ..
+                } => {
+                    first_index_dropped_for_hook.store(true, Ordering::SeqCst);
+                    Authorization::Allow
+                }
+                AuthAction::CreateIndex { index_name, .. }
+                    if index_name == "idx_change_events_project_domain_op_entity_seq"
+                        && first_index_dropped_for_hook.load(Ordering::SeqCst) =>
+                {
+                    Authorization::Deny
+                }
+                _ => Authorization::Allow,
+            }))?;
+            Ok(())
+        })
+        .expect("install index-repair failure hook");
+        let error = db
+            .migrate()
+            .expect_err("a failed second index create must abort the repair savepoint");
+        assert!(first_index_dropped.load(Ordering::SeqCst));
+        assert!(error.to_string().contains("not authorized"));
+        db.with_conn(|conn| {
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            let change_columns = conn
+                .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                .query_map(["idx_change_events_project_domain_op_entity_seq"], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let snapshot_columns = conn
+                .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                .query_map(["idx_state_snap_project_domain_type_entity_seq"], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(
+                change_columns,
+                vec!["project_id", "domain", "entity_id", "op_type", "sequence"]
+            );
+            assert_eq!(
+                snapshot_columns,
+                vec![
+                    "project_id",
+                    "domain",
+                    "entity_type",
+                    "entity_id",
+                    "anchor_sequence"
+                ]
+            );
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "failed repair must leave the checkpoint unsatisfied"
+            );
+            Ok(())
+        })
+        .expect("inspect rolled-back index repair");
+
+        db.migrate().expect("repair wrong-shape indexes");
+        db.with_conn(|conn| {
+            for (name, expected) in [
+                (
+                    "idx_change_events_project_domain_op_entity_seq",
+                    vec!["project_id", "domain", "op_type", "entity_id", "sequence"],
+                ),
+                (
+                    "idx_state_snap_project_domain_type_entity_seq",
+                    vec![
+                        "project_id",
+                        "domain",
+                        "entity_id",
+                        "entity_type",
+                        "anchor_sequence",
+                    ],
+                ),
+            ] {
+                let columns = conn
+                    .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                    .query_map([name], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(columns, expected, "repaired index {name}");
+            }
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "repaired indexes must satisfy the current checkpoint"
+            );
+            Ok(())
+        })
+        .expect("inspect repaired indexes");
+
+        // A second open must remain converged after the repair rather than
+        // dropping/recreating the indexes on every current-schema open.
+        db.migrate().expect("reopen repaired schema");
+    }
+
+    #[test]
+    fn restore_preflight_repairs_a_stale_c2a_trigger_on_current_schema() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-stale-trigger', 'Stale trigger')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, summary_json, created_at, updated_at)
+                 VALUES ('set-stale-trigger', 'run-stale-trigger', 'project-stale-trigger',
+                         'chronicle.extract.review@1', '{}', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 VALUES ('proposal-stale-trigger', 'set-stale-trigger',
+                         'event:stale-trigger', 'chronicle.create-event@1', 'unreviewed',
+                         '{}', 'revision-stale-trigger-parent', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES ('revision-stale-trigger-parent', 'proposal-stale-trigger', 1, '{}',
+                         'enveloped', '{\"schemaVersion\":2}', datetime('now'), 'migration-test')",
+                [],
+            )?;
+            conn.execute_batch(
+                r#"
+                DROP TRIGGER narrative_proposal_revisions_v2_monotonicity_guard;
+                CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard
+                    BEFORE INSERT ON narrative_proposal_revisions
+                    WHEN EXISTS (
+                        SELECT 1
+                          FROM narrative_proposals p
+                          JOIN narrative_proposal_revisions current_revision
+                            ON current_revision.id = p.current_revision_id
+                         WHERE p.id = NEW.proposal_id
+                           AND current_revision.origin_kind = 'enveloped'
+                           AND json_extract(current_revision.reconciliation_envelope_json,
+                                            '$.schemaVersion') = 2
+                    )
+                    AND (
+                        NEW.origin_kind <> 'enveloped'
+                        OR NEW.reconciliation_envelope_json IS NULL
+                        OR json_extract(NEW.reconciliation_envelope_json,
+                                        '$.schemaVersion') <> 2
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                    END;
+                "#,
+            )?;
+            assert!(!grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                conn
+            )?);
+            Ok(())
+        })
+        .expect("seed current schema with stale C2A trigger");
+
+        db.migrate_for_restore_preflight()
+            .expect("restore preflight must converge a current schema with a stale trigger");
+
+        db.with_conn(|conn| {
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            for (case, envelope_json) in [
+                ("missing-schema-version", "{}"),
+                ("null-schema-version", r#"{"schemaVersion":null}"#),
+            ] {
+                let child_id = format!("revision-stale-trigger-{case}");
+                let error = conn
+                    .execute(
+                        "INSERT INTO narrative_proposal_revisions
+                            (id, proposal_id, revision_number, payload_json, origin_kind,
+                             reconciliation_envelope_json, created_at, created_by)
+                         VALUES (?1, 'proposal-stale-trigger', 2, '{}', 'enveloped', ?2,
+                                 datetime('now'), 'migration-test')",
+                        params![child_id, envelope_json],
+                    )
+                    .expect_err("repaired trigger must reject a non-V2 child envelope");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"),
+                    "{case}: unexpected trigger error: {error}"
+                );
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_revisions WHERE id = ?1",
+                    [&child_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "{case}: rejected child persisted");
+            }
+
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES ('revision-stale-trigger-numeric-boundary', 'proposal-stale-trigger',
+                         2, '{}', 'enveloped', '{\"schemaVersion\":2.0}',
+                         datetime('now'), 'migration-test')",
+                [],
+            )?;
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_revisions
+                  WHERE id = 'revision-stale-trigger-numeric-boundary'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "integer-valued 2.0 boundary must remain accepted");
+            Ok(())
+        })
+        .expect("verify repaired C2A trigger and schema checkpoint");
     }
 
     #[test]
@@ -5768,6 +12772,27 @@ mod tests {
         // otherwise never exercised. Restore relies on these being present.
         let db = Database::new(std::path::Path::new(":memory:")).unwrap();
         db.with_conn(|conn| {
+            // The legacy scene belongs to a real project.  Without this row,
+            // the current migration's scope backfill cannot establish the
+            // Native registry before it visits the scene.
+            conn.execute_batch(
+                "CREATE TABLE projects (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT 'Test',
+                    genre TEXT,
+                    pov TEXT,
+                    tense TEXT,
+                    language TEXT NOT NULL DEFAULT 'ja',
+                    style_guide TEXT,
+                    ai_instructions TEXT,
+                    outline TEXT,
+                    target_readers TEXT,
+                    phase_resolution_mode TEXT NOT NULL DEFAULT 'auto',
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 INSERT INTO projects (id, title) VALUES ('p1', 'Project 1');",
+            )?;
             // Pre-chronicle tree_nodes / project_snapshot_tree_nodes (no chronicle_*).
             conn.execute_batch(
                 "CREATE TABLE tree_nodes (
@@ -6651,28 +13676,1970 @@ mod tests {
                 "user_version",
                 grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
             )?;
-            assert!(grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
-                conn
-            )?);
+            assert!(
+                grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
 
             conn.pragma_update(None, "user_version", 15)?;
-            assert!(!grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
-                conn
-            )?);
+            assert!(
+                !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
 
             conn.pragma_update(
                 None,
                 "user_version",
                 grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
             )?;
-            conn.execute_batch(
-                "DROP TRIGGER narrative_revision_envelope_immutable_update",
-            )?;
-            assert!(!grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
-                conn
-            )?);
+            conn.execute_batch("DROP TRIGGER narrative_revision_envelope_immutable_update")?;
+            assert!(
+                !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
             Ok(())
         })
         .expect("probe previous marker compatibility");
+    }
+
+    // -- SCHEMA_VERSION 23: Gate C2-01 Semantic Build Graph -----------------
+
+    #[test]
+    fn schema_23_full_migration_creates_semantic_build_graph_and_status_checks() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            for table in [
+                "narrative_semantic_epochs",
+                "narrative_dependency_edges",
+                "narrative_dependency_edge_states",
+                "narrative_consumer_freshness",
+                "narrative_application_contributions",
+                "narrative_maintenance_finding_observations",
+                "narrative_maintenance_attention",
+            ] {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )?;
+                assert!(exists, "expected SCHEMA 23 table to exist: {table}");
+            }
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            Ok(())
+        })
+        .expect("verify SCHEMA 23 Semantic Build Graph tables");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test')",
+                [],
+            )
+            .ok();
+            let rejected = conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at)
+                 VALUES ('bad-run', 'proj-1', 's', '{}', '{}', 'd', 'bogus', 'now')",
+                [],
+            );
+            assert!(rejected.is_err(), "unknown Run status must violate the SCHEMA 23 CHECK");
+
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at)
+                 VALUES ('superseded-run', 'proj-1', 's', '{}', '{}', 'd', 'superseded', 'now')",
+                [],
+            )?;
+
+            let bad_failure_code = conn.execute(
+                "INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at, failure_code)
+                 VALUES ('bad-attempt', 'missing-task', 1, 'failed', 'now', 'NOT_NEX_PREFIXED')",
+                [],
+            );
+            assert!(
+                bad_failure_code.is_err(),
+                "failure_code without the NEX_ prefix must violate the SCHEMA 23 CHECK"
+            );
+
+            let bad_next_attempt = conn.execute(
+                "INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at, retry_disposition, next_attempt_at)
+                 VALUES ('bad-attempt-2', 'missing-task', 1, 'failed', 'now', 'terminal', '2026-01-01')",
+                [],
+            );
+            assert!(
+                bad_next_attempt.is_err(),
+                "next_attempt_at must require retry_disposition = retryable"
+            );
+            Ok(())
+        })
+        .expect("verify SCHEMA 23 status/failure CHECK constraints");
+    }
+
+    #[test]
+    fn schema_23_migration_is_idempotent() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("first migrate to current schema");
+        db.migrate()
+            .expect("second migrate on an already-current database must be a no-op");
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("schema version stable after repeated migrate");
+    }
+
+    fn seed_pre_v23_execution_state_tables(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             INSERT INTO projects VALUES ('proj-1');
+             CREATE TABLE narrative_extraction_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface_path_id TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_digest TEXT NOT NULL,
+                snapshot_digest TEXT,
+                catalog_digest TEXT,
+                registry_digest TEXT,
+                status TEXT NOT NULL,
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                outcome_summary_json TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE narrative_extraction_tasks (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_json TEXT NOT NULL DEFAULT '{}',
+                output_json TEXT,
+                priority INTEGER NOT NULL DEFAULT 0,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE narrative_extraction_attempts (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                error_message TEXT,
+                output_json TEXT
+             );
+             INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at)
+             VALUES ('run-1', 'proj-1', 's', '{}', '{}', 'd', 'completed', 'now');
+             INSERT INTO narrative_extraction_tasks (id, run_id, task_kind, status, created_at)
+             VALUES ('task-1', 'run-1', 'kind-a', 'completed', 'now');
+             INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at)
+             VALUES
+                ('attempt-legacy-failed', 'task-1', 1, 'failed', 'now'),
+                ('attempt-ok', 'task-1', 2, 'completed', 'now');",
+        )
+        .expect("seed pre-SCHEMA-23 execution-state tables");
+    }
+
+    #[test]
+    fn migrate_narrative_extraction_status_v23_normalizes_legacy_failed_attempts() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v23_execution_state_tables(&conn);
+
+        Database::migrate_narrative_extraction_status_v23(&conn)
+            .expect("SCHEMA 23 execution-state migration");
+
+        let (failure_code, retry_disposition, policy_version): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT failure_code, retry_disposition, policy_version
+                   FROM narrative_extraction_attempts WHERE id = 'attempt-legacy-failed'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read normalized legacy attempt");
+        assert_eq!(failure_code.as_deref(), Some("NEX_LEGACY_UNCLASSIFIED"));
+        assert_eq!(retry_disposition.as_deref(), Some("terminal"));
+        assert_eq!(policy_version.as_deref(), Some("legacy"));
+
+        let clean: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT failure_code, retry_disposition
+                   FROM narrative_extraction_attempts WHERE id = 'attempt-ok'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read non-failed attempt");
+        assert_eq!(clean, (None, None));
+
+        // Idempotent: a second run against the now-current shape is a no-op.
+        Database::migrate_narrative_extraction_status_v23(&conn)
+            .expect("second SCHEMA 23 execution-state migration must be a no-op");
+    }
+
+    #[test]
+    fn migrate_narrative_extraction_status_v23_rejects_unrecognized_status() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v23_execution_state_tables(&conn);
+        conn.execute(
+            "UPDATE narrative_extraction_runs SET status = 'bogus-status' WHERE id = 'run-1'",
+            [],
+        )
+        .expect("corrupt run status");
+
+        let error = Database::migrate_narrative_extraction_status_v23(&conn)
+            .expect_err("unrecognized status must fail closed, not silently coerce");
+        assert!(
+            error.to_string().contains("NEX_EXECUTION_STATUS_INVALID"),
+            "unexpected error: {error:#}"
+        );
+
+        // Failing closed must not have left a partial rebuild behind.
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("original row must remain readable");
+        assert_eq!(status, "bogus-status");
+    }
+
+    #[test]
+    fn migrate_narrative_change_cursors_v23_keeps_pre_c2_consumers_reservation_free() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             INSERT INTO projects VALUES ('proj-1');
+             CREATE TABLE narrative_change_cursors (
+                project_id                    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_id                   TEXT NOT NULL CHECK(length(consumer_id) > 0),
+                acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0
+                    CHECK(acknowledged_through_sequence >= 0),
+                lease_owner                   TEXT,
+                lease_expires_at              TEXT,
+                last_error                    TEXT,
+                updated_at                    TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_id)
+             );
+             INSERT INTO narrative_change_cursors
+                (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+             VALUES ('proj-1', 'legacy-consumer', 42, 'now');",
+        )
+        .expect("seed pre-SCHEMA-23 cursor table");
+
+        Database::migrate_narrative_change_cursors_v23(&conn)
+            .expect("SCHEMA 23 cursor reservation migration");
+
+        let (semantic_epoch_id, reserved_through_sequence, active_run_id): (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT semantic_epoch_id, reserved_through_sequence, active_run_id
+                   FROM narrative_change_cursors WHERE consumer_id = 'legacy-consumer'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read migrated legacy cursor");
+        assert_eq!(semantic_epoch_id, None);
+        assert_eq!(reserved_through_sequence, None);
+        assert_eq!(active_run_id, None);
+
+        let acknowledged: i64 = conn
+            .query_row(
+                "SELECT acknowledged_through_sequence FROM narrative_change_cursors
+                  WHERE consumer_id = 'legacy-consumer'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read preserved acknowledgment");
+        assert_eq!(acknowledged, 42);
+
+        Database::migrate_narrative_change_cursors_v23(&conn)
+            .expect("second SCHEMA 23 cursor reservation migration must be a no-op");
+    }
+
+    fn seed_pre_v24_run_kind_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             INSERT INTO projects VALUES ('proj-1');
+             CREATE TABLE narrative_semantic_epochs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                epoch_number INTEGER NOT NULL CHECK(epoch_number >= 0),
+                reason TEXT NOT NULL,
+                triggered_by_change_event_uid TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(project_id, epoch_number)
+             );
+             INSERT INTO narrative_semantic_epochs (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-1', 'proj-1', 0, 'initial', 'now');
+             CREATE TABLE narrative_extraction_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface_path_id TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_digest TEXT NOT NULL,
+                snapshot_digest TEXT,
+                catalog_digest TEXT,
+                registry_digest TEXT,
+                status TEXT NOT NULL
+                    CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')),
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                outcome_summary_json TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                run_kind TEXT NOT NULL DEFAULT 'interpretation'
+                    CHECK(run_kind IN ('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill')),
+                consumer_id TEXT,
+                semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id),
+                work_key TEXT,
+                terminal_reason_code TEXT
+                    CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'),
+                superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id)
+             );
+             INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at, run_kind)
+             VALUES
+                ('run-1', 'proj-1', 'chronicle.extract', '{}', '{}', 'digest-1', 'completed', 'now', 'interpretation'),
+                ('run-2', 'proj-1', 'chronicle.extract', '{}', '{}', 'digest-2', 'completed', 'now', 'backfill');",
+        )
+        .expect("seed pre-SCHEMA-24 run_kind table");
+    }
+
+    #[test]
+    fn migrate_run_kind_v24_widens_check_preserves_rows_and_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v24_run_kind_table(&conn);
+
+        Database::migrate_run_kind_v24(&conn).expect("SCHEMA 24 run_kind migration");
+
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT id, run_kind FROM narrative_extraction_runs ORDER BY id")
+            .expect("prepare row read")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query rows")
+            .collect::<Result<_, _>>()
+            .expect("collect rows");
+        assert_eq!(
+            rows,
+            vec![
+                ("run-1".to_owned(), "interpretation".to_owned()),
+                ("run-2".to_owned(), "backfill".to_owned()),
+            ]
+        );
+
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at, run_kind)
+             VALUES ('run-3', 'proj-1', 'x', '{}', '{}', 'd3', 'completed', 'now', 'dependency-verify')",
+            [],
+        )
+        .expect("dependency-verify run_kind must now be accepted");
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at, run_kind)
+             VALUES ('run-4', 'proj-1', 'x', '{}', '{}', 'd4', 'completed', 'now', 'dependency-repair')",
+            [],
+        )
+        .expect("dependency-repair run_kind must now be accepted");
+
+        let foreign_key_errors: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("run foreign_key_check");
+        assert_eq!(foreign_key_errors, 0);
+
+        // Idempotent: a second run against the now-current shape is a no-op.
+        Database::migrate_run_kind_v24(&conn)
+            .expect("second SCHEMA 24 run_kind migration must be a no-op");
+    }
+
+    #[test]
+    fn migrate_repair_lease_run_binding_v27_adds_the_column_and_keeps_existing_leases() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        // The pre-SCHEMA-27 shape: everything the lease needs to say *what*
+        // was approved, but nothing saying which execution may apply it.
+        conn.execute_batch(
+            "CREATE TABLE narrative_maintenance_repair_leases (
+                project_id              TEXT NOT NULL,
+                lease_owner             TEXT NOT NULL,
+                verify_run_id           TEXT NOT NULL,
+                repair_plan_digest      TEXT NOT NULL,
+                semantic_epoch_id       TEXT NOT NULL,
+                claimed_at              TEXT NOT NULL,
+                expires_at              TEXT NOT NULL,
+                PRIMARY KEY(project_id)
+             );
+             INSERT INTO narrative_maintenance_repair_leases
+                VALUES ('proj-1', 'owner-1', 'verify-1', 'sha256:d', 'epoch-1',
+                        '2026-08-15T00:00:00.000Z', '2026-08-15T00:15:00.000Z');",
+        )
+        .expect("seed a pre-v27 lease table");
+
+        Database::migrate_narrative_repair_lease_run_binding_v27(&conn)
+            .expect("SCHEMA 27 lease run-binding migration");
+
+        // A lease claimed before this migration carries NULL, which fails
+        // `assert_repair_lease_still_held_in_tx`'s CAS — the safe direction.
+        let (owner, active_run_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT lease_owner, active_run_id FROM narrative_maintenance_repair_leases
+                  WHERE project_id = 'proj-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read the migrated lease");
+        assert_eq!(owner, "owner-1");
+        assert_eq!(active_run_id, None);
+
+        Database::migrate_narrative_repair_lease_run_binding_v27(&conn)
+            .expect("second SCHEMA 27 lease migration must be a no-op");
+    }
+
+    #[test]
+    fn migrate_repair_lease_run_binding_v27_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_repair_lease_run_binding_v27(&conn)
+            .expect("a workspace with no lease table must migrate cleanly");
+    }
+
+    fn seed_pre_v28_contributions(conn: &Connection, rows: &[(&str, &str, &str)]) {
+        conn.execute_batch(
+            "CREATE TABLE narrative_application_contributions (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                application_id         TEXT NOT NULL,
+                target_object_identity TEXT NOT NULL,
+                field_path             TEXT NOT NULL,
+                target_state           TEXT NOT NULL,
+                created_at             TEXT NOT NULL,
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+             );",
+        )
+        .expect("seed a pre-v28 contributions table");
+        for (id, identity, field_path) in rows {
+            conn.execute(
+                "INSERT INTO narrative_application_contributions
+                    (id, project_id, application_id, target_object_identity,
+                     field_path, target_state, created_at)
+                 VALUES (?1, 'proj-1', ?1, ?2, ?3, 'unchanged',
+                         '2026-08-15T00:00:00.000Z')",
+                params![id, identity, field_path],
+            )
+            .expect("seed a pre-v28 contribution");
+        }
+    }
+
+    fn migrated_identity(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT target_object_identity FROM narrative_application_contributions
+              WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .expect("read the migrated contribution")
+    }
+
+    #[test]
+    fn migrate_contribution_target_identity_v28_canonicalizes_both_old_vocabularies() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[
+                // Written by the Legacy Backfill from `applied_entity_kind`.
+                (
+                    "backfill-codex",
+                    "codex_entry:entry-1",
+                    "/legacy-application",
+                ),
+                (
+                    "backfill-marker",
+                    "plot_thread_marker:marker-1",
+                    "/legacy-application",
+                ),
+                // Temporal annotation rows address what they annotate.
+                (
+                    "backfill-scene-chronicle",
+                    "temporal_scene_chronicle:scene-1",
+                    "/legacy-application",
+                ),
+                // Written by Apply from the Field Authority ledger. Canonical
+                // in neither vocabulary.
+                ("apply-event", "event:event-1", "/title"),
+                (
+                    "apply-binding",
+                    "codex-detail-semantic-binding:binding-1",
+                    "/boundEntityId",
+                ),
+                // Already canonical; must be left exactly as-is.
+                ("apply-scene", "scene:scene-9", "/storyTimeOrder"),
+                ("apply-foreshadow", "foreshadow:fs-1", "/note"),
+            ],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("SCHEMA 28 contribution identity migration");
+
+        assert_eq!(
+            migrated_identity(&conn, "backfill-codex"),
+            "codex-entry:entry-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "backfill-marker"),
+            "plot-marker:marker-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "backfill-scene-chronicle"),
+            "scene:scene-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "apply-event"),
+            "chronicle-event:event-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "apply-binding"),
+            "component:codex_semantic_binding:binding-1"
+        );
+        assert_eq!(migrated_identity(&conn, "apply-scene"), "scene:scene-9");
+        assert_eq!(
+            migrated_identity(&conn, "apply-foreshadow"),
+            "foreshadow:fs-1"
+        );
+    }
+
+    /// Re-running must not rewrite an already-canonical row a second time --
+    /// `codex-entry:` is not itself a key in the prefix table, so a second
+    /// pass has nothing to match.
+    #[test]
+    fn migrate_contribution_target_identity_v28_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[("row-1", "codex_entry:entry-1", "/legacy-application")],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("first SCHEMA 28 pass");
+        let once = migrated_identity(&conn, "row-1");
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("second SCHEMA 28 pass must be a no-op");
+        assert_eq!(once, migrated_identity(&conn, "row-1"));
+        assert_eq!(once, "codex-entry:entry-1");
+    }
+
+    /// `_` is a single-character wildcard in SQL `LIKE`, so a prefix match
+    /// written that way would also rewrite unrelated kinds. Matching is done
+    /// on exact string prefixes in Rust; this pins that.
+    #[test]
+    fn migrate_contribution_target_identity_v28_matches_prefixes_literally() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[
+                (
+                    "wildcard-bait",
+                    "codexXentry:entry-1",
+                    "/legacy-application",
+                ),
+                ("unknown-kind", "not-a-kind:thing-1", "/legacy-application"),
+            ],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("SCHEMA 28 contribution identity migration");
+
+        assert_eq!(
+            migrated_identity(&conn, "wildcard-bait"),
+            "codexXentry:entry-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "unknown-kind"),
+            "not-a-kind:thing-1"
+        );
+    }
+
+    fn seed_pre_v28_edges(conn: &Connection, rows: &[(&str, &str, &str)]) {
+        conn.execute_batch(
+            "CREATE TABLE narrative_dependency_edges (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                consumer_kind          TEXT NOT NULL,
+                consumer_key           TEXT NOT NULL,
+                source_object_identity TEXT NOT NULL,
+                read_set_json          TEXT NOT NULL DEFAULT '[]',
+                created_at             TEXT NOT NULL,
+                UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)
+             );
+             CREATE TABLE narrative_dependency_edge_states (
+                edge_id      TEXT PRIMARY KEY,
+                project_id   TEXT NOT NULL,
+                evaluated_at TEXT NOT NULL
+             );",
+        )
+        .expect("seed a pre-v28 edges table");
+        for (id, consumer_key, identity) in rows {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, created_at)
+                 VALUES (?1, 'proj-1', 'narrative-extraction-run', ?2, ?3,
+                         '2026-08-15T00:00:00.000Z')",
+                params![id, consumer_key, identity],
+            )
+            .expect("seed a pre-v28 edge");
+            conn.execute(
+                "INSERT INTO narrative_dependency_edge_states (edge_id, project_id, evaluated_at)
+                 VALUES (?1, 'proj-1', '2026-08-15T00:00:00.000Z')",
+                params![id],
+            )
+            .expect("seed a pre-v28 edge state");
+        }
+    }
+
+    fn edge_identities(conn: &Connection) -> Vec<String> {
+        conn.prepare(
+            "SELECT source_object_identity FROM narrative_dependency_edges
+              ORDER BY source_object_identity ASC",
+        )
+        .expect("prepare edge read")
+        .query_map([], |row| row.get(0))
+        .expect("read edges")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect edges")
+    }
+
+    #[test]
+    fn migrate_dependency_edge_identity_v28_collapses_every_doubled_prefix() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("e1", "run-1", "project:scene:project:scene:scene-1"),
+                ("e2", "run-1", "snapshot:snapshot:run-legacy-1"),
+                (
+                    "e3",
+                    "run-1",
+                    "project:codex-catalog:project:codex-catalog:project-1",
+                ),
+                ("e4", "run-1", "projection:projection:proj-1"),
+                ("e5", "run-1", "artifact:artifact:artifact-1"),
+                ("e6", "run-1", "capture:capture:capture-1"),
+                ("e7", "run-1", "evidence:evidence:evidence-1"),
+                // Already correct; must survive untouched.
+                ("e8", "run-1", "project:scene:scene-9"),
+            ],
+        );
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(
+            edge_identities(&conn),
+            vec![
+                "artifact:artifact-1",
+                "capture:capture-1",
+                "evidence:evidence-1",
+                "project:codex-catalog:project-1",
+                "project:scene:scene-1",
+                "project:scene:scene-9",
+                "projection:proj-1",
+                "snapshot:run-legacy-1",
+            ]
+        );
+    }
+
+    /// The repaired identity can already exist for the same Consumer, which
+    /// the table's UNIQUE forbids. The malformed row loses, and its Edge
+    /// State goes with it rather than being orphaned.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_drops_a_row_that_would_collide() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("wrong", "run-1", "project:scene:project:scene:scene-1"),
+                ("right", "run-1", "project:scene:scene-1"),
+                // Same malformed identity under a *different* Consumer has
+                // nothing to collide with and must be repaired, not dropped.
+                ("other", "run-2", "project:scene:project:scene:scene-1"),
+            ],
+        );
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let surviving: Vec<String> = conn
+            .prepare("SELECT id FROM narrative_dependency_edges ORDER BY id ASC")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("read")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(surviving, vec!["other".to_string(), "right".to_string()]);
+
+        let orphan_states: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states
+                  WHERE edge_id NOT IN (SELECT id FROM narrative_dependency_edges)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count orphan states");
+        assert_eq!(orphan_states, 0, "a dropped Edge must not orphan its State");
+    }
+
+    /// A bare `projection-1` was a legal envelope value, so the pre-#535
+    /// Producer stored it verbatim. It is not a doubled prefix, so prefix
+    /// collapsing alone leaves it -- and the v2 Backfill only *adds* the
+    /// canonical Edge beside it, because the upsert key includes the
+    /// identity. The kind is recovered from the Source Basis that declared it.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_canonicalizes_a_bare_projection_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "projection-1")]);
+        conn.execute_batch(
+            "CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal     INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key  TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL);
+             INSERT INTO narrative_proposal_sets VALUES ('set-1', 'proj-1', 'run-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('revision-1', 'proposal-1');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('revision-1', 0, 'domain-projection', 'projection-1');",
+        )
+        .expect("seed the declaring Source Basis");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(edge_identities(&conn), vec!["projection:projection-1"]);
+    }
+
+    #[test]
+    fn migrate_dependency_edge_identity_v28_keeps_a_new_prefix_opaque_in_a_bare_projection_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "project:scope-authority:legacy")]);
+        conn.execute_batch(
+            "CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal     INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key  TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL);
+             INSERT INTO narrative_proposal_sets VALUES ('set-1', 'proj-1', 'run-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('revision-1', 'proposal-1');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('revision-1', 0, 'domain-projection', 'project:scope-authority:legacy');",
+        )
+        .expect("seed the declaring Source Basis");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let identity = edge_identities(&conn);
+        assert_eq!(identity, vec!["projection:project:scope-authority:legacy"]);
+        assert_eq!(
+            crate::narrative_extraction::canonical_source_object_identity(
+                "domain-projection",
+                &identity[0]
+            )
+            .expect("the migration must produce an identity accepted by the current validator"),
+            identity[0]
+        );
+    }
+
+    /// An Edge names its own Run through `consumer_key`, so a declaration
+    /// belonging to a *different* Run says nothing about this Edge's Source
+    /// -- two Runs can use the same bare key for different objects. Scoping
+    /// project-wide would decorate the identity on someone else's evidence.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_ignores_another_runs_declaration() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "projection-1")]);
+        conn.execute_batch(
+            "CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal     INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key  TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL);
+             INSERT INTO narrative_proposal_sets VALUES ('set-2', 'proj-1', 'run-2');
+             INSERT INTO narrative_proposals VALUES ('proposal-2', 'set-2');
+             INSERT INTO narrative_proposal_revisions VALUES ('revision-2', 'proposal-2');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('revision-2', 0, 'domain-projection', 'projection-1');",
+        )
+        .expect("seed another Run's Source Basis");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(
+            edge_identities(&conn),
+            vec!["projection-1"],
+            "run-2's declaration must not resolve run-1's Edge"
+        );
+    }
+
+    /// Without a declaration the kind cannot be known, and decorating the key
+    /// anyway could point the Edge at a different object. The row stays
+    /// visibly unresolvable instead.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_leaves_an_unattributable_bare_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "mystery-1")]);
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(edge_identities(&conn), vec!["mystery-1"]);
+    }
+
+    /// Rewriting an Edge's identity invalidates every verdict reached against
+    /// the old one. `narrative_consumer_freshness` is the durable Freshness
+    /// authority, not a cache, and nothing else would revisit it -- the
+    /// Semantic Epoch does not rotate here.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_clears_freshness_decided_on_the_old_identity() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("wrong", "run-1", "project:scene:project:scene:scene-1"),
+                ("untouched", "run-2", "project:scene:scene-2"),
+            ],
+        );
+        conn.execute_batch(
+            "CREATE TABLE narrative_consumer_freshness (
+                project_id         TEXT NOT NULL,
+                consumer_kind      TEXT NOT NULL,
+                consumer_key       TEXT NOT NULL,
+                evidence_freshness TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+             );
+             CREATE TABLE narrative_maintenance_finding_observations (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL,
+                finding_key TEXT NOT NULL
+             );
+             INSERT INTO narrative_consumer_freshness
+                VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing'),
+                       ('proj-1', 'narrative-extraction-run', 'run-2', 'fresh');
+             INSERT INTO narrative_maintenance_finding_observations
+                VALUES ('finding-1', 'proj-1', 'narrative-extraction-run:run-1'),
+                       ('finding-2', 'proj-1', 'narrative-extraction-run:run-2');",
+        )
+        .expect("seed derived Freshness state");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let surviving_freshness: Vec<String> = conn
+            .prepare("SELECT consumer_key FROM narrative_consumer_freshness ORDER BY consumer_key")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("read")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(
+            surviving_freshness,
+            vec!["run-2".to_string()],
+            "the repaired Consumer's stale verdict must go; an untouched one must not"
+        );
+
+        let surviving_states: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states WHERE edge_id = 'wrong'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count edge states");
+        assert_eq!(surviving_states, 0);
+
+        let surviving_findings: Vec<String> = conn
+            .prepare("SELECT id FROM narrative_maintenance_finding_observations ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("read")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(surviving_findings, vec!["finding-2".to_string()]);
+    }
+
+    /// The collision path drops the malformed Edge instead of updating it,
+    /// but the Consumer's aggregate verdict was still computed with that Edge
+    /// in the set, so it is just as stale.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_clears_freshness_after_a_collision_drop() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("wrong", "run-1", "project:scene:project:scene:scene-1"),
+                ("right", "run-1", "project:scene:scene-1"),
+            ],
+        );
+        conn.execute_batch(
+            "CREATE TABLE narrative_consumer_freshness (
+                project_id         TEXT NOT NULL,
+                consumer_kind      TEXT NOT NULL,
+                consumer_key       TEXT NOT NULL,
+                evidence_freshness TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+             );
+             INSERT INTO narrative_consumer_freshness
+                VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing');",
+        )
+        .expect("seed derived Freshness state");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count freshness");
+        assert_eq!(remaining, 0);
+        let states: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count states");
+        assert_eq!(
+            states, 0,
+            "the surviving Edge's own State was decided alongside the dropped one"
+        );
+    }
+
+    /// Seeds a fully-migrated workspace, plants pre-#535 rows, and rewinds
+    /// the marker so the next `migrate()` sees the shape a real upgrade does.
+    fn seed_full_schema_with_unrepaired_rows(db: &Database, stamp_version: i32) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-1', 'proj-1', 'narrative-extraction-run', 'run-1',
+                         'project:scene:project:scene:scene-1', '[]',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'proj-1', 0, 'initial', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, updated_at)
+                 VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing',
+                         'rebuild-required', 'epoch-1', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            // An older build reached this marker without the data migration,
+            // which is exactly the state that has no completion record.
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
+            conn.pragma_update(None, "user_version", stamp_version)?;
+            Ok(())
+        })
+        .expect("seed unrepaired rows");
+    }
+
+    fn edge_identity(db: &Database) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT source_object_identity FROM narrative_dependency_edges WHERE id = 'edge-1'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read edge identity")
+    }
+
+    /// The state an earlier SCHEMA 28 build could actually leave behind:
+    /// identities already canonical, but Freshness still holding the verdict
+    /// it reached against the identities they replaced. Nothing in today's
+    /// rows distinguishes this from a healthy workspace, which is why the
+    /// completion marker exists.
+    #[test]
+    fn a_partially_migrated_workspace_has_its_derived_state_discarded() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
+                 INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-1', 'proj-1', 'narrative-extraction-run', 'run-1',
+                         'project:scene:scene-1', '[]', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'proj-1', 0, 'initial', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_dependency_edge_states
+                    (edge_id, project_id, evidence_freshness, build_action,
+                     evaluated_at_epoch_id, evaluated_at)
+                 VALUES ('edge-1', 'proj-1', 'source-missing', 'rebuild-required',
+                         'epoch-1', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, updated_at)
+                 VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing',
+                         'rebuild-required', 'epoch-1', '2026-08-15T00:00:00.000Z');",
+            )?;
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
+            conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION)?;
+            Ok(())
+        })
+        .expect("seed a partially migrated workspace");
+
+        db.migrate().expect("migrate");
+
+        assert_eq!(
+            edge_identity(&db),
+            "project:scene:scene-1",
+            "the identity was already canonical and must be left alone"
+        );
+        assert_eq!(
+            consumer_freshness_rows(&db),
+            0,
+            "Freshness decided against the replaced identity must not survive"
+        );
+        assert_eq!(edge_state_rows(&db), 0, "Edge State is rebuildable");
+        assert!(
+            Database::has_c2_identity_data_migration_marker(&db.lock_conn().expect("lock"))
+                .expect("marker"),
+            "the migration must record that it ran"
+        );
+
+        // Second open: the marker is what stops this repeating.
+        db.migrate().expect("second open");
+        assert!(
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                &db.lock_conn().expect("lock")
+            )
+            .expect("checkpoint"),
+            "a marked workspace must satisfy the checkpoint"
+        );
+    }
+
+    /// An earlier revision marked a Contribution's target unresolvable but
+    /// left the state the Apply had written, which asserts the field still
+    /// matches what was applied to an object that cannot be found.
+    #[test]
+    fn a_partially_migrated_workspace_corrects_unresolved_contribution_states() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
+                 INSERT INTO narrative_application_contributions
+                    (id, project_id, application_id, commit_id, proposal_id, revision_id,
+                     target_object_identity, field_path, target_state, created_at)
+                 VALUES ('c1', 'proj-1', 'app-1', 'commit-1', 'proposal-1', 'revision-1',
+                         'unresolved:codex-detail-value:value-gone', '/legacy-application',
+                         'unchanged', '2026-08-15T00:00:00.000Z');",
+            )?;
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
+            conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION)?;
+            Ok(())
+        })
+        .expect("seed an unresolved Contribution");
+
+        db.migrate().expect("migrate");
+
+        let state: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT target_state FROM narrative_application_contributions WHERE id = 'c1'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read target state");
+        assert_eq!(state, "missing");
+    }
+
+    fn edge_state_rows(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count edge states")
+    }
+
+    fn consumer_freshness_rows(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count consumer freshness")
+    }
+
+    /// SCHEMA 28 changes no physical object, so a complete SCHEMA 27 database
+    /// satisfies every physical checkpoint. Without the repair being part of
+    /// that checkpoint, `migrate()` takes the previous-schema fast path,
+    /// stamps 28, and never runs the data migration -- and the workspace can
+    /// never be repaired afterwards, because 28 then takes the
+    /// current-schema fast path. This goes through the public entry point,
+    /// not the migration helpers, because that is where the hole was.
+    #[test]
+    fn public_migrate_repairs_identities_from_the_previous_schema_marker() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        seed_full_schema_with_unrepaired_rows(&db, 27);
+
+        db.migrate().expect("migrate from the previous marker");
+
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("read version");
+        assert_eq!(edge_identity(&db), "project:scene:scene-1");
+        assert_eq!(
+            consumer_freshness_rows(&db),
+            0,
+            "Freshness decided on the old identity must not survive"
+        );
+    }
+
+    /// The same workspace, already stamped 28 by an earlier build that had
+    /// the marker but not the repair. The current-schema fast path must also
+    /// notice and fall through.
+    #[test]
+    fn public_migrate_repairs_identities_already_stamped_at_the_current_marker() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        seed_full_schema_with_unrepaired_rows(&db, grimodex_core::SCHEMA_VERSION);
+
+        db.migrate().expect("migrate at the current marker");
+
+        assert_eq!(edge_identity(&db), "project:scene:scene-1");
+        assert_eq!(consumer_freshness_rows(&db), 0);
+    }
+
+    /// And a healthy workspace must keep the cheap path: repeated opens must
+    /// not keep finding work.
+    #[test]
+    fn public_migrate_is_a_no_op_once_identities_are_canonical() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        seed_full_schema_with_unrepaired_rows(&db, grimodex_core::SCHEMA_VERSION);
+        db.migrate().expect("first repair");
+
+        let before = edge_identity(&db);
+        db.migrate().expect("second open must find nothing to do");
+        assert_eq!(edge_identity(&db), before);
+        assert!(
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                &db.lock_conn().expect("lock")
+            )
+            .expect("checkpoint"),
+            "a repaired workspace must satisfy the checkpoint, or every open replays the migration"
+        );
+    }
+
+    /// The checkpoint decides whether to re-run the migration, so it must
+    /// never claim work the migration then declines to do -- that combination
+    /// replays the whole migration on every single open and never converges.
+    /// Contested declarations are the case where the two could disagree: the
+    /// migration refuses to guess, so the checkpoint must call the row clean.
+    #[test]
+    fn a_bare_identity_the_migration_refuses_to_repair_does_not_replay_forever() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
+                 INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-1', 'proj-1', 'narrative-extraction-run', 'run-9',
+                         'contested-1', '[]', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, created_at, updated_at)
+                 VALUES ('set-9', 'run-9', 'proj-1', 'extraction',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, payload_json,
+                     created_at, updated_at)
+                 VALUES ('prop-9', 'set-9', 'key-9', 'codex-entry', '{}',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, created_at, created_by)
+                 VALUES ('rev-a', 'prop-9', 1, '{}', '2026-08-15T00:00:00.000Z', 'test'),
+                        ('rev-b', 'prop-9', 2, '{}', '2026-08-15T00:00:00.000Z', 'test');
+                 INSERT INTO narrative_revision_source_basis
+                    (revision_id, ordinal, source_kind, source_key, revision_token)
+                 VALUES ('rev-a', 0, 'domain-projection', 'contested-1', 'tok-a'),
+                        ('rev-b', 0, 'scene', 'contested-1', 'tok-b');",
+            )?;
+            conn.pragma_update(None, "user_version", 27)?;
+            Ok(())
+        })
+        .expect("seed a contested bare identity");
+
+        db.migrate().expect("migrate");
+
+        assert_eq!(
+            edge_identity(&db),
+            "contested-1",
+            "the migration must not guess a kind the declarations disagree on"
+        );
+        assert!(
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                &db.lock_conn().expect("lock")
+            )
+            .expect("checkpoint"),
+            "the checkpoint must agree the row is unrepairable, or every open replays"
+        );
+    }
+
+    #[test]
+    fn migrate_dependency_edge_identity_v28_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[("e1", "run-1", "project:scene:project:scene:scene-1")],
+        );
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn).expect("first pass");
+        let once = edge_identities(&conn);
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("second pass must be a no-op");
+        assert_eq!(once, edge_identities(&conn));
+        assert_eq!(once, vec!["project:scene:scene-1"]);
+    }
+
+    #[test]
+    fn migrate_dependency_edge_identity_v28_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("a workspace with no edges table must migrate cleanly");
+    }
+
+    /// The migration freezes its own copy of the prefix list so SCHEMA 28
+    /// keeps meaning what it meant. Every historical prefix must remain
+    /// understood by the live canonicalizer, while later Source kinds may be
+    /// added without rewriting the old migration.
+    #[test]
+    fn the_frozen_v28_prefix_table_remains_a_subset_of_the_live_canonicalizer() {
+        use crate::narrative_extraction::SOURCE_IDENTITY_PREFIXES;
+
+        assert_eq!(
+            Database::SOURCE_IDENTITY_PREFIXES_V28,
+            &[
+                "project:codex-catalog:",
+                "project:scene:",
+                "projection:",
+                "snapshot:",
+                "artifact:",
+                "capture:",
+                "evidence:",
+            ],
+            "SCHEMA 28's historical transition must remain frozen"
+        );
+        assert!(Database::SOURCE_IDENTITY_PREFIXES_V28
+            .iter()
+            .all(|prefix| SOURCE_IDENTITY_PREFIXES.contains(prefix)));
+        assert!(SOURCE_IDENTITY_PREFIXES.contains(&"project:scope-authority:"));
+
+        assert_eq!(
+            Database::RUN_CONSUMER_KIND_V28,
+            crate::narrative_extraction::RUN_CONSUMER_KIND,
+            "SCHEMA 28 scopes its Source lookup by this Consumer kind"
+        );
+    }
+
+    /// The checkpoint reads the marker the migration writes, from a different
+    /// crate. If the two ever name different migrations, or drift on the
+    /// contract version, the checkpoint silently stops gating the repair --
+    /// which is the exact failure this marker was introduced to end.
+    #[test]
+    fn the_checkpoint_and_the_migration_name_the_same_marker() {
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_IDENTITY_MIGRATION_ID,
+            Database::C2_IDENTITY_MIGRATION_ID
+        );
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_IDENTITY_CONTRACT_VERSION,
+            Database::C2_IDENTITY_CONTRACT_VERSION
+        );
+    }
+
+    /// A workspace whose live Producer declared Edges under a Run, plus the
+    /// per-Revision Source Basis the re-key reads the finer attribution out
+    /// of.
+    ///
+    /// `scene-1` is read by *both* Revisions, which is the case the old
+    /// Run-grained upsert collapsed into one row; `scene-2` by only the
+    /// second. `capture:cap-1` has no Source Basis anywhere -- it stands in
+    /// for a Legacy Backfill Edge, which has no Revision to attribute a read
+    /// to and must stay under the Run.
+    fn seed_run_grained_edges_with_revisions(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE narrative_dependency_edges (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                consumer_kind TEXT NOT NULL, consumer_key TEXT NOT NULL,
+                source_object_identity TEXT NOT NULL, read_set_json TEXT NOT NULL,
+                generated_by_transaction_id TEXT, created_at TEXT NOT NULL,
+                owning_run_id TEXT,
+                UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)
+             );
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, run_id TEXT NOT NULL, project_id TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposals (
+                id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (
+                id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL
+             );
+             CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                source_kind TEXT NOT NULL, source_key TEXT NOT NULL,
+                revision_token TEXT NOT NULL,
+                PRIMARY KEY(revision_id, ordinal)
+             );
+             CREATE TABLE schema_data_migrations (
+                migration_id TEXT PRIMARY KEY, contract_version INTEGER NOT NULL,
+                applied_at TEXT NOT NULL
+             );
+             CREATE TABLE narrative_apply_commits (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT
+             );
+             CREATE TABLE narrative_proposal_applications (
+                id TEXT PRIMARY KEY, commit_id TEXT NOT NULL
+             );
+             CREATE TABLE narrative_projection_dependencies (
+                application_id TEXT NOT NULL, source_kind TEXT NOT NULL,
+                source_key TEXT NOT NULL, observed_revision_token TEXT NOT NULL,
+                PRIMARY KEY (application_id, source_kind, source_key)
+             );
+             CREATE TABLE narrative_consumer_freshness (
+                project_id TEXT NOT NULL, consumer_kind TEXT NOT NULL,
+                consumer_key TEXT NOT NULL, evidence_freshness TEXT NOT NULL
+             );
+             CREATE TABLE narrative_dependency_edge_states (
+                edge_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                evidence_freshness TEXT NOT NULL
+             );
+             CREATE TABLE narrative_maintenance_finding_observations (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, finding_key TEXT NOT NULL
+             );
+
+             INSERT INTO narrative_proposal_sets VALUES ('set-1', 'run-1', 'proj-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-2', 'set-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('rev-1', 'proposal-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('rev-2', 'proposal-2');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('rev-1', 0, 'scene-body', 'project:scene:scene-1', 'v1@a');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('rev-2', 0, 'scene-body', 'project:scene:scene-1', 'v1@a');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('rev-2', 1, 'scene-body', 'project:scene:scene-2', 'v3@b');
+
+             INSERT INTO narrative_apply_commits VALUES ('commit-1', 'proj-1', 'run-1');
+             INSERT INTO narrative_proposal_applications VALUES ('app-1', 'commit-1');
+             INSERT INTO narrative_projection_dependencies
+                VALUES ('app-1', 'scene-body', 'project:scene:scene-2', 'v3@b');
+
+             INSERT INTO narrative_dependency_edges VALUES
+                ('edge-scene-1', 'proj-1', 'narrative-extraction-run', 'run-1',
+                 'project:scene:scene-1', '[\"v1@a\"]', NULL, '2026-08-15T00:00:00.000Z',
+                 'run-1');
+             INSERT INTO narrative_dependency_edges VALUES
+                ('edge-scene-2', 'proj-1', 'narrative-extraction-run', 'run-1',
+                 'project:scene:scene-2', '[\"v3@b\"]', NULL, '2026-08-15T00:00:00.000Z',
+                 'run-1');
+             INSERT INTO narrative_dependency_edges VALUES
+                ('edge-backfill', 'proj-1', 'narrative-extraction-run', 'run-1',
+                 'capture:cap-1', '[\"v9@z\"]', NULL, '2026-08-15T00:00:00.000Z', 'run-1');
+             INSERT INTO narrative_consumer_freshness
+                VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'fresh');
+             INSERT INTO narrative_dependency_edge_states
+                VALUES ('edge-scene-1', 'proj-1', 'fresh');
+             INSERT INTO narrative_maintenance_finding_observations
+                VALUES ('obs-1', 'proj-1', 'narrative-extraction-run:run-1');",
+        )
+        .expect("seed run-grained edges with revisions");
+    }
+
+    fn edge_consumers(conn: &Connection) -> Vec<(String, String, String)> {
+        conn.prepare(
+            "SELECT consumer_kind, consumer_key, source_object_identity
+               FROM narrative_dependency_edges
+              ORDER BY consumer_kind, consumer_key, source_object_identity",
+        )
+        .expect("prepare")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect")
+    }
+
+    #[test]
+    fn consumer_grain_v30_rekeys_run_edges_onto_the_revisions_that_read_them() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_run_grained_edges_with_revisions(&conn);
+
+        Database::migrate_narrative_consumer_grain_v30(&conn).expect("consumer grain re-key");
+
+        assert_eq!(
+            edge_consumers(&conn),
+            vec![
+                (
+                    "narrative-extraction-run".to_string(),
+                    "run-1".to_string(),
+                    "capture:cap-1".to_string()
+                ),
+                // scene-2 is declared by an Application too, and one row
+                // carried both declarations. Deleting it because a Revision
+                // matched would drop the Application's dependency silently.
+                (
+                    "narrative-extraction-run".to_string(),
+                    "run-1".to_string(),
+                    "project:scene:scene-2".to_string()
+                ),
+                (
+                    "proposal-revision".to_string(),
+                    "rev-1".to_string(),
+                    "project:scene:scene-1".to_string()
+                ),
+                (
+                    "proposal-revision".to_string(),
+                    "rev-2".to_string(),
+                    "project:scene:scene-1".to_string()
+                ),
+                (
+                    "proposal-revision".to_string(),
+                    "rev-2".to_string(),
+                    "project:scene:scene-2".to_string()
+                ),
+            ],
+            "each Revision takes the reads its own Source Basis records; the Edge with no \
+             Source Basis and the one an Application also declares both stay under the Run"
+        );
+
+        let owning: Vec<Option<String>> = conn
+            .prepare(
+                "SELECT owning_run_id FROM narrative_dependency_edges
+                  WHERE consumer_kind = 'proposal-revision'",
+            )
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert!(
+            owning.iter().all(|run| run.as_deref() == Some("run-1")),
+            "the declaring Run survives the re-key as provenance"
+        );
+
+        let freshness: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count freshness");
+        assert_eq!(
+            freshness, 0,
+            "Freshness decided against the old Consumer identity must be discarded, not \
+             re-pointed at a Consumer it was never evaluated for"
+        );
+    }
+
+    #[test]
+    fn consumer_grain_v30_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_run_grained_edges_with_revisions(&conn);
+
+        Database::migrate_narrative_consumer_grain_v30(&conn).expect("first pass");
+        let once = edge_consumers(&conn);
+        Database::migrate_narrative_consumer_grain_v30(&conn).expect("second pass");
+        assert_eq!(once, edge_consumers(&conn));
+    }
+
+    /// Same pact as `the_checkpoint_and_the_migration_name_the_same_marker`,
+    /// for the Consumer grain re-key. Without it the checkpoint would report
+    /// a workspace healthy while the re-key had never run on it.
+    #[test]
+    fn the_checkpoint_and_the_consumer_grain_migration_name_the_same_marker() {
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_CONSUMER_GRAIN_MIGRATION_ID,
+            Database::C2_CONSUMER_GRAIN_MIGRATION_ID
+        );
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_CONSUMER_GRAIN_CONTRACT_VERSION,
+            Database::C2_CONSUMER_GRAIN_CONTRACT_VERSION
+        );
+    }
+
+    /// The re-key writes this literal into `consumer_kind`, and the live
+    /// Producer has to keep reading it back as the same Consumer.
+    #[test]
+    fn the_frozen_v30_revision_consumer_kind_matches_the_live_constant() {
+        assert_eq!(
+            Database::PROPOSAL_REVISION_CONSUMER_KIND_V30,
+            crate::narrative_extraction::PROPOSAL_REVISION_CONSUMER_KIND,
+        );
+    }
+
+    /// The migration's frozen copy of the unresolved marker has to keep
+    /// matching the writer's, or the one-time correction misses the rows the
+    /// writer produced.
+    #[test]
+    fn the_frozen_unresolved_prefix_still_matches_the_writer() {
+        assert_eq!(
+            Database::UNRESOLVED_TARGET_PREFIX_V28,
+            crate::narrative_extraction::application_contributions::UNRESOLVED_TARGET_PREFIX
+        );
+    }
+
+    /// Hyphenating `codex_detail_value:<valueId>` would keep the Backfill
+    /// row pointing at the detail-value row while the live Apply path points
+    /// at the owning Entry -- different objects, different ids. The migration
+    /// has to resolve the Entry, exactly as the Backfill now does.
+    #[test]
+    fn migrate_contribution_target_identity_v28_projects_detail_values_onto_their_entry() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[
+                (
+                    "live-row",
+                    "codex_detail_value:value-1",
+                    "/legacy-application",
+                ),
+                (
+                    "hyphenated-row",
+                    "codex-detail-value:value-1",
+                    "/details/def-1",
+                ),
+                (
+                    "gone-row",
+                    "codex_detail_value:value-gone",
+                    "/legacy-application",
+                ),
+            ],
+        );
+        conn.execute_batch(
+            "CREATE TABLE codex_detail_values (
+                id            TEXT PRIMARY KEY,
+                entry_id      TEXT NOT NULL,
+                definition_id TEXT NOT NULL
+             );
+             INSERT INTO codex_detail_values VALUES ('value-1', 'entry-1', 'def-1');",
+        )
+        .expect("seed detail values");
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("SCHEMA 28 contribution identity migration");
+
+        assert_eq!(migrated_identity(&conn, "live-row"), "codex-entry:entry-1");
+        assert_eq!(
+            migrated_identity(&conn, "hyphenated-row"),
+            "codex-entry:entry-1",
+            "an already-hyphenated detail value still points at the wrong object"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "gone-row"),
+            "unresolved:codex-detail-value:value-gone",
+            "a deleted detail value must be marked, never guessed"
+        );
+    }
+
+    /// A pre-SCHEMA-29 shape, modelled closely enough that the rebuild's two
+    /// reconstructions have something real to read.
+    ///
+    /// It previously created only the two narrative tables. That is why the
+    /// rebuild could ship `baseline_sequence = NULL` and `'maintained'` for
+    /// every row and still pass: the scratch database held no canonical apply
+    /// event to reconstruct a baseline from and no Field Authority row to
+    /// contradict the ownership, so both fabricated values looked correct.
+    ///
+    /// `row-1` is a field the author already holds; `row-2` is one nobody
+    /// claimed, so a blanket re-projection would be caught as readily as no
+    /// re-projection at all.
+    fn seed_pre_v29_contributions_with_applications(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+             INSERT INTO projects VALUES ('proj-1', 'Test Project');
+             CREATE TABLE change_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                op_type    TEXT NOT NULL,
+                entity_id  TEXT,
+                sequence   INTEGER NOT NULL
+             );
+             INSERT INTO change_events (project_id, op_type, entity_id, sequence)
+                VALUES ('proj-1', 'narrative.commit.apply', 'commit-1', 20);
+             CREATE TABLE narrative_field_authority (
+                project_id   TEXT NOT NULL,
+                entity_kind  TEXT NOT NULL,
+                entity_id    TEXT NOT NULL,
+                field_path   TEXT NOT NULL,
+                owner_kind   TEXT NOT NULL,
+                explicit_lock INTEGER NOT NULL DEFAULT 0,
+                version      INTEGER NOT NULL DEFAULT 0,
+                updated_at   TEXT NOT NULL,
+                PRIMARY KEY(project_id, entity_kind, entity_id, field_path)
+             );
+             INSERT INTO narrative_field_authority
+                VALUES ('proj-1', 'codex-entry', 'entry-1', '/name', 'human', 0, 1,
+                        '2026-08-15T00:00:00.000Z');
+             CREATE TABLE narrative_application_contributions (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                application_id         TEXT NOT NULL,
+                target_object_identity TEXT NOT NULL,
+                field_path             TEXT NOT NULL,
+                target_state           TEXT NOT NULL,
+                created_at             TEXT NOT NULL,
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+             );
+             CREATE TABLE narrative_proposal_applications (
+                id          TEXT PRIMARY KEY,
+                commit_id   TEXT NOT NULL,
+                proposal_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL
+             );
+             INSERT INTO narrative_proposal_applications
+                VALUES ('app-1', 'commit-1', 'proposal-1', 'revision-1');
+             INSERT INTO narrative_application_contributions
+                VALUES ('row-1', 'proj-1', 'app-1', 'codex-entry:entry-1', '/name',
+                        'unchanged', '2026-08-15T00:00:00.000Z');
+             INSERT INTO narrative_application_contributions
+                VALUES ('row-2', 'proj-1', 'app-1', 'codex-entry:entry-1', '/summary',
+                        'unchanged', '2026-08-15T00:00:00.000Z');",
+        )
+        .expect("seed a pre-v29 contributions table");
+    }
+
+    #[test]
+    fn migrate_application_contributions_v29_takes_provenance_from_the_application() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration");
+
+        let (commit_id, proposal_id, revision_id, operation_id, ownership): (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT commit_id, proposal_id, revision_id, operation_id, maintenance_ownership
+                   FROM narrative_application_contributions WHERE id = 'row-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read the migrated contribution");
+        assert_eq!(commit_id, "commit-1");
+        assert_eq!(proposal_id, "proposal-1");
+        assert_eq!(revision_id, "revision-1");
+        assert_eq!(
+            operation_id, None,
+            "an operation cannot be identified retroactively and must not be invented"
+        );
+        assert_eq!(
+            ownership, "user-owned",
+            "the Field Authority ledger already recorded this field as the author's"
+        );
+    }
+
+    /// The baseline is the sequence of the Application's own canonical apply
+    /// event, which is the same number `commit.rs` stores on the live path.
+    ///
+    /// Writing NULL instead is what made a *pre*-Application human edit read
+    /// as a *post*-Application one: the projection admits an event when
+    /// `COALESCE(baseline_sequence, -1) < sequence`, and a migrated workspace
+    /// has no consumer cursor either, so the first pump replays the whole
+    /// history against a lower bound of -1.
+    #[test]
+    fn migrate_application_contributions_v29_reconstructs_the_baseline_from_the_apply_event() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration");
+
+        let baseline: Option<i64> = conn
+            .query_row(
+                "SELECT baseline_sequence FROM narrative_application_contributions
+                  WHERE id = 'row-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the migrated baseline");
+        assert_eq!(baseline, Some(20));
+    }
+
+    /// A commit with no canonical apply event predates the Change Feed, so
+    /// every Feed event genuinely is later than it. NULL is true there, and
+    /// the reconstruction must not invent a sequence to avoid it.
+    #[test]
+    fn migrate_application_contributions_v29_leaves_the_baseline_null_for_a_pre_feed_commit() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+        conn.execute("DELETE FROM change_events WHERE entity_id = 'commit-1'", [])
+            .expect("remove the canonical apply event");
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration");
+
+        let baseline: Option<i64> = conn
+            .query_row(
+                "SELECT baseline_sequence FROM narrative_application_contributions
+                  WHERE id = 'row-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the migrated baseline");
+        assert_eq!(baseline, None);
+    }
+
+    /// The re-projection is targeted, not a blanket stamp: `row-2` is a field
+    /// nobody claimed and has to survive the migration as `maintained`.
+    #[test]
+    fn migrate_application_contributions_v29_reprojects_ownership_only_where_the_ledger_says_so() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration");
+
+        let owners: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT id, maintenance_ownership FROM narrative_application_contributions
+                  ORDER BY id ASC",
+            )
+            .expect("prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(
+            owners,
+            vec![
+                ("row-1".to_string(), "user-owned".to_string()),
+                ("row-2".to_string(), "maintained".to_string()),
+            ]
+        );
+    }
+
+    /// A workspace whose Field Authority table does not exist yet must still
+    /// migrate: the re-projection is a refinement of the rebuild, not a
+    /// precondition for it.
+    #[test]
+    fn migrate_application_contributions_v29_runs_without_a_field_authority_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+        conn.execute_batch("DROP TABLE narrative_field_authority;")
+            .expect("drop the ledger");
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration without a ledger");
+
+        let ownership: String = conn
+            .query_row(
+                "SELECT maintenance_ownership FROM narrative_application_contributions
+                  WHERE id = 'row-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read ownership");
+        assert_eq!(ownership, "maintained");
+    }
+
+    /// `application_id` has no foreign key, so a Contribution can outlive its
+    /// Application. Provenance cannot be invented for it and dropping the row
+    /// would discard attribution history, so the migration stops.
+    #[test]
+    fn migrate_application_contributions_v29_fails_closed_on_an_orphan() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+        conn.execute(
+            "INSERT INTO narrative_application_contributions
+             VALUES ('row-orphan', 'proj-1', 'app-gone', 'codex-entry:entry-2', '/name',
+                     'unchanged', '2026-08-15T00:00:00.000Z')",
+            [],
+        )
+        .expect("seed an orphan contribution");
+
+        let error = Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect_err("an orphan must stop the migration");
+        assert!(
+            error.to_string().contains("NEX_CONTRIBUTION_ORPHAN"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn migrate_application_contributions_v29_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+
+        Database::migrate_narrative_application_contributions_v29(&conn).expect("first pass");
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("second pass must be a no-op");
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_application_contributions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count rows");
+        assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn migrate_application_contributions_v29_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("a workspace with no contributions table must migrate cleanly");
+    }
+
+    #[test]
+    fn migrate_contribution_target_identity_v28_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("a workspace with no contributions table must migrate cleanly");
+    }
+
+    #[test]
+    fn migrate_run_kind_v24_rejects_unrecognized_run_kind() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        // The realistic post-SCHEMA-23 shape already CHECKs run_kind against
+        // the 5-value set, so a genuinely bogus value can never reach this
+        // migration through normal SQL. Seed the one shape that legitimately
+        // can carry one: an unconstrained column, as SQLite would have it
+        // mid-migration (before the CHECK-bearing rebuild lands) or on a
+        // hand-recovered database. This exercises the fail-closed guard
+        // itself, not a state reachable in an untouched production upgrade.
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             INSERT INTO projects VALUES ('proj-1');
+             CREATE TABLE narrative_extraction_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface_path_id TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_digest TEXT NOT NULL,
+                status TEXT NOT NULL,
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 0,
+                run_kind TEXT NOT NULL DEFAULT 'interpretation'
+             );
+             INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at, run_kind)
+             VALUES ('run-1', 'proj-1', 'chronicle.extract', '{}', '{}', 'digest-1', 'completed', 'now', 'bogus-kind');",
+        )
+        .expect("seed unconstrained run_kind table with a bogus value");
+
+        let error = Database::migrate_run_kind_v24(&conn)
+            .expect_err("unrecognized run_kind must fail closed, not silently coerce");
+        assert!(
+            error.to_string().contains("unrecognized run_kind"),
+            "unexpected error: {error:#}"
+        );
+
+        // Failing closed must not have left a partial rebuild behind.
+        let run_kind: String = conn
+            .query_row(
+                "SELECT run_kind FROM narrative_extraction_runs WHERE id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("original row must remain readable");
+        assert_eq!(run_kind, "bogus-kind");
     }
 }

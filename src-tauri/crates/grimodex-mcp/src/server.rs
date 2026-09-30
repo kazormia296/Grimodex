@@ -4,11 +4,61 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolRequestParams, CallToolResult, ServerCapabilities, ServerInfo};
+use rmcp::service::RequestContext;
 use rmcp::{tool, tool_handler, tool_router, ErrorData};
 use rusqlite::Connection;
 
 use crate::tools;
+
+/// All standalone MCP tool calls remain disabled until the later D2b-2
+/// contract.  The inventory below is test-only bookkeeping so a newly added
+/// router tool cannot silently escape review; it is not an allow-list.
+#[cfg(test)]
+const PROFILE_TOOL_LEDGER: &[&str] = &[
+    "list_projects",
+    "select_project",
+    "get_project",
+    "get_project_stats",
+    "list_tree",
+    "read_scene",
+    "read_scenes_batch",
+    "list_codex_entries",
+    "get_codex_entry",
+    "list_codex_tags",
+    "find_related_entries",
+    "search_codex_by_tags",
+    "get_chapter_summaries",
+    "list_open_foreshadows",
+    "get_foreshadow_detail",
+    "create_foreshadow",
+    "update_foreshadow",
+    "get_scene_timeline_neighbors",
+    "search_project",
+    "list_chat_sessions",
+    "read_chat_history",
+    "list_snippets",
+    "create_snippet",
+    "get_attribution_report",
+    "create_codex_entry",
+    "update_codex_entry",
+    "get_writing_context",
+    "propose_scene_body",
+    "list_events",
+    "get_event_detail",
+    "get_character_timeline",
+    "get_chronicle_state",
+    "create_event",
+    "update_event",
+    "delete_event",
+    "stamp_scene_event",
+    "unstamp_scene_event",
+    "set_event_participants",
+    "add_event_relation",
+    "remove_event_relation",
+];
+
+pub(crate) const D2A_EGRESS_DENIED_MARKER: &str = "D2A_EGRESS_DENIED:";
 
 /// Map an internal error to a generic MCP error, logging the full detail to the
 /// server log (stderr + file) instead of returning it to the client.
@@ -25,7 +75,7 @@ pub(crate) fn internal_err(e: impl std::fmt::Display) -> ErrorData {
 }
 
 pub struct GrimodexServer {
-    pub conn: Mutex<Connection>,
+    pub conn: grimodex_db::Database,
     /// The project all tools currently scope to. Mutable so `--all-projects`
     /// mode can switch it via `select_project`. In pinned mode (the default)
     /// it never changes — `select_project` is rejected — so the per-connection
@@ -55,18 +105,15 @@ impl GrimodexServer {
         session_id: String,
         policy: grimodex_core::policy::AiPolicyToggles,
     ) -> Self {
-        Self::new_with_license_file(
-            conn,
-            project_id,
+        Self {
+            conn: grimodex_db::Database::from_connection(conn),
+            current_project: Mutex::new(project_id),
             all_projects,
             readonly,
             session_id,
             policy,
-            // The convenience constructor is used by isolated tool tests.
-            // Production launchers always call `new_with_license_file` with
-            // their resolved app-data path.
-            None,
-        )
+            license_file_path: None,
+        }
     }
 
     pub fn new_with_license_file(
@@ -79,7 +126,7 @@ impl GrimodexServer {
         license_file_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            conn: Mutex::new(conn),
+            conn: grimodex_db::Database::from_connection(conn),
             current_project: Mutex::new(project_id),
             all_projects,
             readonly,
@@ -575,9 +622,21 @@ impl GrimodexServer {
 
 #[tool_handler]
 impl rmcp::ServerHandler for GrimodexServer {
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        deny_tool_call(request)
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
+}
+
+fn deny_tool_call(_request: CallToolRequestParams) -> Result<CallToolResult, ErrorData> {
+    Err(ErrorData::invalid_params(D2A_EGRESS_DENIED_MARKER, None))
 }
 
 #[cfg(all(test, feature = "licensing"))]
@@ -638,5 +697,112 @@ mod license_tests {
             .join("license.json");
         let server = server_with_license_path(path);
         assert!(server.ensure_license_allows_write().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod tool_route_tests {
+    use super::{GrimodexServer, D2A_EGRESS_DENIED_MARKER, PROFILE_TOOL_LEDGER};
+    use rmcp::model::{
+        ClientJsonRpcMessage, ClientRequest, ErrorCode, Implementation, InitializeRequestParams,
+        RequestId,
+    };
+    use rmcp::service::RequestContext;
+    use rmcp::transport::async_rw::AsyncRwTransport;
+    use rmcp::ServerHandler;
+    use std::collections::HashSet;
+
+    fn fixture_server() -> GrimodexServer {
+        GrimodexServer::new(
+            rusqlite::Connection::open_in_memory().expect("open in-memory DB"),
+            "project-test".to_string(),
+            false,
+            true,
+            "session-test".to_string(),
+            grimodex_core::policy::AiPolicyToggles {
+                chat: true,
+                body_write: true,
+                analysis: true,
+                structure_write: true,
+                knowledge_write: true,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn every_routed_tool_is_denied_before_handler_dispatch() {
+        let server = fixture_server();
+        let (server_io, _client_io) = tokio::io::duplex(64 * 1024);
+        let (server_read, server_write) = tokio::io::split(server_io);
+        let server_transport =
+            AsyncRwTransport::<rmcp::RoleServer, _, _>::new(server_read, server_write);
+        let (_client_read, mut client_write) = tokio::io::split(_client_io);
+        let initialize = ClientJsonRpcMessage::request(
+            ClientRequest::InitializeRequest(rmcp::model::InitializeRequest::new(
+                InitializeRequestParams::new(
+                    Default::default(),
+                    Implementation::new("shutdown-test", "0.0.0"),
+                ),
+            )),
+            RequestId::Number(1),
+        );
+        let encoded = serde_json::to_vec(&initialize).expect("serialize initialize");
+        use tokio::io::AsyncWriteExt;
+        client_write
+            .write_all(&encoded)
+            .await
+            .expect("write initialize");
+        client_write
+            .write_all(b"\n")
+            .await
+            .expect("frame initialize");
+        let running = rmcp::serve_server(server, server_transport)
+            .await
+            .expect("initialize server");
+
+        let payload = serde_json::json!({
+            "scene_id": "scene-with-a-large-body",
+            "title": "scene-title-".repeat(100_000),
+            "chat_message": "chat-content-".repeat(100_000),
+        });
+        let peer = running.peer().clone();
+        for (id, name) in PROFILE_TOOL_LEDGER.iter().enumerate() {
+            let request = rmcp::model::CallToolRequestParams::new(*name)
+                .with_arguments(payload.as_object().expect("object payload").clone());
+            let context = RequestContext::new(RequestId::Number(id as i64 + 2), peer.clone());
+            let error = running
+                .service()
+                .call_tool(request, context)
+                .await
+                .expect_err("tool call must be stopped");
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert_eq!(error.message.as_ref(), D2A_EGRESS_DENIED_MARKER);
+            assert!(error.data.is_none());
+            assert!(!error.message.contains("scene-title-"));
+            assert!(!error.message.contains("chat-content-"));
+        }
+        running.cancel().await.expect("close test server");
+    }
+
+    #[test]
+    fn tool_inventory_matches_every_router_tool_exactly() {
+        let ledger_names: HashSet<&str> = PROFILE_TOOL_LEDGER.iter().copied().collect();
+        assert_eq!(
+            ledger_names.len(),
+            PROFILE_TOOL_LEDGER.len(),
+            "the tool inventory must not contain duplicate tool names"
+        );
+        let router_names: HashSet<String> = GrimodexServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        assert_eq!(ledger_names.len(), router_names.len());
+        assert_eq!(
+            ledger_names,
+            router_names.iter().map(String::as_str).collect(),
+            "every generated router tool must have an explicit egress disposition"
+        );
+        assert!(ledger_names.contains("select_project"));
     }
 }

@@ -146,12 +146,57 @@
           "type": "string",
           "pattern": "^sha256:[0-9a-f]{64}$"
         },
+        "failureDiagnosticsDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "failureDiagnosticsUnavailableReason": {
+          "type": "string",
+          "enum": [
+            "source-missing",
+            "source-read-failed",
+            "source-malformed",
+            "source-oversize",
+            "source-depth-limit",
+            "source-cardinality-limit",
+            "source-binding-mismatch",
+            "source-report-invalid",
+            "source-invalid",
+            "source-parity-mismatch",
+            "projection-persist-failed"
+          ]
+        },
         "result": {
           "type": "string",
           "enum": ["QUALIFIED", "HOLD", "FAILED"]
         },
         "message": { "type": "string", "minLength": 1 }
-      }
+      },
+      "allOf": [
+        {
+          "not": {
+            "required": [
+              "failureDiagnosticsDigest",
+              "failureDiagnosticsUnavailableReason"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "result": { "enum": ["QUALIFIED", "HOLD"] }
+            }
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["failureDiagnosticsDigest"] },
+                { "required": ["failureDiagnosticsUnavailableReason"] }
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -56,6 +56,12 @@ impl From<crate::workspace_lease::LeaseError> for AppError {
     }
 }
 
+impl From<crate::workspace_lifecycle::LifecycleError> for AppError {
+    fn from(value: crate::workspace_lifecycle::LifecycleError) -> Self {
+        AppError::Anyhow(value.into())
+    }
+}
+
 impl Serialize for AppError {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // 文字列ワイヤ (上記コメント参照)。object 化は FE 移行と同時 (Slice2)

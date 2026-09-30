@@ -9,6 +9,7 @@ import {
   shouldUseProductJourneyAi,
   wrapBackendForProductJourneyAi,
 } from "./productJourneyAi.js";
+import fixture from "../shared/productJourneyChronicleFixture.json" with { type: "json" };
 
 function backendStub() {
   const events = vi.fn();
@@ -26,6 +27,51 @@ function backendStub() {
 }
 
 describe("product journey AI backend", () => {
+  it("replaces only the nonstream Chronicle provider response and preserves native calls", async () => {
+    const { backend, dbExecute } = backendStub();
+    const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+    const context = fixture.rows
+      .map((row, index) =>
+        JSON.stringify({
+          kind: "evidence",
+          text: row.text,
+          evidenceRef: `Erequest-${index}`,
+        }),
+      )
+      .join("\n");
+    const wire = JSON.parse(
+      await wrapped.sendChatMessage(
+        {
+          messages: [
+            {
+              role: "user",
+              content: `# Context Set (chronicle.prompt/1)\n--- contextId=observation-citation-window:w inputRef=citation-window:w ---\n${context}\n\n# Output (JSON only)\n{}`,
+            },
+          ],
+          auditContext: {
+            pathId: "narrative_observation_extract",
+            executionId: "audit-chronicle",
+          },
+        },
+        {},
+        "",
+      ),
+    );
+    expect(JSON.parse(wire.blocks[0].content).observations).toHaveLength(5);
+    expect(wire.stopReason).toBe("end_turn");
+    expect(await wrapped.dbExecute("", [], "all")).toBe("native-backend");
+    expect(dbExecute).toHaveBeenCalledOnce();
+    expect(
+      JSON.parse(
+        await wrapped.sendChatMessage(
+          { auditContext: { pathId: "chat" } },
+          {},
+          "",
+        ),
+      ).blocks[0].content,
+    ).toBe("Product Journey");
+  });
+
   it("is limited to an exact non-packaged runner environment", () => {
     expect(
       shouldUseProductJourneyAi({

@@ -20,6 +20,19 @@ vi.mock("./api", () => ({
   createNode: vi.fn().mockImplementation((node) => Promise.resolve(node)),
   updateNode: vi.fn().mockResolvedValue(undefined),
   deleteNode: vi.fn().mockResolvedValue(undefined),
+  treeWriteReceipt: vi.fn(() => ({
+    changeEventUid: "tree-test-event",
+    maintenanceTransactionId: "tree-test-maintenance",
+    undoJournalId: "tree-test-journal",
+  })),
+  historyWriteContext: vi.fn((origin: "undo" | "redo") => ({
+    requestId: `tree-test-${origin}`,
+    sessionId: "tree-test-session",
+    eventUid: `tree-test-${origin}-event`,
+    origin,
+    originalTransactionId: "tree-test-maintenance",
+    undoJournalId: "tree-test-journal",
+  })),
 }));
 
 vi.mock("@/features/codex/phaseStore", () => ({
@@ -505,6 +518,32 @@ describe("updatePovCharacter / updateLocation (tracked)", () => {
   });
 });
 
+describe("Chronicle draft permit propagation", () => {
+  beforeEach(() => reset());
+
+  it("passes an explicit preexisting-draft permit through scene synopsis writes", async () => {
+    await useTreeStore.getState().updateSynopsis("scene-1", "queued synopsis", {
+      preexistingDraft: true,
+    });
+
+    expect(api.updateNode).toHaveBeenCalledWith(
+      "scene-1",
+      { synopsis: "queued synopsis" },
+      { preexistingDraft: true },
+    );
+  });
+
+  it("does not add a lifecycle permit to ordinary scene synopsis writes", async () => {
+    await useTreeStore
+      .getState()
+      .updateSynopsis("scene-1", "ordinary synopsis");
+
+    expect(api.updateNode).toHaveBeenCalledWith("scene-1", {
+      synopsis: "ordinary synopsis",
+    });
+  });
+});
+
 describe("nullable metadata undo", () => {
   beforeEach(() => reset());
 
@@ -524,7 +563,11 @@ describe("nullable metadata undo", () => {
 
     expect(vi.mocked(api.updateNode).mock.calls).toEqual([
       ["scene-1", { [field]: value }],
-      ["scene-1", { [field]: null }],
+      [
+        "scene-1",
+        { [field]: null },
+        expect.objectContaining({ writeContext: expect.any(Object) }),
+      ],
     ]);
     expect(
       useTreeStore.getState().nodes.find((node) => node.id === "scene-1"),

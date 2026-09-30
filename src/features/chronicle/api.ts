@@ -14,7 +14,7 @@ import { nextEventOrdinal } from "./chronicleTime";
 // 暦復元の正本は chronicleTime（純粋モジュール）へ集約。ここでは後方互換の再エクスポート。
 export { calendarFromRow } from "./chronicleTime";
 import { useChronicleStore } from "./chronicleStore";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { EventVersionConflictError } from "./eventOcc";
 import { ProjectCalendarVersionConflictError } from "./calendarOcc";
 import {
@@ -30,29 +30,6 @@ import {
 } from "@/features/agent-writes/event";
 
 /**
- * Timelapse record for a chronicle (作中年表) mutation. Uses the SAME `event`
- * domain the Rust AI-write path emits (`agent_writes.rs`) so the human UI path
- * and the AI path land in one timeline — they are disjoint callers, not a
- * double-record. sceneId stays null (events have no scene FK; scene links live
- * in the `sceneEvents` join table).
- */
-function recordEvent(
-  projectId: string,
-  opType: string,
-  entityId: string | null,
-  payload: Record<string, unknown>,
-): void {
-  recordChangeEvent({
-    domain: "event",
-    opType,
-    projectId,
-    entityType: "event",
-    entityId,
-    payload,
-  });
-}
-
-/**
  * 年表 mutation 後に AI コンテキストの鮮度カウンタを上げる（C3 prompt 鮮度）。
  * UI / 抽出ウィザード / 将来の agent・MCP write が全てこの API を通るため、ここを
  * 単一チョークポイントにすれば全経路で contextPromptKey が更新される。
@@ -61,12 +38,23 @@ function bumpChronicleRevision(): void {
   useChronicleStore.getState().bumpRevision();
 }
 
-/** Human / legacy api 経路の Native writer 呼び出し既定値。 */
-function manualApiWriteOpts(projectId: string) {
+type ChronicleApiWriteOrigin = "human" | "import";
+
+interface ChronicleApiWriteOptions {
+  origin?: ChronicleApiWriteOrigin;
+}
+
+/** Human / import api 経路の Native writer 呼び出し既定値。 */
+function manualApiWriteOpts(
+  projectId: string,
+  origin: ChronicleApiWriteOrigin = "human",
+) {
   return {
-    surface: "manual" as const,
+    surface: origin === "import" ? ("import" as const) : ("manual" as const),
     skipPolicyGate: true,
+    commandFamily: "renderer" as const,
     projectId,
+    requestId: crypto.randomUUID(),
   };
 }
 
@@ -182,26 +170,29 @@ export async function getEvent(
   return row ? normalizeEvent(row) : null;
 }
 
-export async function createEvent(data: {
-  id?: string;
-  projectId: string;
-  title?: string;
-  note?: string | null;
-  detail?: string | null;
-  ordinal?: string;
-  primaryCodexId?: string | null;
-  locationCodexId?: string | null;
-  startTime?: number | null;
-  endTime?: number | null;
-  startMinute?: number | null;
-  endMinute?: number | null;
-  startGranularity?: EventGranularity;
-  endGranularity?: EventGranularity;
-  precision?: EventPrecision;
-  kind?: EventKind;
-  secret?: boolean;
-  revealSceneId?: string | null;
-}): Promise<EventRow> {
+export async function createEvent(
+  data: {
+    id?: string;
+    projectId: string;
+    title?: string;
+    note?: string | null;
+    detail?: string | null;
+    ordinal?: string;
+    primaryCodexId?: string | null;
+    locationCodexId?: string | null;
+    startTime?: number | null;
+    endTime?: number | null;
+    startMinute?: number | null;
+    endMinute?: number | null;
+    startGranularity?: EventGranularity;
+    endGranularity?: EventGranularity;
+    precision?: EventPrecision;
+    kind?: EventKind;
+    secret?: boolean;
+    revealSceneId?: string | null;
+  },
+  opts: ChronicleApiWriteOptions = {},
+): Promise<EventRow> {
   const id = data.id ?? crypto.randomUUID();
   let ordinal = data.ordinal;
   if (ordinal === undefined) {
@@ -212,8 +203,10 @@ export async function createEvent(data: {
       .orderBy(asc(events.ordinal), asc(events.id));
     ordinal = nextEventOrdinal(existing.map((e) => normalizeEvent(e).ordinal));
   }
+  const writeOpts = manualApiWriteOpts(data.projectId, opts.origin);
   await agentCreateEvent(
     {
+      requestId: writeOpts.requestId,
       eventId: id,
       title: data.title ?? "",
       note: data.note ?? null,
@@ -236,7 +229,7 @@ export async function createEvent(data: {
       secret: data.secret ?? false,
       revealSceneId: data.revealSceneId ?? null,
     },
-    manualApiWriteOpts(data.projectId),
+    writeOpts,
   );
   const row = await getEvent(data.projectId, id);
   if (!row) {
@@ -329,7 +322,7 @@ export async function setEventParticipants(
   eventId: string,
   projectId: string,
   codexEntryIds: string[],
-  opts?: { baseVersion?: number },
+  opts?: { baseVersion?: number; origin?: ChronicleApiWriteOrigin },
 ): Promise<number | null> {
   const [ev] = await db
     .select({ id: events.id, version: events.version })
@@ -339,7 +332,7 @@ export async function setEventParticipants(
   const baseVersion = opts?.baseVersion ?? ev.version;
   try {
     const result = await agentSetEventParticipants(eventId, codexEntryIds, {
-      ...manualApiWriteOpts(projectId),
+      ...manualApiWriteOpts(projectId, opts?.origin),
       baseVersion,
     });
     return result.version;
@@ -462,6 +455,7 @@ export async function linkScenesToEvent(
   projectId: string,
   sceneIds: string[],
   eventId: string,
+  opts: ChronicleApiWriteOptions = {},
 ): Promise<void> {
   if (sceneIds.length === 0) return;
   const [event] = await db
@@ -485,7 +479,7 @@ export async function linkScenesToEvent(
   await agentLinkSceneEventsBatch(
     targets,
     eventId,
-    manualApiWriteOpts(projectId),
+    manualApiWriteOpts(projectId, opts.origin),
   );
 }
 
@@ -587,11 +581,15 @@ export async function upsertProjectCalendar(
   options: { baseVersion: number | null },
 ): Promise<CalendarRow> {
   const now = new Date().toISOString();
+  const requestId = crypto.randomUUID();
   const persisted = await invoke<CalendarRow | null>(
     "project_calendar_upsert",
     {
       payload: {
         projectId: data.projectId,
+        requestId,
+        sessionId: getRecorderSessionId(),
+        eventUid: requestId,
         daysPerYear: data.daysPerYear,
         seasonBoundaries: data.seasonBoundaries,
         startYear: data.startYear ?? 0,
@@ -613,11 +611,6 @@ export async function upsertProjectCalendar(
     throw new ProjectCalendarVersionConflictError(data.projectId);
   }
   bumpChronicleRevision();
-  recordEvent(data.projectId, "calendar.update", null, {
-    projectId: data.projectId,
-    daysPerYear: data.daysPerYear,
-    version: persisted.version,
-  });
   return {
     projectId: persisted.projectId,
     daysPerYear: Number(persisted.daysPerYear),

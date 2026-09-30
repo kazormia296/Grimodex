@@ -215,8 +215,27 @@ function scopedArgs(args, workspace) {
 }
 
 async function insertScene(backend, sceneId) {
+  const requestId = `post-effect-scene-create:${sceneId}`;
   return JSON.parse(
     await backend.treeNodeCreate({
+      requestId,
+      sessionId: `${requestId}:session`,
+      eventUid: `${requestId}:event`,
+      origin: "human",
+      authorityRoute: "human-direct",
+      caller: "manual-wrapper",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
       id: sceneId,
       projectId: "default-project",
       parentId: null,
@@ -227,6 +246,60 @@ async function insertScene(backend, sceneId) {
     }),
   );
 }
+
+test("restricted Native post-effect families reject a forged caller before local HTTP", async () => {
+  let requestCount = 0;
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    requestCount += 1;
+    res.writeHead(500).end();
+  });
+  try {
+    const { backend, workspace } = makeBackend();
+    await backend.initializeProfileEgress();
+    const status = JSON.parse(await backend.activateProfileEgress());
+    await backend.openWorkspace(workspace);
+    const forgedIdentity = {
+      profileId: status.profileId,
+      callerId: "forged-post-effect-caller",
+      callerEpoch: status.callerEpoch,
+      senderId: 902,
+      workspaceId: workspace,
+      sessionId: "forged-post-effect-session",
+    };
+    const settings = aiSettings(baseUrl);
+
+    await assert.rejects(
+      backend.startPostEffectRun(
+        scopedArgs(
+          { ...singleArgs("restricted-post-effect"), callerIdentity: forgedIdentity },
+          workspace,
+        ),
+        settings,
+        null,
+        null,
+      ),
+      /D2A_EGRESS_DENIED:/,
+    );
+    await assert.rejects(
+      backend.startPostEffectRunMulti(
+        scopedArgs(
+          {
+            ...multiArgs(["restricted-post-effect-1", "restricted-post-effect-2"]),
+            callerIdentity: forgedIdentity,
+          },
+          workspace,
+        ),
+        settings,
+        null,
+        null,
+      ),
+      /D2A_EGRESS_DENIED:/,
+    );
+    assert.equal(requestCount, 0, "Native gate must precede the local HTTP transport");
+  } finally {
+    await closeServer(server);
+  }
+});
 
 async function rows(backend, sql, params = []) {
   const result = JSON.parse(await backend.dbExecute(sql, params, "all"));

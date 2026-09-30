@@ -46,6 +46,7 @@ import {
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { runTimelapseBodyReplacement } from "@/features/timelapse/bodyWriteMode";
 
 /**
  * Rename propagation engine (Item C apply layer).
@@ -429,8 +430,9 @@ export async function applyRenamePropagation(
     void enqueueRescan(entryId);
   };
 
-  const eventUid = crypto.randomUUID();
   const summary = JSON.stringify({ entryId, oldName, newName, applied });
+  let originalMaintenanceTransactionId: string | null = null;
+  let originalUndoJournalId: string | null = null;
 
   const renameAggregateKey = (update: RenameUndoUpdate): string =>
     update.kind === "codex-detail"
@@ -500,36 +502,87 @@ export async function applyRenamePropagation(
     advanceInverseVersions(appliedUpdates, inverseUpdates);
   };
 
-  const runForward = async () => {
-    const result = await invoke("codex_rename_apply", {
-      payload: {
-        projectId,
-        sessionId: getRecorderSessionId(),
-        surface: "codex-rename-propagation",
-        entryId,
-        updatedAt: now,
-        updates: forward,
-        eventSummary: summary,
-        eventUid,
-        timestamp: Date.now(),
+  const runForward = () =>
+    runTimelapseBodyReplacement(
+      { projectId },
+      {
+        commit: async () => {
+          const requestId = crypto.randomUUID();
+          const redo = originalMaintenanceTransactionId !== null;
+          const result = await invoke("codex_rename_apply", {
+            payload: {
+              requestId,
+              projectId,
+              sessionId: getRecorderSessionId(),
+              surface: "codex-rename-propagation",
+              entryId,
+              updatedAt: now,
+              updates: forward,
+              eventSummary: summary,
+              eventUid: requestId,
+              timestamp: Date.now(),
+              redo,
+              originalTransactionId: redo
+                ? originalMaintenanceTransactionId
+                : null,
+              undoJournalId: redo ? originalUndoJournalId : null,
+            },
+          });
+          if (!redo && result && typeof result === "object") {
+            const maintenanceTransactionId = (
+              result as { maintenanceTransactionId?: unknown }
+            ).maintenanceTransactionId;
+            const undoJournalId = (result as { undoJournalId?: unknown })
+              .undoJournalId;
+            if (
+              typeof maintenanceTransactionId !== "string" ||
+              maintenanceTransactionId.length === 0 ||
+              typeof undoJournalId !== "string" ||
+              undoJournalId.length === 0
+            ) {
+              throw new Error("Codex rename Native receipt is incomplete");
+            }
+            originalMaintenanceTransactionId = maintenanceTransactionId;
+            originalUndoJournalId = undoJournalId;
+          }
+          setInverseVersions(forward, undoUpdates, result);
+          return result;
+        },
+        project: async () => {
+          await resync(liveNew);
+        },
       },
-    });
-    setInverseVersions(forward, undoUpdates, result);
-    await resync(liveNew);
-  };
+    );
 
-  const runUndo = async () => {
-    const result = await invoke("codex_rename_undo", {
-      payload: {
-        projectId,
-        sessionId: getRecorderSessionId(),
-        updatedAt: now,
-        updates: undoUpdates,
+  const runUndo = () =>
+    runTimelapseBodyReplacement(
+      { projectId },
+      {
+        commit: async () => {
+          if (!originalMaintenanceTransactionId || !originalUndoJournalId) {
+            throw new Error("Codex rename Native lineage is unavailable");
+          }
+          const requestId = crypto.randomUUID();
+          const result = await invoke("codex_rename_undo", {
+            payload: {
+              requestId,
+              eventUid: requestId,
+              originalTransactionId: originalMaintenanceTransactionId,
+              undoJournalId: originalUndoJournalId,
+              projectId,
+              sessionId: getRecorderSessionId(),
+              updatedAt: now,
+              updates: undoUpdates,
+            },
+          });
+          setInverseVersions(undoUpdates, forward, result);
+          return result;
+        },
+        project: async () => {
+          await resync(liveOld);
+        },
       },
-    });
-    setInverseVersions(undoUpdates, forward, result);
-    await resync(liveOld);
-  };
+    );
 
   await runForward();
 

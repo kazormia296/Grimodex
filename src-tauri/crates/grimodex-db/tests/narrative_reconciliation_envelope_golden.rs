@@ -6,7 +6,8 @@ use grimodex_db::narrative_extraction::{
 use grimodex_db::Database;
 use serde_json::{json, Value};
 
-const GOLDEN: &str = include_str!("../../../../evals/fixtures/narrative/reconciliation-envelope-v1.json");
+const GOLDEN: &str =
+    include_str!("../../../../evals/fixtures/narrative/reconciliation-envelope-v1.json");
 
 #[test]
 fn native_digest_matches_shared_golden_fixture() {

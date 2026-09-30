@@ -1,0 +1,252 @@
+{
+  "schemaVersion": "nir1-capacity/1",
+  "schema": "schema.v1.json",
+  "diagnosticOnly": true,
+  "status": "measurement-only",
+  "scope": "NIR-1 B whole-project capacity observation; no Graph query or product dispatch",
+  "capacityDecision": "ratified-b-full-set-v1",
+  "admissionBoundary": {
+    "currentMaterialLimit": 512,
+    "meaning": "current A2/request admission label only; not a whole-project build capacity"
+  },
+  "graphLifecycle": {
+    "status": "measurement-only",
+    "queryActivation": "not-activated",
+    "productDispatch": "not-activated",
+    "supportedCapacityClaim": false,
+    "currentRustOutput": "nir1-capacity-observation/1"
+  },
+  "runProtocol": {
+    "database": "Each measured run copies one preseeded file-backed database to a new temporary path.",
+    "process": "Each warmup and measured run starts a fresh child process.",
+    "modeIsolation": "Each diagnostic mode is a separate fresh copy and fresh child process; mode results are never pooled.",
+    "warmupCount": 1,
+    "measuredRunCount": 5,
+    "freshCopyPerRun": true,
+    "freshProcessPerRun": true,
+    "sourceState": "immutable-main-wal-shm",
+    "childState": "record-before-and-after",
+    "childTimeoutMs": 600000,
+    "childTerminationGraceMs": 250
+  },
+  "diagnosticModes": [
+    {
+      "id": "source-reresolution",
+      "label": "Source re-resolution",
+      "producesReportRecords": false,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
+      "postOperationShape": {
+        "Q8176/R16": {"graphSnapshotDependencyEdges": null},
+        "D2064/report-heavy": {"graphSnapshotDependencyEdges": null}
+      },
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    },
+    {
+      "id": "complete-registration",
+      "label": "complete registration",
+      "producesReportRecords": false,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
+      "postOperationShape": {
+        "D2064/report-heavy": {"graphSnapshotDependencyEdges": 1}
+      },
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    },
+    {
+      "id": "coverage",
+      "label": "coverage",
+      "producesReportRecords": true,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 416},
+      "postOperationShape": {
+        "D2064/report-heavy": {"graphSnapshotDependencyEdges": 1}
+      },
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    },
+    {
+      "id": "restore",
+      "label": "Restore",
+      "producesReportRecords": true,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 416},
+      "postOperationShape": {
+        "Q8176/R16": {"rosterRecords": 0},
+        "D2064/report-heavy": {"rosterRecords": 0, "graphSnapshotDependencyEdges": 1}
+      },
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    },
+    {
+      "id": "cold-reopen",
+      "label": "cold reopen",
+      "producesReportRecords": false,
+      "minimumOperationReportRecords": {"Q8176/R16": 0, "D2064/report-heavy": 0},
+      "postOperationShape": {
+        "D2064/report-heavy": {"graphSnapshotDependencyEdges": 1}
+      },
+      "fixtures": ["Q8176/R16", "D2064/report-heavy"]
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "Q513/R3/D0",
+      "qualifiedMaterials": 513,
+      "qualifiedRevisions": 3,
+      "ineligibleCandidates": 0,
+      "dominantShape": "old-512-boundary",
+      "shape": {
+        "candidateRevisions": 3,
+        "qualifiedRevisions": 3,
+        "qualifiedMaterials": 513,
+        "ineligibleCandidates": 0,
+        "rosterRecords": 513
+      }
+    },
+    {
+      "id": "Q513/R3/D516",
+      "qualifiedMaterials": 513,
+      "qualifiedRevisions": 3,
+      "ineligibleCandidates": 516,
+      "dominantShape": "ineligible-candidate-growth",
+      "shape": {
+        "candidateRevisions": 519,
+        "qualifiedRevisions": 3,
+        "qualifiedMaterials": 513,
+        "ineligibleCandidates": 516,
+        "rosterRecords": 513
+      }
+    },
+    {
+      "id": "Q2044/R1022",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": 1022,
+      "ineligibleCandidates": null,
+      "dominantShape": "many-small-revisions",
+      "shape": {
+        "candidateRevisions": 1022,
+        "qualifiedRevisions": 1022,
+        "qualifiedMaterials": 2044,
+        "rosterRecords": 2044
+      }
+    },
+    {
+      "id": "Q2044/R4",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": 4,
+      "ineligibleCandidates": null,
+      "dominantShape": "few-large-revisions",
+      "shape": {
+        "candidateRevisions": 4,
+        "qualifiedRevisions": 4,
+        "qualifiedMaterials": 2044,
+        "rosterRecords": 2044
+      }
+    },
+    {
+      "id": "Q2044/byte-heavy",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": null,
+      "ineligibleCandidates": null,
+      "dominantShape": "large-payload-envelope-live-source-within-per-revision-limits",
+      "shape": {
+        "candidateRevisions": 4,
+        "qualifiedMaterials": 2044,
+        "rosterRecords": 2044
+      }
+    },
+    {
+      "id": "Q2044/evidence-shared",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": null,
+      "ineligibleCandidates": null,
+      "dominantShape": "evidence-reused-across-revisions",
+      "shape": {
+        "candidateRevisions": 4,
+        "qualifiedMaterials": 2044,
+        "evidenceRecords": 1020,
+        "dependencyEdges": 1028,
+        "rosterRecords": 2044
+      },
+      "observedShape": {
+        "graphSnapshotDependencyEdges": 257
+      }
+    },
+    {
+      "id": "Q2044/evidence-unique",
+      "qualifiedMaterials": 2044,
+      "qualifiedRevisions": null,
+      "ineligibleCandidates": null,
+      "dominantShape": "many-independent-evidence-edges",
+      "shape": {
+        "candidateRevisions": 4,
+        "qualifiedMaterials": 2044,
+        "evidenceRecords": 1020,
+        "dependencyEdges": 1028,
+        "rosterRecords": 2044
+      },
+      "observedShape": {
+        "graphSnapshotDependencyEdges": 1025
+      }
+    },
+    {
+      "id": "Q8176/R16",
+      "qualifiedMaterials": 8176,
+      "qualifiedRevisions": 16,
+      "ineligibleCandidates": null,
+      "dominantShape": "material-count-growth",
+      "shape": {
+        "candidateRevisions": 16,
+        "qualifiedRevisions": 16,
+        "qualifiedMaterials": 8176,
+        "rosterRecords": 8176
+      }
+    },
+    {
+      "id": "D2064/report-heavy",
+      "qualifiedMaterials": null,
+      "qualifiedRevisions": null,
+      "ineligibleCandidates": 2064,
+      "dominantShape": "full-set-validation-report-accumulation",
+      "shape": {
+        "candidateRevisions": 2064,
+        "ineligibleCandidates": 2064,
+        "dependencyEdges": 4128,
+        "reportRecords": 416
+      },
+      "observedShape": {
+        "graphSnapshotDependencyEdges": 1
+      }
+    }
+  ],
+  "requiredMetrics": [
+    "diagnosticMode",
+    "candidateRevisionCount",
+    "qualifiedRevisionCount",
+    "payloadBytes",
+    "envelopeBytes",
+    "liveSourceBytes",
+    "rosterRecordCount",
+    "dependencyEdgeCount",
+    "reportRecordCount",
+    "totalPeakMemory",
+    "rustHeapRequestedHighWater",
+    "totalPeakRss",
+    "rss",
+    "hwmRss",
+    "ruMaxrss",
+    "sqliteMemory",
+    "wallTime",
+    "cpuTime",
+    "statementVmSteps",
+    "lifecycleVmStepsUpperBound",
+    "sqlConnectionCoverage",
+    "progressCallbacks",
+    "readBytes",
+    "writeBytes",
+    "temporaryBytes",
+    "temporaryDiskLogicalHighWaterUpperBound",
+    "connectionOccupancy",
+    "publishOccupancy",
+    "foregroundWait",
+    "cancelLatency",
+    "interruptionPhaseProofs"
+  ],
+  "notMeasuredPolicy": "Null is not zero. statementVmSteps remains a PROFILE-visible lower bound. lifecycleVmStepsUpperBound separately counts cadence-one callbacks on the audited SQLite source, including internal VMs and preparation; interrupted/incomplete scopes cannot claim it. temporaryDisk separately bounds total logical file high-water from initial files, Linux successful writes/copies and SQLite VFS file/SHM growth, including WAL/journals and Restore copies; it is not filesystem metadata/preallocation usage. Interruption probes require phase, kind and early/late trigger evidence. A not-run cancel has null latency and provenance; measured cancellation requires complete phase evidence. Restore file installation has no cancellation API; its shutdown/Join and crash recovery proof is recorded separately, never inferred from validation probes.",
+  "supportedCapacity": "Runtime counts/bytes/SQL/cooperative deadline are ratified in docs/plans/nir1-b-close-completion-2026-09-22.md; source constants are in nir1_capacity.rs. A diagnostic result is measurement evidence, not a capacity or activation approval."
+}

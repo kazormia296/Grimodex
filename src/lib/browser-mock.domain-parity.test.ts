@@ -5,6 +5,7 @@ import {
   type EventForVerify,
 } from "@/features/timelapse/hashChain";
 import { createBrowserMock, type PersistentBrowserMock } from "./browser-mock";
+import { withCanonicalWriterTestContext } from "./browser-mock.canonical-test-context";
 
 async function query(
   mock: PersistentBrowserMock,
@@ -29,7 +30,12 @@ async function run(
 describe("browser mock project delete", () => {
   it("validates the typed payload, cascades the row, and dirties only on change", async () => {
     const onDatabaseDirty = vi.fn();
-    const mock = await createBrowserMock({ onDatabaseDirty });
+    const mock = withCanonicalWriterTestContext(
+      await createBrowserMock({
+        onDatabaseDirty,
+        allowProtectedWriterTestFixtures: true,
+      }),
+    );
     try {
       await run(
         mock,
@@ -116,7 +122,12 @@ describe("browser mock Plot command parity", () => {
 
   beforeEach(async () => {
     onDatabaseDirty = vi.fn<() => void>();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({
+        onDatabaseDirty,
+        allowProtectedWriterTestFixtures: true,
+      }),
+    );
     await run(
       mock,
       `INSERT INTO tree_nodes
@@ -224,7 +235,7 @@ describe("browser mock Plot command parity", () => {
         id: "plot-scene-type-link",
         patch: { nodeId: "plot-folder", baseVersion: 0 },
       }),
-    ).rejects.toThrow("owning project");
+    ).rejects.toThrow("same project");
     await expect(
       mock.invoke("plot_thread_branch_update", {
         id: "plot-scene-type-branch",
@@ -427,7 +438,7 @@ describe("browser mock Plot command parity", () => {
         id: "plot-thread-a",
         patch: { name: "stale", baseVersion: 0 },
       }),
-    ).rejects.toThrow("version conflict");
+    ).rejects.toThrow("VERSION_MISMATCH");
     await expect(
       mock.invoke("plot_thread_link_update", {
         id: "plot-link",
@@ -718,7 +729,7 @@ describe("browser mock Plot command parity", () => {
           baseVersion: 0,
         },
       }),
-    ).rejects.toThrow("must stay within its owning project");
+    ).rejects.toThrow("must stay within the same project");
     expect(
       await query(
         mock,
@@ -735,7 +746,12 @@ describe("browser mock Foreshadow command parity", () => {
 
   beforeEach(async () => {
     onDatabaseDirty = vi.fn<() => void>();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({
+        onDatabaseDirty,
+        allowProtectedWriterTestFixtures: true,
+      }),
+    );
     await run(
       mock,
       `INSERT INTO tree_nodes
@@ -759,7 +775,12 @@ describe("browser mock Foreshadow command parity", () => {
   it("does not mark an anchor save dirty when it executes no mutation", async () => {
     mock.close();
     const onDatabaseDirty = vi.fn();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({
+        onDatabaseDirty,
+        allowProtectedWriterTestFixtures: true,
+      }),
+    );
     await run(
       mock,
       `INSERT INTO tree_nodes
@@ -781,7 +802,7 @@ describe("browser mock Foreshadow command parity", () => {
     expect(onDatabaseDirty).not.toHaveBeenCalled();
   });
 
-  it("persists CRUD, setup/orphan, Codex link, dirty, strength, and anchor commands", async () => {
+  it("persists CRUD, setup/orphan, Codex-linked dirty state, strength, and anchor commands", async () => {
     await mock.invoke("foreshadow_create", {
       payload: {
         id: "fs-plain",
@@ -889,10 +910,20 @@ describe("browser mock Foreshadow command parity", () => {
       codexId: "fs-codex",
       baseVersion: 6,
     });
-    await mock.invoke("foreshadow_mark_linked_codex_dirty", {
-      projectId: "default-project",
-      codexEntryId: "fs-codex",
+    const codexWrite = await mock.invoke<{
+      relatedForeshadows: Array<{ id: string; version: number }>;
+    }>("agent_codex_update", {
+      payload: {
+        projectId: "default-project",
+        surface: "manual",
+        entryId: "fs-codex",
+        baseVersion: 0,
+        name: "Linked renamed",
+      },
     });
+    expect(codexWrite.relatedForeshadows).toEqual([
+      expect.objectContaining({ id: "fs-plain", version: 8 }),
+    ]);
     expect(
       await query(
         mock,
@@ -958,10 +989,16 @@ describe("browser mock Foreshadow command parity", () => {
       baseVersion: 9,
     });
     await mock.invoke("foreshadow_delete", {
-      id: "fs-plain",
-      projectId: "default-project",
-      sessionId: "fs-domain-parity",
-      baseVersion: 10,
+      payload: {
+        id: "fs-plain",
+        projectId: "default-project",
+        requestId: "fs-plain-delete",
+        sessionId: "fs-domain-parity",
+        eventUid: "fs-plain-delete-event",
+        origin: "human",
+        originalTransactionId: null,
+        baseVersion: 10,
+      },
     });
     expect(
       await query(mock, "SELECT id FROM foreshadows WHERE id = 'fs-plain'"),
@@ -986,6 +1023,17 @@ describe("browser mock Foreshadow command parity", () => {
     );
 
     await expect(
+      mock.invoke("agent_foreshadow_create", {
+        payload: {
+          foreshadowId: "fs-missing-request",
+          projectId: "default-project",
+          sessionId: "fs-typed-session",
+          title: "Rejected without identity",
+          secret: true,
+        },
+      }),
+    ).rejects.toThrow("requestId");
+    await expect(
       mock.invoke("foreshadow_update", {
         id: "fs-typed-guard",
         patch: { baseVersion: 0, payoffConfirmed: "false" },
@@ -1000,6 +1048,18 @@ describe("browser mock Foreshadow command parity", () => {
     await expect(
       mock.invoke("agent_foreshadow_update", {
         payload: {
+          projectId: "default-project",
+          sessionId: "fs-typed-session",
+          foreshadowId: "fs-typed-guard",
+          baseVersion: 0,
+          title: "Rejected without identity",
+        },
+      }),
+    ).rejects.toThrow("requestId");
+    await expect(
+      mock.invoke("agent_foreshadow_update", {
+        payload: {
+          requestId: "agent-fs-typed-invalid",
           projectId: "default-project",
           sessionId: "fs-typed-session",
           foreshadowId: "fs-typed-guard",
@@ -1244,6 +1304,21 @@ describe("browser mock Foreshadow command parity", () => {
           SET semantic_key = semantic_key || '#dup:' || id
         WHERE id = 'fs-identity-guard'`,
     );
+    // This raw SQL is an intentional fixture-only mutation used to model a
+    // duplicate semantic suffix. It has no canonical writer receipt, so
+    // discard the pre-fixture history before the next typed write rather than
+    // pretending that the old Feed head still describes the modified row.
+    for (const table of [
+      "narrative_change_events",
+      "narrative_change_transactions",
+      "narrative_change_cursors",
+      "narrative_change_sets",
+      "undo_journal",
+      "change_events",
+      "idempotency_requests",
+    ]) {
+      await run(mock, `DELETE FROM ${table}`);
+    }
     await mock.invoke("foreshadow_save_anchors_for_scene", {
       sceneId: "fs-scene-b",
       setups: [
@@ -1489,27 +1564,40 @@ describe("browser mock Foreshadow command parity", () => {
     });
     expect(created.undoJournalId).toBe("agent-fs-create-request");
     expect(created.version).toBe(0);
+    const updatePayload = {
+      requestId: "agent-fs-update-request",
+      projectId: "default-project",
+      sessionId: "agent-fs-session",
+      foreshadowId: "agent-fs",
+      baseVersion: 0,
+      title: "Agent after",
+      intent: null,
+      notes: null,
+      loadBearing: "supporting",
+      payoffConfirmed: null,
+      abandoned: null,
+      secret: null,
+    };
     const updated = await mock.invoke<{
       entityId: string;
       version: number;
       changeEventUid: string;
       undoJournalId: string;
     }>("agent_foreshadow_update", {
-      payload: {
-        projectId: "default-project",
-        sessionId: "agent-fs-session",
-        foreshadowId: "agent-fs",
-        baseVersion: 0,
-        title: "Agent after",
-        intent: null,
-        notes: null,
-        loadBearing: "supporting",
-        payoffConfirmed: null,
-        abandoned: null,
-        secret: null,
-      },
+      payload: updatePayload,
     });
+    expect(updated.undoJournalId).toBe("agent-fs-update-request");
     expect(updated.version).toBe(1);
+    await expect(
+      mock.invoke("agent_foreshadow_update", {
+        payload: { ...updatePayload, sessionId: "agent-fs-retry-session" },
+      }),
+    ).resolves.toEqual(updated);
+    await expect(
+      mock.invoke("agent_foreshadow_update", {
+        payload: { ...updatePayload, title: "Conflicting retry" },
+      }),
+    ).rejects.toThrow("AGENT_FORESHADOW_UPDATE_IDEMPOTENCY_CONFLICT");
     expect(
       await query(
         mock,
@@ -1546,6 +1634,7 @@ describe("browser mock Foreshadow command parity", () => {
     await expect(
       mock.invoke("agent_foreshadow_update", {
         payload: {
+          requestId: "agent-fs-stale-aba-request",
           projectId: "default-project",
           sessionId: "agent-fs-session",
           foreshadowId: "agent-fs",
@@ -1665,7 +1754,9 @@ describe("browser mock scene-event batch tracked write", () => {
   let mock: PersistentBrowserMock;
 
   beforeEach(async () => {
-    mock = await createBrowserMock();
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({ allowProtectedWriterTestFixtures: true }),
+    );
     await run(
       mock,
       `INSERT INTO projects (id, title, language) VALUES ('foreign-project', 'Foreign', 'ja')`,
@@ -1852,14 +1943,26 @@ describe("browser mock scene-event batch tracked write", () => {
       ),
     ).toEqual([{ journals: 1, changes: 1 }]);
 
-    await run(
-      mock,
-      "DELETE FROM scene_events WHERE scene_id = 'batch-existing' AND event_id = 'batch-event'",
-    );
-    await run(
-      mock,
-      "INSERT INTO scene_events (scene_id, event_id) VALUES ('batch-later', 'batch-event')",
-    );
+    await mock.invoke("agent_scene_event_unlink", {
+      payload: {
+        requestId: "browser-batch-unlink-existing",
+        projectId: "default-project",
+        sessionId: "batch-session",
+        surface: "manual",
+        eventId: "batch-event",
+        sceneId: "batch-existing",
+      },
+    });
+    await mock.invoke("agent_scene_event_link", {
+      payload: {
+        requestId: "browser-batch-link-later",
+        projectId: "default-project",
+        sessionId: "batch-session",
+        surface: "manual",
+        eventId: "batch-event",
+        sceneId: "batch-later",
+      },
+    });
     await mock.invoke("agent_apply_undo_journal", {
       payload: {
         requestId: "browser-batch-undo",
@@ -1901,14 +2004,18 @@ describe("browser mock scene-event batch tracked write", () => {
       "event.stamp",
       "event.unstamp",
       "event.stamp",
+      "event.unstamp",
+      "event.stamp",
     ]);
     expect(
-      batchChanges.map(
-        (change) =>
-          (JSON.parse(String(change.payload)) as { sceneIds: string[] })
-            .sceneIds,
-      ),
-    ).toEqual([["batch-new"], ["batch-new"], ["batch-new"]]);
+      batchChanges.map((change) => JSON.parse(String(change.payload))),
+    ).toEqual([
+      expect.objectContaining({ sceneIds: ["batch-new"] }),
+      expect.objectContaining({ sceneId: "batch-existing" }),
+      expect.objectContaining({ sceneId: "batch-later" }),
+      expect.objectContaining({ sceneIds: ["batch-new"] }),
+      expect.objectContaining({ sceneIds: ["batch-new"] }),
+    ]);
 
     const beforeFailure = await query(
       mock,
@@ -2096,39 +2203,27 @@ describe("browser mock scene-event batch tracked write", () => {
         )
       )[0].incarnation_token,
     );
-    const linkedSnapshot = JSON.stringify({
-      snapshotKind: "sceneEventLinkBatch",
-      eventId: "batch-event",
-      sceneIds: ["batch-new"],
-      linked: true,
-      incarnationTokens: { "batch-new": firstToken },
-    });
-    const unlinkedSnapshot = JSON.stringify({
-      snapshotKind: "sceneEventLinkBatch",
-      eventId: "batch-event",
-      sceneIds: ["batch-new"],
-      linked: false,
-    });
-    await run(
-      mock,
-      `INSERT INTO undo_journal
-        (id, project_id, surface, entity_kind, entity_id, op_kind,
-         before_json, after_json, base_version, result_version, created_at)
-       VALUES ('browser-batch-chain-unlink', 'default-project', 'test',
-               'event', 'batch-event', 'update', ?, ?, 7, 7, datetime('now'))`,
-      [linkedSnapshot, unlinkedSnapshot],
+    const unlink = await mock.invoke<{ undoJournalId: string }>(
+      "agent_scene_event_unlink",
+      {
+        payload: {
+          requestId: "browser-batch-chain-unlink",
+          projectId: "default-project",
+          sessionId: "batch-session",
+          surface: "manual",
+          eventId: "batch-event",
+          sceneId: "batch-new",
+        },
+      },
     );
-    await run(
-      mock,
-      "DELETE FROM scene_events WHERE scene_id = 'batch-new' AND event_id = 'batch-event'",
-    );
+    expect(unlink.undoJournalId).toBe("browser-batch-chain-unlink");
 
     await mock.invoke("agent_apply_undo_journal", {
       payload: {
         requestId: "browser-batch-chain-undo-unlink",
         projectId: "default-project",
         sessionId: "batch-session",
-        journalId: "browser-batch-chain-unlink",
+        journalId: unlink.undoJournalId,
         direction: "undo",
       },
     });
@@ -2185,7 +2280,7 @@ describe("browser mock scene-event batch tracked write", () => {
         requestId: "browser-batch-chain-redo-unlink",
         projectId: "default-project",
         sessionId: "batch-session",
-        journalId: "browser-batch-chain-unlink",
+        journalId: unlink.undoJournalId,
         direction: "redo",
       },
     });

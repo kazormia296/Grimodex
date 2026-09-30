@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompletedTurnPersistenceInput } from "./pendingCompletedTurnPersistence";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const persistenceMocks = vi.hoisted(() => {
   const deleteWhere = vi.fn().mockResolvedValue(undefined);
@@ -11,7 +12,11 @@ const persistenceMocks = vi.hoisted(() => {
     deleteFrom: vi.fn(() => ({ where: deleteWhere })),
     selectWhere,
     selectFrom: vi.fn(() => ({ where: selectWhere })),
-    invokeTypedWriter: vi.fn().mockResolvedValue(undefined),
+    invokeTypedWriter: vi.fn().mockResolvedValue({
+      changeEventUid: "delete-change-event",
+      maintenanceTransactionId: "delete-maintenance-transaction",
+      undoJournalId: "delete-undo-journal",
+    }),
     scheduleImeExportRefresh: vi.fn(),
   };
 });
@@ -54,7 +59,7 @@ const deletionTargets = [
   },
   {
     name: "Snippet",
-    persistenceKind: "scoped-delete" as const,
+    persistenceKind: "snippet-typed" as const,
     run: () => deleteSnippet("project-1", "snippet-1"),
   },
 ] as const;
@@ -108,6 +113,7 @@ describe.each(deletionTargets)(
   "$name low-level deletion",
   ({ name, persistenceKind, run }) => {
     beforeEach(() => {
+      publishCurrentProjectId("project-1");
       pendingCompletedTurnPersistence.discard();
       persistenceMocks.deleteFrom.mockClear();
       persistenceMocks.deleteWhere.mockClear();
@@ -118,6 +124,7 @@ describe.each(deletionTargets)(
     });
 
     afterEach(() => {
+      publishCurrentProjectId(null);
       pendingCompletedTurnPersistence.discard();
     });
 
@@ -141,7 +148,7 @@ describe.each(deletionTargets)(
         expect(persistenceMocks.selectFrom).toHaveBeenCalledOnce();
         expect(persistenceMocks.selectWhere).toHaveBeenCalledOnce();
         expect(persistenceMocks.invokeTypedWriter).toHaveBeenCalledWith(
-          "agent_codex_delete",
+          "codex_delete",
           {
             payload: expect.objectContaining({
               projectId: "project-1",
@@ -152,10 +159,19 @@ describe.each(deletionTargets)(
         );
         expect(persistenceMocks.deleteFrom).not.toHaveBeenCalled();
       } else {
-        expect(persistenceMocks.deleteFrom).toHaveBeenCalledOnce();
-        expect(persistenceMocks.deleteWhere).toHaveBeenCalledOnce();
-        expect(persistenceMocks.selectFrom).not.toHaveBeenCalled();
-        expect(persistenceMocks.invokeTypedWriter).not.toHaveBeenCalled();
+        expect(persistenceMocks.selectFrom).toHaveBeenCalledOnce();
+        expect(persistenceMocks.selectWhere).toHaveBeenCalledOnce();
+        expect(persistenceMocks.invokeTypedWriter).toHaveBeenCalledWith(
+          "snippet_delete",
+          {
+            payload: expect.objectContaining({
+              projectId: "project-1",
+              snippetId: "snippet-1",
+              baseVersion: 7,
+            }),
+          },
+        );
+        expect(persistenceMocks.deleteFrom).not.toHaveBeenCalled();
       }
     });
 
@@ -178,10 +194,13 @@ describe.each(deletionTargets)(
         expect(persistenceMocks.invokeTypedWriter).toHaveBeenCalledOnce();
         expect(persistenceMocks.deleteFrom).not.toHaveBeenCalled();
       } else {
-        expect(persistenceMocks.deleteFrom).toHaveBeenCalledOnce();
-        expect(persistenceMocks.deleteWhere).toHaveBeenCalledOnce();
-        expect(persistenceMocks.selectFrom).not.toHaveBeenCalled();
-        expect(persistenceMocks.invokeTypedWriter).not.toHaveBeenCalled();
+        expect(persistenceMocks.selectFrom).toHaveBeenCalledOnce();
+        expect(persistenceMocks.selectWhere).toHaveBeenCalledOnce();
+        expect(persistenceMocks.invokeTypedWriter).toHaveBeenCalledWith(
+          "snippet_delete",
+          expect.any(Object),
+        );
+        expect(persistenceMocks.deleteFrom).not.toHaveBeenCalled();
       }
     });
   },

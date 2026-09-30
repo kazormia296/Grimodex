@@ -1,12 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-    types: [opened, synchronize, reopened]
-  schedule:
-    - cron: "17 18 * * *"
+  # Automatic PR, push, and scheduled runs are paused while this source
+  # repository is private. Keep explicit/manual and release-call entrypoints
+  # available so an operator can resume CI deliberately when needed.
   workflow_dispatch:
     inputs:
       product_journey_mode:
@@ -114,6 +111,8 @@ jobs:
         run: pnpm build:workspace:dependencies
 
       - name: 型チェック
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm exec tsc --noEmit
 
       - name: Lint
@@ -129,6 +128,8 @@ jobs:
         run: pnpm test:node --run
 
       - name: Web Editor-only production artifact
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:web-editor
 
   lfm-encoder-phase0:
@@ -385,6 +386,7 @@ jobs:
           scripts/electron-product-journey-cleanup-results.test.mjs
           scripts/electron-product-journeys.test.mjs
           scripts/generate-licenses.test.mjs
+          scripts/license-policy.test.mjs
           scripts/semantic-reranker-release.test.mjs
 
       - name: Electron type-check
@@ -394,6 +396,8 @@ jobs:
         run: pnpm test:electron --run
 
       - name: Electron production build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
       - name: Renderer performance budget
@@ -451,6 +455,8 @@ jobs:
         run: pnpm exec playwright install-deps chromium
 
       - name: Build development native module and production Electron app
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           pnpm napi:build
           pnpm electron:build
@@ -565,6 +571,8 @@ jobs:
 
       - name: Build native module and production Electron app
         if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           pnpm napi:build
           pnpm electron:build
@@ -578,8 +586,19 @@ jobs:
       - name: Product journey gate
         if: steps.product-journey-impact.outputs.should_run == 'true'
         env:
-          GRIMODEX_PRODUCT_JOURNEY_IDS: ${{ steps.product-journey-impact.outputs.execution_journey_ids }}
-        run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys
+          GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL: "true"
+          GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST: ${{ steps.product-journey-impact.outputs.catalog_digest }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${GRIMODEX_PRODUCT_JOURNEY_IDS:-}" ]]; then
+            echo "Full product journey gate rejects GRIMODEX_PRODUCT_JOURNEY_IDS subset execution" >&2
+            exit 1
+          fi
+          if [[ -n "${GRIMODEX_PRODUCT_JOURNEY_SET:-}" ]]; then
+            echo "Full product journey gate rejects GRIMODEX_PRODUCT_JOURNEY_SET subset execution" >&2
+            exit 1
+          fi
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys
 
       - name: Upload product journey failure artifacts
         if: always()
@@ -669,6 +688,8 @@ jobs:
           }
 
       - name: Build Electron JavaScript
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
       # This job validates electron-builder's two makensis passes, not the
@@ -921,6 +942,10 @@ jobs:
           -p grimodex-db
           --features test-failpoints
           --test workspace_migration_supervisor
+
+      - name: Migration recovery failpoint library tests
+        working-directory: src-tauri
+        run: cargo test -p grimodex-db --features test-failpoints --lib
 
       - name: Safe Mode structured outcome + restore-by-id
         working-directory: src-tauri

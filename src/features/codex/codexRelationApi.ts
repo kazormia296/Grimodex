@@ -7,7 +7,10 @@ import {
 } from "@/features/codex/extraction/relationVocabulary";
 import { notifyCodexRelationsChanged } from "./codexRelationEvents";
 import { invoke } from "@/lib/tauri";
-import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
 
 export type CodexRelationRow = typeof codexRelations.$inferSelect;
 export type NewCodexRelation = typeof codexRelations.$inferInsert;
@@ -65,6 +68,7 @@ export async function createCodexRelation(
     directionality?: CodexRelationDirectionalityStored;
     inverseLabel?: string | null;
   },
+  options: { writeContext?: CanonicalWriteContext } = {},
 ): Promise<CodexRelationRow> {
   const directionality = data.directionality ?? "directed";
   const forwardLabel = data.label ?? "";
@@ -83,11 +87,11 @@ export async function createCodexRelation(
     inverseLabel,
   });
   const id = data.id ?? crypto.randomUUID();
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "relation.create",
       projectId: data.projectId,
-      sessionId: getRecorderSessionId(),
+      ...(options.writeContext ?? createCanonicalWriteContext()),
       surface: "manual",
       relationId: id,
       fromCodexId: data.fromCodexId,
@@ -119,11 +123,11 @@ export async function deleteCodexRelation(id: string): Promise<void> {
     .limit(1);
   const projectId = existing[0]?.projectId;
   if (!projectId) return;
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "relation.delete",
       projectId,
-      sessionId: getRecorderSessionId(),
+      ...createCanonicalWriteContext(),
       surface: "manual",
       relationId: id,
     },

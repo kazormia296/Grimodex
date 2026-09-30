@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { setPermissionRequestHandler, setPermissionCheckHandler } = vi.hoisted(
-  () => ({
-    setPermissionRequestHandler: vi.fn(),
-    setPermissionCheckHandler: vi.fn(),
-  }),
-);
+const {
+  setPermissionRequestHandler,
+  setPermissionCheckHandler,
+  openExternal,
+} = vi.hoisted(() => ({
+  setPermissionRequestHandler: vi.fn(),
+  setPermissionCheckHandler: vi.fn(),
+  openExternal: vi.fn(),
+}));
 
 vi.mock("electron", () => ({
   protocol: {
@@ -18,13 +21,16 @@ vi.mock("electron", () => ({
       setPermissionCheckHandler,
     },
   },
-  shell: { openExternal: vi.fn() },
+  shell: { openExternal },
 }));
 
 import {
   applySessionPermissionPolicy,
+  isAllowedNavigation,
   isAllowedRendererPermission,
   isTrustedRendererUrl,
+  registerSecurityHandlers,
+  setExternalEgressGate,
 } from "./security.js";
 
 const savedRendererUrl = process.env.ELECTRON_RENDERER_URL;
@@ -33,9 +39,12 @@ beforeEach(() => {
   delete process.env.ELECTRON_RENDERER_URL;
   setPermissionRequestHandler.mockClear();
   setPermissionCheckHandler.mockClear();
+  openExternal.mockClear();
+  setExternalEgressGate(null);
 });
 
 afterEach(() => {
+  setExternalEgressGate(null);
   if (savedRendererUrl === undefined) {
     delete process.env.ELECTRON_RENDERER_URL;
   } else {
@@ -125,6 +134,32 @@ describe("isAllowedRendererPermission", () => {
   });
 });
 
+describe("isAllowedNavigation", () => {
+  it("production は app://bundle の同一 origin reload だけを許可する", () => {
+    expect(isAllowedNavigation("app://bundle/index.html")).toBe(true);
+    expect(
+      isAllowedNavigation("app://bundle/index.html?window=panel&panel=chat"),
+    ).toBe(true);
+    expect(isAllowedNavigation("app://other/index.html")).toBe(false);
+    expect(isAllowedNavigation("app://bundle.evil/index.html")).toBe(false);
+    expect(isAllowedNavigation("app://user:pass@bundle/index.html")).toBe(
+      false,
+    );
+    expect(isAllowedNavigation("app://bundle/settings.html")).toBe(false);
+    expect(isAllowedNavigation("https://example.com/")).toBe(false);
+  });
+
+  it("development は ELECTRON_RENDERER_URL と同一 origin だけを許可する", () => {
+    process.env.ELECTRON_RENDERER_URL = "http://localhost:1430";
+    expect(isAllowedNavigation("http://localhost:1430/")).toBe(true);
+    expect(isAllowedNavigation("http://localhost:1430/?reload=1")).toBe(
+      true,
+    );
+    expect(isAllowedNavigation("http://localhost:1431/")).toBe(false);
+    expect(isAllowedNavigation("app://bundle/index.html")).toBe(false);
+  });
+});
+
 describe("applySessionPermissionPolicy", () => {
   it("request/check の両 handler を同じ policy へ接続する", () => {
     applySessionPermissionPolicy();
@@ -179,5 +214,39 @@ describe("applySessionPermissionPolicy", () => {
         { requestingUrl: "app://bundle/index.html", isMainFrame: true },
       ),
     ).toBe(false);
+  });
+});
+
+describe("external egress gate", () => {
+  it("refuses shell.openExternal while profile publication is restricted", () => {
+    type FakeContents = {
+      on: ReturnType<typeof vi.fn>;
+      setWindowOpenHandler: ReturnType<typeof vi.fn>;
+    };
+    const app = { on: vi.fn() };
+    setExternalEgressGate(() => {
+      throw new Error("D2A_EGRESS_DENIED: external URL opening is disabled");
+    });
+    registerSecurityHandlers(app as never);
+
+    const contents: FakeContents = {
+      on: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+    };
+    const createdHandler = app.on.mock.calls.find(
+      ([event]) => event === "web-contents-created",
+    )?.[1] as
+      | ((event: unknown, contents: FakeContents) => void)
+      | undefined;
+    expect(createdHandler).toBeDefined();
+    createdHandler?.({}, contents);
+    const openHandler = contents.setWindowOpenHandler.mock.calls[0]?.[0] as
+      | ((details: { url: string }) => { action: string })
+      | undefined;
+
+    expect(openHandler?.({ url: "https://example.com/" })).toEqual({
+      action: "deny",
+    });
+    expect(openExternal).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
     CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
@@ -21,8 +24,7 @@ type PatchReplayRootState = (
 );
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.execute(
         "INSERT INTO projects (id, title) VALUES (?, 'Project')",
         &[Value::String("project-1".to_string())],
@@ -232,7 +234,7 @@ fn undo_payload(commit_id: &str) -> UndoCommitPayload {
         session_id: "sess-foreshadow".to_string(),
         surface: None,
         commit_id: Some(commit_id.to_string()),
-        request_id: None,
+        request_id: Some(format!("foreshadow-replay:{commit_id}")),
     }
 }
 

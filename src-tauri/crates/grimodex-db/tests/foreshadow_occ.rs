@@ -1,17 +1,40 @@
-use std::path::Path;
+#[path = "../test-support/adapter.rs"]
+mod test_support;
 
 use grimodex_db::{
     agent_writes::{
         agent_foreshadow_update_impl, agent_undo_journal_impl, AgentForeshadowUpdatePayload,
         AgentUndoJournalPayload,
     },
-    foreshadow, Database,
+    foreshadow::{self, ForeshadowDeletePayload, RendererWriteContext},
+    narrative_extraction::change_feed::NarrativeChangeOrigin,
+    Database,
 };
 use serde_json::{json, Value};
 
+fn delete_payload(
+    id: &str,
+    project_id: &str,
+    base_version: i64,
+    request_id: &str,
+) -> ForeshadowDeletePayload {
+    ForeshadowDeletePayload {
+        id: id.to_string(),
+        project_id: project_id.to_string(),
+        base_version,
+        context: RendererWriteContext {
+            request_id: request_id.to_string(),
+            session_id: "manual-session".to_string(),
+            event_uid: format!("{request_id}-event"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        },
+    }
+}
+
 fn test_db() -> Database {
-    let db = Database::new(Path::new(":memory:")).expect("open test database");
-    db.migrate().expect("migrate test database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES ('p1', 'Project');
@@ -62,11 +85,22 @@ fn apply_journal(db: &Database, journal_id: &str, direction: &str) -> anyhow::Re
     agent_undo_journal_impl(
         db,
         AgentUndoJournalPayload {
-            request_id: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
             project_id: "p1".to_string(),
             session_id: "history-session".to_string(),
             journal_id: journal_id.to_string(),
             direction: direction.to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: direction.to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: vec![
+                "original-transaction".to_string(),
+                "journal-lineage".to_string(),
+                "typed-writer".to_string(),
+                "occ".to_string(),
+                "change-event".to_string(),
+                "change-feed".to_string(),
+            ],
         },
     )
 }
@@ -171,14 +205,8 @@ fn assert_full_aggregate(db: &Database, expected_version: i64, expected_title: &
 #[test]
 fn manual_delete_restores_full_aggregate_and_advances_generation_each_cycle() {
     let db = test_db();
-    let receipt = foreshadow::delete(
-        &db,
-        "f1".to_string(),
-        "p1".to_string(),
-        0,
-        "manual-session".to_string(),
-    )
-    .expect("delete aggregate");
+    let receipt = foreshadow::delete(&db, delete_payload("f1", "p1", 0, "delete-f1"))
+        .expect("delete aggregate");
     let journal_id = receipt["undoJournalId"]
         .as_str()
         .expect("delete journal id");
@@ -198,14 +226,8 @@ fn manual_delete_restores_full_aggregate_and_advances_generation_each_cycle() {
     assert!(replay.to_string().contains("still exists"));
     assert_full_aggregate(&db, 2, "Original");
 
-    let stale_delete = foreshadow::delete(
-        &db,
-        "f1".to_string(),
-        "p1".to_string(),
-        0,
-        "stale-session".to_string(),
-    )
-    .expect_err("pre-delete token must remain stale after restore");
+    let stale_delete = foreshadow::delete(&db, delete_payload("f1", "p1", 0, "stale-delete-f1"))
+        .expect_err("pre-delete token must remain stale after restore");
     assert!(stale_delete
         .to_string()
         .contains("FORESHADOW_VERSION_MISMATCH"));
@@ -216,6 +238,7 @@ fn manual_delete_restores_full_aggregate_and_advances_generation_each_cycle() {
 fn stacked_update_and_delete_history_keeps_monotonic_tokens_and_children() {
     let db = test_db();
     let update_payload: AgentForeshadowUpdatePayload = serde_json::from_value(json!({
+        "requestId": "update-f1",
         "projectId": "p1",
         "sessionId": "agent-session",
         "foreshadowId": "f1",
@@ -227,14 +250,8 @@ fn stacked_update_and_delete_history_keeps_monotonic_tokens_and_children() {
     let update_journal = update["undoJournalId"].as_str().expect("update journal id");
     assert_full_aggregate(&db, 1, "Updated");
 
-    let delete = foreshadow::delete(
-        &db,
-        "f1".to_string(),
-        "p1".to_string(),
-        1,
-        "manual-session".to_string(),
-    )
-    .expect("delete after update");
+    let delete = foreshadow::delete(&db, delete_payload("f1", "p1", 1, "delete-f1-after-update"))
+        .expect("delete after update");
     let delete_journal = delete["undoJournalId"].as_str().expect("delete journal id");
 
     apply_journal(&db, delete_journal, "undo").expect("undo delete");

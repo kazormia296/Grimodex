@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "nir1-recovery-workload-freeze/2",
+  "frozenAt": "2026-09-08T10:59:51.143924+00:00",
+  "workloadSha256": "52770092b942e8d32cff6b05cc4412314cefed281e9c2a1cd681037057fafe5d",
+  "baseWorkloadSha256": "5e9c5401d64a4a3d1a527b4d88fce3f046371a620e127c0bb7b9ed6076c99d0e",
+  "scope": "Approved positive query overlay only. Fixed Gold, 100 revisions, 100 trials per mutation class, end states and 2000ms limit unchanged.",
+  "productTrialsStarted": false
+}

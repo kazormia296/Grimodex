@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "nir1-recovery-workload-freeze/1",
+  "frozenAt": "2026-09-08T06:47:14.842148+00:00",
+  "workloadSha256": "5e9c5401d64a4a3d1a527b4d88fce3f046371a620e127c0bb7b9ed6076c99d0e",
+  "canonicalManifestSha256": "fbc6ac25a0171aac48bee27a859d2b582ed748f82adc1b5ccd28057110c950f3",
+  "canonicalCorpusSha256": "2da9496e682ecb7e10a4d680d265a6d93db9be761def0e34730c1d1447b69dd2",
+  "firstSetup": "not-started",
+  "scope": "Additional preparation workload only; fixed canonical quality corpus and five recovery classes unchanged."
+}

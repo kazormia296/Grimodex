@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  GATE_B2_ASSURANCE_SCOPE,
   GATE_B2_CONTRACT_VERSION,
   HARNESS_DIGEST_PATHS,
   allocateGateB2ArtifactAttempt,
@@ -32,6 +33,12 @@ import {
   writeGateB2AttemptArtifact,
 } from "./certify-gate-b2-bindings.mjs";
 import { getGateB2GithubAttemptIdentity } from "./gate-b2-github-attempt.mjs";
+import {
+  CHRONICLE_PRODUCTION_DIMENSION_SCORE_KEYS,
+  CHRONICLE_PRODUCTION_EXPECTED_DIMENSION_KEYS,
+  CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS,
+  CURRENT_NARRATIVE_EVAL_PROTOCOL,
+} from "./quality-evaluation-runtime.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -107,10 +114,61 @@ function checkoutIdentity(overrides = {}) {
   };
 }
 
+function chronicleEvaluation({
+  passed = true,
+  parseFailureCount = 0,
+  unresolvedEvidenceCount = 0,
+  criticalViolations = [],
+  unobservableDimensions = [],
+  dimensions = null,
+} = {}) {
+  const defaultDimensions = Object.fromEntries(
+    CHRONICLE_PRODUCTION_EXPECTED_DIMENSION_KEYS.map((dimension) => [
+      dimension,
+      Object.fromEntries(
+        CHRONICLE_PRODUCTION_DIMENSION_SCORE_KEYS.map((key) => [key, 0]),
+      ),
+    ]),
+  );
+  if (!passed) {
+    defaultDimensions.eventDetection.falsePositive = 1;
+    defaultDimensions.eventDetection.falseNegative = 1;
+  }
+  return {
+    passed,
+    parseFailureCount,
+    unresolvedEvidenceCount,
+    criticalViolations,
+    unobservableDimensions,
+    dimensions: dimensions ?? defaultDimensions,
+  };
+}
+
+function chronicleCase({ caseId, passed = true, evaluation = {} }) {
+  return {
+    caseId,
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    evaluation: chronicleEvaluation({ passed, ...evaluation }),
+  };
+}
+
+function chronicleFailedCase({ caseId, terminalFailure }) {
+  return {
+    caseId,
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    terminalFailure,
+  };
+}
+
 test("certification environments bind candidate and GitHub run metadata", () => {
   const baseEnv = sanitizeCertificationEnv({
     KEEP_ME: "yes",
     NARRATIVE_EVAL_LIMIT: "1",
+    NARRATIVE_EVAL_SUITE_ID: "chronicle-motif-boundary-v1",
     GATE_B2_BOUND_EXECUTION: "1",
     GATE_B2_FREEZE_PATH: "/tmp/trusted-freeze.json",
     OPENROUTER_API_KEY: "must-not-reach-gate",
@@ -119,6 +177,7 @@ test("certification environments bind candidate and GitHub run metadata", () => 
   });
   assert.equal(baseEnv.KEEP_ME, "yes");
   assert.equal(baseEnv.NARRATIVE_EVAL_LIMIT, undefined);
+  assert.equal(baseEnv.NARRATIVE_EVAL_SUITE_ID, undefined);
   assert.equal(baseEnv.GATE_B2_BOUND_EXECUTION, undefined);
   assert.equal(baseEnv.GATE_B2_FREEZE_PATH, undefined);
   assert.equal(baseEnv.OPENROUTER_API_KEY, undefined);
@@ -147,6 +206,7 @@ test("certification environments bind candidate and GitHub run metadata", () => 
   assert.equal(heavy.GATE_B2_GITHUB_RUN_ID, "9001");
   assert.equal(heavy.GATE_B2_GITHUB_RUN_ATTEMPT, "1");
   assert.equal(heavy.GATE_B2_ATTEMPT, "1");
+  assert.equal(heavy.NARRATIVE_EVAL_SUITE_ID, undefined);
 
   const journey = buildJourneyCertificationEnv({
     candidate,
@@ -429,6 +489,12 @@ test("checkout artifact download is exact and paginated", async () => {
 });
 
 test("Journey and Heavy evidence must bind the frozen candidate", () => {
+  assert.deepEqual(GATE_B2_ASSURANCE_SCOPE, {
+    engineeringSafety: "certified",
+    liveProviderExecution: "excluded",
+    modelQuality: "excluded",
+    externalCredentialsUsed: false,
+  });
   const journeyContract = {
     runnerId: "runner-a",
     runnerVersion: "1",
@@ -491,6 +557,10 @@ test("Journey and Heavy evidence must bind the frozen candidate", () => {
     suiteId: expected.suiteId,
     runId: expected.runId,
     commandDigest: digest,
+    mode: "chronicle-production-live",
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
     freezeId: "freeze-1",
     certificationRunId: "cert-1",
     attempt: 1,
@@ -498,6 +568,13 @@ test("Journey and Heavy evidence must bind the frozen candidate", () => {
     completedAt: "2026-01-01T00:01:00.000Z",
     caseCount: 14,
     certificationEligible: true,
+    summary: { passed: 14, failed: 0, parseFailureCount: 0 },
+    cases: Array.from({ length: 14 }, (_, index) =>
+      chronicleCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[index],
+      }),
+    ),
+    failedCases: [],
   };
   assert.equal(
     validateChronicleProductionReport(chronicle, candidate, expected).ok,
@@ -511,6 +588,413 @@ test("Journey and Heavy evidence must bind the frozen candidate", () => {
     ).ok,
     false,
   );
+  for (const report of [
+    { ...chronicle, evidenceMode: undefined },
+    { ...chronicle, evidenceMode: "legacy-v1" },
+    { ...chronicle, receiptMode: undefined },
+    {
+      ...chronicle,
+      versions: {
+        ...chronicle.versions,
+        parser: "window-observation-normalizer/1",
+      },
+    },
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+    );
+  }
+
+  const mutateFirstCase = (mutate) => ({
+    ...chronicle,
+    cases: chronicle.cases.map((entry, index) =>
+      index === 0 ? mutate(entry) : entry,
+    ),
+  });
+  for (const [name, report] of [
+    [
+      "missing per-case evidence mode",
+      mutateFirstCase((entry) => ({ ...entry, evidenceMode: undefined })),
+    ],
+    [
+      "legacy per-case evidence mode",
+      mutateFirstCase((entry) => ({ ...entry, evidenceMode: "legacy-v1" })),
+    ],
+    [
+      "missing per-case receipt mode",
+      mutateFirstCase((entry) => ({ ...entry, receiptMode: undefined })),
+    ],
+    [
+      "drifted per-case parser",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        versions: {
+          ...entry.versions,
+          parser: "window-observation-normalizer/1",
+        },
+      })),
+    ],
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  const cloneDimensions = (evaluation) =>
+    Object.fromEntries(
+      Object.entries(evaluation.dimensions).map(([dimension, score]) => [
+        dimension,
+        { ...score },
+      ]),
+    );
+  for (const [name, report] of [
+    [
+      "parse failure",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, parseFailureCount: 1 },
+      })),
+    ],
+    [
+      "missing parse failure count",
+      mutateFirstCase((entry) => {
+        const evaluation = { ...entry.evaluation };
+        delete evaluation.parseFailureCount;
+        return { ...entry, evaluation };
+      }),
+    ],
+    [
+      "unresolved evidence",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unresolvedEvidenceCount: 1 },
+      })),
+    ],
+    [
+      "negative unresolved evidence",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unresolvedEvidenceCount: -1 },
+      })),
+    ],
+    [
+      "critical violation",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: {
+          ...entry.evaluation,
+          passed: false,
+          criticalViolations: [{ classId: "critical" }],
+        },
+      })),
+    ],
+    [
+      "malformed critical violations",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, criticalViolations: {} },
+      })),
+    ],
+    [
+      "unobservable dimension list",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: {
+          ...entry.evaluation,
+          unobservableDimensions: [{ dimension: "eventDetection" }],
+        },
+      })),
+    ],
+    [
+      "malformed unobservable dimension list",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unobservableDimensions: {} },
+      })),
+    ],
+    [
+      "dimension unobservable score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.unobservable = 1;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "missing dimension",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        delete dimensions.actuality;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "missing dimensions object",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, dimensions: undefined },
+      })),
+    ],
+    [
+      "malformed dimension record",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.actuality = null;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "malformed dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        delete dimensions.actuality.unobservable;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "negative dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.falsePositive = -1;
+        return {
+          ...entry,
+          evaluation: { ...entry.evaluation, passed: false, dimensions },
+        };
+      }),
+    ],
+    [
+      "non-integer dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.truePositive = 0.5;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "passed consistency mismatch",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.falsePositive = 1;
+        dimensions.eventDetection.falseNegative = 1;
+        return {
+          ...entry,
+          evaluation: { ...entry.evaluation, passed: true, dimensions },
+        };
+      }),
+    ],
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  const scoredFailure = {
+    ...chronicle,
+    cases: chronicle.cases.map((entry, index) =>
+      index === 13
+        ? chronicleCase({
+            caseId: entry.caseId,
+            passed: false,
+          })
+        : entry,
+    ),
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  const terminalFailure = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+        terminalFailure: {
+          kind: "terminal-pipeline-failure",
+          stageId: null,
+          invocationIndex: null,
+          parseStatus: null,
+        },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  const parseFailure = {
+    ...chronicle,
+    summary: { passed: 14, failed: 0, parseFailureCount: 1 },
+  };
+  for (const [name, report] of [
+    ["scored semantic failure", scoredFailure],
+    ["terminal failed case", terminalFailure],
+    ["parser failure", parseFailure],
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  const duplicateCaseId = {
+    ...chronicle,
+    cases: chronicle.cases.map((entry, index) =>
+      index === 13
+        ? { ...entry, caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0] }
+        : entry,
+    ),
+  };
+  const unknownCaseId = {
+    ...chronicle,
+    cases: chronicle.cases.map((entry, index) =>
+      index === 0 ? { ...entry, caseId: "chronicle.micro.unknown-999" } : entry,
+    ),
+  };
+  const missingCaseId = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    caseCount: 14,
+    summary: { passed: 13, failed: 0, parseFailureCount: 0 },
+  };
+  const malformedTerminalFailure = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+        terminalFailure: { kind: "terminal-pipeline-failure" },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  const missingTerminalFailure = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    failedCases: [
+      {
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+        evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+        receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+        versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+      },
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  for (const [name, report] of [
+    ["duplicate case ID", duplicateCaseId],
+    ["unknown case ID", unknownCaseId],
+    ["missing case ID", missingCaseId],
+    ["malformed terminal failure", malformedTerminalFailure],
+    ["missing terminal failure", missingTerminalFailure],
+  ]) {
+    assert.equal(
+      validateChronicleProductionReport(report, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
+
+  for (const [name, ownTerminalFailure] of [
+    ["undefined", undefined],
+    ["null", null],
+    ["malformed", {}],
+    [
+      "valid",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: null,
+        parseStatus: null,
+      },
+    ],
+  ]) {
+    const scoredTerminalFailure = {
+      ...chronicle,
+      cases: chronicle.cases.map((entry, index) =>
+        index === 0 ? { ...entry, terminalFailure: ownTerminalFailure } : entry,
+      ),
+    };
+    assert.equal(
+      validateChronicleProductionReport(
+        scoredTerminalFailure,
+        candidate,
+        expected,
+      ).ok,
+      false,
+      `scored terminalFailure ${name}`,
+    );
+  }
+
+  const crossArrayDuplicate = {
+    ...chronicle,
+    cases: chronicle.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0],
+        terminalFailure: {
+          kind: "terminal-pipeline-failure",
+          stageId: null,
+          invocationIndex: null,
+          parseStatus: null,
+        },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  };
+  assert.equal(
+    validateChronicleProductionReport(crossArrayDuplicate, candidate, expected)
+      .ok,
+    false,
+    "cross-array duplicate case ID",
+  );
+
+  for (const [name, hybridTerminalFailure] of [
+    [
+      "null stage with invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: 0,
+        parseStatus: null,
+      },
+    ],
+    [
+      "stage with null invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: "narrative_observation_extract",
+        invocationIndex: null,
+        parseStatus: null,
+      },
+    ],
+    [
+      "parse status without invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: null,
+        parseStatus: "invalid",
+      },
+    ],
+  ]) {
+    const hybridReport = {
+      ...chronicle,
+      cases: chronicle.cases.slice(0, 13),
+      failedCases: [
+        chronicleFailedCase({
+          caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+          terminalFailure: hybridTerminalFailure,
+        }),
+      ],
+      summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+    };
+    assert.equal(
+      validateChronicleProductionReport(hybridReport, candidate, expected).ok,
+      false,
+      name,
+    );
+  }
 
   const browser = {
     ...chronicle,

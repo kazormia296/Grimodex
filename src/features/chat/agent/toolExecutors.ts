@@ -42,7 +42,7 @@ import {
   isCurrentMutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
 import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
-import type { ToolResult } from "./agentTypes";
+import type { AgentToolAuthorization, ToolResult } from "./agentTypes";
 import {
   agentCreateCodexEntry,
   agentUpdateCodexEntry,
@@ -1357,6 +1357,7 @@ function optionalAliases(value: unknown): string | undefined {
 async function createCodexEntryTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const type = String(params["type"] ?? "").trim();
   const name = String(params["name"] ?? "").trim();
@@ -1370,15 +1371,30 @@ async function createCodexEntryTool(
     };
   }
   try {
-    const entry = await agentCreateCodexEntry({
-      requestId,
-      type,
-      name,
-      summary: params["summary"] ? String(params["summary"]) : undefined,
-      content: optionalMarkdownBody(params["content"]),
-      aliases: optionalAliases(params["aliases"]),
-      parentId: params["parentId"] ? String(params["parentId"]) : undefined,
-    });
+    if (!requestId) {
+      throw new Error("create_codex_entry request identity is missing");
+    }
+    const entry = await agentCreateCodexEntry(
+      {
+        requestId,
+        type,
+        name,
+        summary: params["summary"] ? String(params["summary"]) : undefined,
+        content: optionalMarkdownBody(params["content"]),
+        aliases: optionalAliases(params["aliases"]),
+        parentId: params["parentId"] ? String(params["parentId"]) : undefined,
+      },
+      authorization?.chatMessageId,
+      authorization
+        ? {
+            agentAuthorityCapability: authorization.capability,
+            chatMessageId: authorization.chatMessageId,
+            toolCallId: authorization.toolCallId,
+            executionId: authorization.executionId,
+            mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
+          }
+        : undefined,
+    );
     const content = { id: entry.id, name: entry.name, type: entry.type };
     const json = JSON.stringify(content);
     return {
@@ -1404,6 +1420,8 @@ async function createCodexEntryTool(
 
 async function updateCodexEntryTool(
   params: Record<string, unknown>,
+  requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id) {
@@ -1416,17 +1434,34 @@ async function updateCodexEntryTool(
     };
   }
   try {
-    const entry = await agentUpdateCodexEntry({
-      entryId: id,
-      name: params["name"] !== undefined ? String(params["name"]) : undefined,
-      summary:
-        params["summary"] !== undefined ? String(params["summary"]) : undefined,
-      content:
-        params["content"] !== undefined
-          ? optionalMarkdownBody(params["content"])
+    const entry = await agentUpdateCodexEntry(
+      {
+        requestId,
+        entryId: id,
+        name: params["name"] !== undefined ? String(params["name"]) : undefined,
+        summary:
+          params["summary"] !== undefined
+            ? String(params["summary"])
+            : undefined,
+        content:
+          params["content"] !== undefined
+            ? optionalMarkdownBody(params["content"])
+            : undefined,
+        aliases: optionalAliases(params["aliases"]),
+      },
+      authorization?.chatMessageId,
+      {
+        writeOpts: authorization
+          ? {
+              agentAuthorityCapability: authorization.capability,
+              chatMessageId: authorization.chatMessageId,
+              toolCallId: authorization.toolCallId,
+              executionId: authorization.executionId,
+              mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
+            }
           : undefined,
-      aliases: optionalAliases(params["aliases"]),
-    });
+      },
+    );
     const content = { id: entry.id, name: entry.name, type: entry.type };
     const json = JSON.stringify(content);
     return {
@@ -1689,6 +1724,7 @@ async function getThreadScenes(
 type Executor = (
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
 /**
@@ -1736,6 +1772,7 @@ Object.freeze(READ_ONLY_EXECUTORS);
 async function createSnippetTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1748,12 +1785,27 @@ async function createSnippetTool(
     };
   }
   try {
-    const snippet = await agentCreateSnippet({
-      requestId,
-      title,
-      content: optionalMarkdownBody(params["content"]),
-      sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
-    });
+    if (!requestId) {
+      throw new Error("create_snippet request identity is missing");
+    }
+    const snippet = await agentCreateSnippet(
+      {
+        requestId,
+        title,
+        content: optionalMarkdownBody(params["content"]),
+        sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
+      },
+      authorization?.chatMessageId,
+      authorization
+        ? {
+            agentAuthorityCapability: authorization.capability,
+            chatMessageId: authorization.chatMessageId,
+            toolCallId: authorization.toolCallId,
+            executionId: authorization.executionId,
+            mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
+          }
+        : undefined,
+    );
     const content = { id: snippet.id, title: snippet.title };
     const json = JSON.stringify(content);
     return {
@@ -1776,6 +1828,8 @@ async function createSnippetTool(
 
 async function applyAiTreePlanTool(
   params: Record<string, unknown>,
+  requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const kind = params["kind"];
   const ops = params["ops"];
@@ -1799,7 +1853,14 @@ async function applyAiTreePlanTool(
   }
   try {
     const plan = { kind, ops } as AiTreePlan;
-    const result = await agentApplyTreePlan(plan);
+    const result = await agentApplyTreePlan(plan, {
+      requestId,
+      agentAuthorityCapability: authorization?.capability,
+      chatMessageId: authorization?.chatMessageId,
+      toolCallId: authorization?.toolCallId,
+      executionId: authorization?.executionId,
+      mainOwnedProvenanceId: authorization?.mainOwnedProvenanceId,
+    });
     const content = result;
     const json = JSON.stringify(content);
     return {
@@ -1825,6 +1886,8 @@ async function applyAiTreePlanTool(
 
 async function proposeSceneBodyTool(
   params: Record<string, unknown>,
+  requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const sceneId = String(params["sceneId"] ?? "").trim();
   const text = String(params["text"] ?? "").trim();
@@ -1840,7 +1903,17 @@ async function proposeSceneBodyTool(
   const rawMode = params["mode"];
   const mode = rawMode === "insert" ? "insert" : "append";
   try {
-    const result = await agentProposeSceneBody({ sceneId, text, mode });
+    const result = await agentProposeSceneBody({
+      requestId,
+      sceneId,
+      text,
+      mode,
+      agentAuthorityCapability: authorization?.capability,
+      chatMessageId: authorization?.chatMessageId,
+      toolCallId: authorization?.toolCallId,
+      executionId: authorization?.executionId,
+      mainOwnedProvenanceId: authorization?.mainOwnedProvenanceId,
+    });
     useProseStagingStore.getState().enqueue({
       stagingId: result.stagingId,
       sceneId: result.sceneId,
@@ -1874,6 +1947,7 @@ async function proposeSceneBodyTool(
 async function createForeshadowTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1886,8 +1960,12 @@ async function createForeshadowTool(
     };
   }
   try {
-    const item = await agentCreateForeshadow({
+    if (!requestId) {
+      throw new Error("create_foreshadow request identity is missing");
+    }
+    const input = {
       requestId,
+      foreshadowId: authorization?.expectedEntityId,
       title,
       intent: params["intent"] ? String(params["intent"]) : undefined,
       notes: params["notes"] ? String(params["notes"]) : undefined,
@@ -1896,7 +1974,16 @@ async function createForeshadowTool(
         : undefined,
       secret:
         typeof params["secret"] === "boolean" ? params["secret"] : undefined,
-    });
+    };
+    const item = authorization
+      ? await agentCreateForeshadow(input, {
+          agentAuthorityCapability: authorization.capability,
+          chatMessageId: authorization.chatMessageId,
+          toolCallId: authorization.toolCallId,
+          executionId: authorization.executionId,
+          mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
+        })
+      : await agentCreateForeshadow(input);
     const content = { id: item.id, title: item.title, secret: item.secret };
     const json = JSON.stringify(content);
     return {
@@ -1919,6 +2006,8 @@ async function createForeshadowTool(
 
 async function updateForeshadowTool(
   params: Record<string, unknown>,
+  requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id) {
@@ -1945,7 +2034,11 @@ async function updateForeshadowTool(
     };
   }
   try {
-    const item = await agentUpdateForeshadow({
+    if (!requestId) {
+      throw new Error("update_foreshadow request identity is missing");
+    }
+    const input = {
+      requestId,
       foreshadowId: id,
       baseVersion,
       title:
@@ -1968,7 +2061,16 @@ async function updateForeshadowTool(
           : undefined,
       secret:
         typeof params["secret"] === "boolean" ? params["secret"] : undefined,
-    });
+    };
+    const item = authorization
+      ? await agentUpdateForeshadow(input, {
+          agentAuthorityCapability: authorization.capability,
+          chatMessageId: authorization.chatMessageId,
+          toolCallId: authorization.toolCallId,
+          executionId: authorization.executionId,
+          mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
+        })
+      : await agentUpdateForeshadow(input);
     const content = {
       id: item.id,
       title: item.title,
@@ -2021,14 +2123,25 @@ export const EXECUTORS: Record<string, Executor> = {
 // 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
 Object.freeze(EXECUTORS);
 
-const IDEMPOTENT_CREATE_TOOLS: ReadonlySet<string> = new Set([
+const DURABLE_MUTATION_TOOLS: ReadonlySet<string> = new Set([
   "create_codex_entry",
+  "update_codex_entry",
   "create_snippet",
   "create_foreshadow",
+  "update_foreshadow",
   "create_event",
+  "update_event",
+  "delete_event",
+  "stamp_scene_event",
+  "unstamp_scene_event",
+  "set_event_participants",
+  "add_event_relation",
+  "remove_event_relation",
+  "apply_ai_tree_plan",
+  "propose_scene_body",
 ]);
 
-async function toolCreateRequestId(
+async function toolMutationRequestId(
   toolName: string,
   toolCallId: string,
   projectId: string,
@@ -2048,6 +2161,7 @@ export async function executeTool(
   name: string,
   toolCallId: string,
   params: Record<string, unknown>,
+  authorization?: AgentToolAuthorization,
 ): Promise<ToolResult> {
   const executor = EXECUTORS[name];
   if (!executor) {
@@ -2062,18 +2176,26 @@ export async function executeTool(
     };
   }
   try {
-    const createAuthority = IDEMPOTENT_CREATE_TOOLS.has(name)
+    const mutationAuthority = DURABLE_MUTATION_TOOLS.has(name)
       ? captureMutationAuthority(getCurrentProjectId(), getCurrentProjectId)
       : null;
-    const requestId = createAuthority
-      ? await toolCreateRequestId(name, toolCallId, createAuthority.projectId)
+    const requestId = mutationAuthority
+      ? await toolMutationRequestId(
+          name,
+          toolCallId,
+          mutationAuthority.projectId,
+        )
       : undefined;
     // SHA-256 yields before the domain writer captures its own Project. Do not
     // let a pre-switch tool call resume against a replacement Project/Workspace.
-    if (createAuthority && !isCurrentMutationAuthority(createAuthority)) {
-      throw new Error("agent tool create authority changed");
+    if (mutationAuthority && !isCurrentMutationAuthority(mutationAuthority)) {
+      throw new Error("agent tool mutation authority changed");
     }
-    const result = await executor(params, requestId);
+    const result = await executor(
+      params,
+      requestId,
+      authorization ? { ...authorization, toolCallId } : undefined,
+    );
     return { toolCallId, ...result };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

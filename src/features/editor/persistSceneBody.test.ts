@@ -50,6 +50,7 @@ const h = vi.hoisted(() => ({
   listCodexMatchTargets: vi.fn(async () => [] as Array<{ id: string }>),
   recordBodyMentionScans: vi.fn(() => Promise.resolve()),
   scheduleSceneIndex: vi.fn(),
+  recordChangeEvent: vi.fn(),
   scheduleWriteBack: vi.fn(),
   setCharCount: vi.fn(),
   setNodePreview: vi.fn(),
@@ -57,6 +58,9 @@ const h = vi.hoisted(() => ({
   refreshAiRatio: vi.fn(() => Promise.resolve()),
   refreshContextLayers: vi.fn(() => Promise.resolve()),
   scheduleEditorAnalysisTask: vi.fn(),
+  runTimelapseBodyWrite: vi.fn(),
+  runTimelapseBodyReplacement: vi.fn(),
+  runTimelapseMutation: vi.fn(),
   deriveSceneAiRatio: vi.fn(() => 37 as number | undefined),
   deriveSceneBodySnapshot: vi.fn((_doc: ProseMirrorNode) => ({
     contentJson: JSON.stringify({ type: "doc", content: [] }),
@@ -73,7 +77,7 @@ const h = vi.hoisted(() => ({
     beatPovOverrides: [],
     docContentSize: 2,
   })),
-  saveSceneBodyBundle: vi.fn(async () => ({
+  saveSceneBodyBundle: vi.fn(async (_payload: unknown) => ({
     placedBeatPreview: null,
     unplacedBeatPreview: null,
     contentVersion: 2,
@@ -184,6 +188,40 @@ vi.mock("@/features/editor/sceneBodySnapshot", () => ({
 vi.mock("@/features/editor/sceneBodyBundleApi", () => ({
   saveSceneBodyBundle: h.saveSceneBodyBundle,
 }));
+vi.mock("@/features/timelapse/recorder", () => ({
+  getRecorderSessionId: () => "scene-recorder-session",
+  recordChangeEvent: h.recordChangeEvent,
+}));
+vi.mock("@/features/timelapse/bodyWriteMode", () => ({
+  runTimelapseBodyWrite: (
+    input: unknown,
+    callbacks: {
+      commit: (coverage: undefined) => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => {
+    h.runTimelapseBodyWrite(input, callbacks);
+    return callbacks.commit(undefined).then(callbacks.project);
+  },
+  runTimelapseBodyReplacement: (
+    input: unknown,
+    callbacks: {
+      commit: () => Promise<unknown>;
+      project: (committed: unknown) => Promise<unknown>;
+    },
+  ) => {
+    h.runTimelapseBodyReplacement(input, callbacks);
+    return callbacks.commit().then(callbacks.project);
+  },
+  runTimelapseMutation: (
+    projectId: string,
+    operation: () => Promise<unknown>,
+    options?: unknown,
+  ) => {
+    h.runTimelapseMutation(projectId, operation, options);
+    return operation();
+  },
+}));
 vi.mock("@/features/matrix/matrixDataVersion", () => ({
   bumpMatrixDataVersion: h.bumpMatrixDataVersion,
 }));
@@ -197,6 +235,7 @@ import {
   persistSceneBody,
 } from "@/features/editor/persistSceneBody";
 import { flushQuiescenceProviderStage } from "@/lib/quiescenceProviders";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const DOC_JSON = { type: "doc", content: [] };
 const fakeDoc = { toJSON: () => DOC_JSON } as unknown as ProseMirrorNode;
@@ -219,6 +258,7 @@ beforeEach(() => {
     path: "/workspace/test",
     openRevision: 7,
   });
+  publishCurrentProjectId("proj-1");
   h.listCodexMatchTargets.mockResolvedValue([]);
   h.state.treeNodes = [{ id: "scene-1", sourceUri: undefined }];
   h.state.codexEntries = [];
@@ -228,6 +268,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  publishCurrentProjectId(null);
   setCurrentWorkspaceIdentity(null);
   _resetSceneBodyCommitRegistryForTests();
 });
@@ -313,12 +354,20 @@ describe("persistSceneBody — DB-native scene", () => {
       expect.objectContaining({
         sceneId: "scene-1",
         projectId: "proj-1",
+        requestId: expect.any(String),
+        sessionId: "scene-recorder-session",
+        eventUid: expect.any(String),
+        origin: "human",
         includeSidecars: true,
         contentJson: JSON.stringify(DOC_JSON),
         charCount: 42,
         updatedAt: expect.any(String),
       }),
     );
+    const writePayload = h.saveSceneBodyBundle.mock.calls[0]?.[0] as
+      | { eventUid?: string; requestId?: string }
+      | undefined;
+    expect(writePayload?.eventUid).toBe(writePayload?.requestId);
     expect(h.saveSceneContent).not.toHaveBeenCalled();
     expect(h.saveAuthorshipSpans).not.toHaveBeenCalled();
     expect(h.saveForeshadowAnchors).not.toHaveBeenCalled();
@@ -348,6 +397,20 @@ describe("persistSceneBody — DB-native scene", () => {
     );
     expect(h.setAiRatio).toHaveBeenCalledWith("scene-1", 37);
     expect(h.refreshAiRatio).not.toHaveBeenCalled();
+  });
+
+  it("carries a lifecycle preexisting-draft permit into the native body replacement", async () => {
+    h.state.electron = true;
+
+    await persistSceneBody("scene-1", fakeDoc, { preexistingDraft: true });
+
+    expect(h.runTimelapseBodyReplacement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "proj-1",
+        preexistingDraft: true,
+      }),
+      expect.anything(),
+    );
   });
 
   it("forwards the loaded OCC version through the browser fallback", async () => {
@@ -566,6 +629,41 @@ describe("persistSceneBody — DB-native scene", () => {
     expect(h.setAiRatio).not.toHaveBeenCalled();
     expect(h.refreshAiRatio).not.toHaveBeenCalled();
     expect(h.refreshContextLayers).not.toHaveBeenCalled();
+  });
+
+  it("hands headless replay steps to the Electron Native bundle without renderer duplication", async () => {
+    h.state.electron = true;
+    const steps = [{ stepType: "replace", from: 1, to: 1 }];
+
+    await persistSceneBody("scene-1", fakeDoc, {
+      origin: "ai-apply",
+      timelapseSteps: steps,
+    });
+
+    expect(h.saveSceneBodyBundle).toHaveBeenCalledWith(
+      expect.objectContaining({ origin: "ai-apply", timelapseSteps: steps }),
+    );
+    expect(h.recordChangeEvent).not.toHaveBeenCalled();
+  });
+
+  it("retains renderer replay capture only for the non-Native compatibility path", async () => {
+    const steps = [{ stepType: "replace", from: 1, to: 1 }];
+
+    await persistSceneBody("scene-1", fakeDoc, {
+      origin: "ai-apply",
+      timelapseSteps: steps,
+    });
+
+    expect(h.saveSceneBodyBundle).not.toHaveBeenCalled();
+    expect(h.recordChangeEvent).toHaveBeenCalledWith({
+      domain: "editor",
+      opType: "doc.step",
+      projectId: "proj-1",
+      sceneId: "scene-1",
+      entityType: "scene",
+      entityId: "scene-1",
+      payload: { steps },
+    });
   });
 });
 

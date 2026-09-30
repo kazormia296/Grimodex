@@ -1,6 +1,9 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::import::{
-    create_capture, get_capture, seal_capture, update_selection, CaptureEntryInput, CreateCaptureInput,
-    UpdateCaptureSelectionInput,
+    create_capture, get_capture, seal_capture, update_selection, CaptureEntryInput,
+    CreateCaptureInput, UpdateCaptureSelectionInput,
 };
 use grimodex_db::Database;
 use grimodex_db::{
@@ -10,8 +13,7 @@ use grimodex_db::{
 use serde_json::json;
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     let before = load_narrative_runtime_policy_from_db(&db).expect("load runtime policy");
     set_narrative_runtime_policy(
         &db,
@@ -81,7 +83,9 @@ fn sealing_selected_entries_persists_a_stable_capture_digest() {
     let sealed = seal_capture(&db, capture_id).expect("seal capture");
 
     assert_eq!(sealed["state"], "sealed");
-    assert!(sealed["sealedDigest"].as_str().is_some_and(|value| !value.is_empty()));
+    assert!(sealed["sealedDigest"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
     let loaded = get_capture(&db, "capture-1".to_string()).expect("load capture");
     assert_eq!(loaded["entries"].as_array().expect("entries").len(), 2);
 }

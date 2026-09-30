@@ -15,12 +15,348 @@ use rusqlite::{Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use super::{
-    idempotency::{load_row, payload_fingerprint, run_atomic_create, IdempotencyRequest},
+    idempotency::{
+        insert_idempotent_response, load_idempotent_response, load_row, payload_fingerprint,
+        run_atomic_create, IdempotencyRequest,
+    },
     Database,
+};
+use crate::change_events::AppendChangeEvent;
+use crate::narrative_extraction::change_feed::{
+    append_canonical_and_narrative_change_in_tx, narrative_object_key, narrative_snapshot_digest,
+    require_typed_inverse_lineage_in_project, AppendNarrativeChangeTransactionInput,
+    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
 
 const PHASE_TYPES: [&str; 5] = ["introduce", "develop", "turn", "climax", "resolve"];
 const BRANCH_KINDS: [&str; 2] = ["branch", "merge"];
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RendererWriteContext {
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+}
+
+#[cfg(test)]
+impl Default for RendererWriteContext {
+    fn default() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        Self {
+            request_id: format!("plot-test-request-{id}"),
+            session_id: "plot-test-session".to_string(),
+            event_uid: format!("plot-test-event-{id}"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ResolvedWriteContext {
+    request_id: String,
+    session_id: String,
+    event_uid: String,
+    cause_kind: NarrativeChangeCauseKind,
+    origin: NarrativeChangeOrigin,
+    original_transaction_id: Option<String>,
+}
+
+fn resolve_write_context(
+    operation: &str,
+    context: &RendererWriteContext,
+) -> anyhow::Result<ResolvedWriteContext> {
+    for (field, value) in [
+        ("requestId", context.request_id.as_str()),
+        ("sessionId", context.session_id.as_str()),
+        ("eventUid", context.event_uid.as_str()),
+    ] {
+        anyhow::ensure!(
+            !value.trim().is_empty(),
+            "{operation} {field} must be non-empty"
+        );
+    }
+    let cause_kind = match context.origin {
+        NarrativeChangeOrigin::Undo => NarrativeChangeCauseKind::Undo,
+        NarrativeChangeOrigin::Redo => NarrativeChangeCauseKind::Redo,
+        _ => NarrativeChangeCauseKind::Forward,
+    };
+    match cause_kind {
+        NarrativeChangeCauseKind::Forward => anyhow::ensure!(
+            context.original_transaction_id.is_none(),
+            "{operation} forward mutation cannot name originalTransactionId"
+        ),
+        NarrativeChangeCauseKind::Undo | NarrativeChangeCauseKind::Redo => anyhow::ensure!(
+            context
+                .original_transaction_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            "{operation} undo/redo mutation requires originalTransactionId"
+        ),
+    }
+    Ok(ResolvedWriteContext {
+        request_id: context.request_id.clone(),
+        session_id: context.session_id.clone(),
+        event_uid: context.event_uid.clone(),
+        cause_kind,
+        origin: context.origin,
+        original_transaction_id: context.original_transaction_id.clone(),
+    })
+}
+
+fn attach_maintenance_transaction_id(mut response: Value, transaction_id: String) -> Value {
+    if let Value::Object(row) = &mut response {
+        row.insert(
+            "maintenanceTransactionId".to_string(),
+            Value::String(transaction_id),
+        );
+    }
+    response
+}
+
+fn run_atomic_plot_mutation<Mutate>(
+    db: &Database,
+    request: IdempotencyRequest<'_>,
+    project_id: &str,
+    mutate: Mutate,
+) -> anyhow::Result<Value>
+where
+    Mutate: FnOnce(&Connection) -> anyhow::Result<Value>,
+{
+    db.with_conn(|conn| {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<Value> {
+            if let Some(response) = load_idempotent_response(conn, &request)? {
+                return Ok(response);
+            }
+            let response = mutate(conn)?;
+            insert_idempotent_response(conn, &request, project_id, &response)?;
+            Ok(response)
+        })();
+        match result {
+            Ok(value) => match conn.execute_batch("COMMIT") {
+                Ok(()) => Ok(value),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    })
+}
+
+fn row_version(value: Option<&Value>) -> Option<i64> {
+    value
+        .and_then(Value::as_object)
+        .and_then(|row| row.get("version"))
+        .and_then(Value::as_i64)
+}
+
+fn state_digest(value: Option<&Value>) -> anyhow::Result<Option<String>> {
+    value.map(narrative_snapshot_digest).transpose()
+}
+
+fn plot_feed_event(
+    object_key: Value,
+    change_kind: &str,
+    mutation_kind: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+    mut changed_paths: Vec<String>,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    changed_paths.sort();
+    changed_paths.dedup();
+    Ok(NarrativeChangeEventInput {
+        object_key,
+        change_kind: change_kind.to_string(),
+        mutation_kind: mutation_kind.to_string(),
+        before_version: row_version(before),
+        before_digest: state_digest(before)?,
+        after_version: row_version(after),
+        after_digest: state_digest(after)?,
+        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+        changed_paths,
+        text_impact: None,
+    })
+}
+
+fn plot_root_feed_event(
+    thread_id: &str,
+    change_kind: &str,
+    mutation_kind: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+    changed_paths: Vec<String>,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    plot_feed_event(
+        json!({ "kind": "plot-thread", "threadId": thread_id }),
+        change_kind,
+        mutation_kind,
+        before,
+        after,
+        changed_paths,
+    )
+}
+
+fn plot_marker_feed_event(
+    marker_id: &str,
+    change_kind: &str,
+    mutation_kind: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+    changed_paths: Vec<String>,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    plot_feed_event(
+        narrative_object_key("plot_thread_marker", marker_id),
+        change_kind,
+        mutation_kind,
+        before,
+        after,
+        changed_paths,
+    )
+}
+
+fn plot_branch_feed_event(
+    branch_id: &str,
+    change_kind: &str,
+    mutation_kind: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+    changed_paths: Vec<String>,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    plot_feed_event(
+        narrative_object_key("plot_thread_branch", branch_id),
+        change_kind,
+        mutation_kind,
+        before,
+        after,
+        changed_paths,
+    )
+}
+
+struct PlotFeedAppend<'a> {
+    project_id: &'a str,
+    operation: &'a str,
+    entity_type: &'a str,
+    entity_id: &'a str,
+    context: &'a ResolvedWriteContext,
+    cause_kind: NarrativeChangeCauseKind,
+    origin: NarrativeChangeOrigin,
+    original_transaction_id: Option<String>,
+    events: Vec<NarrativeChangeEventInput>,
+}
+
+fn append_plot_feed(conn: &Connection, input: PlotFeedAppend<'_>) -> anyhow::Result<String> {
+    if let Some(original_transaction_id) = input.original_transaction_id.as_deref() {
+        require_typed_inverse_lineage_in_project(
+            conn,
+            input.project_id,
+            original_transaction_id,
+            "plot",
+            input.entity_id,
+        )?;
+    }
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let occurred_at = chrono::DateTime::from_timestamp_millis(timestamp)
+        .ok_or_else(|| anyhow::anyhow!("plot writer timestamp is outside the supported range"))?
+        .to_rfc3339();
+    let mut events = input.events;
+    normalize_plot_feed_events_in_tx(conn, input.project_id, &mut events)?;
+    let canonical = AppendChangeEvent {
+        event_uid: input.context.event_uid.clone(),
+        scene_id: None,
+        domain: "plot".to_string(),
+        op_type: input.operation.to_string(),
+        entity_type: Some(input.entity_type.to_string()),
+        entity_id: Some(input.entity_id.to_string()),
+        payload: serde_json::to_string(&json!({
+            "requestId": input.context.request_id,
+            "origin": input.origin,
+        }))?,
+        timestamp,
+    };
+    let result = append_canonical_and_narrative_change_in_tx(
+        conn,
+        input.project_id,
+        &input.context.session_id,
+        &canonical,
+        &AppendNarrativeChangeTransactionInput {
+            project_id: input.project_id.to_string(),
+            request_id: input.context.request_id.clone(),
+            source_domain: input.operation.to_string(),
+            source_change_event_uid: input.context.event_uid.clone(),
+            cause_kind: input.cause_kind,
+            origin: input.origin,
+            original_transaction_id: input.original_transaction_id,
+            commit_id: None,
+            journal_id: None,
+            undo_journal_id: None,
+            application_ids: Vec::new(),
+            occurred_at,
+            events,
+        },
+    )?;
+    Ok(result.narrative.transaction_id)
+}
+
+fn normalize_plot_feed_events_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    events: &mut [NarrativeChangeEventInput],
+) -> anyhow::Result<()> {
+    // Plot marker/branch writers historically used their direct `SELECT *`
+    // rows for Feed digests.  The canonical loader is the single shape used
+    // by replay/freshness consumers, so normalize at the shared append edge
+    // and source update/delete `before` state from the existing Feed head.
+    for event in events {
+        let kind = event.object_key.get("kind").and_then(Value::as_str);
+        if !matches!(
+            kind,
+            Some("plot-thread") | Some("plot-marker") | Some("plot-branch") | Some("component")
+        ) {
+            continue;
+        }
+        let current = if event.mutation_kind == "delete" {
+            None
+        } else {
+            crate::canonical_feed_snapshots::canonical_snapshot_for_object_key(
+                conn,
+                project_id,
+                &event.object_key,
+            )?
+        };
+        if let Some(snapshot) = current {
+            event.after_version = snapshot.get("version").and_then(Value::as_i64);
+            event.after_digest = Some(narrative_snapshot_digest(&snapshot)?);
+        } else if event.mutation_kind == "delete" {
+            event.after_version = None;
+            event.after_digest = None;
+        }
+        if matches!(event.mutation_kind.as_str(), "update" | "delete") {
+            let identity = crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
+            if let Some((version, digest)) =
+                crate::narrative_extraction::change_feed::previous_event_after_state(
+                    conn, project_id, &identity,
+                )?
+            {
+                event.before_version = version;
+                event.before_digest = digest;
+            }
+        }
+    }
+    Ok(())
+}
 
 fn validate_phase(p: &str) -> anyhow::Result<()> {
     if PHASE_TYPES.contains(&p) {
@@ -65,61 +401,126 @@ fn delete_versioned_row(
     db: &Database,
     table: &str,
     conflict_marker: &str,
-    id: String,
-    base_version: i64,
-) -> anyhow::Result<()> {
-    db.with_conn(|conn| {
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<()> {
-            let project_id = project_for_plot_table(conn, table, &id)?
-                .ok_or_else(|| anyhow::anyhow!("{table} row not found: {id}"))?;
-            let delete_sql = format!("DELETE FROM {table} WHERE id = ? AND version = ?");
-            Database::execute_with_conn(
-                conn,
-                &delete_sql,
-                &[
-                    Value::String(id.clone()),
-                    Value::Number(base_version.into()),
-                ],
-                "run",
-            )?;
-            if conn.changes() == 1 {
-                let (entity_kind, field_paths) = plot_entity_authority(table);
-                record_plot_field_authority(
-                    conn,
-                    &project_id,
-                    entity_kind,
+    payload: PlotDeletePayload,
+) -> anyhow::Result<Value> {
+    let (operation, entity_type, idempotency_domain, idempotency_conflict) = match table {
+        "plot_threads" => (
+            "plot.thread.delete",
+            "plot-thread",
+            "plot_thread_delete",
+            "PLOT_THREAD_DELETE_IDEMPOTENCY_CONFLICT",
+        ),
+        "plot_thread_scene_links" => (
+            "plot.marker.delete",
+            "plot-marker",
+            "plot_thread_link_delete",
+            "PLOT_THREAD_LINK_DELETE_IDEMPOTENCY_CONFLICT",
+        ),
+        "plot_thread_branches" => (
+            "plot.branch.delete",
+            "plot-branch",
+            "plot_thread_branch_delete",
+            "PLOT_THREAD_BRANCH_DELETE_IDEMPOTENCY_CONFLICT",
+        ),
+        _ => anyhow::bail!("unsupported plot delete table: {table}"),
+    };
+    let write_context = resolve_write_context(operation, &payload.context)?;
+    let payload_hash = payload_fingerprint(
+        idempotency_domain,
+        &json!({
+            "id": payload.id,
+            "projectId": payload.project_id,
+            "baseVersion": payload.base_version,
+            "origin": write_context.origin,
+            "originalTransactionId": write_context.original_transaction_id,
+        }),
+    )?;
+    let id = payload.id;
+    let project_id = payload.project_id;
+    let base_version = payload.base_version;
+    let request = IdempotencyRequest {
+        domain: idempotency_domain,
+        request_id: Some(write_context.request_id.as_str()),
+        payload_hash: &payload_hash,
+        conflict_marker: idempotency_conflict,
+    };
+    run_atomic_plot_mutation(db, request, &project_id, |conn| {
+        let actual_project_id = project_for_plot_table(conn, table, &id)?
+            .ok_or_else(|| anyhow::anyhow!("{table} row not found: {id}"))?;
+        anyhow::ensure!(
+            actual_project_id == project_id,
+            "plot delete target belongs to another project"
+        );
+        let before = load_row(conn, table, &id)?
+            .ok_or_else(|| anyhow::anyhow!("{table} row not found: {id}"))?;
+        let delete_sql = format!("DELETE FROM {table} WHERE id = ? AND version = ?");
+        Database::execute_with_conn(
+            conn,
+            &delete_sql,
+            &[
+                Value::String(id.clone()),
+                Value::Number(base_version.into()),
+            ],
+            "run",
+        )?;
+        if conn.changes() == 1 {
+            let (entity_kind, field_paths) = plot_entity_authority(table);
+            record_plot_field_authority(conn, &project_id, entity_kind, &id, field_paths)?;
+            let event = match table {
+                "plot_threads" => plot_root_feed_event(
                     &id,
-                    field_paths,
-                )?;
-                return Ok(());
-            }
-            let select_sql = format!("SELECT version FROM {table} WHERE id = ?");
-            let rows = Database::execute_with_conn(
+                    "catalog",
+                    "delete",
+                    Some(&before),
+                    None,
+                    vec!["/".to_string()],
+                )?,
+                "plot_thread_scene_links" => plot_marker_feed_event(
+                    &id,
+                    "association",
+                    "delete",
+                    Some(&before),
+                    None,
+                    vec!["/".to_string()],
+                )?,
+                "plot_thread_branches" => plot_branch_feed_event(
+                    &id,
+                    "association",
+                    "delete",
+                    Some(&before),
+                    None,
+                    vec!["/".to_string()],
+                )?,
+                _ => unreachable!("delete table was validated above"),
+            };
+            let transaction_id = append_plot_feed(
                 conn,
-                &select_sql,
-                &[Value::String(id.clone())],
-                "get",
+                PlotFeedAppend {
+                    project_id: &project_id,
+                    operation,
+                    entity_type,
+                    entity_id: &id,
+                    context: &write_context,
+                    cause_kind: write_context.cause_kind,
+                    origin: write_context.origin,
+                    original_transaction_id: write_context.original_transaction_id.clone(),
+                    events: vec![event],
+                },
             )?;
-            let current = rows
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("{table} row not found: {id}"))?;
-            let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
-            anyhow::bail!(
-                "{conflict_marker}: expected {base_version}, found {current_version}"
-            )
-        })();
-        match result {
-            Ok(()) => {
-                conn.execute_batch("COMMIT")?;
-                Ok(())
-            }
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
+            return Ok(json!({
+                "id": id,
+                "deleted": true,
+                "maintenanceTransactionId": transaction_id,
+            }));
         }
+        let select_sql = format!("SELECT version FROM {table} WHERE id = ?");
+        let rows =
+            Database::execute_with_conn(conn, &select_sql, &[Value::String(id.clone())], "get")?;
+        let current = rows
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("{table} row not found: {id}"))?;
+        let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
+        anyhow::bail!("{conflict_marker}: expected {base_version}, found {current_version}")
     })
 }
 
@@ -218,6 +619,8 @@ pub struct PlotThreadCreatePayload {
     /// response cannot create a second logical thread.
     #[serde(default)]
     id: Option<String>,
+    #[serde(flatten)]
+    context: RendererWriteContext,
     project_id: String,
     name: String,
     color: Option<String>,
@@ -228,6 +631,9 @@ pub struct PlotThreadCreatePayload {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlotThreadPatch {
+    #[serde(flatten)]
+    context: RendererWriteContext,
+    project_id: String,
     name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_present_nullable")]
     color: Option<Option<String>>,
@@ -243,6 +649,9 @@ pub struct PlotThreadLinkCreatePayload {
     /// Domain-owned idempotency key for renderer retries.
     #[serde(default)]
     id: Option<String>,
+    #[serde(flatten)]
+    context: RendererWriteContext,
+    project_id: String,
     thread_id: String,
     node_id: String,
     phase_type: String,
@@ -253,6 +662,9 @@ pub struct PlotThreadLinkCreatePayload {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlotThreadLinkPatch {
+    #[serde(flatten)]
+    context: RendererWriteContext,
+    project_id: String,
     thread_id: Option<String>,
     node_id: Option<String>,
     phase_type: Option<String>,
@@ -269,6 +681,8 @@ pub struct PlotThreadBranchCreatePayload {
     /// Domain-owned idempotency key for renderer retries.
     #[serde(default)]
     id: Option<String>,
+    #[serde(flatten)]
+    context: RendererWriteContext,
     project_id: String,
     from_thread_id: String,
     to_thread_id: String,
@@ -279,6 +693,9 @@ pub struct PlotThreadBranchCreatePayload {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlotThreadBranchPatch {
+    #[serde(flatten)]
+    context: RendererWriteContext,
+    project_id: String,
     from_thread_id: Option<String>,
     to_thread_id: Option<String>,
     at_node_id: Option<String>,
@@ -346,6 +763,11 @@ pub struct PlotThreadBranchSnapshotRow {
 #[serde(rename_all = "camelCase")]
 pub struct PlotThreadRestoreSnapshotPayload {
     request_id: String,
+    session_id: String,
+    event_uid: String,
+    origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    original_transaction_id: Option<String>,
     project_id: String,
     #[serde(default)]
     thread: Option<PlotThreadSnapshotRow>,
@@ -362,6 +784,11 @@ pub struct PlotThreadRestoreSnapshotPayload {
 #[serde(rename_all = "camelCase")]
 pub struct PlotThreadDeleteSnapshotPayload {
     request_id: String,
+    session_id: String,
+    event_uid: String,
+    origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    original_transaction_id: Option<String>,
     project_id: String,
     #[serde(default)]
     thread: Option<PlotThreadSnapshotRow>,
@@ -391,11 +818,26 @@ pub struct PlotThreadBranchTransition {
 #[serde(rename_all = "camelCase")]
 pub struct PlotThreadMoveMarkerBundlePayload {
     request_id: String,
+    session_id: String,
+    event_uid: String,
+    origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    original_transaction_id: Option<String>,
     project_id: String,
     marker_before: PlotThreadLinkSnapshotRow,
     marker_after: PlotThreadLinkSnapshotRow,
     #[serde(default)]
     branch_transitions: Vec<PlotThreadBranchTransition>,
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlotDeletePayload {
+    id: String,
+    project_id: String,
+    base_version: i64,
+    #[serde(flatten)]
+    context: RendererWriteContext,
 }
 
 fn load_map(
@@ -878,8 +1320,20 @@ fn load_exact_restore_snapshot(
 // ─────────────────────── thread CRUD ───────────────────────
 
 pub fn create(db: &Database, p: PlotThreadCreatePayload) -> anyhow::Result<Value> {
-    let payload_hash = payload_fingerprint("plot_thread_create", &p)?;
-    let has_request_id = p.id.is_some();
+    let write_context = resolve_write_context("plot.thread.create", &p.context)?;
+    let payload_hash = payload_fingerprint(
+        "plot_thread_create",
+        &json!({
+            "id": p.id,
+            "projectId": p.project_id,
+            "origin": write_context.origin,
+            "originalTransactionId": write_context.original_transaction_id,
+            "name": p.name,
+            "color": p.color,
+            "description": p.description,
+            "sortOrder": p.sort_order,
+        }),
+    )?;
     let id = p.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let project_id = p.project_id;
     let name = p.name;
@@ -890,7 +1344,7 @@ pub fn create(db: &Database, p: PlotThreadCreatePayload) -> anyhow::Result<Value
         db,
         IdempotencyRequest {
             domain: "plot_thread_create",
-            request_id: has_request_id.then_some(id.as_str()),
+            request_id: Some(write_context.request_id.as_str()),
             payload_hash: &payload_hash,
             conflict_marker: "PLOT_THREAD_IDEMPOTENCY_CONFLICT",
         },
@@ -966,7 +1420,31 @@ pub fn create(db: &Database, p: PlotThreadCreatePayload) -> anyhow::Result<Value
                     "/endNodeId",
                 ],
             )?;
-            Ok((project_id.clone(), row))
+            let transaction_id = append_plot_feed(
+                conn,
+                PlotFeedAppend {
+                    project_id: &project_id,
+                    operation: "plot.thread.create",
+                    entity_type: "plot-thread",
+                    entity_id: &id,
+                    context: &write_context,
+                    cause_kind: write_context.cause_kind,
+                    origin: write_context.origin,
+                    original_transaction_id: write_context.original_transaction_id.clone(),
+                    events: vec![plot_root_feed_event(
+                        &id,
+                        "catalog",
+                        "create",
+                        None,
+                        Some(&row),
+                        vec!["/".to_string()],
+                    )?],
+                },
+            )?;
+            Ok((
+                project_id.clone(),
+                attach_maintenance_transaction_id(row, transaction_id),
+            ))
         },
         |conn| load_row(conn, "plot_threads", &id),
     )
@@ -974,7 +1452,33 @@ pub fn create(db: &Database, p: PlotThreadCreatePayload) -> anyhow::Result<Value
 }
 
 pub fn update(db: &Database, id: String, patch: PlotThreadPatch) -> anyhow::Result<Value> {
+    let write_context = resolve_write_context("plot.thread.update", &patch.context)?;
+    let project_id = patch.project_id.clone();
+    let payload_hash = payload_fingerprint(
+        "plot_thread_update",
+        &json!({
+            "id": id,
+            "projectId": project_id,
+            "origin": write_context.origin,
+            "originalTransactionId": write_context.original_transaction_id,
+            "name": patch.name,
+            "color": patch.color,
+            "description": patch.description,
+            "sortOrder": patch.sort_order,
+            "baseVersion": patch.base_version,
+        }),
+    )?;
     let base_version = patch.base_version;
+    let changed_paths = [
+        patch.name.is_some().then_some("/name"),
+        patch.color.is_some().then_some("/color"),
+        patch.description.is_some().then_some("/description"),
+        patch.sort_order.is_some().then_some("/sortOrder"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
     if let Some(name) = patch.name {
@@ -993,80 +1497,94 @@ pub fn update(db: &Database, id: String, patch: PlotThreadPatch) -> anyhow::Resu
         sets.push("sort_order = ?");
         params.push(Value::String(sort_order));
     }
-    if sets.is_empty() {
-        let rows = db.execute(
-            "SELECT * FROM plot_threads WHERE id = ?",
-            &[Value::String(id.clone())],
-            "get",
-        )?;
-        let current = rows
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("plot thread not found: {id}"))?;
-        let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
-        anyhow::ensure!(
-            current_version == base_version,
-            "PLOT_THREAD_VERSION_MISMATCH: expected {base_version}, found {current_version}"
-        );
-        return Ok(one(rows));
+    let has_changes = !sets.is_empty();
+    if has_changes {
+        sets.push("version = version + 1");
+        sets.push("updated_at = datetime('now')");
+        params.push(Value::String(id.clone()));
+        params.push(Value::Number(base_version.into()));
     }
-    sets.push("version = version + 1");
-    sets.push("updated_at = datetime('now')");
     let sql = format!(
         "UPDATE plot_threads SET {} WHERE id = ? AND version = ?",
         sets.join(", ")
     );
-    params.push(Value::String(id.clone()));
-    params.push(Value::Number(base_version.into()));
-    db.with_conn(|conn| {
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<Value> {
-            Database::execute_with_conn(conn, &sql, &params, "run")?;
-            anyhow::ensure!(
-                conn.changes() == 1,
-                "PLOT_THREAD_VERSION_MISMATCH: expected base version {base_version}"
-            );
-            let row = one(Database::execute_with_conn(
-                conn,
-                "SELECT * FROM plot_threads WHERE id = ?",
-                &[Value::String(id.clone())],
-                "get",
-            )?);
-            let project_id = row
-                .get("project_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("plot thread missing project_id"))?;
-            record_plot_field_authority(
-                conn,
-                project_id,
-                "plot-thread",
-                &id,
-                &[
-                    "/name",
-                    "/description",
-                    "/color",
-                    "/sortOrder",
-                    "/startNodeId",
-                    "/endNodeId",
-                ],
-            )?;
-            Ok(row)
-        })();
-        match result {
-            Ok(value) => {
-                conn.execute_batch("COMMIT")?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
+    let request = IdempotencyRequest {
+        domain: "plot_thread_update",
+        request_id: Some(write_context.request_id.as_str()),
+        payload_hash: &payload_hash,
+        conflict_marker: "PLOT_THREAD_UPDATE_IDEMPOTENCY_CONFLICT",
+    };
+    run_atomic_plot_mutation(db, request, &project_id, |conn| {
+        let before = load_row(conn, "plot_threads", &id)?
+            .ok_or_else(|| anyhow::anyhow!("plot thread not found: {id}"))?;
+        anyhow::ensure!(
+            before.get("project_id").and_then(Value::as_str) == Some(project_id.as_str()),
+            "plot thread update target belongs to another project"
+        );
+        let current_version = before.get("version").and_then(Value::as_i64).unwrap_or(0);
+        anyhow::ensure!(
+            current_version == base_version,
+            "PLOT_THREAD_VERSION_MISMATCH: expected {base_version}, found {current_version}"
+        );
+        if !has_changes {
+            return Ok(before);
         }
+        Database::execute_with_conn(conn, &sql, &params, "run")?;
+        anyhow::ensure!(
+            conn.changes() == 1,
+            "PLOT_THREAD_VERSION_MISMATCH: expected base version {base_version}"
+        );
+        let row = one(Database::execute_with_conn(
+            conn,
+            "SELECT * FROM plot_threads WHERE id = ?",
+            &[Value::String(id.clone())],
+            "get",
+        )?);
+        let persisted_project_id = row
+            .get("project_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("plot thread missing project_id"))?;
+        record_plot_field_authority(
+            conn,
+            persisted_project_id,
+            "plot-thread",
+            &id,
+            &[
+                "/name",
+                "/description",
+                "/color",
+                "/sortOrder",
+                "/startNodeId",
+                "/endNodeId",
+            ],
+        )?;
+        let transaction_id = append_plot_feed(
+            conn,
+            PlotFeedAppend {
+                project_id: persisted_project_id,
+                operation: "plot.thread.update",
+                entity_type: "plot-thread",
+                entity_id: &id,
+                context: &write_context,
+                cause_kind: write_context.cause_kind,
+                origin: write_context.origin,
+                original_transaction_id: write_context.original_transaction_id.clone(),
+                events: vec![plot_root_feed_event(
+                    &id,
+                    "metadata",
+                    "update",
+                    Some(&before),
+                    Some(&row),
+                    changed_paths.clone(),
+                )?],
+            },
+        )?;
+        Ok(attach_maintenance_transaction_id(row, transaction_id))
     })
 }
 
-pub fn delete(db: &Database, id: String, base_version: i64) -> anyhow::Result<()> {
-    delete_versioned_row(db, "plot_threads", "PLOT_THREAD_VERSION_MISMATCH", id, base_version)
+pub fn delete(db: &Database, payload: PlotDeletePayload) -> anyhow::Result<Value> {
+    delete_versioned_row(db, "plot_threads", "PLOT_THREAD_VERSION_MISMATCH", payload)
 }
 
 pub fn list(db: &Database, project_id: String) -> anyhow::Result<Vec<Value>> {
@@ -1081,9 +1599,23 @@ pub fn list(db: &Database, project_id: String) -> anyhow::Result<Vec<Value>> {
 // ─────────────────────── link CRUD ───────────────────────
 
 pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Result<Value> {
-    let payload_hash = payload_fingerprint("plot_thread_link_create", &p)?;
-    let has_request_id = p.id.is_some();
+    let write_context = resolve_write_context("plot.marker.create", &p.context)?;
+    let payload_hash = payload_fingerprint(
+        "plot_thread_link_create",
+        &json!({
+            "id": p.id,
+            "projectId": p.project_id,
+            "origin": write_context.origin,
+            "originalTransactionId": write_context.original_transaction_id,
+            "threadId": p.thread_id,
+            "nodeId": p.node_id,
+            "phaseType": p.phase_type,
+            "note": p.note,
+            "sortOrder": p.sort_order,
+        }),
+    )?;
     let id = p.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let requested_project_id = p.project_id;
     let thread_id = p.thread_id;
     let node_id = p.node_id;
     let phase_type = p.phase_type;
@@ -1093,7 +1625,7 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
         db,
         IdempotencyRequest {
             domain: "plot_thread_link_create",
-            request_id: has_request_id.then_some(id.as_str()),
+            request_id: Some(write_context.request_id.as_str()),
             payload_hash: &payload_hash,
             conflict_marker: "PLOT_THREAD_LINK_IDEMPOTENCY_CONFLICT",
         },
@@ -1104,6 +1636,10 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
             // later cascade removed the thread or scene.
             let project_id = project_of_conn(conn, "plot_threads", &thread_id)?
                 .ok_or_else(|| anyhow::anyhow!("plot thread link thread does not exist"))?;
+            anyhow::ensure!(
+                project_id == requested_project_id.as_str(),
+                "plot thread link must belong to payload project"
+            );
             require_project_scene(conn, &node_id, &project_id, "plot thread link scene")?;
             let semantic_key = format!("{thread_id}|{node_id}|{phase_type}");
             Database::execute_with_conn(
@@ -1181,7 +1717,31 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
                     "/semanticKey",
                 ],
             )?;
-            Ok((project_id, row))
+            let transaction_id = append_plot_feed(
+                conn,
+                PlotFeedAppend {
+                    project_id: &project_id,
+                    operation: "plot.marker.create",
+                    entity_type: "plot-marker",
+                    entity_id: &id,
+                    context: &write_context,
+                    cause_kind: write_context.cause_kind,
+                    origin: write_context.origin,
+                    original_transaction_id: write_context.original_transaction_id.clone(),
+                    events: vec![plot_marker_feed_event(
+                        &id,
+                        "association",
+                        "create",
+                        None,
+                        Some(&row),
+                        vec!["/".to_string()],
+                    )?],
+                },
+            )?;
+            Ok((
+                project_id,
+                attach_maintenance_transaction_id(row, transaction_id),
+            ))
         },
         |conn| load_row(conn, "plot_thread_scene_links", &id),
     )
@@ -1189,167 +1749,200 @@ pub fn link_create(db: &Database, p: PlotThreadLinkCreatePayload) -> anyhow::Res
 }
 
 pub fn link_update(db: &Database, id: String, patch: PlotThreadLinkPatch) -> anyhow::Result<Value> {
+    let write_context = resolve_write_context("plot.marker.update", &patch.context)?;
+    let project_id = patch.project_id.clone();
+    let payload_hash = payload_fingerprint(
+        "plot_thread_link_update",
+        &json!({
+            "id": id,
+            "projectId": project_id,
+            "origin": write_context.origin,
+            "originalTransactionId": write_context.original_transaction_id,
+            "threadId": patch.thread_id,
+            "nodeId": patch.node_id,
+            "phaseType": patch.phase_type,
+            "note": patch.note,
+            "sortOrder": patch.sort_order,
+            "baseVersion": patch.base_version,
+        }),
+    )?;
     let base_version = patch.base_version;
+    let changed_paths = [
+        patch.thread_id.is_some().then_some("/threadId"),
+        patch.node_id.is_some().then_some("/sceneId"),
+        patch.phase_type.is_some().then_some("/phaseType"),
+        patch.note.is_some().then_some("/note"),
+        patch.sort_order.is_some().then_some("/sortOrder"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
     if let Some(ref pt) = patch.phase_type {
         validate_phase(pt)?;
     }
-    if patch.thread_id.is_none()
-        && patch.node_id.is_none()
-        && patch.phase_type.is_none()
-        && patch.note.is_none()
-        && patch.sort_order.is_none()
-    {
-        let rows = db.execute(
+    let has_changes = patch.thread_id.is_some()
+        || patch.node_id.is_some()
+        || patch.phase_type.is_some()
+        || patch.note.is_some()
+        || patch.sort_order.is_some();
+    let request = IdempotencyRequest {
+        domain: "plot_thread_link_update",
+        request_id: Some(write_context.request_id.as_str()),
+        payload_hash: &payload_hash,
+        conflict_marker: "PLOT_THREAD_LINK_UPDATE_IDEMPOTENCY_CONFLICT",
+    };
+    run_atomic_plot_mutation(db, request, &project_id, |conn| {
+        let current_rows = Database::execute_with_conn(
+            conn,
             "SELECT * FROM plot_thread_scene_links WHERE id = ?",
             &[Value::String(id.clone())],
             "get",
         )?;
-        let current = rows
+        let current = current_rows
             .first()
             .ok_or_else(|| anyhow::anyhow!("plot thread link not found: {id}"))?;
+        let before = Value::Object(current.clone());
+        let current_thread_id = current
+            .get("thread_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("plot thread link missing thread_id"))?;
+        let current_node_id = current
+            .get("node_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("plot thread link missing node_id"))?;
+        let current_phase_type = current
+            .get("phase_type")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("plot thread link missing phase_type"))?;
         let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
         anyhow::ensure!(
             current_version == base_version,
             "PLOT_THREAD_LINK_VERSION_MISMATCH: expected {base_version}, found {current_version}"
         );
-        return Ok(one(rows));
-    }
 
-    db.with_conn(|conn| {
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<Value> {
-            let current_rows = Database::execute_with_conn(
-                conn,
-                "SELECT * FROM plot_thread_scene_links WHERE id = ?",
-                &[Value::String(id.clone())],
-                "get",
-            )?;
-            let current = current_rows
-                .first()
-                .ok_or_else(|| anyhow::anyhow!("plot thread link not found: {id}"))?;
-            let current_thread_id = current
-                .get("thread_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("plot thread link missing thread_id"))?;
-            let current_node_id = current
-                .get("node_id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("plot thread link missing node_id"))?;
-            let current_phase_type = current
-                .get("phase_type")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("plot thread link missing phase_type"))?;
-            let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
-            anyhow::ensure!(
-                current_version == base_version,
-                "PLOT_THREAD_LINK_VERSION_MISMATCH: expected {base_version}, found {current_version}"
-            );
+        let current_project = project_of_conn(conn, "plot_threads", current_thread_id)?;
+        anyhow::ensure!(
+            current_project.as_deref() == Some(project_id.as_str()),
+            "plot thread link update target belongs to another project"
+        );
+        if !has_changes {
+            return Ok(before);
+        }
 
-            let thread_id = patch.thread_id.as_deref().unwrap_or(current_thread_id);
-            let node_id = patch.node_id.as_deref().unwrap_or(current_node_id);
-            let phase_type = patch.phase_type.as_deref().unwrap_or(current_phase_type);
-            let current_project = project_of_conn(conn, "plot_threads", current_thread_id)?;
-            let thread_project = project_of_conn(conn, "plot_threads", thread_id)?;
-            let project_id = match (current_project, thread_project) {
-                (Some(current_project), Some(thread_project))
-                    if current_project == thread_project => current_project,
-                _ => anyhow::bail!("plot thread link move must stay within the same project"),
-            };
-            require_project_scene(conn, node_id, &project_id, "plot thread link scene")?;
+        let thread_id = patch.thread_id.as_deref().unwrap_or(current_thread_id);
+        let node_id = patch.node_id.as_deref().unwrap_or(current_node_id);
+        let phase_type = patch.phase_type.as_deref().unwrap_or(current_phase_type);
+        let thread_project = project_of_conn(conn, "plot_threads", thread_id)?;
+        let project_id = match (current_project, thread_project) {
+            (Some(current_project), Some(thread_project)) if current_project == thread_project => {
+                current_project
+            }
+            _ => anyhow::bail!("plot thread link move must stay within the same project"),
+        };
+        require_project_scene(conn, node_id, &project_id, "plot thread link scene")?;
 
-            let note = patch
-                .note
-                .clone()
-                .map(|value| value.map(Value::String).unwrap_or(Value::Null))
-                .unwrap_or_else(|| current.get("note").cloned().unwrap_or(Value::Null));
-            let sort_order = patch
-                .sort_order
-                .clone()
-                .map(|value| value.map(Value::String).unwrap_or(Value::Null))
-                .unwrap_or_else(|| current.get("sort_order").cloned().unwrap_or(Value::Null));
-            let natural_key = format!("{thread_id}|{node_id}|{phase_type}");
-            let current_key = current
-                .get("semantic_key")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let semantic_key = if current_key == natural_key
-                || current_key
-                    .strip_prefix(&natural_key)
-                    .is_some_and(|suffix| suffix.starts_with("#dup:"))
-            {
-                current_key.to_string()
-            } else {
-                natural_key
-            };
+        let note = patch
+            .note
+            .clone()
+            .map(|value| value.map(Value::String).unwrap_or(Value::Null))
+            .unwrap_or_else(|| current.get("note").cloned().unwrap_or(Value::Null));
+        let sort_order = patch
+            .sort_order
+            .clone()
+            .map(|value| value.map(Value::String).unwrap_or(Value::Null))
+            .unwrap_or_else(|| current.get("sort_order").cloned().unwrap_or(Value::Null));
+        let natural_key = format!("{thread_id}|{node_id}|{phase_type}");
+        let current_key = current
+            .get("semantic_key")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let semantic_key = if current_key == natural_key
+            || current_key
+                .strip_prefix(&natural_key)
+                .is_some_and(|suffix| suffix.starts_with("#dup:"))
+        {
+            current_key.to_string()
+        } else {
+            natural_key
+        };
 
-            Database::execute_with_conn(
-                conn,
-                "UPDATE plot_thread_scene_links
+        Database::execute_with_conn(
+            conn,
+            "UPDATE plot_thread_scene_links
                     SET thread_id = ?, node_id = ?, phase_type = ?, note = ?, sort_order = ?,
                         semantic_key = ?, version = version + 1, updated_at = datetime('now')
                   WHERE id = ? AND version = ?",
-                &[
-                    Value::String(thread_id.to_string()),
-                    Value::String(node_id.to_string()),
-                    Value::String(phase_type.to_string()),
-                    note,
-                    sort_order,
-                    Value::String(semantic_key),
-                    Value::String(id.clone()),
-                    Value::Number(base_version.into()),
-                ],
-                "run",
-            )?;
-            anyhow::ensure!(
-                conn.changes() == 1,
-                "PLOT_THREAD_LINK_VERSION_MISMATCH: link changed during update"
-            );
-            let row = one(Database::execute_with_conn(
-                conn,
-                "SELECT * FROM plot_thread_scene_links WHERE id = ?",
-                &[Value::String(id.clone())],
-                "get",
-            )?);
-            let project_id = project_of_conn(conn, "plot_threads", current_thread_id)?
-                .ok_or_else(|| anyhow::anyhow!("plot thread link project missing"))?;
-            record_plot_field_authority(
-                conn,
-                &project_id,
-                "plot-marker",
-                &id,
-                &[
-                    "/threadId",
-                    "/sceneId",
-                    "/phaseType",
-                    "/note",
-                    "/sortOrder",
-                    "/semanticKey",
-                ],
-            )?;
-            Ok(row)
-        })();
-
-        match result {
-            Ok(value) => {
-                conn.execute_batch("COMMIT")?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
-        }
+            &[
+                Value::String(thread_id.to_string()),
+                Value::String(node_id.to_string()),
+                Value::String(phase_type.to_string()),
+                note,
+                sort_order,
+                Value::String(semantic_key),
+                Value::String(id.clone()),
+                Value::Number(base_version.into()),
+            ],
+            "run",
+        )?;
+        anyhow::ensure!(
+            conn.changes() == 1,
+            "PLOT_THREAD_LINK_VERSION_MISMATCH: link changed during update"
+        );
+        let row = one(Database::execute_with_conn(
+            conn,
+            "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+            &[Value::String(id.clone())],
+            "get",
+        )?);
+        let project_id = project_of_conn(conn, "plot_threads", current_thread_id)?
+            .ok_or_else(|| anyhow::anyhow!("plot thread link project missing"))?;
+        record_plot_field_authority(
+            conn,
+            &project_id,
+            "plot-marker",
+            &id,
+            &[
+                "/threadId",
+                "/sceneId",
+                "/phaseType",
+                "/note",
+                "/sortOrder",
+                "/semanticKey",
+            ],
+        )?;
+        let event = plot_marker_feed_event(
+            &id,
+            "association",
+            "update",
+            Some(&before),
+            Some(&row),
+            changed_paths.clone(),
+        )?;
+        let transaction_id = append_plot_feed(
+            conn,
+            PlotFeedAppend {
+                project_id: &project_id,
+                operation: "plot.marker.update",
+                entity_type: "plot-marker",
+                entity_id: &id,
+                context: &write_context,
+                cause_kind: write_context.cause_kind,
+                origin: write_context.origin,
+                original_transaction_id: write_context.original_transaction_id.clone(),
+                events: vec![event],
+            },
+        )?;
+        Ok(attach_maintenance_transaction_id(row, transaction_id))
     })
 }
 
-pub fn link_delete(db: &Database, id: String, base_version: i64) -> anyhow::Result<()> {
+pub fn link_delete(db: &Database, payload: PlotDeletePayload) -> anyhow::Result<Value> {
     delete_versioned_row(
         db,
         "plot_thread_scene_links",
         "PLOT_THREAD_LINK_VERSION_MISMATCH",
-        id,
-        base_version,
+        payload,
     )
 }
 
@@ -1366,12 +1959,24 @@ pub fn list_links(db: &Database, project_id: String) -> anyhow::Result<Vec<Value
 
 // ─────────────────────── branch create ───────────────────────
 
-/// Create a plot branch through the native domain boundary. Update/delete/list
-/// remain generic Drizzle operations, but create owns the durable request
-/// ledger and XPROJ validation and therefore must be one native transaction.
+/// Create a plot branch through the native domain boundary. Renderer mutations
+/// own XPROJ/OCC validation and append their canonical + maintenance Feed facts
+/// inside the same native transaction.
 pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow::Result<Value> {
-    let payload_hash = payload_fingerprint("plot_thread_branch_create", &p)?;
-    let has_request_id = p.id.is_some();
+    let write_context = resolve_write_context("plot.branch.create", &p.context)?;
+    let payload_hash = payload_fingerprint(
+        "plot_thread_branch_create",
+        &json!({
+            "id": p.id,
+            "projectId": p.project_id,
+            "origin": write_context.origin,
+            "originalTransactionId": write_context.original_transaction_id,
+            "fromThreadId": p.from_thread_id,
+            "toThreadId": p.to_thread_id,
+            "atNodeId": p.at_node_id,
+            "kind": p.kind,
+        }),
+    )?;
     let id = p.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let project_id = p.project_id;
     let from_thread_id = p.from_thread_id;
@@ -1383,7 +1988,7 @@ pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow:
         db,
         IdempotencyRequest {
             domain: "plot_thread_branch_create",
-            request_id: has_request_id.then_some(id.as_str()),
+            request_id: Some(write_context.request_id.as_str()),
             payload_hash: &payload_hash,
             conflict_marker: "PLOT_THREAD_BRANCH_IDEMPOTENCY_CONFLICT",
         },
@@ -1471,7 +2076,32 @@ pub fn branch_create(db: &Database, p: PlotThreadBranchCreatePayload) -> anyhow:
                     "/semanticKey",
                 ],
             )?;
-            Ok((project_id.clone(), row))
+            let event = plot_branch_feed_event(
+                &id,
+                "association",
+                "create",
+                None,
+                Some(&row),
+                vec!["/".to_string()],
+            )?;
+            let transaction_id = append_plot_feed(
+                conn,
+                PlotFeedAppend {
+                    project_id: &project_id,
+                    operation: "plot.branch.create",
+                    entity_type: "plot-branch",
+                    entity_id: &id,
+                    context: &write_context,
+                    cause_kind: write_context.cause_kind,
+                    origin: write_context.origin,
+                    original_transaction_id: write_context.original_transaction_id.clone(),
+                    events: vec![event],
+                },
+            )?;
+            Ok((
+                project_id.clone(),
+                attach_maintenance_transaction_id(row, transaction_id),
+            ))
         },
         |conn| load_row(conn, "plot_thread_branches", &id),
     )
@@ -1483,9 +2113,42 @@ pub fn branch_update(
     id: String,
     patch: PlotThreadBranchPatch,
 ) -> anyhow::Result<Value> {
-    if patch.from_thread_id.is_none() && patch.to_thread_id.is_none() && patch.at_node_id.is_none()
-    {
-        let current_rows = db.execute(
+    let write_context = resolve_write_context("plot.branch.update", &patch.context)?;
+    let requested_project_id = patch.project_id.clone();
+    let payload_hash = payload_fingerprint(
+        "plot_thread_branch_update",
+        &json!({
+            "id": id,
+            "projectId": requested_project_id,
+            "origin": write_context.origin,
+            "originalTransactionId": write_context.original_transaction_id,
+            "fromThreadId": patch.from_thread_id,
+            "toThreadId": patch.to_thread_id,
+            "atNodeId": patch.at_node_id,
+            "baseVersion": patch.base_version,
+        }),
+    )?;
+    let changed_paths = [
+        patch.from_thread_id.is_some().then_some("/fromThreadId"),
+        patch.to_thread_id.is_some().then_some("/toThreadId"),
+        patch.at_node_id.is_some().then_some("/atSceneId"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let has_changes = patch.from_thread_id.is_some()
+        || patch.to_thread_id.is_some()
+        || patch.at_node_id.is_some();
+    let request = IdempotencyRequest {
+        domain: "plot_thread_branch_update",
+        request_id: Some(write_context.request_id.as_str()),
+        payload_hash: &payload_hash,
+        conflict_marker: "PLOT_THREAD_BRANCH_UPDATE_IDEMPOTENCY_CONFLICT",
+    };
+    run_atomic_plot_mutation(db, request, &requested_project_id, |conn| {
+        let current_rows = Database::execute_with_conn(
+            conn,
             "SELECT * FROM plot_thread_branches WHERE id = ?",
             &[Value::String(id.clone())],
             "get",
@@ -1493,155 +2156,147 @@ pub fn branch_update(
         let Some(current) = current_rows.first() else {
             anyhow::bail!("plot thread branch not found: {id}");
         };
+        let before = Value::Object(current.clone());
         let current_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
         anyhow::ensure!(
             current_version == patch.base_version,
             "PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected {}, found {current_version}",
             patch.base_version
         );
-        return Ok(one(current_rows));
-    }
 
-    db.with_conn(|conn| {
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<Value> {
-            let current_rows = Database::execute_with_conn(
-                conn,
-                "SELECT * FROM plot_thread_branches WHERE id = ?",
-                &[Value::String(id.clone())],
-                "get",
-            )?;
-            let Some(current) = current_rows.first() else {
-                anyhow::bail!("plot thread branch not found: {id}");
-            };
-            let current_version = current
-                .get("version")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
-            anyhow::ensure!(
-                current_version == patch.base_version,
-                "PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected {}, found {current_version}",
-                patch.base_version
-            );
-
-            let project_id = current
-                .get("project_id")
+        let project_id = current
+            .get("project_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("plot thread branch missing project_id"))?;
+        anyhow::ensure!(
+            project_id == requested_project_id,
+            "plot thread branch update target belongs to another project"
+        );
+        if !has_changes {
+            return Ok(before);
+        }
+        let kind = current
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("plot thread branch missing kind"))?;
+        let from_thread_id = patch.from_thread_id.as_deref().unwrap_or_else(|| {
+            current
+                .get("from_thread_id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("plot thread branch missing project_id"))?;
-            let kind = current
-                .get("kind")
+                .unwrap_or("")
+        });
+        let to_thread_id = patch.to_thread_id.as_deref().unwrap_or_else(|| {
+            current
+                .get("to_thread_id")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("plot thread branch missing kind"))?;
-            let from_thread_id = patch.from_thread_id.as_deref().unwrap_or_else(|| {
-                current
-                    .get("from_thread_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-            });
-            let to_thread_id = patch.to_thread_id.as_deref().unwrap_or_else(|| {
-                current
-                    .get("to_thread_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-            });
-            let at_node_id = patch.at_node_id.as_deref().unwrap_or_else(|| {
-                current
-                    .get("at_node_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-            });
-            anyhow::ensure!(
-                from_thread_id != to_thread_id,
-                "plot thread branch cannot reference the same thread twice"
-            );
+                .unwrap_or("")
+        });
+        let at_node_id = patch.at_node_id.as_deref().unwrap_or_else(|| {
+            current
+                .get("at_node_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+        });
+        anyhow::ensure!(
+            from_thread_id != to_thread_id,
+            "plot thread branch cannot reference the same thread twice"
+        );
 
-            let from_project = project_of_conn(conn, "plot_threads", from_thread_id)?;
-            let to_project = project_of_conn(conn, "plot_threads", to_thread_id)?;
-            match (from_project, to_project) {
+        let from_project = project_of_conn(conn, "plot_threads", from_thread_id)?;
+        let to_project = project_of_conn(conn, "plot_threads", to_thread_id)?;
+        match (from_project, to_project) {
                 (Some(from), Some(to)) if from == project_id && to == project_id => {}
                 _ => anyhow::bail!(
                     "plot thread branch must reference a project, threads, and scene in the same project"
                 ),
             }
-            require_project_scene(conn, at_node_id, project_id, "plot thread branch scene")?;
+        require_project_scene(conn, at_node_id, project_id, "plot thread branch scene")?;
 
-            let natural_key = format!("{from_thread_id}|{to_thread_id}|{at_node_id}|{kind}");
-            let current_key = current
-                .get("semantic_key")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            let semantic_key = if current_key == natural_key
-                || current_key
-                    .strip_prefix(&natural_key)
-                    .is_some_and(|suffix| suffix.starts_with("#dup:"))
-            {
-                current_key.to_string()
-            } else {
-                natural_key
-            };
-            Database::execute_with_conn(
-                conn,
-                "UPDATE plot_thread_branches
+        let natural_key = format!("{from_thread_id}|{to_thread_id}|{at_node_id}|{kind}");
+        let current_key = current
+            .get("semantic_key")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let semantic_key = if current_key == natural_key
+            || current_key
+                .strip_prefix(&natural_key)
+                .is_some_and(|suffix| suffix.starts_with("#dup:"))
+        {
+            current_key.to_string()
+        } else {
+            natural_key
+        };
+        Database::execute_with_conn(
+            conn,
+            "UPDATE plot_thread_branches
                     SET from_thread_id = ?, to_thread_id = ?, at_node_id = ?,
                         semantic_key = ?, version = version + 1, updated_at = datetime('now')
                   WHERE id = ? AND version = ?",
-                &[
-                    Value::String(from_thread_id.to_string()),
-                    Value::String(to_thread_id.to_string()),
-                    Value::String(at_node_id.to_string()),
-                    Value::String(semantic_key),
-                    Value::String(id.clone()),
-                    Value::Number(current_version.into()),
-                ],
-                "run",
-            )?;
-            anyhow::ensure!(
-                conn.changes() == 1,
-                "PLOT_THREAD_BRANCH_VERSION_MISMATCH: branch changed during update"
-            );
-            let row = one(Database::execute_with_conn(
-                conn,
-                "SELECT * FROM plot_thread_branches WHERE id = ?",
-                &[Value::String(id.clone())],
-                "get",
-            )?);
-            record_plot_field_authority(
-                conn,
+            &[
+                Value::String(from_thread_id.to_string()),
+                Value::String(to_thread_id.to_string()),
+                Value::String(at_node_id.to_string()),
+                Value::String(semantic_key),
+                Value::String(id.clone()),
+                Value::Number(current_version.into()),
+            ],
+            "run",
+        )?;
+        anyhow::ensure!(
+            conn.changes() == 1,
+            "PLOT_THREAD_BRANCH_VERSION_MISMATCH: branch changed during update"
+        );
+        let row = one(Database::execute_with_conn(
+            conn,
+            "SELECT * FROM plot_thread_branches WHERE id = ?",
+            &[Value::String(id.clone())],
+            "get",
+        )?);
+        record_plot_field_authority(
+            conn,
+            project_id,
+            "plot-branch",
+            &id,
+            &[
+                "/fromThreadId",
+                "/toThreadId",
+                "/atSceneId",
+                "/kind",
+                "/semanticKey",
+            ],
+        )?;
+        let event = plot_branch_feed_event(
+            &id,
+            "association",
+            "update",
+            Some(&before),
+            Some(&row),
+            changed_paths.clone(),
+        )?;
+        let transaction_id = append_plot_feed(
+            conn,
+            PlotFeedAppend {
                 project_id,
-                "plot-branch",
-                &id,
-                &[
-                    "/fromThreadId",
-                    "/toThreadId",
-                    "/atSceneId",
-                    "/kind",
-                    "/semanticKey",
-                ],
-            )?;
-            Ok(row)
-        })();
-
-        match result {
-            Ok(value) => {
-                conn.execute_batch("COMMIT")?;
-                Ok(value)
-            }
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(error)
-            }
-        }
+                operation: "plot.branch.update",
+                entity_type: "plot-branch",
+                entity_id: &id,
+                context: &write_context,
+                cause_kind: write_context.cause_kind,
+                origin: write_context.origin,
+                original_transaction_id: write_context.original_transaction_id.clone(),
+                events: vec![event],
+            },
+        )?;
+        Ok(attach_maintenance_transaction_id(row, transaction_id))
     })
 }
 
-pub fn branch_delete(db: &Database, id: String, base_version: i64) -> anyhow::Result<()> {
+pub fn branch_delete(db: &Database, payload: PlotDeletePayload) -> anyhow::Result<Value> {
     delete_versioned_row(
         db,
         "plot_thread_branches",
         "PLOT_THREAD_BRANCH_VERSION_MISMATCH",
-        id,
-        base_version,
+        payload,
     )
 }
 
@@ -1947,6 +2602,129 @@ fn move_marker_bundle_response(
     })
 }
 
+fn move_marker_feed_events(
+    payload: &PlotThreadMoveMarkerBundlePayload,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    let marker_before = serde_json::to_value(&payload.marker_before)?;
+    let marker_after = serde_json::to_value(&payload.marker_after)?;
+    let mut ordered = vec![(
+        0_u8,
+        payload.marker_before.id.clone(),
+        plot_marker_feed_event(
+            &payload.marker_before.id,
+            "association",
+            "update",
+            Some(&marker_before),
+            Some(&marker_after),
+            marker_transition_changed_paths(&payload.marker_before, &payload.marker_after),
+        )?,
+    )];
+    for transition in &payload.branch_transitions {
+        let branch = transition
+            .after
+            .as_ref()
+            .or(transition.before.as_ref())
+            .ok_or_else(|| anyhow::anyhow!("plot marker move branch transition has no row"))?;
+        let before = transition
+            .before
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()?;
+        let after = transition
+            .after
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()?;
+        let mutation_kind = match (&before, &after) {
+            (None, Some(_))
+                if matches!(
+                    payload.origin,
+                    NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+                ) =>
+            {
+                "restore"
+            }
+            (None, Some(_)) => "create",
+            (Some(_), Some(_)) => "update",
+            (Some(_), None) => "delete",
+            (None, None) => anyhow::bail!("plot marker move branch transition has no state"),
+        };
+        let changed_paths = match (&transition.before, &transition.after) {
+            (Some(before), Some(after)) => branch_transition_changed_paths(before, after),
+            _ => vec!["/".to_string()],
+        };
+        ordered.push((
+            1_u8,
+            branch.id.clone(),
+            plot_branch_feed_event(
+                &branch.id,
+                "association",
+                mutation_kind,
+                before.as_ref(),
+                after.as_ref(),
+                changed_paths,
+            )?,
+        ));
+    }
+    ordered.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    Ok(ordered.into_iter().map(|(_, _, event)| event).collect())
+}
+
+fn marker_transition_changed_paths(
+    before: &PlotThreadLinkSnapshotRow,
+    after: &PlotThreadLinkSnapshotRow,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    if before.thread_id != after.thread_id {
+        paths.push("/threadId".to_string());
+    }
+    if before.node_id != after.node_id {
+        paths.push("/sceneId".to_string());
+    }
+    if before.phase_type != after.phase_type {
+        paths.push("/phaseType".to_string());
+    }
+    if before.note != after.note {
+        paths.push("/note".to_string());
+    }
+    if before.sort_order != after.sort_order {
+        paths.push("/sortOrder".to_string());
+    }
+    if before.semantic_key != after.semantic_key {
+        paths.push("/semanticKey".to_string());
+    }
+    if paths.is_empty() {
+        paths.push("/".to_string());
+    }
+    paths
+}
+
+fn branch_transition_changed_paths(
+    before: &PlotThreadBranchSnapshotRow,
+    after: &PlotThreadBranchSnapshotRow,
+) -> Vec<String> {
+    let mut paths = Vec::new();
+    if before.from_thread_id != after.from_thread_id {
+        paths.push("/fromThreadId".to_string());
+    }
+    if before.to_thread_id != after.to_thread_id {
+        paths.push("/toThreadId".to_string());
+    }
+    if before.at_node_id != after.at_node_id {
+        paths.push("/atSceneId".to_string());
+    }
+    if before.kind != after.kind {
+        paths.push("/kind".to_string());
+    }
+    if before.semantic_key != after.semantic_key {
+        paths.push("/semanticKey".to_string());
+    }
+    if paths.is_empty() {
+        paths.push("/".to_string());
+    }
+    paths
+}
+
 fn move_marker_bundle_effect_present(
     conn: &Connection,
     request_id: &str,
@@ -2095,8 +2873,20 @@ pub fn move_marker_bundle(
     normalize_move_marker_bundle(&mut payload)?;
     validate_move_marker_bundle_shape(&payload)?;
     let request_id = payload.request_id.clone();
+    let write_context = resolve_write_context(
+        "plot.marker.move",
+        &RendererWriteContext {
+            request_id: request_id.clone(),
+            session_id: payload.session_id.clone(),
+            event_uid: payload.event_uid.clone(),
+            origin: payload.origin,
+            original_transaction_id: payload.original_transaction_id.clone(),
+        },
+    )?;
     let fingerprint_payload = json!({
         "projectId": payload.project_id,
+        "origin": write_context.origin,
+        "originalTransactionId": write_context.original_transaction_id,
         "markerBefore": payload.marker_before,
         "markerAfter": payload.marker_after,
         "branchTransitions": payload.branch_transitions,
@@ -2227,9 +3017,26 @@ pub fn move_marker_bundle(
                     .iter()
                     .filter_map(|transition| transition.after.clone()),
             )?;
+            let transaction_id = append_plot_feed(
+                conn,
+                PlotFeedAppend {
+                    project_id: &payload.project_id,
+                    operation: "plot.marker.move",
+                    entity_type: "plot-marker",
+                    entity_id: &payload.marker_after.id,
+                    context: &write_context,
+                    cause_kind: write_context.cause_kind,
+                    origin: write_context.origin,
+                    original_transaction_id: write_context.original_transaction_id.clone(),
+                    events: move_marker_feed_events(&payload)?,
+                },
+            )?;
             Ok((
                 payload.project_id.clone(),
-                move_marker_bundle_response(&request_id, &payload),
+                attach_maintenance_transaction_id(
+                    move_marker_bundle_response(&request_id, &payload),
+                    transaction_id,
+                ),
             ))
         },
         |conn| move_marker_bundle_effect_present(conn, &request_id, &payload),
@@ -2239,17 +3046,164 @@ pub fn move_marker_bundle(
 
 // ─────────────────────── history snapshot transactions ───────────────────────
 
+fn plot_history_semantics(
+    origin: NarrativeChangeOrigin,
+    original_transaction_id: Option<String>,
+) -> anyhow::Result<(
+    NarrativeChangeCauseKind,
+    NarrativeChangeOrigin,
+    Option<String>,
+)> {
+    let cause_kind = match origin {
+        NarrativeChangeOrigin::Undo => NarrativeChangeCauseKind::Undo,
+        NarrativeChangeOrigin::Redo => NarrativeChangeCauseKind::Redo,
+        _ => NarrativeChangeCauseKind::Forward,
+    };
+    if cause_kind == NarrativeChangeCauseKind::Forward {
+        anyhow::ensure!(
+            original_transaction_id.is_none(),
+            "plot history forward mutation cannot name an original transaction"
+        );
+    } else {
+        anyhow::ensure!(
+            original_transaction_id.is_some(),
+            "plot undo/redo origin requires originalTransactionId"
+        );
+    }
+    Ok((cause_kind, origin, original_transaction_id))
+}
+
+fn restore_snapshot_feed_events(
+    payload: &PlotThreadRestoreSnapshotPayload,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    let mut ordered = Vec::new();
+    if let Some(thread) = &payload.thread {
+        let after = serde_json::to_value(thread)?;
+        ordered.push((
+            0_u8,
+            thread.id.clone(),
+            plot_root_feed_event(
+                &thread.id,
+                "catalog",
+                "restore",
+                None,
+                Some(&after),
+                vec!["/".to_string()],
+            )?,
+        ));
+    }
+    for link in &payload.links {
+        let after = serde_json::to_value(link)?;
+        ordered.push((
+            1_u8,
+            link.id.clone(),
+            plot_marker_feed_event(
+                &link.id,
+                "association",
+                "restore",
+                None,
+                Some(&after),
+                vec!["/".to_string()],
+            )?,
+        ));
+    }
+    for branch in &payload.branches {
+        let after = serde_json::to_value(branch)?;
+        ordered.push((
+            2_u8,
+            branch.id.clone(),
+            plot_branch_feed_event(
+                &branch.id,
+                "association",
+                "restore",
+                None,
+                Some(&after),
+                vec!["/".to_string()],
+            )?,
+        ));
+    }
+    ordered.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    Ok(ordered.into_iter().map(|(_, _, event)| event).collect())
+}
+
+fn delete_snapshot_feed_events(
+    payload: &PlotThreadDeleteSnapshotPayload,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    let mut ordered = Vec::new();
+    if let Some(thread) = &payload.thread {
+        let before = serde_json::to_value(thread)?;
+        ordered.push((
+            0_u8,
+            thread.id.clone(),
+            plot_root_feed_event(
+                &thread.id,
+                "catalog",
+                "delete",
+                Some(&before),
+                None,
+                vec!["/".to_string()],
+            )?,
+        ));
+    }
+    for link in payload.link.iter().chain(&payload.links) {
+        let before = serde_json::to_value(link)?;
+        ordered.push((
+            1_u8,
+            link.id.clone(),
+            plot_marker_feed_event(
+                &link.id,
+                "association",
+                "delete",
+                Some(&before),
+                None,
+                vec!["/".to_string()],
+            )?,
+        ));
+    }
+    for branch in &payload.branches {
+        let before = serde_json::to_value(branch)?;
+        ordered.push((
+            2_u8,
+            branch.id.clone(),
+            plot_branch_feed_event(
+                &branch.id,
+                "association",
+                "delete",
+                Some(&before),
+                None,
+                vec!["/".to_string()],
+            )?,
+        ));
+    }
+    ordered.sort_by(|left, right| (left.0, &left.1).cmp(&(right.0, &right.1)));
+    Ok(ordered.into_iter().map(|(_, _, event)| event).collect())
+}
+
 pub fn restore_snapshot(
     db: &Database,
     payload: PlotThreadRestoreSnapshotPayload,
 ) -> anyhow::Result<Value> {
     validate_restore_snapshot_shape(&payload)?;
     let request_id = payload.request_id.clone();
+    let write_context = resolve_write_context(
+        "plot.history.restore",
+        &RendererWriteContext {
+            request_id: request_id.clone(),
+            session_id: payload.session_id.clone(),
+            event_uid: payload.event_uid.clone(),
+            origin: payload.origin,
+            original_transaction_id: payload.original_transaction_id.clone(),
+        },
+    )?;
+    let (cause_kind, origin, original_transaction_id) =
+        plot_history_semantics(payload.origin, payload.original_transaction_id.clone())?;
     let fingerprint_payload = json!({
         "projectId": payload.project_id,
         "thread": payload.thread,
         "links": payload.links,
         "branches": payload.branches,
+        "origin": origin,
+        "originalTransactionId": original_transaction_id,
     });
     let payload_hash = payload_fingerprint("plot_thread_restore_snapshot", &fingerprint_payload)?;
     let mut restored = payload;
@@ -2276,9 +3230,33 @@ pub fn restore_snapshot(
             for branch in &restored.branches {
                 insert_or_validate_branch(conn, branch)?;
             }
+            let entity_id = restored
+                .thread
+                .as_ref()
+                .map(|thread| thread.id.as_str())
+                .or_else(|| restored.links.first().map(|link| link.id.as_str()))
+                .or_else(|| restored.branches.first().map(|branch| branch.id.as_str()))
+                .ok_or_else(|| anyhow::anyhow!("plot restore snapshot has no entity"))?;
+            let transaction_id = append_plot_feed(
+                conn,
+                PlotFeedAppend {
+                    project_id: &restored.project_id,
+                    operation: "plot.history.restore",
+                    entity_type: "plot-history",
+                    entity_id,
+                    context: &write_context,
+                    cause_kind,
+                    origin,
+                    original_transaction_id: original_transaction_id.clone(),
+                    events: restore_snapshot_feed_events(&restored)?,
+                },
+            )?;
             Ok((
                 restored.project_id.clone(),
-                restore_snapshot_response(&request_id, &restored),
+                attach_maintenance_transaction_id(
+                    restore_snapshot_response(&request_id, &restored),
+                    transaction_id,
+                ),
             ))
         },
         |conn| load_exact_restore_snapshot(conn, &request_id, &restored),
@@ -2304,12 +3282,7 @@ fn expected_delete_branch_ids(
         project_id,
         "plot delete snapshot link thread",
     )?;
-    require_project_scene(
-        conn,
-        node_id,
-        project_id,
-        "plot delete snapshot link scene",
-    )?;
+    require_project_scene(conn, node_id, project_id, "plot delete snapshot link scene")?;
 
     let other_links = Database::execute_with_conn(
         conn,
@@ -2385,11 +3358,7 @@ fn delete_snapshot_effect_present(
     Ok(Some(json!({ "id": request_id, "deleted": true })))
 }
 
-fn load_sorted_ids(
-    conn: &Connection,
-    sql: &str,
-    params: &[Value],
-) -> anyhow::Result<Vec<String>> {
+fn load_sorted_ids(conn: &Connection, sql: &str, params: &[Value]) -> anyhow::Result<Vec<String>> {
     let rows = Database::execute_with_conn(conn, sql, params, "all")?;
     rows.into_iter()
         .map(|row| {
@@ -2465,9 +3434,7 @@ fn validate_thread_delete_snapshot(
             anyhow::anyhow!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch no longer exists")
         })?;
         if !branch_row_matches(&current, branch) {
-            anyhow::bail!(
-                "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch changed since snapshot"
-            );
+            anyhow::bail!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch changed since snapshot");
         }
     }
     Ok(())
@@ -2492,6 +3459,10 @@ pub fn delete_snapshot(
     }
     let validation_snapshot = PlotThreadRestoreSnapshotPayload {
         request_id: payload.request_id.clone(),
+        session_id: payload.session_id.clone(),
+        event_uid: payload.event_uid.clone(),
+        origin: payload.origin,
+        original_transaction_id: payload.original_transaction_id.clone(),
         project_id: payload.project_id.clone(),
         thread: payload.thread.clone(),
         links: payload
@@ -2515,12 +3486,26 @@ pub fn delete_snapshot(
     }
 
     let request_id = payload.request_id.clone();
+    let write_context = resolve_write_context(
+        "plot.history.delete",
+        &RendererWriteContext {
+            request_id: request_id.clone(),
+            session_id: payload.session_id.clone(),
+            event_uid: payload.event_uid.clone(),
+            origin: payload.origin,
+            original_transaction_id: payload.original_transaction_id.clone(),
+        },
+    )?;
+    let (cause_kind, origin, original_transaction_id) =
+        plot_history_semantics(payload.origin, payload.original_transaction_id.clone())?;
     let fingerprint_payload = json!({
         "projectId": payload.project_id,
         "thread": payload.thread,
         "link": payload.link,
         "links": payload.links,
         "branches": payload.branches,
+        "origin": origin,
+        "originalTransactionId": original_transaction_id,
     });
     let payload_hash = payload_fingerprint("plot_thread_delete_snapshot", &fingerprint_payload)?;
 
@@ -2558,8 +3543,7 @@ pub fn delete_snapshot(
                         "PLOT_THREAD_DELETE_PRECONDITION_FAILED: link changed since snapshot"
                     );
                 }
-                let mut expected =
-                    expected_delete_branch_ids(conn, &payload.project_id, &link.id)?;
+                let mut expected = expected_delete_branch_ids(conn, &payload.project_id, &link.id)?;
                 let mut supplied = payload
                     .branches
                     .iter()
@@ -2573,9 +3557,12 @@ pub fn delete_snapshot(
                     );
                 }
                 for branch in &payload.branches {
-                    let current = load_map(conn, "plot_thread_branches", &branch.id)?.ok_or_else(
-                        || anyhow::anyhow!("PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch no longer exists"),
-                    )?;
+                    let current =
+                        load_map(conn, "plot_thread_branches", &branch.id)?.ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch no longer exists"
+                            )
+                        })?;
                     if !branch_row_matches(&current, branch) {
                         anyhow::bail!(
                             "PLOT_THREAD_DELETE_PRECONDITION_FAILED: branch changed since snapshot"
@@ -2609,9 +3596,33 @@ pub fn delete_snapshot(
                     "PLOT_THREAD_DELETE_PRECONDITION_FAILED: link version changed"
                 );
             }
+            let entity_id = payload
+                .thread
+                .as_ref()
+                .map(|thread| thread.id.as_str())
+                .or_else(|| payload.link.as_ref().map(|link| link.id.as_str()))
+                .ok_or_else(|| anyhow::anyhow!("plot delete snapshot has no entity"))?;
+            let transaction_id = append_plot_feed(
+                conn,
+                PlotFeedAppend {
+                    project_id: &payload.project_id,
+                    operation: "plot.history.delete",
+                    entity_type: "plot-history",
+                    entity_id,
+                    context: &write_context,
+                    cause_kind,
+                    origin,
+                    original_transaction_id: original_transaction_id.clone(),
+                    events: delete_snapshot_feed_events(&payload)?,
+                },
+            )?;
             Ok((
                 payload.project_id.clone(),
-                json!({ "id": request_id, "deleted": true }),
+                json!({
+                    "id": request_id,
+                    "deleted": true,
+                    "maintenanceTransactionId": transaction_id,
+                }),
             ))
         },
         |conn| delete_snapshot_effect_present(conn, &request_id, &payload),
@@ -2625,47 +3636,82 @@ mod tests {
     use super::*;
 
     fn db() -> Database {
-        let db = Database::new(std::path::Path::new(":memory:")).unwrap();
-        db.migrate().unwrap();
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.execute("INSERT INTO projects (id) VALUES ('p1')", &[], "run")
             .unwrap();
         db
     }
 
+    fn test_identity(mut payload: Value) -> Value {
+        let object = payload
+            .as_object_mut()
+            .expect("plot test payload must be an object");
+        let context = RendererWriteContext::default();
+        object.insert("projectId".to_string(), Value::String("p1".to_string()));
+        object.insert("requestId".to_string(), Value::String(context.request_id));
+        object.insert("sessionId".to_string(), Value::String(context.session_id));
+        object.insert("eventUid".to_string(), Value::String(context.event_uid));
+        object.insert(
+            "origin".to_string(),
+            serde_json::to_value(context.origin).expect("serialize origin"),
+        );
+        payload
+    }
+
+    fn delete_payload(id: &str, base_version: i64) -> PlotDeletePayload {
+        PlotDeletePayload {
+            id: id.to_string(),
+            project_id: "p1".to_string(),
+            base_version,
+            context: RendererWriteContext::default(),
+        }
+    }
+
+    fn renderer_context(request_id: &str) -> RendererWriteContext {
+        RendererWriteContext {
+            request_id: request_id.to_string(),
+            session_id: "plot-test-session".to_string(),
+            event_uid: format!("plot-test-event-{request_id}"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+        }
+    }
+
     #[test]
     fn nullable_patches_preserve_omitted_null_and_value_states() {
-        let omitted: PlotThreadPatch = serde_json::from_value(json!({ "baseVersion": 0 })).unwrap();
+        let omitted: PlotThreadPatch =
+            serde_json::from_value(test_identity(json!({ "baseVersion": 0 }))).unwrap();
         assert_eq!(omitted.color, None);
         assert_eq!(omitted.description, None);
 
-        let clear: PlotThreadPatch = serde_json::from_value(json!({
+        let clear: PlotThreadPatch = serde_json::from_value(test_identity(json!({
             "color": null,
             "description": null,
             "baseVersion": 0
-        }))
+        })))
         .unwrap();
         assert_eq!(clear.color, Some(None));
         assert_eq!(clear.description, Some(None));
 
-        let set: PlotThreadPatch = serde_json::from_value(json!({
+        let set: PlotThreadPatch = serde_json::from_value(test_identity(json!({
             "color": "#123456",
             "description": "detail",
             "baseVersion": 0
-        }))
+        })))
         .unwrap();
         assert_eq!(set.color, Some(Some("#123456".to_string())));
         assert_eq!(set.description, Some(Some("detail".to_string())));
 
         let omitted_link: PlotThreadLinkPatch =
-            serde_json::from_value(json!({ "baseVersion": 0 })).unwrap();
+            serde_json::from_value(test_identity(json!({ "baseVersion": 0 }))).unwrap();
         assert_eq!(omitted_link.note, None);
         assert_eq!(omitted_link.sort_order, None);
 
-        let clear_link: PlotThreadLinkPatch = serde_json::from_value(json!({
+        let clear_link: PlotThreadLinkPatch = serde_json::from_value(test_identity(json!({
             "note": null,
             "sortOrder": null,
             "baseVersion": 0
-        }))
+        })))
         .unwrap();
         assert_eq!(clear_link.note, Some(None));
         assert_eq!(clear_link.sort_order, Some(None));
@@ -2692,11 +3738,11 @@ mod tests {
         })
         .unwrap();
 
-        let thread_patch: PlotThreadPatch = serde_json::from_value(json!({
+        let thread_patch: PlotThreadPatch = serde_json::from_value(test_identity(json!({
             "color": null,
             "description": null,
             "baseVersion": 0
-        }))
+        })))
         .unwrap();
         let cleared_thread = update(&d, "thread-nullable".into(), thread_patch).unwrap();
         assert_eq!(cleared_thread["color"], Value::Null);
@@ -2704,15 +3750,15 @@ mod tests {
         assert_eq!(cleared_thread["version"], 1);
 
         let omitted_thread_patch: PlotThreadPatch =
-            serde_json::from_value(json!({ "baseVersion": 1 })).unwrap();
+            serde_json::from_value(test_identity(json!({ "baseVersion": 1 }))).unwrap();
         let unchanged_thread = update(&d, "thread-nullable".into(), omitted_thread_patch).unwrap();
         assert_eq!(unchanged_thread["version"], 1);
 
-        let link_patch: PlotThreadLinkPatch = serde_json::from_value(json!({
+        let link_patch: PlotThreadLinkPatch = serde_json::from_value(test_identity(json!({
             "note": null,
             "sortOrder": null,
             "baseVersion": 0
-        }))
+        })))
         .unwrap();
         let cleared_link = link_update(&d, "link-nullable".into(), link_patch).unwrap();
         assert_eq!(cleared_link["note"], Value::Null);
@@ -2720,7 +3766,7 @@ mod tests {
         assert_eq!(cleared_link["version"], 1);
 
         let omitted_link_patch: PlotThreadLinkPatch =
-            serde_json::from_value(json!({ "baseVersion": 1 })).unwrap();
+            serde_json::from_value(test_identity(json!({ "baseVersion": 1 }))).unwrap();
         let unchanged_link = link_update(&d, "link-nullable".into(), omitted_link_patch).unwrap();
         assert_eq!(unchanged_link["version"], 1);
     }
@@ -2731,6 +3777,7 @@ mod tests {
         let created = create(
             &d,
             PlotThreadCreatePayload {
+                context: RendererWriteContext::default(),
                 id: None,
                 project_id: "p1".into(),
                 name: "復讐の糸".into(),
@@ -2748,47 +3795,47 @@ mod tests {
     #[test]
     fn create_reuses_domain_id_for_an_identical_retry() {
         let d = db();
-        let first = create(
-            &d,
-            PlotThreadCreatePayload {
-                id: Some("request-1".into()),
-                project_id: "p1".into(),
-                name: "retry-safe".into(),
-                color: Some("#123".into()),
-                description: Some("same logical request".into()),
-                sort_order: "a0".into(),
-            },
-        )
-        .unwrap();
-        let retried = create(
-            &d,
-            PlotThreadCreatePayload {
-                id: Some("request-1".into()),
-                project_id: "p1".into(),
-                name: "retry-safe".into(),
-                color: Some("#123".into()),
-                description: Some("same logical request".into()),
-                sort_order: "a0".into(),
-            },
-        )
-        .unwrap();
+        let payload = || PlotThreadCreatePayload {
+            context: renderer_context("request-1"),
+            id: Some("request-1".into()),
+            project_id: "p1".into(),
+            name: "retry-safe".into(),
+            color: Some("#123".into()),
+            description: Some("same logical request".into()),
+            sort_order: "a0".into(),
+        };
+        let first = create(&d, payload()).unwrap();
+        let mut retry_payload = payload();
+        retry_payload.context.session_id = "plot-retry-session".into();
+        retry_payload.context.event_uid = "plot-retry-event".into();
+        let retried = create(&d, retry_payload).unwrap();
 
         assert_eq!(first.get("id"), retried.get("id"));
         assert_eq!(retried["__idempotency"]["replayed"], Value::Bool(true));
         assert_eq!(retried["__idempotency"]["entityPresent"], Value::Bool(true));
-        delete(&d, "request-1".to_string(), 0).expect("delete thread");
-        let deleted_retry = create(
-            &d,
-            PlotThreadCreatePayload {
-                id: Some("request-1".into()),
-                project_id: "p1".into(),
-                name: "retry-safe".into(),
-                color: Some("#123".into()),
-                description: Some("same logical request".into()),
-                sort_order: "a0".into(),
-            },
-        )
-        .expect("retry after delete");
+        let event_count: i64 = d
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM change_events WHERE project_id = 'p1' AND domain = 'plot'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count canonical plot create events");
+        let feed_count: i64 = d
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_change_transactions WHERE project_id = 'p1' AND source_domain = 'plot.thread.create'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count plot maintenance transactions");
+        assert_eq!((event_count, feed_count), (1, 1));
+        delete(&d, delete_payload("request-1", 0)).expect("delete thread");
+        let deleted_retry = create(&d, payload()).expect("retry after delete");
         assert_eq!(
             deleted_retry["__idempotency"]["entityPresent"],
             Value::Bool(false)
@@ -2817,6 +3864,8 @@ mod tests {
             &d,
             "thread".into(),
             PlotThreadPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 name: Some("winner".into()),
                 color: None,
                 description: None,
@@ -2830,6 +3879,8 @@ mod tests {
             &d,
             "thread".into(),
             PlotThreadPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 name: Some("stale".into()),
                 color: None,
                 description: None,
@@ -2841,12 +3892,14 @@ mod tests {
         assert!(stale_thread
             .to_string()
             .contains("PLOT_THREAD_VERSION_MISMATCH"));
-        assert!(delete(&d, "thread".into(), 0).is_err());
+        assert!(delete(&d, delete_payload("thread", 0)).is_err());
 
         let updated_link = link_update(
             &d,
             "link".into(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: None,
                 node_id: None,
                 phase_type: None,
@@ -2861,6 +3914,8 @@ mod tests {
             &d,
             "link".into(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: None,
                 node_id: None,
                 phase_type: None,
@@ -2873,7 +3928,7 @@ mod tests {
         assert!(stale_link
             .to_string()
             .contains("PLOT_THREAD_LINK_VERSION_MISMATCH"));
-        assert!(link_delete(&d, "link".into(), 0).is_err());
+        assert!(link_delete(&d, delete_payload("link", 0)).is_err());
 
         let rows = d
             .execute(
@@ -2887,12 +3942,14 @@ mod tests {
         assert_eq!(rows[0]["thread"].as_str(), Some("winner:1"));
         assert_eq!(rows[0]["link"].as_str(), Some("winner:1"));
 
-        link_delete(&d, "link".into(), 1).expect("current link delete");
-        delete(&d, "thread".into(), 1).expect("current thread delete");
+        link_delete(&d, delete_payload("link", 1)).expect("current link delete");
+        delete(&d, delete_payload("thread", 1)).expect("current thread delete");
         assert!(link_update(
             &d,
             "link".into(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: None,
                 node_id: None,
                 phase_type: None,
@@ -2906,6 +3963,8 @@ mod tests {
             &d,
             "thread".into(),
             PlotThreadPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 name: Some("missing".into()),
                 color: None,
                 description: None,
@@ -2922,6 +3981,7 @@ mod tests {
         create(
             &d,
             PlotThreadCreatePayload {
+                context: RendererWriteContext::default(),
                 id: Some("request-1".into()),
                 project_id: "p1".into(),
                 name: "first".into(),
@@ -2934,6 +3994,7 @@ mod tests {
         let error = create(
             &d,
             PlotThreadCreatePayload {
+                context: RendererWriteContext::default(),
                 id: Some("request-1".into()),
                 project_id: "p1".into(),
                 name: "different".into(),
@@ -2956,6 +4017,7 @@ mod tests {
         create(
             &d,
             PlotThreadCreatePayload {
+                context: RendererWriteContext::default(),
                 id: None,
                 project_id: "p1".into(),
                 name: "t".into(),
@@ -2983,6 +4045,8 @@ mod tests {
         let bad = link_create(
             &d,
             PlotThreadLinkCreatePayload {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 id: None,
                 thread_id: tid.clone(),
                 node_id: "s1".into(),
@@ -2996,6 +4060,8 @@ mod tests {
         let ok = link_create(
             &d,
             PlotThreadLinkCreatePayload {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 id: None,
                 thread_id: tid,
                 node_id: "s1".into(),
@@ -3023,45 +4089,22 @@ mod tests {
         )
         .unwrap();
 
-        let first = link_create(
-            &d,
-            PlotThreadLinkCreatePayload {
-                id: Some("link-request-1".into()),
-                thread_id: "t1".into(),
-                node_id: "s1".into(),
-                phase_type: "introduce".into(),
-                note: Some("same".into()),
-                sort_order: None,
-            },
-        )
-        .unwrap();
-        let retried = link_create(
-            &d,
-            PlotThreadLinkCreatePayload {
-                id: Some("link-request-1".into()),
-                thread_id: "t1".into(),
-                node_id: "s1".into(),
-                phase_type: "introduce".into(),
-                note: Some("same".into()),
-                sort_order: None,
-            },
-        )
-        .unwrap();
+        let payload = || PlotThreadLinkCreatePayload {
+            context: renderer_context("link-request-1"),
+            project_id: "p1".into(),
+            id: Some("link-request-1".into()),
+            thread_id: "t1".into(),
+            node_id: "s1".into(),
+            phase_type: "introduce".into(),
+            note: Some("same".into()),
+            sort_order: None,
+        };
+        let first = link_create(&d, payload()).unwrap();
+        let retried = link_create(&d, payload()).unwrap();
         assert_eq!(first.get("id"), retried.get("id"));
         assert_eq!(retried["__idempotency"]["entityPresent"], Value::Bool(true));
-        link_delete(&d, "link-request-1".to_string(), 0).expect("delete link");
-        let deleted_retry = link_create(
-            &d,
-            PlotThreadLinkCreatePayload {
-                id: Some("link-request-1".into()),
-                thread_id: "t1".into(),
-                node_id: "s1".into(),
-                phase_type: "introduce".into(),
-                note: Some("same".into()),
-                sort_order: None,
-            },
-        )
-        .expect("retry after link delete");
+        link_delete(&d, delete_payload("link-request-1", 0)).expect("delete link");
+        let deleted_retry = link_create(&d, payload()).expect("retry after link delete");
         assert_eq!(
             deleted_retry["__idempotency"]["entityPresent"],
             Value::Bool(false)
@@ -3070,6 +4113,8 @@ mod tests {
         let conflict = link_create(
             &d,
             PlotThreadLinkCreatePayload {
+                context: renderer_context("link-request-1"),
+                project_id: "p1".into(),
                 id: Some("link-request-1".into()),
                 thread_id: "t1".into(),
                 node_id: "s1".into(),
@@ -3094,6 +4139,7 @@ mod tests {
         create(
             &d,
             PlotThreadCreatePayload {
+                context: RendererWriteContext::default(),
                 id: None,
                 project_id: "p1".into(),
                 name: "t".into(),
@@ -3120,6 +4166,8 @@ mod tests {
         let cross = link_create(
             &d,
             PlotThreadLinkCreatePayload {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 id: None,
                 thread_id: tid,
                 node_id: "s2".into(),
@@ -3169,6 +4217,8 @@ mod tests {
         let link = link_create(
             &d,
             PlotThreadLinkCreatePayload {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 id: None,
                 thread_id: "a".into(),
                 node_id: "s1".into(),
@@ -3190,6 +4240,8 @@ mod tests {
             &d,
             lid.clone(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: Some("b".into()),
                 node_id: None,
                 phase_type: None,
@@ -3213,6 +4265,8 @@ mod tests {
             &d,
             lid.clone(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: None,
                 node_id: Some("s2".into()),
                 phase_type: None,
@@ -3230,6 +4284,8 @@ mod tests {
             &d,
             lid.clone(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: Some("c".into()),
                 node_id: Some("s2".into()),
                 phase_type: None,
@@ -3248,6 +4304,8 @@ mod tests {
             &d,
             lid.clone(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: Some("c".into()),
                 node_id: None,
                 phase_type: None,
@@ -3303,6 +4361,8 @@ mod tests {
             &d,
             "legacy".into(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: None,
                 node_id: None,
                 phase_type: None,
@@ -3338,6 +4398,7 @@ mod tests {
         )
         .unwrap();
         let payload = || PlotThreadBranchCreatePayload {
+            context: renderer_context("branch-request-1"),
             id: Some("branch-request-1".into()),
             project_id: "p1".into(),
             from_thread_id: "from".into(),
@@ -3401,6 +4462,7 @@ mod tests {
         let error = branch_create(
             &d,
             PlotThreadBranchCreatePayload {
+                context: RendererWriteContext::default(),
                 id: Some("cross-project-branch".into()),
                 project_id: "p1".into(),
                 from_thread_id: "p1-thread".into(),
@@ -3434,6 +4496,8 @@ mod tests {
         assert!(link_create(
             &d,
             PlotThreadLinkCreatePayload {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 id: Some("folder-link".into()),
                 thread_id: "target".into(),
                 node_id: "folder".into(),
@@ -3446,6 +4510,7 @@ mod tests {
         assert!(branch_create(
             &d,
             PlotThreadBranchCreatePayload {
+                context: RendererWriteContext::default(),
                 id: Some("folder-branch".into()),
                 project_id: "p1".into(),
                 from_thread_id: "source".into(),
@@ -3474,6 +4539,8 @@ mod tests {
             &d,
             "link".into(),
             PlotThreadLinkPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 thread_id: None,
                 node_id: Some("folder".into()),
                 phase_type: None,
@@ -3487,6 +4554,8 @@ mod tests {
             &d,
             "branch".into(),
             PlotThreadBranchPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 from_thread_id: None,
                 to_thread_id: None,
                 at_node_id: Some("folder".into()),
@@ -3501,6 +4570,10 @@ mod tests {
         assert!(restore_snapshot(
             &d,
             PlotThreadRestoreSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "restore-folder-boundary".into(),
                 project_id: "p1".into(),
                 thread: Some(restored_thread),
@@ -3516,6 +4589,10 @@ mod tests {
         assert!(move_marker_bundle(
             &d,
             PlotThreadMoveMarkerBundlePayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
                 request_id: "move-marker-to-folder".into(),
                 project_id: "p1".into(),
                 marker_before: link_snapshot("link", "target"),
@@ -3570,6 +4647,7 @@ mod tests {
         let created = branch_create(
             &d,
             PlotThreadBranchCreatePayload {
+                context: RendererWriteContext::default(),
                 id: Some("branch".into()),
                 project_id: "p1".into(),
                 from_thread_id: "from".into(),
@@ -3585,6 +4663,8 @@ mod tests {
             &d,
             "branch".into(),
             PlotThreadBranchPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 from_thread_id: Some("alternate".into()),
                 to_thread_id: None,
                 at_node_id: None,
@@ -3602,6 +4682,8 @@ mod tests {
             &d,
             "branch".into(),
             PlotThreadBranchPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 from_thread_id: None,
                 to_thread_id: Some("from".into()),
                 at_node_id: None,
@@ -3623,12 +4705,12 @@ mod tests {
         assert_eq!(stored[0]["from_thread_id"].as_str(), Some("alternate"));
         assert_eq!(stored[0]["to_thread_id"].as_str(), Some("to"));
         assert_eq!(stored[0]["version"].as_i64(), Some(1));
-        let stale_delete = branch_delete(&d, "branch".into(), 0)
+        let stale_delete = branch_delete(&d, delete_payload("branch", 0))
             .expect_err("stale branch delete must not remove the row");
         assert!(stale_delete
             .to_string()
             .contains("PLOT_THREAD_BRANCH_VERSION_MISMATCH"));
-        branch_delete(&d, "branch".into(), 1).expect("matching branch delete");
+        branch_delete(&d, delete_payload("branch", 1)).expect("matching branch delete");
         assert!(d
             .execute(
                 "SELECT id FROM plot_thread_branches WHERE id = 'branch'",
@@ -3655,6 +4737,8 @@ mod tests {
             &d,
             "legacy".into(),
             PlotThreadBranchPatch {
+                context: RendererWriteContext::default(),
+                project_id: "p1".into(),
                 from_thread_id: Some("from".into()),
                 to_thread_id: None,
                 at_node_id: None,
@@ -3720,6 +4804,203 @@ mod tests {
     }
 
     #[test]
+    fn child_feed_uses_typed_identity_and_preserves_state_continuity() {
+        let d = db();
+        d.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title)
+                   VALUES ('scene','p1','scene','Scene'),
+                          ('scene-2','p1','scene','Scene 2');
+                 INSERT INTO plot_threads (id, project_id, name, sort_order)
+                   VALUES ('thread-a','p1','A','a0'),
+                          ('thread-b','p1','B','a1');",
+            )?;
+            Ok(())
+        })
+        .expect("seed plot child Feed fixture");
+
+        link_create(
+            &d,
+            PlotThreadLinkCreatePayload {
+                id: Some("marker-feed".to_string()),
+                context: renderer_context("marker-feed-create"),
+                project_id: "p1".to_string(),
+                thread_id: "thread-a".to_string(),
+                node_id: "scene".to_string(),
+                phase_type: "turn".to_string(),
+                note: None,
+                sort_order: Some("a0".to_string()),
+            },
+        )
+        .expect("create marker");
+        link_update(
+            &d,
+            "marker-feed".to_string(),
+            PlotThreadLinkPatch {
+                context: renderer_context("marker-feed-update"),
+                project_id: "p1".to_string(),
+                thread_id: None,
+                node_id: Some("scene-2".to_string()),
+                phase_type: None,
+                note: Some(Some("moved".to_string())),
+                sort_order: None,
+                base_version: 0,
+            },
+        )
+        .expect("update marker");
+        link_delete(
+            &d,
+            PlotDeletePayload {
+                id: "marker-feed".to_string(),
+                context: renderer_context("marker-feed-delete"),
+                project_id: "p1".to_string(),
+                base_version: 1,
+            },
+        )
+        .expect("delete marker");
+
+        branch_create(
+            &d,
+            PlotThreadBranchCreatePayload {
+                id: Some("branch-feed".to_string()),
+                context: renderer_context("branch-feed-create"),
+                project_id: "p1".to_string(),
+                from_thread_id: "thread-a".to_string(),
+                to_thread_id: "thread-b".to_string(),
+                at_node_id: "scene".to_string(),
+                kind: "branch".to_string(),
+            },
+        )
+        .expect("create branch");
+        branch_update(
+            &d,
+            "branch-feed".to_string(),
+            PlotThreadBranchPatch {
+                context: renderer_context("branch-feed-update"),
+                project_id: "p1".to_string(),
+                from_thread_id: None,
+                to_thread_id: None,
+                at_node_id: Some("scene-2".to_string()),
+                base_version: 0,
+            },
+        )
+        .expect("update branch");
+        branch_delete(
+            &d,
+            PlotDeletePayload {
+                id: "branch-feed".to_string(),
+                context: renderer_context("branch-feed-delete"),
+                project_id: "p1".to_string(),
+                base_version: 1,
+            },
+        )
+        .expect("delete branch");
+
+        for (object_kind, object_id, expected_paths) in [
+            (
+                "plot-marker",
+                "marker-feed",
+                vec![vec!["/"], vec!["/note", "/sceneId"], vec!["/"]],
+            ),
+            (
+                "plot-branch",
+                "branch-feed",
+                vec![vec!["/"], vec!["/atSceneId"], vec!["/"]],
+            ),
+        ] {
+            let identity_path = if object_kind == "plot-marker" {
+                "$.markerId"
+            } else {
+                "$.branchId"
+            };
+            let expected_key = if object_kind == "plot-marker" {
+                json!({ "kind": object_kind, "markerId": object_id })
+            } else {
+                json!({ "kind": object_kind, "branchId": object_id })
+            };
+            d.with_conn(|conn| {
+                let rows = conn
+                    .prepare(
+                        "SELECT event.object_key_json, event.mutation_kind,
+                                event.before_digest, event.after_digest,
+                                event.changed_paths_json
+                           FROM narrative_change_events event
+                           JOIN narrative_change_transactions transaction_row
+                             ON transaction_row.id = event.transaction_id
+                            AND transaction_row.project_id = event.project_id
+                          WHERE event.project_id = 'p1'
+                            AND json_extract(event.object_key_json, ?1) = ?2
+                          ORDER BY event.canonical_sequence, event.event_ordinal",
+                    )?
+                    .query_map(rusqlite::params![identity_path, object_id], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                            row.get::<_, String>(4)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(rows.len(), 3);
+                assert!(rows.iter().all(|row| {
+                    serde_json::from_str::<Value>(&row.0).ok() == Some(expected_key.clone())
+                }));
+                assert_eq!(
+                    rows.iter().map(|row| row.1.as_str()).collect::<Vec<_>>(),
+                    vec!["create", "update", "delete"]
+                );
+                assert_eq!(rows[0].3, rows[1].2, "create -> update must be continuous");
+                assert_eq!(rows[1].3, rows[2].2, "update -> delete must be continuous");
+                assert_eq!(rows[0].2, None);
+                assert_eq!(rows[2].3, None);
+                let paths = rows
+                    .iter()
+                    .map(|row| serde_json::from_str::<Vec<String>>(&row.4))
+                    .collect::<Result<Vec<_>, _>>()?;
+                assert_eq!(paths, expected_paths);
+                Ok(())
+            })
+            .expect("inspect typed plot child Feed continuity");
+        }
+    }
+
+    #[test]
+    fn history_feed_orders_root_then_markers_then_branches_by_entity_id() {
+        let payload = PlotThreadRestoreSnapshotPayload {
+            request_id: "restore-order".to_string(),
+            session_id: "plot-test-session".to_string(),
+            event_uid: "restore-order-event".to_string(),
+            origin: NarrativeChangeOrigin::Restore,
+            original_transaction_id: None,
+            project_id: "p1".to_string(),
+            thread: Some(thread_snapshot("thread-z")),
+            links: vec![
+                link_snapshot("marker-z", "thread-z"),
+                link_snapshot("marker-a", "thread-z"),
+            ],
+            branches: vec![
+                branch_snapshot("branch-z", "thread-a", "thread-z"),
+                branch_snapshot("branch-a", "thread-a", "thread-z"),
+            ],
+        };
+        let events = restore_snapshot_feed_events(&payload).expect("build ordered Feed events");
+        assert_eq!(
+            events
+                .into_iter()
+                .map(|event| event.object_key)
+                .collect::<Vec<_>>(),
+            vec![
+                json!({ "kind": "plot-thread", "threadId": "thread-z" }),
+                json!({ "kind": "plot-marker", "markerId": "marker-a" }),
+                json!({ "kind": "plot-marker", "markerId": "marker-z" }),
+                json!({ "kind": "plot-branch", "branchId": "branch-a" }),
+                json!({ "kind": "plot-branch", "branchId": "branch-z" }),
+            ]
+        );
+    }
+
+    #[test]
     fn restore_snapshot_is_atomic_replay_safe_and_does_not_resurrect_after_delete() {
         let d = db();
         d.execute(
@@ -3737,6 +5018,10 @@ mod tests {
         )
         .unwrap();
         let payload = || PlotThreadRestoreSnapshotPayload {
+            session_id: "plot-test-session".to_string(),
+            event_uid: "plot-test-event-restore-request-1".to_string(),
+            origin: NarrativeChangeOrigin::Restore,
+            original_transaction_id: None,
             request_id: "restore-request-1".into(),
             project_id: "p1".into(),
             thread: Some(thread_snapshot("target")),
@@ -3800,6 +5085,10 @@ mod tests {
         restore_snapshot(
             &d,
             PlotThreadRestoreSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "restore-multiple-semantic-keys".into(),
                 project_id: "p1".into(),
                 thread: Some(thread),
@@ -3851,6 +5140,10 @@ mod tests {
         let restored_v1 = restore_snapshot(
             &d,
             PlotThreadRestoreSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "thread-restore-v1".into(),
                 project_id: "p1".into(),
                 thread: Some(thread_snapshot("target")),
@@ -3872,6 +5165,10 @@ mod tests {
         delete_snapshot(
             &d,
             PlotThreadDeleteSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "thread-delete-v1".into(),
                 project_id: "p1".into(),
                 thread: Some(thread_v1.clone()),
@@ -3885,6 +5182,10 @@ mod tests {
         let restored_v2 = restore_snapshot(
             &d,
             PlotThreadRestoreSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "thread-restore-v2".into(),
                 project_id: "p1".into(),
                 thread: Some(thread_v1.clone()),
@@ -3900,6 +5201,10 @@ mod tests {
         let stale = delete_snapshot(
             &d,
             PlotThreadDeleteSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "thread-delete-stale".into(),
                 project_id: "p1".into(),
                 thread: Some(thread_v1),
@@ -3909,9 +5214,7 @@ mod tests {
             },
         )
         .expect_err("a pre-restore snapshot must not delete the new generation");
-        assert!(stale
-            .to_string()
-            .contains("thread changed since snapshot"));
+        assert!(stale.to_string().contains("thread changed since snapshot"));
 
         let thread_v2: PlotThreadSnapshotRow =
             serde_json::from_value(restored_v2["thread"].clone()).expect("thread v2");
@@ -3930,6 +5233,10 @@ mod tests {
         let incomplete = delete_snapshot(
             &d,
             PlotThreadDeleteSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "thread-delete-incomplete".into(),
                 project_id: "p1".into(),
                 thread: Some(thread_v2),
@@ -3973,6 +5280,10 @@ mod tests {
         let error = restore_snapshot(
             &d,
             PlotThreadRestoreSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "restore-invalid".into(),
                 project_id: "p1".into(),
                 thread: Some(thread_snapshot("target")),
@@ -4006,6 +5317,10 @@ mod tests {
         let error = restore_snapshot(
             &d,
             PlotThreadRestoreSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "restore-empty-id".into(),
                 project_id: "p1".into(),
                 thread: Some(empty_id),
@@ -4041,6 +5356,10 @@ mod tests {
         )
         .unwrap();
         let base = PlotThreadRestoreSnapshotPayload {
+            session_id: "plot-test-session".to_string(),
+            event_uid: RendererWriteContext::default().event_uid,
+            origin: NarrativeChangeOrigin::Restore,
+            original_transaction_id: None,
             request_id: "restore-conflict".into(),
             project_id: "p1".into(),
             thread: Some(thread_snapshot("target")),
@@ -4092,6 +5411,10 @@ mod tests {
         created_branch.at_node_id = "scene-2".into();
         created_branch.updated_at = "2026-01-03T02:00:00.000Z".into();
         PlotThreadMoveMarkerBundlePayload {
+            session_id: "plot-test-session".to_string(),
+            event_uid: format!("plot-test-event-{request_id}"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
             request_id: request_id.into(),
             project_id: "p1".into(),
             marker_before: before,
@@ -4172,6 +5495,10 @@ mod tests {
         let stale = move_marker_bundle(
             &d,
             PlotThreadMoveMarkerBundlePayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
                 request_id: "move-stale-version".into(),
                 project_id: "p1".into(),
                 marker_before: stale_marker,
@@ -4191,6 +5518,10 @@ mod tests {
         let undo = move_marker_bundle(
             &d,
             PlotThreadMoveMarkerBundlePayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
                 request_id: "move-undo".into(),
                 project_id: "p1".into(),
                 marker_before: forward_marker.clone(),
@@ -4214,6 +5545,10 @@ mod tests {
         let redo = move_marker_bundle(
             &d,
             PlotThreadMoveMarkerBundlePayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
                 request_id: "move-redo".into(),
                 project_id: "p1".into(),
                 marker_before: undo_marker,
@@ -4376,6 +5711,10 @@ mod tests {
         let d = db();
         seed_marker_delete_snapshot(&d);
         let payload = || PlotThreadDeleteSnapshotPayload {
+            session_id: "plot-test-session".to_string(),
+            event_uid: "plot-test-event-delete-request-1".to_string(),
+            origin: NarrativeChangeOrigin::Restore,
+            original_transaction_id: None,
             request_id: "delete-request-1".into(),
             project_id: "p1".into(),
             thread: None,
@@ -4434,6 +5773,10 @@ mod tests {
         let error = delete_snapshot(
             &d,
             PlotThreadDeleteSnapshotPayload {
+                session_id: "plot-test-session".to_string(),
+                event_uid: RendererWriteContext::default().event_uid,
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
                 request_id: "delete-invalid".into(),
                 project_id: "p1".into(),
                 thread: None,
@@ -4466,6 +5809,10 @@ mod tests {
         let d = db();
         seed_marker_delete_snapshot(&d);
         let payload = |request_id: &str| PlotThreadDeleteSnapshotPayload {
+            session_id: "plot-test-session".to_string(),
+            event_uid: RendererWriteContext::default().event_uid,
+            origin: NarrativeChangeOrigin::Restore,
+            original_transaction_id: None,
             request_id: request_id.into(),
             project_id: "p1".into(),
             thread: None,

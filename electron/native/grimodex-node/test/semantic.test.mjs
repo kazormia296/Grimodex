@@ -88,12 +88,7 @@ async function exec(backend, sql, params = [], method = "all") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;
 }
 
-async function waitForNewBackup(
-  backend,
-  workspace,
-  before,
-  timeoutMs = 30000,
-) {
+async function waitForNewBackup(backend, workspace, before, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     const created = JSON.parse(await backend.listBackups()).find(
@@ -128,15 +123,32 @@ async function writeTrustedPlainBackup(backend, workspace, path) {
 function tiptapDoc(text) {
   return JSON.stringify({
     type: "doc",
-    content: [
-      { type: "paragraph", content: [{ type: "text", text }] },
-    ],
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
   });
 }
 
 async function seedScene(backend, id, title, text) {
+  const requestId = `semantic-scene-create:${id}`;
   return JSON.parse(
     await backend.treeNodeCreate({
+      requestId,
+      sessionId: `${requestId}:session`,
+      eventUid: `${requestId}:event`,
+      origin: "human",
+      authorityRoute: "human-direct",
+      caller: "manual-wrapper",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
       id,
       projectId: "default-project",
       parentId: null,
@@ -298,9 +310,8 @@ test("openWorkspace後は同一IDでも新DBだけを読み、旧epochの状態�
     },
   ]);
   assert.equal(
-    JSON.parse(
-      await fixture.backend.codexMatchText("旧ワークスペース人物", []),
-    ).length,
+    JSON.parse(await fixture.backend.codexMatchText("旧ワークスペース人物", []))
+      .length,
     1,
   );
 
@@ -427,6 +438,24 @@ test("restoreBackup再活性化後は復元DBだけを読みsemantic commandsを
     join(backups, backupName),
   );
   await fixture.backend.treeNodePatch({
+    requestId: "semantic-restore-scene-patch",
+    sessionId: "semantic-restore-scene-patch:session",
+    eventUid: "semantic-restore-scene-patch:event",
+    origin: "human",
+    authorityRoute: "human-direct",
+    caller: "manual-wrapper",
+    controls: [
+      "runtime-policy",
+      "actor-context",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
+    originalTransactionId: null,
+    undoJournalId: null,
     projectId: "default-project",
     nodeId: "restore-scene",
     patch: { title: "After", content: tiptapDoc("mutated state") },

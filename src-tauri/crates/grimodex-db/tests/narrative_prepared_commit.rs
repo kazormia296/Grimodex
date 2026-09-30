@@ -1,32 +1,87 @@
 //! Gate B2-1 — Prepared Commit seal and apply-by-id authority.
 
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
+use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
     CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
 };
+use grimodex_db::domain_writes::{
+    project_create, tree_node_create, ProjectCreatePayload, TreeNodeCreatePayload,
+};
+use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
     SetNarrativeRuntimePolicyInput, NARRATIVE_REVIEW_ONLY,
 };
-use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
-    db.execute(
-        "INSERT INTO projects (id, title) VALUES (?, 'Project')",
-        &[Value::String("project-1".to_string())],
-        "run",
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
+    project_create(
+        &db,
+        ProjectCreatePayload {
+            project_id: "project-1".to_string(),
+            request_id: "fixture-project-1".to_string(),
+            session_id: "fixture-session".to_string(),
+            event_uid: "fixture-project-1-event".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            title: "Project".to_string(),
+            genre: None,
+            pov: None,
+            tense: None,
+            language: None,
+            style_guide: None,
+            ai_instructions: None,
+            outline: None,
+            target_readers: None,
+            created_at: "2026-01-01T00:00:00.000Z".to_string(),
+            updated_at: "2026-01-01T00:00:00.000Z".to_string(),
+        },
     )
-    .expect("insert project");
-    db.execute(
-        "INSERT INTO tree_nodes (id, project_id, node_type, title, version)
-         VALUES ('scene-1', 'project-1', 'scene', 'Scene', 0)",
-        &[],
-        "run",
+    .expect("seed project through production writer");
+    tree_node_create(
+        &db,
+        TreeNodeCreatePayload {
+            id: "scene-1".to_string(),
+            project_id: "project-1".to_string(),
+            request_id: "fixture-scene-1".to_string(),
+            session_id: "fixture-session".to_string(),
+            event_uid: "fixture-scene-1-event".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            parent_id: None,
+            node_type: "scene".to_string(),
+            title: "Scene".to_string(),
+            sort_order: "a0".to_string(),
+            synopsis: None,
+            status: None,
+            source_uri: None,
+            source_mtime: None,
+            content: None,
+            canonical_payload: None,
+        },
     )
-    .expect("insert scene");
+    .expect("seed scene through production writer");
+    // Keep the production-created scene and its A1 scope binding, but model a
+    // pre-Feed legacy scene: its canonical audit row exists, while no prior
+    // scene Feed head forces the order-only snapshot to chain from a
+    // different snapshot shape.
+    db.execute(
+        "DELETE FROM narrative_change_transactions
+          WHERE project_id = ? AND source_change_event_uid = ?",
+        &[
+            Value::String("project-1".to_string()),
+            Value::String("fixture-scene-1-event".to_string()),
+        ],
+        "remove setup scene Feed transaction",
+    )
+    .expect("seed legacy scene without Feed history");
     db
 }
 
@@ -216,7 +271,12 @@ fn seed_scene_body_approved(db: &Database) -> (String, String, String, String) {
         },
     )
     .expect("approve scene-writer proposal");
-    (run_id.to_string(), set_id.to_string(), saved_proposal_id, revision_id)
+    (
+        run_id.to_string(),
+        set_id.to_string(),
+        saved_proposal_id,
+        revision_id,
+    )
 }
 
 fn retraction_envelope(run_id: &str, target_application_id: &str) -> Value {
@@ -711,10 +771,7 @@ fn story_order_materialize_uses_canonical_scene_payload_and_label() -> anyhow::R
         &db,
         ApplyCommitPayload {
             project_id: "project-1".to_string(),
-            prepared_commit_id: prepared["preparedCommitId"]
-                .as_str()
-                .unwrap()
-                .to_string(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
             request_id: "req-story-order".to_string(),
             session_id: "session-req-story-order".to_string(),
             expected_version: prepared["version"].as_i64(),
@@ -793,17 +850,16 @@ fn story_order_materialize_rejects_foreign_scene_from_commit_project() -> anyhow
         &db,
         ApplyCommitPayload {
             project_id: "project-1".to_string(),
-            prepared_commit_id: prepared["preparedCommitId"]
-                .as_str()
-                .unwrap()
-                .to_string(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
             request_id: "req-story-foreign".to_string(),
             session_id: "session-req-story-foreign".to_string(),
             expected_version: prepared["version"].as_i64(),
         },
     )
     .expect_err("foreign scene must be scoped to the commit project");
-    assert!(error.to_string().contains("not found in project 'project-1'"));
+    assert!(error
+        .to_string()
+        .contains("not found in project 'project-1'"));
     Ok(())
 }
 
@@ -845,10 +901,7 @@ fn story_order_materialize_respects_human_field_lock() -> anyhow::Result<()> {
         &db,
         ApplyCommitPayload {
             project_id: "project-1".to_string(),
-            prepared_commit_id: prepared["preparedCommitId"]
-                .as_str()
-                .unwrap()
-                .to_string(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
             request_id: "req-story-lock".to_string(),
             session_id: "session-req-story-lock".to_string(),
             expected_version: prepared["version"].as_i64(),
@@ -888,10 +941,7 @@ fn story_order_materialize_without_label_does_not_claim_label_field() -> anyhow:
         &db,
         ApplyCommitPayload {
             project_id: "project-1".to_string(),
-            prepared_commit_id: prepared["preparedCommitId"]
-                .as_str()
-                .unwrap()
-                .to_string(),
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
             request_id: "req-story-no-label".to_string(),
             session_id: "session-req-story-no-label".to_string(),
             expected_version: prepared["version"].as_i64(),
@@ -945,6 +995,84 @@ fn prepare_seals_prepared_commit_row() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn supplied_apply_context_succeeds_and_stopped_context_preserves_prepared_commit() {
+    use narrative_extraction::{GraphWorkControl, GraphWorkStage};
+    struct Context {
+        stopped: bool,
+        full: bool,
+    }
+    impl GraphWorkControl for Context {
+        fn check(&mut self, _: GraphWorkStage) -> anyhow::Result<()> {
+            if self.stopped {
+                return Err(narrative_extraction::validation_terminated(
+                    narrative_extraction::ValidationTerminationReason::Cancelled,
+                    "stopped foreground Apply owner",
+                ));
+            }
+            Ok(())
+        }
+        fn allows_full_eligibility(&self) -> bool {
+            self.full
+        }
+    }
+    let db = migrated_db();
+    let (run_id, set_id, proposal_id, revision_id) = seed_one_approved(&db);
+    enable_manual_apply(&db);
+    let mut owner = Context {
+        stopped: false,
+        full: false,
+    };
+    let error = narrative_extraction::narrative_extraction_prepare_commit_with_control(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+        &mut owner,
+    )
+    .expect_err("wrong context cannot enter whole-project validation");
+    assert!(narrative_extraction::is_validation_terminated(&error));
+    assert!(error.to_string().contains("context-unavailable"));
+    owner.full = true;
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit_with_control(
+        &db,
+        build_prepare(&run_id, &set_id, &proposal_id, &revision_id),
+        &mut owner,
+    )
+    .expect("live supplied Prepare owner");
+    let payload = ApplyCommitPayload {
+        project_id: "project-1".into(),
+        prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().into(),
+        request_id: "req-prepared-1".into(),
+        session_id: "sess-prepared".into(),
+        expected_version: prepared["version"].as_i64(),
+    };
+    owner.stopped = true;
+    let error = narrative_extraction::narrative_extraction_apply_commit_with_control(
+        &db,
+        payload.clone(),
+        &mut owner,
+    )
+    .expect_err("stopped owner cannot write");
+    assert!(narrative_extraction::is_validation_terminated(&error));
+    db.with_conn(|conn| {
+        let status: String = conn.query_row(
+            "SELECT status FROM narrative_apply_commits WHERE id=?1",
+            [&payload.prepared_commit_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(status, "prepared");
+        assert!(conn.is_autocommit());
+        Ok(())
+    })
+    .unwrap();
+    owner.stopped = false;
+    let result = narrative_extraction::narrative_extraction_apply_commit_with_control(
+        &db, payload, &mut owner,
+    )
+    .expect("live supplied Apply owner");
+    assert_eq!(result["status"], "applied");
+    assert_eq!(result["created"][0]["entityId"], "event-prepared-1");
 }
 
 #[test]
@@ -1170,6 +1298,12 @@ fn actual_scene_writer_invalidates_prepared_commit_on_scene_body_change() -> any
         SaveSceneBodyBundlePayload {
             scene_id: "scene-1".to_string(),
             project_id: "project-1".to_string(),
+            request_id: "prepared-scene-writer-request".to_string(),
+            session_id: "prepared-scene-writer-session".to_string(),
+            event_uid: "prepared-scene-writer-event".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            timelapse_steps: None,
+            timelapse_doc_step_coverage: None,
             include_sidecars: false,
             base_version: Some(0),
             updated_at: "2026-08-12T00:00:01.000Z".to_string(),

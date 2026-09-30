@@ -1,23 +1,72 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
+use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
+use grimodex_db::domain_writes::{
+    project_create, tree_node_create, ProjectCreatePayload, TreeNodeCreatePayload,
+};
+use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{
-    self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
+    self, run_incremental_freshness_cycle, write_dependency_declaration_set, AppendDecisionPayload,
+    ApplyCommitPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
+    DependencyDeclaration, DependencyDeclarationSetRequest, IncrementalFreshnessCycleOutcome,
+    PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::{
-    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
-    SetNarrativeRuntimePolicyInput, Database,
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
+    SetNarrativeRuntimePolicyInput,
 };
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
-    db.execute(
-        "INSERT INTO projects (id, title) VALUES (?, 'Project')",
-        &[Value::String("project-1".to_string())],
-        "run",
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
+    project_create(
+        &db,
+        ProjectCreatePayload {
+            project_id: "project-1".to_string(),
+            request_id: "fixture-project-1".to_string(),
+            session_id: "fixture-session".to_string(),
+            event_uid: "fixture-project-1-event".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            title: "Project".to_string(),
+            genre: None,
+            pov: None,
+            tense: None,
+            language: None,
+            style_guide: None,
+            ai_instructions: None,
+            outline: None,
+            target_readers: None,
+            created_at: "2026-08-24T00:00:00.000Z".to_string(),
+            updated_at: "2026-08-24T00:00:00.000Z".to_string(),
+        },
     )
-    .expect("insert project");
+    .expect("seed project through production writer");
+    remove_setup_feed_transaction(&db, "fixture-project-1");
     db
+}
+
+fn remove_setup_feed_transaction(db: &Database, request_id: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_change_events
+              WHERE project_id = 'project-1'
+                AND transaction_id IN (
+                    SELECT id FROM narrative_change_transactions
+                     WHERE project_id = 'project-1' AND request_id = ?1
+                )",
+            [request_id],
+        )?;
+        conn.execute(
+            "DELETE FROM narrative_change_transactions
+              WHERE project_id = 'project-1' AND request_id = ?1",
+            [request_id],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("remove setup Feed transaction");
 }
 
 fn test_envelope(run_id: &str, task_id: &str) -> Value {
@@ -39,15 +88,31 @@ fn test_envelope(run_id: &str, task_id: &str) -> Value {
 }
 
 fn seed_scene(db: &Database, scene_id: &str, title: &str) {
-    db.execute(
-        "INSERT INTO tree_nodes (id, project_id, node_type, title) VALUES (?, 'project-1', 'scene', ?)",
-        &[
-            Value::String(scene_id.to_string()),
-            Value::String(title.to_string()),
-        ],
-        "run",
+    tree_node_create(
+        db,
+        TreeNodeCreatePayload {
+            id: scene_id.to_string(),
+            project_id: "project-1".to_string(),
+            request_id: format!("fixture-scene-{scene_id}"),
+            session_id: "fixture-session".to_string(),
+            event_uid: format!("fixture-scene-{scene_id}-event"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            parent_id: None,
+            node_type: "scene".to_string(),
+            title: title.to_string(),
+            sort_order: "a0".to_string(),
+            synopsis: None,
+            status: None,
+            source_uri: None,
+            source_mtime: None,
+            content: None,
+            canonical_payload: None,
+        },
     )
-    .expect("insert scene");
+    .expect("seed scene through production writer");
+    remove_setup_feed_transaction(db, &format!("fixture-scene-{scene_id}"));
 }
 
 fn seed_event(db: &Database, event_id: &str, title: &str) {
@@ -171,12 +236,14 @@ fn build_prepare(
 ) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
-        .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
-            kind: kind.clone(),
-            payload: payload.clone(),
-            proposal_id: proposal_id.clone(),
-            revision_id: revision_id.clone(),
-        })
+        .map(
+            |(proposal_id, revision_id, kind, payload)| CommitOperation {
+                kind: kind.clone(),
+                payload: payload.clone(),
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+            },
+        )
         .collect();
     let applications: Vec<CommitApplicationRef> = ops
         .iter()
@@ -201,14 +268,10 @@ fn build_prepare(
     }
 }
 
-fn prepare_and_apply(
-    db: &Database,
-    prepare: PrepareCommitPayload,
-) -> Value {
+fn prepare_and_apply(db: &Database, prepare: PrepareCommitPayload) -> Value {
     enable_manual_apply(db);
-    let prepared =
-        narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
-            .expect("prepare");
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect("prepare");
     narrative_extraction::narrative_extraction_apply_commit(
         db,
         ApplyCommitPayload {
@@ -339,7 +402,9 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
 
     db.with_conn(|conn| {
         let node_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| {
+                r.get(0)
+            })?;
         let constraint_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_temporal_constraints",
             [],
@@ -369,6 +434,113 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn scene_chronicle_journal_root_does_not_select_project_scope_authority() {
+    let db = migrated_db();
+    seed_scene(&db, "scene-scope-calendar", "Chronicle-only Scene");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-scope-calendar', 'project-1', 0, 'initial',
+                     '2026-08-24T00:00:00.000Z')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed canonical Epoch authority for the Feed cycle");
+    let items = [(
+        "temporal.scene.metadata.patch",
+        json!({
+            "sceneId": "scene-scope-calendar",
+            "baseVersion": 0,
+            "startTime": 5,
+            "startMinute": 480,
+            "startGranularity": "time",
+            "endTime": 5,
+            "endMinute": 540,
+            "endGranularity": "time",
+            "precision": "exact",
+        }),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-scope-calendar", "set-scope-calendar", &items);
+    write_dependency_declaration_set(
+        &db,
+        DependencyDeclarationSetRequest {
+            project_id: "project-1".to_owned(),
+            consumer_kind: "proposal-revision".to_owned(),
+            consumer_key: "scope-calendar-consumer".to_owned(),
+            producer_id: "proposal-revision-source-basis".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![DependencyDeclaration {
+                source_object_identity: "project:scope-authority:project-1".to_owned(),
+                role: DependencyRole::ScopeResolution,
+                selector: DependencySelector::WholeSource,
+            }],
+            created_at: "2026-08-24T00:00:00.000Z".to_owned(),
+        },
+    )
+    .expect("seal the project Scope declaration before the Chronicle-only commit");
+
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-scope-calendar",
+            "digest-scope-calendar",
+            "set-scope-calendar",
+            "run-scope-calendar",
+            zip_ops(&pairs, &items),
+        ),
+    );
+    let journal_id = applied["journalId"].as_str().expect("journal id");
+    let transaction_id = applied["maintenanceTransactionId"]
+        .as_str()
+        .expect("maintenance transaction id");
+    db.with_conn(|conn| {
+        let entity_kind: String = conn.query_row(
+            "SELECT json_extract(after_json, '$.entities[0].entityKind')
+               FROM narrative_commit_journals WHERE id = ?1",
+            [journal_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(entity_kind, "temporal_scene_chronicle");
+        let (object_kind, change_kind, mutation_kind, changed_paths): (
+            String,
+            String,
+            String,
+            String,
+        ) = conn.query_row(
+            "SELECT json_extract(object_key_json, '$.kind'), change_kind,
+                    mutation_kind, changed_paths_json
+               FROM narrative_change_events
+              WHERE transaction_id = ?1
+                AND json_extract(object_key_json, '$.kind') = 'scene'",
+            [transaction_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(object_kind, "scene");
+        assert_eq!(change_kind, "calendar");
+        assert_eq!(mutation_kind, "update");
+        assert_eq!(changed_paths, r#"["/"]"#);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify the real journal-to-Feed projection");
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("process the Chronicle-only Feed event")
+    else {
+        panic!("the Chronicle commit must leave a pending Feed range");
+    };
+    assert_eq!(summary.v2_shadow.active_head_count, 1);
+    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 1);
+    assert_eq!(summary.v2_shadow.consumers.len(), 1);
+    let consumer = &summary.v2_shadow.consumers[0];
+    assert_eq!(consumer.consumer_key, "scope-calendar-consumer");
+    assert_eq!(consumer.freshness, "stale");
+    assert_eq!(consumer.required_actions, vec!["resolve-only"]);
 }
 
 #[test]
@@ -435,6 +607,19 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
     ];
     let pairs = seed_approved_proposals(&db, "run-2", "set-2", &items);
 
+    let before_binding: (i64, String) = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT version, source_token
+                   FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'project-1' AND scene_id = 'scene-2'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read pre-failure scope binding");
+
     let err = prepare_then_apply(
         &db,
         build_prepare(
@@ -446,11 +631,15 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
         ),
     )
     .expect_err("should fail on the event OCC mismatch");
-    assert!(err.to_string().contains("NEX_TEMPORAL_EVENT_VERSION_MISMATCH"));
+    assert!(err
+        .to_string()
+        .contains("NEX_TEMPORAL_EVENT_VERSION_MISMATCH"));
 
     db.with_conn(|conn| {
         let node_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| {
+                r.get(0)
+            })?;
         let constraint_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_temporal_constraints",
             [],
@@ -461,16 +650,33 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let event_version: i64 = conn.query_row(
-            "SELECT version FROM events WHERE id = 'event-2'",
+        let event_version: i64 =
+            conn.query_row("SELECT version FROM events WHERE id = 'event-2'", [], |r| {
+                r.get(0)
+            })?;
+        let after_binding: (i64, String) = conn.query_row(
+            "SELECT version, source_token
+               FROM narrative_scene_scope_bindings
+              WHERE project_id = 'project-1' AND scene_id = 'scene-2'",
             [],
-            |r| r.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let commit_feed_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions
+              WHERE project_id = 'project-1' AND request_id = 'req-rollback-1'",
+            [],
+            |row| row.get(0),
         )?;
         assert_eq!(node_count, 0, "node.ensure must roll back with the rest");
         assert_eq!(constraint_count, 0);
         assert_eq!(scene_start, None, "scene patch must roll back");
         assert_eq!(scene_version, 0);
         assert_eq!(event_version, 0);
+        assert_eq!(after_binding, before_binding);
+        assert_eq!(
+            commit_feed_count, 0,
+            "failed apply must not append Feed rows"
+        );
         Ok(())
     })
     .unwrap();
@@ -570,17 +776,89 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
 
     db.with_conn(|conn| {
         let node_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| {
+                r.get(0)
+            })?;
         let constraint_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_temporal_constraints",
             [],
             |r| r.get(0),
         )?;
         assert_eq!(node_count, 1, "only the first node must survive");
-        assert_eq!(constraint_count, 1, "only the first constraint must survive");
+        assert_eq!(
+            constraint_count, 1,
+            "only the first constraint must survive"
+        );
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn ensuring_an_existing_node_commits_without_a_false_feed_mutation() {
+    let db = migrated_db();
+    seed_scene(&db, "scene-existing", "Existing Scene");
+    let node = [(
+        "temporal.node.ensure",
+        node_ensure_payload(
+            "tn:scene:existing",
+            json!({ "kind": "scene", "documentRef": "scene-existing" }),
+        ),
+    )];
+
+    let first_pairs = seed_approved_proposals(&db, "run-existing-a", "set-existing-a", &node);
+    let first = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-existing-a",
+            "digest-existing-a",
+            "set-existing-a",
+            "run-existing-a",
+            zip_ops(&first_pairs, &node),
+        ),
+    );
+    assert!(first["maintenanceTransactionId"].is_string());
+
+    let second_pairs = seed_approved_proposals(&db, "run-existing-b", "set-existing-b", &node);
+    let second = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-existing-b",
+            "digest-existing-b",
+            "set-existing-b",
+            "run-existing-b",
+            zip_ops(&second_pairs, &node),
+        ),
+    );
+    assert_eq!(second["status"], "applied");
+    assert!(second.get("maintenanceTransactionId").is_none());
+
+    db.with_conn(|conn| {
+        let feed_transactions: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions
+              WHERE project_id = 'project-1'
+                AND request_id IN ('req-existing-a', 'req-existing-b')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            feed_transactions, 1,
+            "the second no-op ensure must not create a freshness mutation"
+        );
+        let second_commit_id = second["commitId"].as_str().expect("second commit id");
+        let journal: String = conn.query_row(
+            "SELECT after_json FROM narrative_commit_journals WHERE commit_id = ?1",
+            [second_commit_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            serde_json::from_str::<Value>(&journal)?["entities"][0]["opKind"],
+            "ensure-existing",
+            "the immutable journal must retain the no-op operation"
+        );
+        Ok(())
+    })
+    .expect("inspect no-op commit");
 }
 
 #[test]
@@ -633,21 +911,23 @@ fn undo_restores_scene_chronicle_with_a_version_bump_not_a_rewind() {
             session_id: "sess-temporal".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("temporal-constraint-undo".to_string()),
         },
     )
     .expect("undo");
     assert_eq!(undone["status"], "undone");
 
     db.with_conn(|conn| {
-        let (start_time, start_granularity, version): (Option<i64>, String, i64) = conn
-            .query_row(
-                "SELECT chronicle_start_time, chronicle_start_granularity, version
+        let (start_time, start_granularity, version): (Option<i64>, String, i64) = conn.query_row(
+            "SELECT chronicle_start_time, chronicle_start_granularity, version
                    FROM tree_nodes WHERE id = 'scene-4'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )?;
-        assert_eq!(start_time, None, "chronicle fields are restored to pre-patch state");
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        assert_eq!(
+            start_time, None,
+            "chronicle fields are restored to pre-patch state"
+        );
         assert_eq!(start_granularity, "none");
         assert_eq!(
             version, 2,
@@ -706,7 +986,7 @@ fn human_edited_scene_after_commit_blocks_undo() {
             session_id: "sess-temporal".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("temporal-edited-undo".to_string()),
         },
     )
     .expect_err("human edit should block undo");

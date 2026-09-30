@@ -1,0 +1,4685 @@
+{
+  "schemaVersion": 1,
+  "gateId": "gate-c1",
+  "operationFragments": ["policies/narrative/change-feed-operations/*.json"],
+  "canonicalBirths": [
+    { "operationId": "project.create.renderer", "opType": "project.create" },
+    {
+      "operationId": "import.session.apply.internal",
+      "opType": "import.session.apply"
+    },
+    {
+      "operationId": "scan.import.publish",
+      "opType": "scan.import.publish"
+    }
+  ],
+  "semanticBoundary": {
+    "schemaVersion": 1,
+    "scanRoots": [
+      "src/features/narrative-semantic-core",
+      "src/features/narrative-extraction",
+      "src/features/semantic-search",
+      "src/application/narrative-extraction",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction",
+      "src-tauri/crates/grimodex-semantic/src",
+      "electron/main",
+      "electron/preload"
+    ],
+    "commandInventory": {
+      "schemaVersion": 1,
+      "sources": [
+        {
+          "path": "electron/shared/ipcContract.ts",
+          "surface": "electron-ipc",
+          "extractor": "handler-keys"
+        },
+        {
+          "path": "src/lib/browser-mock.ts",
+          "surface": "electron-ipc",
+          "extractor": "browser-command-cases"
+        }
+      ],
+      "mutationPrefixes": [
+        "agent_",
+        "ai_tree_plan_",
+        "tree_node_",
+        "project_",
+        "plot_thread_",
+        "foreshadow_",
+        "snippet_",
+        "codex_rename_",
+        "event_create",
+        "event_update",
+        "event_delete",
+        "event_participants_set",
+        "event_relation_",
+        "scene_event_",
+        "chronicle_bulk_mutate",
+        "temporal_scene_patch",
+        "map_write_bundle",
+        "save_scene_body_bundle",
+        "revision_scene_restore",
+        "trash_bin_",
+        "repair_integrity",
+        "event_set_participants",
+        "project_calendar_upsert",
+        "entity_tags_set",
+        "authorship_replace_lane",
+        "scan_staging_project_create",
+        "scan_staging_project_publish",
+        "narrative_runtime_policy_set",
+        "narrative_extraction_",
+        "import_web_editor_workspace",
+        "runtime_performance_seed",
+        "seed_sample_workspace",
+        "restore_backup",
+        "restore_recovery_candidate"
+      ],
+      "ignoredCommands": [
+        "project_snapshot_restore_context",
+        "plot_thread_list",
+        "plot_thread_list_links",
+        "foreshadow_list_with_labels",
+        "foreshadow_list_open_for_context",
+        "foreshadow_get_scene_info",
+        "foreshadow_get_scene_context",
+        "foreshadow_list_by_codex_entry",
+        "foreshadow_get_chapter_stats",
+        "foreshadow_get_setup",
+        "foreshadow_get",
+        "foreshadow_list_linked_codex",
+        "foreshadow_load_anchors_for_scene",
+        "trash_bin_list",
+        "narrative_extraction_capture_workspace_binding",
+        "narrative_extraction_get_run",
+        "narrative_extraction_is_run_resumable_for_review",
+        "narrative_extraction_list_resumable_runs",
+        "narrative_extraction_list_chronicle_task_resume_candidates",
+        "narrative_extraction_get_run_review_bundle",
+        "narrative_extraction_get_commit_status"
+      ]
+    }
+  },
+  "runtimeEvidence": {
+    "schemaVersion": 1,
+    "status": "verified",
+    "evidenceId": "gate-c1.5-contract-regressions",
+    "commands": [
+      "pnpm test:electron --run electron/main/ipc.test.ts",
+      "pnpm electron:product-journeys",
+      "pnpm test --run src/features/concurrency/externalWriteFeed.test.ts src/lib/browser-mock.undo-change-feed.test.ts",
+      "pnpm --dir electron/native/grimodex-node test",
+      "cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
+      "pnpm verify:quality"
+    ],
+    "testFiles": [
+      "electron/main/ipc.test.ts",
+      "electron/native/grimodex-node/test/agent-writes.test.mjs",
+      "electron/native/grimodex-node/test/foreshadow.test.mjs",
+      "src/features/concurrency/externalWriteFeed.test.ts",
+      "src/lib/browser-mock.undo-change-feed.test.ts",
+      "src/features/narrative-semantic-core/contracts/disclosure.test.ts",
+      "src/features/narrative-semantic-core/contracts/evidencePolicy.test.ts",
+      "scripts/quality/validate-semantic-core-boundary.test.mjs",
+      "scripts/quality/validate-change-feed-writers.test.mjs",
+      "scripts/electron-product-journeys.test.mjs"
+    ],
+    "controls": [
+      "runtime-policy",
+      "actor-context",
+      "knowledge-write-policy",
+      "stable-request-id",
+      "agent-provenance",
+      "field-authority",
+      "proposal-revision",
+      "decision",
+      "prepared-commit",
+      "application-id",
+      "source-basis-occ",
+      "import-policy",
+      "source-package-evidence",
+      "original-transaction",
+      "journal-lineage",
+      "exclusive-system-operation",
+      "semantic-epoch-event",
+      "full-rebuild-marker",
+      "typed-writer",
+      "occ",
+      "undo-journal",
+      "change-event",
+      "change-feed"
+    ]
+  },
+  "mcpAuthorityContract": {
+    "schemaVersion": 1,
+    "fieldAuthority": "native-transactional-preflight",
+    "coverageStatus": "verified",
+    "executionSurface": "mcp-tool-native",
+    "runtimeTestCommand": "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib && cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-mcp",
+    "evidenceTests": [
+      {
+        "file": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbols": [
+          "mcp_codex_update_preflights_human_field_without_renderer_context",
+          "mcp_codex_tag_update_preflights_tags_cache_authority",
+          "mcp_codex_empty_update_is_rejected_without_promoting_legacy_fields",
+          "mcp_legacy_field_without_authority_remains_fail_closed",
+          "mcp_relation_records_field_authority_for_both_endpoints",
+          "mcp_codex_create_records_ai_field_authority"
+        ]
+      },
+      {
+        "file": "src-tauri/crates/grimodex-mcp/src/tools/codex.rs",
+        "symbols": [
+          "create_codex_entry_is_atomic_and_idempotent_on_mcp_surface",
+          "update_codex_entry_uses_client_occ_and_deduplicates_retry"
+        ]
+      },
+      {
+        "file": "src-tauri/crates/grimodex-mcp/src/tools/foreshadow.rs",
+        "symbols": [
+          "create_foreshadow_tool_is_tracked",
+          "update_foreshadow_tool_is_tracked"
+        ]
+      },
+      {
+        "file": "src-tauri/crates/grimodex-mcp/src/tools/snippets.rs",
+        "symbols": [
+          "create_snippet_is_idempotent_and_appends_the_feed_on_mcp_surface"
+        ]
+      },
+      {
+        "file": "src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs",
+        "symbols": [
+          "create_event_is_tracked_with_mcp_surface",
+          "update_event_changes_calendar_fields",
+          "update_event_rejects_empty_patch",
+          "delete_event_cascades_and_snapshots_associations",
+          "stamp_and_unstamp_scene_event",
+          "set_participants_replaces_and_tracks"
+        ]
+      }
+    ],
+    "operationEvidence": [
+      {
+        "operationId": "mcp.foreshadow.create",
+        "symbols": ["create_foreshadow_tool_is_tracked"]
+      },
+      {
+        "operationId": "mcp.foreshadow.update",
+        "symbols": ["update_foreshadow_tool_is_tracked"]
+      },
+      {
+        "operationId": "mcp.snippet.create",
+        "symbols": [
+          "create_snippet_is_idempotent_and_appends_the_feed_on_mcp_surface"
+        ]
+      },
+      {
+        "operationId": "mcp.codex.create",
+        "symbols": ["create_codex_entry_is_atomic_and_idempotent_on_mcp_surface"]
+      },
+      {
+        "operationId": "mcp.codex.update",
+        "symbols": ["mcp_codex_update_preflights_human_field_without_renderer_context"]
+      },
+      {
+        "operationId": "mcp.event.create",
+        "symbols": ["create_event_is_tracked_with_mcp_surface"]
+      },
+      {
+        "operationId": "mcp.event.update",
+        "symbols": [
+          "update_event_changes_calendar_fields",
+          "update_event_rejects_empty_patch"
+        ]
+      },
+      {
+        "operationId": "mcp.event.delete",
+        "symbols": ["delete_event_cascades_and_snapshots_associations"]
+      },
+      {
+        "operationId": "mcp.event.scene-link",
+        "symbols": ["stamp_and_unstamp_scene_event"]
+      },
+      {
+        "operationId": "mcp.event.participants",
+        "symbols": ["set_participants_replaces_and_tracks"]
+      },
+      {
+        "operationId": "mcp.event.relation",
+        "symbols": ["mcp_relation_records_field_authority_for_both_endpoints"]
+      }
+    ]
+  },
+  "writerMatrix": [
+    {
+      "writer": "project.metadata",
+      "objectKey": "project",
+      "addressing": "independent-key",
+      "paths": [
+        "/title",
+        "/genre",
+        "/pov",
+        "/tense",
+        "/language",
+        "/styleGuide",
+        "/aiInstructions",
+        "/outline",
+        "/targetReaders",
+        "/aiPolicy",
+        "/phaseResolutionMode"
+      ],
+      "textImpact": "none",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "scene.body",
+      "objectKey": "scene",
+      "addressing": "independent-key",
+      "paths": ["/content", "/charCount", "/placedBeatPreview"],
+      "textImpact": "required",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "codex.entry",
+      "objectKey": "codex-entry",
+      "addressing": "independent-key",
+      "paths": ["/name", "/summary", "/content", "/aliases"],
+      "textImpact": "optional",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "codex.detail.value",
+      "objectKey": "codex-detail-value",
+      "addressing": "independent-key",
+      "paths": ["/value"],
+      "textImpact": "optional",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "chronicle.aggregate",
+      "objectKey": "chronicle-event",
+      "addressing": "aggregate-path",
+      "paths": ["/title", "/content", "/sceneLinks/<sceneId>", "/participants/<entryId>"],
+      "textImpact": "optional",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "plot.aggregate",
+      "objectKey": "plot-thread|plot-marker|plot-branch",
+      "addressing": "independent-key",
+      "paths": ["/title", "/markers/<markerId>", "/branches/<branchId>"],
+      "textImpact": "none",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "foreshadow.aggregate",
+      "objectKey": "foreshadow|foreshadow-setup|foreshadow-payoff",
+      "addressing": "aggregate-path",
+      "paths": [
+        "/title",
+        "/setups/<setupId>",
+        "/setups/<setupId>/anchor",
+        "/setups/<setupId>/orphan",
+        "/payoff/sceneId",
+        "/payoff/fromPos",
+        "/payoff/toPos",
+        "/payoff/confirmed",
+        "/payoffs/<payoffId>"
+      ],
+      "textImpact": "required-when-anchor",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "temporal.graph",
+      "objectKey": "temporal-node|temporal-constraint|temporal-projection",
+      "addressing": "independent-key",
+      "paths": ["/subject", "/constraints/<constraintId>", "/projection"],
+      "textImpact": "none",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "import.apply",
+      "objectKey": "import-source",
+      "addressing": "independent-key",
+      "paths": ["/"],
+      "textImpact": "optional",
+      "cause": ["forward"],
+      "atomic": true,
+      "undoRedo": false,
+      "idempotent": true
+    },
+    {
+      "writer": "narrative-extraction.apply",
+      "objectKey": "codex-entry|chronicle-event|plot-thread|foreshadow",
+      "addressing": "aggregate-path",
+      "paths": ["/"],
+      "textImpact": "optional",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "snapshot.restore",
+      "objectKey": "project",
+      "addressing": "independent-key",
+      "paths": ["/"],
+      "textImpact": "none",
+      "cause": ["forward"],
+      "atomic": true,
+      "undoRedo": false,
+      "idempotent": true
+    }
+  ],
+  "operations": [
+    {
+      "id": "renderer.generic-sql.execute",
+      "authorityRoute": "human-direct",
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Renderer generic SQL is untrusted and is never authoritative for Narrative Change Feed records. This exclusion includes direct Map board, position, sticky, edge, and frame canvas-layout CRUD, which cannot create or mutate Scene, Codex, Chronicle, Plot, or Foreshadow narrative artifacts.",
+      "exclusionReason": "untrusted-generic-sql",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/execute.rs",
+        "symbol": "execute_renderer"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "db_execute",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "db_execute",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["snippet.entry"],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "renderer.generic-sql.batch",
+      "authorityRoute": "human-direct",
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Renderer generic SQL batches are untrusted and cannot append authority Feed rows, including batches limited to non-narrative Map canvas layout state.",
+      "exclusionReason": "untrusted-generic-sql",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/execute.rs",
+        "symbol": "execute_batch_tx_renderer"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "db_execute_batch",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "db_execute_batch",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "mcp.generic-sql.execute",
+      "authorityRoute": "interactive-agent-command",
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "MCP generic SQL has no public write tool and remains an untrusted origin.",
+      "exclusionReason": "untrusted-generic-sql",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/execute.rs",
+        "symbol": "execute_untrusted"
+      },
+      "routes": [],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "mcp.generic-sql.batch",
+      "authorityRoute": "interactive-agent-command",
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "MCP generic SQL batches have no public write tool and remain an untrusted origin.",
+      "exclusionReason": "untrusted-generic-sql",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/execute.rs",
+        "symbol": "execute_batch_tx_untrusted"
+      },
+      "routes": [],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "workspace.backup.restore",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "A backup restore atomically replaces the database image instead of appending to the replaced image's Feed.",
+      "exclusionReason": "database-image-replacement",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/backup_restore.rs",
+        "symbol": "restore_backup_core"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "restore_backup",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "restore_backup",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "database",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "workspace.recovery.restore",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Safe Mode recovery atomically replaces the database image and cannot append to the discarded image.",
+      "exclusionReason": "database-image-replacement",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/recovery.rs",
+        "symbol": "restore_safe_mode_candidate"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "restore_recovery_candidate",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "restore_recovery_candidate",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "database",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "project.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Publishing a Project atomically creates its scope container and the four canonical builtin Codex types, then appends one ordered catalog Feed transaction before commit.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "project_create"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "project_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "project_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["project.lifecycle", "codex.catalog"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "project.create" }
+    },
+    {
+      "id": "project.metadata.patch.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Project semantic metadata is a canonical build input and must publish its changed JSON Pointer paths with an OCC token.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "project_patch"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "project_patch",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "project_patch",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["project.lifecycle"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "project.meta.update" }
+    },
+    {
+      "id": "project.delete",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Project deletion removes the project-scoped Feed itself; no consumer remains to acknowledge a terminal event.",
+      "exclusionReason": "project-deletion",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "project_delete"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "project_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "project_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail",
+        "narrative.authority",
+        "narrative.revision-envelope",
+        "narrative.freshness",
+        "narrative.field-authority",
+        "narrative.maintenance-feed",
+        "idempotency.receipt"
+      ],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "workspace.web-editor.import",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Web Editor handoff creates a new workspace image and establishes its initial Feed baseline during import.",
+      "exclusionReason": "workspace-import",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/web_editor_handoff.rs",
+        "symbol": "import_web_editor_workspace"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "import_web_editor_workspace",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "import_web_editor_workspace",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "workspace",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "narrative.runtime-policy.set",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "The runtime policy is workspace control-plane state, not a project-scoped narrative mutation.",
+      "exclusionReason": "control-plane",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_runtime_policy.rs",
+        "symbol": "set_narrative_runtime_policy"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_runtime_policy_set",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_runtime_policy_set",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.runtime_policy"],
+      "scope": "workspace",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "project.snapshot.capture",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Capturing a read-only project snapshot does not mutate source narrative aggregates.",
+      "exclusionReason": "snapshot-capture",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+        "symbol": "create_project_snapshot"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "project_snapshot_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "project_snapshot_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "workspace.sample.seed",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Sample seeding initializes a new workspace and establishes its initial Feed baseline.",
+      "exclusionReason": "bootstrap",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/sample_seed.rs",
+        "symbol": "seed_sample_workspace"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "seed_sample_workspace",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "seed_sample_workspace",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "workspace",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "test.runtime-performance.seed",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Runtime performance data is a guarded test fixture and never a user domain mutation.",
+      "exclusionReason": "test-fixture",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/runtime_performance_seed.rs",
+        "symbol": "seed_runtime_performance_fixture"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "runtime_performance_seed",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "runtime_performance_seed",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "test",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "schema.migrate",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Schema migrations transform storage shape and establish baselines; they are not user narrative transactions.",
+      "exclusionReason": "migration",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/migrate.rs",
+        "symbol": "migrate"
+      },
+      "routes": [],
+      "writerIds": [
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail",
+        "narrative.runtime_policy",
+        "narrative.fixture",
+        "narrative.authority",
+        "narrative.revision-envelope",
+        "narrative.freshness",
+        "narrative.field-authority",
+        "narrative.maintenance-feed",
+        "schema.migration"
+      ],
+      "scope": "migration",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "narrative.workflow.create-run",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Extraction run lifecycle state is staging-only and does not change domain artifacts.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_create_run"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_create_run",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_create_run",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.extraction-task"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.workflow.cancel-run",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Cancelling an extraction run changes workflow state only.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_cancel_run"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_cancel_run",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_cancel_run",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.extraction-task"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.workflow.claim-task",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Claiming an extraction task changes workflow coordination state only.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_claim_task"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_claim_task",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_claim_task",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.extraction-task", "narrative.extraction-attempt"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.workflow.finish-task",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Finishing an extraction task records staging output without applying domain mutations.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_finish_task"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_finish_task",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_finish_task",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "narrative.extraction-task",
+        "narrative.extraction-attempt",
+        "narrative.extraction-artifact",
+        "narrative.stage-provenance"
+      ],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.workflow.fail-task",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Failing an extraction task records workflow diagnostics without changing domain artifacts.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_fail_task"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_fail_task",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_fail_task",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.extraction-task", "narrative.extraction-attempt"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.proposal.save-set",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Saving proposals is review staging; the later apply operation owns the domain Feed transaction.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_save_proposal_set"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_save_proposal_set",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_save_proposal_set",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.proposal.append-revision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Proposal revisions are immutable review metadata until an apply commit succeeds.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_append_revision"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_append_revision",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_append_revision",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.proposal.create-human-derived-revision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "C2B Human-derived revision materialization is review authority metadata; the later apply operation owns the domain Change Feed transaction.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization_auto"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_create_human_derived_revision",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_create_human_derived_revision",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.proposal.append-decision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "A review decision is authority metadata; apply emits the eventual domain Feed transaction.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_append_decision"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_append_decision",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_append_decision",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.proposal.append-human-decision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "A human review decision is authority metadata; apply emits the eventual domain Feed transaction.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_append_human_decision"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_append_human_decision",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_append_human_decision",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.proposal.revise-and-decide",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Atomic revise-and-decide remains review metadata until apply.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_revise_and_decide"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_revise_and_decide",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_revise_and_decide",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.proposal.revise-and-decide-human",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Human revise-and-decide remains review metadata until apply.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_revise_and_decide_as_human"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_revise_and_decide_as_human",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_revise_and_decide_as_human",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.field-authority.set-lock",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Field locks are control metadata consumed by maintenance self-stale guards, not domain mutations.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_set_human_field_lock"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_set_human_field_lock",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_set_human_field_lock",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.field-authority", "narrative.freshness"],
+      "scope": "project",
+      "requiredIdentities": ["projectId", "sessionId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.commit.prepare",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Preparing a commit records authority and preconditions but performs no domain mutation.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_prepare_commit"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_prepare_commit",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_prepare_commit",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.authority", "narrative.revision-envelope"],
+      "scope": "project",
+      "requiredIdentities": ["projectId", "requestId", "sessionId"],
+      "canonical": null
+    },
+    {
+      "id": "authorship.sidecar.replace-lane",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Authorship spans are source-attribution sidecars; the owning scene or Codex writer emits the authoritative domain Feed event.",
+      "exclusionReason": "derived-state",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "replace_authorship_lane"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "authorship_replace_lane",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "authorship_replace_lane",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "scan.staging-project.create",
+      "visibility": "hidden",
+      "canonicality": "noncanonical",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "The scan staging project is a hidden, noncanonical import workspace and is not visible as a canonical narrative aggregate until the typed scan.import.publish operation.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "create_scan_staging_project"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "scan_staging_project_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "scan_staging_project_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "workspace",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "scan.import.publish",
+      "visibility": "visible",
+      "canonicality": "canonical",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Publishing a completed scan import promotes the hidden staging project through one typed canonical Feed transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "publish_scan_staging_project"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "scan_staging_project_publish",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "scan_staging_project_publish",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "scan.import.publish" }
+    },
+    {
+      "id": "trash.envelope.create",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Creating a Trash envelope stores recovery metadata; the canonical delete writer owns the domain Feed event.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/trash_bin.rs",
+        "symbol": "create"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "trash_bin_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "trash_bin_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "trash.envelope.delete",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Deleting an inactive Trash envelope does not mutate the live narrative aggregate.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/trash_bin.rs",
+        "symbol": "delete"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "trash_bin_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "trash_bin_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "trash.envelope.clear",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Clearing inactive Trash envelopes does not mutate live narrative aggregates.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/trash_bin.rs",
+        "symbol": "clear_all"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "trash_bin_clear_all",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "trash_bin_clear_all",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "trash.envelope.prune",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Retention pruning removes only inactive Trash envelopes and does not mutate live narrative aggregates.",
+      "exclusionReason": "authority-metadata",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/trash_bin.rs",
+        "symbol": "prune"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "trash_bin_prune",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "trash_bin_prune",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "test.protected-writer-fixture",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Gate fixtures exist only to prove protected writer enforcement.",
+      "exclusionReason": "test-fixture",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/protected_writers.rs",
+        "symbol": "bundled_protected_writer_registry"
+      },
+      "routes": [],
+      "writerIds": ["narrative.fixture"],
+      "scope": "test",
+      "requiredIdentities": [],
+      "canonical": null
+    },
+    {
+      "id": "integrity.repair.renderer",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Integrity repair mutates project-scoped Codex and Snippet authority rows, so the repair, canonical Change Event, Narrative Change Feed transaction, and retry receipt must commit atomically.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/integrity.rs",
+        "symbol": "repair_integrity"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "repair_integrity",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "repair_integrity",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "integrity.repair" }
+    },
+    {
+      "id": "chronicle.event.set-participants.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Participant membership changes Chronicle and Codex-derived artifact freshness.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/chronicle.rs",
+        "symbol": "set_event_participants"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "event_set_participants",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "event_set_participants",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "event.participants" }
+    },
+    {
+      "id": "chronicle.calendar.upsert.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Calendar changes invalidate temporal interpretation across the project.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/chronicle.rs",
+        "symbol": "upsert_project_calendar"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "project_calendar_upsert",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "project_calendar_upsert",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["temporal.calendar"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "project.calendar.upsert" }
+    },
+    {
+      "id": "codex.tags.set.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Codex or Snippet tag changes affect context selection and derived artifact dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "set_entity_tags"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "entity_tags_set",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "entity_tags_set",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry", "snippet.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "codex.tags.set" }
+    },
+    {
+      "id": "codex.rename.undo.renderer",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Undoing a Codex rename changes the authoritative entity and its dependents.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "undo_codex_rename"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "codex_rename_undo",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "codex_rename_undo",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "codex.rename.undo" }
+    },
+    {
+      "id": "codex.rename.apply.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Applying a Codex rename changes the authoritative entity and its dependents.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "apply_codex_rename"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "codex_rename_apply",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "codex_rename_apply",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "codex.rename.apply" }
+    },
+    {
+      "id": "tree.ai-plan.apply.renderer",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Applying or redoing a typed AI tree plan changes narrative structure and ordering as one Native transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "apply_ai_tree_plan"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "ai_tree_plan_apply",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "ai_tree_plan_apply",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": {
+        "origin": "renderer",
+        "opType": "tree.aiScaffold|tree.aiReorganize"
+      }
+    },
+    {
+      "id": "tree.ai-plan.undo.renderer",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Undoing a typed AI tree plan restores its exact structural generation with explicit Feed lineage.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "undo_ai_tree_plan"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "ai_tree_plan_undo",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "ai_tree_plan_undo",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "tree.aiPlanUndo" }
+    },
+    {
+      "id": "tree.node.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Creating a scene or structural node changes narrative ordering and dependency scope.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "tree_node_create"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "tree_node_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "tree_node_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "tree.node.create" }
+    },
+    {
+      "id": "tree.node.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Deleting a scene or structural node invalidates every artifact that depends on it.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "tree_node_delete"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "tree_node_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "tree_node_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "tree.node.delete" }
+    },
+    {
+      "id": "tree.node.patch.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Patching narrative node content or metadata changes derived artifact inputs.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "tree_node_patch"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "tree_node_patch",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "tree_node_patch",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "tree.node.update" }
+    },
+    {
+      "id": "temporal.scene.patch.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Temporal scene changes invalidate Chronicle and structure-health projections.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "temporal_scene_patch"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "temporal_scene_patch",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "temporal_scene_patch",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "scene.temporal.update" }
+    },
+    {
+      "id": "map.write.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "map_write_bundle is the only Canonical Native Map aggregate writer: its promotion variants can create authoritative scene, snippet, Codex entry, or Codex relation entities. Direct Renderer Map canvas-layout CRUD is excluded through renderer.generic-sql.execute/batch and cannot create narrative artifacts.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/map_writes.rs",
+        "symbol": "apply_map_write"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "map_write_bundle",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "map_write_bundle",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node", "codex.entry", "codex.relation"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "map.write" }
+    },
+    {
+      "id": "project.snapshot.restore",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "A project snapshot restore is a user-visible bulk domain mutation and requires explicit restore events.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+        "symbol": "apply_project_snapshot_restore"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "project_snapshot_apply_restore",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "project_snapshot_apply_restore",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": {
+        "origin": "renderer",
+        "opType": "project.snapshot.restore"
+      }
+    },
+    {
+      "id": "revision.scene.restore.renderer",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Restoring a scene revision replaces authoritative prose and invalidates scene-derived artifacts in the same transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/revision_restore.rs",
+        "symbol": "restore_scene_revision"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "revision_scene_restore",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "revision_scene_restore",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node", "foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "content.restore" }
+    },
+    {
+      "id": "trash.structure.restore.renderer",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Restoring structural Trash content recreates a project-owned domain aggregate and consumes the Trash item atomically.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/trash_bin.rs",
+        "symbol": "restore"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "trash_bin_restore",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "trash_bin_restore",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node", "codex.entry", "foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "trash.restore" }
+    },
+    {
+      "id": "scene.body.save.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Saving scene prose and its sidecars changes the primary input to maintenance projections.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/scene_body.rs",
+        "symbol": "save_scene_body_bundle"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "save_scene_body_bundle",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "save_scene_body_bundle",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["tree.node", "foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "scene.body.save" }
+    },
+    {
+      "id": "plot.thread.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Creating a plot thread changes plot dependency inputs.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "create"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.thread.create" }
+    },
+    {
+      "id": "plot.thread.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Updating a plot thread changes plot dependency inputs.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "update"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.thread.update" }
+    },
+    {
+      "id": "plot.thread.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Deleting a plot thread invalidates thread and marker dependents.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "delete"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate", "plot_threads.branch"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.thread.delete" }
+    },
+    {
+      "id": "plot.marker.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Creating a plot marker changes scene-to-thread dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "link_create"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_link_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_link_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.marker.create" }
+    },
+    {
+      "id": "plot.marker.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Updating a plot marker changes scene-to-thread dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "link_update"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_link_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_link_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.marker.update" }
+    },
+    {
+      "id": "plot.marker.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Deleting a plot marker invalidates scene-to-thread and dependent branch artifacts.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "link_delete"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_link_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_link_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate", "plot_threads.branch"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.marker.delete" }
+    },
+    {
+      "id": "plot.branch.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Creating a plot branch changes plot dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "branch_create"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_branch_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_branch_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.branch"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.branch.create" }
+    },
+    {
+      "id": "plot.branch.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Updating a plot branch changes plot dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "branch_update"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_branch_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_branch_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.branch"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.branch.update" }
+    },
+    {
+      "id": "plot.branch.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Deleting a plot branch changes plot dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "branch_delete"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_branch_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_branch_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.branch"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.branch.delete" }
+    },
+    {
+      "id": "plot.marker.move.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Moving a plot marker atomically updates marker and dependent branch topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "move_marker_bundle"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_move_marker_bundle",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_move_marker_bundle",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate", "plot_threads.branch"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.marker.move" }
+    },
+    {
+      "id": "plot.history.restore.renderer",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "History restore must be distinguishable from forward plot mutations.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "restore_snapshot"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_restore_snapshot",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_restore_snapshot",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate", "plot_threads.branch"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.history.restore" }
+    },
+    {
+      "id": "plot.history.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "History deletion must be distinguishable from forward plot mutations.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/plot_threads.rs",
+        "symbol": "delete_snapshot"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "plot_thread_delete_snapshot",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "plot_thread_delete_snapshot",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["plot_threads.aggregate", "plot_threads.branch"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "plot.history.delete" }
+    },
+    {
+      "id": "foreshadow.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Creating a foreshadow changes structure-health and callback dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "create"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "foreshadow.create" }
+    },
+    {
+      "id": "foreshadow.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Updating a foreshadow changes structure-health and callback dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "update"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "foreshadow.update" }
+    },
+    {
+      "id": "foreshadow.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Deleting a foreshadow invalidates setups, payoffs, and linked Codex dependents.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "delete"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "foreshadow.delete" }
+    },
+    {
+      "id": "foreshadow.setup.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Updating a setup changes foreshadow-to-scene dependency state.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "update_setup"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_update_setup",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_update_setup",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "foreshadow.setup.update" }
+    },
+    {
+      "id": "foreshadow.codex-link.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Linking Codex to a foreshadow changes dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "link_codex"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_link_codex",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_link_codex",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": {
+        "origin": "renderer",
+        "opType": "foreshadow.codex-link.create"
+      }
+    },
+    {
+      "id": "foreshadow.codex-link.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Unlinking Codex from a foreshadow changes dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "unlink_codex"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_unlink_codex",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_unlink_codex",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": {
+        "origin": "renderer",
+        "opType": "foreshadow.codex-link.delete"
+      }
+    },
+    {
+      "id": "foreshadow.setup.strength.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Setup strength changes structure-health severity and dependency state.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "set_setup_strength"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_set_setup_strength",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_set_setup_strength",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": {
+        "origin": "renderer",
+        "opType": "foreshadow.setup.strength"
+      }
+    },
+    {
+      "id": "foreshadow.setup.create-ai.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Creating a setup from AI output changes authoritative foreshadow dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "setup_create_ai"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_setup_create_ai",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_setup_create_ai",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "foreshadow.setup.create" }
+    },
+    {
+      "id": "foreshadow.orphan.resolve.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Resolving an orphan changes setup identity and scene anchoring.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "resolve_orphan"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_resolve_orphan",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_resolve_orphan",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": {
+        "origin": "renderer",
+        "opType": "foreshadow.orphan.resolve"
+      }
+    },
+    {
+      "id": "foreshadow.anchors.save.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Saving anchors changes exact setup/payoff ranges used by freshness and reanchor planning.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+        "symbol": "save_anchors_for_scene"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "foreshadow_save_anchors_for_scene",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "foreshadow_save_anchors_for_scene",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "foreshadow.anchors.save" }
+    },
+    {
+      "id": "agent.codex.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent Codex creation already emits a canonical Change Event and must append the linked Feed row.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_codex_create_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_codex_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_codex_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "codex.create" }
+    },
+    {
+      "id": "agent.codex.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent Codex update already emits a canonical Change Event and must append the linked Feed row.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_codex_update_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_codex_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_codex_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "codex.update" }
+    },
+    {
+      "id": "agent.codex.delete",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent Codex deletion invalidates the entity and every linked derived artifact.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_codex_delete_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_codex_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_codex_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "codex.delete" }
+    },
+    {
+      "id": "codex.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Human/import/history renderer Codex creation uses the tracked writer while remaining separate from capability-bound Agent commands.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "renderer_codex_create_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "codex_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "codex_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": ["projectId","requestId","sessionId","transactionId"],
+      "canonical": { "origin": "renderer", "opType": "codex.create" }
+    },
+    {
+      "id": "codex.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Human/import/history renderer Codex updates use the tracked writer while remaining separate from capability-bound Agent commands.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "renderer_codex_update_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "codex_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "codex_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": ["projectId","requestId","sessionId","transactionId"],
+      "canonical": { "origin": "renderer", "opType": "codex.update" }
+    },
+    {
+      "id": "codex.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Human/import/history renderer Codex deletion uses the tracked cascade writer while remaining separate from capability-bound Agent commands.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "renderer_codex_delete_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "codex_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "codex_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry","codex.relation","codex.phase","codex.detail"],
+      "scope": "project",
+      "requiredIdentities": ["projectId","requestId","sessionId","transactionId"],
+      "canonical": { "origin": "renderer", "opType": "codex.delete" }
+    },
+    {
+      "id": "agent.codex.mutate",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Typed aggregate Codex mutation changes entries, relations, phases, or details.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/codex_writes.rs",
+        "symbol": "agent_codex_mutate_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_codex_mutate",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_codex_mutate",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "codex.catalog",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "codex.mutate" }
+    },
+    {
+      "id": "codex.mutate.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Human/import/history/restore Codex aggregate mutations use an explicit renderer command while sharing the typed writer core with Agent mutations.",
+      "implementation": {"module":"src-tauri/crates/grimodex-db/src/codex_writes.rs","symbol":"renderer_codex_mutate_impl"},
+      "routes": [
+        {"surface":"electron-ipc","name":"codex_mutate","module":"electron/shared/ipcContract.ts"},
+        {"surface":"napi","name":"codex_mutate","module":"electron/native/grimodex-node/src/lib.rs"}
+      ],
+      "writerIds": ["codex.catalog","codex.entry","codex.relation","codex.phase","codex.detail"],
+      "scope": "project",
+      "requiredIdentities": ["projectId","requestId","sessionId","transactionId"],
+      "canonical": {"origin":"renderer","opType":"codex.mutate"}
+    },
+    {
+      "id": "chronicle.event.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore Chronicle event creation uses an explicit renderer command and the shared tracked writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_create_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_create","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_create","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.create"}
+    },
+    {
+      "id": "chronicle.event.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore Chronicle event updates use an explicit renderer command and the shared tracked writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_update_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_update","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_update","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.update"}
+    },
+    {
+      "id": "chronicle.event.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore Chronicle event deletion uses an explicit renderer command and the shared cascade writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_delete_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_delete","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_delete","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.delete"}
+    },
+    {
+      "id": "chronicle.bulk.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore Chronicle bulk mutations use an explicit renderer command and one shared transaction writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/chronicle_bulk.rs","symbol":"agent_chronicle_bulk_mutate_impl"},
+      "routes":[{"surface":"electron-ipc","name":"chronicle_bulk_mutate","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"chronicle_bulk_mutate","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event","tree.node"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"chronicle.bulk"}
+    },
+    {
+      "id": "chronicle.event.participants.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore participant replacement uses an explicit renderer command and the shared Chronicle writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_set_participants_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_participants_set","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_participants_set","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.participants"}
+    },
+    {
+      "id": "chronicle.event.scene-link.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore scene-event links use explicit renderer commands and the shared association writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_scene_event_mutate_impl"},
+      "routes":[{"surface":"electron-ipc","name":"scene_event_link","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"scene_event_link","module":"electron/native/grimodex-node/src/lib.rs"},{"surface":"electron-ipc","name":"scene_event_unlink","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"scene_event_unlink","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.scene-link"}
+    },
+    {
+      "id": "chronicle.event.scene-link-batch.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore batch scene-event links use an explicit renderer command and the shared association writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_scene_event_link_batch_impl"},
+      "routes":[{"surface":"electron-ipc","name":"scene_event_link_batch","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"scene_event_link_batch","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.scene-link.batch"}
+    },
+    {
+      "id": "chronicle.event.relation.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore causal relation mutations use explicit renderer commands and the shared association writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_relation_mutate_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_relation_add","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_relation_add","module":"electron/native/grimodex-node/src/lib.rs"},{"surface":"electron-ipc","name":"event_relation_remove","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_relation_remove","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.relation"}
+    },
+    {
+      "id": "agent.snippet.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Creating an accepted AI snippet changes a project-owned narrative source and records its Undo and freshness lineage atomically.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_snippet_create_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_snippet_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_snippet_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["snippet.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "snippet.create" }
+    },
+    {
+      "id": "renderer.snippet.create",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Manual, import, and restore Snippet creation commits the domain row, Undo Journal, canonical Change Event, Feed transaction, and retry receipt atomically.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/snippet_writes.rs",
+        "symbol": "create"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "snippet_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "snippet_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["snippet.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "snippet.create" }
+    },
+    {
+      "id": "renderer.snippet.update",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Manual Snippet updates are OCC guarded and atomically append the canonical event and Narrative Change Feed before commit.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/snippet_writes.rs",
+        "symbol": "update"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "snippet_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "snippet_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["snippet.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "snippet.update" }
+    },
+    {
+      "id": "renderer.snippet.delete",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Manual Snippet deletion is OCC guarded and rolls back with the domain row when Undo, canonical event, Feed, or receipt append fails.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/snippet_writes.rs",
+        "symbol": "delete"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "snippet_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "snippet_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["snippet.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "snippet.delete" }
+    },
+    {
+      "id": "agent.sql-bundle.mutate",
+      "authorityRoute": "interactive-agent-command",
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "The generic agent SQL bundle fails closed; all domain mutations must use a typed Native writer.",
+      "exclusionReason": "untrusted-generic-sql",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_write_bundle_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_write_bundle",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_write_bundle",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": ["projectId", "sessionId"],
+      "canonical": null
+    },
+    {
+      "id": "agent.prose.propose",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "A prose proposal is staging-only until accepted.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_propose_scene_body_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_propose_scene_body",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_propose_scene_body",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": ["projectId", "requestId", "sessionId"],
+      "canonical": null
+    },
+    {
+      "id": "agent.prose.accept",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Accepting prose marks staging state only; save_scene_body_bundle performs the authoritative ai-apply scene mutation.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_accept_prose_stage_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_accept_prose_stage",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_accept_prose_stage",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": ["projectId", "requestId", "sessionId"],
+      "canonical": null
+    },
+    {
+      "id": "agent.prose.discard",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Discarding staged prose removes proposal state without changing authoritative scene content.",
+      "exclusionReason": "staging-only",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_discard_prose_stage_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_discard_prose_stage",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_discard_prose_stage",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": ["projectId", "requestId", "sessionId"],
+      "canonical": null
+    },
+    {
+      "id": "agent.history.apply-undo-journal",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Applying an Undo Journal changes authoritative domain state and needs explicit undo or redo semantics.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_undo_journal_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_apply_undo_journal",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_apply_undo_journal",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "history.apply" }
+    },
+    {
+      "id": "agent.foreshadow.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent foreshadow creation changes structure-health inputs.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_foreshadow_create_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_foreshadow_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_foreshadow_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "foreshadow.create" }
+    },
+    {
+      "id": "agent.foreshadow.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent foreshadow update changes structure-health inputs.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_foreshadow_update_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_foreshadow_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_foreshadow_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "foreshadow.update" }
+    },
+    {
+      "id": "agent.event.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent Chronicle event creation changes Chronicle dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_event_create_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_event_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_event_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "event.create" }
+    },
+    {
+      "id": "agent.event.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent Chronicle event update changes Chronicle dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_event_update_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_event_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_event_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "event.update" }
+    },
+    {
+      "id": "agent.event.delete",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent Chronicle event deletion invalidates the event and its associations.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_event_delete_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_event_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_event_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "event.delete" }
+    },
+    {
+      "id": "agent.chronicle.bulk",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Chronicle bulk mutation changes events, associations, and temporal scene state in one transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/chronicle_bulk.rs",
+        "symbol": "agent_chronicle_bulk_mutate_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_chronicle_bulk_mutate",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_chronicle_bulk_mutate",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event", "tree.node"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "chronicle.bulk" }
+    },
+    {
+      "id": "agent.event.participants",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Agent participant replacement changes Chronicle and Codex dependency edges.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_event_set_participants_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_event_set_participants",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_event_set_participants",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "event.participants" }
+    },
+    {
+      "id": "agent.event.scene-link",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Linking a Chronicle event to a scene changes dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_scene_event_mutate_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_scene_event_link",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_scene_event_link",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        },
+        {
+          "surface": "electron-ipc",
+          "name": "agent_scene_event_unlink",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_scene_event_unlink",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "event.scene-link" }
+    },
+    {
+      "id": "agent.event.scene-link-batch",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Batch scene linking changes multiple Chronicle dependency edges atomically.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_scene_event_link_batch_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_scene_event_link_batch",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_scene_event_link_batch",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "event.scene-link.batch" }
+    },
+    {
+      "id": "agent.event.relation",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Adding or removing a causal relation changes Chronicle dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "agent_event_relation_mutate_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "agent_event_relation_add",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_event_relation_add",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        },
+        {
+          "surface": "electron-ipc",
+          "name": "agent_event_relation_remove",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "agent_event_relation_remove",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "agent", "opType": "event.relation" }
+    },
+    {
+      "id": "import.session.apply.internal",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Applying an import creates the reserved project baseline and its canonical import Feed transaction atomically.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/import/commit.rs",
+        "symbol": "apply_commit"
+      },
+      "routes": [
+        {
+          "surface": "internal",
+          "name": "apply_commit",
+          "module": "src-tauri/crates/grimodex-db/src/import/commit.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "native", "opType": "import.session.apply" }
+    },
+    {
+      "id": "narrative.commit.apply",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
+      "feedPolicy": "delegated",
+      "coverageStatus": "verified",
+      "reason": "Gate C0 already appends a canonical Change Event and linked Feed transaction in the apply transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_apply_commit"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_apply_commit",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_apply_commit",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "narrative.authority",
+        "narrative.maintenance-feed",
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "narrative", "opType": "narrative.commit.apply" }
+    },
+    {
+      "id": "narrative.commit.undo",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "delegated",
+      "coverageStatus": "verified",
+      "reason": "Gate C0 already appends an undo-specific canonical Change Event and linked Feed transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_undo_commit"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_undo_commit",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_undo_commit",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "narrative.authority",
+        "narrative.maintenance-feed",
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "narrative", "opType": "narrative.commit.undo" }
+    },
+    {
+      "id": "narrative.commit.redo",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+      "feedPolicy": "delegated",
+      "coverageStatus": "verified",
+      "reason": "Gate C0 already appends a redo-specific canonical Change Event and linked Feed transaction.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs",
+        "symbol": "narrative_extraction_redo_commit"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_extraction_redo_commit",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_extraction_redo_commit",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [
+        "narrative.authority",
+        "narrative.maintenance-feed",
+        "chronicle.event",
+        "foreshadow.aggregate",
+        "plot_threads.aggregate",
+        "plot_threads.branch",
+        "tree.node",
+        "temporal.calendar",
+        "codex.entry",
+        "codex.relation",
+        "codex.phase",
+        "codex.detail"
+      ],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "narrative", "opType": "narrative.commit.redo" }
+    },
+    {
+      "id": "mcp.foreshadow.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP foreshadow creation changes authoritative structure-health inputs.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/foreshadow.rs",
+        "symbol": "create_foreshadow"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "create_foreshadow",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "foreshadow.create" }
+    },
+    {
+      "id": "mcp.foreshadow.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP foreshadow update changes authoritative structure-health inputs.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/foreshadow.rs",
+        "symbol": "update_foreshadow"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "update_foreshadow",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["foreshadow.aggregate"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "foreshadow.update" }
+    },
+    {
+      "id": "mcp.snippet.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP Snippet creation uses the accepted-AI Native writer and atomically records Undo, canonical event, Feed, and retry identity.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/snippets.rs",
+        "symbol": "create_snippet"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "create_snippet",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["snippet.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "snippet.create" }
+    },
+    {
+      "id": "mcp.codex.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP Codex creation changes authoritative context dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/codex.rs",
+        "symbol": "create_codex_entry"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "create_codex_entry",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "codex.create" }
+    },
+    {
+      "id": "mcp.codex.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP Codex update changes authoritative context dependencies.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/codex.rs",
+        "symbol": "update_codex_entry"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "update_codex_entry",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "codex.update" }
+    },
+    {
+      "id": "mcp.event.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP Chronicle creation already emits a canonical Change Event and must append the linked Feed row.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs",
+        "symbol": "create_event"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "create_event",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "event.create" }
+    },
+    {
+      "id": "mcp.event.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP Chronicle update already emits a canonical Change Event and must append the linked Feed row.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs",
+        "symbol": "update_event"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "update_event",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "event.update" }
+    },
+    {
+      "id": "mcp.event.delete",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP Chronicle deletion already emits a canonical Change Event and must append the linked Feed row.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs",
+        "symbol": "delete_event"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "delete_event",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "event.delete" }
+    },
+    {
+      "id": "mcp.event.scene-link",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP scene stamping changes Chronicle dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs",
+        "symbol": "stamp_scene_event"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "stamp_scene_event",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        },
+        {
+          "surface": "mcp-tool",
+          "name": "unstamp_scene_event",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "event.scene-link" }
+    },
+    {
+      "id": "mcp.event.participants",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP participant replacement changes Chronicle and Codex dependency edges.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs",
+        "symbol": "set_event_participants"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "set_event_participants",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "event.participants" }
+    },
+    {
+      "id": "mcp.event.relation",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "MCP causal relation changes Chronicle dependency topology.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs",
+        "symbol": "add_event_relation"
+      },
+      "routes": [
+        {
+          "surface": "mcp-tool",
+          "name": "add_event_relation",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        },
+        {
+          "surface": "mcp-tool",
+          "name": "remove_event_relation",
+          "module": "src-tauri/crates/grimodex-mcp/src/server.rs"
+        }
+      ],
+      "writerIds": ["chronicle.event"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "mcp", "opType": "event.relation" }
+    },
+    {
+      "id": "narrative.dependency-declaration.store",
+      "authorityRoute": "interpreter-projection",
+      "controls": [
+        "proposal-revision",
+        "decision",
+        "prepared-commit",
+        "application-id",
+        "source-basis-occ",
+        "field-authority",
+        "typed-writer"
+      ],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "shadow-storage" },
+      "reason": "D1 persists sealed Dependency declarations as a non-authoritative shadow; V1 narrative_dependency_edges remains the canonical Freshness input until a later cutover lane.",
+      "exclusionReason": "derived-state",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/declaration_storage.rs",
+        "symbol": "write_dependency_declaration_set"
+      },
+      "routes": [],
+      "writerIds": ["narrative.dependency-declaration"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "nir1.generation.storage",
+      "authorityRoute": "restore-or-migration",
+      "controls": [
+        "exclusive-system-operation",
+        "semantic-epoch-event",
+        "full-rebuild-marker"
+      ],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "control-plane" },
+      "reason": "Native D2b storage persists immutable generation attempt, message-version, input-reference, qualification-reference, and terminal-receipt metadata. These rows record observations against existing stores; they do not mutate a canonical Narrative aggregate or append a Change Feed event.",
+      "exclusionReason": "control-plane",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+        "symbol": "create_attempt"
+      },
+      "routes": [],
+      "writerIds": ["nir1_generation.storage"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.maintenance-attention.set",
+      "authorityRoute": "attention-typed-writer",
+      "controls": ["typed-writer", "occ", "stable-request-id", "actor-context"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "non-backflow-invariant" },
+      "reason": "Maintenance Attention is durable, non-epoch-bound user disposition (policies/narrative/maintenance-attention-contract.json: backflowPolicy forbid); it never appends to the Change Feed.",
+      "exclusionReason": "non-backflow-invariant",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/attention.rs",
+        "symbol": "set_attention_in_tx"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_maintenance_attention_set",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_maintenance_attention_set",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.maintenance-attention"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.maintenance-attention.clear",
+      "authorityRoute": "attention-typed-writer",
+      "controls": ["typed-writer", "occ", "stable-request-id", "actor-context"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "non-backflow-invariant" },
+      "reason": "Clearing Maintenance Attention is the same durable, non-epoch-bound user disposition as set; it never appends to the Change Feed.",
+      "exclusionReason": "non-backflow-invariant",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/attention.rs",
+        "symbol": "clear_attention_in_tx"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_maintenance_attention_clear",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_maintenance_attention_clear",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.maintenance-attention"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    }
+  ]
+}

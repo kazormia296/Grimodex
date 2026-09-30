@@ -226,6 +226,13 @@ fn insert_seed_rows(
             now_dt,
         ],
     )?;
+    crate::narrative_extraction::ensure_scope_registry_in_tx(conn, project_id, now_dt).map_err(
+        |error| {
+            rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
+                error.to_string(),
+            )))
+        },
+    )?;
 
     // Keep the portable, prose-heavy records in language-specific JSON.
     for node in &seed.tree_nodes {
@@ -256,6 +263,19 @@ fn insert_seed_rows(
                 now_dt,
             ],
         )?;
+        if node.node_type == "scene" {
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                project_id,
+                &node.id,
+                now_dt,
+            )
+            .map_err(|error| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
+                    error.to_string(),
+                )))
+            })?;
+        }
     }
 
     for entry in &seed.codex_entries {
@@ -507,14 +527,11 @@ pub fn seed_sample_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     const FULL_AI_POLICY: &str = r#"{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}"#;
 
     fn make_test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     fn parse_seed(src: &str) -> SeedData {

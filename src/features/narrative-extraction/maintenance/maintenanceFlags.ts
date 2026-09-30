@@ -2,15 +2,19 @@ import {
   parseNarrativeRuntimePolicy,
   type NarrativeRuntimePolicy,
 } from "../runtime/narrativeRuntimePolicy";
+import type { NativeNarrativeRuntimePolicy } from "../runtime/narrativeRuntimePolicyApi";
 
 /**
  * Renderer-side mirrors of Narrative Maintenance flags.
  * Native `require_narrative_maintenance_allowed` remains authoritative.
  */
 export function isNarrativeMaintenanceUiEnabled(
-  policy: NarrativeRuntimePolicy = parseNarrativeRuntimePolicy(null),
+  policy?: NativeNarrativeRuntimePolicy,
 ): boolean {
-  return policy.maintenanceEnabled && policy.runtimeMode !== "disabled";
+  return (
+    policy?.maintenancePreviewAllowed === true &&
+    policy.effectiveMode !== "disabled"
+  );
 }
 
 export function isNarrativeGenericImportUiEnabled(
@@ -20,12 +24,9 @@ export function isNarrativeGenericImportUiEnabled(
 }
 
 export function isNarrativeBackgroundAiUiEnabled(
-  policy: NarrativeRuntimePolicy = parseNarrativeRuntimePolicy(null),
+  _policy: NarrativeRuntimePolicy = parseNarrativeRuntimePolicy(null),
 ): boolean {
-  return policy.backgroundAiEnabled && policy.runtimeMode === "automatic";
-}
-
-/** Opt-in flag for the new Narrative Maintenance change-feed pipeline. */
-export function isNarrativeMaintenancePipelinePreferred(): boolean {
-  return import.meta.env.VITE_GRIMODEX_NARRATIVE_MAINTENANCE_PIPELINE === "new";
+  // Gate C0 is preview-only. Native policy fields reserve the future contract,
+  // but this restack must not expose or start Background AI.
+  return false;
 }

@@ -25,6 +25,15 @@ vi.mock("./api", () => ({
     ),
   updateNode: vi.fn().mockResolvedValue(undefined),
   deleteNode: vi.fn(),
+  treeWriteReceipt: vi.fn((result: unknown) => result),
+  historyWriteContext: vi.fn((origin: "undo" | "redo") => ({
+    requestId: `${origin}-request`,
+    sessionId: "tree-delete-test-session",
+    eventUid: `${origin}-event`,
+    origin,
+    originalTransactionId: "tree-delete-test-transaction",
+    undoJournalId: "tree-delete-test-journal",
+  })),
   loadSceneContent: vi.fn().mockResolvedValue(""),
   saveSceneContent: vi.fn().mockResolvedValue(undefined),
 }));
@@ -85,7 +94,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   __resetChatNavigationGuardForTests();
   _resetQuiescenceLeasesForTests();
-  vi.mocked(api.deleteNode).mockReset().mockResolvedValue(undefined);
+  vi.mocked(api.deleteNode).mockReset().mockResolvedValue({
+    changeEventUid: "tree-delete-test-event",
+    maintenanceTransactionId: "tree-delete-test-transaction",
+    undoJournalId: "tree-delete-test-journal",
+  });
   useTreeStore.setState({
     nodes: [],
     projectId: "proj-1",
@@ -271,8 +284,8 @@ describe("treeStore.deleteNode Phase scene-time invalidation", () => {
   });
 });
 
-describe("treeStore.deleteNode partial failure", () => {
-  it("on partial failure, syncs only successfully-deleted ids and skips history push", async () => {
+describe("treeStore.deleteNode atomic failure", () => {
+  it("keeps the complete subtree and skips history when the native delete fails", async () => {
     // Tree:  parent -> [childA, childB]
     useTreeStore.setState({
       nodes: [
@@ -282,26 +295,23 @@ describe("treeStore.deleteNode partial failure", () => {
       ],
     });
 
-    // Leaf-first reverse iteration: childB, childA, parent.
-    // Make childA fail. childB should be deleted; childA + parent retained.
     let callCount = 0;
     vi.mocked(api.deleteNode).mockImplementation(async (id: string) => {
       callCount++;
-      if (id === "childA") throw new Error("FK violation");
-      return undefined;
+      if (id === "parent") throw new Error("forced atomic failure");
+      return {
+        changeEventUid: "unexpected",
+        maintenanceTransactionId: "unexpected",
+        undoJournalId: "unexpected",
+      };
     });
 
     await useTreeStore.getState().deleteNode("parent");
 
     const remaining = useTreeStore.getState().nodes.map((n) => n.id);
-    // childB succeeded; childA + parent remain in state because deletion broke
-    expect(remaining).toEqual(expect.arrayContaining(["parent", "childA"]));
-    expect(remaining).not.toContain("childB");
+    expect(remaining).toEqual(["parent", "childA", "childB"]);
 
-    // No history entry was pushed because the delete is half-completed
     expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
-
-    // Sanity: api.deleteNode was attempted at least up through the failure
-    expect(callCount).toBeGreaterThanOrEqual(2);
+    expect(callCount).toBe(1);
   });
 });

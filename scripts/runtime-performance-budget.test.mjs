@@ -624,6 +624,28 @@ test("runtime performance budgets reject missing metrics and regressions", () =>
   );
 });
 
+test("startup memory above 1 GB shares the existing whole-run peak envelope", () => {
+  assert.equal(DEFAULT_RUNTIME_BUDGETS.peakMemoryBytes, 2_500_000_000);
+  for (const bytes of [1_200_000_000, 2_500_000_000, 2_500_000_001]) {
+    const metrics = passingMetrics();
+    for (const phase of ["startup", "peak"]) {
+      metrics.memory[`${phase}Bytes`] = bytes;
+      metrics.memory[`${phase}Processes`][0].measuredBytes = bytes;
+      metrics.memory[`${phase}Processes`][0].workingSetBytes = bytes;
+    }
+    const result = evaluateRuntimePerformance(metrics);
+    const withinEnvelope = bytes <= 2_500_000_000;
+    assert.equal(result.ok, withinEnvelope, `memory=${bytes}`);
+    for (const phase of ["startup", "peak"]) {
+      const check = result.checks.find(
+        (entry) => entry.name === `memory.${phase}Bytes`,
+      );
+      assert.equal(check.max, DEFAULT_RUNTIME_BUDGETS.peakMemoryBytes);
+      assert.equal(check.ok, withinEnvelope);
+    }
+  }
+});
+
 test("runtime performance budgets require supported memory semantics and non-empty process evidence", () => {
   const cases = [
     {
@@ -656,6 +678,12 @@ test("runtime performance budgets require supported memory semantics and non-emp
       name: "memory.startupBytesEvidence",
       mutate(metrics) {
         metrics.memory.startupBytes -= 1;
+      },
+    },
+    {
+      name: "memory.startupBytes",
+      mutate(metrics) {
+        delete metrics.memory.startupBytes;
       },
     },
   ];

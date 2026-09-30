@@ -1,0 +1,524 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/nir1-capacity/schema.v1.json",
+  "title": "NIR-1 B capacity diagnostic manifest",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "schema",
+    "diagnosticOnly",
+    "status",
+    "scope",
+    "capacityDecision",
+    "admissionBoundary",
+    "runProtocol",
+    "diagnosticModes",
+    "fixtures",
+    "requiredMetrics",
+    "notMeasuredPolicy",
+    "supportedCapacity",
+    "graphLifecycle"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "nir1-capacity/1" },
+    "schema": { "type": "string", "minLength": 1 },
+    "diagnosticOnly": { "const": true },
+    "status": { "const": "measurement-only" },
+    "scope": { "type": "string", "minLength": 1 },
+    "capacityDecision": {
+      "const": "ratified-b-full-set-v1"
+    },
+    "admissionBoundary": {
+      "type": "object",
+      "required": ["currentMaterialLimit", "meaning"],
+      "properties": {
+        "currentMaterialLimit": { "const": 512 },
+        "meaning": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "graphLifecycle": { "$ref": "#/$defs/graphLifecycle" },
+    "runProtocol": {
+      "type": "object",
+      "required": [
+        "database",
+        "process",
+        "warmupCount",
+        "measuredRunCount",
+        "freshCopyPerRun",
+        "freshProcessPerRun",
+        "sourceState",
+        "childState",
+        "modeIsolation",
+        "childTimeoutMs",
+        "childTerminationGraceMs"
+      ],
+      "properties": {
+        "database": { "type": "string", "minLength": 1 },
+        "process": { "type": "string", "minLength": 1 },
+        "warmupCount": { "const": 1 },
+        "measuredRunCount": { "type": "integer", "minimum": 5 },
+        "freshCopyPerRun": { "const": true },
+        "freshProcessPerRun": { "const": true },
+        "sourceState": { "const": "immutable-main-wal-shm" },
+        "childState": { "const": "record-before-and-after" },
+        "modeIsolation": { "type": "string", "minLength": 1 },
+        "childTimeoutMs": { "type": "integer", "minimum": 1 },
+        "childTerminationGraceMs": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "diagnosticModes": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": false,
+        "items": {
+          "type": "object",
+        "required": [
+          "id",
+          "label",
+          "producesReportRecords",
+          "minimumOperationReportRecords",
+          "fixtures"
+        ],
+          "properties": {
+          "id": {
+            "enum": [
+              "source-reresolution",
+              "complete-registration",
+              "coverage",
+              "restore",
+              "cold-reopen"
+            ]
+          },
+          "label": { "type": "string", "minLength": 1 },
+          "postOperationShape": {
+            "type": "object",
+            "additionalProperties": { "$ref": "#/$defs/shape" }
+          },
+          "fixtures": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 },
+            "uniqueItems": true
+          },
+          "producesReportRecords": { "type": "boolean" },
+          "minimumOperationReportRecords": {
+            "type": "object",
+            "minProperties": 1,
+            "additionalProperties": { "type": "integer", "minimum": 0 }
+          }
+          },
+          "additionalProperties": false
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 9,
+      "items": { "$ref": "#/$defs/fixture" }
+    },
+    "requiredMetrics": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "notMeasuredPolicy": { "type": "string", "minLength": 1 },
+    "supportedCapacity": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "nonNegativeCount": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "shape": {
+      "type": "object",
+      "properties": {
+        "candidateRevisions": { "$ref": "#/$defs/nonNegativeCount" },
+        "qualifiedRevisions": { "$ref": "#/$defs/nonNegativeCount" },
+        "qualifiedMaterials": { "$ref": "#/$defs/nonNegativeCount" },
+        "qualifiedMaterialRecords": { "$ref": "#/$defs/nonNegativeCount" },
+        "ineligibleCandidates": { "$ref": "#/$defs/nonNegativeCount" },
+        "rejectedRevisions": { "$ref": "#/$defs/nonNegativeCount" },
+        "rosterRecords": { "$ref": "#/$defs/nonNegativeCount" },
+        "evidenceRecords": { "$ref": "#/$defs/nonNegativeCount" },
+        "dependencyEdges": { "$ref": "#/$defs/nonNegativeCount" },
+        "graphSnapshotDependencyEdges": { "$ref": "#/$defs/nonNegativeCount" },
+        "reportRecords": { "$ref": "#/$defs/nonNegativeCount" }
+      },
+      "additionalProperties": false
+    },
+    "fixture": {
+      "type": "object",
+      "required": [
+        "id",
+        "qualifiedMaterials",
+        "qualifiedRevisions",
+        "ineligibleCandidates",
+        "dominantShape"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "qualifiedMaterials": { "$ref": "#/$defs/nonNegativeCount" },
+        "qualifiedRevisions": { "$ref": "#/$defs/nonNegativeCount" },
+        "ineligibleCandidates": { "$ref": "#/$defs/nonNegativeCount" },
+        "dominantShape": { "type": "string", "minLength": 1 },
+        "shape": { "$ref": "#/$defs/shape" },
+        "observedShape": { "$ref": "#/$defs/shape" }
+      },
+      "additionalProperties": false
+    },
+    "graphLifecycle": {
+      "type": "object",
+      "required": [
+        "status",
+        "queryActivation",
+        "productDispatch",
+        "supportedCapacityClaim",
+        "currentRustOutput"
+      ],
+      "properties": {
+        "status": { "const": "measurement-only" },
+        "queryActivation": { "const": "not-activated" },
+        "productDispatch": { "const": "not-activated" },
+        "supportedCapacityClaim": { "const": false },
+        "currentRustOutput": { "const": "nir1-capacity-observation/1" }
+      },
+      "additionalProperties": false
+    },
+    "optionalNonNegativeInteger": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "optionalNonNegativeNumber": {
+      "type": ["number", "null"],
+      "minimum": 0
+    },
+    "optionalNonEmptyString": {
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        { "type": "null" }
+      ]
+    },
+    "capacityObservation": {
+      "type": "object",
+      "required": [
+        "diagnosticOnly",
+        "processId",
+        "fixtureId",
+        "mode",
+        "status",
+        "admission",
+        "supportedCapacityClaim",
+        "databasePath",
+        "counts",
+        "fixtureShape",
+        "bytes",
+        "process",
+        "sql",
+        "occupancy",
+        "graphLifecycle",
+        "modeOutcome",
+        "cancel",
+        "interruptionProbes",
+        "rejectionReasons",
+        "notMeasured"
+      ],
+      "properties": {
+        "diagnosticOnly": { "const": true },
+        "processId": { "type": "integer", "minimum": 1 },
+        "fixtureId": { "type": "string", "minLength": 1 },
+        "mode": {
+          "enum": [
+            "full-build",
+            "source-reresolution",
+            "complete-registration",
+            "coverage",
+            "restore",
+            "cold-reopen"
+          ]
+        },
+        "status": { "type": "string", "minLength": 1 },
+        "admission": { "type": "string", "minLength": 1 },
+        "supportedCapacityClaim": { "const": false },
+        "databasePath": { "type": "string", "minLength": 1 },
+        "counts": { "$ref": "#/$defs/observationCounts" },
+        "fixtureShape": { "$ref": "#/$defs/observationCounts" },
+        "bytes": { "$ref": "#/$defs/observationBytes" },
+        "process": { "$ref": "#/$defs/observationProcess" },
+        "sql": { "$ref": "#/$defs/observationSql" },
+        "occupancy": { "$ref": "#/$defs/observationOccupancy" },
+        "cancel": { "$ref": "#/$defs/observationCancel" },
+        "interruptionProbes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/interruptionProbe" }
+        },
+        "rejectionReasons": { "type": "object" },
+        "notMeasured": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "publishedGeneration": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "publishedGenerationBefore": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "publishedGenerationAfter": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "graphLifecycle": { "$ref": "#/$defs/graphLifecycleObservation" },
+        "modeOutcome": { "$ref": "#/$defs/modeOutcome" }
+      },
+      "additionalProperties": true
+    },
+    "observationCounts": {
+      "type": "object",
+      "required": [
+        "candidateRevisions",
+        "qualifiedRevisions",
+        "rejectedRevisions",
+        "entityRecords",
+        "relationRecords",
+        "evidenceRecords",
+        "qualifiedMaterialRecords",
+        "rosterRecords",
+        "dependencyEdges",
+        "graphSnapshotDependencyEdges",
+        "reportRecords"
+      ],
+      "properties": {
+        "candidateRevisions": { "type": "integer", "minimum": 0 },
+        "qualifiedRevisions": { "type": "integer", "minimum": 0 },
+        "rejectedRevisions": { "type": "integer", "minimum": 0 },
+        "entityRecords": { "type": "integer", "minimum": 0 },
+        "relationRecords": { "type": "integer", "minimum": 0 },
+        "evidenceRecords": { "type": "integer", "minimum": 0 },
+        "qualifiedMaterialRecords": { "type": "integer", "minimum": 0 },
+        "rosterRecords": { "type": "integer", "minimum": 0 },
+        "dependencyEdges": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "graphSnapshotDependencyEdges": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "reportRecords": { "$ref": "#/$defs/optionalNonNegativeInteger" }
+      },
+      "additionalProperties": true
+    },
+    "observationBytes": {
+      "type": "object",
+      "required": [
+        "payloadBytes",
+        "envelopeBytes",
+        "sourceBasisBytes",
+        "liveSourceBytes",
+        "rosterBytes",
+        "revisionIdOverheadBytes"
+      ],
+      "properties": {
+        "payloadBytes": { "type": "integer", "minimum": 0 },
+        "envelopeBytes": { "type": "integer", "minimum": 0 },
+        "sourceBasisBytes": { "type": "integer", "minimum": 0 },
+        "liveSourceBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "rosterBytes": { "type": "integer", "minimum": 0 },
+        "revisionIdOverheadBytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "rustHeapMeasurement": {
+      "type": "object",
+      "required": [
+        "currentRequestedBytes",
+        "peakRequestedBytes",
+        "method",
+        "coverage",
+        "uncertainty"
+      ],
+      "properties": {
+        "currentRequestedBytes": { "type": "integer", "minimum": 0 },
+        "peakRequestedBytes": { "type": "integer", "minimum": 0 },
+        "method": { "type": "string", "minLength": 1 },
+        "coverage": { "type": "string", "minLength": 1 },
+        "uncertainty": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "observationProcess": {
+      "type": "object",
+      "required": [
+        "elapsedMs",
+        "userCpuUs",
+        "systemCpuUs",
+        "rssBytes",
+        "hwmRssBytes",
+        "totalPeakRssBytes",
+        "ruMaxrssBytes",
+        "sqliteMemoryBytes",
+        "sqliteMemoryHighwaterBytes",
+        "rustHeap",
+        "readBytes",
+        "writeBytes",
+        "temporaryBytes",
+        "temporaryBytesMethod",
+        "temporaryBytesCoverage",
+        "temporaryBytesUncertainty",
+        "temporaryDisk"
+      ],
+      "properties": {
+        "elapsedMs": { "type": "number", "minimum": 0 },
+        "userCpuUs": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "systemCpuUs": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "rssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "hwmRssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "totalPeakRssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "ruMaxrssBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "sqliteMemoryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "sqliteMemoryHighwaterBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "rustHeap": {
+          "anyOf": [
+            { "$ref": "#/$defs/rustHeapMeasurement" },
+            { "type": "null" }
+          ]
+        },
+        "readBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "writeBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "temporaryBytes": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "temporaryBytesMethod": { "type": "string", "minLength": 1 },
+        "temporaryBytesCoverage": { "type": "string", "minLength": 1 },
+        "temporaryBytesUncertainty": { "type": "string", "minLength": 1 },
+        "temporaryDisk": { "anyOf": [{ "$ref": "#/$defs/diskMeasurement" }, { "type": "null" }] }
+      },
+      "additionalProperties": true
+    },
+    "observationSql": {
+      "type": "object",
+      "required": ["statementVmSteps", "exactVmSteps", "vmStepsKind", "progressCallbacks", "statements", "openedConnections", "closedConnections", "method", "coverage", "lifecycleVmStepsUpperBound", "lifecycleVmStepsMethod", "lifecycleVmStepsCoverage", "sqliteSourceId"],
+      "properties": {
+        "statementVmSteps": { "type": "integer", "minimum": 0 },
+        "exactVmSteps": { "const": false },
+        "vmStepsKind": { "enum": ["profiled-subset-lower-bound", "unavailable"] },
+        "progressCallbacks": { "type": "integer", "minimum": 0 },
+        "statements": { "type": "integer", "minimum": 0 },
+        "openedConnections": { "type": "integer", "minimum": 0 },
+        "closedConnections": { "type": "integer", "minimum": 0 },
+        "lifecycleVmStepsUpperBound": { "$ref": "#/$defs/optionalNonNegativeInteger" },
+        "lifecycleVmStepsMethod": { "type": "string", "minLength": 1 },
+        "lifecycleVmStepsCoverage": { "type": "string", "minLength": 1 },
+        "sqliteSourceId": { "type": "string", "minLength": 1 },
+        "method": { "type": "string", "minLength": 1 },
+        "coverage": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "diskMeasurement": {
+      "type": "object",
+      "required": ["logicalHighWaterUpperBoundBytes", "initialBytes", "successfulWriteBytes", "sqliteFileGrowthBytes", "sqliteShmGrowthBytes", "openedFiles", "closedFiles", "method", "coverage", "uncertainty"],
+      "properties": {
+        "logicalHighWaterUpperBoundBytes": { "type": "integer", "minimum": 0 },
+        "initialBytes": { "type": "integer", "minimum": 0 },
+        "successfulWriteBytes": { "type": "integer", "minimum": 0 },
+        "sqliteFileGrowthBytes": { "type": "integer", "minimum": 0 },
+        "sqliteShmGrowthBytes": { "type": "integer", "minimum": 0 },
+        "openedFiles": { "type": "integer", "minimum": 1 },
+        "closedFiles": { "type": "integer", "minimum": 1 },
+        "method": { "const": "initial-plus-linux-wchar-plus-sqlite-vfs-positive-growth" },
+        "coverage": { "type": "string", "minLength": 1 },
+        "uncertainty": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "observationOccupancy": {
+      "type": "object",
+      "required": [
+        "connectionHoldMs",
+        "publishTransactionMs",
+        "foregroundWaitMs",
+        "foregroundWaitScope",
+        "foregroundWaitMethod",
+        "foregroundWaitUncertainty"
+      ],
+      "properties": {
+        "connectionHoldMs": { "type": "number", "minimum": 0 },
+        "publishTransactionMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
+        "foregroundWaitMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
+        "foregroundWaitScope": { "$ref": "#/$defs/optionalNonEmptyString" },
+        "foregroundWaitMethod": { "$ref": "#/$defs/optionalNonEmptyString" },
+        "foregroundWaitUncertainty": { "$ref": "#/$defs/optionalNonEmptyString" }
+      },
+      "additionalProperties": true
+    },
+    "observationCancel": {
+      "type": "object",
+      "required": [
+        "status",
+        "latencyMs",
+        "scope",
+        "method",
+        "uncertainty"
+      ],
+      "properties": {
+        "status": { "enum": ["not-run", "measured"] },
+        "latencyMs": { "$ref": "#/$defs/optionalNonNegativeNumber" },
+        "scope": { "$ref": "#/$defs/optionalNonEmptyString" },
+        "method": { "$ref": "#/$defs/optionalNonEmptyString" },
+        "uncertainty": { "$ref": "#/$defs/optionalNonEmptyString" }
+      },
+      "allOf": [{
+        "if": { "properties": { "status": { "const": "measured" } } },
+        "then": { "properties": {
+          "latencyMs": { "type": "number", "minimum": 0 },
+          "scope": { "type": "string", "minLength": 1 },
+          "method": { "type": "string", "minLength": 1 },
+          "uncertainty": { "type": "string", "minLength": 1 }
+        } },
+        "else": { "properties": {
+          "latencyMs": { "type": "null" },
+          "scope": { "type": "null" },
+          "method": { "type": "null" },
+          "uncertainty": { "type": "null" }
+        } }
+      }],
+      "additionalProperties": true
+    },
+    "interruptionProbe": {
+      "type": "object",
+      "required": [
+        "phase", "kind", "triggerPoint", "latencyMs", "progressCallbacks", "connectionReusable",
+        "transactionClean", "progressHandlerCleared", "busyTimeoutRestored", "bindingUnchanged"
+      ],
+      "properties": {
+        "phase": { "enum": ["build-prepare", "build-publish", "source-reresolution", "complete-registration", "coverage-verify", "restore-full-set-validation", "restore-graph-prepare", "restore-graph-publish", "cold-reopen"] },
+        "kind": { "enum": ["cancel", "foreground"] },
+        "triggerPoint": { "enum": ["first-sql-progress", "before-commit"] },
+        "latencyMs": { "type": "number", "minimum": 0 },
+        "progressCallbacks": { "type": "integer", "minimum": 1 },
+        "connectionReusable": { "const": true },
+        "transactionClean": { "const": true },
+        "progressHandlerCleared": { "const": true },
+        "busyTimeoutRestored": { "const": true },
+        "bindingUnchanged": { "const": true }
+      },
+      "additionalProperties": false
+    },
+    "modeOutcome": {
+      "type": "object",
+      "required": [
+        "operation",
+        "success",
+        "requiredSuccess",
+        "operationReportRecords"
+      ],
+      "properties": {
+        "operation": { "type": "string", "minLength": 1 },
+        "success": { "type": "boolean" },
+        "requiredSuccess": { "type": "boolean" },
+        "operationReportRecords": { "$ref": "#/$defs/optionalNonNegativeInteger" }
+      },
+      "additionalProperties": true
+    },
+    "graphLifecycleObservation": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "minLength": 1 },
+        "activated": { "const": false },
+        "queryActivation": { "const": "not-activated" },
+        "productDispatch": { "const": "not-activated" },
+        "publishedGeneration": { "$ref": "#/$defs/optionalNonNegativeInteger" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

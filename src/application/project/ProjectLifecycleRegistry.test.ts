@@ -9,6 +9,7 @@ import {
   acquireQuiescenceLease,
   canScheduleQuiescenceMutation,
 } from "@/application/lifecycle/quiescenceLease";
+import { isD2aEgressDenied } from "@/lib/tauri";
 
 describe("ProjectLifecycleRegistry", () => {
   afterEach(() => {
@@ -148,6 +149,64 @@ describe("ProjectLifecycleRegistry", () => {
     expect(result.degraded).toEqual([
       { participantId: "failed", error: failure },
     ]);
+  });
+
+  it("treats only the four D2a hydration denials as successful empty work", async () => {
+    const d2aCause = new Error("D2A_EGRESS_DENIED: plaintext-publication");
+    const d2aError = new Error("query failed", { cause: d2aCause });
+    const ordinaryError = new Error("ordinary failure");
+    const expectedIds = new Set([
+      "chat-history-load",
+      "foreshadow-load",
+      "trash-load",
+      "plot-threads-load",
+    ]);
+    const participants: ProjectLifecycleParticipant[] = [
+      ...Array.from(expectedIds, (id) => ({
+        id,
+        hydrateOptional: async () => {
+          throw d2aError;
+        },
+      })),
+      {
+        id: "unrelated-load",
+        hydrateOptional: async () => {
+          throw d2aError;
+        },
+      },
+      {
+        id: "chat-history-ordinary-failure",
+        hydrateOptional: async () => {
+          throw ordinaryError;
+        },
+      },
+    ];
+    const onOptionalFailure = vi.fn();
+
+    const result = await createProjectLifecycleRegistry(participants, {
+      onOptionalFailure,
+      isExpectedOptionalFailure: (participant, error) =>
+        expectedIds.has(participant.id) && isD2aEgressDenied(error),
+    }).reload({ projectId: "project-d2a" });
+
+    expect(result.degraded).toEqual([
+      { participantId: "unrelated-load", error: d2aError },
+      {
+        participantId: "chat-history-ordinary-failure",
+        error: ordinaryError,
+      },
+    ]);
+    expect(onOptionalFailure).toHaveBeenCalledTimes(2);
+    expect(onOptionalFailure).toHaveBeenNthCalledWith(
+      1,
+      participants[4],
+      d2aError,
+    );
+    expect(onOptionalFailure).toHaveBeenNthCalledWith(
+      2,
+      participants[5],
+      ordinaryError,
+    );
   });
 
   it("reports closed timing spans for successful and failed participant work", async () => {

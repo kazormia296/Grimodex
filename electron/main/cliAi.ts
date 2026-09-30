@@ -105,6 +105,8 @@ export interface CliProcessRunner {
   start(spec: CliCommandSpec): RunningCliProcess;
   /** Electron終了時に、このrunnerが起動した全childを同期的に停止する。 */
   disposeAll?(): void;
+  /** Main-only D2a barrier: await close for every spawned child. */
+  quiesceForProfileEgress?(): Promise<void>;
 }
 
 export interface CliExecutableIdentity {
@@ -161,6 +163,8 @@ interface StreamLifecycle {
 export interface CliAiManager {
   handlers: ShellCommandHandlers;
   disposeAll(): void;
+  /** Main-only D2a barrier: stop and await every admitted CLI stream. */
+  quiesceForProfileEgress(): Promise<void>;
 }
 
 type Broadcast = (channel: string, payload: unknown) => void;
@@ -477,14 +481,21 @@ export function createNodeCliProcessRunner(
   platform: NodeJS.Platform = process.platform,
 ): CliProcessRunner {
   const children = new Set<ChildProcess>();
+  const childLifetimes = new Set<Promise<void>>();
+  let quiescenceFlight: Promise<void> | null = null;
   let disposed = false;
   const track = (child: ChildProcess): void => {
     children.add(child);
-    const forget = (): void => {
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    childLifetimes.add(closed);
+    child.once("close", () => {
       children.delete(child);
-    };
-    child.once("close", forget);
-    child.once("error", forget);
+      resolveClosed();
+      childLifetimes.delete(closed);
+    });
   };
 
   return {
@@ -638,6 +649,24 @@ export function createNodeCliProcessRunner(
         forceTerminateChildTree(child, platform);
       }
       children.clear();
+    },
+
+    quiesceForProfileEgress() {
+      if (quiescenceFlight) return quiescenceFlight;
+      // The manager closes admission before calling this method. Keep the
+      // runner-side lifetime independent from capture Promise settlement:
+      // output overflow/timeout may reject while the OS child is still alive.
+      quiescenceFlight = Promise.allSettled([...childLifetimes])
+        .then((results) => {
+          const failure = results.find(
+            (result) => result.status === "rejected",
+          );
+          if (failure) throw failure.reason;
+        })
+        .finally(() => {
+          quiescenceFlight = null;
+        });
+      return quiescenceFlight;
     },
   };
 }
@@ -1334,11 +1363,44 @@ export function createCliAiManager(
   const readDir = supplied.readDir ?? defaultReadDir;
   const hashFile = supplied.hashFile ?? defaultHashFile;
   const runner = supplied.runner ?? createNodeCliProcessRunner(platform);
+  const runnerOperations = new Set<Promise<unknown>>();
+  const trackRunnerOperation = <T>(operation: Promise<T>): Promise<T> => {
+    runnerOperations.add(operation);
+    void operation.then(
+      () => runnerOperations.delete(operation),
+      () => runnerOperations.delete(operation),
+    );
+    return operation;
+  };
+  const handlerOperations = new Set<Promise<unknown>>();
+  const trackHandlerOperation = <T>(operation: Promise<T>): Promise<T> => {
+    handlerOperations.add(operation);
+    void operation.then(
+      () => handlerOperations.delete(operation),
+      () => handlerOperations.delete(operation),
+    );
+    return operation;
+  };
+  const trackedRunner: CliProcessRunner = {
+    run: (spec, options) => {
+      let operation: Promise<CliProcessResult>;
+      try {
+        operation = runner.run(spec, options);
+      } catch (error) {
+        operation = Promise.reject(error);
+      }
+      return trackRunnerOperation(operation);
+    },
+    start: (spec) => runner.start(spec),
+    disposeAll: () => runner.disposeAll?.(),
+    quiesceForProfileEgress: () =>
+      runner.quiesceForProfileEgress?.() ?? Promise.resolve(),
+  };
   const detectBinary =
     supplied.detectBinary ??
     ((kind: CliKind) =>
       detectCliBinaryMain(kind, {
-        runner,
+        runner: trackedRunner,
         platform,
         env,
         homeDir,
@@ -1609,6 +1671,7 @@ export function createCliAiManager(
 
   let active: ActiveRun | null = null;
   let busy = false;
+  let quiescenceFlight: Promise<void> | null = null;
   const pendingAbortIds = new Set<string>();
   const lifecycles = new Map<string, StreamLifecycle>();
   const completedAbortReceipts = new Map<string, boolean>();
@@ -1696,6 +1759,40 @@ export function createCliAiManager(
     let fallback: ReturnType<typeof setTimeout> | null = null;
     const settled = await Promise.race([
       lifecycle.settled,
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
+        fallback.unref();
+      }),
+    ]);
+    if (fallback) clearTimeout(fallback);
+    return settled;
+  };
+  const waitForRunnerOperation = async (
+    operation: Promise<unknown>,
+  ): Promise<boolean> => {
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      operation.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
+        fallback.unref();
+      }),
+    ]);
+    if (fallback) clearTimeout(fallback);
+    return settled;
+  };
+  const waitForRunnerQuiescence = async (
+    operation: Promise<void>,
+  ): Promise<boolean> => {
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      operation.then(
+        () => true,
+        () => false,
+      ),
       new Promise<false>((resolve) => {
         fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
         fallback.unref();
@@ -1928,27 +2025,34 @@ export function createCliAiManager(
     }
   };
 
+  const trackedHandler =
+    <T>(
+      handler: (args: CommandArgs) => Promise<T>,
+    ): ((args: CommandArgs) => Promise<T>) =>
+    (args) =>
+      trackHandlerOperation(handler(args));
+
   const handlers: ShellCommandHandlers = {
-    detect_cli_binary: async (args) => {
+    detect_cli_binary: trackedHandler(async (args) => {
       ensureNotDisposed();
       const kind = parseCliKind(args.cli);
       const detected = await detectAndTrust(kind, true);
       return detected?.requestedPath ?? null;
-    },
+    }),
 
-    test_cli_connection: async (args) => {
+    test_cli_connection: trackedHandler(async (args) => {
       ensureNotDisposed();
       const kind = cliKindFromExecutable(args.binaryPath, platform);
       const authorized = await resolveExecutable(kind, args.binaryPath);
       const executable = await prepareExecutableForSpawn(kind, authorized);
-      const result = await runCapturedChecked(runner, {
+      const result = await runCapturedChecked(trackedRunner, {
         executable,
         args: ["--version"],
       });
       return result.stdout.trim();
-    },
+    }),
 
-    list_cli_models: async (args) => {
+    list_cli_models: trackedHandler(async (args) => {
       ensureNotDisposed();
       const kind = parseCliKind(args.cli);
       if (kind === "claude") {
@@ -1962,15 +2066,15 @@ export function createCliAiManager(
         kind,
         args: kind === "codex" ? ["debug", "models", "--bundled"] : ["models"],
       };
-      const result = await runCapturedChecked(runner, spec);
+      const result = await runCapturedChecked(trackedRunner, spec);
       return kind === "codex"
         ? parseCodexModels(result.stdout)
         : parseOpenCodeModels(result.stdout);
-    },
+    }),
 
-    send_cli_chat_stream: sendCliStream,
+    send_cli_chat_stream: trackedHandler(sendCliStream),
 
-    abort_cli_chat_stream: async (args) => {
+    abort_cli_chat_stream: trackedHandler(async (args) => {
       ensureNotDisposed();
       const streamId = requireTrimmedNonEmptyString(args.streamId, "streamId");
       const completed = completedAbortReceipts.get(streamId);
@@ -2006,21 +2110,86 @@ export function createCliAiManager(
         abortCommandAcknowledged: true,
         transportTerminationObserved: processStopped && lifecycleStopped,
       };
-    },
+    }),
+  };
+
+  const disposeAllNow = (): void => {
+    if (disposed) return;
+    disposed = true;
+    if (active && !active.completed) {
+      addBoundedSet(pendingAbortIds, active.streamId);
+      active.aborted = true;
+      active.process.terminate("SIGTERM");
+      active.process.terminate("SIGKILL");
+      clearRunTimers(active);
+    }
+    runner.disposeAll?.();
+  };
+
+  const quiesceForProfileEgress = (): Promise<void> => {
+    if (quiescenceFlight) return quiescenceFlight;
+    const activeLifecycles = [...lifecycles.values()];
+    const activeRunnerOperations = [...runnerOperations];
+    const activeHandlerOperations = [...handlerOperations];
+    quiescenceFlight = (async () => {
+      // Mark the manager closed before awaiting anything. A handler admitted
+      // before activation can finish its current await, but its next
+      // ensureNotDisposed check prevents a child spawn after this point.
+      let disposeError: unknown = null;
+      try {
+        disposeAllNow();
+      } catch (error) {
+        disposeError = error;
+      }
+      let runnerQuiescence: Promise<boolean>;
+      try {
+        runnerQuiescence = trackedRunner.quiesceForProfileEgress
+          ? waitForRunnerQuiescence(
+              trackedRunner.quiesceForProfileEgress(),
+            )
+          : Promise.resolve(true);
+      } catch {
+        runnerQuiescence = Promise.resolve(false);
+      }
+      const [
+        stopped,
+        commandsSettled,
+        handlersSettled,
+        runnerQuiesced,
+      ] = await Promise.all([
+        Promise.all(
+          activeLifecycles.map((lifecycle) => waitForLifecycle(lifecycle)),
+        ),
+        Promise.all(
+          activeRunnerOperations.map((operation) =>
+            waitForRunnerOperation(operation),
+          ),
+        ),
+        Promise.all(
+          activeHandlerOperations.map((operation) =>
+            waitForRunnerOperation(operation),
+          ),
+        ),
+        runnerQuiescence,
+      ]);
+      if (disposeError) throw toError(disposeError);
+      if (
+        stopped.some((value) => !value) ||
+        commandsSettled.some((value) => !value) ||
+        handlersSettled.some((value) => !value) ||
+        !runnerQuiesced
+      ) {
+        throw new Error("CLI egress transport did not quiesce");
+      }
+    })().finally(() => {
+      quiescenceFlight = null;
+    });
+    return quiescenceFlight;
   };
 
   return {
     handlers,
-    disposeAll() {
-      disposed = true;
-      if (active && !active.completed) {
-        addBoundedSet(pendingAbortIds, active.streamId);
-        active.aborted = true;
-        active.process.terminate("SIGTERM");
-        active.process.terminate("SIGKILL");
-        clearRunTimers(active);
-      }
-      runner.disposeAll?.();
-    },
+    disposeAll: disposeAllNow,
+    quiesceForProfileEgress,
   };
 }

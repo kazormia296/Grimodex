@@ -7,9 +7,13 @@ import {
   narrativeCommitJournals,
   narrativeExtractionArtifacts,
   narrativeExtractionAttempts,
+  narrativeExtractionStageModelBindings,
+  narrativeExtractionStageReceipts,
   narrativeExtractionRuns,
   narrativeExtractionTaskEdges,
   narrativeExtractionTasks,
+  narrativeSceneScopeBindings,
+  narrativeScopeRegistries,
   narrativeProposalApplications,
   narrativeProposalDecisions,
   narrativeProposalRevisions,
@@ -23,6 +27,10 @@ const CONTRACT_TABLES = [
   "narrative_extraction_task_edges",
   "narrative_extraction_attempts",
   "narrative_extraction_artifacts",
+  "narrative_extraction_stage_model_bindings",
+  "narrative_extraction_stage_receipts",
+  "narrative_scope_registries",
+  "narrative_scene_scope_bindings",
   "narrative_proposal_sets",
   "narrative_proposals",
   "narrative_proposal_revisions",
@@ -49,6 +57,18 @@ describe("narrative extraction schema", () => {
     );
     expect(getTableName(narrativeExtractionArtifacts)).toBe(
       "narrative_extraction_artifacts",
+    );
+    expect(getTableName(narrativeExtractionStageModelBindings)).toBe(
+      "narrative_extraction_stage_model_bindings",
+    );
+    expect(getTableName(narrativeExtractionStageReceipts)).toBe(
+      "narrative_extraction_stage_receipts",
+    );
+    expect(getTableName(narrativeScopeRegistries)).toBe(
+      "narrative_scope_registries",
+    );
+    expect(getTableName(narrativeSceneScopeBindings)).toBe(
+      "narrative_scene_scope_bindings",
     );
     expect(getTableName(narrativeProposalSets)).toBe("narrative_proposal_sets");
     expect(getTableName(narrativeProposals)).toBe("narrative_proposals");

@@ -50,6 +50,7 @@ pub fn insert_undo_journal_in_tx(
 pub struct UndoJournalRow {
     pub id: String,
     pub project_id: String,
+    pub surface: String,
     pub entity_kind: String,
     pub entity_id: String,
     pub op_kind: String,
@@ -57,6 +58,7 @@ pub struct UndoJournalRow {
     pub after_json: Option<String>,
     pub base_version: i64,
     pub result_version: i64,
+    pub change_event_uid: Option<String>,
 }
 
 pub fn load_undo_journal(
@@ -65,21 +67,24 @@ pub fn load_undo_journal(
     journal_id: &str,
 ) -> anyhow::Result<UndoJournalRow> {
     conn.query_row(
-        "SELECT id, project_id, entity_kind, entity_id, op_kind,
-                before_json, after_json, base_version, result_version
+        "SELECT id, project_id, surface, entity_kind, entity_id, op_kind,
+                before_json, after_json, base_version, result_version,
+                change_event_uid
          FROM undo_journal WHERE id = ?1 AND project_id = ?2",
         params![journal_id, project_id],
         |row| {
             Ok(UndoJournalRow {
                 id: row.get(0)?,
                 project_id: row.get(1)?,
-                entity_kind: row.get(2)?,
-                entity_id: row.get(3)?,
-                op_kind: row.get(4)?,
-                before_json: row.get(5)?,
-                after_json: row.get(6)?,
-                base_version: row.get(7)?,
-                result_version: row.get(8)?,
+                surface: row.get(2)?,
+                entity_kind: row.get(3)?,
+                entity_id: row.get(4)?,
+                op_kind: row.get(5)?,
+                before_json: row.get(6)?,
+                after_json: row.get(7)?,
+                base_version: row.get(8)?,
+                result_version: row.get(9)?,
+                change_event_uid: row.get(10)?,
             })
         },
     )
@@ -272,7 +277,7 @@ fn next_codex_replay_version(version: i64, direction: &str) -> anyhow::Result<i6
 /// journal chain. Adjacent create/update/delete commands then remain connected
 /// after a fresh live version is allocated, while a stale external token can
 /// never become current again (the ABA case).
-fn advance_codex_journal_state_token(
+pub fn advance_codex_journal_state_token(
     conn: &Connection,
     project_id: &str,
     entity_id: &str,
@@ -512,29 +517,138 @@ pub fn advance_foreshadow_journal_state_token(
     Ok(())
 }
 
-fn insert_snippet_from_snap(conn: &Connection, snap: &serde_json::Value) -> anyhow::Result<()> {
-    let id = snap["id"].as_str().unwrap_or("");
-    let project = snap["projectId"].as_str().unwrap_or("");
-    let title = snap["title"].as_str().unwrap_or("");
-    let content = snap["content"].as_str().unwrap_or("{}");
-    let scene_id = snap["sceneId"].as_str();
-    let content_source = snap["contentSource"].as_str().unwrap_or("ai");
-    let version = snap["version"].as_i64().unwrap_or(1);
-    conn.execute(
+fn snippet_nullable_string<'a>(
+    snap: &'a serde_json::Value,
+    key: &str,
+    missing_default: Option<&'a str>,
+) -> Option<&'a str> {
+    match snap.get(key) {
+        Some(serde_json::Value::Null) => None,
+        Some(value) => value.as_str(),
+        None => missing_default,
+    }
+}
+
+fn validate_snippet_snapshot_identity(
+    snap: &serde_json::Value,
+    entity_id: &str,
+    project_id: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        snap["id"].as_str() == Some(entity_id),
+        "snippet '{}' journal snapshot identity mismatch",
+        entity_id
+    );
+    anyhow::ensure!(
+        snap["projectId"].as_str() == Some(project_id),
+        "snippet '{}' journal snapshot project mismatch",
+        entity_id
+    );
+    Ok(())
+}
+
+fn insert_snippet_from_snap(
+    conn: &Connection,
+    snap: &serde_json::Value,
+    entity_id: &str,
+    project_id: &str,
+    replay_version: i64,
+) -> anyhow::Result<()> {
+    validate_snippet_snapshot_identity(snap, entity_id, project_id)?;
+    let inserted = conn.execute(
         "INSERT INTO snippets
-         (id, project_id, title, content, scene_id, content_source, version, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))",
+         (id, project_id, title, content, tags_cache, content_source, scene_id,
+          source_chat_message_id, usage_count, version, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                 coalesce(?11, datetime('now')), datetime('now'))",
         params![
-            id,
-            project,
-            title,
-            content,
-            scene_id,
-            content_source,
-            version
+            entity_id,
+            project_id,
+            snap["title"].as_str().unwrap_or(""),
+            snap["content"].as_str().unwrap_or("{}"),
+            snippet_nullable_string(snap, "tagsCache", None),
+            snippet_nullable_string(snap, "contentSource", Some("human")),
+            snippet_nullable_string(snap, "sceneId", None),
+            snippet_nullable_string(snap, "sourceChatMessageId", None),
+            snap["usageCount"].as_i64().unwrap_or(0),
+            replay_version,
+            snap["createdAt"].as_str(),
         ],
     )?;
-    restore_snippet_authorship_spans(conn, id, snap)?;
+    anyhow::ensure!(inserted == 1, "snippet '{}' was not restored", entity_id);
+    restore_snippet_authorship_spans(conn, entity_id, snap)?;
+    Ok(())
+}
+
+fn restore_snippet_fields(
+    conn: &Connection,
+    snap: &serde_json::Value,
+    entity_id: &str,
+    project_id: &str,
+    replay_version: i64,
+    expected_current_version: i64,
+) -> anyhow::Result<()> {
+    validate_snippet_snapshot_identity(snap, entity_id, project_id)?;
+    let updated = conn.execute(
+        "UPDATE snippets SET
+            title = ?1, content = ?2, tags_cache = ?3, content_source = ?4,
+            scene_id = ?5, source_chat_message_id = ?6, usage_count = ?7,
+            version = ?8, updated_at = datetime('now')
+          WHERE id = ?9 AND project_id = ?10 AND version = ?11",
+        params![
+            snap["title"].as_str().unwrap_or(""),
+            snap["content"].as_str().unwrap_or("{}"),
+            snippet_nullable_string(snap, "tagsCache", None),
+            snippet_nullable_string(snap, "contentSource", Some("human")),
+            snippet_nullable_string(snap, "sceneId", None),
+            snippet_nullable_string(snap, "sourceChatMessageId", None),
+            snap["usageCount"].as_i64().unwrap_or(0),
+            replay_version,
+            entity_id,
+            project_id,
+            expected_current_version,
+        ],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "snippet '{}' version {} conflict during journal restore",
+        entity_id,
+        expected_current_version
+    );
+    restore_snippet_authorship_spans(conn, entity_id, snap)?;
+    Ok(())
+}
+
+fn next_snippet_replay_version(version: i64, direction: &str) -> anyhow::Result<i64> {
+    version
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("snippet version overflow during {direction}"))
+}
+
+/// Replace a replayed logical state token throughout one Snippet's journal
+/// chain. Fresh generations prevent an old renderer OCC token from becoming
+/// current again after Undo/Redo (the ABA case).
+pub fn advance_snippet_journal_state_token(
+    conn: &Connection,
+    project_id: &str,
+    entity_id: &str,
+    previous_version: i64,
+    replay_version: i64,
+) -> anyhow::Result<()> {
+    let updated = conn.execute(
+        "UPDATE undo_journal
+         SET base_version = CASE WHEN base_version = ?1 THEN ?2 ELSE base_version END,
+             result_version = CASE WHEN result_version = ?1 THEN ?2 ELSE result_version END
+         WHERE project_id = ?3 AND entity_kind = 'snippet' AND entity_id = ?4
+           AND (base_version = ?1 OR result_version = ?1)",
+        params![previous_version, replay_version, project_id, entity_id],
+    )?;
+    anyhow::ensure!(
+        updated > 0,
+        "snippet undo journal chain for '{}' lost state version {}",
+        entity_id,
+        previous_version
+    );
     Ok(())
 }
 
@@ -618,6 +732,46 @@ pub fn revert_undo_journal_in_tx(
                         row.result_version
                     );
                 }
+            }
+            "update" => {
+                let before = row
+                    .before_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("revert update: missing before_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(before)?;
+                let replay_version =
+                    next_snippet_replay_version(row.result_version, "undo update")?;
+                restore_snippet_fields(
+                    conn,
+                    &snap,
+                    &row.entity_id,
+                    project_id,
+                    replay_version,
+                    row.result_version,
+                )?;
+                advance_snippet_journal_state_token(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    row.base_version,
+                    replay_version,
+                )?;
+            }
+            "delete" => {
+                let before = row
+                    .before_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("revert delete: missing before_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(before)?;
+                let replay_version = next_snippet_replay_version(row.base_version, "undo delete")?;
+                insert_snippet_from_snap(conn, &snap, &row.entity_id, project_id, replay_version)?;
+                advance_snippet_journal_state_token(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    row.base_version,
+                    replay_version,
+                )?;
             }
             other => anyhow::bail!("revert_undo_journal: unsupported snippet op_kind '{other}'"),
         },
@@ -785,7 +939,51 @@ pub fn apply_undo_journal_in_tx(
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("apply create: missing after_json"))?;
                 let snap: serde_json::Value = serde_json::from_str(after)?;
-                insert_snippet_from_snap(conn, &snap)?;
+                let replay_version =
+                    next_snippet_replay_version(row.result_version, "redo create")?;
+                insert_snippet_from_snap(conn, &snap, &row.entity_id, project_id, replay_version)?;
+                advance_snippet_journal_state_token(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    row.result_version,
+                    replay_version,
+                )?;
+            }
+            "update" => {
+                let after = row
+                    .after_json
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("apply update: missing after_json"))?;
+                let snap: serde_json::Value = serde_json::from_str(after)?;
+                let replay_version = next_snippet_replay_version(row.base_version, "redo update")?;
+                restore_snippet_fields(
+                    conn,
+                    &snap,
+                    &row.entity_id,
+                    project_id,
+                    replay_version,
+                    row.base_version,
+                )?;
+                advance_snippet_journal_state_token(
+                    conn,
+                    project_id,
+                    &row.entity_id,
+                    row.result_version,
+                    replay_version,
+                )?;
+            }
+            "delete" => {
+                let deleted = conn.execute(
+                    "DELETE FROM snippets WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+                    params![row.entity_id, project_id, row.result_version],
+                )?;
+                anyhow::ensure!(
+                    deleted == 1,
+                    "apply delete: snippet '{}' version {} not found",
+                    row.entity_id,
+                    row.result_version
+                );
             }
             other => anyhow::bail!("apply_undo_journal: unsupported snippet op_kind '{other}'"),
         },
@@ -937,8 +1135,11 @@ mod tests {
                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 title TEXT NOT NULL,
                 content TEXT NOT NULL DEFAULT '{}',
+                tags_cache TEXT,
                 scene_id TEXT,
-                content_source TEXT NOT NULL DEFAULT 'human',
+                content_source TEXT,
+                source_chat_message_id TEXT,
+                usage_count INTEGER NOT NULL DEFAULT 0,
                 version INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))

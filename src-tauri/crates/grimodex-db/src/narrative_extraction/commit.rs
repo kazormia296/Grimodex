@@ -1,12 +1,26 @@
 //! Atomic narrative apply commit engine (prepare / apply / status).
 
 use chrono::Utc;
+use grimodex_core::narrative_ir::validate_chronicle_scene_event_proposal_payload;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeSet, HashMap};
 use uuid::Uuid;
 
+use super::application_contributions::{
+    contribution_target_identity_for_application, record_contribution_in_tx, ContributionField,
+    ContributionProvenance, ContributionTargetState, FieldAuthorityCoordinate,
+};
+use super::c2zc_canonical_cutover::{
+    is_generic_freshness_canonical, write_application_dependencies_in_tx,
+};
+use super::change_feed::{
+    append_narrative_change_transaction_in_tx, events_from_journal_entities,
+    journal_op_kind_wrote_nothing, AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind,
+    NarrativeChangeOrigin,
+};
 use super::chronicle_operations::{
     apply_chronicle_event_create, ensure_event_id_available, ensure_order_neighbor,
     ensure_scene_versions, generate_append_ordinals, parse_event_create_payload,
@@ -25,7 +39,7 @@ use super::detail_operations::{
     apply_detail_value_set_in_tx, parse_detail_value_set_payload, OP_KIND_DETAIL_VALUE_SET,
 };
 use super::field_authority::{
-    load_decision_authority, record_operation_field_authority,
+    affected_fields, load_decision_authority, record_operation_field_authority,
     validate_operation_field_authority,
 };
 use super::foreshadow_operations::{
@@ -35,6 +49,7 @@ use super::foreshadow_operations::{
     parse_patch as parse_foreshadow_patch, OP_KIND_FORESHADOW_AGGREGATE_CREATE,
     OP_KIND_FORESHADOW_AGGREGATE_PATCH,
 };
+use super::incremental_freshness::initialize_application_freshness_in_tx;
 use super::models::{
     ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
     GetCommitStatusPayload, PrepareCommitPayload,
@@ -52,15 +67,24 @@ use super::plot_thread_operations::{
     OP_KIND_PLOT_THREAD_CREATE, OP_KIND_PLOT_THREAD_PATCH,
 };
 use super::reconciliation_envelope::{
-    load_read_set_rows, load_source_basis_rows, validate_reconciliation_envelope, SourceBasisRow,
-    ORIGIN_ENVELOPED,
+    envelope_schema_version, load_read_set_rows, load_source_basis_rows,
+    validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED,
 };
-use super::repository::{ensure_proposal_not_applied, ensure_run_project};
+use super::repository::{
+    current_chronicle_revision_requires_probable_duplicate_review,
+    current_chronicle_run_spec_for_run, ensure_proposal_not_applied, ensure_run_project,
+    load_current_chronicle_proposal_matches, load_verified_chronicle_revision_review_authority,
+    load_verified_chronicle_snapshot_for_apply, validate_current_chronicle_live_catalog,
+};
 use super::semantic_bindings::{
     apply_semantic_binding_upsert_in_tx, parse_semantic_binding_upsert_payload,
     OP_KIND_SEMANTIC_BINDING_UPSERT,
 };
-use super::source_revision::resolve_source_revision;
+use super::nir1_entity_relation_index::{GraphWorkControl, GraphWorkStage};
+use super::source_revision::{
+    is_validation_terminated, resolve_source_revision_with_validation_context,
+    validation_context, validation_terminated, ValidationTerminationReason,
+};
 use super::task_leases::with_immediate_transaction;
 use super::temporal_constraints::{
     apply_constraint_create_in_tx, parse_constraint_create_payload, OP_KIND_CONSTRAINT_CREATE,
@@ -92,6 +116,26 @@ const STATUS_REDONE: &str = "redone";
 const STATUS_FAILED: &str = "failed";
 const STATUS_INVALIDATED: &str = "invalidated";
 
+/// Explicit owner for the frozen standalone DB/legacy adapter.  Native's
+/// production path supplies `ForegroundValidationControl`; this adapter is
+/// only used when the caller already owns the Database transaction boundary.
+struct StandaloneForegroundValidationControl;
+
+impl GraphWorkControl for StandaloneForegroundValidationControl {
+    fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    // This adapter is constructed only by the public standalone transaction
+    // owner below. That owner already supplies the DB/transaction boundary
+    // required by the compatibility API, so it must explicitly opt into the
+    // full eligibility read rather than inheriting the fail-closed default
+    // used by arbitrary controls.
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
+
 struct CommitPlanValidationContext<'a> {
     expected_calendar_version: Option<i64>,
     project_id: &'a str,
@@ -101,6 +145,22 @@ struct CommitPlanValidationContext<'a> {
     applications: &'a [CommitApplicationRef],
     expected_tail_ordinal: Option<&'a str>,
     entity_bindings: &'a [EntityBindingSeed],
+}
+
+/// Transaction-local authority for compiling every current Chronicle Event
+/// operation in one commit plan. The constructor performs the expensive full
+/// Snapshot verification once; proposal-specific compilation only reads this
+/// immutable document map.
+struct VerifiedChronicleCommitDocumentAuthority {
+    project_id: String,
+    run_id: String,
+    documents: HashMap<String, (String, u64)>,
+}
+
+#[derive(Clone, Copy)]
+enum ChronicleCommitPlanAuthority<'a> {
+    NonCurrent,
+    Current(&'a VerifiedChronicleCommitDocumentAuthority),
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -115,8 +175,32 @@ pub fn narrative_extraction_prepare_commit(
     db: &Database,
     payload: PrepareCommitPayload,
 ) -> anyhow::Result<Value> {
+    // The standalone DB API is the frozen compatibility adapter used by the
+    // legacy shell and file-backed tests.  It owns the enclosing transaction
+    // for the duration of this call, so it supplies an explicit command
+    // context instead of silently falling back to `NeverStop`.
+    let mut compatibility_owner = StandaloneForegroundValidationControl;
+    narrative_extraction_prepare_commit_with_control(
+        db,
+        payload,
+        Some(&mut compatibility_owner),
+    )
+}
+
+/// Foreground lifecycle owner variant.  The borrowed control is threaded only
+/// through the whole-eligibility Source contract; it does not grant any
+/// semantic Apply authority or create a nested maintenance admission.
+pub fn narrative_extraction_prepare_commit_with_control(
+    db: &Database,
+    payload: PrepareCommitPayload,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Value> {
+    let mut lifecycle_control = control;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            if let Some(control) = lifecycle_control.as_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             require_narrative_apply_allowed(conn)?;
             let mut sealed_plan = sealed_plan_json(&payload)?;
             let plan_digest = digest_plan(&json!({
@@ -147,19 +231,30 @@ pub fn narrative_extraction_prepare_commit(
                     "idempotentReplay": true,
                 }));
             }
-            validate_commit_plan(
+            let validation_ctx = CommitPlanValidationContext {
+                expected_calendar_version: payload.expected_calendar_version,
+                project_id: &payload.project_id,
+                run_id: &payload.run_id,
+                proposal_set_id: &payload.proposal_set_id,
+                operations: &payload.operations,
+                applications: &payload.applications,
+                expected_tail_ordinal: payload.expected_tail_ordinal.as_deref(),
+                entity_bindings: &payload.entity_bindings,
+            };
+            validate_current_chronicle_apply_coverage(conn, &validation_ctx)?;
+            // The Existing Event Catalog is an input to match/safety, but is
+            // not part of each Proposal's Source Basis. Recheck its Native
+            // authority in this same transaction before a prepared Commit row
+            // can make stale `noDuplicate` evidence durable. Only the exact-set
+            // review/coverage gate intentionally precedes this check so a
+            // legacy partial Apply is reported as an unusable partial set;
+            // ordinary plan validation retains catalog-drift precedence.
+            validate_current_chronicle_live_catalog(
                 conn,
-                CommitPlanValidationContext {
-                    expected_calendar_version: payload.expected_calendar_version,
-                    project_id: &payload.project_id,
-                    run_id: &payload.run_id,
-                    proposal_set_id: &payload.proposal_set_id,
-                    operations: &payload.operations,
-                    applications: &payload.applications,
-                    expected_tail_ordinal: payload.expected_tail_ordinal.as_deref(),
-                    entity_bindings: &payload.entity_bindings,
-                },
+                &payload.project_id,
+                &payload.run_id,
             )?;
+            validate_commit_plan(conn, validation_ctx)?;
             let applications = application_pairs(&payload.applications);
             validate_narrative_apply_authority_in_tx(
                 conn,
@@ -179,12 +274,29 @@ pub fn narrative_extraction_prepare_commit(
             )?;
             let authority_digest =
                 digest_authority_rows(conn, &payload.proposal_set_id, &applications)?;
-            let source_contract = build_source_contract(
-                conn,
-                &payload.project_id,
-                &payload.run_id,
-                &applications,
-            )?;
+            let source_contract = {
+                // The foreground command owns this borrowed validation
+                // capability for the duration of the same write transaction.
+                // It is intentionally not a maintenance re-admission.
+                let owner: &mut dyn GraphWorkControl = lifecycle_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "whole-project eligibility requires a caller-owned validation context",
+                        )
+                    })?;
+                build_source_contract(
+                    conn,
+                    &payload.project_id,
+                    &payload.run_id,
+                    &applications,
+                    owner,
+                )?
+            };
+            if let Some(control) = lifecycle_control.as_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             validate_retraction_targets(
                 conn,
                 &payload.project_id,
@@ -377,7 +489,16 @@ fn build_source_contract(
     project_id: &str,
     run_id: &str,
     applications: &[(String, String)],
+    owner: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<SealedSourceContract> {
+    if !owner.allows_full_eligibility() {
+        return Err(validation_terminated(
+            ValidationTerminationReason::ContextUnavailable,
+            "whole-project eligibility requires a caller-owned validation context",
+        ));
+    }
+    let mut validation = validation_context(conn, owner);
+    validation.ensure_connection(conn)?;
     let mut revision_rows = Vec::with_capacity(applications.len());
     let mut source_rows = Vec::new();
     let mut read_rows = Vec::new();
@@ -426,8 +547,8 @@ fn build_source_contract(
         }));
 
         for source in &persisted_source_basis {
-            let current = resolve_source_revision(
-                conn,
+            let current = resolve_source_revision_with_validation_context(
+                &mut validation,
                 project_id,
                 run_id,
                 &source.source_kind,
@@ -450,6 +571,22 @@ fn build_source_contract(
             }));
         }
 
+        if envelope_schema_version(&envelope) == Some(2) {
+            for row in super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
+                &mut validation,
+                project_id,
+                run_id,
+                revision_id,
+                &envelope,
+            )? {
+                read_rows.push(json!({
+                    "proposalId": proposal_id, "revisionId": revision_id,
+                    "inputRef": row.source_key, "kind": row.source_kind,
+                    "revisionToken": row.revision_token,
+                }));
+            }
+            continue;
+        }
         let read_set = envelope
             .get("readSet")
             .and_then(Value::as_array)
@@ -471,8 +608,13 @@ fn build_source_contract(
                 .and_then(Value::as_str)
                 .map(Ok)
                 .unwrap_or_else(|| source_kind_for_read_set(kind))?;
-            let current =
-                resolve_source_revision(conn, project_id, run_id, source_kind, input_ref)?;
+            let current = resolve_source_revision_with_validation_context(
+                &mut validation,
+                project_id,
+                run_id,
+                source_kind,
+                input_ref,
+            )?;
             if let Some(expected) = object.get("revisionToken").and_then(Value::as_str) {
                 anyhow::ensure!(
                     current.revision_token == expected,
@@ -619,10 +761,9 @@ fn compensation_strategy(operation_kind: &str) -> anyhow::Result<(&'static str, 
         OP_KIND_RELATION_CREATE => ("codex_relation", "codex.relation.retract"),
         OP_KIND_DETAIL_VALUE_SET => ("codex_detail_value", "codex.detail-value.retract"),
         OP_KIND_PHASE_CREATE | OP_KIND_PHASE_PATCH => ("codex_phase", "codex.phase.retract"),
-        OP_KIND_SEMANTIC_BINDING_UPSERT => (
-            "codex_semantic_binding",
-            "codex.semantic-binding.retract",
-        ),
+        OP_KIND_SEMANTIC_BINDING_UPSERT => {
+            ("codex_semantic_binding", "codex.semantic-binding.retract")
+        }
         OP_KIND_NODE_ENSURE => ("temporal_node", "temporal.node.retract"),
         OP_KIND_CONSTRAINT_CREATE => ("temporal_constraint", "temporal.constraint.retract"),
         OP_KIND_SCENE_METADATA_PATCH => (
@@ -633,10 +774,9 @@ fn compensation_strategy(operation_kind: &str) -> anyhow::Result<(&'static str, 
             "temporal_event_chronicle",
             "temporal.event-metadata.retract",
         ),
-        OP_KIND_STORY_ORDER_MATERIALIZE => (
-            "temporal_scene_story_order",
-            "temporal.story-order.retract",
-        ),
+        OP_KIND_STORY_ORDER_MATERIALIZE => {
+            ("temporal_scene_story_order", "temporal.story-order.retract")
+        }
         OP_KIND_PROJECTION_RECORD => ("temporal_projection", "temporal.projection.retract"),
         OP_KIND_PLOT_THREAD_CREATE | OP_KIND_PLOT_THREAD_PATCH => {
             ("plot_thread", "plot.thread.retract")
@@ -730,6 +870,10 @@ fn load_retraction_metadata(
     let object = envelope.as_object().ok_or_else(|| {
         anyhow::anyhow!("NEX_RETRACTION_ENVELOPE_INVALID: envelope is not an object")
     })?;
+    if envelope_schema_version(&envelope) == Some(2) {
+        super::v2_apply_sources::ensure_supported_intent(&envelope)?;
+        return Ok(("add".to_string(), None));
+    }
     let change_kind = object
         .get("changeKind")
         .and_then(Value::as_str)
@@ -777,15 +921,33 @@ pub fn narrative_extraction_apply_commit(
     db: &Database,
     payload: ApplyCommitPayload,
 ) -> anyhow::Result<Value> {
+    let mut compatibility_owner = StandaloneForegroundValidationControl;
+    narrative_extraction_apply_commit_with_control(
+        db,
+        payload,
+        Some(&mut compatibility_owner),
+    )
+}
+
+/// Apply counterpart of [`narrative_extraction_prepare_commit_with_control`].
+pub fn narrative_extraction_apply_commit_with_control(
+    db: &Database,
+    payload: ApplyCommitPayload,
+    control: Option<&mut dyn GraphWorkControl>,
+) -> anyhow::Result<Value> {
+    let mut lifecycle_control = control;
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let timestamp = Utc::now().timestamp_millis();
 
     let apply_result = db.with_conn(|conn| {
+        if let Some(control) = lifecycle_control.as_deref_mut() {
+            control.check(GraphWorkStage::Source)?;
+        }
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
             let existing =
                 load_commit_by_id(conn, &payload.project_id, &payload.prepared_commit_id)?
-            .ok_or_else(|| anyhow::anyhow!("prepared commit not found"))?;
+                    .ok_or_else(|| anyhow::anyhow!("prepared commit not found"))?;
             anyhow::ensure!(
                 existing.request_id == payload.request_id,
                 "NEX_COMMIT_REQUEST_MISMATCH: request id does not match prepared commit"
@@ -817,8 +979,8 @@ pub fn narrative_extraction_apply_commit(
                 );
             }
             let sealed_plan_raw = existing
-                    .prepared_plan_json
-                    .as_deref()
+                .prepared_plan_json
+                .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("prepared commit has no sealed plan"))?;
             let sealed_plan_value: Value = serde_json::from_str(sealed_plan_raw)?;
             let sealed_source_contract: SealedSourceContract = sealed_plan_value
@@ -832,29 +994,35 @@ pub fn narrative_extraction_apply_commit(
                 .and_then(|value| serde_json::from_value(value).map_err(Into::into))?;
             let sealed_plan: PrepareCommitPayload = serde_json::from_value(sealed_plan_value)?;
             require_narrative_apply_allowed(conn)?;
-            validate_commit_plan(
+            let validation_ctx = CommitPlanValidationContext {
+                expected_calendar_version: sealed_plan.expected_calendar_version,
+                project_id: &sealed_plan.project_id,
+                run_id: &sealed_plan.run_id,
+                proposal_set_id: &sealed_plan.proposal_set_id,
+                operations: &sealed_plan.operations,
+                applications: &sealed_plan.applications,
+                expected_tail_ordinal: sealed_plan.expected_tail_ordinal.as_deref(),
+                entity_bindings: &sealed_plan.entity_bindings,
+            };
+            validate_current_chronicle_apply_coverage(conn, &validation_ctx)?;
+            // Close the Prepare -> Apply writer race. A prepared plan may
+            // still be byte-valid while its match-existing catalog is stale.
+            // This guard runs under the Apply BEGIN IMMEDIATE and precedes
+            // Event/Application/operation DML.
+            validate_current_chronicle_live_catalog(
                 conn,
-                CommitPlanValidationContext {
-                    expected_calendar_version: sealed_plan.expected_calendar_version,
-                    project_id: &sealed_plan.project_id,
-                    run_id: &sealed_plan.run_id,
-                    proposal_set_id: &sealed_plan.proposal_set_id,
-                    operations: &sealed_plan.operations,
-                    applications: &sealed_plan.applications,
-                    expected_tail_ordinal: sealed_plan.expected_tail_ordinal.as_deref(),
-                    entity_bindings: &sealed_plan.entity_bindings,
-                },
+                &sealed_plan.project_id,
+                &sealed_plan.run_id,
             )?;
+            validate_commit_plan(conn, validation_ctx)?;
             let applications = application_pairs(&sealed_plan.applications);
             validate_narrative_apply_authority_in_tx(
                 conn,
                 &sealed_plan.proposal_set_id,
                 &applications,
             )?;
-            let validation_commit_map = build_validation_commit_map(
-                &sealed_plan.entity_bindings,
-                &sealed_plan.operations,
-            )?;
+            let validation_commit_map =
+                build_validation_commit_map(&sealed_plan.entity_bindings, &sealed_plan.operations)?;
             validate_operation_field_authority(
                 conn,
                 &sealed_plan.project_id,
@@ -879,12 +1047,29 @@ pub fn narrative_extraction_apply_commit(
                 existing.prepared_policy_version == Some(current_policy_version),
                 "NEX_PREPARED_POLICY_CHANGED: prepared policy version no longer matches"
             );
-            let current_source_contract = build_source_contract(
-                conn,
-                &sealed_plan.project_id,
-                &sealed_plan.run_id,
-                &applications,
-            )?;
+            let current_source_contract = {
+                // Apply revalidates the sealed contract on the same
+                // transaction and borrowed owner as its DML.  A separate
+                // connection or nested maintenance admission is forbidden.
+                let owner: &mut dyn GraphWorkControl = lifecycle_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "whole-project eligibility requires a caller-owned validation context",
+                        )
+                    })?;
+                build_source_contract(
+                    conn,
+                    &sealed_plan.project_id,
+                    &sealed_plan.run_id,
+                    &applications,
+                    owner,
+                )?
+            };
+            if let Some(control) = lifecycle_control.as_deref_mut() {
+                control.check(GraphWorkStage::Source)?;
+            }
             anyhow::ensure!(
                 current_source_contract.revision_envelope_digest
                     == sealed_source_contract.revision_envelope_digest,
@@ -931,6 +1116,16 @@ pub fn narrative_extraction_apply_commit(
 
             let mut created = Vec::new();
             let mut after_snapshots = Vec::new();
+            let mut scene_scope_refresh_events = Vec::new();
+            let mut application_ids = Vec::with_capacity(payload.applications.len());
+            // Kept so each Contribution can name the operation that produced
+            // it (SCHEMA 29). 1:1 with `payload.operations` by construction,
+            // the same way `application_ids` is.
+            let mut operation_ids = Vec::with_capacity(payload.operations.len());
+            // Same 1:1 indexing. Carried to the Contribution loop below so it
+            // can tell an operation that wrote something from one that did
+            // not; see `journal_op_kind_wrote_nothing`.
+            let mut operation_op_kinds: Vec<&str> = Vec::with_capacity(payload.operations.len());
 
             for (index, op) in payload.operations.iter().enumerate() {
                 ensure_operation_kind(&op.kind)?;
@@ -938,398 +1133,404 @@ pub fn narrative_extraction_apply_commit(
                     .kind
                     .as_str()
                 {
-                        OP_KIND_EVENT_CREATE => {
-                            let event_payload = parse_event_create_payload(&op.payload)?;
-                            let ordinal = &ordinals[ordinal_index];
-                            ordinal_index += 1;
-                            let result = apply_chronicle_event_create(ChronicleEventCreateContext {
-                                conn,
-                                project_id: &payload.project_id,
-                                session_id: &payload.session_id,
-                                surface: payload.surface.as_deref(),
-                                payload: &event_payload,
-                                ordinal,
-                                now: &now,
-                                timestamp,
-                            })?;
-                            (
-                                "event",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                "create",
-                            )
-                        }
+                    OP_KIND_EVENT_CREATE => {
+                        let event_payload = parse_event_create_payload(&op.payload)?;
+                        let ordinal = &ordinals[ordinal_index];
+                        ordinal_index += 1;
+                        let result = apply_chronicle_event_create(ChronicleEventCreateContext {
+                            conn,
+                            project_id: &payload.project_id,
+                            session_id: &payload.session_id,
+                            surface: payload.surface.as_deref(),
+                            payload: &event_payload,
+                            ordinal,
+                            now: &now,
+                            timestamp,
+                        })?;
+                        (
+                            "event",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            "create",
+                        )
+                    }
 
-                        OP_KIND_ENTRY_CREATE => {
-                            let entry_payload = parse_entry_create_payload(&op.payload)?;
-                            let result = apply_codex_entry_create(
-                                conn,
-                                &payload.project_id,
-                                &payload.session_id,
-                                payload.surface.as_deref(),
-                                &entry_payload,
-                                &now,
-                                timestamp,
-                            )?;
-                            if let Some(narrative_entity_id) =
-                                entry_payload.narrative_entity_id.as_ref()
-                            {
-                                commit_map.insert_binding(CodexEntityBinding {
-                                    narrative_entity_id: narrative_entity_id.clone(),
-                                    codex_entry_id: result.entity_id.clone(),
-                                    source: "created".to_string(),
-                                })?;
-                            }
-                            (
-                                "codex_entry",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                "create",
-                            )
-                        }
-                        OP_KIND_ENTRY_PATCH => {
-                            let patch_payload = parse_entry_patch_payload(&op.payload)?;
-                            let result = apply_codex_entry_patch(
-                                conn,
-                                &payload.project_id,
-                                &payload.session_id,
-                                payload.surface.as_deref(),
-                                &patch_payload,
-                                &now,
-                                timestamp,
-                            )?;
-                            if let Some(narrative_entity_id) =
-                                patch_payload.narrative_entity_id.as_ref()
-                            {
-                                commit_map.insert_binding(CodexEntityBinding {
-                                    narrative_entity_id: narrative_entity_id.clone(),
-                                    codex_entry_id: result.entity_id.clone(),
-                                    source: "existing".to_string(),
-                                })?;
-                            }
-                            (
-                                "codex_entry",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                Some(result.before_snapshot),
-                                "patch",
-                            )
-                        }
-                        OP_KIND_ENTITY_BIND_EXISTING => {
-                            let bind_payload = parse_entity_bind_existing_payload(&op.payload)?;
-                            let (entity_id, version, snapshot) = apply_codex_entity_bind_existing(
-                                conn,
-                                &payload.project_id,
-                                &bind_payload,
-                            )?;
+                    OP_KIND_ENTRY_CREATE => {
+                        let entry_payload = parse_entry_create_payload(&op.payload)?;
+                        let result = apply_codex_entry_create(
+                            conn,
+                            &payload.project_id,
+                            &payload.session_id,
+                            payload.surface.as_deref(),
+                            &entry_payload,
+                            &now,
+                            timestamp,
+                        )?;
+                        if let Some(narrative_entity_id) =
+                            entry_payload.narrative_entity_id.as_ref()
+                        {
                             commit_map.insert_binding(CodexEntityBinding {
-                                narrative_entity_id: bind_payload.narrative_entity_id.clone(),
-                                codex_entry_id: entity_id.clone(),
+                                narrative_entity_id: narrative_entity_id.clone(),
+                                codex_entry_id: result.entity_id.clone(),
+                                source: "created".to_string(),
+                            })?;
+                        }
+                        (
+                            "codex_entry",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            "create",
+                        )
+                    }
+                    OP_KIND_ENTRY_PATCH => {
+                        let patch_payload = parse_entry_patch_payload(&op.payload)?;
+                        let result = apply_codex_entry_patch(
+                            conn,
+                            &payload.project_id,
+                            &payload.session_id,
+                            payload.surface.as_deref(),
+                            &patch_payload,
+                            &now,
+                            timestamp,
+                        )?;
+                        if let Some(narrative_entity_id) =
+                            patch_payload.narrative_entity_id.as_ref()
+                        {
+                            commit_map.insert_binding(CodexEntityBinding {
+                                narrative_entity_id: narrative_entity_id.clone(),
+                                codex_entry_id: result.entity_id.clone(),
                                 source: "existing".to_string(),
                             })?;
-                            (
-                                "codex_entry",
-                                entity_id,
-                                version,
-                                snapshot.clone(),
-                                Some(snapshot),
-                                "bind",
-                            )
                         }
-                        OP_KIND_RELATION_CREATE => {
-                            let relation_payload = parse_relation_create_payload(&op.payload)?;
-                            let result = apply_codex_relation_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &relation_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "codex_relation",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                "create",
-                            )
-                        }
-                        OP_KIND_DETAIL_VALUE_SET => {
-                            let detail_payload = parse_detail_value_set_payload(&op.payload)?;
-                            let result = apply_detail_value_set_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &detail_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "codex_detail_value",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PHASE_CREATE => {
-                            let phase_payload = parse_phase_create_payload(&op.payload)?;
-                            let result = apply_phase_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &phase_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "codex_phase",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PHASE_PATCH => {
-                            let phase_payload = parse_phase_patch_payload(&op.payload)?;
-                            let result = apply_phase_patch_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &phase_payload,
-                                &now,
-                            )?;
-                            (
-                                "codex_phase",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_SEMANTIC_BINDING_UPSERT => {
+                        (
+                            "codex_entry",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            Some(result.before_snapshot),
+                            "patch",
+                        )
+                    }
+                    OP_KIND_ENTITY_BIND_EXISTING => {
+                        let bind_payload = parse_entity_bind_existing_payload(&op.payload)?;
+                        let (entity_id, version, snapshot) = apply_codex_entity_bind_existing(
+                            conn,
+                            &payload.project_id,
+                            &bind_payload,
+                        )?;
+                        commit_map.insert_binding(CodexEntityBinding {
+                            narrative_entity_id: bind_payload.narrative_entity_id.clone(),
+                            codex_entry_id: entity_id.clone(),
+                            source: "existing".to_string(),
+                        })?;
+                        (
+                            "codex_entry",
+                            entity_id,
+                            version,
+                            snapshot.clone(),
+                            Some(snapshot),
+                            "bind",
+                        )
+                    }
+                    OP_KIND_RELATION_CREATE => {
+                        let relation_payload = parse_relation_create_payload(&op.payload)?;
+                        let result = apply_codex_relation_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &relation_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "codex_relation",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            "create",
+                        )
+                    }
+                    OP_KIND_DETAIL_VALUE_SET => {
+                        let detail_payload = parse_detail_value_set_payload(&op.payload)?;
+                        let result = apply_detail_value_set_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &detail_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "codex_detail_value",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PHASE_CREATE => {
+                        let phase_payload = parse_phase_create_payload(&op.payload)?;
+                        let result = apply_phase_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &phase_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "codex_phase",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PHASE_PATCH => {
+                        let phase_payload = parse_phase_patch_payload(&op.payload)?;
+                        let result = apply_phase_patch_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &phase_payload,
+                            &now,
+                        )?;
+                        (
+                            "codex_phase",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_SEMANTIC_BINDING_UPSERT => {
                         let binding_payload = parse_semantic_binding_upsert_payload(&op.payload)?;
-                            let result = apply_semantic_binding_upsert_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &binding_payload,
-                                &now,
-                            )?;
-                            (
-                                "codex_semantic_binding",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_NODE_ENSURE => {
-                            let node_payload = parse_node_ensure_payload(&op.payload)?;
-                            let result = apply_node_ensure_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &node_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_node",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                if result.created {
-                                    "create"
-                                } else {
-                                    "ensure-existing"
-                                },
-                            )
-                        }
-                        OP_KIND_CONSTRAINT_CREATE => {
+                        let result = apply_semantic_binding_upsert_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &binding_payload,
+                            &now,
+                        )?;
+                        (
+                            "codex_semantic_binding",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_NODE_ENSURE => {
+                        let node_payload = parse_node_ensure_payload(&op.payload)?;
+                        let result = apply_node_ensure_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &node_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_node",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            if result.created {
+                                "create"
+                            } else {
+                                "ensure-existing"
+                            },
+                        )
+                    }
+                    OP_KIND_CONSTRAINT_CREATE => {
                         let constraint_payload = parse_constraint_create_payload(&op.payload)?;
-                            let result = apply_constraint_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &constraint_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_constraint",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                "create",
-                            )
-                        }
-                        OP_KIND_SCENE_METADATA_PATCH => {
+                        let result = apply_constraint_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &constraint_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_constraint",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            "create",
+                        )
+                    }
+                    OP_KIND_SCENE_METADATA_PATCH => {
                         let scene_payload = parse_scene_metadata_patch_payload(&op.payload)?;
-                            let result = apply_scene_metadata_patch_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &scene_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_scene_chronicle",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                Some(result.before_snapshot),
-                                "patch",
-                            )
+                        let result = apply_scene_metadata_patch_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &scene_payload,
+                            &now,
+                        )?;
+                        if let Some(event) = result.scope_refresh_event.clone() {
+                            scene_scope_refresh_events.push(event);
                         }
-                        OP_KIND_EVENT_METADATA_PATCH => {
+                        (
+                            "temporal_scene_chronicle",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            Some(result.before_snapshot),
+                            "patch",
+                        )
+                    }
+                    OP_KIND_EVENT_METADATA_PATCH => {
                         let event_payload = parse_event_metadata_patch_payload(&op.payload)?;
-                            let result = apply_event_metadata_patch_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &event_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_event_chronicle",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                Some(result.before_snapshot),
-                                "patch",
-                            )
+                        let result = apply_event_metadata_patch_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &event_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_event_chronicle",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            Some(result.before_snapshot),
+                            "patch",
+                        )
+                    }
+                    OP_KIND_STORY_ORDER_MATERIALIZE => {
+                        let story_order_payload =
+                            parse_story_order_materialize_payload(&op.payload)?;
+                        let result = apply_story_order_materialize_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &story_order_payload,
+                            &now,
+                        )?;
+                        if let Some(event) = result.scope_refresh_event.clone() {
+                            scene_scope_refresh_events.push(event);
                         }
-                        OP_KIND_STORY_ORDER_MATERIALIZE => {
-                            let story_order_payload =
-                                parse_story_order_materialize_payload(&op.payload)?;
-                            let result = apply_story_order_materialize_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &story_order_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_scene_story_order",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                Some(result.before_snapshot),
-                                "patch",
-                            )
-                        }
-                        OP_KIND_PROJECTION_RECORD => {
+                        (
+                            "temporal_scene_story_order",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            Some(result.before_snapshot),
+                            "patch",
+                        )
+                    }
+                    OP_KIND_PROJECTION_RECORD => {
                         let projection_payload = parse_projection_record_payload(&op.payload)?;
-                            let result = apply_projection_record_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &projection_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_projection",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
+                        let result = apply_projection_record_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &projection_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_projection",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
 
-                        OP_KIND_PLOT_THREAD_CREATE => {
+                    OP_KIND_PLOT_THREAD_CREATE => {
                         let thread_payload = parse_plot_thread_create_payload(&op.payload)?;
-                            let result = apply_plot_thread_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &thread_payload,
-                                &now,
-                            )?;
-                            commit_map.insert_plot_thread_binding(PlotThreadBinding {
-                                hypothesis_id: thread_payload.hypothesis_id.clone(),
-                                plot_thread_id: result.entity_id.clone(),
-                                source: "created".to_string(),
-                            });
-                            (
-                                "plot_thread",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PLOT_THREAD_PATCH => {
+                        let result = apply_plot_thread_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &thread_payload,
+                            &now,
+                        )?;
+                        commit_map.insert_plot_thread_binding(PlotThreadBinding {
+                            hypothesis_id: thread_payload.hypothesis_id.clone(),
+                            plot_thread_id: result.entity_id.clone(),
+                            source: "created".to_string(),
+                        });
+                        (
+                            "plot_thread",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PLOT_THREAD_PATCH => {
                         let thread_payload = parse_plot_thread_patch_payload(&op.payload)?;
-                            let result = apply_plot_thread_patch_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &thread_payload,
-                                &now,
-                            )?;
-                            commit_map.insert_plot_thread_binding(PlotThreadBinding {
-                                hypothesis_id: thread_payload.hypothesis_id.clone(),
-                                plot_thread_id: result.entity_id.clone(),
-                                source: "existing".to_string(),
-                            });
-                            (
-                                "plot_thread",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PLOT_MARKER_CREATE => {
+                        let result = apply_plot_thread_patch_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &thread_payload,
+                            &now,
+                        )?;
+                        commit_map.insert_plot_thread_binding(PlotThreadBinding {
+                            hypothesis_id: thread_payload.hypothesis_id.clone(),
+                            plot_thread_id: result.entity_id.clone(),
+                            source: "existing".to_string(),
+                        });
+                        (
+                            "plot_thread",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PLOT_MARKER_CREATE => {
                         let marker_payload = parse_plot_marker_create_payload(&op.payload)?;
-                            let result = apply_plot_marker_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &marker_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "plot_thread_marker",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PLOT_BRANCH_CREATE => {
+                        let result = apply_plot_marker_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &marker_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "plot_thread_marker",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PLOT_BRANCH_CREATE => {
                         let branch_payload = parse_plot_branch_create_payload(&op.payload)?;
-                            let result = apply_plot_branch_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &branch_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "plot_thread_branch",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_FORESHADOW_AGGREGATE_CREATE => {
-                            let foreshadow_payload = parse_foreshadow_create(&op.payload)?;
+                        let result = apply_plot_branch_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &branch_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "plot_thread_branch",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_FORESHADOW_AGGREGATE_CREATE => {
+                        let foreshadow_payload = parse_foreshadow_create(&op.payload)?;
                         let result = apply_foreshadow_create(
                             conn,
                             &payload.project_id,
                             &foreshadow_payload,
                             &now,
                         )?;
-                            commit_map.insert_foreshadow_binding(ForeshadowBinding {
-                                hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
+                        commit_map.insert_foreshadow_binding(ForeshadowBinding {
+                            hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
                             foreshadow_id: result.entity_id.clone(),
                             source: "created".to_string(),
-                            });
+                        });
                         (
                             "foreshadow",
                             result.entity_id,
@@ -1338,20 +1539,20 @@ pub fn narrative_extraction_apply_commit(
                             result.before_snapshot,
                             result.op_kind,
                         )
-                        }
-                        OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
-                            let foreshadow_payload = parse_foreshadow_patch(&op.payload)?;
+                    }
+                    OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
+                        let foreshadow_payload = parse_foreshadow_patch(&op.payload)?;
                         let result = apply_foreshadow_patch(
                             conn,
                             &payload.project_id,
                             &foreshadow_payload,
                             &now,
                         )?;
-                            commit_map.insert_foreshadow_binding(ForeshadowBinding {
-                                hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
+                        commit_map.insert_foreshadow_binding(ForeshadowBinding {
+                            hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
                             foreshadow_id: result.entity_id.clone(),
                             source: "existing".to_string(),
-                            });
+                        });
                         (
                             "foreshadow",
                             result.entity_id,
@@ -1360,17 +1561,20 @@ pub fn narrative_extraction_apply_commit(
                             result.before_snapshot,
                             result.op_kind,
                         )
-                        }
-                        other => anyhow::bail!("unsupported commit operation kind: {other}"),
-                    };
+                    }
+                    other => anyhow::bail!("unsupported commit operation kind: {other}"),
+                };
 
+                let operation_id = Uuid::new_v4().to_string();
+                operation_ids.push(operation_id.clone());
+                operation_op_kinds.push(op_kind);
                 conn.execute(
                     "INSERT INTO narrative_apply_operations
                         (id, commit_id, operation_index, operation_kind, payload_json,
                          result_entity_kind, result_entity_id, status, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'applied', ?8)",
                     params![
-                        Uuid::new_v4().to_string(),
+                        operation_id,
                         commit_id,
                         index as i64,
                         op.kind,
@@ -1415,16 +1619,17 @@ pub fn narrative_extraction_apply_commit(
                     .and_then(Value::as_str)
                     .unwrap_or("event");
                 let application_id = Uuid::new_v4().to_string();
+                let (application_kind, compensates_application_id) = load_retraction_metadata(
+                    conn,
+                    &application.proposal_id,
+                    &application.revision_id,
+                )?;
                 let (application_kind, compensates_application_id) =
-                    load_retraction_metadata(conn, &application.proposal_id, &application.revision_id)?;
-                let (application_kind, compensates_application_id) = if application_kind == "retract" {
-                    (
-                        "compensation",
-                        compensates_application_id,
-                    )
-                } else {
-                    ("normal", None)
-                };
+                    if application_kind == "retract" {
+                        ("compensation", compensates_application_id)
+                    } else {
+                        ("normal", None)
+                    };
                 conn.execute(
                     "INSERT INTO narrative_proposal_applications
                         (id, commit_id, proposal_id, revision_id,
@@ -1452,27 +1657,79 @@ pub fn narrative_extraction_apply_commit(
                     |row| row.get(0),
                 )?;
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
-                let read_set = load_read_set_rows(&envelope)?;
-                conn.execute(
-                    "INSERT INTO narrative_projection_freshness
-                        (application_id, status, reason_json, version, updated_at)
-                     VALUES (?1, 'fresh', NULL, 0, ?2)",
-                    params![application_id, now],
-                )?;
-                for source in source_basis.into_iter().chain(read_set) {
-                    conn.execute(
-                        "INSERT OR IGNORE INTO narrative_projection_dependencies
-                            (application_id, source_kind, source_key,
-                             observed_revision_token, propagation)
-                         VALUES (?1, ?2, ?3, ?4, 'freshness-only')",
-                        params![
-                            application_id,
-                            source.source_kind,
-                            source.source_key,
-                            source.revision_token,
-                        ],
+                let read_set = if envelope_schema_version(&envelope) == Some(2) {
+                    let owner: &mut dyn GraphWorkControl = lifecycle_control
+                        .as_deref_mut()
+                        .ok_or_else(|| {
+                            validation_terminated(
+                                ValidationTerminationReason::ContextUnavailable,
+                                "V2 apply source validation requires a caller-owned validation context",
+                            )
+                        })?;
+                    if !owner.allows_full_eligibility() {
+                        return Err(validation_terminated(
+                            ValidationTerminationReason::ContextUnavailable,
+                            "V2 apply source validation requires a caller-owned validation context",
+                        ));
+                    }
+                    let mut validation = validation_context(conn, owner);
+                    validation.ensure_connection(conn)?;
+                    super::v2_apply_sources::load_v2_apply_sources_with_validation_context(
+                        &mut validation,
+                        &payload.project_id,
+                        &payload.run_id,
+                        &application.revision_id,
+                        &envelope,
+                    )?
+                } else {
+                    load_read_set_rows(&envelope)?
+                };
+                let source_rows = source_basis.into_iter().chain(read_set).collect::<Vec<_>>();
+                let generic_freshness_canonical = is_generic_freshness_canonical(conn)?;
+                if generic_freshness_canonical {
+                    write_application_dependencies_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &application_id,
+                        &payload.run_id,
+                        &source_rows,
+                        &now,
                     )?;
+                    // Post-cutover, a newly declared Application has no
+                    // legacy projection fallback.  Feed-backed mutations
+                    // will supersede this seed in the same/next cycle, but a
+                    // normal Apply must still publish a canonical
+                    // Unknown/Manual row immediately rather than leaving an
+                    // authority-shaped hole until a later Feed wake.
+                    initialize_application_freshness_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &application_id,
+                        &now,
+                    )?;
+                } else {
+                    conn.execute(
+                        "INSERT INTO narrative_projection_freshness
+                            (application_id, status, reason_json, version, updated_at)
+                         VALUES (?1, 'fresh', NULL, 0, ?2)",
+                        params![application_id, now],
+                    )?;
+                    for source in source_rows {
+                        conn.execute(
+                            "INSERT OR IGNORE INTO narrative_projection_dependencies
+                                (application_id, source_kind, source_key,
+                                 observed_revision_token, propagation)
+                             VALUES (?1, ?2, ?3, ?4, 'freshness-only')",
+                            params![
+                                application_id,
+                                source.source_kind,
+                                source.source_key,
+                                source.revision_token,
+                            ],
+                        )?;
+                    }
                 }
+                application_ids.push(application_id);
             }
             record_operation_field_authority(
                 conn,
@@ -1509,7 +1766,7 @@ pub fn narrative_extraction_apply_commit(
                 "entityIds": created.iter().map(|row| row["entityId"].clone()).collect::<Vec<_>>(),
                 "entityBindings": commit_map.to_json(),
             });
-            append_change_events_in_tx(
+            let canonical_append = append_change_events_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
@@ -1524,8 +1781,158 @@ pub fn narrative_extraction_apply_commit(
                     timestamp,
                 }],
             )?;
+            anyhow::ensure!(
+                canonical_append.inserted_count == 1,
+                "NEX_CHANGE_EVENT_CORRELATION_FAILED: canonical event was not appended"
+            );
 
-            let receipt = json!({
+            // Gate C2 Lane H (`application_contributions.rs`, wired in
+            // C2-T1): record which Application most recently touched which
+            // field, reusing the same `affected_fields` coverage table
+            // `record_operation_field_authority` above already relies on
+            // rather than re-deriving field ownership per operation kind a
+            // second, drifting way. `application_ids` is 1:1 with
+            // `payload.operations` by construction (both built from the
+            // same per-index `payload.applications` loop above).
+            //
+            // Deliberately *after* the canonical append, not with the rest of
+            // the Application bookkeeping: `baseline_sequence` is the
+            // canonical `change_events.sequence` this commit's own write
+            // landed on, and it does not exist until the append returns. It
+            // is the self-stale guard's lower bound (ADR 005) -- without it a
+            // later evaluation would read this commit's own event as evidence
+            // that the Source changed underneath the Application, and mark
+            // the Application stale the instant it was applied. Everything
+            // this loop reads (`commit_map`, `payload`, `application_ids`,
+            // `operation_ids`, `now`) is still in scope here, and
+            // `application_ids` is not moved into the maintenance transaction
+            // until below.
+            //
+            // `Unchanged` is the correct initial `targetState`: this write
+            // just landed, so the field currently matches exactly what this
+            // Application applied; a later process (Undo/Redo, a
+            // superseding Application, a hand edit) is what would ever
+            // transition it away from `Unchanged`, not this commit itself.
+            for (index, (operation, application_id)) in
+                payload.operations.iter().zip(&application_ids).enumerate()
+            {
+                let application = payload.applications.get(index).ok_or_else(|| {
+                    anyhow::anyhow!("operation[{index}] has no matching application")
+                })?;
+                let provenance = ContributionProvenance {
+                    application_id,
+                    commit_id: &commit_id,
+                    proposal_id: &application.proposal_id,
+                    revision_id: &application.revision_id,
+                    operation_id: operation_ids.get(index).map(String::as_str),
+                    baseline_sequence: Some(canonical_append.tail_sequence),
+                };
+                // Which *object* was written comes from the Application row,
+                // not from `affected_fields`. `affected_fields` is the
+                // authority on which fields an operation touches, but its
+                // entity id is a Field Authority *coordinate*:
+                // `temporal.constraint.create` uses `authority_entity_id()`,
+                // which falls back to a fingerprint (then a node id, then the
+                // literal "constraint") when the payload carries no
+                // `constraintId` -- while the row that was actually inserted
+                // got a fresh UUID. Those can never be the same string, so a
+                // Contribution addressed that way points at no object.
+                //
+                // `applied_entity_kind`/`applied_entity_id` are the ids the
+                // Apply really wrote, and running them through the same
+                // function `legacy_backfill.rs` uses is what makes the two
+                // writers agree by construction rather than by coincidence.
+                let (applied_entity_kind, applied_entity_id): (String, String) = conn.query_row(
+                    "SELECT applied_entity_kind, applied_entity_id
+                       FROM narrative_proposal_applications
+                      WHERE id = ?1",
+                    params![application_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let target_object_identity = contribution_target_identity_for_application(
+                    conn,
+                    &applied_entity_kind,
+                    &applied_entity_id,
+                )?;
+                // An operation that wrote nothing still gets its Contribution
+                // rows -- "this Application depended on this object" is a real
+                // fact the reverse lookup needs -- but `Unchanged` would
+                // assert the field currently holds what *this* Application
+                // wrote, and this one wrote nothing. `NotApplicable` is the
+                // ratified value for exactly that.
+                //
+                // Deciding it here, at write time, is what keeps Undo simple:
+                // an Undo that rolls nothing back for these operations
+                // (`undo.rs`'s `op_kind != "ensure-existing"` guard) never has
+                // to re-derive which rows it may speak for.
+                let wrote_nothing = operation_op_kinds
+                    .get(index)
+                    .is_some_and(|kind| journal_op_kind_wrote_nothing(kind));
+                let target_state = if wrote_nothing {
+                    ContributionTargetState::NotApplicable
+                } else {
+                    ContributionTargetState::Unchanged
+                };
+                for field in affected_fields(operation, &commit_map)? {
+                    record_contribution_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &provenance,
+                        &ContributionField {
+                            target_object_identity: &target_object_identity,
+                            field_path: &field.field_path,
+                            target_state,
+                            // `affected_fields` *is* the Field Authority
+                            // coordinate -- the same `(entity_kind,
+                            // entity_id, field_path)` triple
+                            // `record_operation_field_authority` writes just
+                            // above -- so ownership is read from the ledger
+                            // with the key the ledger is actually indexed by,
+                            // no translation and no guess. The object the
+                            // Contribution is filed under still comes from
+                            // the Application row, for the reason spelled out
+                            // above; only ownership uses this coordinate.
+                            authority: Some(FieldAuthorityCoordinate {
+                                entity_kind: &field.entity_kind,
+                                entity_id: &field.entity_id,
+                            }),
+                        },
+                        &now,
+                    )?;
+                }
+            }
+
+            let mut maintenance_events = events_from_journal_entities(
+                after_json["entities"]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("commit journal entities are missing"))?,
+                NarrativeChangeCauseKind::Forward,
+            )?;
+            maintenance_events.extend(scene_scope_refresh_events);
+            let maintenance_transaction = if maintenance_events.is_empty() {
+                None
+            } else {
+                Some(append_narrative_change_transaction_in_tx(
+                    conn,
+                    &AppendNarrativeChangeTransactionInput {
+                        project_id: payload.project_id.clone(),
+                        request_id: payload.request_id.clone(),
+                        source_domain: "narrative.commit.apply".to_string(),
+                        source_change_event_uid: change_uid.clone(),
+                        cause_kind: NarrativeChangeCauseKind::Forward,
+                        origin: NarrativeChangeOrigin::AiApply,
+                        original_transaction_id: None,
+                        commit_id: Some(commit_id.clone()),
+                        journal_id: Some(journal_id.clone()),
+                        undo_journal_id: None,
+                        application_ids,
+                        occurred_at: now.clone(),
+                        events: maintenance_events,
+                    },
+                )?)
+            };
+
+            let mut receipt = json!({
                 "commitId": commit_id,
                 "requestId": payload.request_id,
                 "planDigest": payload.plan_digest,
@@ -1535,6 +1942,22 @@ pub fn narrative_extraction_apply_commit(
                 "created": created,
                 "entityBindings": commit_map.to_json(),
             });
+            if let (Some(receipt), Some(maintenance_transaction)) =
+                (receipt.as_object_mut(), maintenance_transaction)
+            {
+                receipt.insert(
+                    "maintenanceTransactionId".to_string(),
+                    Value::String(maintenance_transaction.transaction_id.clone()),
+                );
+                receipt.insert(
+                    "maintenanceOriginalTransactionId".to_string(),
+                    Value::String(maintenance_transaction.transaction_id),
+                );
+                receipt.insert(
+                    "maintenanceEventIds".to_string(),
+                    serde_json::to_value(maintenance_transaction.event_ids)?,
+                );
+            }
 
             conn.execute(
                 "UPDATE narrative_apply_commits
@@ -1553,11 +1976,27 @@ pub fn narrative_extraction_apply_commit(
     match apply_result {
         Ok(receipt) => Ok(receipt),
         Err(err) => {
+            // A lifecycle stop is neither Source absence nor an Apply
+            // failure.  Preserve the typed signal and leave the durable
+            // Prepared row retryable; string-based audit classifiers below
+            // must never turn it into failed/invalidated.
+            if is_validation_terminated(&err) {
+                return Err(err);
+            }
             let message = err.to_string();
             let invalidation = message.contains("NEX_SOURCE_")
                 || message.contains("NEX_READ_SET_DRIFT")
                 || message.contains("NEX_REVISION_ENVELOPE_CHANGED")
                 || message.contains("NEX_REVISION_ENVELOPE_MISSING")
+                || message.contains("NEX_CHRONICLE_RESUME_LIVE_CATALOG_DRIFT")
+                || message.contains("NEX_CHRONICLE_RESUME_ARTIFACT_INCONSISTENT")
+                || message.contains("NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH")
+                || message.contains("NEX_CHRONICLE_RESUME_TOPOLOGY_INVALID")
+                || message.contains("NEX_SCOPE_AUTHORITY_CORPUS_ARTIFACT_INVALID")
+                || message.contains("NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE")
+                || message.contains("NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH")
+                || message.contains("NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT")
+                || message.contains("NEX_PROPOSAL_PAYLOAD_MISMATCH")
                 || message.contains("NEX_PREPARED_POLICY_CHANGED")
                 || message.contains("NEX_FIELD_AUTHORITY")
                 || message.contains("NEX_RETRACTION");
@@ -1685,6 +2124,7 @@ pub(crate) struct CommitRow {
     pub commit_id: String,
     #[allow(dead_code)]
     pub project_id: String,
+    pub run_id: Option<String>,
     pub request_id: String,
     pub plan_digest: String,
     pub status: String,
@@ -1705,7 +2145,7 @@ pub(crate) fn load_commit_by_id(
     commit_id: &str,
 ) -> anyhow::Result<Option<CommitRow>> {
     conn.query_row(
-        "SELECT id, project_id, request_id, plan_digest, status, receipt_json,
+        "SELECT id, project_id, run_id, request_id, plan_digest, status, receipt_json,
                 prepared_plan_json, prepared_policy_version, authority_digest, session_id,
                 error_message, created_at, completed_at, version
            FROM narrative_apply_commits
@@ -1723,7 +2163,7 @@ pub(crate) fn load_commit_by_request(
     request_id: &str,
 ) -> anyhow::Result<Option<CommitRow>> {
     conn.query_row(
-        "SELECT id, project_id, request_id, plan_digest, status, receipt_json,
+        "SELECT id, project_id, run_id, request_id, plan_digest, status, receipt_json,
                 prepared_plan_json, prepared_policy_version, authority_digest, session_id,
                 error_message, created_at, completed_at, version
            FROM narrative_apply_commits
@@ -1741,18 +2181,19 @@ fn map_commit_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommitRow> {
     Ok(CommitRow {
         commit_id: row.get(0)?,
         project_id: row.get(1)?,
-        request_id: row.get(2)?,
-        plan_digest: row.get(3)?,
-        status: row.get(4)?,
-        receipt_json: row.get(5)?,
-        prepared_plan_json: row.get(6)?,
-        prepared_policy_version: row.get(7)?,
-        authority_digest: row.get(8)?,
-        session_id: row.get(9)?,
-        error_message: row.get(10)?,
-        created_at: row.get(11)?,
-        completed_at: row.get(12)?,
-        version: row.get(13)?,
+        run_id: row.get(2)?,
+        request_id: row.get(3)?,
+        plan_digest: row.get(4)?,
+        status: row.get(5)?,
+        receipt_json: row.get(6)?,
+        prepared_plan_json: row.get(7)?,
+        prepared_policy_version: row.get(8)?,
+        authority_digest: row.get(9)?,
+        session_id: row.get(10)?,
+        error_message: row.get(11)?,
+        created_at: row.get(12)?,
+        completed_at: row.get(13)?,
+        version: row.get(14)?,
     })
 }
 
@@ -1817,6 +2258,9 @@ fn validate_commit_plan(
         |row| row.get(0),
     )?;
     anyhow::ensure!(set_ok == 1, "proposal set not found for run/project");
+
+    let current_chronicle = current_chronicle_run_spec_for_run(conn, ctx.project_id, ctx.run_id)?;
+    let mut chronicle_document_authority = None;
 
     let has_chronicle = ctx.operations.iter().any(|op| is_chronicle_op(&op.kind));
     if has_chronicle {
@@ -1982,9 +2426,29 @@ fn validate_commit_plan(
         }
 
         if !op.proposal_id.is_empty() {
+            if current_chronicle && chronicle_document_authority.is_none() {
+                chronicle_document_authority =
+                    Some(load_verified_chronicle_commit_document_authority(
+                        conn,
+                        ctx.project_id,
+                        ctx.run_id,
+                    )?);
+            }
+            let operation_chronicle_authority = if current_chronicle {
+                ChronicleCommitPlanAuthority::Current(
+                    chronicle_document_authority.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_CHRONICLE_COMMIT_DOCUMENT_AUTHORITY_MISSING: verified Snapshot document authority was not retained"
+                        )
+                    })?,
+                )
+            } else {
+                ChronicleCommitPlanAuthority::NonCurrent
+            };
             ensure_proposal_approved_and_bound(
                 conn,
-                ctx.proposal_set_id,
+                &ctx,
+                operation_chronicle_authority,
                 &op.proposal_id,
                 Some(op.revision_id.as_str()),
                 &op.kind,
@@ -2019,39 +2483,284 @@ fn validate_commit_plan(
                 && operation.revision_id == application.revision_id,
             "NEX_COMMIT_APPLICATIONS_MISMATCH: index {index} proposal/revision diverge"
         );
-        ensure_proposal_approved_and_bound(
-            conn,
-            ctx.proposal_set_id,
-            &application.proposal_id,
-            Some(application.revision_id.as_str()),
-            &operation.kind,
-            &operation.payload,
-        )?;
-        ensure_proposal_not_applied(conn, &application.proposal_id)?;
+        // The operation loop already validated this exact proposal/revision,
+        // its current Decision/Envelope, its Native-compiled payload, and its
+        // unapplied state. Once the application coordinates are proven equal,
+        // repeating that work would add no authority and used to reparse the
+        // complete current Chronicle Snapshot a second time.
     }
 
     Ok(())
 }
 
+/// Current Chronicle v2 deliberately exposes one atomic review boundary per
+/// ProposalSet. A renderer must not select only the approved subset while
+/// leaving another actionable Proposal unresolved: the first Apply would
+/// mutate the live Event Catalog and permanently stale the remainder.
+///
+/// This common Prepare/Apply validator runs under the caller's
+/// `BEGIN IMMEDIATE`. Same-request Prepare replay and terminal Apply replay
+/// return before this function, while every new mutation attempt must own the
+/// exact, duplicate-free roster of approved current revisions.
+fn validate_current_chronicle_apply_coverage(
+    conn: &Connection,
+    ctx: &CommitPlanValidationContext<'_>,
+) -> anyhow::Result<()> {
+    if !current_chronicle_run_spec_for_run(conn, ctx.project_id, ctx.run_id)? {
+        return Ok(());
+    }
+
+    let existing_application_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_proposal_applications application
+           JOIN narrative_proposals proposal ON proposal.id = application.proposal_id
+          WHERE proposal.proposal_set_id = ?1",
+        params![ctx.proposal_set_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        existing_application_count == 0,
+        "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH: current Chronicle ProposalSet already contains {existing_application_count} Application row(s); only the original idempotent request may replay an atomic Apply"
+    );
+
+    let mut match_by_proposal_key = load_current_chronicle_proposal_matches(
+        conn,
+        ctx.project_id,
+        ctx.run_id,
+        ctx.proposal_set_id,
+    )?;
+    let mut statement = conn.prepare(
+        "SELECT proposal.id, proposal.proposal_key, proposal.status,
+                proposal.current_revision_id,
+                (SELECT decision.decision
+                   FROM narrative_proposal_decisions decision
+                  WHERE decision.proposal_id = proposal.id
+                    AND decision.revision_id = proposal.current_revision_id
+                  ORDER BY decision.rowid DESC
+                  LIMIT 1) AS current_decision,
+                (SELECT decision.decision_json
+                   FROM narrative_proposal_decisions decision
+                  WHERE decision.proposal_id = proposal.id
+                    AND decision.revision_id = proposal.current_revision_id
+                  ORDER BY decision.rowid DESC
+                  LIMIT 1) AS current_decision_json
+           FROM narrative_proposals proposal
+          WHERE proposal.proposal_set_id = ?1
+          ORDER BY proposal.id ASC",
+    )?;
+    let proposals = statement
+        .query_map(params![ctx.proposal_set_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut expected_approved = Vec::new();
+    // Snapshot/catalog verification is O(snapshotBytes). Cache one verified
+    // transaction-local authority and reuse it for every terminal Proposal;
+    // per-Proposal work below remains a current-revision row lookup + raw
+    // title comparison.
+    let mut revision_review_authority = None;
+    for (
+        proposal_id,
+        proposal_key,
+        status,
+        current_revision_id,
+        current_decision,
+        current_decision_json,
+    ) in proposals
+    {
+        let plan_authority = match_by_proposal_key.remove(&proposal_key).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Proposal '{proposal_id}' has no sealed plan match metadata"
+            )
+        })?;
+        let match_status = plan_authority
+            .match_value
+            .get("status")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Proposal '{proposal_id}' sealed match has no status"
+                )
+            })?;
+        anyhow::ensure!(
+            matches!(match_status, "none" | "probable-duplicate"),
+            "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: Proposal '{proposal_id}' has unsupported sealed match status '{match_status}'"
+        );
+        let decision_json = current_decision_json
+            .as_deref()
+            .map(serde_json::from_str::<Value>)
+            .transpose()
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: Proposal '{proposal_id}' current Decision JSON is malformed: {error}"
+                )
+            })?;
+        let probable_duplicate_choice = decision_json
+            .as_ref()
+            .and_then(|value| value.get("probableDuplicateChoice"))
+            .and_then(Value::as_str);
+        let decision_matches_status = current_decision.as_deref() == Some(status.as_str());
+        match status.as_str() {
+            "approved" => {
+                anyhow::ensure!(
+                    decision_matches_status,
+                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: approved Proposal '{proposal_id}' has no matching current-revision Decision"
+                );
+                let revision_id = current_revision_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: approved Proposal '{proposal_id}' has no current revision"
+                    )
+                })?;
+                if revision_review_authority.is_none() {
+                    revision_review_authority =
+                        Some(load_verified_chronicle_revision_review_authority(
+                            conn,
+                            ctx.project_id,
+                            ctx.run_id,
+                        )?);
+                }
+                let revision_review_authority = revision_review_authority.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_REVISION_REVIEW_AUTHORITY_MISSING: verified Snapshot/catalog authority was not retained"
+                    )
+                })?;
+                let requires_probable_duplicate_choice = match_status == "probable-duplicate"
+                    || current_chronicle_revision_requires_probable_duplicate_review(
+                        conn,
+                        revision_review_authority,
+                        ctx.proposal_set_id,
+                        &proposal_id,
+                        revision_id,
+                        &plan_authority.planned_title,
+                    )?;
+                anyhow::ensure!(
+                    !requires_probable_duplicate_choice
+                        || probable_duplicate_choice == Some("create-as-new"),
+                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: current-revision probable-duplicate Proposal '{proposal_id}' requires decisionJson.probableDuplicateChoice='create-as-new' before approval"
+                );
+                expected_approved.push((proposal_id, revision_id.to_string()));
+            }
+            "rejected" => {
+                let revision_id = current_revision_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: rejected Proposal '{proposal_id}' has no current revision"
+                    )
+                })?;
+                anyhow::ensure!(
+                    decision_matches_status,
+                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: rejected Proposal '{proposal_id}' has no matching current-revision Decision"
+                );
+                if revision_review_authority.is_none() {
+                    revision_review_authority =
+                        Some(load_verified_chronicle_revision_review_authority(
+                            conn,
+                            ctx.project_id,
+                            ctx.run_id,
+                        )?);
+                }
+                let revision_review_authority = revision_review_authority.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_CHRONICLE_REVISION_REVIEW_AUTHORITY_MISSING: verified Snapshot/catalog authority was not retained"
+                    )
+                })?;
+                let requires_probable_duplicate_choice = match_status == "probable-duplicate"
+                    || current_chronicle_revision_requires_probable_duplicate_review(
+                        conn,
+                        revision_review_authority,
+                        ctx.proposal_set_id,
+                        &proposal_id,
+                        revision_id,
+                        &plan_authority.planned_title,
+                    )?;
+                anyhow::ensure!(
+                    !requires_probable_duplicate_choice
+                        || probable_duplicate_choice == Some("skip-as-same"),
+                    "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: rejected current-revision probable-duplicate Proposal '{proposal_id}' requires decisionJson.probableDuplicateChoice='skip-as-same'"
+                );
+            }
+            "unreviewed" | "held" | "deferred" => anyhow::bail!(
+                "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: Proposal '{proposal_id}' remains '{status}'"
+            ),
+            other => anyhow::bail!(
+                "NEX_CHRONICLE_APPLY_REVIEW_INCOMPLETE: Proposal '{proposal_id}' has unsupported status '{other}'"
+            ),
+        }
+    }
+    anyhow::ensure!(
+        match_by_proposal_key.is_empty(),
+        "NEX_CHRONICLE_PLAN_PROPOSAL_SET_INCONSISTENT: sealed plan match roster contains a Proposal absent from the durable ProposalSet"
+    );
+
+    let operation_roster: Vec<(String, String)> = ctx
+        .operations
+        .iter()
+        .map(|operation| (operation.proposal_id.clone(), operation.revision_id.clone()))
+        .collect();
+    let application_roster: Vec<(String, String)> = ctx
+        .applications
+        .iter()
+        .map(|application| {
+            (
+                application.proposal_id.clone(),
+                application.revision_id.clone(),
+            )
+        })
+        .collect();
+    let unique_operations: BTreeSet<_> = operation_roster.iter().cloned().collect();
+    let unique_applications: BTreeSet<_> = application_roster.iter().cloned().collect();
+    anyhow::ensure!(
+        unique_operations.len() == operation_roster.len()
+            && unique_applications.len() == application_roster.len(),
+        "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH: operation/application roster contains a duplicate Proposal revision"
+    );
+
+    expected_approved.sort();
+    let mut actual_operations = operation_roster;
+    actual_operations.sort();
+    let mut actual_applications = application_roster;
+    actual_applications.sort();
+    anyhow::ensure!(
+        actual_operations == expected_approved && actual_applications == expected_approved,
+        "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH: operation/application roster does not exactly cover every approved current Proposal revision"
+    );
+    Ok(())
+}
+
 fn ensure_proposal_approved_and_bound(
     conn: &Connection,
-    proposal_set_id: &str,
+    ctx: &CommitPlanValidationContext<'_>,
+    chronicle_authority: ChronicleCommitPlanAuthority<'_>,
     proposal_id: &str,
     revision_id: Option<&str>,
     operation_kind: &str,
     operation_payload: &Value,
 ) -> anyhow::Result<()> {
+    let current_chronicle = matches!(
+        chronicle_authority,
+        ChronicleCommitPlanAuthority::Current(_)
+    );
     let row: Option<(String, Option<String>, String)> = conn
         .query_row(
             "SELECT status, current_revision_id, kind
-               FROM narrative_proposals
+              FROM narrative_proposals
               WHERE id = ?1 AND proposal_set_id = ?2",
-            params![proposal_id, proposal_set_id],
+            params![proposal_id, ctx.proposal_set_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
     let Some((status, current_revision_id, proposal_kind)) = row else {
-        anyhow::bail!("proposal '{proposal_id}' not found in set '{proposal_set_id}'");
+        anyhow::bail!(
+            "proposal '{proposal_id}' not found in set '{}'",
+            ctx.proposal_set_id
+        );
     };
     anyhow::ensure!(
         status == "approved",
@@ -2072,31 +2781,363 @@ fn ensure_proposal_approved_and_bound(
         .next()
         .unwrap_or(proposal_kind.as_str());
     anyhow::ensure!(
-        proposal_kind_allows_operation(proposal_kind_base, operation_kind),
+        proposal_kind_allows_operation(proposal_kind_base, operation_kind)
+            || (current_chronicle
+                && proposal_kind_base == "chronicle.create-event"
+                && operation_kind == OP_KIND_EVENT_CREATE),
         "NEX_PROPOSAL_KIND_MISMATCH: proposal '{proposal_id}' kind '{proposal_kind}' != operation '{operation_kind}'"
     );
 
-    let (revision_payload_raw, origin_kind, envelope_digest): (String, String, Option<String>) =
-        conn.query_row(
-            "SELECT payload_json, origin_kind, reconciliation_envelope_digest
+    let (revision_payload_raw, origin_kind, envelope_json, envelope_digest): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT payload_json, origin_kind, reconciliation_envelope_digest
+                    , reconciliation_envelope_json
                FROM narrative_proposal_revisions
               WHERE id = ?1 AND proposal_id = ?2",
-            params![revision_id, proposal_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )?;
+        params![revision_id, proposal_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(3)?, row.get(2)?)),
+    )?;
     anyhow::ensure!(
         origin_kind == ORIGIN_ENVELOPED && envelope_digest.is_some(),
         "NEX_REVISION_LEGACY_UNBOUND: proposal '{proposal_id}' revision '{revision_id}' requires re-extract/re-review before Apply"
     );
     let revision_payload: Value = serde_json::from_str(&revision_payload_raw)?;
-    let comparable = revision_payload_for_commit_compare(&revision_payload, operation_kind)?;
-    let revision_digest = digest_plan(comparable);
+    let comparable = if current_chronicle {
+        anyhow::ensure!(
+            proposal_kind_base == "chronicle.create-event"
+                && operation_kind == OP_KIND_EVENT_CREATE,
+            "NEX_PROPOSAL_KIND_MISMATCH: current Chronicle proposal '{proposal_id}' must compile chronicle.create-event@1 to chronicle.event.create"
+        );
+        let envelope: Value = envelope_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_REVISION_ENVELOPE_MISSING: current Chronicle proposal '{proposal_id}' has no Envelope"
+                )
+            })?;
+        let validated_envelope = validate_reconciliation_envelope(
+            conn,
+            ctx.project_id,
+            ctx.run_id,
+            Some(&envelope),
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_REVISION_ENVELOPE_MISSING: current Chronicle proposal '{proposal_id}' has an unsealed Envelope"
+            )
+        })?;
+        anyhow::ensure!(
+            envelope_digest.as_deref() == Some(validated_envelope.digest.as_str()),
+            "NEX_REVISION_ENVELOPE_CHANGED: current Chronicle proposal '{proposal_id}' Envelope digest differs"
+        );
+        let ChronicleCommitPlanAuthority::Current(chronicle_document_authority) =
+            chronicle_authority
+        else {
+            anyhow::bail!(
+                "NEX_CHRONICLE_COMMIT_DOCUMENT_AUTHORITY_MISSING: verified Snapshot document authority was not retained"
+            );
+        };
+        anyhow::ensure!(
+            chronicle_document_authority.project_id == ctx.project_id
+                && chronicle_document_authority.run_id == ctx.run_id,
+            "NEX_CHRONICLE_COMMIT_DOCUMENT_AUTHORITY_MISMATCH: verified Snapshot document authority belongs to another Run"
+        );
+        compile_current_chronicle_event_operation_payload(
+            chronicle_document_authority,
+            &revision_payload,
+            &envelope,
+        )?
+    } else {
+        revision_payload_for_commit_compare(&revision_payload, operation_kind)?.clone()
+    };
+    let revision_digest = digest_plan(&comparable);
     let operation_digest = digest_plan(operation_payload);
     anyhow::ensure!(
         revision_digest == operation_digest,
         "NEX_PROPOSAL_PAYLOAD_MISMATCH: proposal '{proposal_id}' revision payload does not match operation payload"
     );
     Ok(())
+}
+
+/// Load and verify the completed sealed Snapshot once for one current
+/// Chronicle commit-plan validation, then retain only the document authority
+/// required by every Proposal compiler invocation in that transaction.
+fn load_verified_chronicle_commit_document_authority(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<VerifiedChronicleCommitDocumentAuthority> {
+    let snapshot_payload = load_verified_chronicle_snapshot_for_apply(conn, project_id, run_id)?;
+    let snapshot_documents = snapshot_payload
+        .pointer("/snapshot/documents")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: sealed Snapshot has no documents"
+            )
+        })?;
+    let mut document_authority = HashMap::with_capacity(snapshot_documents.len());
+    for (index, document) in snapshot_documents.iter().enumerate() {
+        let document_ref = document.get("ref").and_then(Value::as_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Snapshot document {index} has no ref"
+            )
+        })?;
+        let origin = document
+            .get("origin")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Snapshot document {index} has no origin"
+            )
+            })?;
+        let scene_id = origin.get("nodeId").and_then(Value::as_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Snapshot document {index} has no origin.nodeId"
+            )
+        })?;
+        let source_version = origin
+            .get("sourceVersion")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Snapshot document {index} has no origin.sourceVersion"
+                )
+            })?;
+        anyhow::ensure!(
+            document_authority
+                .insert(
+                    document_ref.to_string(),
+                    (scene_id.to_string(), source_version),
+                )
+                .is_none(),
+            "NEX_CHRONICLE_RESUME_SNAPSHOT_MISMATCH: Snapshot has duplicate document ref '{document_ref}'"
+        );
+    }
+    Ok(VerifiedChronicleCommitDocumentAuthority {
+        project_id: project_id.to_string(),
+        run_id: run_id.to_string(),
+        documents: document_authority,
+    })
+}
+
+/// Reproduce `compileCreateChronicleEventOperation` from Native-owned inputs.
+/// The current Revision supplies the reviewed IR payload, its validated
+/// Envelope supplies the exact evidenceRef -> documentRef pairing, and the
+/// once-verified sealed Snapshot supplies document -> Scene/version authority.
+/// Renderer-supplied compiled fields never participate in this derivation.
+fn compile_current_chronicle_event_operation_payload(
+    authority: &VerifiedChronicleCommitDocumentAuthority,
+    proposal: &Value,
+    envelope: &Value,
+) -> anyhow::Result<Value> {
+    validate_chronicle_scene_event_proposal_payload(proposal).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal payload is invalid: {error}"
+        )
+    })?;
+    let document_authority = &authority.documents;
+
+    let evidence_set = envelope
+        .pointer("/effectiveMaterialBasis/evidenceSet")
+        .or_else(|| envelope.get("evidenceSet"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle Envelope has no evidenceSet"
+            )
+        })?;
+    let mut document_by_anchor: HashMap<String, String> = HashMap::new();
+    let mut envelope_anchor_ids = Vec::with_capacity(evidence_set.len());
+    let mut envelope_document_refs = Vec::with_capacity(evidence_set.len());
+    for (index, evidence) in evidence_set.iter().enumerate() {
+        let evidence_ref = evidence
+            .get("evidenceRef")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_PROPOSAL_PAYLOAD_MISMATCH: Envelope evidenceSet[{index}] has no evidenceRef"
+                )
+            })?;
+        let document_ref = evidence
+            .get("documentRef")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_PROPOSAL_PAYLOAD_MISMATCH: Envelope evidenceSet[{index}] has no documentRef"
+                )
+            })?;
+        anyhow::ensure!(
+            document_by_anchor
+                .insert(evidence_ref.to_string(), document_ref.to_string())
+                .is_none(),
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: Envelope evidenceSet contains duplicate evidenceRef '{evidence_ref}'"
+        );
+        envelope_anchor_ids.push(evidence_ref.to_string());
+        envelope_document_refs.push(document_ref.to_string());
+    }
+
+    let proposal_anchor_ids = proposal
+        .get("evidenceAnchorIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal has no evidenceAnchorIds"
+            )
+        })?
+        .iter()
+        .map(|value| {
+            value.as_str().map(str::to_string).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_PROPOSAL_PAYLOAD_MISMATCH: evidenceAnchorIds contains a non-string"
+                )
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let proposal_document_refs = proposal
+        .get("evidenceDocumentRefs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal has no evidenceDocumentRefs"
+            )
+        })?
+        .iter()
+        .map(|value| {
+            value.as_str().map(str::to_string).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_PROPOSAL_PAYLOAD_MISMATCH: evidenceDocumentRefs contains a non-string"
+                )
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let mut sorted_proposal_anchors = proposal_anchor_ids.clone();
+    let mut sorted_proposal_documents = proposal_document_refs.clone();
+    sorted_proposal_anchors.sort();
+    sorted_proposal_documents.sort();
+    envelope_anchor_ids.sort();
+    envelope_document_refs.sort();
+    envelope_document_refs.dedup();
+    anyhow::ensure!(
+        sorted_proposal_anchors
+            .windows(2)
+            .all(|window| window[0] != window[1])
+            && sorted_proposal_documents
+                .windows(2)
+                .all(|window| window[0] != window[1])
+            &&
+        sorted_proposal_anchors == envelope_anchor_ids
+            && sorted_proposal_documents == envelope_document_refs,
+        "NEX_PROPOSAL_PAYLOAD_MISMATCH: proposal evidence does not exactly match current Envelope evidenceSet"
+    );
+
+    // The Envelope owns evidenceRef -> documentRef authority, while the
+    // reviewed Proposal owns anchor ordering. The renderer compiler iterates
+    // proposal.evidenceAnchorIds, so never inherit evidenceSet row order here.
+    let mut anchors_by_document: HashMap<String, Vec<String>> = HashMap::new();
+    for anchor in &proposal_anchor_ids {
+        let document_ref = document_by_anchor.get(anchor).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: proposal evidence anchor '{anchor}' is absent from the current Envelope"
+            )
+        })?;
+        anchors_by_document
+            .entry(document_ref.clone())
+            .or_default()
+            .push(anchor.clone());
+    }
+
+    let mut evidence_scene_links: Vec<Value> = Vec::new();
+    let mut scene_link_index = HashMap::<String, usize>::new();
+    for document_ref in &proposal_document_refs {
+        let (scene_id, source_version) = document_authority.get(document_ref).ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: unknown evidence document ref '{document_ref}'"
+            )
+        })?;
+        let link_index = match scene_link_index.get(scene_id) {
+            Some(index) => *index,
+            None => {
+                let index = evidence_scene_links.len();
+                evidence_scene_links.push(json!({
+                    "sceneId": scene_id,
+                    "expectedSceneVersion": source_version,
+                    "evidenceAnchorIds": [],
+                }));
+                scene_link_index.insert(scene_id.clone(), index);
+                index
+            }
+        };
+        let link_anchors = evidence_scene_links[link_index]
+            .get_mut("evidenceAnchorIds")
+            .and_then(Value::as_array_mut)
+            .ok_or_else(|| anyhow::anyhow!("unreachable Native evidence link shape"))?;
+        if let Some(document_anchors) = anchors_by_document.get(document_ref) {
+            for anchor in document_anchors {
+                if !link_anchors
+                    .iter()
+                    .any(|value| value.as_str() == Some(anchor))
+                {
+                    link_anchors.push(Value::String(anchor.clone()));
+                }
+            }
+        }
+        if link_anchors.is_empty() {
+            for anchor in &proposal_anchor_ids {
+                if !link_anchors
+                    .iter()
+                    .any(|value| value.as_str() == Some(anchor))
+                {
+                    link_anchors.push(Value::String(anchor.clone()));
+                }
+            }
+        }
+    }
+
+    let reveal_document_ref = proposal
+        .pointer("/disclosure/revealDocumentRef")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PROPOSAL_PAYLOAD_MISMATCH: current Chronicle proposal has no disclosure.revealDocumentRef"
+            )
+        })?;
+    let (reveal_scene_id, _) = document_authority.get(reveal_document_ref).ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PROPOSAL_PAYLOAD_MISMATCH: unknown reveal document ref '{reveal_document_ref}'"
+        )
+    })?;
+    let mut compiled = json!({
+        "eventId": proposal.get("eventId").cloned().unwrap_or(Value::Null),
+        "title": proposal.get("title").cloned().unwrap_or(Value::Null),
+        "note": proposal.get("note").cloned().unwrap_or(Value::Null),
+        "kind": "generic",
+        "precision": "unknown",
+        "placement": { "mode": "append-tail", "afterOrdinal": null },
+        "secret": proposal.pointer("/disclosure/secret").cloned().unwrap_or(Value::Null),
+        "revealSceneId": reveal_scene_id,
+        "evidenceSceneLinks": evidence_scene_links,
+        "detail": null,
+        "primaryCodexId": null,
+        "locationCodexId": null,
+        "participants": [],
+        "startTime": null,
+        "endTime": null,
+        "startGranularity": "none",
+        "endGranularity": "none",
+    });
+    if let Some(semantic_type) = proposal.get("semanticType").and_then(Value::as_str) {
+        if !semantic_type.is_empty() {
+            compiled["semanticType"] = Value::String(semantic_type.to_string());
+        }
+    }
+    Ok(compiled)
 }
 
 /// Codex review revisions store an envelope:

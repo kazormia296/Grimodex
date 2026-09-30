@@ -5,6 +5,7 @@ import { Sparkles, Loader2 } from "lucide-react";
 import { SettingSection } from "../components/SettingSection";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import {
   listCodexEntries,
@@ -62,7 +63,7 @@ export function ReadingsBackfillSection() {
     // 先頭で 1 回だけ policy を検査する。ここで弾かないと chunk 毎に
     // inferReadings が blockIfPolicyOff でエラートーストを連発しつつ空 Map を返し、
     // 最後に success(count:0) を出す矛盾トーストになる (レビュー指摘)。
-    if (blockIfPolicyOff("knowledgeWrite")) return;
+    if (blockIfPolicyOff("knowledgeWrite") || blockIfUnlicensed()) return;
     setRunning(true);
     setProgress({ done: 0, total: 0 });
     try {

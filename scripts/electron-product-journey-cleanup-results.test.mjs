@@ -15,6 +15,7 @@ test("runner preserves the journey failure and writes results when failure clean
 
   await assert.rejects(
     runProductJourneys({
+      catalog: [{ id: "broken" }],
       journeys: [
         {
           id: "broken",

@@ -2,11 +2,7 @@
  * Codex Entry 復元 (設計書 §6, §16.3)。
  * 新 ID 発行、parentId が現存しないときはルート。
  */
-import {
-  createCodexEntry,
-  getCodexEntry,
-  updateCodexEntry,
-} from "@/features/codex/api";
+import { createCodexEntry, getCodexEntry } from "@/features/codex/api";
 import type { CodexEntryPayload, TrashItemData } from "../types";
 import type { RestoreOutcome } from "./types";
 
@@ -44,10 +40,6 @@ export async function restoreCodexEntry(
       aliases: payload.aliases ?? undefined,
       excludedAliases: payload.excludedAliases ?? undefined,
       parentId: parentId ?? undefined,
-    });
-    // body / icon / notes / contextMode / childrenBudget は createCodexEntry 経由で
-    // 渡せないので updateCodexEntry で 2 段階に上書き。
-    await updateCodexEntry(options.projectId, newId, {
       content: payload.body,
       icon: payload.icon ?? undefined,
       notes: payload.notes ?? undefined,

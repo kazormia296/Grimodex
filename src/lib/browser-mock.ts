@@ -3,7 +3,9 @@
 // @ts-ignore — sql.js/dist/sql-asm.js has no dedicated type declarations
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import type { Database, SqlValue } from "sql.js";
+import { sha256Hex } from "@grimodex/scan-contract";
 import schemaContract from "@/db/generated/schema-contract.json";
+import protectedWriterPolicy from "../../policies/narrative/protected-writers.json";
 import {
   resolveActiveOpenaiCompatibleEndpoint,
   type AiProvider,
@@ -42,6 +44,14 @@ import {
   hexToBytes,
 } from "@/features/timelapse/hashChain";
 import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
+import {
+  canonicalChangedPaths,
+  jsonPointerSegment,
+} from "@/features/narrative-extraction/maintenance/changedPath";
+import {
+  buildCodexRelationSemanticKey,
+  normalizeRelationLabel,
+} from "@/features/codex/extraction/relationVocabulary";
 import {
   AUX_PROJECT_FILTER,
   AUX_SCOPE_OWNER,
@@ -146,6 +156,8 @@ const RUST_ONLY_BROWSER_TABLES = new Set([
   "tree_nodes_fts_en",
   "post_effect_annotations_fts",
   "post_effect_annotations_fts_en",
+  "nir1_chat_input_captures",
+  "nir1_chat_input_submission_keys",
 ]);
 
 function executableCreateSql(createSql: string, columnNames: string[]): string {
@@ -271,6 +283,114 @@ function assertRendererDoesNotMutateAiAudit(sql: string): void {
     throw new Error(
       "RENDERER_SQL_SECURITY: denied mutation of ai_audit_events; use typed audit commands",
     );
+  }
+}
+
+type BrowserProtectedWriterPolicyEntry = {
+  table: string;
+  protection: "table" | "columns";
+  columns?: string[];
+  enforcement: "active" | "deferred";
+  writer: string;
+};
+
+const ACTIVE_BROWSER_PROTECTED_WRITERS = (
+  protectedWriterPolicy as BrowserProtectedWriterPolicyEntry[]
+).filter((entry) => entry.enforcement === "active");
+
+function sqlReferencesTable(sql: string, table: string): boolean {
+  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    "(?:^|[^A-Za-z0-9_])(?:main\\s*\\.\\s*)?[`\"'\\[]?" +
+      escaped +
+      "[`\"'\\]]?(?=$|[^A-Za-z0-9_])",
+    "iu",
+  ).test(sql);
+}
+
+function protectedMutationColumn(
+  sql: string,
+  entry: BrowserProtectedWriterPolicyEntry,
+): string | null {
+  if (entry.protection === "table") return entry.table;
+  // A column-protected table is writable only when this is provably one plain
+  // UPDATE whose every assignment targets an unprotected column. Any embedded
+  // statement delimiter or less constrained verb fails closed.
+  if (sql.includes(";")) return entry.table;
+  const columns = entry.columns ?? [];
+  const escapedTable = entry.table.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const update = sql.match(
+    new RegExp(
+      `^\\s*update\\s+(?:main\\s*\\.\\s*)?[\`"'\\[]?${escapedTable}[\`"'\\]]?\\s+set\\s+([\\s\\S]+?)(?:\\s+where\\b|\\s+returning\\b|$)`,
+      "iu",
+    ),
+  );
+  if (update) {
+    const assignments = update[1].split(",");
+    if (assignments.length === 0) return entry.table;
+    for (const assignment of assignments) {
+      const column = assignment
+        .match(
+          /^\s*(?:[`"']|\[)?([A-Za-z_][A-Za-z0-9_]*)(?:[`"']|\])?\s*=/u,
+        )?.[1]
+        ?.toLowerCase();
+      if (!column) return entry.table;
+      if (columns.includes(column)) return column;
+    }
+    return null;
+  }
+  return entry.table;
+}
+
+/**
+ * BrowserMock is the Web Editor's Native-compatibility boundary. Keep its
+ * generic SQL surface subject to the same active Writer Authority registry as
+ * Electron/MCP: protected rows are readable, but every mutation must use a
+ * typed canonical writer that can append Change Event + Maintenance Feed in
+ * the same transaction.
+ */
+function assertRendererDoesNotMutateProtectedWriter(sql: string): void {
+  const withoutComments = sql
+    .replace(/\/\*[\s\S]*?\*\//gu, "")
+    .replace(/--[^\r\n]*/gu, "");
+  const hadStatementDelimiter = withoutComments
+    .trim()
+    .replace(/;\s*$/u, "")
+    .includes(";");
+  const withoutTrailingSemicolon = withoutComments.trim().replace(/;\s*$/u, "");
+  const isSingleReadOnlySelect =
+    /^select\b/iu.test(withoutTrailingSemicolon) &&
+    !withoutTrailingSemicolon.includes(";");
+  if (isSingleReadOnlySelect) return;
+
+  const protectedEntry = ACTIVE_BROWSER_PROTECTED_WRITERS.find((entry) => {
+    if (!sqlReferencesTable(withoutTrailingSemicolon, entry.table))
+      return false;
+    return (
+      hadStatementDelimiter ||
+      protectedMutationColumn(withoutTrailingSemicolon, entry) !== null
+    );
+  });
+  if (!protectedEntry) return;
+  const protectedColumn = protectedMutationColumn(
+    withoutTrailingSemicolon,
+    protectedEntry,
+  );
+  throw new Error(
+    protectedEntry.protection === "columns" &&
+      protectedColumn !== protectedEntry.table
+      ? `PROTECTED_WRITER_SQL: denied mutation of protected column ${protectedEntry.table}.${protectedColumn} (writer ${protectedEntry.writer})`
+      : `PROTECTED_WRITER_SQL: denied mutation of protected narrative table ${protectedEntry.table} (writer ${protectedEntry.writer})`,
+  );
+}
+
+function assertRendererGenericSqlAuthorized(
+  sql: string,
+  allowProtectedWriterTestFixtures: boolean,
+): void {
+  assertRendererDoesNotMutateAiAudit(sql);
+  if (!allowProtectedWriterTestFixtures) {
+    assertRendererDoesNotMutateProtectedWriter(sql);
   }
 }
 
@@ -699,6 +819,13 @@ export interface BrowserMockOptions {
     request: BrowserAiAuthorizationRequest,
   ) => Promise<void>;
   aiTransport?: BrowserAiTransport;
+  /**
+   * Test-only escape hatch for seeding protected domain fixtures and installing
+   * rollback fault-injection triggers. Production builds ignore this flag.
+   */
+  allowProtectedWriterTestFixtures?: boolean;
+  /** Test-only observation point for the single genesis change-event probe. */
+  onTimelapseGenesisLedgerReadForTest?: () => void;
 }
 
 export interface BrowserAiAuthorizationRequest {
@@ -1236,6 +1363,109 @@ function canonicalizeAiAuditJson(value: unknown): unknown {
     );
   }
   return value;
+}
+
+function narrativeStateJson(value: unknown, label: string): string {
+  const validate = (candidate: unknown, path: string): void => {
+    if (
+      candidate === null ||
+      typeof candidate === "string" ||
+      typeof candidate === "boolean"
+    ) {
+      return;
+    }
+    if (typeof candidate === "number") {
+      if (!Number.isFinite(candidate)) {
+        throw new Error(`${label} ${path} must contain a finite JSON number`);
+      }
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      for (let index = 0; index < candidate.length; index += 1) {
+        if (!Object.hasOwn(candidate, index)) {
+          throw new Error(`${label} ${path} must not contain sparse arrays`);
+        }
+        validate(candidate[index], `${path}[${index}]`);
+      }
+      return;
+    }
+    if (candidate !== null && typeof candidate === "object") {
+      const prototype = Object.getPrototypeOf(candidate);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new Error(
+          `${label} ${path} must contain only plain JSON objects`,
+        );
+      }
+      for (const [key, child] of Object.entries(
+        candidate as Record<string, unknown>,
+      )) {
+        validate(child, `${path}.${key}`);
+      }
+      return;
+    }
+    throw new Error(`${label} ${path} must contain only JSON values`);
+  };
+  validate(value, "$state");
+  const serialized = JSON.stringify(canonicalizeAiAuditJson(value));
+  if (serialized === undefined) {
+    throw new Error(`${label} must be serializable canonical JSON`);
+  }
+  return serialized;
+}
+
+function browserNarrativeObjectIdentity(
+  objectKey: Record<string, unknown>,
+): string {
+  const kind = objectKey.kind;
+  if (typeof kind !== "string" || kind.length === 0) {
+    throw new Error("Narrative object key kind is required");
+  }
+  const fieldByKind: Record<string, string> = {
+    project: "projectId",
+    scene: "sceneId",
+    "codex-entry": "entryId",
+    "codex-relation": "relationId",
+    "codex-phase": "phaseId",
+    "codex-detail-definition": "definitionId",
+    "codex-detail-value": "valueId",
+    "chronicle-event": "eventId",
+    "plot-thread": "threadId",
+    "plot-marker": "markerId",
+    "plot-branch": "branchId",
+    foreshadow: "foreshadowId",
+    "foreshadow-setup": "setupId",
+    "foreshadow-payoff": "payoffId",
+    "temporal-node": "nodeId",
+    "temporal-constraint": "constraintId",
+    "temporal-projection": "projectionId",
+    calendar: "calendarRef",
+    component: "componentId",
+  };
+  if (kind === "import-source") {
+    return narrativeStateJson(
+      {
+        kind,
+        sourceSetId: objectKey.sourceSetId,
+        objectKey: objectKey.objectKey,
+      },
+      "Narrative object identity",
+    );
+  }
+  const field = fieldByKind[kind];
+  if (!field || objectKey[field] === null || objectKey[field] === undefined) {
+    throw new Error(`Narrative object key '${kind}' has no canonical identity`);
+  }
+  return narrativeStateJson(
+    { kind, [field]: objectKey[field] },
+    "Narrative object identity",
+  );
+}
+
+export function browserNarrativeStateDigest(
+  value: unknown,
+  label = "Narrative state",
+): string {
+  return `sha256:${sha256Hex(narrativeStateJson(value, label))}`;
 }
 
 async function sha256AuditHex(value: string): Promise<string> {
@@ -3198,7 +3428,11 @@ export async function createBrowserMock(
   } {
     const sql = args.sql as string;
     const params = args.params as SqlValue[];
-    assertRendererDoesNotMutateAiAudit(sql);
+    assertRendererGenericSqlAuthorized(
+      sql,
+      import.meta.env.MODE === "test" &&
+        options.allowProtectedWriterTestFixtures === true,
+    );
     const result = executeBrowserDbStatement(db, sql, params);
 
     if (methodAssumesMutation(args.method) || result.mutated) {
@@ -3257,6 +3491,7 @@ export async function createBrowserMock(
     version: number;
     changeEventUid: string;
     undoJournalId: string;
+    maintenanceTransactionId?: string;
   }
 
   const BROWSER_CODEX_CREATE_IDEMPOTENCY_DOMAIN = "agent_codex_create";
@@ -3313,6 +3548,10 @@ export async function createBrowserMock(
       readings: optionalString(payload.readings),
       tagsCache: optionalString(payload.tagsCache),
       parentId: optionalString(payload.parentId),
+      contextMode: optionalString(payload.contextMode),
+      icon: optionalString(payload.icon),
+      childrenBudget: optionalString(payload.childrenBudget),
+      notes: optionalString(payload.notes),
       sourceChatMessageId: optionalString(payload.sourceChatMessageId),
       model: optionalString(payload.model),
       chatMessageId: optionalString(payload.chatMessageId),
@@ -3395,6 +3634,735 @@ export async function createBrowserMock(
       throw new Error(`${key} must be an integer`);
     }
     return value;
+  }
+
+  const BROWSER_CANONICAL_WRITE_ORIGINS = new Set([
+    "human",
+    "ai-apply",
+    "import",
+    "undo",
+    "redo",
+    "restore",
+    "migration",
+  ]);
+
+  type BrowserCanonicalWriteOrigin =
+    | "human"
+    | "ai-apply"
+    | "import"
+    | "undo"
+    | "redo"
+    | "restore"
+    | "migration";
+
+  interface BrowserCanonicalWriteIdentity {
+    projectId: string;
+    requestId: string;
+    sessionId: string;
+    eventUid: string;
+    origin: BrowserCanonicalWriteOrigin;
+    originalTransactionId: string | null;
+    undoJournalId: string | null;
+  }
+
+  function browserCanonicalNullableIdentity(
+    payload: Record<string, unknown>,
+    key: "originalTransactionId" | "undoJournalId",
+    command: string,
+  ): string | null {
+    if (!Object.hasOwn(payload, key)) {
+      throw new Error(`${command}: ${key} is required`);
+    }
+    const value = payload[key];
+    if (value === null) return null;
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(`${command}: ${key} must be a non-empty string or null`);
+    }
+    return value;
+  }
+
+  function browserCanonicalWriteIdentity(
+    payload: Record<string, unknown>,
+    command: string,
+  ): BrowserCanonicalWriteIdentity {
+    const projectId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "projectId",
+    );
+    const requestId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "requestId",
+    );
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "sessionId",
+    );
+    const eventUid = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventUid",
+    );
+    const origin = browserCodexRequiredNonEmptyPayloadString(payload, "origin");
+    if (!BROWSER_CANONICAL_WRITE_ORIGINS.has(origin)) {
+      throw new Error(`${command}: unsupported Change Feed origin '${origin}'`);
+    }
+    const originalTransactionId = browserCanonicalNullableIdentity(
+      payload,
+      "originalTransactionId",
+      command,
+    );
+    const undoJournalId = browserCanonicalNullableIdentity(
+      payload,
+      "undoJournalId",
+      command,
+    );
+    const replaysHistory = origin === "undo" || origin === "redo";
+    if (
+      replaysHistory !==
+      (originalTransactionId !== null && undoJournalId !== null)
+    ) {
+      throw new Error(
+        `${command}: undo/redo requires originalTransactionId and undoJournalId`,
+      );
+    }
+    return {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid,
+      origin: origin as BrowserCanonicalWriteOrigin,
+      originalTransactionId,
+      undoJournalId,
+    };
+  }
+
+  async function browserCanonicalWriteFingerprint(
+    domain: string,
+    payload: Record<string, unknown>,
+  ): Promise<string> {
+    const normalized = structuredClone(payload);
+    delete normalized.requestId;
+    delete normalized.sessionId;
+    delete normalized.eventUid;
+    if (isRecord(normalized.changeEvent)) {
+      delete normalized.changeEvent.requestId;
+      delete normalized.changeEvent.sessionId;
+      delete normalized.changeEvent.eventUid;
+    }
+    return browserPayloadFingerprint(domain, normalized);
+  }
+
+  function browserCanonicalReceiptFromResponse(
+    response: Record<string, unknown>,
+  ): {
+    changeEventUid: string;
+    maintenanceTransactionId: string;
+    undoJournalId: string | null;
+  } {
+    const nested = isRecord(response.__writeReceipt)
+      ? response.__writeReceipt
+      : response;
+    if (
+      typeof nested.changeEventUid !== "string" ||
+      nested.changeEventUid.length === 0 ||
+      typeof nested.maintenanceTransactionId !== "string" ||
+      nested.maintenanceTransactionId.length === 0 ||
+      !(
+        nested.undoJournalId === undefined ||
+        nested.undoJournalId === null ||
+        (typeof nested.undoJournalId === "string" &&
+          nested.undoJournalId.length > 0)
+      )
+    ) {
+      throw new Error("canonical writer receipt is incomplete");
+    }
+    return {
+      changeEventUid: nested.changeEventUid,
+      maintenanceTransactionId: nested.maintenanceTransactionId,
+      undoJournalId:
+        typeof nested.undoJournalId === "string" ? nested.undoJournalId : null,
+    };
+  }
+
+  function loadBrowserCanonicalWriteReplay(input: {
+    domain: string;
+    identity: BrowserCanonicalWriteIdentity;
+    requestHash: string;
+    conflictMarker: string;
+  }): Record<string, unknown> | null {
+    const ledger = queryOne(
+      `SELECT project_id, payload_hash, tombstone_json
+         FROM idempotency_requests
+        WHERE domain = ? AND request_id = ?`,
+      [input.domain, input.identity.requestId],
+    );
+    if (!ledger) return null;
+    if (
+      String(ledger.project_id) !== input.identity.projectId ||
+      String(ledger.payload_hash) !== input.requestHash
+    ) {
+      throw new Error(
+        `${input.conflictMarker}: request id reused with different payload or project`,
+      );
+    }
+    let response: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(String(ledger.tombstone_json)) as unknown;
+      if (!isRecord(parsed)) throw new Error("receipt is not an object");
+      response = parsed;
+    } catch {
+      throw new Error(`${input.conflictMarker}: committed receipt is invalid`);
+    }
+    const receipt = browserCanonicalReceiptFromResponse(response);
+    const tracked = queryOne(
+      `SELECT 1 AS tracked
+         FROM narrative_change_transactions tx
+         JOIN change_events event
+           ON event.project_id = tx.project_id
+          AND event.event_uid = tx.source_change_event_uid
+        WHERE tx.project_id = ? AND tx.id = ?
+          AND tx.source_change_event_uid = ?`,
+      [
+        input.identity.projectId,
+        receipt.maintenanceTransactionId,
+        receipt.changeEventUid,
+      ],
+    );
+    if (!tracked) {
+      throw new Error(`${input.conflictMarker}: committed history is missing`);
+    }
+    return response;
+  }
+
+  function insertBrowserCanonicalWriteReceipt(input: {
+    domain: string;
+    identity: BrowserCanonicalWriteIdentity;
+    requestHash: string;
+    response: Record<string, unknown>;
+    now: string;
+  }): void {
+    db.run(
+      `INSERT INTO idempotency_requests
+        (domain, request_id, project_id, payload_hash, tombstone_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        input.domain,
+        input.identity.requestId,
+        input.identity.projectId,
+        input.requestHash,
+        JSON.stringify(input.response),
+        input.now,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `${input.domain}: idempotency receipt '${input.identity.requestId}' was not persisted`,
+      );
+    }
+  }
+
+  function loadBrowserTrackedWriteReplay(input: {
+    domain: string;
+    projectId: string;
+    requestId: string;
+    requestHash: string;
+    conflictMarker: string;
+  }): { response: unknown } | null {
+    const ledger = queryOne(
+      `SELECT project_id, payload_hash, tombstone_json
+         FROM idempotency_requests
+        WHERE domain = ? AND request_id = ?`,
+      [input.domain, input.requestId],
+    );
+    if (!ledger) return null;
+    if (
+      String(ledger.project_id) !== input.projectId ||
+      String(ledger.payload_hash) !== input.requestHash
+    ) {
+      throw new Error(
+        `${input.conflictMarker}: request id reused with different payload or project`,
+      );
+    }
+    let response: unknown;
+    try {
+      response = JSON.parse(String(ledger.tombstone_json)) as unknown;
+    } catch {
+      throw new Error(`${input.conflictMarker}: committed receipt is invalid`);
+    }
+    if (
+      !queryOne(
+        `SELECT 1 AS tracked
+           FROM narrative_change_transactions transaction_row
+           JOIN change_events canonical
+             ON canonical.project_id = transaction_row.project_id
+            AND canonical.event_uid = transaction_row.source_change_event_uid
+          WHERE transaction_row.project_id = ?
+            AND transaction_row.request_id = ?
+          LIMIT 1`,
+        [input.projectId, input.requestId],
+      )
+    ) {
+      throw new Error(`${input.conflictMarker}: committed history is missing`);
+    }
+    return { response };
+  }
+
+  function insertBrowserTrackedWriteReceipt(input: {
+    domain: string;
+    projectId: string;
+    requestId: string;
+    requestHash: string;
+    response: unknown;
+    now: string;
+  }): void {
+    db.run(
+      `INSERT INTO idempotency_requests
+        (domain, request_id, project_id, payload_hash, tombstone_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        input.domain,
+        input.requestId,
+        input.projectId,
+        input.requestHash,
+        JSON.stringify(input.response),
+        input.now,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `${input.domain}: idempotency receipt '${input.requestId}' was not persisted`,
+      );
+    }
+  }
+
+  interface BrowserNarrativeChangeEventInput {
+    objectKey: Record<string, unknown>;
+    changeKind:
+      | "content"
+      | "metadata"
+      | "order"
+      | "association"
+      | "catalog"
+      | "calendar"
+      | "policy"
+      | "schema"
+      | "unknown";
+    mutationKind: "create" | "update" | "delete" | "restore";
+    beforeVersion: number | null;
+    afterVersion: number | null;
+    /** Canonical JSON snapshot used when the aggregate has no numeric version. */
+    beforeState?: unknown;
+    /** Canonical JSON snapshot used when the aggregate has no numeric version. */
+    afterState?: unknown;
+    changedPaths: string[];
+    /** Full versioned Canonical Text impact, when this writer has a map. */
+    textImpact?: Record<string, unknown> | null;
+    structuralImpact?: Record<string, unknown> | null;
+  }
+
+  function normalizeBrowserStructuralImpact(
+    value: Record<string, unknown> | null | undefined,
+    fallbackPaths: string[],
+    eventOrdinal: number,
+  ): string {
+    const normalized: Record<string, unknown> =
+      value == null ? { changedPaths: fallbackPaths } : { ...value };
+    if (Object.hasOwn(normalized, "changedPaths")) {
+      if (!Array.isArray(normalized.changedPaths)) {
+        throw new Error(
+          `Narrative Change Feed events[${eventOrdinal}].structuralImpact.changedPaths must be an array`,
+        );
+      }
+      normalized.changedPaths = canonicalChangedPaths(
+        normalized.changedPaths.map((path) => {
+          if (typeof path !== "string") {
+            throw new Error(
+              `Narrative Change Feed events[${eventOrdinal}].structuralImpact.changedPaths must contain strings`,
+            );
+          }
+          return path;
+        }),
+      );
+    }
+    if (Object.hasOwn(normalized, "event")) {
+      if (
+        normalized.event !== "semantic-epoch-reset" &&
+        normalized.event !== "project-restored" &&
+        normalized.event !== "schema-component-changed"
+      ) {
+        throw new Error(
+          `Narrative Change Feed events[${eventOrdinal}].structuralImpact.event is unsupported`,
+        );
+      }
+      if (normalized.requiresFullRebuild !== true) {
+        throw new Error(
+          `Narrative Change Feed events[${eventOrdinal}].structuralImpact epoch markers require requiresFullRebuild=true`,
+        );
+      }
+    }
+    if (
+      Object.hasOwn(normalized, "requiresFullRebuild") &&
+      typeof normalized.requiresFullRebuild !== "boolean"
+    ) {
+      throw new Error(
+        `Narrative Change Feed events[${eventOrdinal}].structuralImpact.requiresFullRebuild must be boolean`,
+      );
+    }
+    return narrativeStateJson(
+      normalized,
+      `events[${eventOrdinal}].structuralImpact`,
+    );
+  }
+
+  function insertBrowserNarrativeChange(input: {
+    preparedEvent: PreparedBrowserTrackedChangeEvent;
+    identity: BrowserCanonicalWriteIdentity;
+    requestHash: string;
+    undoJournalId: string | null;
+    typedInverseEntity?: { domain: string; entityId: string };
+    occurredAt: string;
+    events: BrowserNarrativeChangeEventInput[];
+  }): string {
+    if (input.events.length === 0) {
+      throw new Error("Narrative Change Feed transaction requires an event");
+    }
+    const replaysHistory =
+      input.identity.origin === "undo" || input.identity.origin === "redo";
+    if (replaysHistory) {
+      if (input.identity.undoJournalId !== null) {
+        const original = queryOne(
+          `SELECT journal_transaction.cause_kind,
+                  journal_transaction.original_transaction_id,
+                  journal_transaction.undo_journal_id,
+                  journal.entity_id,
+                  journal_event.domain AS journal_domain,
+                  root_transaction.cause_kind AS root_cause_kind,
+                  root_event.domain AS root_domain,
+                  root_event.entity_id AS root_entity_id
+             FROM narrative_change_transactions journal_transaction
+             JOIN undo_journal journal
+               ON journal.id = journal_transaction.undo_journal_id
+              AND journal.project_id = journal_transaction.project_id
+             JOIN change_events journal_event
+               ON journal_event.project_id = journal.project_id
+              AND journal_event.event_uid = journal.change_event_uid
+             LEFT JOIN narrative_change_transactions root_transaction
+               ON root_transaction.project_id = journal_transaction.project_id
+              AND root_transaction.id = journal_transaction.original_transaction_id
+             LEFT JOIN change_events root_event
+               ON root_event.project_id = root_transaction.project_id
+              AND root_event.event_uid = root_transaction.source_change_event_uid
+            WHERE journal_transaction.project_id = ?
+              AND journal_transaction.undo_journal_id = ?
+            ORDER BY journal_transaction.source_change_event_sequence
+            LIMIT 1`,
+          [input.identity.projectId, input.identity.undoJournalId],
+        );
+        const directForward =
+          original?.cause_kind === "forward" &&
+          input.identity.originalTransactionId ===
+            queryOne(
+              `SELECT id FROM narrative_change_transactions
+                WHERE project_id = ? AND undo_journal_id = ?
+                  AND cause_kind = 'forward'
+                ORDER BY source_change_event_sequence LIMIT 1`,
+              [input.identity.projectId, input.identity.undoJournalId],
+            )?.id;
+        const typedInverse =
+          (original?.cause_kind === "undo" ||
+            original?.cause_kind === "redo") &&
+          original.original_transaction_id ===
+            input.identity.originalTransactionId &&
+          original.root_cause_kind === "forward" &&
+          original.root_domain === original.journal_domain &&
+          original.root_entity_id === original.entity_id;
+        if (!original || (!directForward && !typedInverse)) {
+          throw new Error(
+            "undo/redo lineage does not identify the project-scoped forward transaction",
+          );
+        }
+        if (
+          !queryOne(
+            "SELECT 1 AS owned FROM undo_journal WHERE id = ? AND project_id = ?",
+            [input.identity.undoJournalId, input.identity.projectId],
+          )
+        ) {
+          throw new Error("undo/redo journal is not in the requested project");
+        }
+      } else if (input.typedInverseEntity) {
+        const original = queryOne(
+          `SELECT 1 AS matched
+             FROM narrative_change_transactions transaction_row
+             JOIN change_events canonical
+               ON canonical.project_id = transaction_row.project_id
+              AND canonical.event_uid = transaction_row.source_change_event_uid
+            WHERE transaction_row.project_id = ?
+              AND transaction_row.id = ?
+              AND transaction_row.cause_kind = 'forward'
+              AND canonical.domain = ?
+              AND canonical.entity_id = ?`,
+          [
+            input.identity.projectId,
+            input.identity.originalTransactionId,
+            input.typedInverseEntity.domain,
+            input.typedInverseEntity.entityId,
+          ],
+        );
+        if (!original) {
+          throw new Error(
+            "typed inverse Change Feed lineage does not identify the same project entity",
+          );
+        }
+      } else {
+        throw new Error(
+          "undo/redo lineage does not identify a replay or typed inverse",
+        );
+      }
+    }
+
+    const eventRows = input.events.map((event, eventOrdinal) => {
+      if (
+        event.objectKey === null ||
+        Array.isArray(event.objectKey) ||
+        typeof event.objectKey !== "object" ||
+        typeof event.objectKey.kind !== "string" ||
+        event.objectKey.kind.length === 0
+      ) {
+        throw new Error(
+          `Narrative Change Feed events[${eventOrdinal}].objectKey is invalid`,
+        );
+      }
+      const objectKeyJson = narrativeStateJson(
+        event.objectKey,
+        `events[${eventOrdinal}].objectKey`,
+      );
+      const hasBeforeState = Object.hasOwn(event, "beforeState");
+      const hasAfterState = Object.hasOwn(event, "afterState");
+      if (hasBeforeState && event.beforeState === undefined) {
+        throw new Error("Narrative Change Feed beforeState must be JSON");
+      }
+      if (hasAfterState && event.afterState === undefined) {
+        throw new Error("Narrative Change Feed afterState must be JSON");
+      }
+      if (
+        event.beforeVersion !== null &&
+        (!Number.isSafeInteger(event.beforeVersion) || event.beforeVersion < 0)
+      ) {
+        throw new Error(
+          "Narrative Change Feed beforeVersion must be a non-negative integer",
+        );
+      }
+      if (
+        event.afterVersion !== null &&
+        (!Number.isSafeInteger(event.afterVersion) || event.afterVersion < 0)
+      ) {
+        throw new Error(
+          "Narrative Change Feed afterVersion must be a non-negative integer",
+        );
+      }
+      const hasBefore = event.beforeVersion !== null || hasBeforeState;
+      const hasAfter = event.afterVersion !== null || hasAfterState;
+      const validStateContract =
+        event.mutationKind === "create" || event.mutationKind === "restore"
+          ? !hasBefore && hasAfter
+          : event.mutationKind === "delete"
+            ? hasBefore && !hasAfter
+            : hasBefore && hasAfter;
+      if (!validStateContract) {
+        throw new Error(
+          `Narrative Change Feed ${event.mutationKind} state contract is invalid`,
+        );
+      }
+      let paths: string[];
+      try {
+        paths = canonicalChangedPaths(event.changedPaths);
+      } catch (error) {
+        throw new Error(
+          `Narrative Change Feed changedPaths are invalid: ${String(error)}`,
+          { cause: error },
+        );
+      }
+      const beforeDigest = hasBeforeState
+        ? browserNarrativeStateDigest(
+            event.beforeState,
+            `events[${eventOrdinal}].beforeState`,
+          )
+        : null;
+      const afterDigest = hasAfterState
+        ? browserNarrativeStateDigest(
+            event.afterState,
+            `events[${eventOrdinal}].afterState`,
+          )
+        : null;
+      const textImpactJson =
+        event.textImpact == null
+          ? null
+          : narrativeStateJson(
+              event.textImpact,
+              `events[${eventOrdinal}].textImpact`,
+            );
+      const structuralImpactJson = normalizeBrowserStructuralImpact(
+        event.structuralImpact,
+        paths,
+        eventOrdinal,
+      );
+      return {
+        event,
+        eventOrdinal,
+        objectKeyJson,
+        objectIdentity: browserNarrativeObjectIdentity(event.objectKey),
+        paths,
+        beforeDigest,
+        afterDigest,
+        textImpactJson,
+        structuralImpactJson,
+      };
+    });
+
+    type BrowserNarrativeHead = {
+      afterVersion: number | null;
+      afterDigest: string | null;
+    };
+    const heads = new Map<string, BrowserNarrativeHead | null>();
+    for (const row of eventRows) {
+      if (!heads.has(row.objectIdentity)) {
+        const existing = queryOne(
+          `SELECT after_version, after_digest
+             FROM narrative_change_object_heads
+            WHERE project_id = ? AND object_identity = ?`,
+          [input.identity.projectId, row.objectIdentity],
+        );
+        const previous: BrowserNarrativeHead | null = existing
+          ? {
+              afterVersion:
+                existing.after_version == null
+                  ? null
+                  : Number(existing.after_version),
+              afterDigest:
+                existing.after_digest == null
+                  ? null
+                  : String(existing.after_digest),
+            }
+          : null;
+        heads.set(row.objectIdentity, previous);
+      }
+      const previous = heads.get(row.objectIdentity) ?? null;
+      const isEpochReset =
+        row.event.objectKey.kind === "project" &&
+        row.event.structuralImpact?.event === "project-restored";
+      if (
+        !isEpochReset &&
+        previous !== null &&
+        (previous.afterVersion !== row.event.beforeVersion ||
+          previous.afterDigest !== row.beforeDigest)
+      ) {
+        throw new Error(
+          `Narrative Change Feed continuity mismatch for ${row.objectIdentity} ` +
+            `(previous version=${String(previous.afterVersion)} digest=${String(previous.afterDigest)}; ` +
+            `incoming version=${String(row.event.beforeVersion)} digest=${String(row.beforeDigest)})`,
+        );
+      }
+      heads.set(row.objectIdentity, {
+        afterVersion: row.event.afterVersion,
+        afterDigest: row.afterDigest,
+      });
+    }
+
+    insertPreparedBrowserTrackedChangeEvent(input.preparedEvent);
+    const transactionId = crypto.randomUUID();
+    db.run(
+      `INSERT INTO narrative_change_transactions
+        (id, project_id, request_id, source_domain,
+         source_change_event_uid, source_change_event_sequence, cause_kind,
+         origin, original_transaction_id, commit_id, journal_id,
+         undo_journal_id, application_ids_json, payload_digest, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, '[]', ?, ?)`,
+      [
+        transactionId,
+        input.identity.projectId,
+        input.identity.requestId,
+        input.preparedEvent.opType,
+        input.preparedEvent.eventUid,
+        input.preparedEvent.sequence,
+        input.identity.origin === "undo"
+          ? "undo"
+          : input.identity.origin === "redo"
+            ? "redo"
+            : "forward",
+        input.identity.origin,
+        input.identity.originalTransactionId,
+        input.undoJournalId,
+        `sha256:${input.requestHash}`,
+        input.occurredAt,
+      ],
+    );
+    for (const {
+      event,
+      eventOrdinal,
+      objectKeyJson,
+      objectIdentity,
+      paths,
+      beforeDigest,
+      afterDigest,
+      textImpactJson,
+      structuralImpactJson,
+    } of eventRows) {
+      const eventId = crypto.randomUUID();
+      db.run(
+        `INSERT INTO narrative_change_events
+          (id, project_id, transaction_id, canonical_change_event_uid,
+           canonical_sequence, event_ordinal, object_key_json, change_kind,
+           mutation_kind, before_version, before_digest, after_version,
+           after_digest, changed_paths_json, text_impact_json,
+           structural_impact_json, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          eventId,
+          input.identity.projectId,
+          transactionId,
+          input.preparedEvent.eventUid,
+          input.preparedEvent.sequence,
+          eventOrdinal,
+          objectKeyJson,
+          event.changeKind,
+          event.mutationKind,
+          event.beforeVersion,
+          beforeDigest,
+          event.afterVersion,
+          afterDigest,
+          JSON.stringify(paths),
+          textImpactJson,
+          structuralImpactJson,
+          input.occurredAt,
+        ],
+      );
+      db.run(
+        `INSERT INTO narrative_change_object_heads
+          (project_id, object_identity, after_version, after_digest, event_id,
+           canonical_sequence, event_ordinal, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, object_identity) DO UPDATE SET
+           after_version = excluded.after_version,
+           after_digest = excluded.after_digest,
+           event_id = excluded.event_id,
+           canonical_sequence = excluded.canonical_sequence,
+           event_ordinal = excluded.event_ordinal,
+           updated_at = excluded.updated_at
+         WHERE excluded.canonical_sequence > narrative_change_object_heads.canonical_sequence
+            OR (excluded.canonical_sequence = narrative_change_object_heads.canonical_sequence
+                AND excluded.event_ordinal > narrative_change_object_heads.event_ordinal)`,
+        [
+          input.identity.projectId,
+          objectIdentity,
+          event.afterVersion,
+          afterDigest,
+          eventId,
+          input.preparedEvent.sequence,
+          eventOrdinal,
+          input.occurredAt,
+        ],
+      );
+    }
+    return transactionId;
   }
 
   function browserCodexOptionalPayloadNumber(
@@ -3630,6 +4598,13 @@ export async function createBrowserMock(
       version: Number(row.version),
       authorshipSpans: loadBrowserCodexAuthorshipSpans(entryId),
     };
+  }
+
+  function browserCanonicalCodexEntryState(
+    snapshot: BrowserCodexEntrySnapshot,
+  ): Omit<BrowserCodexEntrySnapshot, "authorshipSpans"> {
+    const { authorshipSpans: _authorshipSpans, ...root } = snapshot;
+    return root;
   }
 
   function parseBrowserCodexEntrySnapshot(
@@ -3975,11 +4950,20 @@ export async function createBrowserMock(
         "committed post-state or change event is invalid",
       );
     }
+    const tracked = queryOne(
+      `SELECT id FROM narrative_change_transactions
+        WHERE project_id = ? AND source_change_event_uid = ?`,
+      [input.projectId, result.changeEventUid],
+    );
+    if (!tracked) {
+      return browserCodexCreateConflict("original Change Feed is missing");
+    }
     return {
       entityId: result.entityId,
       version: Number(journal.result_version),
       changeEventUid: result.changeEventUid,
       undoJournalId: result.undoJournalId,
+      maintenanceTransactionId: String(tracked.id),
     };
   }
 
@@ -4043,6 +5027,12 @@ export async function createBrowserMock(
     };
   }
 
+  function browserCanonicalPhaseState(
+    snapshot: BrowserPhaseAggregateSnapshot,
+  ): BrowserPhaseAggregateSnapshot {
+    return snapshot;
+  }
+
   function replaceBrowserPhaseOverrides(
     phaseId: string,
     projectId: string,
@@ -4085,18 +5075,30 @@ export async function createBrowserMock(
 
   async function handleBrowserPhasePatch(
     p: Record<string, unknown>,
+    identity: BrowserCanonicalWriteIdentity,
   ): Promise<Record<string, unknown>> {
     const phaseId = String(p.phaseId);
-    const projectId = String(p.projectId);
-    const sessionId = String(p.sessionId);
+    const projectId = identity.projectId;
+    const sessionId = identity.sessionId;
     const surface = String(p.surface ?? "manual");
     const baseVersion = Number(p.baseVersion);
-    const eventUid = crypto.randomUUID();
-    const undoJournalId = crypto.randomUUID();
+    const eventUid = identity.eventUid;
+    const undoJournalId = identity.undoJournalId ?? identity.requestId;
     const timestamp = Date.now();
     const now = new Date(timestamp).toISOString();
 
     return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        "agent_codex_mutate",
+        p,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "agent_codex_mutate",
+        identity,
+        requestHash,
+        conflictMarker: "CODEX_MUTATION_REQUEST_CONFLICT",
+      });
+      if (replay) return replay;
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
         projectId,
@@ -4112,6 +5114,16 @@ export async function createBrowserMock(
 
       db.run("BEGIN IMMEDIATE");
       try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "agent_codex_mutate",
+          identity,
+          requestHash,
+          conflictMarker: "CODEX_MUTATION_REQUEST_CONFLICT",
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
         const before = loadBrowserPhaseAggregateSnapshot(phaseId, projectId);
         if (!before) {
           throw new Error(
@@ -4182,34 +5194,74 @@ export async function createBrowserMock(
         if (!after || after.version !== baseVersion + 1) {
           throw new Error("phase version conflict");
         }
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
-        db.run(
-          `INSERT INTO undo_journal
-            (id, project_id, surface, entity_kind, entity_id, op_kind,
-             before_json, after_json, base_version, result_version,
-             change_event_uid, created_at)
-           VALUES (?, ?, ?, 'codex_phase', ?, 'update', ?, ?, ?, ?, ?, ?)`,
-          [
-            undoJournalId,
-            projectId,
-            surface,
-            phaseId,
-            JSON.stringify(before),
-            JSON.stringify(after),
-            before.version,
-            after.version,
-            eventUid,
-            now,
+        if (identity.origin !== "undo" && identity.origin !== "redo") {
+          db.run(
+            `INSERT INTO undo_journal
+              (id, project_id, surface, entity_kind, entity_id, op_kind,
+               before_json, after_json, base_version, result_version,
+               change_event_uid, created_at)
+             VALUES (?, ?, ?, 'codex_phase', ?, 'update', ?, ?, ?, ?, ?, ?)`,
+            [
+              undoJournalId,
+              projectId,
+              surface,
+              phaseId,
+              JSON.stringify(before),
+              JSON.stringify(after),
+              before.version,
+              after.version,
+              eventUid,
+              now,
+            ],
+          );
+        }
+        const changedPaths = [
+          ["anchorNodeId", "/anchorNodeId"],
+          ["contentOverride", "/contentOverride"],
+          ["contextModeOverride", "/contextModeOverride"],
+          ["detailOverrides", "/detailOverrides"],
+          ["label", "/label"],
+          ["summaryOverride", "/summaryOverride"],
+        ]
+          .filter(([field]) => Object.hasOwn(p, field))
+          .map(([, path]) => path)
+          .sort();
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "codex-phase", phaseId },
+              changeKind: "metadata",
+              mutationKind: "update",
+              beforeVersion: before.version,
+              beforeState: browserCanonicalPhaseState(before),
+              afterVersion: after.version,
+              afterState: browserCanonicalPhaseState(after),
+              changedPaths: changedPaths.length > 0 ? changedPaths : ["/"],
+            },
           ],
-        );
-        db.run("COMMIT");
-        options.onDatabaseDirty?.();
-        return {
+        });
+        const response = {
           entityId: phaseId,
           version: after.version,
           changeEventUid: eventUid,
           undoJournalId,
+          maintenanceTransactionId,
         };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "agent_codex_mutate",
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -4340,22 +5392,773 @@ export async function createBrowserMock(
     }
   }
 
+  type BrowserSnippetSnapshot = {
+    id: string;
+    projectId: string;
+    title: string;
+    content: string;
+    tagsCache: string | null;
+    contentSource: string | null;
+    sceneId: string | null;
+    sourceChatMessageId: string | null;
+    usageCount: number;
+    createdAt: string;
+    updatedAt: string;
+    version: number;
+  };
+
+  type BrowserCanonicalSnippetState = Omit<
+    BrowserSnippetSnapshot,
+    "usageCount"
+  >;
+
+  function loadBrowserSnippetSnapshot(
+    snippetId: string,
+    projectId: string,
+  ): BrowserSnippetSnapshot | null {
+    const row = queryOne(
+      `SELECT id, project_id, title, content, tags_cache, content_source,
+              scene_id, source_chat_message_id, usage_count, created_at,
+              updated_at, version
+         FROM snippets WHERE id = ? AND project_id = ?`,
+      [snippetId, projectId],
+    );
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      projectId: String(row.project_id),
+      title: String(row.title),
+      content: String(row.content),
+      tagsCache: typeof row.tags_cache === "string" ? row.tags_cache : null,
+      contentSource:
+        typeof row.content_source === "string" ? row.content_source : null,
+      sceneId: typeof row.scene_id === "string" ? row.scene_id : null,
+      sourceChatMessageId:
+        typeof row.source_chat_message_id === "string"
+          ? row.source_chat_message_id
+          : null,
+      usageCount: Number(row.usage_count),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
+      version: Number(row.version),
+    };
+  }
+
+  function browserCanonicalSnippetState(
+    snapshot: BrowserSnippetSnapshot,
+  ): BrowserCanonicalSnippetState {
+    const { usageCount: _usageCount, ...root } = snapshot;
+    return root;
+  }
+
+  function parseBrowserSnippetSnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): BrowserSnippetSnapshot {
+    if (typeof raw !== "string") {
+      throw new Error(`snippet journal '${journalId}' snapshot is missing`);
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error(`snippet journal '${journalId}' snapshot is invalid`);
+    }
+    if (!isRecord(parsed)) {
+      throw new Error(`snippet journal '${journalId}' snapshot is invalid`);
+    }
+    for (const key of [
+      "id",
+      "projectId",
+      "title",
+      "content",
+      "createdAt",
+      "updatedAt",
+    ]) {
+      if (typeof parsed[key] !== "string") {
+        throw new Error(`snippet journal '${journalId}' snapshot is invalid`);
+      }
+    }
+    for (const key of ["usageCount", "version"]) {
+      if (
+        typeof parsed[key] !== "number" ||
+        !Number.isSafeInteger(parsed[key]) ||
+        parsed[key] < 0
+      ) {
+        throw new Error(`snippet journal '${journalId}' snapshot is invalid`);
+      }
+    }
+    for (const key of [
+      "tagsCache",
+      "contentSource",
+      "sceneId",
+      "sourceChatMessageId",
+    ]) {
+      if (parsed[key] !== null && typeof parsed[key] !== "string") {
+        throw new Error(`snippet journal '${journalId}' snapshot is invalid`);
+      }
+    }
+    return parsed as BrowserSnippetSnapshot;
+  }
+
+  function assertBrowserSnippetSnapshotIdentity(
+    snapshot: BrowserSnippetSnapshot,
+    projectId: string,
+    snippetId: string,
+    journalId: string,
+  ): void {
+    if (snapshot.id !== snippetId || snapshot.projectId !== projectId) {
+      throw new Error(`snippet journal '${journalId}' identity mismatch`);
+    }
+  }
+
+  function validateBrowserSnippetReferences(
+    projectId: string,
+    sceneId: string | null,
+    sourceChatMessageId: string | null,
+  ): void {
+    if (
+      sceneId !== null &&
+      !queryOne(
+        `SELECT 1 AS owned FROM tree_nodes
+          WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+        [sceneId, projectId],
+      )
+    ) {
+      throw new Error(`Snippet scene is not in project '${projectId}'`);
+    }
+    if (
+      sourceChatMessageId !== null &&
+      !queryOne(
+        `SELECT 1 AS owned
+           FROM chat_messages message
+           JOIN chat_sessions session ON session.id = message.session_id
+          WHERE message.id = ? AND session.project_id = ?`,
+        [sourceChatMessageId, projectId],
+      )
+    ) {
+      throw new Error(
+        `Snippet source chat message is not in project '${projectId}'`,
+      );
+    }
+  }
+
+  function insertBrowserSnippetSnapshot(
+    snapshot: BrowserSnippetSnapshot,
+    projectId: string,
+    snippetId: string,
+    version: number,
+    now: string,
+  ): void {
+    assertBrowserSnippetSnapshotIdentity(
+      snapshot,
+      projectId,
+      snippetId,
+      "replay",
+    );
+    validateBrowserSnippetReferences(
+      projectId,
+      snapshot.sceneId,
+      snapshot.sourceChatMessageId,
+    );
+    db.run(
+      `INSERT INTO snippets
+        (id, project_id, title, content, tags_cache, content_source,
+         scene_id, source_chat_message_id, usage_count, version,
+         created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        snippetId,
+        projectId,
+        snapshot.title,
+        snapshot.content,
+        snapshot.tagsCache,
+        snapshot.contentSource,
+        snapshot.sceneId,
+        snapshot.sourceChatMessageId,
+        snapshot.usageCount,
+        version,
+        snapshot.createdAt,
+        now,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`snippet '${snippetId}' was not restored`);
+    }
+  }
+
+  function restoreBrowserSnippetSnapshot(
+    snapshot: BrowserSnippetSnapshot,
+    projectId: string,
+    snippetId: string,
+    expectedVersion: number,
+    replayVersion: number,
+    now: string,
+  ): void {
+    assertBrowserSnippetSnapshotIdentity(
+      snapshot,
+      projectId,
+      snippetId,
+      "replay",
+    );
+    validateBrowserSnippetReferences(
+      projectId,
+      snapshot.sceneId,
+      snapshot.sourceChatMessageId,
+    );
+    db.run(
+      `UPDATE snippets SET title = ?, content = ?, tags_cache = ?,
+              content_source = ?, scene_id = ?, source_chat_message_id = ?,
+              usage_count = ?, version = ?, updated_at = ?
+        WHERE id = ? AND project_id = ? AND version = ?`,
+      [
+        snapshot.title,
+        snapshot.content,
+        snapshot.tagsCache,
+        snapshot.contentSource,
+        snapshot.sceneId,
+        snapshot.sourceChatMessageId,
+        snapshot.usageCount,
+        replayVersion,
+        now,
+        snippetId,
+        projectId,
+        expectedVersion,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`snippet '${snippetId}' version conflict during replay`);
+    }
+  }
+
+  function rewriteBrowserSnippetJournalStateToken(
+    projectId: string,
+    snippetId: string,
+    previousVersion: number,
+    replayVersion: number,
+  ): void {
+    db.run(
+      `UPDATE undo_journal
+          SET base_version = CASE
+                WHEN base_version = ? THEN ? ELSE base_version END,
+              result_version = CASE
+                WHEN result_version = ? THEN ? ELSE result_version END
+        WHERE project_id = ? AND entity_kind = 'snippet' AND entity_id = ?
+          AND (base_version = ? OR result_version = ?)`,
+      [
+        previousVersion,
+        replayVersion,
+        previousVersion,
+        replayVersion,
+        projectId,
+        snippetId,
+        previousVersion,
+        previousVersion,
+      ],
+    );
+    if (db.getRowsModified() === 0) {
+      throw new Error(
+        `snippet undo journal chain for '${snippetId}' lost state version ${previousVersion}`,
+      );
+    }
+  }
+
+  const BROWSER_UNDO_REPLAY_DOMAIN = "agent_apply_undo_journal";
+  const BROWSER_UNDO_REPLAY_CONFLICT = "UNDO_JOURNAL_IDEMPOTENCY_CONFLICT";
+
+  function browserUndoReplayForwardTransaction(
+    projectId: string,
+    journalId: string,
+  ): string {
+    const forward = queryOne(
+      `SELECT COALESCE(
+                CASE
+                  WHEN transaction_row.cause_kind = 'forward'
+                    THEN transaction_row.id
+                  ELSE transaction_row.original_transaction_id
+                END,
+                transaction_row.id
+              ) AS root_transaction_id
+         FROM narrative_change_transactions transaction_row
+         JOIN undo_journal journal
+           ON journal.id = transaction_row.undo_journal_id
+          AND journal.project_id = transaction_row.project_id
+         JOIN change_events journal_event
+           ON journal_event.project_id = journal.project_id
+          AND journal_event.event_uid = journal.change_event_uid
+         LEFT JOIN narrative_change_transactions root_transaction
+           ON root_transaction.project_id = transaction_row.project_id
+          AND root_transaction.id = transaction_row.original_transaction_id
+         LEFT JOIN change_events root_event
+           ON root_event.project_id = root_transaction.project_id
+          AND root_event.event_uid = root_transaction.source_change_event_uid
+        WHERE transaction_row.project_id = ?
+          AND transaction_row.undo_journal_id = ?
+          AND (
+            transaction_row.cause_kind = 'forward'
+            OR (
+              transaction_row.cause_kind IN ('undo', 'redo')
+              AND root_transaction.cause_kind = 'forward'
+              AND root_event.domain = journal_event.domain
+              AND root_event.entity_id = journal.entity_id
+            )
+          )
+        ORDER BY transaction_row.source_change_event_sequence
+        LIMIT 1`,
+      [projectId, journalId],
+    );
+    if (!forward) {
+      throw new Error(
+        `browser undo journal '${journalId}' has no project-scoped forward Change Feed transaction`,
+      );
+    }
+    return String(forward.root_transaction_id);
+  }
+
+  function loadBrowserUndoReplay(
+    identity: BrowserCanonicalWriteIdentity,
+    requestHash: string,
+  ): Record<string, unknown> | null {
+    const replay = loadBrowserCanonicalWriteReplay({
+      domain: BROWSER_UNDO_REPLAY_DOMAIN,
+      identity,
+      requestHash,
+      conflictMarker: BROWSER_UNDO_REPLAY_CONFLICT,
+    });
+    if (!replay) return null;
+    const receipt = browserCanonicalReceiptFromResponse(replay);
+    if (receipt.undoJournalId !== identity.undoJournalId) {
+      throw new Error(
+        `${BROWSER_UNDO_REPLAY_CONFLICT}: committed replay journal is invalid`,
+      );
+    }
+    const lineage = queryOne(
+      `SELECT cause_kind, origin, original_transaction_id, undo_journal_id
+         FROM narrative_change_transactions
+        WHERE project_id = ? AND id = ?`,
+      [identity.projectId, receipt.maintenanceTransactionId],
+    );
+    if (
+      !lineage ||
+      lineage.cause_kind !== identity.origin ||
+      lineage.origin !== identity.origin ||
+      lineage.original_transaction_id !== identity.originalTransactionId ||
+      lineage.undo_journal_id !== identity.undoJournalId
+    ) {
+      throw new Error(
+        `${BROWSER_UNDO_REPLAY_CONFLICT}: committed replay lineage is invalid`,
+      );
+    }
+    return replay;
+  }
+
+  function browserUndoReplayCanonicalDetails(
+    journal: Record<string, SqlValue>,
+    direction: "undo" | "redo",
+    journalId: string,
+  ): Record<string, unknown> {
+    const details: Record<string, unknown> = {
+      direction,
+      opKind: String(journal.op_kind),
+      journalId,
+    };
+    if (journal.entity_kind !== "event") return details;
+
+    const snapshotKind = browserEventJournalSnapshotKind(
+      journal.op_kind === "create" ? journal.after_json : journal.before_json,
+      journalId,
+    );
+    const targetRaw =
+      journal.op_kind === "create"
+        ? journal.after_json
+        : journal.op_kind === "delete"
+          ? journal.before_json
+          : direction === "undo"
+            ? journal.before_json
+            : journal.after_json;
+    if (snapshotKind === "scene-link") {
+      const snapshot = parseBrowserSceneEventLinkBatchSnapshot(
+        targetRaw,
+        journalId,
+      );
+      return {
+        ...details,
+        eventId: snapshot.eventId,
+        sceneIds: snapshot.sceneIds,
+        linked: snapshot.linked,
+      };
+    }
+    if (snapshotKind === "relation") {
+      const snapshot = parseBrowserEventRelationSnapshot(targetRaw, journalId);
+      return {
+        ...details,
+        causeEventId: snapshot.causeEventId,
+        effectEventId: snapshot.effectEventId,
+        linked: snapshot.linked,
+      };
+    }
+    if (snapshotKind === "participants") {
+      const snapshot = parseBrowserEventParticipantsSnapshot(
+        targetRaw,
+        journalId,
+      );
+      return {
+        ...details,
+        eventId: snapshot.eventId,
+        participantCodexEntryIds: snapshot.participants
+          .map((participant) => participant.codexEntryId)
+          .sort(),
+      };
+    }
+
+    const snapshot = parseBrowserEventAggregateSnapshot(targetRaw, journalId);
+    const relatedEventIds = new Set<string>();
+    snapshot.relations.asCause.forEach((relation) =>
+      relatedEventIds.add(String(relation.effectEventId)),
+    );
+    snapshot.relations.asEffect.forEach((relation) =>
+      relatedEventIds.add(String(relation.causeEventId)),
+    );
+    return {
+      ...details,
+      eventId: String(snapshot.eventData.id),
+      sceneIds: snapshot.sceneLinks.map((link) => link.sceneId).sort(),
+      participantCodexEntryIds: snapshot.participants
+        .map((participant) => participant.codexEntryId)
+        .sort(),
+      relatedEventIds: [...relatedEventIds].sort(),
+    };
+  }
+
+  function browserUndoReplayNarrativeEvent(
+    journal: Record<string, SqlValue>,
+    direction: "undo" | "redo",
+    journalId: string,
+  ): BrowserNarrativeChangeEventInput {
+    const entityKind = String(journal.entity_kind);
+    const entityId = String(journal.entity_id);
+    const opKind = String(journal.op_kind);
+    const baseVersion = Number(journal.base_version);
+    const resultVersion = Number(journal.result_version);
+    if (
+      !Number.isSafeInteger(baseVersion) ||
+      !Number.isSafeInteger(resultVersion)
+    ) {
+      throw new Error(`undo journal '${journalId}' has invalid state tokens`);
+    }
+
+    let mutationKind: BrowserNarrativeChangeEventInput["mutationKind"];
+    let beforeVersion: number | null;
+    let afterVersion: number | null;
+    if (opKind === "create") {
+      mutationKind = direction === "undo" ? "delete" : "restore";
+      beforeVersion = direction === "undo" ? resultVersion : null;
+      afterVersion = direction === "redo" ? resultVersion : null;
+    } else if (opKind === "delete") {
+      mutationKind = direction === "undo" ? "restore" : "delete";
+      beforeVersion = direction === "redo" ? resultVersion : null;
+      afterVersion = direction === "undo" ? resultVersion : null;
+    } else if (opKind === "update") {
+      mutationKind = "update";
+      beforeVersion = direction === "undo" ? resultVersion : baseVersion;
+      afterVersion = direction === "undo" ? baseVersion : resultVersion;
+    } else {
+      throw new Error(
+        `undo journal '${journalId}' has unsupported op '${opKind}'`,
+      );
+    }
+
+    let objectKey: Record<string, unknown>;
+    let changeKind: BrowserNarrativeChangeEventInput["changeKind"] = "metadata";
+    let changedPaths = ["/"];
+    if (entityKind === "codex_entry") {
+      objectKey = { kind: "codex-entry", entryId: entityId };
+    } else if (entityKind === "codex_phase") {
+      objectKey = { kind: "codex-phase", phaseId: entityId };
+    } else if (entityKind === "snippet") {
+      objectKey = { kind: "component", componentId: `snippet:${entityId}` };
+      const snapshotRaw =
+        direction === "undo"
+          ? (journal.before_json ?? journal.after_json)
+          : (journal.after_json ?? journal.before_json);
+      const snapshot = parseBrowserSnippetSnapshot(snapshotRaw, journalId);
+      if (snapshot.id !== entityId) {
+        throw new Error(`snippet journal '${journalId}' identity mismatch`);
+      }
+      if (opKind === "update") {
+        const before = parseBrowserSnippetSnapshot(
+          journal.before_json,
+          journalId,
+        );
+        const after = parseBrowserSnippetSnapshot(
+          journal.after_json,
+          journalId,
+        );
+        changedPaths = [
+          ["content", before.content, after.content],
+          ["sceneId", before.sceneId, after.sceneId],
+          ["tagsCache", before.tagsCache, after.tagsCache],
+          ["title", before.title, after.title],
+        ]
+          .filter(([, left, right]) => left !== right)
+          .map(([field]) => `/${String(field)}`)
+          .sort();
+        if (changedPaths.length === 0) changedPaths = ["/"];
+      } else {
+        changedPaths = ["/"];
+      }
+      changeKind = changedPaths.includes("/content") ? "content" : "metadata";
+    } else if (entityKind === "foreshadow") {
+      objectKey = { kind: "foreshadow", foreshadowId: entityId };
+    } else if (entityKind === "event") {
+      const snapshotKind = browserEventJournalSnapshotKind(
+        journal.op_kind === "create" ? journal.after_json : journal.before_json,
+        journalId,
+      );
+      if (snapshotKind === "relation") {
+        const snapshot = parseBrowserEventRelationSnapshot(
+          direction === "undo" ? journal.before_json : journal.after_json,
+          journalId,
+        );
+        objectKey = {
+          kind: "chronicle-event",
+          eventId: snapshot.causeEventId,
+        };
+        changeKind = "association";
+        changedPaths = ["/relations"];
+      } else {
+        objectKey = { kind: "chronicle-event", eventId: entityId };
+        if (snapshotKind === "scene-link") {
+          changeKind = "association";
+          changedPaths = ["/sceneIds"];
+        } else if (snapshotKind === "participants") {
+          changeKind = "association";
+          changedPaths = ["/participants"];
+        }
+      }
+    } else {
+      throw new Error(
+        `browser undo does not support entity kind '${entityKind}'`,
+      );
+    }
+    return {
+      objectKey,
+      changeKind,
+      mutationKind,
+      beforeVersion,
+      afterVersion,
+      changedPaths,
+    };
+  }
+
+  function browserEventReplayAffectedIds(
+    journal: Record<string, SqlValue>,
+    journalId: string,
+  ): string[] {
+    const entityId = String(journal.entity_id);
+    const snapshotKind = browserEventJournalSnapshotKind(
+      journal.op_kind === "create" ? journal.after_json : journal.before_json,
+      journalId,
+    );
+    const ids = new Set<string>([entityId]);
+    if (snapshotKind === "relation") {
+      const snapshot = parseBrowserEventRelationSnapshot(
+        journal.op_kind === "create" ? journal.after_json : journal.before_json,
+        journalId,
+      );
+      ids.add(snapshot.causeEventId);
+      ids.add(snapshot.effectEventId);
+    } else if (snapshotKind === "aggregate" && journal.op_kind === "delete") {
+      const snapshot = parseBrowserEventAggregateSnapshot(
+        journal.before_json,
+        journalId,
+      );
+      snapshot.relations.asCause.forEach((relation) =>
+        ids.add(relation.effectEventId),
+      );
+      snapshot.relations.asEffect.forEach((relation) =>
+        ids.add(relation.causeEventId),
+      );
+    }
+    return [...ids].sort(compareUtf8);
+  }
+
+  function loadBrowserEventReplayStates(
+    eventIds: string[],
+    projectId: string,
+  ): Map<string, BrowserEventSnapshot | null> {
+    return new Map(
+      eventIds.map((eventId) => [
+        eventId,
+        loadBrowserEventSnapshot(eventId, projectId),
+      ]),
+    );
+  }
+
+  function browserEventReplayNarrativeEvents(
+    journal: Record<string, SqlValue>,
+    journalId: string,
+    eventIds: string[],
+    beforeStates: Map<string, BrowserEventSnapshot | null>,
+    afterStates: Map<string, BrowserEventSnapshot | null>,
+  ): BrowserNarrativeChangeEventInput[] {
+    const entityId = String(journal.entity_id);
+    const snapshotKind = browserEventJournalSnapshotKind(
+      journal.op_kind === "create" ? journal.after_json : journal.before_json,
+      journalId,
+    );
+    return eventIds.map((eventId) => {
+      const beforeState = beforeStates.get(eventId) ?? null;
+      const afterState = afterStates.get(eventId) ?? null;
+      if (beforeState === null && afterState === null) {
+        throw new Error(
+          `event '${eventId}' is missing on both sides of undo replay`,
+        );
+      }
+      const mutationKind: BrowserNarrativeChangeEventInput["mutationKind"] =
+        beforeState === null
+          ? "restore"
+          : afterState === null
+            ? "delete"
+            : "update";
+      const isRelatedDeleteRoot =
+        snapshotKind === "aggregate" &&
+        journal.op_kind === "delete" &&
+        eventId !== entityId;
+      const changeKind: BrowserNarrativeChangeEventInput["changeKind"] =
+        snapshotKind === "scene-link" ||
+        snapshotKind === "participants" ||
+        snapshotKind === "relation" ||
+        isRelatedDeleteRoot
+          ? "association"
+          : "metadata";
+      const changedPaths =
+        snapshotKind === "scene-link"
+          ? ["/sceneIds"]
+          : snapshotKind === "participants"
+            ? ["/participants"]
+            : snapshotKind === "relation" || isRelatedDeleteRoot
+              ? ["/relations"]
+              : ["/"];
+      return {
+        objectKey: { kind: "chronicle-event", eventId },
+        changeKind,
+        mutationKind,
+        beforeVersion:
+          beforeState === null ? null : Number(beforeState.eventData.version),
+        ...(beforeState === null ? {} : { beforeState }),
+        afterVersion:
+          afterState === null ? null : Number(afterState.eventData.version),
+        ...(afterState === null ? {} : { afterState }),
+        changedPaths,
+      };
+    });
+  }
+
+  function loadBrowserUndoReplayRootState(
+    journal: Record<string, SqlValue>,
+    projectId: string,
+  ):
+    | BrowserCodexEntrySnapshot
+    | BrowserPhaseAggregateSnapshot
+    | BrowserSnippetSnapshot
+    | BrowserForeshadowAggregateSnapshot
+    | null {
+    const entityId = String(journal.entity_id);
+    if (journal.entity_kind === "codex_entry") {
+      return loadBrowserCodexEntrySnapshot(entityId, projectId);
+    }
+    if (journal.entity_kind === "snippet") {
+      return loadBrowserSnippetSnapshot(entityId, projectId);
+    }
+    if (journal.entity_kind === "codex_phase") {
+      return loadBrowserPhaseAggregateSnapshot(entityId, projectId);
+    }
+    if (journal.entity_kind === "foreshadow") {
+      return loadBrowserForeshadowAggregateSnapshot(entityId, projectId);
+    }
+    return null;
+  }
+
+  function browserUndoReplayNarrativeEventWithRootState(
+    journal: Record<string, SqlValue>,
+    direction: "undo" | "redo",
+    journalId: string,
+    beforeState:
+      | BrowserCodexEntrySnapshot
+      | BrowserPhaseAggregateSnapshot
+      | BrowserSnippetSnapshot
+      | BrowserForeshadowAggregateSnapshot
+      | null,
+    afterState:
+      | BrowserCodexEntrySnapshot
+      | BrowserPhaseAggregateSnapshot
+      | BrowserSnippetSnapshot
+      | BrowserForeshadowAggregateSnapshot
+      | null,
+  ): BrowserNarrativeChangeEventInput {
+    const event = browserUndoReplayNarrativeEvent(
+      journal,
+      direction,
+      journalId,
+    );
+    return {
+      ...event,
+      ...(beforeState === null
+        ? {}
+        : {
+            beforeState:
+              journal.entity_kind === "codex_entry"
+                ? browserCanonicalCodexEntryState(
+                    beforeState as BrowserCodexEntrySnapshot,
+                  )
+                : journal.entity_kind === "codex_phase"
+                  ? browserCanonicalPhaseState(
+                      beforeState as BrowserPhaseAggregateSnapshot,
+                    )
+                  : journal.entity_kind === "foreshadow"
+                    ? (beforeState as BrowserForeshadowAggregateSnapshot)
+                    : browserCanonicalSnippetState(
+                        beforeState as BrowserSnippetSnapshot,
+                      ),
+          }),
+      ...(afterState === null
+        ? {}
+        : {
+            afterState:
+              journal.entity_kind === "codex_entry"
+                ? browserCanonicalCodexEntryState(
+                    afterState as BrowserCodexEntrySnapshot,
+                  )
+                : journal.entity_kind === "codex_phase"
+                  ? browserCanonicalPhaseState(
+                      afterState as BrowserPhaseAggregateSnapshot,
+                    )
+                  : journal.entity_kind === "foreshadow"
+                    ? (afterState as BrowserForeshadowAggregateSnapshot)
+                    : browserCanonicalSnippetState(
+                        afterState as BrowserSnippetSnapshot,
+                      ),
+          }),
+    };
+  }
+
   async function handleBrowserApplyUndoJournal(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const p = (args.payload ?? {}) as Record<string, unknown>;
-    const requestId = String(p.requestId);
-    const projectId = String(p.projectId);
-    const sessionId = String(p.sessionId);
-    const journalId = String(p.journalId);
-    const direction = String(p.direction);
-    if (direction !== "undo" && direction !== "redo") {
-      throw new Error(`invalid undo direction: ${direction}`);
+    const requestId = browserCodexRequiredNonEmptyPayloadString(p, "requestId");
+    const projectId = browserCodexRequiredNonEmptyPayloadString(p, "projectId");
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(p, "sessionId");
+    const journalId = browserCodexRequiredNonEmptyPayloadString(p, "journalId");
+    if (p.direction !== "undo" && p.direction !== "redo") {
+      throw new Error(`invalid undo direction: ${String(p.direction)}`);
     }
+    const direction = p.direction;
 
     return withAppendLedgerLock(async () => {
       const payloadHash = await browserPayloadFingerprint(
-        "agent_apply_undo_journal",
+        BROWSER_UNDO_REPLAY_DOMAIN,
         { projectId, journalId, direction },
       );
       const journal = queryOne(
@@ -4368,9 +6171,25 @@ export async function createBrowserMock(
       if (!journal) {
         throw new Error(`undo journal '${journalId}' not found`);
       }
+      const originalTransactionId = browserUndoReplayForwardTransaction(
+        projectId,
+        journalId,
+      );
+      const identity: BrowserCanonicalWriteIdentity = {
+        projectId,
+        requestId,
+        sessionId,
+        eventUid: crypto.randomUUID(),
+        origin: direction,
+        originalTransactionId,
+        undoJournalId: journalId,
+      };
+      const replay = loadBrowserUndoReplay(identity, payloadHash);
+      if (replay) return replay;
       if (
         journal.entity_kind !== "codex_entry" &&
         journal.entity_kind !== "codex_phase" &&
+        journal.entity_kind !== "snippet" &&
         journal.entity_kind !== "foreshadow" &&
         journal.entity_kind !== "event"
       ) {
@@ -4380,13 +6199,25 @@ export async function createBrowserMock(
       }
       const isCodexEntry = journal.entity_kind === "codex_entry";
       const isPhase = journal.entity_kind === "codex_phase";
-      const isSceneEventBatch = journal.entity_kind === "event";
-      const sceneEventSnapshot = isSceneEventBatch
-        ? parseBrowserSceneEventLinkBatchSnapshot(
-            direction === "undo" ? journal.before_json : journal.after_json,
-            journalId,
-          )
-        : null;
+      const isSnippet = journal.entity_kind === "snippet";
+      const eventJournalKind =
+        journal.entity_kind === "event"
+          ? browserEventJournalSnapshotKind(
+              journal.op_kind === "create"
+                ? journal.after_json
+                : journal.before_json,
+              journalId,
+            )
+          : null;
+      const isSceneEventBatch = eventJournalKind === "scene-link";
+      const isEventRelation = eventJournalKind === "relation";
+      const isChronicleEvent =
+        eventJournalKind === "aggregate" || eventJournalKind === "participants";
+      const canonicalDetails = browserUndoReplayCanonicalDetails(
+        journal,
+        direction,
+        journalId,
+      );
       const opType = isCodexEntry
         ? journal.op_kind === "create"
           ? direction === "undo"
@@ -4399,20 +6230,51 @@ export async function createBrowserMock(
             : "entry.update"
         : isPhase
           ? "phase.update"
-          : isSceneEventBatch
-            ? direction === "undo"
-              ? "event.unstamp"
-              : "event.stamp"
-            : journal.op_kind === "create"
+          : isSnippet
+            ? journal.op_kind === "create"
               ? direction === "undo"
-                ? "foreshadow.delete"
-                : "foreshadow.create"
+                ? "snippet.delete"
+                : "snippet.create"
               : journal.op_kind === "delete"
                 ? direction === "undo"
-                  ? "foreshadow.create"
-                  : "foreshadow.delete"
-                : "foreshadow.update";
-      const eventUid = crypto.randomUUID();
+                  ? "snippet.create"
+                  : "snippet.delete"
+                : "snippet.update"
+            : isSceneEventBatch
+              ? direction === "undo"
+                ? "event.unstamp"
+                : "event.stamp"
+              : isEventRelation
+                ? parseBrowserEventRelationSnapshot(
+                    direction === "undo"
+                      ? journal.before_json
+                      : journal.after_json,
+                    journalId,
+                  ).linked
+                  ? "event.relation_add"
+                  : "event.relation_remove"
+                : isChronicleEvent
+                  ? journal.op_kind === "create"
+                    ? direction === "undo"
+                      ? "event.delete"
+                      : "event.create"
+                    : journal.op_kind === "delete"
+                      ? direction === "undo"
+                        ? "event.create"
+                        : "event.delete"
+                      : eventJournalKind === "participants"
+                        ? "event.participants"
+                        : "event.update"
+                  : journal.op_kind === "create"
+                    ? direction === "undo"
+                      ? "foreshadow.delete"
+                      : "foreshadow.create"
+                    : journal.op_kind === "delete"
+                      ? direction === "undo"
+                        ? "foreshadow.create"
+                        : "foreshadow.delete"
+                      : "foreshadow.update";
+      const eventUid = identity.eventUid;
       const timestamp = Date.now();
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
@@ -4421,29 +6283,23 @@ export async function createBrowserMock(
         domain:
           isCodexEntry || isPhase
             ? "codex"
-            : isSceneEventBatch
-              ? "event"
-              : "foreshadow",
+            : isSnippet
+              ? "snippet"
+              : isSceneEventBatch || isEventRelation || isChronicleEvent
+                ? "event"
+                : "foreshadow",
         opType,
         entityType: isCodexEntry
           ? "codex_entry"
           : isPhase
             ? "phase"
-            : isSceneEventBatch
-              ? "event"
-              : "foreshadow",
+            : isSnippet
+              ? "snippet"
+              : isSceneEventBatch || isEventRelation || isChronicleEvent
+                ? "event"
+                : "foreshadow",
         entityId: String(journal.entity_id),
-        payload: JSON.stringify({
-          direction,
-          opKind: String(journal.op_kind),
-          journalId,
-          ...(sceneEventSnapshot
-            ? {
-                eventId: sceneEventSnapshot.eventId,
-                sceneIds: sceneEventSnapshot.sceneIds,
-              }
-            : {}),
-        }),
+        payload: JSON.stringify(canonicalDetails),
         sessionId,
         timestamp,
       });
@@ -4451,20 +6307,20 @@ export async function createBrowserMock(
 
       db.run("BEGIN IMMEDIATE");
       try {
-        const existing = queryOne(
-          `SELECT payload_hash
-             FROM idempotency_requests
-            WHERE domain = 'agent_apply_undo_journal' AND request_id = ?`,
-          [requestId],
-        );
-        if (existing) {
-          if (String(existing.payload_hash) !== payloadHash) {
-            throw new Error(
-              "UNDO_JOURNAL_IDEMPOTENCY_CONFLICT: request id reused with different payload",
-            );
-          }
+        const committed = loadBrowserUndoReplay(identity, payloadHash);
+        if (committed) {
           db.run("COMMIT");
-          return { ok: true };
+          return committed;
+        }
+
+        const transactionInScope = browserUndoReplayForwardTransaction(
+          projectId,
+          journalId,
+        );
+        if (transactionInScope !== originalTransactionId) {
+          throw new Error(
+            "undo/redo lineage changed while preparing the replay",
+          );
         }
 
         const currentJournal = queryOne(
@@ -4477,6 +6333,18 @@ export async function createBrowserMock(
         if (!currentJournal) {
           throw new Error(`undo journal '${journalId}' disappeared`);
         }
+        const eventReplayIds =
+          currentJournal.entity_kind === "event"
+            ? browserEventReplayAffectedIds(currentJournal, journalId)
+            : null;
+        const eventReplayBeforeStates =
+          eventReplayIds === null
+            ? null
+            : loadBrowserEventReplayStates(eventReplayIds, projectId);
+        const rootReplayBeforeState = loadBrowserUndoReplayRootState(
+          currentJournal,
+          projectId,
+        );
         if (currentJournal.entity_kind === "codex_entry") {
           const opKind = String(currentJournal.op_kind);
           const entryId = String(currentJournal.entity_id);
@@ -4635,6 +6503,135 @@ export async function createBrowserMock(
             priorTargetVersion,
             targetVersion,
           );
+        } else if (currentJournal.entity_kind === "snippet") {
+          const opKind = String(currentJournal.op_kind);
+          const snippetId = String(currentJournal.entity_id);
+          if (opKind === "create") {
+            const snapshot = parseBrowserSnippetSnapshot(
+              currentJournal.after_json,
+              journalId,
+            );
+            assertBrowserSnippetSnapshotIdentity(
+              snapshot,
+              projectId,
+              snippetId,
+              journalId,
+            );
+            if (direction === "undo") {
+              const expectedVersion = Number(currentJournal.result_version);
+              db.run(
+                `DELETE FROM snippets
+                  WHERE id = ? AND project_id = ? AND version = ?`,
+                [snippetId, projectId, expectedVersion],
+              );
+              if (db.getRowsModified() !== 1) {
+                throw new Error(
+                  `snippet '${snippetId}' version conflict during undo replay`,
+                );
+              }
+            } else {
+              const previousVersion = Number(currentJournal.result_version);
+              const replayVersion = previousVersion + 1;
+              if (!Number.isSafeInteger(replayVersion)) {
+                throw new Error("snippet version overflow during redo create");
+              }
+              insertBrowserSnippetSnapshot(
+                snapshot,
+                projectId,
+                snippetId,
+                replayVersion,
+                now,
+              );
+              rewriteBrowserSnippetJournalStateToken(
+                projectId,
+                snippetId,
+                previousVersion,
+                replayVersion,
+              );
+            }
+          } else if (opKind === "update") {
+            const snapshot = parseBrowserSnippetSnapshot(
+              direction === "undo"
+                ? currentJournal.before_json
+                : currentJournal.after_json,
+              journalId,
+            );
+            const expectedVersion = Number(
+              direction === "undo"
+                ? currentJournal.result_version
+                : currentJournal.base_version,
+            );
+            const priorTargetVersion = Number(
+              direction === "undo"
+                ? currentJournal.base_version
+                : currentJournal.result_version,
+            );
+            const replayVersion = expectedVersion + 1;
+            if (!Number.isSafeInteger(replayVersion)) {
+              throw new Error(`snippet version overflow during ${direction}`);
+            }
+            restoreBrowserSnippetSnapshot(
+              snapshot,
+              projectId,
+              snippetId,
+              expectedVersion,
+              replayVersion,
+              now,
+            );
+            rewriteBrowserSnippetJournalStateToken(
+              projectId,
+              snippetId,
+              priorTargetVersion,
+              replayVersion,
+            );
+          } else if (opKind === "delete") {
+            const snapshot = parseBrowserSnippetSnapshot(
+              currentJournal.before_json,
+              journalId,
+            );
+            assertBrowserSnippetSnapshotIdentity(
+              snapshot,
+              projectId,
+              snippetId,
+              journalId,
+            );
+            if (direction === "undo") {
+              const previousVersion = Number(currentJournal.base_version);
+              const replayVersion = previousVersion + 1;
+              if (!Number.isSafeInteger(replayVersion)) {
+                throw new Error("snippet version overflow during undo delete");
+              }
+              insertBrowserSnippetSnapshot(
+                snapshot,
+                projectId,
+                snippetId,
+                replayVersion,
+                now,
+              );
+              rewriteBrowserSnippetJournalStateToken(
+                projectId,
+                snippetId,
+                previousVersion,
+                replayVersion,
+              );
+            } else {
+              const expectedVersion = Number(currentJournal.result_version);
+              db.run(
+                `DELETE FROM snippets
+                  WHERE id = ? AND project_id = ? AND version = ?`,
+                [snippetId, projectId, expectedVersion],
+              );
+              if (db.getRowsModified() !== 1) {
+                throw new Error(
+                  `snippet '${snippetId}' version conflict during redo replay`,
+                );
+              }
+            }
+          } else {
+            throw new Error(
+              `snippet undo journal '${journalId}' has unsupported op '${opKind}'`,
+            );
+          }
         } else if (currentJournal.entity_kind === "foreshadow") {
           const opKind = String(currentJournal.op_kind);
           const foreshadowId = String(currentJournal.entity_id);
@@ -4776,39 +6773,302 @@ export async function createBrowserMock(
             );
           }
         } else if (currentJournal.entity_kind === "event") {
-          if (currentJournal.op_kind !== "update") {
-            throw new Error(
-              `scene event batch journal '${journalId}' is invalid`,
-            );
-          }
-          replayBrowserSceneEventLinkBatchSnapshot(
-            projectId,
+          const currentKind = browserEventJournalSnapshotKind(
+            currentJournal.op_kind === "create"
+              ? currentJournal.after_json
+              : currentJournal.before_json,
             journalId,
-            direction,
-            currentJournal.before_json,
-            currentJournal.after_json,
           );
+          if (currentKind === "scene-link") {
+            if (currentJournal.op_kind !== "update") {
+              throw new Error(
+                `scene event batch journal '${journalId}' is invalid`,
+              );
+            }
+            replayBrowserSceneEventLinkBatchSnapshot(
+              projectId,
+              journalId,
+              direction,
+              currentJournal.before_json,
+              currentJournal.after_json,
+            );
+          } else if (currentKind === "relation") {
+            if (currentJournal.op_kind !== "update") {
+              throw new Error(
+                `event relation journal '${journalId}' is invalid`,
+              );
+            }
+            replayBrowserEventRelationSnapshot(
+              projectId,
+              journalId,
+              direction,
+              currentJournal.before_json,
+              currentJournal.after_json,
+            );
+          } else if (currentKind === "participants") {
+            if (currentJournal.op_kind !== "update") {
+              throw new Error(
+                `event participant journal '${journalId}' is invalid`,
+              );
+            }
+            const snapshot = parseBrowserEventParticipantsSnapshot(
+              direction === "undo"
+                ? currentJournal.before_json
+                : currentJournal.after_json,
+              journalId,
+            );
+            if (snapshot.eventId !== String(currentJournal.entity_id)) {
+              throw new Error(
+                `event participant journal '${journalId}' identity mismatch`,
+              );
+            }
+            const expectedVersion = Number(
+              direction === "undo"
+                ? currentJournal.result_version
+                : currentJournal.base_version,
+            );
+            const targetVersion = expectedVersion + 1;
+            if (!Number.isSafeInteger(targetVersion)) {
+              throw new Error(
+                "event version overflow during participant replay",
+              );
+            }
+            restoreBrowserEventParticipantsSnapshot(
+              projectId,
+              snapshot,
+              expectedVersion,
+              targetVersion,
+              now,
+            );
+            db.run(
+              direction === "undo"
+                ? "UPDATE undo_journal SET base_version = ? WHERE id = ? AND project_id = ?"
+                : "UPDATE undo_journal SET result_version = ? WHERE id = ? AND project_id = ?",
+              [targetVersion, journalId, projectId],
+            );
+          } else {
+            const snapshot = parseBrowserEventAggregateSnapshot(
+              currentJournal.op_kind === "create"
+                ? currentJournal.after_json
+                : currentJournal.before_json,
+              journalId,
+            );
+            if (
+              snapshot.eventData.id !== String(currentJournal.entity_id) ||
+              snapshot.eventData.projectId !== projectId
+            ) {
+              throw new Error(
+                `event undo journal '${journalId}' identity mismatch`,
+              );
+            }
+            if (currentJournal.op_kind === "create") {
+              if (direction === "undo") {
+                const current = loadBrowserEventSnapshot(
+                  String(currentJournal.entity_id),
+                  projectId,
+                );
+                if (
+                  !current ||
+                  JSON.stringify(current) !== JSON.stringify(snapshot)
+                ) {
+                  throw new Error(
+                    `event '${String(currentJournal.entity_id)}' aggregate changed before create undo`,
+                  );
+                }
+                db.run(
+                  "DELETE FROM events WHERE id = ? AND project_id = ? AND version = ?",
+                  [
+                    String(currentJournal.entity_id),
+                    projectId,
+                    Number(currentJournal.result_version),
+                  ],
+                );
+                if (db.getRowsModified() !== 1) {
+                  throw new Error(
+                    `event '${String(currentJournal.entity_id)}' changed before create undo`,
+                  );
+                }
+              } else {
+                if (
+                  loadBrowserEventSnapshot(
+                    String(currentJournal.entity_id),
+                    projectId,
+                  )
+                ) {
+                  throw new Error(
+                    `event '${String(currentJournal.entity_id)}' already exists during create redo`,
+                  );
+                }
+                const previousVersion = Number(currentJournal.result_version);
+                const targetVersion = previousVersion + 1;
+                if (!Number.isSafeInteger(targetVersion)) {
+                  throw new Error("event version overflow during create redo");
+                }
+                restoreBrowserEventAggregateSnapshot(
+                  snapshot,
+                  projectId,
+                  null,
+                  targetVersion,
+                  now,
+                );
+                const replayed = loadBrowserEventSnapshot(
+                  String(currentJournal.entity_id),
+                  projectId,
+                );
+                if (!replayed || replayed.eventData.version !== targetVersion) {
+                  throw new Error(
+                    `event '${String(currentJournal.entity_id)}' missing after create redo`,
+                  );
+                }
+                db.run(
+                  "UPDATE undo_journal SET after_json = ?, result_version = ? WHERE id = ? AND project_id = ?",
+                  [
+                    JSON.stringify(replayed),
+                    targetVersion,
+                    journalId,
+                    projectId,
+                  ],
+                );
+              }
+            } else if (currentJournal.op_kind === "update") {
+              const targetSnapshot = parseBrowserEventAggregateSnapshot(
+                direction === "undo"
+                  ? currentJournal.before_json
+                  : currentJournal.after_json,
+                journalId,
+              );
+              const expectedVersion = Number(
+                direction === "undo"
+                  ? currentJournal.result_version
+                  : currentJournal.base_version,
+              );
+              const targetVersion = expectedVersion + 1;
+              if (!Number.isSafeInteger(targetVersion)) {
+                throw new Error("event version overflow during replay");
+              }
+              restoreBrowserEventAggregateSnapshot(
+                targetSnapshot,
+                projectId,
+                expectedVersion,
+                targetVersion,
+                now,
+              );
+              db.run(
+                direction === "undo"
+                  ? "UPDATE undo_journal SET base_version = ? WHERE id = ? AND project_id = ?"
+                  : "UPDATE undo_journal SET result_version = ? WHERE id = ? AND project_id = ?",
+                [targetVersion, journalId, projectId],
+              );
+            } else if (currentJournal.op_kind === "delete") {
+              if (direction === "undo") {
+                if (
+                  loadBrowserEventSnapshot(
+                    String(currentJournal.entity_id),
+                    projectId,
+                  )
+                ) {
+                  throw new Error(
+                    `event '${String(currentJournal.entity_id)}' still exists during delete undo`,
+                  );
+                }
+                const previousVersion = Math.max(
+                  Number(currentJournal.base_version),
+                  Number(currentJournal.result_version),
+                );
+                const targetVersion = previousVersion + 1;
+                if (!Number.isSafeInteger(targetVersion)) {
+                  throw new Error("event version overflow during delete undo");
+                }
+                restoreBrowserEventAggregateSnapshot(
+                  snapshot,
+                  projectId,
+                  null,
+                  targetVersion,
+                  now,
+                );
+                db.run(
+                  "UPDATE undo_journal SET result_version = ? WHERE id = ? AND project_id = ?",
+                  [targetVersion, journalId, projectId],
+                );
+              } else {
+                const expectedVersion = Number(currentJournal.result_version);
+                db.run(
+                  "DELETE FROM events WHERE id = ? AND project_id = ? AND version = ?",
+                  [
+                    String(currentJournal.entity_id),
+                    projectId,
+                    expectedVersion,
+                  ],
+                );
+                if (db.getRowsModified() !== 1) {
+                  throw new Error(
+                    `event '${String(currentJournal.entity_id)}' version conflict during delete redo`,
+                  );
+                }
+              }
+            } else {
+              throw new Error(
+                `event undo journal '${journalId}' has unsupported op '${String(currentJournal.op_kind)}'`,
+              );
+            }
+          }
         } else {
           throw new Error(
             `browser undo does not support entity kind '${String(currentJournal.entity_kind)}'`,
           );
         }
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
-        db.run(
-          `INSERT INTO idempotency_requests
-            (domain, request_id, project_id, payload_hash, tombstone_json, created_at)
-           VALUES ('agent_apply_undo_journal', ?, ?, ?, ?, ?)`,
-          [
-            requestId,
-            projectId,
-            payloadHash,
-            JSON.stringify({ id: journalId }),
-            now,
-          ],
+        const replayedJournal = queryOne(
+          `SELECT entity_kind, entity_id, op_kind, before_json, after_json,
+                  base_version, result_version
+             FROM undo_journal
+            WHERE id = ? AND project_id = ?`,
+          [journalId, projectId],
         );
+        if (!replayedJournal) {
+          throw new Error(`undo journal '${journalId}' disappeared`);
+        }
+        const narrativeEvents =
+          eventReplayIds === null || eventReplayBeforeStates === null
+            ? [
+                browserUndoReplayNarrativeEventWithRootState(
+                  replayedJournal,
+                  direction,
+                  journalId,
+                  rootReplayBeforeState,
+                  loadBrowserUndoReplayRootState(replayedJournal, projectId),
+                ),
+              ]
+            : browserEventReplayNarrativeEvents(
+                replayedJournal,
+                journalId,
+                eventReplayIds,
+                eventReplayBeforeStates,
+                loadBrowserEventReplayStates(eventReplayIds, projectId),
+              );
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash: payloadHash,
+          undoJournalId: journalId,
+          occurredAt: now,
+          events: narrativeEvents,
+        });
+        const response = {
+          ok: true,
+          changeEventUid: eventUid,
+          maintenanceTransactionId,
+          undoJournalId: journalId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: BROWSER_UNDO_REPLAY_DOMAIN,
+          identity,
+          requestHash: payloadHash,
+          response,
+          now,
+        });
         db.run("COMMIT");
         options.onDatabaseDirty?.();
-        return { ok: true };
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -4824,22 +7084,23 @@ export async function createBrowserMock(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const p = nativeCodexPayload(args);
-    const projectId = browserCodexRequiredPayloadString(p, "projectId");
-    const sessionId = browserCodexRequiredPayloadString(p, "sessionId");
+    const canonicalIdentity = browserCanonicalWriteIdentity(
+      p,
+      "agent_codex_create",
+    );
+    const projectId = canonicalIdentity.projectId;
+    const sessionId = canonicalIdentity.sessionId;
     const surface =
       browserCodexOptionalPayloadString(p.surface, "surface") ?? "in-app-agent";
     const suppliedEntryId = browserCodexOptionalPayloadString(
       p.entryId,
       "entryId",
     );
-    const explicitRequestId = browserCodexOptionalPayloadString(
-      p.requestId,
-      "requestId",
-    );
-    const requestId = explicitRequestId ?? suppliedEntryId;
+    const requestId = canonicalIdentity.requestId;
     const entryId = suppliedEntryId ?? crypto.randomUUID();
-    const eventUid = crypto.randomUUID();
-    const undoJournalId = requestId ?? crypto.randomUUID();
+    const eventUid = canonicalIdentity.eventUid;
+    const undoJournalId =
+      canonicalIdentity.undoJournalId ?? canonicalIdentity.requestId;
     const timestamp = Date.now();
     const now = new Date(timestamp).toISOString();
     const typeSlug = browserCodexRequiredPayloadString(p, "typeSlug");
@@ -4861,6 +7122,16 @@ export async function createBrowserMock(
       "parentId",
     );
     const parentId = rawParentId === "" ? null : rawParentId;
+    const contextMode = browserCodexOptionalPayloadString(
+      p.contextMode,
+      "contextMode",
+    );
+    const icon = browserCodexOptionalPayloadString(p.icon, "icon");
+    const childrenBudget = browserCodexOptionalPayloadString(
+      p.childrenBudget,
+      "childrenBudget",
+    );
+    const notes = browserCodexOptionalPayloadString(p.notes, "notes");
     const sourceChatMessageId = browserCodexOptionalPayloadString(
       p.sourceChatMessageId,
       "sourceChatMessageId",
@@ -4882,9 +7153,15 @@ export async function createBrowserMock(
     );
 
     return withAppendLedgerLock(async () => {
-      const requestHash = await browserPayloadFingerprint(
-        BROWSER_CODEX_CREATE_IDEMPOTENCY_DOMAIN,
-        browserCodexCreateFingerprintPayload(p, authorshipSpans),
+      const requestHash = await browserCanonicalWriteFingerprint(
+        "renderer_agent_codex_create",
+        {
+          ...browserCodexCreateFingerprintPayload(p, authorshipSpans),
+          origin: canonicalIdentity.origin,
+          originalTransactionId: canonicalIdentity.originalTransactionId,
+          undoJournalId: canonicalIdentity.undoJournalId,
+          canonicalPayload: p.canonicalPayload ?? null,
+        },
       );
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
@@ -4906,7 +7183,7 @@ export async function createBrowserMock(
 
       db.run("BEGIN IMMEDIATE");
       try {
-        if (requestId !== null) {
+        {
           const replay = loadBrowserCodexCreateReplayResult({
             requestId,
             projectId,
@@ -4946,9 +7223,10 @@ export async function createBrowserMock(
         db.run(
           `INSERT INTO codex_entries
             (id, project_id, type, name, aliases, excluded_aliases, readings,
-             tags_cache, summary, content, parent_id, source_chat_message_id,
-             version, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+             tags_cache, summary, content, parent_id, icon, context_mode,
+             children_budget, source_chat_message_id, notes, version,
+             created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
           [
             entryId,
             projectId,
@@ -4961,7 +7239,11 @@ export async function createBrowserMock(
             summary ?? "",
             content ?? "{}",
             parentId,
+            icon,
+            contextMode ?? "mentioned",
+            childrenBudget ?? "compact",
             sourceChatMessageId,
+            notes,
             now,
             now,
           ],
@@ -4986,27 +7268,50 @@ export async function createBrowserMock(
             `codex entry '${entryId}' could not be read after create`,
           );
         }
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
-        insertBrowserCodexUndoJournal({
-          id: undoJournalId,
-          projectId,
-          surface,
-          entryId,
-          opKind: "create",
-          before: null,
-          after,
-          baseVersion: 0,
-          resultVersion: after.version,
-          changeEventUid: eventUid,
-          now,
+        if (
+          canonicalIdentity.origin !== "undo" &&
+          canonicalIdentity.origin !== "redo"
+        ) {
+          insertBrowserCodexUndoJournal({
+            id: undoJournalId,
+            projectId,
+            surface,
+            entryId,
+            opKind: "create",
+            before: null,
+            after,
+            baseVersion: 0,
+            resultVersion: after.version,
+            changeEventUid: eventUid,
+            now,
+          });
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity: canonicalIdentity,
+          requestHash,
+          undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "codex-entry", entryId },
+              changeKind: "metadata",
+              mutationKind: "create",
+              beforeVersion: null,
+              afterVersion: after.version,
+              afterState: browserCanonicalCodexEntryState(after),
+              changedPaths: ["/"],
+            },
+          ],
         });
         const result: BrowserCodexWriteResult = {
           entityId: entryId,
           version: after.version,
           changeEventUid: eventUid,
           undoJournalId,
+          maintenanceTransactionId,
         };
-        if (requestId !== null) {
+        {
           db.run(
             `INSERT INTO idempotency_requests
               (domain, request_id, project_id, payload_hash,
@@ -5045,14 +7350,19 @@ export async function createBrowserMock(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const p = nativeCodexPayload(args);
-    const projectId = browserCodexRequiredPayloadString(p, "projectId");
-    const sessionId = browserCodexRequiredPayloadString(p, "sessionId");
+    const canonicalIdentity = browserCanonicalWriteIdentity(
+      p,
+      "agent_codex_update",
+    );
+    const projectId = canonicalIdentity.projectId;
+    const sessionId = canonicalIdentity.sessionId;
     const surface =
       browserCodexOptionalPayloadString(p.surface, "surface") ?? "in-app-agent";
     const entryId = browserCodexRequiredPayloadString(p, "entryId");
     const baseVersion = browserCodexRequiredPayloadInteger(p, "baseVersion");
-    const eventUid = crypto.randomUUID();
-    const undoJournalId = crypto.randomUUID();
+    const eventUid = canonicalIdentity.eventUid;
+    const undoJournalId =
+      canonicalIdentity.undoJournalId ?? canonicalIdentity.requestId;
     const timestamp = Date.now();
     const now = new Date(timestamp).toISOString();
     const columns: Record<string, string> = {
@@ -5103,6 +7413,17 @@ export async function createBrowserMock(
     );
 
     return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        "renderer_agent_codex_update",
+        p,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "agent_codex_update",
+        identity: canonicalIdentity,
+        requestHash,
+        conflictMarker: "AGENT_CODEX_UPDATE_IDEMPOTENCY_CONFLICT",
+      });
+      if (replay) return replay;
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
         projectId,
@@ -5118,6 +7439,16 @@ export async function createBrowserMock(
 
       db.run("BEGIN IMMEDIATE");
       try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "agent_codex_update",
+          identity: canonicalIdentity,
+          requestHash,
+          conflictMarker: "AGENT_CODEX_UPDATE_IDEMPOTENCY_CONFLICT",
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
         const before = loadBrowserCodexEntrySnapshot(entryId, projectId);
         if (!before) {
           throw new Error(
@@ -5183,28 +7514,137 @@ export async function createBrowserMock(
             `codex entry '${entryId}' version conflict after update`,
           );
         }
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
-        insertBrowserCodexUndoJournal({
-          id: undoJournalId,
-          projectId,
-          surface,
-          entryId,
-          opKind: "update",
-          before,
-          after,
-          baseVersion: before.version,
-          resultVersion: after.version,
-          changeEventUid: eventUid,
-          now,
+        const invalidatesLinkedForeshadows = changedFields.some((field) =>
+          ["name", "aliases", "summary", "content"].includes(field),
+        );
+        const linkedForeshadowEvents: BrowserNarrativeChangeEventInput[] = [];
+        let relatedForeshadows: Record<string, SqlValue>[] = [];
+        if (invalidatesLinkedForeshadows) {
+          const linkedBefore = queryAll(
+            `SELECT foreshadow.id, foreshadow.version
+               FROM foreshadows foreshadow
+               JOIN foreshadow_codex_links link
+                 ON link.foreshadow_id = foreshadow.id
+              WHERE foreshadow.project_id = ? AND link.codex_entry_id = ?
+              ORDER BY foreshadow.id`,
+            [projectId, entryId],
+          );
+          for (const foreshadow of linkedBefore) {
+            const foreshadowId = String(foreshadow.id);
+            const beforeVersion = Number(foreshadow.version);
+            const beforeState = loadBrowserForeshadowAggregateSnapshot(
+              foreshadowId,
+              projectId,
+            );
+            if (!beforeState) {
+              throw new Error(
+                `linked Foreshadow '${foreshadowId}' aggregate is missing`,
+              );
+            }
+            db.run(
+              `UPDATE foreshadows
+                  SET codex_link_dirty_at = ?, updated_at = ?, version = version + 1
+                WHERE id = ? AND project_id = ? AND version = ?`,
+              [timestamp, timestamp, foreshadowId, projectId, beforeVersion],
+            );
+            if (db.getRowsModified() !== 1) {
+              throw new Error(
+                `linked Foreshadow '${foreshadowId}' changed during Codex update`,
+              );
+            }
+            const afterState = loadBrowserForeshadowAggregateSnapshot(
+              foreshadowId,
+              projectId,
+            );
+            if (!afterState) {
+              throw new Error(
+                `linked Foreshadow '${foreshadowId}' aggregate disappeared`,
+              );
+            }
+            linkedForeshadowEvents.push({
+              objectKey: { kind: "foreshadow", foreshadowId },
+              changeKind: "metadata",
+              mutationKind: "update",
+              beforeVersion,
+              beforeState,
+              afterVersion: beforeVersion + 1,
+              afterState,
+              changedPaths: ["/codexLinkDirtyAt"],
+            });
+          }
+          relatedForeshadows = queryAll(
+            `SELECT foreshadow.*
+               FROM foreshadows foreshadow
+               JOIN foreshadow_codex_links link
+                 ON link.foreshadow_id = foreshadow.id
+              WHERE foreshadow.project_id = ? AND link.codex_entry_id = ?
+              ORDER BY foreshadow.id`,
+            [projectId, entryId],
+          );
+        }
+        if (
+          canonicalIdentity.origin !== "undo" &&
+          canonicalIdentity.origin !== "redo"
+        ) {
+          insertBrowserCodexUndoJournal({
+            id: undoJournalId,
+            projectId,
+            surface,
+            entryId,
+            opKind: "update",
+            before,
+            after,
+            baseVersion: before.version,
+            resultVersion: after.version,
+            changeEventUid: eventUid,
+            now,
+          });
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity: canonicalIdentity,
+          requestHash,
+          undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "codex-entry", entryId },
+              changeKind:
+                changedFields.includes("content") ||
+                changedFields.includes("summary")
+                  ? "content"
+                  : "metadata",
+              mutationKind: "update",
+              beforeVersion: before.version,
+              beforeState: browserCanonicalCodexEntryState(before),
+              afterVersion: after.version,
+              afterState: browserCanonicalCodexEntryState(after),
+              changedPaths:
+                changedFields.length > 0
+                  ? changedFields.map((field) => `/${field}`).sort()
+                  : ["/"],
+            },
+            ...linkedForeshadowEvents,
+          ],
         });
-        db.run("COMMIT");
-        options.onDatabaseDirty?.();
-        return {
+        const response = {
           entityId: entryId,
           version: after.version,
           changeEventUid: eventUid,
           undoJournalId,
+          maintenanceTransactionId,
+          relatedForeshadows,
         };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "agent_codex_update",
+          identity: canonicalIdentity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -5220,18 +7660,34 @@ export async function createBrowserMock(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const p = nativeCodexPayload(args);
-    const projectId = browserCodexRequiredPayloadString(p, "projectId");
-    const sessionId = browserCodexRequiredPayloadString(p, "sessionId");
+    const canonicalIdentity = browserCanonicalWriteIdentity(
+      p,
+      "agent_codex_delete",
+    );
+    const projectId = canonicalIdentity.projectId;
+    const sessionId = canonicalIdentity.sessionId;
     const surface =
       browserCodexOptionalPayloadString(p.surface, "surface") ?? "in-app-agent";
     const entryId = browserCodexRequiredPayloadString(p, "entryId");
     const baseVersion = browserCodexRequiredPayloadInteger(p, "baseVersion");
-    const eventUid = crypto.randomUUID();
-    const undoJournalId = crypto.randomUUID();
+    const eventUid = canonicalIdentity.eventUid;
+    const undoJournalId =
+      canonicalIdentity.undoJournalId ?? canonicalIdentity.requestId;
     const timestamp = Date.now();
     const now = new Date(timestamp).toISOString();
 
     return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        "renderer_agent_codex_delete",
+        p,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "renderer_agent_codex_delete",
+        identity: canonicalIdentity,
+        requestHash,
+        conflictMarker: "AGENT_CODEX_DELETE_IDEMPOTENCY_CONFLICT",
+      });
+      if (replay) return replay;
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
         projectId,
@@ -5247,6 +7703,16 @@ export async function createBrowserMock(
 
       db.run("BEGIN IMMEDIATE");
       try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "renderer_agent_codex_delete",
+          identity: canonicalIdentity,
+          requestHash,
+          conflictMarker: "AGENT_CODEX_DELETE_IDEMPOTENCY_CONFLICT",
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
         const before = loadBrowserCodexEntrySnapshot(entryId, projectId);
         if (!before) {
           throw new Error(
@@ -5266,28 +7732,59 @@ export async function createBrowserMock(
         if (db.getRowsModified() !== 1) {
           throw new Error(`codex entry '${entryId}' version conflict`);
         }
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
-        insertBrowserCodexUndoJournal({
-          id: undoJournalId,
-          projectId,
-          surface,
-          entryId,
-          opKind: "delete",
-          before,
-          after: null,
-          baseVersion: before.version,
-          resultVersion: before.version,
-          changeEventUid: eventUid,
-          now,
+        if (
+          canonicalIdentity.origin !== "undo" &&
+          canonicalIdentity.origin !== "redo"
+        ) {
+          insertBrowserCodexUndoJournal({
+            id: undoJournalId,
+            projectId,
+            surface,
+            entryId,
+            opKind: "delete",
+            before,
+            after: null,
+            baseVersion: before.version,
+            resultVersion: before.version,
+            changeEventUid: eventUid,
+            now,
+          });
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity: canonicalIdentity,
+          requestHash,
+          undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "codex-entry", entryId },
+              changeKind: "metadata",
+              mutationKind: "delete",
+              beforeVersion: before.version,
+              beforeState: browserCanonicalCodexEntryState(before),
+              afterVersion: null,
+              changedPaths: ["/"],
+            },
+          ],
         });
-        db.run("COMMIT");
-        options.onDatabaseDirty?.();
-        return {
+        const response = {
           entityId: entryId,
           version: before.version,
           changeEventUid: eventUid,
           undoJournalId,
+          maintenanceTransactionId,
         };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "renderer_agent_codex_delete",
+          identity: canonicalIdentity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -5302,9 +7799,10 @@ export async function createBrowserMock(
   async function handleBrowserCodexDetailMutation(
     p: Record<string, unknown>,
     operation: string,
+    identity: BrowserCanonicalWriteIdentity,
   ): Promise<Record<string, unknown>> {
-    const projectId = browserCodexRequiredNonEmptyPayloadString(p, "projectId");
-    const sessionId = browserCodexRequiredNonEmptyPayloadString(p, "sessionId");
+    const projectId = identity.projectId;
+    const sessionId = identity.sessionId;
     const surface =
       browserCodexOptionalPayloadString(p.surface, "surface") ?? "manual";
     const definitionId = browserCodexRequiredNonEmptyPayloadString(
@@ -5323,11 +7821,22 @@ export async function createBrowserMock(
       operation === "detail.value.upsert"
         ? browserCodexOptionalPayloadString(p.value, "value")
         : null;
-    const eventUid = crypto.randomUUID();
+    const eventUid = identity.eventUid;
     const timestamp = Date.now();
     const now = new Date(timestamp).toISOString();
 
     return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        "agent_codex_mutate",
+        p,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "agent_codex_mutate",
+        identity,
+        requestHash,
+        conflictMarker: "CODEX_MUTATION_REQUEST_CONFLICT",
+      });
+      if (replay) return replay;
       let entityId: string;
       let expectedValueExists = false;
       if (operation === "detail.value.upsert") {
@@ -5363,6 +7872,82 @@ export async function createBrowserMock(
 
       db.run("BEGIN IMMEDIATE");
       try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "agent_codex_mutate",
+          identity,
+          requestHash,
+          conflictMarker: "CODEX_MUTATION_REQUEST_CONFLICT",
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const detailFeedSnapshot = (): Record<string, unknown> | null => {
+          if (operation === "detail.value.upsert") {
+            const entryId = valueEntryId as string;
+            if (
+              !queryOne(
+                "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+                [entryId, projectId],
+              )
+            ) {
+              throw new Error(
+                `codex entry '${entryId}' is not in project '${projectId}'`,
+              );
+            }
+            const row = queryOne(
+              `SELECT value.id,
+                      value.entry_id AS entryId,
+                      value.definition_id AS definitionId,
+                      value.value,
+                      value.version,
+                      value.created_at AS createdAt,
+                      value.updated_at AS updatedAt
+                 FROM codex_detail_values value
+                 JOIN codex_detail_definitions definition
+                   ON definition.id = value.definition_id
+                  AND definition.project_id = ?
+                WHERE value.entry_id = ? AND value.definition_id = ?`,
+              [projectId, entryId, definitionId],
+            );
+            return row
+              ? {
+                  id: String(row.id),
+                  entryId: String(row.entryId),
+                  definitionId: String(row.definitionId),
+                  value: row.value == null ? null : String(row.value),
+                  version: Number(row.version),
+                  createdAt: String(row.createdAt),
+                  updatedAt: String(row.updatedAt),
+                }
+              : null;
+          }
+          const row = queryOne(
+            `SELECT type_slug AS typeSlug,
+                    name,
+                    field_type AS fieldType,
+                    field_config AS fieldConfig,
+                    sort_order AS sortOrder,
+                    include_in_context AS includeInContext,
+                    version
+               FROM codex_detail_definitions
+              WHERE id = ? AND project_id = ?`,
+            [definitionId, projectId],
+          );
+          return row
+            ? {
+                typeSlug: String(row.typeSlug),
+                name: String(row.name),
+                fieldType: String(row.fieldType),
+                fieldConfig:
+                  row.fieldConfig == null ? null : String(row.fieldConfig),
+                sortOrder: Number(row.sortOrder),
+                includeInContext: Number(row.includeInContext),
+                version: Number(row.version),
+              }
+            : null;
+        };
+        const beforeState = detailFeedSnapshot();
         let version: number;
         if (operation === "detail.definition.create") {
           const typeSlug = browserCodexRequiredNonEmptyPayloadString(
@@ -5587,10 +8172,86 @@ export async function createBrowserMock(
           throw new Error(`Unsupported Codex mutation: ${operation}`);
         }
 
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        const afterState = detailFeedSnapshot();
+        const mutationKind =
+          operation === "detail.value.upsert" && beforeState === null
+            ? "create"
+            : operation.endsWith(".create")
+              ? "create"
+              : operation.endsWith(".delete")
+                ? "delete"
+                : "update";
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey:
+                operation === "detail.value.upsert"
+                  ? {
+                      kind: "codex-detail-value",
+                      valueId: entityId,
+                    }
+                  : {
+                      kind: "codex-detail-definition",
+                      definitionId: definitionId,
+                    },
+              changeKind:
+                operation === "detail.value.upsert" ? "metadata" : "catalog",
+              mutationKind,
+              beforeVersion:
+                beforeState?.version == null
+                  ? null
+                  : Number(beforeState.version),
+              afterVersion:
+                afterState?.version == null ? null : Number(afterState.version),
+              ...(beforeState ? { beforeState } : {}),
+              ...(afterState ? { afterState } : {}),
+              changedPaths:
+                operation === "detail.value.upsert"
+                  ? [`/details/${jsonPointerSegment(definitionId)}`]
+                  : mutationKind === "update"
+                    ? Object.keys(p)
+                        .filter(
+                          (key) =>
+                            ![
+                              "operation",
+                              "projectId",
+                              "requestId",
+                              "sessionId",
+                              "eventUid",
+                              "origin",
+                              "originalTransactionId",
+                              "undoJournalId",
+                              "surface",
+                              "baseVersion",
+                            ].includes(key),
+                        )
+                        .map((key) => `/${key}`)
+                        .sort()
+                    : ["/"],
+            },
+          ],
+        });
+        const response = {
+          entityId,
+          version,
+          changeEventUid: eventUid,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "agent_codex_mutate",
+          identity,
+          requestHash,
+          response,
+          now,
+        });
         db.run("COMMIT");
         options.onDatabaseDirty?.();
-        return { entityId, version, changeEventUid: eventUid };
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -5605,13 +8266,32 @@ export async function createBrowserMock(
   function handleAgentCodexMutate(args: Record<string, unknown>) {
     const p = nativeCodexPayload(args);
     const operation = browserCodexRequiredPayloadString(p, "operation");
+    const identity = browserCanonicalWriteIdentity(p, "agent_codex_mutate");
+    if (
+      operation === "tag.create" ||
+      operation === "tag.update" ||
+      operation === "tag.delete" ||
+      operation === "type.create" ||
+      operation === "type.update" ||
+      operation === "type.delete"
+    ) {
+      return handleBrowserCodexCatalogMutation(p, operation, identity);
+    }
+    if (
+      operation === "relation.create" ||
+      operation === "relation.delete" ||
+      operation === "phase.create" ||
+      operation === "phase.delete"
+    ) {
+      return handleBrowserCodexRelationOrPhaseMutation(p, operation, identity);
+    }
     if (
       operation === "detail.definition.create" ||
       operation === "detail.definition.update" ||
       operation === "detail.definition.delete" ||
       operation === "detail.value.upsert"
     ) {
-      return handleBrowserCodexDetailMutation(p, operation);
+      return handleBrowserCodexDetailMutation(p, operation, identity);
     }
     const now = new Date().toISOString();
     if (operation === "relation.create") {
@@ -5707,7 +8387,7 @@ export async function createBrowserMock(
       operation === "phase.update" ||
       operation === "phase.aggregate"
     ) {
-      return handleBrowserPhasePatch(p);
+      return handleBrowserPhasePatch(p, identity);
     } else if (operation === "phase.delete") {
       db.run(
         p.expectedVersion == null
@@ -5728,6 +8408,563 @@ export async function createBrowserMock(
       version: 1,
       changeEventUid: crypto.randomUUID(),
     };
+  }
+
+  function browserCodexCatalogFeedState(
+    row: Record<string, unknown>,
+    isTag: boolean,
+  ): Record<string, unknown> {
+    if (isTag) {
+      return {
+        name: String(row.name),
+        color: row.color == null ? null : String(row.color),
+        typeFilter: row.type_filter == null ? null : String(row.type_filter),
+        createdAt: String(row.created_at),
+      };
+    }
+    return {
+      slug: String(row.slug),
+      label: String(row.label),
+      color: String(row.color),
+      paletteIndex:
+        row.palette_index == null ? null : Number(row.palette_index),
+      icon: row.icon == null ? null : String(row.icon),
+      isBuiltin: Number(row.is_builtin),
+      sortOrder: Number(row.sort_order),
+      createdAt: String(row.created_at),
+    };
+  }
+
+  function loadBrowserCodexRelationFeedState(
+    relationId: string,
+    projectId: string,
+  ): Record<string, SqlValue> | null {
+    const row = queryOne(
+      `SELECT id,
+              project_id AS projectId,
+              from_codex_id AS fromCodexId,
+              to_codex_id AS toCodexId,
+              relation_type AS relationType,
+              label,
+              directionality,
+              inverse_label AS inverseLabel,
+              semantic_key AS semanticKey,
+              depth_hint AS depthHint,
+              source_map_edge_id AS sourceMapEdgeId,
+              version,
+              created_at AS createdAt,
+              updated_at AS updatedAt
+         FROM codex_relations
+        WHERE id = ? AND project_id = ?`,
+      [relationId, projectId],
+    );
+    return row
+      ? {
+          id: String(row.id),
+          projectId: String(row.projectId),
+          fromCodexId: String(row.fromCodexId),
+          toCodexId: String(row.toCodexId),
+          relationType: String(row.relationType),
+          label: String(row.label),
+          directionality: String(row.directionality),
+          inverseLabel:
+            row.inverseLabel == null ? null : String(row.inverseLabel),
+          semanticKey: String(row.semanticKey),
+          depthHint: row.depthHint == null ? null : Number(row.depthHint),
+          sourceMapEdgeId:
+            row.sourceMapEdgeId == null ? null : String(row.sourceMapEdgeId),
+          version: Number(row.version),
+          createdAt: String(row.createdAt),
+          updatedAt: String(row.updatedAt),
+        }
+      : null;
+  }
+
+  async function handleBrowserCodexCatalogMutation(
+    p: Record<string, unknown>,
+    operation: string,
+    identity: BrowserCanonicalWriteIdentity,
+  ): Promise<Record<string, unknown>> {
+    const isTag = operation.startsWith("tag.");
+    const entityId = browserCodexRequiredNonEmptyPayloadString(
+      p,
+      isTag ? "tagId" : "typeId",
+    );
+    const mutationKind = operation.endsWith(".create")
+      ? "create"
+      : operation.endsWith(".delete")
+        ? "delete"
+        : "update";
+    const objectKey = {
+      kind: "component",
+      componentId: `${isTag ? "codex-tag" : "codex-type"}:${entityId}`,
+    };
+    const changedPaths =
+      mutationKind === "update"
+        ? (isTag
+            ? ["name", "color", "typeFilter"]
+            : ["label", "color", "paletteIndex", "icon", "sortOrder"]
+          )
+            .filter((key) => Object.hasOwn(p, key))
+            .map((key) => `/${key}`)
+            .sort()
+        : ["/"];
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        "agent_codex_mutate",
+        p,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "agent_codex_mutate",
+        identity,
+        requestHash,
+        conflictMarker: "CODEX_MUTATION_REQUEST_CONFLICT",
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: null,
+        domain: "codex",
+        opType: operation,
+        entityType: isTag ? "tag" : "type",
+        entityId,
+        payload: JSON.stringify({
+          surface: String(p.surface ?? "manual"),
+          operation,
+        }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const current = queryOne(
+          isTag
+            ? "SELECT * FROM codex_tags WHERE id = ? AND project_id = ?"
+            : "SELECT * FROM codex_types WHERE id = ? AND project_id = ?",
+          [entityId, identity.projectId],
+        );
+        if (mutationKind === "create") {
+          if (current) throw new Error(`Codex catalog '${entityId}' exists`);
+          if (isTag) {
+            db.run(
+              `INSERT INTO codex_tags
+                (id, project_id, name, color, type_filter, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)`,
+              [
+                entityId,
+                identity.projectId,
+                browserCodexRequiredNonEmptyPayloadString(p, "name"),
+                nativeNullable(p.color) ?? null,
+                nativeNullable(p.typeFilter) ?? null,
+                String(p.createdAt ?? now),
+              ],
+            );
+          } else {
+            db.run(
+              `INSERT INTO codex_types
+                (id, project_id, slug, label, color, palette_index, icon,
+                 is_builtin, sort_order, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                entityId,
+                identity.projectId,
+                browserCodexRequiredNonEmptyPayloadString(p, "slug"),
+                browserCodexRequiredNonEmptyPayloadString(p, "label"),
+                p.color == null ? "#888888" : String(p.color),
+                p.paletteIndex == null ? null : Number(p.paletteIndex),
+                nativeNullable(p.icon) ?? null,
+                p.isBuiltin === true || p.isBuiltin === 1 ? 1 : 0,
+                p.sortOrder == null ? 0 : Number(p.sortOrder),
+                String(p.createdAt ?? now),
+              ],
+            );
+          }
+        } else if (mutationKind === "update") {
+          if (!current) {
+            throw new Error(`Codex catalog '${entityId}' not in project`);
+          }
+          if (isTag) {
+            if (changedPaths.length === 0)
+              throw new Error("tag update has no fields");
+            db.run(
+              `UPDATE codex_tags
+                  SET name = ?, color = ?, type_filter = ?
+                WHERE id = ? AND project_id = ?`,
+              [
+                Object.hasOwn(p, "name")
+                  ? browserCodexRequiredNonEmptyPayloadString(p, "name")
+                  : current.name,
+                Object.hasOwn(p, "color")
+                  ? (nativeNullable(p.color) ?? null)
+                  : (current.color as SqlValue),
+                Object.hasOwn(p, "typeFilter")
+                  ? (nativeNullable(p.typeFilter) ?? null)
+                  : (current.type_filter as SqlValue),
+                entityId,
+                identity.projectId,
+              ],
+            );
+          } else {
+            if (changedPaths.length === 0)
+              throw new Error("type update has no fields");
+            db.run(
+              `UPDATE codex_types
+                  SET label = ?, color = ?, palette_index = ?, icon = ?,
+                      sort_order = ?
+                WHERE id = ? AND project_id = ?`,
+              [
+                Object.hasOwn(p, "label")
+                  ? browserCodexRequiredNonEmptyPayloadString(p, "label")
+                  : current.label,
+                Object.hasOwn(p, "color")
+                  ? browserCodexRequiredNonEmptyPayloadString(p, "color")
+                  : current.color,
+                Object.hasOwn(p, "paletteIndex")
+                  ? p.paletteIndex == null
+                    ? null
+                    : Number(p.paletteIndex)
+                  : (current.palette_index as SqlValue),
+                Object.hasOwn(p, "icon")
+                  ? browserCodexOptionalPayloadString(p.icon, "icon")
+                  : (current.icon as SqlValue),
+                Object.hasOwn(p, "sortOrder")
+                  ? Number(p.sortOrder)
+                  : Number(current.sort_order),
+                entityId,
+                identity.projectId,
+              ],
+            );
+          }
+        } else {
+          if (!current) {
+            throw new Error(`Codex catalog '${entityId}' not in project`);
+          }
+          if (!isTag && Number(current.is_builtin) !== 0) {
+            throw new Error("cannot delete a builtin codex type");
+          }
+          db.run(
+            isTag
+              ? "DELETE FROM codex_tags WHERE id = ? AND project_id = ?"
+              : "DELETE FROM codex_types WHERE id = ? AND project_id = ?",
+            [entityId, identity.projectId],
+          );
+        }
+        const after =
+          mutationKind === "delete"
+            ? null
+            : queryOne(
+                isTag
+                  ? "SELECT * FROM codex_tags WHERE id = ? AND project_id = ?"
+                  : "SELECT * FROM codex_types WHERE id = ? AND project_id = ?",
+                [entityId, identity.projectId],
+              );
+        if (mutationKind !== "delete" && !after) {
+          throw new Error(`Codex catalog '${entityId}' was not persisted`);
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey,
+              changeKind: "catalog",
+              mutationKind,
+              beforeVersion: null,
+              afterVersion: null,
+              ...(current
+                ? { beforeState: browserCodexCatalogFeedState(current, isTag) }
+                : {}),
+              ...(after
+                ? { afterState: browserCodexCatalogFeedState(after, isTag) }
+                : {}),
+              changedPaths: changedPaths.length > 0 ? changedPaths : ["/"],
+            },
+          ],
+        });
+        const response = {
+          entityId,
+          version: 0,
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "agent_codex_mutate",
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Codex catalog mutation failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleBrowserCodexRelationOrPhaseMutation(
+    p: Record<string, unknown>,
+    operation: string,
+    identity: BrowserCanonicalWriteIdentity,
+  ): Promise<Record<string, unknown>> {
+    const isRelation = operation.startsWith("relation.");
+    const entityId = browserCodexRequiredNonEmptyPayloadString(
+      p,
+      isRelation ? "relationId" : "phaseId",
+    );
+    const mutationKind = operation.endsWith(".create") ? "create" : "delete";
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        "agent_codex_mutate",
+        p,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "agent_codex_mutate",
+        identity,
+        requestHash,
+        conflictMarker: "CODEX_MUTATION_REQUEST_CONFLICT",
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: null,
+        domain: "codex",
+        opType: operation,
+        entityType: isRelation ? "relation" : "phase",
+        entityId,
+        payload: JSON.stringify({
+          surface: String(p.surface ?? "manual"),
+          operation,
+        }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "agent_codex_mutate",
+          identity,
+          requestHash,
+          conflictMarker: "CODEX_MUTATION_REQUEST_CONFLICT",
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        let version = 0;
+        let beforeVersion: number | null = null;
+        const beforeState = isRelation
+          ? loadBrowserCodexRelationFeedState(entityId, identity.projectId)
+          : loadBrowserPhaseAggregateSnapshot(entityId, identity.projectId);
+        if (operation === "relation.create") {
+          const fromId = browserCodexRequiredNonEmptyPayloadString(
+            p,
+            "fromCodexId",
+          );
+          const toId = browserCodexRequiredNonEmptyPayloadString(
+            p,
+            "toCodexId",
+          );
+          if (fromId === toId) throw new Error("from and to must differ");
+          for (const entryId of [fromId, toId]) {
+            if (
+              !queryOne(
+                "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+                [entryId, identity.projectId],
+              )
+            ) {
+              throw new Error(
+                `codex entry '${entryId}' is not in project '${identity.projectId}'`,
+              );
+            }
+          }
+          const directionality = String(p.directionality ?? "directed");
+          if (!["directed", "symmetric"].includes(directionality)) {
+            throw new Error("invalid directionality");
+          }
+          const label = browserCodexRequiredNonEmptyPayloadString(p, "label");
+          const inverseLabel =
+            nativeNullable(p.inverseLabel) ??
+            (directionality === "symmetric" ? label : null);
+          if (directionality === "symmetric" && inverseLabel !== label) {
+            throw new Error("symmetric relation labels must match");
+          }
+          const semanticKey = String(
+            p.semanticKey ??
+              `${identity.projectId}:${fromId}:${toId}:${String(p.relationType ?? "custom")}:${directionality}:${label}:${String(inverseLabel ?? "")}`,
+          );
+          db.run(
+            `INSERT INTO codex_relations
+              (id, project_id, from_codex_id, to_codex_id, relation_type,
+               label, directionality, inverse_label, semantic_key, version,
+               depth_hint, source_map_edge_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+            [
+              entityId,
+              identity.projectId,
+              fromId,
+              toId,
+              String(p.relationType ?? "custom"),
+              label,
+              directionality,
+              inverseLabel,
+              semanticKey,
+              p.depthHint == null ? null : Number(p.depthHint),
+              nativeNullable(p.sourceMapEdgeId) ?? null,
+              now,
+              now,
+            ],
+          );
+          version = 1;
+        } else if (operation === "relation.delete") {
+          if (!beforeState)
+            throw new Error(`codex relation '${entityId}' not found`);
+          beforeVersion = Number(beforeState.version);
+          db.run(
+            "DELETE FROM codex_relations WHERE id = ? AND project_id = ?",
+            [entityId, identity.projectId],
+          );
+        } else if (operation === "phase.create") {
+          const entryId = browserCodexRequiredNonEmptyPayloadString(
+            p,
+            "entryId",
+          );
+          if (
+            !queryOne(
+              "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+              [entryId, identity.projectId],
+            )
+          ) {
+            throw new Error(
+              `phase entry '${entryId}' is not in project '${identity.projectId}'`,
+            );
+          }
+          const anchorNodeId = nativeNullable(p.anchorNodeId) ?? null;
+          if (
+            anchorNodeId !== null &&
+            !queryOne(
+              `SELECT 1 AS owned FROM tree_nodes
+                WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+              [anchorNodeId, identity.projectId],
+            )
+          ) {
+            throw new Error(
+              `phase anchor '${anchorNodeId}' is not a scene in project '${identity.projectId}'`,
+            );
+          }
+          version = p.version == null ? 0 : Number(p.version);
+          db.run(
+            `INSERT INTO codex_entry_phases
+              (id, entry_id, anchor_node_id, label, summary_override,
+               content_override, context_mode_override, version,
+               created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              entityId,
+              entryId,
+              anchorNodeId,
+              String(p.label ?? ""),
+              nativeNullable(p.summaryOverride) ?? null,
+              nativeNullable(p.contentOverride) ?? null,
+              nativeNullable(p.contextModeOverride) ?? null,
+              version,
+              String(p.createdAt ?? now),
+              now,
+            ],
+          );
+          if (Object.hasOwn(p, "detailOverrides")) {
+            replaceBrowserPhaseOverrides(
+              entityId,
+              identity.projectId,
+              p.detailOverrides,
+            );
+          }
+        } else {
+          if (!beforeState) {
+            throw new Error(`phase '${entityId}' is not in project`);
+          }
+          beforeVersion = Number(beforeState.version);
+          if (
+            p.expectedVersion != null &&
+            Number(p.expectedVersion) !== Number(beforeState.version)
+          ) {
+            throw new Error(`phase '${entityId}' version conflict`);
+          }
+          db.run(
+            `DELETE FROM codex_entry_phases
+              WHERE id = ? AND EXISTS (
+                SELECT 1 FROM codex_entries entry
+                 WHERE entry.id = codex_entry_phases.entry_id
+                   AND entry.project_id = ?
+              )`,
+            [entityId, identity.projectId],
+          );
+        }
+        const afterState = isRelation
+          ? loadBrowserCodexRelationFeedState(entityId, identity.projectId)
+          : loadBrowserPhaseAggregateSnapshot(entityId, identity.projectId);
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: isRelation
+                ? { kind: "codex-relation", relationId: entityId }
+                : { kind: "codex-phase", phaseId: entityId },
+              changeKind: isRelation ? "association" : "metadata",
+              mutationKind,
+              beforeVersion,
+              ...(beforeState ? { beforeState } : {}),
+              afterVersion:
+                afterState?.version == null ? null : Number(afterState.version),
+              ...(afterState ? { afterState } : {}),
+              changedPaths: ["/"],
+            },
+          ],
+        });
+        const response = {
+          entityId,
+          version,
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "agent_codex_mutate",
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical relation/phase mutation failure.
+        }
+        throw error;
+      }
+    });
   }
 
   function lintIgnoreRowsToWire(
@@ -6019,6 +9256,2026 @@ export async function createBrowserMock(
     return null;
   }
 
+  type BrowserEventSnapshot = {
+    eventData: Record<string, unknown>;
+    participants: Array<{ codexEntryId: string; role: string | null }>;
+    sceneLinks: Array<{ sceneId: string; incarnationToken: string }>;
+    relations: {
+      asCause: Array<{ projectId: string; effectEventId: string }>;
+      asEffect: Array<{ projectId: string; causeEventId: string }>;
+    };
+  };
+
+  function browserEventMutationIdentity(
+    payload: Record<string, unknown>,
+    command: string,
+  ): BrowserCanonicalWriteIdentity {
+    const projectId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "projectId",
+    );
+    const requestId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "requestId",
+    );
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "sessionId",
+    );
+    const surface = browserCodexOptionalPayloadString(
+      payload.surface,
+      `${command} surface`,
+    );
+    return {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid: crypto.randomUUID(),
+      origin:
+        surface === "manual"
+          ? "human"
+          : surface === "import"
+            ? "import"
+            : "ai-apply",
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+  }
+
+  async function browserEventMutationFingerprint(
+    domain: string,
+    payload: Record<string, unknown>,
+    normalizeParticipants = false,
+  ): Promise<string> {
+    const normalized = structuredClone(payload);
+    delete normalized.requestId;
+    delete normalized.sessionId;
+    delete normalized.surface;
+    if (normalizeParticipants) {
+      const ids = Array.isArray(normalized.codexEntryIds)
+        ? normalized.codexEntryIds.map(String)
+        : [];
+      normalized.codexEntryIds = [...new Set(ids)].sort();
+    }
+    return browserPayloadFingerprint(domain, normalized);
+  }
+
+  function browserEventVersion(
+    payload: Record<string, unknown>,
+    key = "baseVersion",
+  ): number {
+    const value = payload[key];
+    if (
+      typeof value !== "number" ||
+      !Number.isSafeInteger(value) ||
+      value < 0
+    ) {
+      throw new Error(`${key} must be a non-negative safe integer`);
+    }
+    return value;
+  }
+
+  function browserEventNullableString(value: SqlValue): string | null {
+    return value == null ? null : String(value);
+  }
+
+  function loadBrowserEventSnapshot(
+    eventId: string,
+    projectId: string,
+  ): BrowserEventSnapshot | null {
+    const row = queryOne(
+      `SELECT id, project_id, title, note, detail, ordinal,
+              primary_codex_id, lane_group, location_codex_id,
+              start_time, end_time, start_minute, end_minute,
+              start_granularity, end_granularity, precision, kind,
+              secret, reveal_scene_id, version, created_at, updated_at
+         FROM events WHERE id = ? AND project_id = ?`,
+      [eventId, projectId],
+    );
+    if (!row) return null;
+    const participants = queryAll(
+      `SELECT codex_entry_id, role FROM event_participants
+        WHERE event_id = ? ORDER BY codex_entry_id`,
+      [eventId],
+    ).map((participant) => ({
+      codexEntryId: String(participant.codex_entry_id),
+      role: browserEventNullableString(participant.role),
+    }));
+    const sceneLinks = queryAll(
+      `SELECT scene_id, incarnation_token
+         FROM scene_events WHERE event_id = ? ORDER BY scene_id`,
+      [eventId],
+    ).map((link) => ({
+      sceneId: String(link.scene_id),
+      incarnationToken: String(link.incarnation_token),
+    }));
+    const asCause = queryAll(
+      `SELECT project_id, effect_event_id FROM event_relations
+        WHERE cause_event_id = ? ORDER BY effect_event_id`,
+      [eventId],
+    ).map((relation) => ({
+      projectId: String(relation.project_id),
+      effectEventId: String(relation.effect_event_id),
+    }));
+    const asEffect = queryAll(
+      `SELECT project_id, cause_event_id FROM event_relations
+        WHERE effect_event_id = ? ORDER BY cause_event_id`,
+      [eventId],
+    ).map((relation) => ({
+      projectId: String(relation.project_id),
+      causeEventId: String(relation.cause_event_id),
+    }));
+    return {
+      eventData: {
+        id: String(row.id),
+        projectId: String(row.project_id),
+        title: String(row.title),
+        note: browserEventNullableString(row.note),
+        detail: browserEventNullableString(row.detail),
+        ordinal: String(row.ordinal),
+        primaryCodexId: browserEventNullableString(row.primary_codex_id),
+        laneGroup: browserEventNullableString(row.lane_group),
+        locationCodexId: browserEventNullableString(row.location_codex_id),
+        startTime: row.start_time == null ? null : Number(row.start_time),
+        endTime: row.end_time == null ? null : Number(row.end_time),
+        startMinute: row.start_minute == null ? null : Number(row.start_minute),
+        endMinute: row.end_minute == null ? null : Number(row.end_minute),
+        startGranularity: String(row.start_granularity),
+        endGranularity: String(row.end_granularity),
+        precision: String(row.precision),
+        kind: String(row.kind),
+        secret: Number(row.secret),
+        revealSceneId: browserEventNullableString(row.reveal_scene_id),
+        version: Number(row.version),
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+      },
+      participants,
+      sceneLinks,
+      relations: { asCause, asEffect },
+    };
+  }
+
+  function loadBrowserEventParticipantsSnapshot(
+    eventId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const snapshot = loadBrowserEventSnapshot(eventId, projectId);
+    if (!snapshot) return null;
+    return {
+      eventId,
+      version: snapshot.eventData.version,
+      participants: snapshot.participants,
+    };
+  }
+
+  function browserEventJournalSnapshotKind(
+    raw: SqlValue,
+    journalId: string,
+  ): "scene-link" | "relation" | "participants" | "aggregate" {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `event undo journal '${journalId}' is missing a snapshot`,
+      );
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) {
+      throw new Error(
+        `event undo journal '${journalId}' has an invalid snapshot`,
+      );
+    }
+    if (parsed.snapshotKind === BROWSER_SCENE_EVENT_LINK_BATCH_SNAPSHOT_KIND) {
+      return "scene-link";
+    }
+    if (
+      typeof parsed.projectId === "string" &&
+      typeof parsed.causeEventId === "string" &&
+      typeof parsed.effectEventId === "string" &&
+      typeof parsed.linked === "boolean"
+    ) {
+      return "relation";
+    }
+    if (isRecord(parsed.eventData)) return "aggregate";
+    if (
+      typeof parsed.eventId === "string" &&
+      Number.isSafeInteger(parsed.version) &&
+      Array.isArray(parsed.participants)
+    ) {
+      return "participants";
+    }
+    throw new Error(
+      `event undo journal '${journalId}' has an invalid snapshot`,
+    );
+  }
+
+  function parseBrowserEventAggregateSnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): BrowserEventSnapshot {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `event undo journal '${journalId}' is missing an aggregate snapshot`,
+      );
+    }
+    const parsed = JSON.parse(raw) as Partial<BrowserEventSnapshot>;
+    if (
+      !isRecord(parsed.eventData) ||
+      typeof parsed.eventData.id !== "string" ||
+      typeof parsed.eventData.projectId !== "string" ||
+      !Number.isSafeInteger(parsed.eventData.version) ||
+      !Array.isArray(parsed.participants) ||
+      !Array.isArray(parsed.sceneLinks) ||
+      !isRecord(parsed.relations) ||
+      !Array.isArray(parsed.relations.asCause) ||
+      !Array.isArray(parsed.relations.asEffect)
+    ) {
+      throw new Error(
+        `event undo journal '${journalId}' has an invalid aggregate snapshot`,
+      );
+    }
+    const sceneLinks = parsed.sceneLinks.map((raw) => {
+      if (typeof raw === "string") {
+        return { sceneId: raw, incarnationToken: "" };
+      }
+      if (
+        !isRecord(raw) ||
+        typeof raw.sceneId !== "string" ||
+        typeof raw.incarnationToken !== "string"
+      ) {
+        throw new Error(
+          `event undo journal '${journalId}' has an invalid scene link`,
+        );
+      }
+      return {
+        sceneId: raw.sceneId,
+        incarnationToken: raw.incarnationToken,
+      };
+    });
+    return { ...(parsed as BrowserEventSnapshot), sceneLinks };
+  }
+
+  function parseBrowserEventParticipantsSnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): {
+    eventId: string;
+    version: number;
+    participants: Array<{ codexEntryId: string; role: string | null }>;
+  } {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `event undo journal '${journalId}' is missing a participant snapshot`,
+      );
+    }
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (
+      typeof parsed.eventId !== "string" ||
+      !Number.isSafeInteger(parsed.version) ||
+      !Array.isArray(parsed.participants)
+    ) {
+      throw new Error(
+        `event undo journal '${journalId}' has an invalid participant snapshot`,
+      );
+    }
+    const participants = parsed.participants.map((rawParticipant) => {
+      if (
+        !isRecord(rawParticipant) ||
+        typeof rawParticipant.codexEntryId !== "string" ||
+        !(
+          rawParticipant.role === null ||
+          typeof rawParticipant.role === "string"
+        )
+      ) {
+        throw new Error(
+          `event undo journal '${journalId}' has an invalid participant`,
+        );
+      }
+      return {
+        codexEntryId: rawParticipant.codexEntryId,
+        role: rawParticipant.role,
+      };
+    });
+    return {
+      eventId: parsed.eventId,
+      version: Number(parsed.version),
+      participants,
+    };
+  }
+
+  interface BrowserEventRelationSnapshot {
+    projectId: string;
+    causeEventId: string;
+    effectEventId: string;
+    linked: boolean;
+  }
+
+  function parseBrowserEventRelationSnapshot(
+    raw: SqlValue,
+    journalId: string,
+  ): BrowserEventRelationSnapshot {
+    if (typeof raw !== "string") {
+      throw new Error(
+        `event relation journal '${journalId}' is missing a snapshot`,
+      );
+    }
+    const parsed = JSON.parse(raw) as Partial<BrowserEventRelationSnapshot>;
+    if (
+      typeof parsed.projectId !== "string" ||
+      typeof parsed.causeEventId !== "string" ||
+      typeof parsed.effectEventId !== "string" ||
+      typeof parsed.linked !== "boolean"
+    ) {
+      throw new Error(
+        `event relation journal '${journalId}' has an invalid snapshot`,
+      );
+    }
+    return parsed as BrowserEventRelationSnapshot;
+  }
+
+  function replayBrowserEventRelationSnapshot(
+    projectId: string,
+    journalId: string,
+    direction: "undo" | "redo",
+    beforeRaw: SqlValue,
+    afterRaw: SqlValue,
+  ): void {
+    const source = parseBrowserEventRelationSnapshot(
+      direction === "undo" ? afterRaw : beforeRaw,
+      journalId,
+    );
+    const target = parseBrowserEventRelationSnapshot(
+      direction === "undo" ? beforeRaw : afterRaw,
+      journalId,
+    );
+    if (
+      source.projectId !== projectId ||
+      target.projectId !== projectId ||
+      source.causeEventId !== target.causeEventId ||
+      source.effectEventId !== target.effectEventId
+    ) {
+      throw new Error(
+        `event relation journal '${journalId}' has mismatched association identity`,
+      );
+    }
+    requireBrowserEventReference(
+      "events",
+      source.causeEventId,
+      projectId,
+      "cause event",
+    );
+    requireBrowserEventReference(
+      "events",
+      source.effectEventId,
+      projectId,
+      "effect event",
+    );
+    const linked = Boolean(
+      queryOne(
+        `SELECT 1 AS linked FROM event_relations
+          WHERE project_id = ? AND cause_event_id = ? AND effect_event_id = ?`,
+        [projectId, source.causeEventId, source.effectEventId],
+      ),
+    );
+    if (linked !== source.linked) {
+      throw new Error(
+        `event relation journal '${journalId}' association state changed`,
+      );
+    }
+    if (target.linked) {
+      db.run(
+        `INSERT INTO event_relations
+          (project_id, cause_event_id, effect_event_id) VALUES (?, ?, ?)`,
+        [projectId, target.causeEventId, target.effectEventId],
+      );
+    } else {
+      db.run(
+        `DELETE FROM event_relations
+          WHERE project_id = ? AND cause_event_id = ? AND effect_event_id = ?`,
+        [projectId, target.causeEventId, target.effectEventId],
+      );
+    }
+    if (source.linked !== target.linked && db.getRowsModified() !== 1) {
+      throw new Error(`event relation journal '${journalId}' was not applied`);
+    }
+  }
+
+  function replaceBrowserEventParticipants(
+    eventId: string,
+    projectId: string,
+    participants: Array<{ codexEntryId: string; role: string | null }>,
+  ): void {
+    for (const participant of participants) {
+      requireBrowserEventReference(
+        "codex_entries",
+        participant.codexEntryId,
+        projectId,
+        "chronicle participant",
+      );
+    }
+    db.run("DELETE FROM event_participants WHERE event_id = ?", [eventId]);
+    for (const participant of participants) {
+      db.run(
+        `INSERT INTO event_participants (event_id, codex_entry_id, role)
+         VALUES (?, ?, ?)`,
+        [eventId, participant.codexEntryId, participant.role],
+      );
+    }
+  }
+
+  function restoreBrowserEventParticipantsSnapshot(
+    projectId: string,
+    snapshot: {
+      eventId: string;
+      participants: Array<{ codexEntryId: string; role: string | null }>;
+    },
+    expectedVersion: number,
+    targetVersion: number,
+    now: string,
+  ): void {
+    db.run(
+      `UPDATE events SET version = ?, updated_at = ?
+        WHERE id = ? AND project_id = ? AND version = ?`,
+      [targetVersion, now, snapshot.eventId, projectId, expectedVersion],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `event '${snapshot.eventId}' version conflict during participant replay`,
+      );
+    }
+    replaceBrowserEventParticipants(
+      snapshot.eventId,
+      projectId,
+      snapshot.participants,
+    );
+  }
+
+  function browserEventDataValues(
+    snapshot: BrowserEventSnapshot,
+    targetVersion: number,
+    now: string,
+  ): SqlValue[] {
+    const event = snapshot.eventData;
+    return [
+      String(event.title),
+      (event.note ?? null) as SqlValue,
+      (event.detail ?? null) as SqlValue,
+      String(event.ordinal),
+      (event.primaryCodexId ?? null) as SqlValue,
+      (event.laneGroup ?? null) as SqlValue,
+      (event.locationCodexId ?? null) as SqlValue,
+      (event.startTime ?? null) as SqlValue,
+      (event.endTime ?? null) as SqlValue,
+      (event.startMinute ?? null) as SqlValue,
+      (event.endMinute ?? null) as SqlValue,
+      String(event.startGranularity),
+      String(event.endGranularity),
+      String(event.precision),
+      String(event.kind),
+      Number(event.secret),
+      (event.revealSceneId ?? null) as SqlValue,
+      targetVersion,
+      now,
+    ];
+  }
+
+  function validateBrowserEventSnapshotReferences(
+    snapshot: BrowserEventSnapshot,
+    projectId: string,
+  ): void {
+    const event = snapshot.eventData;
+    if (event.projectId !== projectId) {
+      throw new Error("event undo snapshot belongs to another project");
+    }
+    for (const [field, label] of [
+      ["primaryCodexId", "primary Codex"],
+      ["locationCodexId", "location Codex"],
+    ] as const) {
+      const id = event[field];
+      if (typeof id === "string" && id.length > 0) {
+        requireBrowserEventReference("codex_entries", id, projectId, label);
+      }
+    }
+    if (typeof event.revealSceneId === "string") {
+      requireBrowserEventReference(
+        "tree_nodes",
+        event.revealSceneId,
+        projectId,
+        "reveal scene",
+      );
+    }
+  }
+
+  function replaceBrowserEventAggregateAssociations(
+    snapshot: BrowserEventSnapshot,
+    projectId: string,
+  ): void {
+    const eventId = String(snapshot.eventData.id);
+    replaceBrowserEventParticipants(eventId, projectId, snapshot.participants);
+    db.run("DELETE FROM scene_events WHERE event_id = ?", [eventId]);
+    for (const link of snapshot.sceneLinks) {
+      const { sceneId, incarnationToken } = link;
+      const scene = queryOne(
+        `SELECT 1 AS owned FROM tree_nodes
+          WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+        [sceneId, projectId],
+      );
+      if (!scene) {
+        throw new Error(`scene '${sceneId}' is not in project '${projectId}'`);
+      }
+      db.run(
+        `INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+         VALUES (?, ?, ?)`,
+        [sceneId, eventId, incarnationToken],
+      );
+    }
+    db.run(
+      "DELETE FROM event_relations WHERE cause_event_id = ? OR effect_event_id = ?",
+      [eventId, eventId],
+    );
+    for (const relation of snapshot.relations.asCause) {
+      requireBrowserEventReference(
+        "events",
+        relation.effectEventId,
+        projectId,
+        "related event",
+      );
+      db.run(
+        `INSERT OR IGNORE INTO event_relations
+          (project_id, cause_event_id, effect_event_id) VALUES (?, ?, ?)`,
+        [projectId, eventId, relation.effectEventId],
+      );
+    }
+    for (const relation of snapshot.relations.asEffect) {
+      requireBrowserEventReference(
+        "events",
+        relation.causeEventId,
+        projectId,
+        "related event",
+      );
+      db.run(
+        `INSERT OR IGNORE INTO event_relations
+          (project_id, cause_event_id, effect_event_id) VALUES (?, ?, ?)`,
+        [projectId, relation.causeEventId, eventId],
+      );
+    }
+  }
+
+  function restoreBrowserEventAggregateSnapshot(
+    snapshot: BrowserEventSnapshot,
+    projectId: string,
+    expectedVersion: number | null,
+    targetVersion: number,
+    now: string,
+  ): void {
+    validateBrowserEventSnapshotReferences(snapshot, projectId);
+    const event = snapshot.eventData;
+    const values = browserEventDataValues(snapshot, targetVersion, now);
+    if (expectedVersion === null) {
+      db.run(
+        `INSERT INTO events
+          (id, project_id, title, note, detail, ordinal, primary_codex_id,
+           lane_group, location_codex_id, start_time, end_time, start_minute,
+           end_minute, start_granularity, end_granularity, precision, kind,
+           secret, reveal_scene_id, version, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          String(event.id),
+          projectId,
+          ...values.slice(0, -1),
+          String(event.createdAt),
+          now,
+        ],
+      );
+    } else {
+      db.run(
+        `UPDATE events SET
+           title = ?, note = ?, detail = ?, ordinal = ?, primary_codex_id = ?,
+           lane_group = ?, location_codex_id = ?, start_time = ?, end_time = ?,
+           start_minute = ?, end_minute = ?, start_granularity = ?,
+           end_granularity = ?, precision = ?, kind = ?, secret = ?,
+           reveal_scene_id = ?, version = ?, updated_at = ?
+         WHERE id = ? AND project_id = ? AND version = ?`,
+        [...values, String(event.id), projectId, expectedVersion],
+      );
+    }
+    if (db.getRowsModified() !== 1) {
+      throw new Error(
+        `event '${String(event.id)}' version conflict during replay`,
+      );
+    }
+    replaceBrowserEventAggregateAssociations(snapshot, projectId);
+  }
+
+  function insertBrowserEventUndoJournal(input: {
+    id: string;
+    projectId: string;
+    surface: string;
+    eventId: string;
+    opKind: "create" | "update" | "delete";
+    before:
+      | Record<string, unknown>
+      | BrowserEventSnapshot
+      | BrowserEventRelationSnapshot
+      | BrowserSceneEventLinkBatchSnapshot
+      | null;
+    after:
+      | Record<string, unknown>
+      | BrowserEventSnapshot
+      | BrowserEventRelationSnapshot
+      | BrowserSceneEventLinkBatchSnapshot
+      | null;
+    baseVersion: number;
+    resultVersion: number;
+    eventUid: string;
+    now: string;
+  }): void {
+    db.run(
+      `INSERT INTO undo_journal
+        (id, project_id, surface, entity_kind, entity_id, op_kind,
+         before_json, after_json, base_version, result_version,
+         change_event_uid, created_at)
+       VALUES (?, ?, ?, 'event', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.projectId,
+        input.surface,
+        input.eventId,
+        input.opKind,
+        input.before === null ? null : JSON.stringify(input.before),
+        input.after === null ? null : JSON.stringify(input.after),
+        input.baseVersion,
+        input.resultVersion,
+        input.eventUid,
+        input.now,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`event undo journal '${input.id}' was not persisted`);
+    }
+  }
+
+  function requireBrowserEventReference(
+    table: "codex_entries" | "tree_nodes" | "events",
+    id: string,
+    projectId: string,
+    label: string,
+  ): void {
+    if (
+      !queryOne(
+        `SELECT 1 AS owned FROM ${table} WHERE id = ? AND project_id = ?`,
+        [id, projectId],
+      )
+    ) {
+      throw new Error(`${label} '${id}' is not in project '${projectId}'`);
+    }
+  }
+
+  function browserEventOptionalInteger(
+    value: unknown,
+    label: string,
+  ): number | null {
+    if (value == null) return null;
+    if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+      throw new Error(`${label} must be an integer or null`);
+    }
+    return value;
+  }
+
+  function browserEventStringArray(value: unknown, label: string): string[] {
+    if (value == null) return [];
+    if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+    const ids = value.map((id) => {
+      if (typeof id !== "string" || id.length === 0) {
+        throw new Error(`${label} must contain non-empty strings`);
+      }
+      return id;
+    });
+    return [...new Set(ids)].sort();
+  }
+
+  async function handleAgentEventCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "agent_event_create";
+    const payload = nativeCodexPayload(args);
+    const identity = browserEventMutationIdentity(payload, command);
+    const suppliedEventId = browserCodexOptionalPayloadString(
+      payload.eventId,
+      "eventId",
+    );
+    if (suppliedEventId !== null && suppliedEventId.trim().length === 0) {
+      throw new Error("eventId must be a non-empty string or null");
+    }
+    const eventId = suppliedEventId ?? crypto.randomUUID();
+    const surface =
+      browserCodexOptionalPayloadString(payload.surface, "surface") ??
+      "in-app-agent";
+    const title =
+      payload.title == null
+        ? ""
+        : browserCodexRequiredPayloadString(payload, "title");
+    const note = browserCodexOptionalPayloadString(payload.note, "note");
+    const detail = browserCodexOptionalPayloadString(payload.detail, "detail");
+    const ordinal =
+      payload.ordinal == null
+        ? "a0"
+        : browserCodexRequiredPayloadString(payload, "ordinal");
+    const primaryCodexId = browserCodexOptionalPayloadString(
+      payload.primaryCodexId,
+      "primaryCodexId",
+    );
+    const laneGroup = browserCodexOptionalPayloadString(
+      payload.laneGroup,
+      "laneGroup",
+    );
+    const locationCodexId = browserCodexOptionalPayloadString(
+      payload.locationCodexId,
+      "locationCodexId",
+    );
+    const startTime = browserEventOptionalInteger(
+      payload.startTime,
+      "startTime",
+    );
+    const endTime = browserEventOptionalInteger(payload.endTime, "endTime");
+    const startMinute = browserEventOptionalInteger(
+      payload.startMinute,
+      "startMinute",
+    );
+    const endMinute = browserEventOptionalInteger(
+      payload.endMinute,
+      "endMinute",
+    );
+    const explicitStartGranularity = browserCodexOptionalPayloadString(
+      payload.startGranularity,
+      "startGranularity",
+    );
+    const explicitEndGranularity = browserCodexOptionalPayloadString(
+      payload.endGranularity,
+      "endGranularity",
+    );
+    const startGranularity =
+      explicitStartGranularity ??
+      (startMinute !== null ? "time" : startTime !== null ? "day" : "none");
+    const endGranularity =
+      explicitEndGranularity ??
+      (endMinute !== null ? "time" : endTime !== null ? "day" : "none");
+    if (!new Set(["none", "day", "time"]).has(startGranularity)) {
+      throw new Error(`invalid startGranularity '${startGranularity}'`);
+    }
+    if (!new Set(["none", "day", "time"]).has(endGranularity)) {
+      throw new Error(`invalid endGranularity '${endGranularity}'`);
+    }
+    const precision =
+      payload.precision == null
+        ? "exact"
+        : browserCodexRequiredPayloadString(payload, "precision");
+    const kind =
+      payload.kind == null
+        ? "generic"
+        : browserCodexRequiredPayloadString(payload, "kind");
+    if (payload.secret != null && typeof payload.secret !== "boolean") {
+      throw new Error("secret must be a boolean");
+    }
+    const secret = payload.secret === true;
+    const rawRevealSceneId = browserCodexOptionalPayloadString(
+      payload.revealSceneId,
+      "revealSceneId",
+    );
+    const revealSceneId = rawRevealSceneId || null;
+    const participantCodexIds = browserEventStringArray(
+      payload.participantCodexIds,
+      "participantCodexIds",
+    );
+    const sceneIds = browserEventStringArray(payload.sceneIds, "sceneIds");
+    const requestHash = await browserPayloadFingerprint(command, {
+      projectId: identity.projectId,
+      title,
+      note,
+      detail,
+      ordinal,
+      primaryCodexId,
+      laneGroup,
+      locationCodexId,
+      startTime,
+      endTime,
+      startMinute,
+      endMinute,
+      startGranularity,
+      endGranularity,
+      precision,
+      kind,
+      secret,
+      revealSceneId,
+      participantCodexIds,
+      sceneIds,
+    });
+    const conflictMarker = "AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
+
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: null,
+        domain: "event",
+        opType: "event.create",
+        entityType: "event",
+        entityId: eventId,
+        payload: JSON.stringify({ title, kind, requestHash }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        if (
+          !queryOne("SELECT 1 AS owned FROM projects WHERE id = ?", [
+            identity.projectId,
+          ])
+        ) {
+          throw new Error(`project '${identity.projectId}' not found`);
+        }
+        if (
+          queryOne("SELECT 1 AS occupied FROM events WHERE id = ?", [
+            eventId,
+          ]) ||
+          queryOne("SELECT 1 AS occupied FROM undo_journal WHERE id = ?", [
+            identity.requestId,
+          ])
+        ) {
+          throw new Error(
+            `${conflictMarker}: entity or request identity is already occupied`,
+          );
+        }
+        for (const [id, label] of [
+          [primaryCodexId, "primary Codex"],
+          [locationCodexId, "location Codex"],
+        ] as const) {
+          if (id) {
+            requireBrowserEventReference(
+              "codex_entries",
+              id,
+              identity.projectId,
+              label,
+            );
+          }
+        }
+        if (revealSceneId) {
+          requireBrowserEventReference(
+            "tree_nodes",
+            revealSceneId,
+            identity.projectId,
+            "reveal scene",
+          );
+        }
+        for (const codexEntryId of participantCodexIds) {
+          requireBrowserEventReference(
+            "codex_entries",
+            codexEntryId,
+            identity.projectId,
+            "chronicle participant",
+          );
+        }
+        for (const sceneId of sceneIds) {
+          const scene = queryOne(
+            `SELECT 1 AS owned FROM tree_nodes
+              WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+            [sceneId, identity.projectId],
+          );
+          if (!scene) {
+            throw new Error(
+              `scene '${sceneId}' is not in project '${identity.projectId}'`,
+            );
+          }
+        }
+
+        db.run(
+          `INSERT INTO events
+            (id, project_id, title, note, detail, ordinal, primary_codex_id,
+             lane_group, location_codex_id, start_time, end_time, start_minute,
+             end_minute, start_granularity, end_granularity, precision, kind,
+             secret, reveal_scene_id, version, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+          [
+            eventId,
+            identity.projectId,
+            title,
+            note,
+            detail,
+            ordinal,
+            primaryCodexId,
+            laneGroup,
+            locationCodexId,
+            startTime,
+            endTime,
+            startMinute,
+            endMinute,
+            startGranularity,
+            endGranularity,
+            precision,
+            kind,
+            secret ? 1 : 0,
+            revealSceneId,
+            now,
+            now,
+          ],
+        );
+        for (const codexEntryId of participantCodexIds) {
+          db.run(
+            `INSERT INTO event_participants (event_id, codex_entry_id, role)
+             VALUES (?, ?, NULL)`,
+            [eventId, codexEntryId],
+          );
+        }
+        for (const sceneId of sceneIds) {
+          db.run(
+            `INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+             VALUES (?, ?, ?)`,
+            [sceneId, eventId, crypto.randomUUID()],
+          );
+        }
+        const after = loadBrowserEventSnapshot(eventId, identity.projectId);
+        if (!after || after.eventData.version !== 1) {
+          throw new Error(`event '${eventId}' missing after create`);
+        }
+        insertBrowserEventUndoJournal({
+          id: identity.requestId,
+          projectId: identity.projectId,
+          surface,
+          eventId,
+          opKind: "create",
+          before: null,
+          after,
+          baseVersion: 0,
+          resultVersion: 1,
+          eventUid: identity.eventUid,
+          now,
+        });
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.requestId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "chronicle-event", eventId },
+              changeKind: "metadata",
+              mutationKind: "create",
+              beforeVersion: null,
+              afterVersion: 1,
+              afterState: after,
+              changedPaths: ["/"],
+            },
+          ],
+        });
+        const response = {
+          entityId: eventId,
+          version: 1,
+          changeEventUid: identity.eventUid,
+          undoJournalId: identity.requestId,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original event create failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleAgentSceneEventMutation(
+    args: Record<string, unknown>,
+    link: boolean,
+  ): Promise<Record<string, unknown>> {
+    const command = link
+      ? "agent_scene_event_link"
+      : "agent_scene_event_unlink";
+    const payload = nativeCodexPayload(args);
+    const identity = browserEventMutationIdentity(payload, command);
+    const sceneId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "sceneId",
+    );
+    const eventId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventId",
+    );
+    const surface =
+      browserCodexOptionalPayloadString(payload.surface, "surface") ??
+      "in-app-agent";
+    const requestHash = await browserEventMutationFingerprint(command, payload);
+    const conflictMarker = "AGENT_SCENE_EVENT_IDEMPOTENCY_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) {
+        const journal = queryOne(
+          `SELECT after_json FROM undo_journal
+            WHERE id = ? AND project_id = ? AND entity_kind = 'event'`,
+          [identity.requestId, identity.projectId],
+        );
+        if (!journal) {
+          throw new Error(`${conflictMarker}: original journal is missing`);
+        }
+        const originalAfter = parseBrowserSceneEventLinkBatchSnapshot(
+          journal.after_json,
+          identity.requestId,
+        );
+        const current = collectBrowserSceneEventLinkBatchState(eventId, [
+          sceneId,
+        ]).sceneLinks[0];
+        const stateMatches = link
+          ? current?.linked === true &&
+            current.incarnationToken ===
+              originalAfter.incarnationTokens?.[sceneId]
+          : current?.linked === false;
+        if (!stateMatches) {
+          throw new Error(
+            `${conflictMarker}: association state changed after original request`,
+          );
+        }
+        return replay;
+      }
+
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId,
+        domain: "event",
+        opType: link ? "event.stamp" : "event.unstamp",
+        entityType: "event",
+        entityId: eventId,
+        payload: JSON.stringify({ sceneId, eventId, requestHash }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const event = queryOne(
+          "SELECT version FROM events WHERE id = ? AND project_id = ?",
+          [eventId, identity.projectId],
+        );
+        if (!event) {
+          throw new Error(
+            `event '${eventId}' not found in project '${identity.projectId}'`,
+          );
+        }
+        if (
+          !queryOne(
+            `SELECT 1 AS owned FROM tree_nodes
+              WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+            [sceneId, identity.projectId],
+          )
+        ) {
+          throw new Error(
+            `scene '${sceneId}' not found in project '${identity.projectId}'`,
+          );
+        }
+        const existing = queryOne(
+          `SELECT incarnation_token FROM scene_events
+            WHERE scene_id = ? AND event_id = ?`,
+          [sceneId, eventId],
+        );
+        const beforeState = loadBrowserEventSnapshot(
+          eventId,
+          identity.projectId,
+        );
+        if (!beforeState) {
+          throw new Error(
+            `event '${eventId}' not found in project '${identity.projectId}'`,
+          );
+        }
+        const before = browserSceneEventLinkBatchSnapshot(
+          eventId,
+          [sceneId],
+          Boolean(existing),
+          existing
+            ? { [sceneId]: String(existing.incarnation_token) }
+            : undefined,
+        );
+        let afterToken: string | undefined;
+        if (link) {
+          afterToken = existing
+            ? String(existing.incarnation_token)
+            : crypto.randomUUID();
+          if (!existing) {
+            db.run(
+              `INSERT INTO scene_events (scene_id, event_id, incarnation_token)
+               VALUES (?, ?, ?)`,
+              [sceneId, eventId, afterToken],
+            );
+          }
+        } else if (existing) {
+          db.run(
+            `DELETE FROM scene_events
+              WHERE scene_id = ? AND event_id = ? AND incarnation_token = ?`,
+            [sceneId, eventId, String(existing.incarnation_token)],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              `scene-event association '${sceneId}' incarnation changed`,
+            );
+          }
+        }
+        const after = browserSceneEventLinkBatchSnapshot(
+          eventId,
+          [sceneId],
+          link,
+          afterToken ? { [sceneId]: afterToken } : undefined,
+        );
+        const afterState = loadBrowserEventSnapshot(
+          eventId,
+          identity.projectId,
+        );
+        if (!afterState) {
+          throw new Error(`event '${eventId}' disappeared during scene link`);
+        }
+        insertBrowserEventUndoJournal({
+          id: identity.requestId,
+          projectId: identity.projectId,
+          surface,
+          eventId,
+          opKind: "update",
+          before,
+          after,
+          baseVersion: Number(event.version),
+          resultVersion: Number(event.version),
+          eventUid: identity.eventUid,
+          now,
+        });
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.requestId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "chronicle-event", eventId },
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: Number(event.version),
+              beforeState,
+              afterVersion: Number(event.version),
+              afterState,
+              changedPaths: ["/sceneIds"],
+            },
+          ],
+        });
+        const response = {
+          entityId: eventId,
+          version: Number(event.version),
+          changeEventUid: identity.eventUid,
+          undoJournalId: identity.requestId,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original scene-event mutation failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleAgentEventRelationMutation(
+    args: Record<string, unknown>,
+    add: boolean,
+  ): Promise<Record<string, unknown>> {
+    const command = add
+      ? "agent_event_relation_add"
+      : "agent_event_relation_remove";
+    const payload = nativeCodexPayload(args);
+    const identity = browserEventMutationIdentity(payload, command);
+    const causeEventId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "causeEventId",
+    );
+    const effectEventId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "effectEventId",
+    );
+    if (causeEventId === effectEventId) {
+      throw new Error("self-loop event relation forbidden");
+    }
+    const surface =
+      browserCodexOptionalPayloadString(payload.surface, "surface") ??
+      "in-app-agent";
+    const requestHash = await browserEventMutationFingerprint(command, payload);
+    const conflictMarker = "AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) {
+        const linked = Boolean(
+          queryOne(
+            `SELECT 1 AS linked FROM event_relations
+              WHERE project_id = ? AND cause_event_id = ? AND effect_event_id = ?`,
+            [identity.projectId, causeEventId, effectEventId],
+          ),
+        );
+        if (linked !== add) {
+          throw new Error(
+            `${conflictMarker}: association state changed after original request`,
+          );
+        }
+        return replay;
+      }
+
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: null,
+        domain: "event",
+        opType: add ? "event.relation_add" : "event.relation_remove",
+        entityType: "event",
+        entityId: causeEventId,
+        payload: JSON.stringify({ causeEventId, effectEventId, requestHash }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const cause = queryOne(
+          "SELECT version FROM events WHERE id = ? AND project_id = ?",
+          [causeEventId, identity.projectId],
+        );
+        if (!cause) {
+          throw new Error(
+            `cause event '${causeEventId}' not found in project '${identity.projectId}'`,
+          );
+        }
+        requireBrowserEventReference(
+          "events",
+          effectEventId,
+          identity.projectId,
+          "effect event",
+        );
+        const eventIds = [causeEventId, effectEventId].sort(compareUtf8);
+        const beforeStates = new Map<string, BrowserEventSnapshot>(
+          eventIds.map((eventId) => {
+            const state = loadBrowserEventSnapshot(eventId, identity.projectId);
+            if (!state) {
+              throw new Error(
+                `event '${eventId}' not found in project '${identity.projectId}'`,
+              );
+            }
+            return [eventId, state];
+          }),
+        );
+        const linked = Boolean(
+          queryOne(
+            `SELECT 1 AS linked FROM event_relations
+              WHERE project_id = ? AND cause_event_id = ? AND effect_event_id = ?`,
+            [identity.projectId, causeEventId, effectEventId],
+          ),
+        );
+        const before: BrowserEventRelationSnapshot = {
+          projectId: identity.projectId,
+          causeEventId,
+          effectEventId,
+          linked,
+        };
+        if (add && !linked) {
+          db.run(
+            `INSERT INTO event_relations
+              (project_id, cause_event_id, effect_event_id) VALUES (?, ?, ?)`,
+            [identity.projectId, causeEventId, effectEventId],
+          );
+        } else if (!add && linked) {
+          db.run(
+            `DELETE FROM event_relations
+              WHERE project_id = ? AND cause_event_id = ? AND effect_event_id = ?`,
+            [identity.projectId, causeEventId, effectEventId],
+          );
+        }
+        const after: BrowserEventRelationSnapshot = {
+          ...before,
+          linked: add,
+        };
+        const afterStates = new Map<string, BrowserEventSnapshot>(
+          eventIds.map((eventId) => {
+            const state = loadBrowserEventSnapshot(eventId, identity.projectId);
+            if (!state) {
+              throw new Error(
+                `event '${eventId}' disappeared during relation mutation`,
+              );
+            }
+            return [eventId, state];
+          }),
+        );
+        insertBrowserEventUndoJournal({
+          id: identity.requestId,
+          projectId: identity.projectId,
+          surface,
+          eventId: causeEventId,
+          opKind: "update",
+          before,
+          after,
+          baseVersion: Number(cause.version),
+          resultVersion: Number(cause.version),
+          eventUid: identity.eventUid,
+          now,
+        });
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.requestId,
+          occurredAt: now,
+          events: eventIds.map((eventId) => {
+            const beforeState = beforeStates.get(eventId)!;
+            const afterState = afterStates.get(eventId)!;
+            return {
+              objectKey: { kind: "chronicle-event", eventId },
+              changeKind: "association" as const,
+              mutationKind: "update" as const,
+              beforeVersion: Number(beforeState.eventData.version),
+              beforeState,
+              afterVersion: Number(afterState.eventData.version),
+              afterState,
+              changedPaths: ["/relations"],
+            };
+          }),
+        });
+        const response = {
+          entityId: causeEventId,
+          version: Number(cause.version),
+          changeEventUid: identity.eventUid,
+          undoJournalId: identity.requestId,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original event-relation mutation failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleAgentEventUpdate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "agent_event_update";
+    const payload = nativeCodexPayload(args);
+    const identity = browserEventMutationIdentity(payload, command);
+    const eventId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventId",
+    );
+    const baseVersion = browserEventVersion(payload);
+    const surface =
+      browserCodexOptionalPayloadString(payload.surface, "surface") ??
+      "in-app-agent";
+    const columns: Record<string, string> = {
+      title: "title",
+      note: "note",
+      detail: "detail",
+      ordinal: "ordinal",
+      primaryCodexId: "primary_codex_id",
+      laneGroup: "lane_group",
+      locationCodexId: "location_codex_id",
+      startTime: "start_time",
+      endTime: "end_time",
+      startMinute: "start_minute",
+      endMinute: "end_minute",
+      startGranularity: "start_granularity",
+      endGranularity: "end_granularity",
+      precision: "precision",
+      kind: "kind",
+      secret: "secret",
+      revealSceneId: "reveal_scene_id",
+    };
+    const changedFields = Object.keys(columns).filter(
+      (key) => payload[key] !== undefined && payload[key] !== null,
+    );
+    const requestHash = await browserEventMutationFingerprint(
+      "agent_event_update",
+      payload,
+    );
+    const conflictMarker = "AGENT_EVENT_UPDATE_IDEMPOTENCY_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "agent_event_update",
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: null,
+        domain: "event",
+        opType: "event.update",
+        entityType: "event",
+        entityId: eventId,
+        payload: JSON.stringify({ fields: changedFields }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "agent_event_update",
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const before = loadBrowserEventSnapshot(eventId, identity.projectId);
+        if (!before) {
+          throw new Error(
+            `event '${eventId}' is not in project '${identity.projectId}'`,
+          );
+        }
+        if (before.eventData.version !== baseVersion) {
+          throw new Error(
+            `event '${eventId}' version conflict: expected ${baseVersion} but database has ${String(before.eventData.version)}`,
+          );
+        }
+        for (const [field, label] of [
+          ["primaryCodexId", "primary Codex"],
+          ["locationCodexId", "location Codex"],
+        ] as const) {
+          const id = payload[field];
+          if (typeof id === "string" && id.length > 0) {
+            requireBrowserEventReference(
+              "codex_entries",
+              id,
+              identity.projectId,
+              label,
+            );
+          }
+        }
+        if (
+          typeof payload.revealSceneId === "string" &&
+          payload.revealSceneId.length > 0
+        ) {
+          requireBrowserEventReference(
+            "tree_nodes",
+            payload.revealSceneId,
+            identity.projectId,
+            "reveal scene",
+          );
+        }
+
+        const sets = ["version = version + 1", "updated_at = ?"];
+        const params: SqlValue[] = [now];
+        const nullableIdentityFields = new Set([
+          "primaryCodexId",
+          "laneGroup",
+          "locationCodexId",
+          "revealSceneId",
+        ]);
+        for (const field of changedFields) {
+          sets.push(`${columns[field]} = ?`);
+          const value = payload[field];
+          if (nullableIdentityFields.has(field) && value === "") {
+            params.push(null);
+          } else if (field === "secret") {
+            params.push(value === true || value === 1 ? 1 : 0);
+          } else {
+            params.push(value as SqlValue);
+          }
+        }
+        params.push(eventId, identity.projectId, baseVersion);
+        db.run(
+          `UPDATE events SET ${sets.join(", ")}
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          params,
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        const after = loadBrowserEventSnapshot(eventId, identity.projectId);
+        if (!after || after.eventData.version !== baseVersion + 1) {
+          throw new Error(`event '${eventId}' changed during update`);
+        }
+        insertBrowserEventUndoJournal({
+          id: identity.requestId,
+          projectId: identity.projectId,
+          surface,
+          eventId,
+          opKind: "update",
+          before,
+          after,
+          baseVersion,
+          resultVersion: baseVersion + 1,
+          eventUid: identity.eventUid,
+          now,
+        });
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.requestId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "chronicle-event", eventId },
+              changeKind:
+                changedFields.includes("detail") ||
+                changedFields.includes("note")
+                  ? "content"
+                  : "metadata",
+              mutationKind: "update",
+              beforeVersion: baseVersion,
+              beforeState: before,
+              afterVersion: baseVersion + 1,
+              afterState: after,
+              changedPaths:
+                changedFields.length === 0
+                  ? ["/"]
+                  : changedFields.map((field) => `/${field}`).sort(),
+            },
+          ],
+        });
+        const response = {
+          entityId: eventId,
+          version: baseVersion + 1,
+          changeEventUid: identity.eventUid,
+          undoJournalId: identity.requestId,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "agent_event_update",
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original event update failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleAgentEventDelete(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "agent_event_delete";
+    const payload = nativeCodexPayload(args);
+    const identity = browserEventMutationIdentity(payload, command);
+    const eventId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventId",
+    );
+    const baseVersion = browserEventVersion(payload);
+    const surface =
+      browserCodexOptionalPayloadString(payload.surface, "surface") ??
+      "in-app-agent";
+    const requestHash = await browserEventMutationFingerprint(
+      "agent_event_delete",
+      payload,
+    );
+    const conflictMarker = "AGENT_EVENT_DELETE_IDEMPOTENCY_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "agent_event_delete",
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: null,
+        domain: "event",
+        opType: "event.delete",
+        entityType: "event",
+        entityId: eventId,
+        payload: "{}",
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "agent_event_delete",
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const before = loadBrowserEventSnapshot(eventId, identity.projectId);
+        if (!before) {
+          throw new Error(
+            `event '${eventId}' is not in project '${identity.projectId}'`,
+          );
+        }
+        if (before.eventData.version !== baseVersion) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        const eventIds = [
+          eventId,
+          ...before.relations.asCause.map((relation) => relation.effectEventId),
+          ...before.relations.asEffect.map((relation) => relation.causeEventId),
+        ]
+          .filter((id, index, ids) => ids.indexOf(id) === index)
+          .sort(compareUtf8);
+        const beforeStates = new Map(
+          eventIds.map((id) => {
+            const state =
+              id === eventId
+                ? before
+                : loadBrowserEventSnapshot(id, identity.projectId);
+            if (!state) {
+              throw new Error(
+                `related event '${id}' is not in project '${identity.projectId}'`,
+              );
+            }
+            return [id, state] as const;
+          }),
+        );
+        db.run(
+          "DELETE FROM events WHERE id = ? AND project_id = ? AND version = ?",
+          [eventId, identity.projectId, baseVersion],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        const afterStates = new Map(
+          eventIds.map(
+            (id) =>
+              [id, loadBrowserEventSnapshot(id, identity.projectId)] as const,
+          ),
+        );
+        insertBrowserEventUndoJournal({
+          id: identity.requestId,
+          projectId: identity.projectId,
+          surface,
+          eventId,
+          opKind: "delete",
+          before,
+          after: null,
+          baseVersion,
+          resultVersion: 0,
+          eventUid: identity.eventUid,
+          now,
+        });
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.requestId,
+          occurredAt: now,
+          events: eventIds.map((id) => {
+            const beforeState = beforeStates.get(id)!;
+            const afterState = afterStates.get(id) ?? null;
+            if (id === eventId) {
+              return {
+                objectKey: { kind: "chronicle-event", eventId: id },
+                changeKind: "metadata" as const,
+                mutationKind: "delete" as const,
+                beforeVersion: Number(beforeState.eventData.version),
+                beforeState,
+                afterVersion: null,
+                changedPaths: ["/"],
+              };
+            }
+            if (!afterState) {
+              throw new Error(
+                `related event '${id}' disappeared during delete`,
+              );
+            }
+            return {
+              objectKey: { kind: "chronicle-event", eventId: id },
+              changeKind: "association" as const,
+              mutationKind: "update" as const,
+              beforeVersion: Number(beforeState.eventData.version),
+              beforeState,
+              afterVersion: Number(afterState.eventData.version),
+              afterState,
+              changedPaths: ["/relations"],
+            };
+          }),
+        });
+        const response = {
+          entityId: eventId,
+          version: 0,
+          changeEventUid: identity.eventUid,
+          undoJournalId: identity.requestId,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "agent_event_delete",
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original event delete failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleAgentEventSetParticipants(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "agent_event_set_participants";
+    const payload = nativeCodexPayload(args);
+    const identity = browserEventMutationIdentity(payload, command);
+    const eventId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventId",
+    );
+    const baseVersion = browserEventVersion(payload);
+    const surface =
+      browserCodexOptionalPayloadString(payload.surface, "surface") ??
+      "in-app-agent";
+    if (!Array.isArray(payload.codexEntryIds)) {
+      throw new Error("codexEntryIds must be an array");
+    }
+    const codexEntryIds = payload.codexEntryIds.map((id) => {
+      if (typeof id !== "string" || id.length === 0) {
+        throw new Error("codexEntryIds must contain non-empty strings");
+      }
+      return id;
+    });
+    const requestHash = await browserEventMutationFingerprint(
+      "agent_event_participants",
+      payload,
+      true,
+    );
+    const conflictMarker = "AGENT_EVENT_PARTICIPANTS_IDEMPOTENCY_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "agent_event_participants",
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: null,
+        domain: "event",
+        opType: "event.participants",
+        entityType: "event",
+        entityId: eventId,
+        payload: JSON.stringify({ eventId, codexEntryIds }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "agent_event_participants",
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const beforeState = loadBrowserEventSnapshot(
+          eventId,
+          identity.projectId,
+        );
+        const before = loadBrowserEventParticipantsSnapshot(
+          eventId,
+          identity.projectId,
+        );
+        if (!before || !beforeState) {
+          throw new Error(
+            `event '${eventId}' is not in project '${identity.projectId}'`,
+          );
+        }
+        if (before.version !== baseVersion) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        for (const codexEntryId of codexEntryIds) {
+          requireBrowserEventReference(
+            "codex_entries",
+            codexEntryId,
+            identity.projectId,
+            "chronicle participant",
+          );
+        }
+        db.run(
+          `UPDATE events SET version = version + 1, updated_at = ?
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          [now, eventId, identity.projectId, baseVersion],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`event '${eventId}' version conflict`);
+        }
+        db.run("DELETE FROM event_participants WHERE event_id = ?", [eventId]);
+        for (const codexEntryId of codexEntryIds) {
+          db.run(
+            `INSERT INTO event_participants (event_id, codex_entry_id, role)
+             VALUES (?, ?, NULL)`,
+            [eventId, codexEntryId],
+          );
+        }
+        const after = loadBrowserEventParticipantsSnapshot(
+          eventId,
+          identity.projectId,
+        );
+        if (!after || after.version !== baseVersion + 1) {
+          throw new Error(
+            `event '${eventId}' changed during participant update`,
+          );
+        }
+        const afterState = loadBrowserEventSnapshot(
+          eventId,
+          identity.projectId,
+        );
+        if (!afterState) {
+          throw new Error(
+            `event '${eventId}' disappeared during participant update`,
+          );
+        }
+        insertBrowserEventUndoJournal({
+          id: identity.requestId,
+          projectId: identity.projectId,
+          surface,
+          eventId,
+          opKind: "update",
+          before,
+          after,
+          baseVersion,
+          resultVersion: baseVersion + 1,
+          eventUid: identity.eventUid,
+          now,
+        });
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.requestId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "chronicle-event", eventId },
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: baseVersion,
+              beforeState,
+              afterVersion: baseVersion + 1,
+              afterState,
+              changedPaths: ["/participants"],
+            },
+          ],
+        });
+        const response = {
+          entityId: eventId,
+          version: baseVersion + 1,
+          changeEventUid: identity.eventUid,
+          undoJournalId: identity.requestId,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "agent_event_participants",
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original event participant failure.
+        }
+        throw error;
+      }
+    });
+  }
+
   function handleEventGetVersion(args: Record<string, unknown>): number | null {
     const row = queryOne(
       "SELECT version FROM events WHERE id = ? AND project_id = ?",
@@ -6027,59 +11284,185 @@ export async function createBrowserMock(
     return row ? Number(row.version) : null;
   }
 
-  function handleEventSetParticipants(
+  async function handleEventSetParticipants(
     args: Record<string, unknown>,
-  ): number | null {
-    const payload = args.payload as Record<string, unknown>;
-    const eventId = String(payload.eventId);
-    const projectId = String(payload.projectId);
-    const baseVersion = Number(payload.baseVersion);
-    const currentVersion = handleEventGetVersion({ eventId, projectId });
-    if (currentVersion !== baseVersion) return null;
-
-    const codexEntryIds = payload.codexEntryIds as string[];
-    for (const codexEntryId of codexEntryIds) {
-      const entry = queryOne(
-        "SELECT 1 FROM codex_entries WHERE id = ? AND project_id = ?",
-        [codexEntryId, projectId],
+  ): Promise<number | null> {
+    const command = "event_set_participants";
+    const payload = browserCommandPayload(command, args);
+    const projectId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "projectId",
+    );
+    const requestId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "requestId",
+    );
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "sessionId",
+    );
+    const eventUid = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventUid",
+    );
+    const eventId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventId",
+    );
+    const updatedAt = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "updatedAt",
+    );
+    const baseVersion = payload.baseVersion;
+    if (
+      typeof baseVersion !== "number" ||
+      !Number.isSafeInteger(baseVersion) ||
+      baseVersion < 0
+    ) {
+      throw new Error(
+        `${command}: baseVersion must be a non-negative safe integer`,
       );
-      if (!entry) {
+    }
+    if (!Array.isArray(payload.codexEntryIds)) {
+      throw new Error(`${command}: codexEntryIds must be an array`);
+    }
+    const codexEntryIds = payload.codexEntryIds.map((value) => {
+      if (typeof value !== "string" || value.length === 0) {
         throw new Error(
-          `chronicle participant '${codexEntryId}' is not in project '${projectId}'`,
+          `${command}: codexEntryIds must contain non-empty strings`,
         );
       }
-    }
-
-    const nextVersion = baseVersion + 1;
-    handleDbExecuteBatch({
-      statements: [
-        {
-          sql: `UPDATE events SET version = ?, updated_at = ?
-                 WHERE id = ? AND project_id = ? AND version = ?`,
-          params: [
-            nextVersion,
-            String(payload.updatedAt),
-            eventId,
-            projectId,
-            baseVersion,
-          ],
-          method: "run",
-        },
-        {
-          sql: "DELETE FROM event_participants WHERE event_id = ?",
-          params: [eventId],
-          method: "run",
-        },
-        ...codexEntryIds.map((codexEntryId) => ({
-          sql: `INSERT INTO event_participants
-                  (event_id, codex_entry_id, role)
-                VALUES (?, ?, NULL)`,
-          params: [eventId, codexEntryId],
-          method: "run",
-        })),
-      ],
+      return value;
     });
-    return nextVersion;
+    const identity: BrowserCanonicalWriteIdentity = {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid,
+      origin: "human",
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+    const requestHash = await browserCanonicalWriteFingerprint(
+      command,
+      payload,
+    );
+    const conflictMarker = "EVENT_SET_PARTICIPANTS_IDEMPOTENCY_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserTrackedWriteReplay({
+        domain: command,
+        projectId,
+        requestId,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return Number(replay.response);
+      const parsedTimestamp = Date.parse(updatedAt);
+      const timestamp = Number.isFinite(parsedTimestamp)
+        ? parsedTimestamp
+        : Date.now();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "chronicle",
+        opType: "chronicle.participants.set",
+        entityType: "event",
+        entityId: eventId,
+        payload: JSON.stringify({ eventId }),
+        sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserTrackedWriteReplay({
+          domain: command,
+          projectId,
+          requestId,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return Number(committed.response);
+        }
+        const beforeState = loadBrowserEventSnapshot(eventId, projectId);
+        const before = loadBrowserEventParticipantsSnapshot(eventId, projectId);
+        if (!before || !beforeState || before.version !== baseVersion) {
+          db.run("COMMIT");
+          return null;
+        }
+        for (const codexEntryId of codexEntryIds) {
+          requireBrowserEventReference(
+            "codex_entries",
+            codexEntryId,
+            projectId,
+            "chronicle participant",
+          );
+        }
+        const nextVersion = baseVersion + 1;
+        db.run(
+          `UPDATE events SET version = ?, updated_at = ?
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          [nextVersion, updatedAt, eventId, projectId, baseVersion],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error("EVENT_VERSION_MISMATCH");
+        }
+        db.run("DELETE FROM event_participants WHERE event_id = ?", [eventId]);
+        for (const codexEntryId of codexEntryIds) {
+          db.run(
+            `INSERT INTO event_participants
+              (event_id, codex_entry_id, role) VALUES (?, ?, NULL)`,
+            [eventId, codexEntryId],
+          );
+        }
+        const afterState = loadBrowserEventSnapshot(eventId, projectId);
+        if (!afterState) {
+          throw new Error(
+            `event '${eventId}' disappeared during participant update`,
+          );
+        }
+        insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: null,
+          occurredAt: updatedAt,
+          events: [
+            {
+              objectKey: { kind: "chronicle-event", eventId },
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: baseVersion,
+              beforeState,
+              afterVersion: nextVersion,
+              afterState,
+              changedPaths: ["/participants"],
+            },
+          ],
+        });
+        insertBrowserTrackedWriteReceipt({
+          domain: command,
+          projectId,
+          requestId,
+          requestHash,
+          response: nextVersion,
+          now: updatedAt,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return nextVersion;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical participant write failure.
+        }
+        throw error;
+      }
+    });
   }
 
   function selectProjectCalendarRow(
@@ -6122,112 +11505,222 @@ export async function createBrowserMock(
    * `null` for every conflict so callers map it to the same typed error the
    * native backend produces.
    */
-  function handleProjectCalendarUpsert(
+  async function handleProjectCalendarUpsert(
     args: Record<string, unknown>,
-  ): Record<string, unknown> | null {
-    const payload = args.payload as Record<string, unknown>;
-    const projectId = String(payload.projectId);
-    const baseVersion =
-      payload.baseVersion === null || payload.baseVersion === undefined
-        ? null
-        : Number(payload.baseVersion);
-    const existing = queryOne(
-      "SELECT version FROM project_calendar WHERE project_id = ?",
-      [projectId],
+  ): Promise<Record<string, unknown> | null> {
+    const command = "project_calendar_upsert";
+    const payload = browserCommandPayload(command, args);
+    const projectId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "projectId",
     );
-    const existingVersion = existing ? Number(existing.version) : null;
-
-    if (baseVersion === null && existingVersion !== null) return null;
-    if (baseVersion !== null && existingVersion === null) return null;
+    const requestId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "requestId",
+    );
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "sessionId",
+    );
+    const eventUid = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventUid",
+    );
+    const updatedAt = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "updatedAt",
+    );
+    const baseVersion = payload.baseVersion;
     if (
       baseVersion !== null &&
-      existingVersion !== null &&
-      baseVersion !== existingVersion
+      (typeof baseVersion !== "number" ||
+        !Number.isSafeInteger(baseVersion) ||
+        baseVersion < 0)
     ) {
-      return null;
+      throw new Error(
+        `${command}: baseVersion must be a non-negative safe integer or null`,
+      );
     }
-
-    const updatedAt = String(payload.updatedAt);
-    const daysPerYear = Number(payload.daysPerYear);
-    const seasonBoundaries = String(payload.seasonBoundaries);
-    const startYear = Number(payload.startYear);
-    const months = String(payload.months);
-    const weekdayNames = String(payload.weekdayNames);
-    const weekdayStartIndex = Number(payload.weekdayStartIndex);
-    const leapRule = String(payload.leapRule);
-    const ageReckoning = String(payload.ageReckoning);
-    const eras = String(payload.eras);
-    const reform = String(payload.reform);
-    const timezone = String(payload.timezone);
-    const lunarTzMinutes = Number(payload.lunarTzMinutes);
-
-    if (baseVersion === null) {
-      handleDbExecuteBatch({
-        statements: [
-          {
-            sql: `INSERT INTO project_calendar (
-                    project_id, days_per_year, season_boundaries, start_year,
-                    months, weekday_names, weekday_start_index, leap_rule,
-                    age_reckoning, eras, reform, timezone, lunar_tz_minutes,
-                    version, created_at, updated_at
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-            params: [
-              projectId,
-              daysPerYear,
-              seasonBoundaries,
-              startYear,
-              months,
-              weekdayNames,
-              weekdayStartIndex,
-              leapRule,
-              ageReckoning,
-              eras,
-              reform,
-              timezone,
-              lunarTzMinutes,
-              updatedAt,
-              updatedAt,
-            ],
-            method: "run",
-          },
-        ],
-      });
-    } else {
-      handleDbExecuteBatch({
-        statements: [
-          {
-            sql: `UPDATE project_calendar SET
-                    days_per_year = ?, season_boundaries = ?, start_year = ?,
-                    months = ?, weekday_names = ?, weekday_start_index = ?,
-                    leap_rule = ?, age_reckoning = ?, eras = ?, reform = ?,
-                    timezone = ?, lunar_tz_minutes = ?, version = ?,
-                    updated_at = ?
-                  WHERE project_id = ? AND version = ?`,
-            params: [
-              daysPerYear,
-              seasonBoundaries,
-              startYear,
-              months,
-              weekdayNames,
-              weekdayStartIndex,
-              leapRule,
-              ageReckoning,
-              eras,
-              reform,
-              timezone,
-              lunarTzMinutes,
-              baseVersion + 1,
-              updatedAt,
-              projectId,
-              baseVersion,
-            ],
-            method: "run",
-          },
-        ],
-      });
+    const integerFields = [
+      "daysPerYear",
+      "startYear",
+      "weekdayStartIndex",
+      "lunarTzMinutes",
+    ] as const;
+    for (const key of integerFields) {
+      if (
+        typeof payload[key] !== "number" ||
+        !Number.isSafeInteger(payload[key])
+      ) {
+        throw new Error(`${command}: ${key} must be a safe integer`);
+      }
     }
+    const stringFields = [
+      "seasonBoundaries",
+      "months",
+      "weekdayNames",
+      "leapRule",
+      "ageReckoning",
+      "eras",
+      "reform",
+      "timezone",
+    ] as const;
+    for (const key of stringFields) {
+      if (typeof payload[key] !== "string") {
+        throw new Error(`${command}: ${key} must be a string`);
+      }
+    }
+    const identity: BrowserCanonicalWriteIdentity = {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid,
+      origin: "human",
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+    const requestHash = await browserCanonicalWriteFingerprint(
+      command,
+      payload,
+    );
+    const conflictMarker = "PROJECT_CALENDAR_UPSERT_IDEMPOTENCY_CONFLICT";
 
-    return selectProjectCalendarRow(projectId);
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserTrackedWriteReplay({
+        domain: command,
+        projectId,
+        requestId,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) {
+        if (!isRecord(replay.response)) {
+          throw new Error(`${conflictMarker}: committed receipt is invalid`);
+        }
+        return replay.response;
+      }
+      const parsedTimestamp = Date.parse(updatedAt);
+      const timestamp = Number.isFinite(parsedTimestamp)
+        ? parsedTimestamp
+        : Date.now();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "chronicle",
+        opType: "chronicle.calendar.upsert",
+        entityType: "project_calendar",
+        entityId: projectId,
+        payload: JSON.stringify({ projectId }),
+        sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserTrackedWriteReplay({
+          domain: command,
+          projectId,
+          requestId,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          if (!isRecord(committed.response)) {
+            throw new Error(`${conflictMarker}: committed receipt is invalid`);
+          }
+          db.run("COMMIT");
+          return committed.response;
+        }
+        const before = selectProjectCalendarRow(projectId);
+        const existingVersion = before ? Number(before.version) : null;
+        if (
+          (baseVersion === null && existingVersion !== null) ||
+          (baseVersion !== null && existingVersion === null) ||
+          (baseVersion !== null && existingVersion !== baseVersion)
+        ) {
+          db.run("COMMIT");
+          return null;
+        }
+        const values = [
+          Number(payload.daysPerYear),
+          String(payload.seasonBoundaries),
+          Number(payload.startYear),
+          String(payload.months),
+          String(payload.weekdayNames),
+          Number(payload.weekdayStartIndex),
+          String(payload.leapRule),
+          String(payload.ageReckoning),
+          String(payload.eras),
+          String(payload.reform),
+          String(payload.timezone),
+          Number(payload.lunarTzMinutes),
+        ];
+        if (baseVersion === null) {
+          db.run(
+            `INSERT INTO project_calendar (
+              project_id, days_per_year, season_boundaries, start_year,
+              months, weekday_names, weekday_start_index, leap_rule,
+              age_reckoning, eras, reform, timezone, lunar_tz_minutes,
+              version, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+            [projectId, ...values, updatedAt, updatedAt],
+          );
+        } else {
+          db.run(
+            `UPDATE project_calendar SET
+              days_per_year = ?, season_boundaries = ?, start_year = ?,
+              months = ?, weekday_names = ?, weekday_start_index = ?,
+              leap_rule = ?, age_reckoning = ?, eras = ?, reform = ?,
+              timezone = ?, lunar_tz_minutes = ?, version = ?, updated_at = ?
+            WHERE project_id = ? AND version = ?`,
+            [...values, baseVersion + 1, updatedAt, projectId, baseVersion],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error("PROJECT_CALENDAR_VERSION_MISMATCH");
+          }
+        }
+        const after = selectProjectCalendarRow(projectId);
+        if (!after)
+          throw new Error("project calendar disappeared during upsert");
+        insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: null,
+          occurredAt: updatedAt,
+          events: [
+            {
+              objectKey: { kind: "calendar", calendarRef: projectId },
+              changeKind: "calendar",
+              mutationKind: before ? "update" : "create",
+              beforeVersion: before ? Number(before.version) : null,
+              ...(before ? { beforeState: before } : {}),
+              afterVersion: Number(after.version),
+              afterState: after,
+              changedPaths: ["/"],
+            },
+          ],
+        });
+        insertBrowserTrackedWriteReceipt({
+          domain: command,
+          projectId,
+          requestId,
+          requestHash,
+          response: after,
+          now: updatedAt,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return after;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Calendar failure.
+        }
+        throw error;
+      }
+    });
   }
 
   function handleFtsSearch(
@@ -6335,7 +11828,11 @@ export async function createBrowserMock(
     let mutated = false;
     try {
       for (const s of statements) {
-        assertRendererDoesNotMutateAiAudit(s.sql);
+        assertRendererGenericSqlAuthorized(
+          s.sql,
+          import.meta.env.MODE === "test" &&
+            options.allowProtectedWriterTestFixtures === true,
+        );
         const result = executeBrowserDbStatement(db, s.sql, s.params);
         last = result.rows;
         mutated ||= methodAssumesMutation(s.method) || result.mutated;
@@ -6486,128 +11983,799 @@ export async function createBrowserMock(
     handleDbExecuteBatch({ statements });
   }
 
-  function handleEntityTagsSet(args: Record<string, unknown>): void {
-    const payload = args.payload as {
-      entityKind: "codex" | "snippet";
-      entityId: string;
-      tagIds: string[];
-      updatedAt: string | null;
-    };
-    const entityTable =
-      payload.entityKind === "codex" ? "codex_entries" : "snippets";
+  async function handleEntityTagsSet(
+    args: Record<string, unknown>,
+  ): Promise<void> {
+    const command = "entity_tags_set";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    const { projectId, requestId, sessionId, eventUid } = identity;
+    const entityKind = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "entityKind",
+    );
+    if (entityKind !== "codex" && entityKind !== "snippet") {
+      throw new Error(`${command}: entityKind must be codex or snippet`);
+    }
+    const entityId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "entityId",
+    );
+    if (!Array.isArray(payload.tagIds)) {
+      throw new Error(`${command}: tagIds must be an array`);
+    }
+    const tagIds = payload.tagIds.map((value) => {
+      if (typeof value !== "string" || value.length === 0) {
+        throw new Error(`${command}: tagIds must contain non-empty strings`);
+      }
+      return value;
+    });
+    if (new Set(tagIds).size !== tagIds.length) {
+      throw new Error(`${command}: tagIds must be unique`);
+    }
+    const updatedAt =
+      payload.updatedAt === null
+        ? null
+        : browserCodexRequiredNonEmptyPayloadString(payload, "updatedAt");
+    if (entityKind === "codex" && updatedAt === null) {
+      throw new Error(`${command}: Codex tags require updatedAt`);
+    }
+    const entityTable = entityKind === "codex" ? "codex_entries" : "snippets";
     const entity = queryOne(
       `SELECT project_id FROM ${entityTable} WHERE id = ?`,
-      [payload.entityId],
+      [entityId],
     );
-    if (!entity) throw new Error(`${payload.entityKind} entity not found`);
-    const projectId = String(entity.project_id);
-    const tags = payload.tagIds.map((tagId) => {
-      const tag = queryOne(
-        `SELECT name, color FROM codex_tags
-          WHERE id = ? AND project_id = ?`,
-        [tagId, projectId],
+    if (!entity) throw new Error(`${entityKind} entity not found`);
+    if (String(entity.project_id) !== projectId) {
+      throw new Error(
+        `${entityKind} entity '${entityId}' is not in project '${projectId}'`,
       );
-      if (!tag) throw new Error(`tag '${tagId}' is not in the entity project`);
-      return { id: tagId, name: String(tag.name), color: tag.color ?? null };
-    });
-    tags.sort((a, b) => a.name.localeCompare(b.name));
-    const tagsCache = JSON.stringify(
-      tags.map(({ name, color }) => ({ name, color })),
-    );
-    const statements: Array<{
-      sql: string;
-      params: SqlValue[];
-      method: string;
-    }> = [];
-    if (payload.entityKind === "codex") {
-      statements.push({
-        sql: "DELETE FROM codex_entry_tags WHERE entry_id = ?",
-        params: [payload.entityId],
-        method: "run",
-      });
-      for (const tag of tags) {
-        statements.push({
-          sql: `INSERT INTO codex_entry_tags (entry_id, tag_id)
-                VALUES (?, ?)`,
-          params: [payload.entityId, tag.id],
-          method: "run",
-        });
-      }
-      statements.push({
-        sql: `UPDATE codex_entries
-                SET tags_cache = ?, updated_at = ?
-              WHERE id = ? AND project_id = ?`,
-        params: [tagsCache, payload.updatedAt, payload.entityId, projectId],
-        method: "run",
-      });
-    } else {
-      statements.push({
-        sql: "DELETE FROM snippet_entry_tags WHERE snippet_id = ?",
-        params: [payload.entityId],
-        method: "run",
-      });
-      for (const tag of tags) {
-        statements.push({
-          sql: `INSERT INTO snippet_entry_tags (snippet_id, tag_id)
-                VALUES (?, ?)`,
-          params: [payload.entityId, tag.id],
-          method: "run",
-        });
-      }
-      statements.push({
-        sql: `UPDATE snippets SET tags_cache = ?
-              WHERE id = ? AND project_id = ?`,
-        params: [tagsCache, payload.entityId, projectId],
-        method: "run",
-      });
     }
-    handleDbExecuteBatch({ statements });
+    const requestHash = await browserCanonicalWriteFingerprint(
+      command,
+      payload,
+    );
+    const conflictMarker = "ENTITY_TAGS_REQUEST_CONFLICT";
+
+    await withAppendLedgerLock(async () => {
+      if (
+        loadBrowserTrackedWriteReplay({
+          domain: command,
+          projectId,
+          requestId,
+          requestHash,
+          conflictMarker,
+        })
+      ) {
+        return;
+      }
+      const occurredAt = updatedAt ?? new Date().toISOString();
+      const parsedTimestamp = Date.parse(occurredAt);
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: entityKind,
+        opType: `${entityKind}.tags.set`,
+        entityType: `${entityKind}_tags`,
+        entityId,
+        payload: JSON.stringify({ requestId, tagCount: tagIds.length }),
+        sessionId,
+        timestamp: Number.isFinite(parsedTimestamp)
+          ? parsedTimestamp
+          : Date.now(),
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        if (
+          loadBrowserTrackedWriteReplay({
+            domain: command,
+            projectId,
+            requestId,
+            requestHash,
+            conflictMarker,
+          })
+        ) {
+          db.run("COMMIT");
+          return;
+        }
+        const owned = queryOne(
+          `SELECT project_id FROM ${entityTable} WHERE id = ? AND project_id = ?`,
+          [entityId, projectId],
+        );
+        if (!owned) throw new Error(`${entityKind} entity not found`);
+        const beforeState =
+          entityKind === "codex"
+            ? loadBrowserCodexEntrySnapshot(entityId, projectId)
+            : loadBrowserSnippetSnapshot(entityId, projectId);
+        if (!beforeState) throw new Error(`${entityKind} entity not found`);
+        const linkTable =
+          entityKind === "codex" ? "codex_entry_tags" : "snippet_entry_tags";
+        const linkColumn = entityKind === "codex" ? "entry_id" : "snippet_id";
+        const beforeTagIds = queryAll(
+          `SELECT tag_id FROM ${linkTable}
+            WHERE ${linkColumn} = ? ORDER BY tag_id`,
+          [entityId],
+        ).map((row) => String(row.tag_id));
+        const tags = tagIds.map((tagId) => {
+          const tag = queryOne(
+            `SELECT name, color FROM codex_tags
+              WHERE id = ? AND project_id = ?`,
+            [tagId, projectId],
+          );
+          if (!tag) {
+            throw new Error(`tag '${tagId}' is not in the entity project`);
+          }
+          return {
+            id: tagId,
+            name: String(tag.name),
+            color: tag.color ?? null,
+          };
+        });
+        tags.sort((left, right) => left.name.localeCompare(right.name));
+        const tagsCache = JSON.stringify(
+          tags.map(({ name, color }) => ({ name, color })),
+        );
+        db.run(`DELETE FROM ${linkTable} WHERE ${linkColumn} = ?`, [entityId]);
+        for (const tag of tags) {
+          db.run(
+            `INSERT INTO ${linkTable} (${linkColumn}, tag_id) VALUES (?, ?)`,
+            [entityId, tag.id],
+          );
+        }
+        if (entityKind === "codex") {
+          db.run(
+            `UPDATE codex_entries SET tags_cache = ?, updated_at = ?
+              WHERE id = ? AND project_id = ?`,
+            [tagsCache, updatedAt, entityId, projectId],
+          );
+        } else {
+          db.run(
+            `UPDATE snippets SET tags_cache = ?
+              WHERE id = ? AND project_id = ?`,
+            [tagsCache, entityId, projectId],
+          );
+        }
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`${entityKind} entity left its project`);
+        }
+        const afterState =
+          entityKind === "codex"
+            ? loadBrowserCodexEntrySnapshot(entityId, projectId)
+            : loadBrowserSnippetSnapshot(entityId, projectId);
+        if (!afterState) {
+          throw new Error(`${entityKind} entity left its project`);
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.undoJournalId,
+          occurredAt,
+          events: [
+            {
+              objectKey:
+                entityKind === "codex"
+                  ? { kind: "codex-entry", entryId: entityId }
+                  : { kind: "component", componentId: `snippet:${entityId}` },
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: beforeState.version,
+              beforeState:
+                entityKind === "codex"
+                  ? browserCanonicalCodexEntryState(
+                      beforeState as BrowserCodexEntrySnapshot,
+                    )
+                  : browserCanonicalSnippetState(
+                      beforeState as BrowserSnippetSnapshot,
+                    ),
+              afterVersion: afterState.version,
+              afterState:
+                entityKind === "codex"
+                  ? browserCanonicalCodexEntryState(
+                      afterState as BrowserCodexEntrySnapshot,
+                    )
+                  : browserCanonicalSnippetState(
+                      afterState as BrowserSnippetSnapshot,
+                    ),
+              changedPaths: ["/tags"],
+            },
+          ],
+        });
+        insertBrowserTrackedWriteReceipt({
+          domain: command,
+          projectId,
+          requestId,
+          requestHash,
+          response: {
+            eventUid,
+            changeEventUid: eventUid,
+            maintenanceTransactionId,
+            beforeTagIds,
+          },
+          now: occurredAt,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical tag write failure.
+        }
+        throw error;
+      }
+    });
   }
 
-  function handleCodexRenameUndo(args: Record<string, unknown>): {
-    versions: Array<{
-      kind: string;
-      refId: string;
-      detailDefinitionId: string | null;
-      baseVersion: number;
-      version: number;
-    }>;
-  } {
-    const payload = args.payload as {
-      projectId: string;
-      updatedAt: string;
-      updates: Array<{
-        kind: string;
-        refId: string;
-        detailDefinitionId: string | null;
-        baseVersion: number;
-        value: string;
-        charCount: number | null;
-        placedBeatPreview: string | null;
-      }>;
+  function browserSnippetNullableString(
+    payload: Record<string, unknown>,
+    key: string,
+    command: string,
+  ): string | null {
+    const value = payload[key];
+    if (value === null || value === undefined) return null;
+    if (typeof value !== "string") {
+      throw new Error(`${command}: ${key} must be a string or null`);
+    }
+    return value;
+  }
+
+  function browserSnippetCanonicalPayload(
+    payload: Record<string, unknown>,
+    fallback: Record<string, unknown>,
+  ): string {
+    const canonicalPayload = payload.canonicalPayload;
+    return JSON.stringify(
+      canonicalPayload === undefined || canonicalPayload === null
+        ? fallback
+        : canonicalPayload,
+    );
+  }
+
+  async function handleSnippetWrite(
+    args: Record<string, unknown>,
+    operation: "create" | "update" | "delete",
+  ): Promise<Record<string, unknown>> {
+    const command = `snippet_${operation}`;
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    if (identity.origin === "undo" || identity.origin === "redo") {
+      throw new Error("Snippet Undo/Redo must replay its Native Undo Journal");
+    }
+    const snippetId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "snippetId",
+    );
+    const baseVersion =
+      operation === "create"
+        ? null
+        : (() => {
+            if (
+              typeof payload.baseVersion !== "number" ||
+              !Number.isSafeInteger(payload.baseVersion) ||
+              payload.baseVersion < 0
+            ) {
+              throw new Error(
+                `${command}: baseVersion must be a non-negative safe integer`,
+              );
+            }
+            return payload.baseVersion;
+          })();
+    const requestHash = await browserCanonicalWriteFingerprint(
+      command,
+      payload,
+    );
+    const conflictMarker = `SNIPPET_${operation.toUpperCase()}_IDEMPOTENCY_CONFLICT`;
+    const changedFields: string[] = [];
+    if (operation === "update") {
+      for (const field of [
+        "title",
+        "content",
+        "tagsCache",
+        "sceneId",
+      ] as const) {
+        if (Object.hasOwn(payload, field)) changedFields.push(field);
+      }
+      if (changedFields.length === 0) {
+        throw new Error("Snippet update requires a changed field");
+      }
+      if (
+        Object.hasOwn(payload, "title") &&
+        typeof payload.title !== "string"
+      ) {
+        throw new Error(`${command}: title must be a string`);
+      }
+      if (
+        Object.hasOwn(payload, "content") &&
+        typeof payload.content !== "string"
+      ) {
+        throw new Error(`${command}: content must be a string`);
+      }
+      for (const field of ["tagsCache", "sceneId"] as const) {
+        if (
+          Object.hasOwn(payload, field) &&
+          typeof payload[field] !== "string"
+        ) {
+          throw new Error(
+            `${command}: ${field} must use a string (empty means null)`,
+          );
+        }
+      }
+    }
+    if (operation === "create") {
+      if (typeof payload.title !== "string") {
+        throw new Error(`${command}: title must be a string`);
+      }
+      if (typeof payload.content !== "string") {
+        throw new Error(`${command}: content must be a string`);
+      }
+      const contentSource = browserSnippetNullableString(
+        payload,
+        "contentSource",
+        command,
+      );
+      if (
+        contentSource !== null &&
+        contentSource !== "human" &&
+        contentSource !== "ai"
+      ) {
+        throw new Error(`${command}: contentSource must be human, ai, or null`);
+      }
+    }
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const before =
+        operation === "create"
+          ? null
+          : loadBrowserSnippetSnapshot(snippetId, identity.projectId);
+      const sceneId =
+        operation === "create"
+          ? browserSnippetNullableString(payload, "sceneId", command)
+          : operation === "update" && Object.hasOwn(payload, "sceneId")
+            ? String(payload.sceneId).length === 0
+              ? null
+              : String(payload.sceneId)
+            : (before?.sceneId ?? null);
+      const sourceChatMessageId =
+        operation === "create"
+          ? browserSnippetNullableString(
+              payload,
+              "sourceChatMessageId",
+              command,
+            )
+          : (before?.sourceChatMessageId ?? null);
+      validateBrowserSnippetReferences(
+        identity.projectId,
+        sceneId,
+        sourceChatMessageId,
+      );
+      const opType = `snippet.${operation}`;
+      const canonicalPayload = browserSnippetCanonicalPayload(
+        payload,
+        operation === "create"
+          ? { title: payload.title, sceneId }
+          : operation === "update"
+            ? { fields: changedFields }
+            : { title: before?.title ?? null },
+      );
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId,
+        domain: "snippet",
+        opType,
+        entityType: "snippet",
+        entityId: snippetId,
+        payload: canonicalPayload,
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        if (
+          !queryOne("SELECT 1 AS owned FROM projects WHERE id = ?", [
+            identity.projectId,
+          ])
+        ) {
+          throw new Error(
+            `Snippet project '${identity.projectId}' does not exist`,
+          );
+        }
+        const current = loadBrowserSnippetSnapshot(
+          snippetId,
+          identity.projectId,
+        );
+        let after: BrowserSnippetSnapshot | null;
+        let resultVersion: number;
+        if (operation === "create") {
+          if (current) {
+            throw new Error(`Snippet '${snippetId}' already exists`);
+          }
+          const contentSource =
+            browserSnippetNullableString(payload, "contentSource", command) ??
+            "human";
+          db.run(
+            `INSERT INTO snippets
+              (id, project_id, title, content, tags_cache, content_source,
+               scene_id, source_chat_message_id, usage_count, version,
+               created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+            [
+              snippetId,
+              identity.projectId,
+              String(payload.title),
+              String(payload.content),
+              browserSnippetNullableString(payload, "tagsCache", command),
+              contentSource,
+              sceneId,
+              sourceChatMessageId,
+              now,
+              now,
+            ],
+          );
+          resultVersion = 1;
+          after = loadBrowserSnippetSnapshot(snippetId, identity.projectId);
+        } else {
+          if (!current) {
+            throw new Error(
+              `Snippet '${snippetId}' is not in project '${identity.projectId}'`,
+            );
+          }
+          if (current.version !== baseVersion) {
+            throw new Error(
+              `Snippet '${snippetId}' version conflict: expected ${baseVersion} but database has ${current.version}`,
+            );
+          }
+          if (operation === "update") {
+            resultVersion = current.version + 1;
+            if (!Number.isSafeInteger(resultVersion)) {
+              throw new Error("Snippet version overflow");
+            }
+            db.run(
+              `UPDATE snippets SET
+                title = ?, content = ?, tags_cache = ?, scene_id = ?,
+                version = ?, updated_at = ?
+               WHERE id = ? AND project_id = ? AND version = ?`,
+              [
+                Object.hasOwn(payload, "title")
+                  ? String(payload.title)
+                  : current.title,
+                Object.hasOwn(payload, "content")
+                  ? String(payload.content)
+                  : current.content,
+                Object.hasOwn(payload, "tagsCache")
+                  ? String(payload.tagsCache).length === 0
+                    ? null
+                    : String(payload.tagsCache)
+                  : current.tagsCache,
+                sceneId,
+                resultVersion,
+                now,
+                snippetId,
+                identity.projectId,
+                current.version,
+              ],
+            );
+            if (db.getRowsModified() !== 1) {
+              throw new Error("Snippet version conflict during update");
+            }
+            after = loadBrowserSnippetSnapshot(snippetId, identity.projectId);
+          } else {
+            resultVersion = current.version;
+            db.run(
+              `DELETE FROM snippets
+                WHERE id = ? AND project_id = ? AND version = ?`,
+              [snippetId, identity.projectId, current.version],
+            );
+            if (db.getRowsModified() !== 1) {
+              throw new Error("Snippet version conflict during delete");
+            }
+            after = null;
+          }
+        }
+        if (operation !== "delete" && !after) {
+          throw new Error(`Snippet '${snippetId}' disappeared during write`);
+        }
+        const beforeJson = before === null ? null : JSON.stringify(before);
+        const afterJson = after === null ? null : JSON.stringify(after);
+        db.run(
+          `INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind,
+             before_json, after_json, base_version, result_version,
+             change_event_uid, created_at)
+           VALUES (?, ?, ?, 'snippet', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            identity.requestId,
+            identity.projectId,
+            identity.origin === "human" ? "manual" : identity.origin,
+            snippetId,
+            operation,
+            beforeJson,
+            afterJson,
+            operation === "create" ? 0 : baseVersion,
+            resultVersion,
+            identity.eventUid,
+            now,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error("Snippet Undo Journal was not persisted");
+        }
+        const changedPaths =
+          operation === "update"
+            ? changedFields.map((field) => `/${field}`).sort()
+            : ["/"];
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: identity.requestId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: {
+                kind: "component",
+                componentId: `snippet:${snippetId}`,
+              },
+              changeKind: changedPaths.includes("/content")
+                ? "content"
+                : "metadata",
+              mutationKind: operation,
+              beforeVersion: before?.version ?? null,
+              ...(before === null
+                ? {}
+                : { beforeState: browserCanonicalSnippetState(before) }),
+              afterVersion: after?.version ?? null,
+              ...(after === null
+                ? {}
+                : { afterState: browserCanonicalSnippetState(after) }),
+              changedPaths,
+            },
+          ],
+        });
+        const response = {
+          entityId: snippetId,
+          version: resultVersion,
+          changeEventUid: identity.eventUid,
+          undoJournalId: identity.requestId,
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Snippet write failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  interface BrowserCodexRenameUpdate {
+    kind: string;
+    refId: string;
+    detailDefinitionId: string | null;
+    baseVersion: number;
+    value: string;
+    charCount: number | null;
+    placedBeatPreview: string | null;
+  }
+
+  interface BrowserCodexRenameVersion {
+    kind: string;
+    refId: string;
+    detailDefinitionId: string | null;
+    baseVersion: number;
+    version: number;
+  }
+
+  interface BrowserCodexRenameApplyOutcome {
+    versions: BrowserCodexRenameVersion[];
+    feedEvents: BrowserNarrativeChangeEventInput[];
+  }
+
+  function browserCodexRenameUsesEntrySnapshot(kind: string): boolean {
+    return (
+      kind === "codex-summary" ||
+      kind === "codex-content" ||
+      kind === "codex-notes"
+    );
+  }
+
+  function loadBrowserCodexDetailCanonicalState(
+    entryId: string,
+    definitionId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const row = queryOne(
+      `SELECT value.id, value.entry_id, value.definition_id, value.value,
+              value.version, value.created_at, value.updated_at
+         FROM codex_detail_values value
+         JOIN codex_entries entry ON entry.id = value.entry_id
+         JOIN codex_detail_definitions definition
+           ON definition.id = value.definition_id
+        WHERE value.entry_id = ? AND value.definition_id = ?
+          AND entry.project_id = ? AND definition.project_id = ?`,
+      [entryId, definitionId, projectId, projectId],
+    );
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      entryId: String(row.entry_id),
+      definitionId: String(row.definition_id),
+      value: row.value == null ? null : String(row.value),
+      version: Number(row.version),
+      createdAt: String(row.created_at),
+      updatedAt: String(row.updated_at),
     };
-    const statements: Array<{
-      sql: string;
-      params: SqlValue[];
-      method: string;
-    }> = [];
+  }
+
+  function loadBrowserCodexRenameState(
+    update: BrowserCodexRenameUpdate,
+    projectId: string,
+  ): unknown | null {
+    if (browserCodexRenameUsesEntrySnapshot(update.kind)) {
+      const snapshot = loadBrowserCodexEntrySnapshot(update.refId, projectId);
+      return snapshot === null
+        ? null
+        : browserCanonicalCodexEntryState(snapshot);
+    }
+    if (update.kind === "codex-detail") {
+      return loadBrowserCodexDetailCanonicalState(
+        update.refId,
+        update.detailDefinitionId ?? "",
+        projectId,
+      );
+    }
+    if (update.kind === "codex-relation-label") {
+      return loadBrowserCodexRelationFeedState(update.refId, projectId);
+    }
+    if (
+      update.kind === "scene-body" ||
+      update.kind === "node-title" ||
+      update.kind === "node-synopsis"
+    ) {
+      return browserTreeNodeRow(update.refId, projectId);
+    }
+    return null;
+  }
+
+  function browserCodexRenameUpdates(
+    payload: Record<string, unknown>,
+    command: string,
+  ): BrowserCodexRenameUpdate[] {
+    if (!Array.isArray(payload.updates) || payload.updates.length === 0) {
+      throw new Error(`${command}: updates must be a non-empty array`);
+    }
+    const supported = new Set([
+      "scene-body",
+      "node-title",
+      "node-synopsis",
+      "codex-summary",
+      "codex-content",
+      "codex-notes",
+      "codex-detail",
+      "codex-relation-label",
+    ]);
+    const unique = new Set<string>();
+    return payload.updates.map((raw) => {
+      if (!isRecord(raw)) {
+        throw new Error(`${command}: updates must contain objects`);
+      }
+      const kind = browserCodexRequiredNonEmptyPayloadString(raw, "kind");
+      const refId = browserCodexRequiredNonEmptyPayloadString(raw, "refId");
+      if (!supported.has(kind)) {
+        throw new Error(`${command}: unsupported rename kind '${kind}'`);
+      }
+      const detailDefinitionId =
+        raw.detailDefinitionId === null
+          ? null
+          : browserCodexRequiredNonEmptyPayloadString(
+              raw,
+              "detailDefinitionId",
+            );
+      if (kind === "codex-detail" && detailDefinitionId === null) {
+        throw new Error(`${command}: codex-detail requires detailDefinitionId`);
+      }
+      const baseVersion = raw.baseVersion;
+      if (
+        typeof baseVersion !== "number" ||
+        !Number.isSafeInteger(baseVersion) ||
+        baseVersion < 0
+      ) {
+        throw new Error(
+          `${command}: baseVersion must be a non-negative safe integer`,
+        );
+      }
+      if (typeof raw.value !== "string") {
+        throw new Error(`${command}: update value must be a string`);
+      }
+      const charCount = raw.charCount;
+      if (
+        charCount !== null &&
+        (typeof charCount !== "number" ||
+          !Number.isSafeInteger(charCount) ||
+          charCount < 0)
+      ) {
+        throw new Error(`${command}: charCount must be non-negative or null`);
+      }
+      if (kind === "scene-body" && charCount === null) {
+        throw new Error(`${command}: scene-body requires charCount`);
+      }
+      const placedBeatPreview = raw.placedBeatPreview;
+      if (placedBeatPreview !== null && typeof placedBeatPreview !== "string") {
+        throw new Error(
+          `${command}: placedBeatPreview must be a string or null`,
+        );
+      }
+      const key = `${kind}:${refId}:${detailDefinitionId ?? ""}`;
+      if (!unique.add(key)) {
+        throw new Error(`${command}: rename updates must be unique`);
+      }
+      return {
+        kind,
+        refId,
+        detailDefinitionId,
+        baseVersion,
+        value: raw.value,
+        charCount,
+        placedBeatPreview,
+      };
+    });
+  }
+
+  function applyBrowserCodexRenameUpdates(
+    projectId: string,
+    updatedAt: string,
+    updates: BrowserCodexRenameUpdate[],
+  ): BrowserCodexRenameApplyOutcome {
     const aggregateVersions = new Map<
       string,
       { initial: number; current: number }
     >();
-    const persistedVersions: Array<{
-      kind: string;
-      refId: string;
-      detailDefinitionId: string | null;
-      baseVersion: number;
-      version: number;
-    }> = [];
-    for (const update of payload.updates) {
-      if (!Number.isSafeInteger(update.baseVersion) || update.baseVersion < 0) {
-        throw new Error(
-          "codex rename baseVersion must be a non-negative integer",
-        );
-      }
+    const persistedVersions: Array<BrowserCodexRenameVersion | undefined> =
+      Array(updates.length);
+    const feedEvents: BrowserNarrativeChangeEventInput[] = [];
+    const orderedUpdates = updates
+      .map((update, index) => ({
+        index,
+        sortKey: browserCodexRenameSortKey(update),
+        update,
+      }))
+      .sort((left, right) => compareUtf8(left.sortKey, right.sortKey));
+    for (const { index, update } of orderedUpdates) {
+      const feedContract = browserCodexRenameFeedContract(update);
+      const beforeState = loadBrowserCodexRenameState(update, projectId);
       const aggregateKey =
         update.kind === "codex-detail"
           ? `codex-detail:${update.refId}:${update.detailDefinitionId ?? ""}`
@@ -6624,82 +12792,39 @@ export async function createBrowserMock(
         initial: previous?.initial ?? update.baseVersion,
         current: nextVersion,
       });
-      if (update.kind.startsWith("node-") || update.kind === "scene-body") {
-        const row = queryOne(
-          "SELECT version FROM tree_nodes WHERE id = ? AND project_id = ?",
-          [update.refId, payload.projectId],
-        );
-        if (!row) {
-          throw new Error("codex rename undo tree target is outside project");
-        }
-        if (Number(row.version) !== expectedVersion) {
-          throw new Error("CODEX_RENAME_VERSION_MISMATCH");
-        }
-      } else if (update.kind.startsWith("codex-")) {
-        const exists =
-          update.kind === "codex-detail"
-            ? queryOne(
-                `SELECT value.version AS version
-                   FROM codex_detail_values value
-                   JOIN codex_entries entry ON entry.id = value.entry_id
-                  WHERE value.entry_id = ? AND value.definition_id = ?
-                    AND entry.project_id = ?`,
-                [update.refId, update.detailDefinitionId, payload.projectId],
-              )
-            : update.kind === "codex-relation-label"
-              ? queryOne(
-                  "SELECT version FROM codex_relations WHERE id = ? AND project_id = ?",
-                  [update.refId, payload.projectId],
-                )
-              : queryOne(
-                  "SELECT version FROM codex_entries WHERE id = ? AND project_id = ?",
-                  [update.refId, payload.projectId],
-                );
-        if (!exists) {
-          throw new Error("codex rename undo target is outside project");
-        }
-        if (Number(exists.version) !== expectedVersion) {
-          throw new Error("CODEX_RENAME_VERSION_MISMATCH");
-        }
-      }
-
+      let sql: string;
+      let params: SqlValue[];
       switch (update.kind) {
         case "scene-body":
-          statements.push({
-            sql: `UPDATE tree_nodes
+          sql = `UPDATE tree_nodes
                     SET content = ?, char_count = ?, placed_beat_preview = ?,
                         version = ?, updated_at = ?
                   WHERE id = ? AND project_id = ? AND node_type = 'scene'
-                    AND version = ?`,
-            params: [
-              update.value,
-              update.charCount,
-              update.placedBeatPreview,
-              nextVersion,
-              payload.updatedAt,
-              update.refId,
-              payload.projectId,
-              expectedVersion,
-            ],
-            method: "run",
-          });
+                    AND version = ?`;
+          params = [
+            update.value,
+            update.charCount,
+            update.placedBeatPreview,
+            nextVersion,
+            updatedAt,
+            update.refId,
+            projectId,
+            expectedVersion,
+          ];
           break;
         case "node-title":
         case "node-synopsis": {
           const column = update.kind === "node-title" ? "title" : "synopsis";
-          statements.push({
-            sql: `UPDATE tree_nodes SET ${column} = ?, version = ?, updated_at = ?
-                  WHERE id = ? AND project_id = ? AND version = ?`,
-            params: [
-              update.value,
-              nextVersion,
-              payload.updatedAt,
-              update.refId,
-              payload.projectId,
-              expectedVersion,
-            ],
-            method: "run",
-          });
+          sql = `UPDATE tree_nodes SET ${column} = ?, version = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ? AND version = ?`;
+          params = [
+            update.value,
+            nextVersion,
+            updatedAt,
+            update.refId,
+            projectId,
+            expectedVersion,
+          ];
           break;
         }
         case "codex-summary":
@@ -6711,70 +12836,396 @@ export async function createBrowserMock(
               : update.kind === "codex-content"
                 ? "content"
                 : "notes";
-          statements.push({
-            sql: `UPDATE codex_entries SET ${column} = ?, version = ?, updated_at = ?
-                  WHERE id = ? AND project_id = ? AND version = ?`,
-            params: [
-              update.value,
-              nextVersion,
-              payload.updatedAt,
-              update.refId,
-              payload.projectId,
-              expectedVersion,
-            ],
-            method: "run",
-          });
+          sql = `UPDATE codex_entries SET ${column} = ?, version = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ? AND version = ?`;
+          params = [
+            update.value,
+            nextVersion,
+            updatedAt,
+            update.refId,
+            projectId,
+            expectedVersion,
+          ];
           break;
         }
         case "codex-detail":
-          statements.push({
-            sql: `UPDATE codex_detail_values SET value = ?, version = ?, updated_at = ?
+          sql = `UPDATE codex_detail_values SET value = ?, version = ?, updated_at = ?
                   WHERE entry_id = ? AND definition_id = ? AND version = ?
                     AND EXISTS (
                       SELECT 1 FROM codex_entries
                        WHERE id = ? AND project_id = ?
-                    )`,
-            params: [
-              update.value,
-              nextVersion,
-              payload.updatedAt,
-              update.refId,
-              update.detailDefinitionId,
-              expectedVersion,
-              update.refId,
-              payload.projectId,
-            ],
-            method: "run",
-          });
+                    )
+                    AND EXISTS (
+                      SELECT 1 FROM codex_detail_definitions
+                       WHERE id = ? AND project_id = ?
+                    )`;
+          params = [
+            update.value,
+            nextVersion,
+            updatedAt,
+            update.refId,
+            update.detailDefinitionId,
+            expectedVersion,
+            update.refId,
+            projectId,
+            update.detailDefinitionId,
+            projectId,
+          ];
           break;
         case "codex-relation-label":
-          statements.push({
-            sql: `UPDATE codex_relations SET label = ?, version = ?, updated_at = ?
-                  WHERE id = ? AND project_id = ? AND version = ?`,
-            params: [
-              update.value,
-              nextVersion,
-              payload.updatedAt,
-              update.refId,
-              payload.projectId,
-              expectedVersion,
-            ],
-            method: "run",
-          });
+          sql = `UPDATE codex_relations SET label = ?, version = ?, updated_at = ?
+                  WHERE id = ? AND project_id = ? AND version = ?`;
+          params = [
+            update.value,
+            nextVersion,
+            updatedAt,
+            update.refId,
+            projectId,
+            expectedVersion,
+          ];
           break;
         default:
-          throw new Error("unsupported codex rename undo kind");
+          throw new Error("unsupported codex rename kind");
       }
-      persistedVersions.push({
+      db.run(sql, params);
+      if (db.getRowsModified() !== 1) {
+        throw new Error(
+          `CODEX_RENAME_VERSION_MISMATCH: target '${update.refId}' is missing, outside project '${projectId}', or stale`,
+        );
+      }
+      persistedVersions[index] = {
         kind: update.kind,
         refId: update.refId,
         detailDefinitionId: update.detailDefinitionId,
         baseVersion: expectedVersion,
         version: nextVersion,
+      };
+      const afterState = loadBrowserCodexRenameState(update, projectId);
+      if (!beforeState || !afterState) {
+        throw new Error(
+          `codex rename target '${update.refId}' disappeared during mutation`,
+        );
+      }
+      if (update.kind === "codex-detail" && isRecord(afterState)) {
+        feedContract.objectKey = {
+          kind: "codex-detail-value",
+          valueId: String(afterState.id),
+        };
+      }
+      feedEvents.push({
+        objectKey: feedContract.objectKey,
+        changeKind: feedContract.changeKind,
+        mutationKind: "update",
+        beforeVersion: expectedVersion,
+        ...(beforeState === null ? {} : { beforeState }),
+        afterVersion: nextVersion,
+        ...(afterState === null ? {} : { afterState }),
+        changedPaths: feedContract.changedPaths,
       });
     }
-    handleDbExecuteBatch({ statements });
-    return { versions: persistedVersions };
+    const versions = persistedVersions.map((version) => {
+      if (!version)
+        throw new Error("codex rename version receipt is incomplete");
+      return version;
+    });
+    return { versions, feedEvents };
+  }
+
+  function browserCodexRenameSortKey(update: BrowserCodexRenameUpdate): string {
+    switch (update.kind) {
+      case "scene-body":
+        return `scene:${update.refId}:content`;
+      case "node-title":
+        return `scene:${update.refId}:title`;
+      case "node-synopsis":
+        return `scene:${update.refId}:synopsis`;
+      case "codex-summary":
+        return `codex-entry:${update.refId}:/summary`;
+      case "codex-content":
+        return `codex-entry:${update.refId}:/content`;
+      case "codex-notes":
+        return `codex-entry:${update.refId}:/notes`;
+      case "codex-detail":
+        return `codex-detail:${update.refId}:${update.detailDefinitionId ?? ""}`;
+      case "codex-relation-label":
+        return `codex-relation:${update.refId}`;
+      default:
+        throw new Error(`unsupported codex rename kind '${update.kind}'`);
+    }
+  }
+
+  function browserCodexRenameFeedContract(update: BrowserCodexRenameUpdate): {
+    objectKey: Record<string, unknown>;
+    changeKind: BrowserNarrativeChangeEventInput["changeKind"];
+    changedPaths: string[];
+  } {
+    let objectKey: Record<string, unknown>;
+    let changeKind: BrowserNarrativeChangeEventInput["changeKind"];
+    let changedPaths: string[];
+    switch (update.kind) {
+      case "scene-body":
+        objectKey = { kind: "scene", sceneId: update.refId };
+        changeKind = "content";
+        changedPaths = ["/charCount", "/content", "/placedBeatPreview"];
+        break;
+      case "node-title":
+      case "node-synopsis": {
+        const field = update.kind === "node-title" ? "title" : "synopsis";
+        objectKey = { kind: "scene", sceneId: update.refId };
+        changeKind = "metadata";
+        changedPaths = [`/${field}`];
+        break;
+      }
+      case "codex-summary":
+      case "codex-content":
+      case "codex-notes": {
+        const field = update.kind.slice("codex-".length);
+        objectKey = { kind: "codex-entry", entryId: update.refId };
+        changeKind = "metadata";
+        changedPaths = [`/${field}`];
+        break;
+      }
+      case "codex-detail":
+        objectKey = {
+          kind: "codex-detail-value",
+          valueId: update.refId,
+        };
+        changeKind = "metadata";
+        changedPaths = [
+          `/details/${jsonPointerSegment(update.detailDefinitionId ?? "")}`,
+        ];
+        break;
+      case "codex-relation-label":
+        objectKey = {
+          kind: "codex-relation",
+          relationId: update.refId,
+        };
+        changeKind = "association";
+        changedPaths = ["/forwardLabel"];
+        break;
+      default:
+        throw new Error(`unsupported codex rename kind '${update.kind}'`);
+    }
+    return { objectKey, changeKind, changedPaths };
+  }
+
+  async function handleCodexRename(
+    args: Record<string, unknown>,
+    mode: "apply" | "undo",
+  ): Promise<Record<string, unknown>> {
+    const command =
+      mode === "apply" ? "codex_rename_apply" : "codex_rename_undo";
+    const payload = browserCommandPayload(command, args);
+    const projectId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "projectId",
+    );
+    const requestId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "requestId",
+    );
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "sessionId",
+    );
+    const eventUid = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventUid",
+    );
+    const updatedAt = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "updatedAt",
+    );
+    const updates = browserCodexRenameUpdates(payload, command);
+    const redo = mode === "apply" && payload.redo === true;
+    if (mode === "apply" && typeof payload.redo !== "boolean") {
+      throw new Error(`${command}: redo must be a boolean`);
+    }
+    const originalTransactionId =
+      mode === "undo" || redo
+        ? browserCodexRequiredNonEmptyPayloadString(
+            payload,
+            "originalTransactionId",
+          )
+        : null;
+    const suppliedUndoJournalId =
+      mode === "undo" || redo
+        ? browserCodexRequiredNonEmptyPayloadString(payload, "undoJournalId")
+        : null;
+    if (
+      mode === "apply" &&
+      !redo &&
+      (payload.originalTransactionId !== null || payload.undoJournalId !== null)
+    ) {
+      throw new Error(
+        `${command}: forward apply cannot provide replay lineage`,
+      );
+    }
+    const entryId =
+      mode === "apply"
+        ? browserCodexRequiredNonEmptyPayloadString(payload, "entryId")
+        : updates[0]!.refId;
+    const timestamp =
+      mode === "apply"
+        ? (() => {
+            if (
+              typeof payload.timestamp !== "number" ||
+              !Number.isSafeInteger(payload.timestamp)
+            ) {
+              throw new Error(`${command}: timestamp must be a safe integer`);
+            }
+            return payload.timestamp;
+          })()
+        : (() => {
+            const parsed = Date.parse(updatedAt);
+            return Number.isFinite(parsed) ? parsed : Date.now();
+          })();
+    const eventSummary =
+      mode === "apply"
+        ? browserCodexRequiredNonEmptyPayloadString(payload, "eventSummary")
+        : JSON.stringify({ requestId, updateCount: updates.length });
+    if (
+      mode === "apply" &&
+      !queryOne(
+        "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+        [entryId, projectId],
+      )
+    ) {
+      throw new Error(
+        `codex rename entry '${entryId}' is not in project '${projectId}'`,
+      );
+    }
+    const identity: BrowserCanonicalWriteIdentity = {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid,
+      origin: mode === "undo" ? "undo" : redo ? "redo" : "human",
+      originalTransactionId,
+      undoJournalId: suppliedUndoJournalId,
+    };
+    const requestHash = await browserCanonicalWriteFingerprint(
+      command,
+      payload,
+    );
+    const conflictMarker =
+      mode === "undo"
+        ? "CODEX_RENAME_UNDO_REQUEST_CONFLICT"
+        : "CODEX_RENAME_APPLY_REQUEST_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid,
+        projectId,
+        sceneId: null,
+        domain: "codex",
+        opType: mode === "undo" ? "codex.renameUndo" : "codex.renamePropagate",
+        entityType: mode === "undo" ? "codex_rename" : "codex_entry",
+        entityId: entryId,
+        payload: eventSummary,
+        sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        if (
+          mode === "apply" &&
+          !queryOne(
+            "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+            [entryId, projectId],
+          )
+        ) {
+          throw new Error(
+            `codex rename entry '${entryId}' is not in project '${projectId}'`,
+          );
+        }
+        const { versions, feedEvents } = applyBrowserCodexRenameUpdates(
+          projectId,
+          updatedAt,
+          updates,
+        );
+        const undoJournalId = suppliedUndoJournalId ?? crypto.randomUUID();
+        if (mode === "apply" && !redo) {
+          db.run(
+            `INSERT INTO undo_journal
+              (id, project_id, surface, entity_kind, entity_id, op_kind,
+               before_json, after_json, base_version, result_version,
+               change_event_uid, created_at)
+             VALUES (?, ?, ?, 'codex_rename', ?, 'codex.renamePropagate',
+                     NULL, ?, 0, 1, ?, ?)`,
+            [
+              undoJournalId,
+              projectId,
+              typeof payload.surface === "string" && payload.surface.length > 0
+                ? payload.surface
+                : "codex-rename-propagation",
+              entryId,
+              eventSummary,
+              eventUid,
+              updatedAt,
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error("codex rename undo journal was not persisted");
+          }
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId,
+          typedInverseEntity: { domain: "codex", entityId: entryId },
+          occurredAt: new Date(timestamp).toISOString(),
+          events: feedEvents,
+        });
+        const response: Record<string, unknown> = {
+          ...(mode === "apply"
+            ? {
+                entityId: entryId,
+                version: versions.at(-1)?.version ?? 0,
+              }
+            : {}),
+          versions,
+          changeEventUid: eventUid,
+          ...(mode === "apply" ? { undoJournalId } : {}),
+          maintenanceTransactionId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now: updatedAt,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Codex rename failure.
+        }
+        throw error;
+      }
+    });
   }
 
   function handleScanStagingProjectCreate(args: Record<string, unknown>): void {
@@ -6784,67 +13235,494 @@ export async function createBrowserMock(
       language: "ja" | "en";
       createdAt: string;
     };
-    handleDbExecuteBatch({
-      statements: [
-        {
-          sql: `INSERT INTO projects
-            (id, title, language, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)`,
-          params: [
-            payload.id,
-            payload.title,
-            payload.language,
-            payload.createdAt,
-            payload.createdAt,
-          ],
-          method: "run",
-        },
-        {
-          sql: `INSERT INTO project_settings (project_id, key, value)
-                VALUES (?, 'scan.import.state', 'staging')
-                ON CONFLICT(project_id, key)
-                DO UPDATE SET value = 'staging'`,
-          params: [payload.id],
-          method: "run",
-        },
-      ],
-    });
+    db.run("BEGIN IMMEDIATE");
+    try {
+      db.run(
+        `INSERT INTO projects
+          (id, title, language, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          payload.id,
+          payload.title,
+          payload.language,
+          payload.createdAt,
+          payload.createdAt,
+        ],
+      );
+      db.run(
+        `INSERT INTO project_settings (project_id, key, value)
+         VALUES (?, 'scan.import.state', 'staging')
+         ON CONFLICT(project_id, key)
+         DO UPDATE SET value = 'staging'`,
+        [payload.id],
+      );
+      db.run("COMMIT");
+      options.onDatabaseDirty?.();
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the typed scan staging creation failure.
+      }
+      throw error;
+    }
   }
 
-  function handleTreePlanUndo(args: Record<string, unknown>): void {
-    const payload = args.payload as {
-      projectId: string;
-      beforeStates: Array<{
-        id: string;
-        parentId: string | null;
-        sortOrder: string;
-        title: string;
-      }>;
-      createdIds: string[];
-      updatedAt: string;
-    };
-    const statements = payload.beforeStates.map((state) => ({
-      sql: `UPDATE tree_nodes
-              SET parent_id = ?, sort_order = ?, title = ?, updated_at = ?
-            WHERE id = ? AND project_id = ?`,
-      params: [
-        state.parentId,
-        state.sortOrder,
-        state.title,
-        payload.updatedAt,
-        state.id,
-        payload.projectId,
-      ],
-      method: "run",
-    }));
-    for (const id of [...payload.createdIds].reverse()) {
-      statements.push({
-        sql: "DELETE FROM tree_nodes WHERE id = ? AND project_id = ?",
-        params: [id, payload.projectId],
-        method: "run",
-      });
+  async function handleProjectCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "project_create";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    if (identity.origin === "undo" || identity.origin === "redo") {
+      throw new Error(`${command}: project creation is forward-only`);
     }
-    handleDbExecuteBatch({ statements });
+    const title = requiredBrowserString(command, payload, "title");
+    const createdAt = requiredBrowserString(command, payload, "createdAt");
+    const updatedAt = requiredBrowserString(command, payload, "updatedAt");
+    const genre = nullableBrowserString(command, payload, "genre");
+    const pov = nullableBrowserString(command, payload, "pov");
+    const tense = nullableBrowserString(command, payload, "tense");
+    const language =
+      nullableBrowserString(command, payload, "language") || "ja";
+    const styleGuide = nullableBrowserString(command, payload, "styleGuide");
+    const aiInstructions = nullableBrowserString(
+      command,
+      payload,
+      "aiInstructions",
+    );
+    const outline = nullableBrowserString(command, payload, "outline");
+    const targetReaders = nullableBrowserString(
+      command,
+      payload,
+      "targetReaders",
+    );
+    const requestHash = await browserCanonicalWriteFingerprint(
+      command,
+      payload,
+    );
+    const replay = loadBrowserCanonicalWriteReplay({
+      domain: command,
+      identity,
+      requestHash,
+      conflictMarker: "PROJECT_CREATE_REQUEST_CONFLICT",
+    });
+    if (replay) return replay;
+
+    const timestamp = Number.isFinite(Date.parse(createdAt))
+      ? Date.parse(createdAt)
+      : Date.now();
+    const builtinTypeIds = ["character", "location", "item", "lore"].map(
+      (slug) => `${identity.projectId}-${slug}`,
+    );
+    const canonicalPayload = JSON.stringify({
+      requestId: identity.requestId,
+      projectId: identity.projectId,
+      builtinTypeIds,
+    });
+    const preparedEvent = await prepareBrowserTrackedChangeEvent({
+      eventUid: identity.eventUid,
+      projectId: identity.projectId,
+      sceneId: null,
+      domain: "project",
+      opType: "project.create",
+      entityType: "project",
+      entityId: identity.projectId,
+      payload: canonicalPayload,
+      sessionId: identity.sessionId,
+      timestamp,
+    });
+
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const replayAfterLock = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker: "PROJECT_CREATE_REQUEST_CONFLICT",
+      });
+      if (replayAfterLock) {
+        db.run("COMMIT");
+        return replayAfterLock;
+      }
+      db.run(
+        `INSERT INTO projects
+          (id, title, genre, pov, tense, language, style_guide,
+           ai_instructions, outline, target_readers, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          identity.projectId,
+          title,
+          genre,
+          pov,
+          tense,
+          language,
+          styleGuide,
+          aiInstructions,
+          outline,
+          targetReaders,
+          createdAt,
+          updatedAt,
+        ],
+      );
+      if (db.getRowsModified() !== 1) {
+        throw new Error(`project '${identity.projectId}' was not created`);
+      }
+
+      if (language.startsWith("en")) {
+        for (const [slug, label] of [
+          ["character", "Character"],
+          ["location", "Location"],
+          ["item", "Item"],
+          ["lore", "Lore & Worldbuilding"],
+        ] as const) {
+          db.run(
+            `UPDATE codex_types
+                SET label = ?
+              WHERE project_id = ? AND slug = ? AND is_builtin = 1`,
+            [label, identity.projectId, slug],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              `project '${identity.projectId}' did not seed builtin Codex type '${slug}'`,
+            );
+          }
+        }
+      }
+
+      const builtinTypes = queryAll(
+        `SELECT id,
+                project_id,
+                slug,
+                label,
+                color,
+                palette_index,
+                icon,
+                is_builtin,
+                sort_order,
+                created_at
+           FROM codex_types
+          WHERE project_id = ? AND is_builtin = 1
+            AND slug IN ('character', 'location', 'item', 'lore')
+          ORDER BY CASE slug
+                     WHEN 'character' THEN 0
+                     WHEN 'location' THEN 1
+                     WHEN 'item' THEN 2
+                     WHEN 'lore' THEN 3
+                     ELSE 4
+                   END`,
+        [identity.projectId],
+      );
+      const expectedSlugs = ["character", "location", "item", "lore"];
+      if (
+        builtinTypes.length !== expectedSlugs.length ||
+        builtinTypes.some(
+          (row, index) => String(row.slug) !== expectedSlugs[index],
+        )
+      ) {
+        throw new Error(
+          `project '${identity.projectId}' did not seed the canonical builtin Codex catalog`,
+        );
+      }
+      if (
+        builtinTypes.some(
+          (row, index) => String(row.id) !== builtinTypeIds[index],
+        )
+      ) {
+        throw new Error(
+          `project '${identity.projectId}' seeded non-canonical builtin Codex type identities`,
+        );
+      }
+      const maintenanceTransactionId = insertBrowserNarrativeChange({
+        preparedEvent,
+        identity,
+        requestHash,
+        undoJournalId: null,
+        occurredAt: createdAt,
+        events: builtinTypes.map((row) => ({
+          objectKey: {
+            kind: "component",
+            componentId: `codex-type:${String(row.id)}`,
+          },
+          changeKind: "catalog",
+          mutationKind: "create",
+          beforeVersion: null,
+          afterVersion: null,
+          afterState: browserCodexCatalogFeedState(row, false),
+          changedPaths: ["/"],
+        })),
+      });
+      const row = queryOne(
+        `SELECT id, title, genre, pov, tense, language,
+                style_guide AS styleGuide,
+                ai_instructions AS aiInstructions,
+                outline,
+                target_readers AS targetReaders,
+                phase_resolution_mode AS phaseResolutionMode,
+                ai_policy AS aiPolicy,
+                created_at AS createdAt,
+                updated_at AS updatedAt
+           FROM projects WHERE id = ?`,
+        [identity.projectId],
+      );
+      if (!row) {
+        throw new Error(`project '${identity.projectId}' was not created`);
+      }
+      const response: Record<string, unknown> = {
+        ...row,
+        __writeReceipt: {
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId: null,
+        },
+      };
+      insertBrowserCanonicalWriteReceipt({
+        domain: command,
+        identity,
+        requestHash,
+        response,
+        now: createdAt,
+      });
+      db.run("COMMIT");
+      options.onDatabaseDirty?.();
+      return response;
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the canonical Project creation failure.
+      }
+      throw error;
+    }
+  }
+
+  async function handleProjectPatch(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "project_patch";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    const baseUpdatedAt = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "baseUpdatedAt",
+    );
+    const updatedAt = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "updatedAt",
+    );
+    const patch = payload.patch;
+    if (!isRecord(patch) || Object.keys(patch).length === 0) {
+      throw new Error(`${command}: patch must be a non-empty object`);
+    }
+    const fieldMap: Record<string, string> = {
+      title: "title",
+      genre: "genre",
+      pov: "pov",
+      tense: "tense",
+      language: "language",
+      styleGuide: "style_guide",
+      aiInstructions: "ai_instructions",
+      outline: "outline",
+      targetReaders: "target_readers",
+      aiPolicy: "ai_policy",
+      phaseResolutionMode: "phase_resolution_mode",
+    };
+    const pathMap: Record<string, string> = {
+      title: "/title",
+      genre: "/genre",
+      pov: "/pov",
+      tense: "/tense",
+      language: "/language",
+      styleGuide: "/styleGuide",
+      aiInstructions: "/aiInstructions",
+      outline: "/outline",
+      targetReaders: "/targetReaders",
+      aiPolicy: "/aiPolicy",
+      phaseResolutionMode: "/phaseResolutionMode",
+    };
+    const patchKeys = Object.keys(patch);
+    if (patchKeys.some((key) => !fieldMap[key])) {
+      throw new Error(`${command}: patch contains an unsupported field`);
+    }
+    for (const key of patchKeys) {
+      const value = patch[key];
+      if (value !== null && typeof value !== "string") {
+        throw new Error(`${command}: patch.${key} must be a string or null`);
+      }
+      if (key === "title" && value === null) {
+        throw new Error(`${command}: patch.title cannot be null`);
+      }
+    }
+    const requestHash = await browserCanonicalWriteFingerprint(
+      command,
+      payload,
+    );
+    const replay = loadBrowserCanonicalWriteReplay({
+      domain: command,
+      identity,
+      requestHash,
+      conflictMarker: "PROJECT_PATCH_REQUEST_CONFLICT",
+    });
+    if (replay) return replay;
+
+    const snapshot = (row: Record<string, unknown>) => ({
+      id: row.id,
+      title: row.title,
+      genre: row.genre,
+      pov: row.pov,
+      tense: row.tense,
+      language: row.language,
+      styleGuide: row.styleGuide,
+      aiInstructions: row.aiInstructions,
+      outline: row.outline,
+      targetReaders: row.targetReaders,
+      phaseResolutionMode: row.phaseResolutionMode,
+      aiPolicy: row.aiPolicy,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+    const current = queryOne(
+      `SELECT id, title, genre, pov, tense, language,
+              style_guide AS styleGuide, ai_instructions AS aiInstructions,
+              outline, target_readers AS targetReaders,
+              phase_resolution_mode AS phaseResolutionMode,
+              ai_policy AS aiPolicy, created_at AS createdAt,
+              updated_at AS updatedAt
+         FROM projects WHERE id = ?`,
+      [identity.projectId],
+    );
+    if (!current) throw new Error(`project '${identity.projectId}' not found`);
+    if (String(current.updatedAt) !== baseUpdatedAt) {
+      throw new Error(
+        `PROJECT_VERSION_MISMATCH: project '${identity.projectId}' changed since ${baseUpdatedAt}`,
+      );
+    }
+    const beforeState = snapshot(current);
+    const timestamp = Number.isFinite(Date.parse(updatedAt))
+      ? Date.parse(updatedAt)
+      : Date.now();
+    const preparedEvent = await prepareBrowserTrackedChangeEvent({
+      eventUid: identity.eventUid,
+      projectId: identity.projectId,
+      sceneId: null,
+      domain: "project",
+      opType: "project.meta.update",
+      entityType: "project",
+      entityId: identity.projectId,
+      payload: JSON.stringify({
+        projectId: identity.projectId,
+        fields: patchKeys.slice().sort(),
+        patch,
+      }),
+      sessionId: identity.sessionId,
+      timestamp,
+    });
+
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const replayAfterLock = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker: "PROJECT_PATCH_REQUEST_CONFLICT",
+      });
+      if (replayAfterLock) {
+        db.run("COMMIT");
+        return replayAfterLock;
+      }
+      const assignments = patchKeys.map((key) => `${fieldMap[key]} = ?`);
+      const values: SqlValue[] = patchKeys.map(
+        (key) => (patch[key] as SqlValue | null | undefined) ?? null,
+      );
+      assignments.push("updated_at = ?");
+      values.push(updatedAt);
+      values.push(identity.projectId, baseUpdatedAt);
+      db.run(
+        `UPDATE projects SET ${assignments.join(", ")}
+          WHERE id = ? AND updated_at = ?`,
+        values,
+      );
+      if (db.getRowsModified() !== 1) {
+        throw new Error(
+          `PROJECT_VERSION_MISMATCH: project '${identity.projectId}' update lost its OCC race`,
+        );
+      }
+      const afterRow = queryOne(
+        `SELECT id, title, genre, pov, tense, language,
+                style_guide AS styleGuide, ai_instructions AS aiInstructions,
+                outline, target_readers AS targetReaders,
+                phase_resolution_mode AS phaseResolutionMode,
+                ai_policy AS aiPolicy, created_at AS createdAt,
+                updated_at AS updatedAt
+           FROM projects WHERE id = ?`,
+        [identity.projectId],
+      );
+      if (!afterRow) throw new Error("project patch did not return a row");
+      const afterState = snapshot(afterRow);
+      const undoJournalId = identity.undoJournalId ?? identity.requestId;
+      if (identity.origin !== "undo" && identity.origin !== "redo") {
+        db.run(
+          `INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind,
+             before_json, after_json, base_version, result_version,
+             change_event_uid, created_at)
+           VALUES (?, ?, 'project', 'project', ?, 'update', ?, ?, 0, 0, ?, ?)`,
+          [
+            undoJournalId,
+            identity.projectId,
+            identity.projectId,
+            JSON.stringify(beforeState),
+            JSON.stringify(afterState),
+            identity.eventUid,
+            updatedAt,
+          ],
+        );
+      }
+      const maintenanceTransactionId = insertBrowserNarrativeChange({
+        preparedEvent,
+        identity,
+        requestHash,
+        undoJournalId,
+        occurredAt: updatedAt,
+        events: [
+          {
+            objectKey: { kind: "project", projectId: identity.projectId },
+            changeKind: patchKeys.includes("aiPolicy") ? "policy" : "metadata",
+            mutationKind: "update",
+            beforeVersion: null,
+            afterVersion: null,
+            beforeState,
+            afterState,
+            changedPaths: patchKeys.map((key) => pathMap[key]).sort(),
+          },
+        ],
+      });
+      const response: Record<string, unknown> = {
+        ...afterRow,
+        __writeReceipt: {
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId,
+        },
+      };
+      insertBrowserCanonicalWriteReceipt({
+        domain: command,
+        identity,
+        requestHash,
+        response,
+        now: updatedAt,
+      });
+      db.run("COMMIT");
+      options.onDatabaseDirty?.();
+      return response;
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the original project patch failure.
+      }
+      throw error;
+    }
   }
 
   type BrowserMapRow = Record<string, unknown>;
@@ -7135,321 +14013,950 @@ export async function createBrowserMock(
     );
   }
 
-  function handleMapWriteBundle(args: Record<string, unknown>): void {
-    const payload = args.payload as BrowserMapRow;
-    const kind = String(payload.kind);
-    const projectId = String(payload.projectId);
-    const statements: BrowserMapStatement[] = [];
+  type BrowserMapFeedState = {
+    board: Record<string, SqlValue> | null;
+    branch: Record<string, SqlValue> | null;
+    targetEntity: Record<string, SqlValue> | null;
+    sticky: Record<string, SqlValue> | null;
+    codex: Record<string, SqlValue> | null;
+    frame: Record<string, SqlValue> | null;
+    position: Record<string, SqlValue> | null;
+    edge: Record<string, SqlValue> | null;
+    relation: Record<string, SqlValue> | null;
+  };
 
+  function browserMapNestedRow(
+    payload: BrowserMapRow,
+    key: string,
+  ): BrowserMapRow {
+    const value = payload[key];
+    if (!isRecord(value)) {
+      throw new Error(`map write ${key} must be an object`);
+    }
+    return value;
+  }
+
+  function browserMapRequiredString(
+    payload: BrowserMapRow,
+    key: string,
+  ): string {
+    const value = payload[key];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(`map write ${key} must be a non-empty string`);
+    }
+    return value;
+  }
+
+  function browserMapRootEntity(
+    payload: BrowserMapRow,
+    kind: string,
+  ): { entityType: string; entityId: string } {
     if (kind === "create-board") {
-      const board = payload.board as BrowserMapRow;
-      const stickies = (payload.stickies ?? []) as BrowserMapRow[];
-      const positions = (payload.positions ?? []) as BrowserMapRow[];
-      const edges = (payload.edges ?? []) as BrowserMapRow[];
-      const frames = (payload.frames ?? []) as BrowserMapRow[];
-      if (
-        String(board.projectId) !== projectId ||
-        !queryOne("SELECT 1 FROM projects WHERE id = ?", [projectId])
-      ) {
-        throw new Error("map board project is invalid");
-      }
-      validateBrowserMapGraph(
-        projectId,
-        String(board.id),
-        [],
-        stickies,
-        positions,
-        edges,
-        frames,
-        [],
-      );
-      statements.push(browserMapBoardInsert(board));
-      statements.push(
-        ...stickies.map((row) => browserMapStickyInsert(row, false)),
-        ...positions.map((row) => browserMapPositionInsert(row, false)),
-        ...edges.map((row) => browserMapEdgeInsert(row, false)),
-        ...frames.map((row) => browserMapFrameInsert(row, false)),
+      return {
+        entityType: "map_board",
+        entityId: browserMapRequiredString(
+          browserMapNestedRow(payload, "board"),
+          "id",
+        ),
+      };
+    }
+    if (kind === "create-ai-branch" || kind === "restore-ai-branch") {
+      return {
+        entityType: "map_ai_branch",
+        entityId: browserMapRequiredString(
+          browserMapNestedRow(payload, "branch"),
+          "id",
+        ),
+      };
+    }
+    if (kind === "erase-ai-branch") {
+      return {
+        entityType: "map_ai_branch",
+        entityId: browserMapRequiredString(payload, "branchId"),
+      };
+    }
+    if (kind === "promote-sticky") {
+      return {
+        entityType: "map_promotion",
+        entityId: browserMapRequiredString(payload, "newEntityId"),
+      };
+    }
+    if (kind === "extract-frame-to-codex") {
+      return {
+        entityType: "map_extraction",
+        entityId: browserMapRequiredString(payload, "codexId"),
+      };
+    }
+    if (kind === "promote-user-edge-to-codex-relation") {
+      return {
+        entityType: "map_relation_promotion",
+        entityId: browserMapRequiredString(payload, "relationId"),
+      };
+    }
+    throw new Error("unsupported map write kind");
+  }
+
+  function captureBrowserMapFeedState(
+    payload: BrowserMapRow,
+    kind: string,
+    projectId: string,
+  ): BrowserMapFeedState {
+    const state: BrowserMapFeedState = {
+      board: null,
+      branch: null,
+      targetEntity: null,
+      sticky: null,
+      codex: null,
+      frame: null,
+      position: null,
+      edge: null,
+      relation: null,
+    };
+    if (kind === "create-board") {
+      const board = browserMapNestedRow(payload, "board");
+      state.board = queryOne(
+        "SELECT * FROM map_boards WHERE id = ? AND project_id = ?",
+        [browserMapRequiredString(board, "id"), projectId],
       );
     } else if (kind === "create-ai-branch" || kind === "restore-ai-branch") {
-      const restore = kind === "restore-ai-branch";
-      const branch = payload.branch as BrowserMapRow;
-      const branchPosition = payload.branchPosition as BrowserMapRow;
-      const stickies = (payload.stickies ?? []) as BrowserMapRow[];
+      const branch = browserMapNestedRow(payload, "branch");
+      state.branch = queryOne(
+        `SELECT branch.*
+           FROM map_ai_branches branch
+           JOIN map_boards board ON board.id = branch.board_id
+          WHERE branch.id = ? AND board.project_id = ?`,
+        [browserMapRequiredString(branch, "id"), projectId],
+      );
+    } else if (kind === "erase-ai-branch") {
+      state.branch = queryOne(
+        `SELECT branch.*
+           FROM map_ai_branches branch
+           JOIN map_boards board ON board.id = branch.board_id
+          WHERE branch.id = ? AND board.project_id = ?`,
+        [browserMapRequiredString(payload, "branchId"), projectId],
+      );
+    } else if (kind === "promote-sticky") {
+      state.sticky = queryOne(
+        `SELECT sticky.*
+           FROM map_stickies sticky
+           JOIN map_boards board ON board.id = sticky.board_id
+          WHERE sticky.id = ? AND board.project_id = ?`,
+        [browserMapRequiredString(payload, "stickyId"), projectId],
+      );
+      const entityId = browserMapRequiredString(payload, "newEntityId");
+      const targetType = browserMapRequiredString(payload, "targetType");
+      state.targetEntity =
+        targetType === "scene" || targetType === "note"
+          ? queryOne(
+              "SELECT * FROM tree_nodes WHERE id = ? AND project_id = ?",
+              [entityId, projectId],
+            )
+          : targetType === "snippet"
+            ? queryOne(
+                "SELECT * FROM snippets WHERE id = ? AND project_id = ?",
+                [entityId, projectId],
+              )
+            : targetType === "codex"
+              ? queryOne(
+                  "SELECT * FROM codex_entries WHERE id = ? AND project_id = ?",
+                  [entityId, projectId],
+                )
+              : null;
+    } else if (kind === "extract-frame-to-codex") {
+      const boardId = browserMapRequiredString(payload, "boardId");
+      state.codex = queryOne(
+        "SELECT * FROM codex_entries WHERE id = ? AND project_id = ?",
+        [browserMapRequiredString(payload, "codexId"), projectId],
+      );
+      state.frame = queryOne(
+        "SELECT * FROM map_frames WHERE id = ? AND board_id = ?",
+        [browserMapRequiredString(payload, "frameId"), boardId],
+      );
       const positions = (payload.positions ?? []) as BrowserMapRow[];
-      const edges = (payload.edges ?? []) as BrowserMapRow[];
-      const spans = (payload.spans ?? []) as BrowserMapRow[];
-      const boardId = String(branch.boardId);
-      ensureBrowserMapBoardProject(boardId, projectId);
-      validateBrowserMapGraph(
+      if (positions.length > 0) {
+        state.position = queryOne(
+          "SELECT * FROM map_node_positions WHERE id = ? AND board_id = ?",
+          [browserMapRequiredString(positions[0], "id"), boardId],
+        );
+      }
+    } else if (kind === "promote-user-edge-to-codex-relation") {
+      const boardId = browserMapRequiredString(payload, "boardId");
+      state.edge = queryOne(
+        "SELECT * FROM map_edges WHERE id = ? AND board_id = ?",
+        [browserMapRequiredString(payload, "edgeId"), boardId],
+      );
+      state.relation = loadBrowserCodexRelationFeedState(
+        browserMapRequiredString(payload, "relationId"),
         projectId,
-        boardId,
-        [branch],
-        stickies,
-        [branchPosition, ...positions],
-        edges,
-        [],
-        spans,
       );
-      statements.push(
-        browserMapBranchInsert(branch, restore),
-        browserMapPositionInsert(branchPosition, restore),
-        ...stickies.map((row) => browserMapStickyInsert(row, restore)),
-      );
-      if (restore) {
-        statements.push(
-          ...stickies.map((row) =>
-            mapStatement(
-              `UPDATE map_stickies SET ai_branch_id = ?
-                WHERE id = ? AND board_id = ?`,
-              [mapValue(branch, "id"), mapValue(row, "id"), boardId],
-            ),
+    }
+    return state;
+  }
+
+  function browserMapFeedStateJson(state: BrowserMapFeedState): string | null {
+    return Object.values(state).every((value) => value === null)
+      ? null
+      : JSON.stringify(state);
+  }
+
+  function browserMapSnapshotVersion(
+    snapshot: Record<string, SqlValue> | null,
+  ): number | null {
+    return typeof snapshot?.version === "number" ? snapshot.version : null;
+  }
+
+  function browserMapComponentKey(kind: string, id: string) {
+    return { kind: "component", componentId: `map-${kind}:${id}` };
+  }
+
+  function browserMapFeedEvents(
+    payload: BrowserMapRow,
+    kind: string,
+    before: BrowserMapFeedState,
+    after: BrowserMapFeedState,
+  ): BrowserNarrativeChangeEventInput[] {
+    const event = (
+      objectKey: Record<string, unknown>,
+      changeKind: BrowserNarrativeChangeEventInput["changeKind"],
+      mutationKind: BrowserNarrativeChangeEventInput["mutationKind"],
+      beforeSnapshot: Record<string, SqlValue> | null,
+      afterSnapshot: Record<string, SqlValue> | null,
+    ): BrowserNarrativeChangeEventInput => ({
+      objectKey,
+      changeKind,
+      mutationKind,
+      beforeVersion: browserMapSnapshotVersion(beforeSnapshot),
+      afterVersion: browserMapSnapshotVersion(afterSnapshot),
+      ...(beforeSnapshot ? { beforeState: beforeSnapshot } : {}),
+      ...(afterSnapshot ? { afterState: afterSnapshot } : {}),
+      changedPaths: ["/"],
+    });
+    if (kind === "create-board") {
+      const board = browserMapNestedRow(payload, "board");
+      return [
+        event(
+          browserMapComponentKey(
+            "board",
+            browserMapRequiredString(board, "id"),
+          ),
+          "association",
+          "create",
+          null,
+          after.board,
+        ),
+      ];
+    }
+    if (kind === "create-ai-branch" || kind === "restore-ai-branch") {
+      const branch = browserMapNestedRow(payload, "branch");
+      return [
+        event(
+          browserMapComponentKey(
+            "ai-branch",
+            browserMapRequiredString(branch, "id"),
+          ),
+          "association",
+          kind === "restore-ai-branch" ? "restore" : "create",
+          null,
+          after.branch,
+        ),
+      ];
+    }
+    if (kind === "erase-ai-branch") {
+      return [
+        event(
+          browserMapComponentKey(
+            "ai-branch",
+            browserMapRequiredString(payload, "branchId"),
+          ),
+          "association",
+          "delete",
+          before.branch,
+          null,
+        ),
+      ];
+    }
+    if (kind === "promote-sticky") {
+      const targetType = browserMapRequiredString(payload, "targetType");
+      const entityId = browserMapRequiredString(payload, "newEntityId");
+      const objectKey =
+        targetType === "scene"
+          ? { kind: "scene", sceneId: entityId }
+          : targetType === "codex"
+            ? { kind: "codex-entry", entryId: entityId }
+            : browserMapComponentKey(targetType, entityId);
+      return [
+        event(
+          objectKey,
+          targetType === "codex" ? "catalog" : "content",
+          "create",
+          null,
+          after.targetEntity,
+        ),
+        event(
+          browserMapComponentKey(
+            "sticky",
+            browserMapRequiredString(payload, "stickyId"),
+          ),
+          "association",
+          "delete",
+          before.sticky,
+          null,
+        ),
+      ];
+    }
+    if (kind === "extract-frame-to-codex") {
+      const positions = (payload.positions ?? []) as BrowserMapRow[];
+      const positionId = browserMapRequiredString(positions[0], "id");
+      return [
+        event(
+          {
+            kind: "codex-entry",
+            entryId: browserMapRequiredString(payload, "codexId"),
+          },
+          "catalog",
+          "create",
+          null,
+          after.codex,
+        ),
+        event(
+          browserMapComponentKey(
+            "frame",
+            browserMapRequiredString(payload, "frameId"),
+          ),
+          "association",
+          "delete",
+          before.frame,
+          null,
+        ),
+        event(
+          browserMapComponentKey("position", positionId),
+          "association",
+          "create",
+          null,
+          after.position,
+        ),
+      ];
+    }
+    if (kind === "promote-user-edge-to-codex-relation") {
+      const events: BrowserNarrativeChangeEventInput[] = [];
+      if (payload.reuseExistingRelation !== true) {
+        events.push(
+          event(
+            {
+              kind: "codex-relation",
+              relationId: browserMapRequiredString(payload, "relationId"),
+            },
+            "association",
+            "create",
+            null,
+            after.relation,
           ),
         );
       }
-      statements.push(
-        ...positions.map((row) => browserMapPositionInsert(row, restore)),
-        ...edges.map((row) => browserMapEdgeInsert(row, restore)),
-        ...spans.map((row) => browserMapSpanInsert(row, restore)),
+      events.push(
+        event(
+          browserMapComponentKey(
+            "edge",
+            browserMapRequiredString(payload, "edgeId"),
+          ),
+          "association",
+          "delete",
+          before.edge,
+          null,
+        ),
       );
-    } else if (kind === "promote-sticky") {
-      const boardId = String(payload.boardId);
-      const stickyId = String(payload.stickyId);
-      const positionId = String(payload.positionId);
-      const newEntityId = String(payload.newEntityId);
-      const targetType = String(payload.targetType);
-      ensureBrowserMapBoardProject(boardId, projectId);
-      if (
-        !queryOne("SELECT 1 FROM map_stickies WHERE id = ? AND board_id = ?", [
-          stickyId,
-          boardId,
-        ]) ||
-        !queryOne(
-          `SELECT 1 FROM map_node_positions
-            WHERE id = ? AND board_id = ? AND sticky_id = ?`,
-          [positionId, boardId, stickyId],
-        )
-      ) {
-        throw new Error("map sticky promotion target is stale");
-      }
-      let treeNodeId: SqlValue = null;
-      let codexEntryId: SqlValue = null;
-      let snippetId: SqlValue = null;
-      if (targetType === "scene" || targetType === "note") {
-        if (
-          payload.parentId &&
-          !queryOne(
-            "SELECT 1 FROM tree_nodes WHERE id = ? AND project_id = ?",
-            [String(payload.parentId), projectId],
-          )
-        ) {
-          throw new Error("map sticky promotion parent is outside project");
+      return events;
+    }
+    throw new Error("unsupported map write kind");
+  }
+
+  async function handleMapWriteBundle(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    if (!isRecord(args.payload)) {
+      throw new Error("map_write_bundle: payload is required");
+    }
+    const payload: BrowserMapRow = {
+      ...args.payload,
+      origin: args.payload.origin ?? "human",
+      originalTransactionId: Object.hasOwn(
+        args.payload,
+        "originalTransactionId",
+      )
+        ? args.payload.originalTransactionId
+        : null,
+      undoJournalId: Object.hasOwn(args.payload, "undoJournalId")
+        ? args.payload.undoJournalId
+        : null,
+    };
+    const kind = browserMapRequiredString(payload, "kind");
+    const identity = browserCanonicalWriteIdentity(payload, "map_write_bundle");
+    const projectId = identity.projectId;
+    const { entityType, entityId } = browserMapRootEntity(payload, kind);
+    const operation = `map.${kind.replaceAll("-", ".")}`;
+
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        "map_write_bundle",
+        payload,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: "map_write_bundle",
+        identity,
+        requestHash,
+        conflictMarker: "MAP_WRITE_REQUEST_CONFLICT",
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId,
+        sceneId: null,
+        domain: "map",
+        opType: operation,
+        entityType,
+        entityId,
+        payload: JSON.stringify({ kind, requestId: identity.requestId }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: "map_write_bundle",
+          identity,
+          requestHash,
+          conflictMarker: "MAP_WRITE_REQUEST_CONFLICT",
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
         }
-        treeNodeId = newEntityId;
-        statements.push(
-          mapStatement(
-            `INSERT INTO tree_nodes
+        const statements: BrowserMapStatement[] = [];
+
+        if (kind === "create-board") {
+          const board = payload.board as BrowserMapRow;
+          const stickies = (payload.stickies ?? []) as BrowserMapRow[];
+          const positions = (payload.positions ?? []) as BrowserMapRow[];
+          const edges = (payload.edges ?? []) as BrowserMapRow[];
+          const frames = (payload.frames ?? []) as BrowserMapRow[];
+          if (
+            String(board.projectId) !== projectId ||
+            !queryOne("SELECT 1 FROM projects WHERE id = ?", [projectId])
+          ) {
+            throw new Error("map board project is invalid");
+          }
+          validateBrowserMapGraph(
+            projectId,
+            String(board.id),
+            [],
+            stickies,
+            positions,
+            edges,
+            frames,
+            [],
+          );
+          statements.push(browserMapBoardInsert(board));
+          statements.push(
+            ...stickies.map((row) => browserMapStickyInsert(row, false)),
+            ...positions.map((row) => browserMapPositionInsert(row, false)),
+            ...edges.map((row) => browserMapEdgeInsert(row, false)),
+            ...frames.map((row) => browserMapFrameInsert(row, false)),
+          );
+        } else if (
+          kind === "create-ai-branch" ||
+          kind === "restore-ai-branch"
+        ) {
+          const restore = kind === "restore-ai-branch";
+          const branch = payload.branch as BrowserMapRow;
+          const branchPosition = payload.branchPosition as BrowserMapRow;
+          const stickies = (payload.stickies ?? []) as BrowserMapRow[];
+          const positions = (payload.positions ?? []) as BrowserMapRow[];
+          const edges = (payload.edges ?? []) as BrowserMapRow[];
+          const spans = (payload.spans ?? []) as BrowserMapRow[];
+          const boardId = String(branch.boardId);
+          ensureBrowserMapBoardProject(boardId, projectId);
+          validateBrowserMapGraph(
+            projectId,
+            boardId,
+            [branch],
+            stickies,
+            [branchPosition, ...positions],
+            edges,
+            [],
+            spans,
+          );
+          statements.push(
+            browserMapBranchInsert(branch, restore),
+            browserMapPositionInsert(branchPosition, restore),
+            ...stickies.map((row) => browserMapStickyInsert(row, restore)),
+          );
+          if (restore) {
+            statements.push(
+              ...stickies.map((row) =>
+                mapStatement(
+                  `UPDATE map_stickies SET ai_branch_id = ?
+                WHERE id = ? AND board_id = ?`,
+                  [mapValue(branch, "id"), mapValue(row, "id"), boardId],
+                ),
+              ),
+            );
+          }
+          statements.push(
+            ...positions.map((row) => browserMapPositionInsert(row, restore)),
+            ...edges.map((row) => browserMapEdgeInsert(row, restore)),
+            ...spans.map((row) => browserMapSpanInsert(row, restore)),
+          );
+        } else if (kind === "promote-sticky") {
+          const boardId = String(payload.boardId);
+          const stickyId = String(payload.stickyId);
+          const positionId = String(payload.positionId);
+          const newEntityId = String(payload.newEntityId);
+          const targetType = String(payload.targetType);
+          ensureBrowserMapBoardProject(boardId, projectId);
+          if (
+            !queryOne(
+              "SELECT 1 FROM map_stickies WHERE id = ? AND board_id = ?",
+              [stickyId, boardId],
+            ) ||
+            !queryOne(
+              `SELECT 1 FROM map_node_positions
+            WHERE id = ? AND board_id = ? AND sticky_id = ?`,
+              [positionId, boardId, stickyId],
+            )
+          ) {
+            throw new Error("map sticky promotion target is stale");
+          }
+          let treeNodeId: SqlValue = null;
+          let codexEntryId: SqlValue = null;
+          let snippetId: SqlValue = null;
+          if (targetType === "scene" || targetType === "note") {
+            if (
+              payload.parentId &&
+              !queryOne(
+                "SELECT 1 FROM tree_nodes WHERE id = ? AND project_id = ?",
+                [String(payload.parentId), projectId],
+              )
+            ) {
+              throw new Error("map sticky promotion parent is outside project");
+            }
+            treeNodeId = newEntityId;
+            statements.push(
+              mapStatement(
+                `INSERT INTO tree_nodes
               (id, project_id, parent_id, node_type, title, sort_order, content,
                created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              newEntityId,
-              projectId,
-              mapValue(payload, "parentId"),
-              targetType,
-              mapValue(payload, "title"),
-              mapValue(payload, "sortOrder"),
-              mapValue(payload, "body"),
-              mapValue(payload, "createdAt"),
-              mapValue(payload, "updatedAt"),
-            ],
-          ),
-        );
-      } else if (targetType === "snippet") {
-        snippetId = newEntityId;
-        statements.push(
-          mapStatement(
-            `INSERT INTO snippets
+                [
+                  newEntityId,
+                  projectId,
+                  mapValue(payload, "parentId"),
+                  targetType,
+                  mapValue(payload, "title"),
+                  mapValue(payload, "sortOrder"),
+                  mapValue(payload, "body"),
+                  mapValue(payload, "createdAt"),
+                  mapValue(payload, "updatedAt"),
+                ],
+              ),
+            );
+          } else if (targetType === "snippet") {
+            snippetId = newEntityId;
+            statements.push(
+              mapStatement(
+                `INSERT INTO snippets
               (id, project_id, title, content, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?)`,
-            [
-              newEntityId,
-              projectId,
-              mapValue(payload, "title"),
-              mapValue(payload, "body"),
-              mapValue(payload, "createdAt"),
-              mapValue(payload, "updatedAt"),
-            ],
-          ),
-        );
-      } else if (targetType === "codex") {
-        codexEntryId = newEntityId;
-        statements.push(
-          mapStatement(
-            `INSERT INTO codex_entries
+                [
+                  newEntityId,
+                  projectId,
+                  mapValue(payload, "title"),
+                  mapValue(payload, "body"),
+                  mapValue(payload, "createdAt"),
+                  mapValue(payload, "updatedAt"),
+                ],
+              ),
+            );
+          } else if (targetType === "codex") {
+            codexEntryId = newEntityId;
+            statements.push(
+              mapStatement(
+                `INSERT INTO codex_entries
               (id, project_id, type, name, content, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
-            [
-              newEntityId,
-              projectId,
-              mapValue(payload, "codexType"),
-              mapValue(payload, "title"),
-              mapValue(payload, "body"),
-              mapValue(payload, "createdAt"),
-              mapValue(payload, "updatedAt"),
-            ],
-          ),
-        );
-      } else {
-        throw new Error("unsupported sticky promotion target");
-      }
-      statements.push(
-        mapStatement(
-          `UPDATE map_node_positions
+                [
+                  newEntityId,
+                  projectId,
+                  mapValue(payload, "codexType"),
+                  mapValue(payload, "title"),
+                  mapValue(payload, "body"),
+                  mapValue(payload, "createdAt"),
+                  mapValue(payload, "updatedAt"),
+                ],
+              ),
+            );
+          } else {
+            throw new Error("unsupported sticky promotion target");
+          }
+          statements.push(
+            mapStatement(
+              `UPDATE map_node_positions
               SET node_ref_type = ?, tree_node_id = ?, codex_entry_id = ?,
                   snippet_id = ?, sticky_id = NULL, ai_branch_id = NULL,
                   updated_at = ?
             WHERE id = ? AND board_id = ? AND sticky_id = ?`,
-          [
-            targetType,
-            treeNodeId,
-            codexEntryId,
-            snippetId,
-            mapValue(payload, "updatedAt"),
-            positionId,
-            boardId,
-            stickyId,
-          ],
-        ),
-        mapStatement(
-          `UPDATE authorship_spans
+              [
+                targetType,
+                treeNodeId,
+                codexEntryId,
+                snippetId,
+                mapValue(payload, "updatedAt"),
+                positionId,
+                boardId,
+                stickyId,
+              ],
+            ),
+            mapStatement(
+              `UPDATE authorship_spans
               SET node_id = ?, codex_entry_id = ?, snippet_id = ?,
                   sticky_id = NULL
             WHERE sticky_id = ?`,
-          [treeNodeId, codexEntryId, snippetId, stickyId],
-        ),
-        mapStatement("DELETE FROM map_stickies WHERE id = ? AND board_id = ?", [
-          stickyId,
-          boardId,
-        ]),
-      );
-    } else if (kind === "erase-ai-branch") {
-      const branchId = String(payload.branchId);
-      const branch = queryOne(
-        `SELECT branch.board_id
+              [treeNodeId, codexEntryId, snippetId, stickyId],
+            ),
+            mapStatement(
+              "DELETE FROM map_stickies WHERE id = ? AND board_id = ?",
+              [stickyId, boardId],
+            ),
+          );
+        } else if (kind === "erase-ai-branch") {
+          const branchId = String(payload.branchId);
+          const branch = queryOne(
+            `SELECT branch.board_id
            FROM map_ai_branches branch
            JOIN map_boards board ON board.id = branch.board_id
           WHERE branch.id = ? AND board.project_id = ?`,
-        [branchId, projectId],
-      );
-      if (!branch) throw new Error("AI branch is outside project");
-      const boardId = String(branch.board_id);
-      for (const id of (payload.spanIds ?? []) as string[]) {
-        statements.push(
-          mapStatement(
-            `DELETE FROM authorship_spans
+            [branchId, projectId],
+          );
+          if (!branch) throw new Error("AI branch is outside project");
+          const boardId = String(branch.board_id);
+          for (const id of (payload.spanIds ?? []) as string[]) {
+            statements.push(
+              mapStatement(
+                `DELETE FROM authorship_spans
               WHERE id = ? AND sticky_id IN (
                 SELECT id FROM map_stickies
                  WHERE board_id = ? AND ai_branch_id = ?
               )`,
-            [id, boardId, branchId],
-          ),
-        );
-      }
-      for (const id of (payload.stickyPositionIds ?? []) as string[]) {
-        statements.push(
-          mapStatement(
-            `DELETE FROM map_node_positions
+                [id, boardId, branchId],
+              ),
+            );
+          }
+          for (const id of (payload.stickyPositionIds ?? []) as string[]) {
+            statements.push(
+              mapStatement(
+                `DELETE FROM map_node_positions
               WHERE id = ? AND board_id = ? AND sticky_id IN (
                 SELECT id FROM map_stickies
                  WHERE board_id = ? AND ai_branch_id = ?
               )`,
-            [id, boardId, boardId, branchId],
-          ),
-        );
-      }
-      for (const id of (payload.stickyIds ?? []) as string[]) {
-        statements.push(
-          mapStatement(
-            `DELETE FROM map_stickies
+                [id, boardId, boardId, branchId],
+              ),
+            );
+          }
+          for (const id of (payload.stickyIds ?? []) as string[]) {
+            statements.push(
+              mapStatement(
+                `DELETE FROM map_stickies
               WHERE id = ? AND board_id = ? AND ai_branch_id = ?`,
-            [id, boardId, branchId],
-          ),
-        );
-      }
-      statements.push(
-        mapStatement(
-          "DELETE FROM map_ai_branches WHERE id = ? AND board_id = ?",
-          [branchId, boardId],
-        ),
-      );
-    } else if (kind === "extract-frame-to-codex") {
-      const boardId = String(payload.boardId);
-      const frameId = String(payload.frameId);
-      const stickyIds = (payload.stickyIds ?? []) as string[];
-      ensureBrowserMapBoardProject(boardId, projectId);
-      if (
-        !queryOne("SELECT 1 FROM map_frames WHERE id = ? AND board_id = ?", [
-          frameId,
-          boardId,
-        ])
-      ) {
-        throw new Error("map frame is stale");
-      }
-      for (const stickyId of stickyIds) {
-        if (
-          !queryOne(
-            "SELECT 1 FROM map_stickies WHERE id = ? AND board_id = ?",
-            [stickyId, boardId],
-          )
-        ) {
-          throw new Error("map frame contains a foreign sticky");
-        }
-      }
-      statements.push(
-        mapStatement(
-          `INSERT INTO codex_entries
+                [id, boardId, branchId],
+              ),
+            );
+          }
+          statements.push(
+            mapStatement(
+              "DELETE FROM map_ai_branches WHERE id = ? AND board_id = ?",
+              [branchId, boardId],
+            ),
+          );
+        } else if (kind === "extract-frame-to-codex") {
+          const boardId = String(payload.boardId);
+          const frameId = String(payload.frameId);
+          const codexId = String(payload.codexId);
+          const stickyIds = (payload.stickyIds ?? []) as string[];
+          const positions = (payload.positions ?? []) as BrowserMapRow[];
+          ensureBrowserMapBoardProject(boardId, projectId);
+          if (
+            !queryOne(
+              "SELECT 1 FROM map_frames WHERE id = ? AND board_id = ?",
+              [frameId, boardId],
+            )
+          ) {
+            throw new Error("map frame is stale");
+          }
+          for (const stickyId of stickyIds) {
+            if (
+              !queryOne(
+                "SELECT 1 FROM map_stickies WHERE id = ? AND board_id = ?",
+                [stickyId, boardId],
+              )
+            ) {
+              throw new Error("map frame contains a foreign sticky");
+            }
+          }
+          if (positions.length !== 1) {
+            throw new Error(
+              "frame extraction requires exactly one Codex map position",
+            );
+          }
+          const position = positions[0];
+          if (
+            String(position.boardId) !== boardId ||
+            String(position.nodeRefType) !== "codex" ||
+            String(position.codexEntryId) !== codexId ||
+            position.treeNodeId != null ||
+            position.snippetId != null ||
+            position.stickyId != null ||
+            position.aiBranchId != null
+          ) {
+            throw new Error(
+              "frame extraction position must reference the created Codex entry",
+            );
+          }
+          statements.push(
+            mapStatement(
+              `INSERT INTO codex_entries
             (id, project_id, type, name, content, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [
-            mapValue(payload, "codexId"),
-            projectId,
-            mapValue(payload, "codexType"),
-            mapValue(payload, "title"),
-            mapValue(payload, "content"),
-            mapValue(payload, "createdAt"),
-            mapValue(payload, "updatedAt"),
-          ],
-        ),
-      );
-      for (const stickyId of stickyIds) {
-        statements.push(
-          mapStatement(
-            `UPDATE authorship_spans
+              [
+                codexId,
+                projectId,
+                mapValue(payload, "codexType"),
+                mapValue(payload, "title"),
+                mapValue(payload, "content"),
+                mapValue(payload, "createdAt"),
+                mapValue(payload, "updatedAt"),
+              ],
+            ),
+          );
+          for (const stickyId of stickyIds) {
+            statements.push(
+              mapStatement(
+                `UPDATE authorship_spans
                 SET codex_entry_id = ?, sticky_id = NULL
               WHERE sticky_id = ?`,
-            [mapValue(payload, "codexId"), stickyId],
-          ),
-        );
-      }
-      for (const stickyId of stickyIds) {
-        statements.push(
-          mapStatement(
-            "DELETE FROM map_stickies WHERE id = ? AND board_id = ?",
-            [stickyId, boardId],
-          ),
-        );
-      }
-      statements.push(
-        mapStatement("DELETE FROM map_frames WHERE id = ? AND board_id = ?", [
-          frameId,
-          boardId,
-        ]),
-      );
-    } else {
-      throw new Error("unsupported map write kind");
-    }
+                [codexId, stickyId],
+              ),
+            );
+          }
+          for (const stickyId of stickyIds) {
+            statements.push(
+              mapStatement(
+                "DELETE FROM map_stickies WHERE id = ? AND board_id = ?",
+                [stickyId, boardId],
+              ),
+            );
+          }
+          statements.push(
+            mapStatement(
+              "DELETE FROM map_frames WHERE id = ? AND board_id = ?",
+              [frameId, boardId],
+            ),
+            browserMapPositionInsert(position, false),
+          );
+        } else if (kind === "promote-user-edge-to-codex-relation") {
+          const boardId = String(payload.boardId);
+          const edgeId = String(payload.edgeId);
+          const relationId = String(payload.relationId);
+          const fromCodexId = String(payload.fromCodexId);
+          const toCodexId = String(payload.toCodexId);
+          const relationType = normalizeRelationLabel(
+            String(payload.relationType),
+          );
+          const label = normalizeRelationLabel(String(payload.label));
+          const reuseExistingRelation = payload.reuseExistingRelation === true;
+          ensureBrowserMapBoardProject(boardId, projectId);
+          if (
+            !edgeId ||
+            !relationId ||
+            !fromCodexId ||
+            !toCodexId ||
+            !relationType ||
+            !label ||
+            fromCodexId === toCodexId
+          ) {
+            throw new Error("map relation promotion payload is invalid");
+          }
+          const authoritativeEdge = queryOne(
+            `SELECT edge.from_position_id, edge.to_position_id,
+                from_position.codex_entry_id AS from_codex_id,
+                to_position.codex_entry_id AS to_codex_id
+           FROM map_edges edge
+           JOIN map_node_positions from_position
+             ON from_position.id = edge.from_position_id
+            AND from_position.board_id = edge.board_id
+            AND from_position.node_ref_type = 'codex'
+           JOIN map_node_positions to_position
+             ON to_position.id = edge.to_position_id
+            AND to_position.board_id = edge.board_id
+            AND to_position.node_ref_type = 'codex'
+           JOIN codex_entries from_entry
+             ON from_entry.id = from_position.codex_entry_id
+            AND from_entry.project_id = ?
+           JOIN codex_entries to_entry
+             ON to_entry.id = to_position.codex_entry_id
+            AND to_entry.project_id = ?
+          WHERE edge.id = ? AND edge.board_id = ?`,
+            [projectId, projectId, edgeId, boardId],
+          );
+          if (
+            !authoritativeEdge ||
+            String(authoritativeEdge.from_codex_id) !== fromCodexId ||
+            String(authoritativeEdge.to_codex_id) !== toCodexId
+          ) {
+            throw new Error(
+              "map relation endpoints do not match the authoritative edge",
+            );
+          }
+          if (reuseExistingRelation) {
+            const existing = queryOne(
+              `SELECT 1
+             FROM codex_relations
+            WHERE id = ? AND project_id = ? AND relation_type = ?
+              AND ((from_codex_id = ? AND to_codex_id = ?)
+                OR (from_codex_id = ? AND to_codex_id = ?))`,
+              [
+                relationId,
+                projectId,
+                relationType,
+                fromCodexId,
+                toCodexId,
+                toCodexId,
+                fromCodexId,
+              ],
+            );
+            if (!existing) {
+              throw new Error(
+                "reused Codex relation is stale or outside the project",
+              );
+            }
+          } else {
+            const semanticKey = buildCodexRelationSemanticKey({
+              projectId,
+              fromCodexId,
+              toCodexId,
+              relationType,
+              directionality: "directed",
+              forwardLabel: label,
+              inverseLabel: null,
+            });
+            statements.push(
+              mapStatement(
+                `INSERT INTO codex_relations
+              (id, project_id, from_codex_id, to_codex_id, relation_type,
+               label, directionality, inverse_label, semantic_key, version,
+               source_map_edge_id, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'directed', NULL, ?, 1, ?, ?, ?)`,
+                [
+                  relationId,
+                  projectId,
+                  fromCodexId,
+                  toCodexId,
+                  relationType,
+                  label,
+                  semanticKey,
+                  edgeId,
+                  mapValue(payload, "createdAt"),
+                  mapValue(payload, "updatedAt"),
+                ],
+              ),
+            );
+          }
+          statements.push(
+            mapStatement(
+              "DELETE FROM map_edges WHERE id = ? AND board_id = ?",
+              [edgeId, boardId],
+            ),
+          );
+        } else {
+          throw new Error("unsupported map write kind");
+        }
 
-    handleDbExecuteBatch({ statements });
+        const beforeFeedState = captureBrowserMapFeedState(
+          payload,
+          kind,
+          projectId,
+        );
+        for (const statement of statements) {
+          executeBrowserDbStatement(db, statement.sql, statement.params);
+        }
+        const afterFeedState = captureBrowserMapFeedState(
+          payload,
+          kind,
+          projectId,
+        );
+        const undoJournalId = identity.undoJournalId ?? identity.requestId;
+        if (identity.origin !== "undo" && identity.origin !== "redo") {
+          db.run(
+            `INSERT INTO undo_journal
+              (id, project_id, surface, entity_kind, entity_id, op_kind,
+               before_json, after_json, base_version, result_version,
+               change_event_uid, created_at)
+             VALUES (?, ?, 'map', ?, ?, ?, ?, ?, 0, 1, ?, ?)`,
+            [
+              undoJournalId,
+              projectId,
+              entityType,
+              entityId,
+              kind,
+              browserMapFeedStateJson(beforeFeedState),
+              browserMapFeedStateJson(afterFeedState),
+              identity.eventUid,
+              now,
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error("map undo journal was not persisted");
+          }
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId,
+          occurredAt: now,
+          events: browserMapFeedEvents(
+            payload,
+            kind,
+            beforeFeedState,
+            afterFeedState,
+          ),
+        });
+        const response = {
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: "map_write_bundle",
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original Map aggregate failure.
+        }
+        throw error;
+      }
+    });
   }
 
   const browserSnapshotRestoreTables = new Set<string>([
@@ -7466,6 +14973,547 @@ export async function createBrowserMock(
     return (
       (AUX_SCOPE_OWNER as Partial<Record<string, RestoreScope>>)[table] ?? null
     );
+  }
+
+  type BrowserSnapshotInsertPlan = {
+    table: string;
+    row: RawRow;
+    mode: "insert" | "replace";
+  };
+
+  function browserSnapshotRawRow(
+    table: string,
+    row: Record<string, SqlValue>,
+  ): RawRow {
+    return Object.fromEntries(
+      Object.entries(row).map(([column, value]) => {
+        if (
+          value !== null &&
+          typeof value !== "string" &&
+          typeof value !== "number"
+        ) {
+          throw new Error(
+            `project snapshot '${table}' row column '${column}' is not a SQLite scalar`,
+          );
+        }
+        return [column, value];
+      }),
+    );
+  }
+
+  function browserSnapshotAuxRows(
+    snapshotId: string,
+    scope: AuxScope,
+  ): RawRow[] {
+    const captured = queryOne(
+      "SELECT payload_json FROM project_snapshot_aux WHERE snapshot_id = ? AND scope = ?",
+      [snapshotId, scope],
+    );
+    if (!captured) return [];
+    const payload = JSON.parse(String(captured.payload_json)) as {
+      rows?: RawRow[];
+    };
+    if (!Array.isArray(payload.rows)) {
+      throw new Error(`project snapshot '${scope}' payload has no rows`);
+    }
+    return payload.rows;
+  }
+
+  function browserSnapshotCanonicalPlan(
+    projectId: string,
+    snapshotId: string,
+    scopes: ReadonlySet<RestoreScope>,
+  ): BrowserSnapshotInsertPlan[] {
+    const liveTables = new Set(
+      queryAll(
+        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
+        [],
+      ).map((row) => String(row.name)),
+    );
+    const liveIds = (sql: string): Set<string> =>
+      new Set(queryAll(sql, [projectId]).map((row) => String(row.id)));
+    const liveCodexIds = liveIds(
+      "SELECT id FROM codex_entries WHERE project_id = ?",
+    );
+    const liveCodexPhaseIds = liveIds(
+      "SELECT id FROM codex_entry_phases WHERE entry_id IN (SELECT id FROM codex_entries WHERE project_id = ?)",
+    );
+    const liveTreeNodeIds = liveIds(
+      "SELECT id FROM tree_nodes WHERE project_id = ?",
+    );
+    const liveSnippetIds = liveIds(
+      "SELECT id FROM snippets WHERE project_id = ?",
+    );
+    const liveEventIds = liveIds("SELECT id FROM events WHERE project_id = ?");
+    const liveCodexTagIds = liveIds(
+      "SELECT id FROM codex_tags WHERE project_id = ?",
+    );
+    const contentById = new Map(
+      queryAll(
+        `SELECT id, content FROM content_versions
+          WHERE id IN (
+                SELECT body_version_id FROM project_snapshot_tree_nodes
+                 WHERE snapshot_id = ? AND body_version_id IS NOT NULL
+                UNION
+                SELECT body_version_id FROM project_snapshot_codex_entries
+                 WHERE snapshot_id = ? AND body_version_id IS NOT NULL
+                UNION
+                SELECT body_version_id FROM project_snapshot_snippets
+                 WHERE snapshot_id = ? AND body_version_id IS NOT NULL
+          )`,
+        [snapshotId, snapshotId, snapshotId],
+      ).map((row) => [String(row.id), String(row.content)]),
+    );
+    const aux = new Map<AuxScope, RawRow[]>();
+    for (const scope of AUX_SCOPES) {
+      if (scopes.has(AUX_SCOPE_OWNER[scope])) {
+        aux.set(scope, browserSnapshotAuxRows(snapshotId, scope));
+      }
+    }
+    const take = (scope: AuxScope): RawRow[] => {
+      const rows = aux.get(scope) ?? [];
+      aux.delete(scope);
+      return rows;
+    };
+    const inserts: BrowserSnapshotInsertPlan[] = [];
+    const push = (
+      table: string,
+      rows: RawRow[],
+      mode: "insert" | "replace" = "insert",
+    ): void => {
+      if (!liveTables.has(table)) return;
+      for (const row of rows) inserts.push({ table, row, mode });
+    };
+    const bodyContent = (row: RawRow): string =>
+      row.body_version_id == null
+        ? "{}"
+        : (contentById.get(String(row.body_version_id)) ?? "{}");
+
+    if (scopes.has("codex")) {
+      push("codex_types", take("codex_types"), "replace");
+      push(
+        "codex_entries",
+        queryAll(
+          "SELECT * FROM project_snapshot_codex_entries WHERE snapshot_id = ? ORDER BY entry_id",
+          [snapshotId],
+        )
+          .map((row) => browserSnapshotRawRow("codex_entries", row))
+          .map((row) => ({
+            id: row.entry_id,
+            project_id: projectId,
+            parent_id: row.parent_id ?? null,
+            type: row.type,
+            name: row.name,
+            aliases: row.aliases ?? null,
+            excluded_aliases: row.excluded_aliases ?? null,
+            summary: row.summary ?? null,
+            content: bodyContent(row),
+            icon: row.icon ?? null,
+            tags_cache: null,
+            context_mode: row.context_mode,
+            children_budget: row.children_budget,
+            source_chat_message_id: null,
+            notes: row.notes ?? null,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          })),
+      );
+      for (const scope of [
+        "codex_tags",
+        "codex_detail_definitions",
+        "codex_detail_semantic_bindings",
+        "codex_entry_tags",
+        "codex_detail_values",
+        "codex_entry_phases",
+        "codex_phase_detail_overrides",
+        "codex_quick_pins",
+        "codex_dismissed_relations",
+        "codex_relations",
+      ] as const) {
+        push(scope, take(scope));
+      }
+    }
+
+    if (scopes.has("body")) {
+      push(
+        "tree_nodes",
+        queryAll(
+          "SELECT * FROM project_snapshot_tree_nodes WHERE snapshot_id = ? ORDER BY node_id",
+          [snapshotId],
+        )
+          .map((row) => browserSnapshotRawRow("tree_nodes", row))
+          .map((row) => {
+            const povId =
+              row.pov_character_id == null
+                ? null
+                : String(row.pov_character_id);
+            const locationId =
+              row.location_id == null ? null : String(row.location_id);
+            return {
+              id: row.node_id,
+              project_id: projectId,
+              parent_id: row.parent_id ?? null,
+              node_type: row.node_type,
+              title: row.title,
+              synopsis: row.synopsis ?? null,
+              intent: row.intent ?? null,
+              sort_order: row.sort_order,
+              story_time_order: row.story_time_order ?? null,
+              story_time_label: row.story_time_label ?? null,
+              pov_character_id:
+                scopes.has("codex") || povId === null || liveCodexIds.has(povId)
+                  ? povId
+                  : null,
+              location_id:
+                scopes.has("codex") ||
+                locationId === null ||
+                liveCodexIds.has(locationId)
+                  ? locationId
+                  : null,
+              chronicle_start_time: row.chronicle_start_time ?? null,
+              chronicle_start_minute: row.chronicle_start_minute ?? null,
+              chronicle_start_granularity:
+                row.chronicle_start_granularity ?? "none",
+              chronicle_end_time: row.chronicle_end_time ?? null,
+              chronicle_end_minute: row.chronicle_end_minute ?? null,
+              chronicle_end_granularity:
+                row.chronicle_end_granularity ?? "none",
+              chronicle_precision: row.chronicle_precision ?? "exact",
+              status: row.status ?? null,
+              content: bodyContent(row),
+              unplaced_beats_doc: row.unplaced_beats_doc ?? "[]",
+              char_count: row.char_count ?? 0,
+              unplaced_beat_preview: null,
+              placed_beat_preview: null,
+              created_at: row.created_at,
+              updated_at: row.updated_at,
+            };
+          }),
+      );
+      for (const scope of [
+        "authorship_spans",
+        "post_effect_annotations",
+        "post_effect_annotation_relations",
+      ] as const) {
+        push(scope, take(scope));
+      }
+      for (const [scope, reference] of [
+        ["scene_codex_pins", "entry_id"],
+        ["scene_codex_mentions", "codex_entry_id"],
+        ["scene_beat_pov_cache", "pov_character_id"],
+      ] as const) {
+        push(
+          scope,
+          take(scope).filter(
+            (row) =>
+              scopes.has("codex") ||
+              typeof row[reference] !== "string" ||
+              liveCodexIds.has(row[reference]),
+          ),
+        );
+      }
+      for (const scope of [
+        "plot_threads",
+        "plot_thread_scene_links",
+        "plot_thread_branches",
+      ] as const) {
+        push(scope, take(scope));
+      }
+      push(
+        "events",
+        take("events").map((row) => {
+          const normalized = { ...row };
+          if (!scopes.has("codex")) {
+            for (const field of [
+              "primary_codex_id",
+              "location_codex_id",
+            ] as const) {
+              if (
+                typeof normalized[field] === "string" &&
+                !liveCodexIds.has(normalized[field])
+              ) {
+                normalized[field] = null;
+              }
+            }
+          }
+          return normalized;
+        }),
+      );
+      push("scene_events", take("scene_events"));
+      push(
+        "event_participants",
+        take("event_participants").filter(
+          (row) =>
+            scopes.has("codex") ||
+            typeof row.codex_entry_id !== "string" ||
+            liveCodexIds.has(row.codex_entry_id),
+        ),
+      );
+      push("event_relations", take("event_relations"));
+      push("project_calendar", take("project_calendar"));
+    }
+
+    if (scopes.has("snippet")) {
+      push(
+        "snippets",
+        queryAll(
+          "SELECT * FROM project_snapshot_snippets WHERE snapshot_id = ? ORDER BY snippet_id",
+          [snapshotId],
+        )
+          .map((row) => browserSnapshotRawRow("snippets", row))
+          .map((row) => {
+            const sceneId = row.scene_id == null ? null : String(row.scene_id);
+            return {
+              id: row.snippet_id,
+              project_id: projectId,
+              title: row.title,
+              scene_id:
+                scopes.has("body") ||
+                sceneId === null ||
+                liveTreeNodeIds.has(sceneId)
+                  ? sceneId
+                  : null,
+              source_chat_message_id: row.source_chat_message_id ?? null,
+              content: bodyContent(row),
+              source_marker: null,
+              created_at: row.created_at,
+              updated_at: row.updated_at,
+            };
+          }),
+      );
+      push(
+        "snippet_entry_tags",
+        take("snippet_entry_tags").filter(
+          (row) =>
+            scopes.has("codex") ||
+            typeof row.tag_id !== "string" ||
+            liveCodexTagIds.has(row.tag_id),
+        ),
+      );
+    }
+
+    if (scopes.has("labels")) {
+      push("labels", take("labels"));
+      push(
+        "tree_node_labels",
+        take("tree_node_labels").filter(
+          (row) =>
+            scopes.has("body") ||
+            (typeof row.node_id === "string" &&
+              liveTreeNodeIds.has(row.node_id)),
+        ),
+      );
+    }
+
+    if (scopes.has("foreshadow")) {
+      push(
+        "foreshadows",
+        take("foreshadows").map((row) => ({
+          ...row,
+          payoff_scene_id:
+            !scopes.has("body") &&
+            typeof row.payoff_scene_id === "string" &&
+            !liveTreeNodeIds.has(row.payoff_scene_id)
+              ? null
+              : row.payoff_scene_id,
+        })),
+      );
+      const setupRows = take("foreshadow_setups").filter(
+        (row) =>
+          scopes.has("body") ||
+          (typeof row.scene_id === "string" &&
+            liveTreeNodeIds.has(row.scene_id)),
+      );
+      const payoffRows = take("foreshadow_payoffs").filter(
+        (row) =>
+          scopes.has("body") ||
+          (typeof row.scene_id === "string" &&
+            liveTreeNodeIds.has(row.scene_id)),
+      );
+      const setupIds = new Set(
+        setupRows.map((row) => String(row.id)).filter(Boolean),
+      );
+      const payoffIds = new Set(
+        payoffRows.map((row) => String(row.id)).filter(Boolean),
+      );
+      push("foreshadow_setups", setupRows);
+      push("foreshadow_payoffs", payoffRows);
+      push(
+        "foreshadow_setup_payoff_links",
+        take("foreshadow_setup_payoff_links").filter(
+          (row) =>
+            typeof row.setup_id === "string" &&
+            typeof row.payoff_id === "string" &&
+            setupIds.has(row.setup_id) &&
+            payoffIds.has(row.payoff_id),
+        ),
+      );
+      push(
+        "foreshadow_codex_links",
+        take("foreshadow_codex_links").filter(
+          (row) =>
+            scopes.has("codex") ||
+            typeof row.codex_entry_id !== "string" ||
+            liveCodexIds.has(row.codex_entry_id),
+        ),
+      );
+    }
+
+    if (scopes.has("map")) {
+      for (const scope of [
+        "map_boards",
+        "map_ai_branches",
+        "map_stickies",
+      ] as const) {
+        push(scope, take(scope));
+      }
+      push(
+        "editor_stickies",
+        take("editor_stickies").filter((row) => {
+          const missing = [
+            ["body", "tree_node_id", liveTreeNodeIds],
+            ["codex", "codex_entry_id", liveCodexIds],
+            ["codex", "phase_id", liveCodexPhaseIds],
+            ["snippet", "snippet_id", liveSnippetIds],
+            ["body", "chronicle_event_id", liveEventIds],
+          ] as const;
+          return !missing.some(
+            ([owner, field, ids]) =>
+              !scopes.has(owner) &&
+              typeof row[field] === "string" &&
+              !ids.has(row[field]),
+          );
+        }),
+      );
+      push("map_frames", take("map_frames"));
+      push(
+        "map_node_positions",
+        take("map_node_positions").map((row) => ({
+          ...row,
+          tree_node_id:
+            !scopes.has("body") &&
+            typeof row.tree_node_id === "string" &&
+            !liveTreeNodeIds.has(row.tree_node_id)
+              ? null
+              : row.tree_node_id,
+          codex_entry_id:
+            !scopes.has("codex") &&
+            typeof row.codex_entry_id === "string" &&
+            !liveCodexIds.has(row.codex_entry_id)
+              ? null
+              : row.codex_entry_id,
+        })),
+      );
+      push("map_edges", take("map_edges"));
+    }
+
+    if (scopes.has("lint")) {
+      push("lint_term_dictionary", take("lint_term_dictionary"));
+      push(
+        "lint_ignored_diagnostics",
+        take("lint_ignored_diagnostics").filter(
+          (row) =>
+            scopes.has("body") ||
+            (typeof row.scene_id === "string" &&
+              liveTreeNodeIds.has(row.scene_id)),
+        ),
+      );
+    }
+
+    return inserts;
+  }
+
+  function browserSnapshotPrimaryKey(table: string, row: RawRow): string {
+    const columns = queryAll(`PRAGMA table_info("${table}")`, [])
+      .filter((column) => Number(column.pk) > 0)
+      .sort((left, right) => Number(left.pk) - Number(right.pk))
+      .map((column) => String(column.name));
+    if (columns.length === 0) {
+      throw new Error(
+        `project snapshot restore table '${table}' has no primary key`,
+      );
+    }
+    return JSON.stringify(
+      columns.map((column) => {
+        if (!(column in row)) {
+          throw new Error(
+            `project snapshot insert for '${table}' is missing primary key '${column}'`,
+          );
+        }
+        return row[column];
+      }),
+    );
+  }
+
+  function browserNormalizedSnapshotInsert(
+    insert: BrowserSnapshotInsertPlan,
+  ): string {
+    const row = { ...insert.row };
+    if (insert.table === "scene_events") {
+      row.incarnation_token = "<native-generated>";
+    }
+    if (insert.table === "project_calendar") {
+      row.version = "<native-generated>";
+      row.updated_at = "<native-generated>";
+    }
+    const orderedRow = Object.fromEntries(
+      Object.entries(row).sort(([left], [right]) => left.localeCompare(right)),
+    );
+    return JSON.stringify({ mode: insert.mode, row: orderedRow });
+  }
+
+  function browserValidateSnapshotRestorePlan(
+    projectId: string,
+    snapshotId: string,
+    scopes: ReadonlySet<RestoreScope>,
+    incoming: BrowserSnapshotInsertPlan[],
+  ): BrowserSnapshotInsertPlan[] {
+    const canonical = browserSnapshotCanonicalPlan(
+      projectId,
+      snapshotId,
+      scopes,
+    );
+    const toMap = (
+      inserts: BrowserSnapshotInsertPlan[],
+      source: "canonical" | "renderer",
+    ): Map<string, string> => {
+      const rows = new Map<string, string>();
+      for (const insert of inserts) {
+        const key = `${insert.table}:${browserSnapshotPrimaryKey(
+          insert.table,
+          insert.row,
+        )}`;
+        if (rows.has(key)) {
+          throw new Error(
+            `project snapshot ${source} plan contains a duplicate '${insert.table}' row`,
+          );
+        }
+        rows.set(key, browserNormalizedSnapshotInsert(insert));
+      }
+      return rows;
+    };
+    const expected = toMap(canonical, "canonical");
+    const actual = toMap(incoming, "renderer");
+    const missing = [...expected.keys()].filter((key) => !actual.has(key));
+    if (missing.length > 0) {
+      throw new Error(
+        `project snapshot restore plan omits owned snapshot rows: ${missing.join(", ")}`,
+      );
+    }
+    const extra = [...actual.keys()].filter((key) => !expected.has(key));
+    if (extra.length > 0) {
+      throw new Error(
+        `project snapshot restore plan contains rows outside the owned snapshot: ${extra.join(", ")}`,
+      );
+    }
+    for (const [key, expectedRow] of expected) {
+      if (actual.get(key) !== expectedRow) {
+        throw new Error(
+          `project snapshot restore row '${key}' does not match the owned snapshot`,
+        );
+      }
+    }
+    return canonical;
   }
 
   function browserSnapshotInsertStatement(
@@ -7678,16 +15726,702 @@ export async function createBrowserMock(
     };
   }
 
-  function handleProjectSnapshotApplyRestore(
-    args: Record<string, unknown>,
-  ): void {
-    const payload = browserSnapshotPayload(
-      args,
-      "project_snapshot_apply_restore",
+  type BrowserSnapshotFeedState = {
+    objectKey: Record<string, unknown>;
+    rows: Map<string, RawRow>;
+    canonicalSnapshot: unknown;
+    version: number | null;
+    hasRootVersion: boolean;
+    changeKind: BrowserNarrativeChangeEventInput["changeKind"];
+  };
+
+  function browserSnapshotComponent(
+    componentKind: string,
+    id: string,
+  ): Record<string, unknown> {
+    return { kind: "component", componentId: `${componentKind}:${id}` };
+  }
+
+  function browserSnapshotRequiredRowId(
+    table: string,
+    row: RawRow,
+    field: string,
+  ): string {
+    const value = row[field];
+    if (typeof value !== "string" || value.length === 0) {
+      throw new Error(
+        `project snapshot Feed row '${table}.${field}' has no identity`,
+      );
+    }
+    return value;
+  }
+
+  function browserSnapshotFeedObjectKeys(
+    table: string,
+    row: RawRow,
+  ): Array<{ objectKey: Record<string, unknown>; root: boolean }> {
+    const one = (objectKey: Record<string, unknown>, root: boolean) => [
+      { objectKey, root },
+    ];
+    const id = (field = "id") =>
+      browserSnapshotRequiredRowId(table, row, field);
+    switch (table) {
+      case "tree_nodes":
+        return row.node_type === "scene"
+          ? one({ kind: "scene", sceneId: id() }, true)
+          : one(browserSnapshotComponent("tree-node", id()), true);
+      case "codex_entries":
+        return one({ kind: "codex-entry", entryId: id() }, true);
+      case "codex_relations":
+        return one({ kind: "codex-relation", relationId: id() }, true);
+      case "codex_entry_phases":
+        return one({ kind: "codex-phase", phaseId: id() }, true);
+      case "plot_threads":
+        return one({ kind: "plot-thread", threadId: id() }, true);
+      case "events":
+        return one({ kind: "chronicle-event", eventId: id() }, true);
+      case "project_calendar":
+        return one({ kind: "calendar", calendarRef: id("project_id") }, true);
+      case "foreshadows":
+        return one({ kind: "foreshadow", foreshadowId: id() }, true);
+      case "snippets":
+        return one(browserSnapshotComponent("snippet", id()), true);
+      case "codex_types":
+        return one(browserSnapshotComponent("codex-type", id()), true);
+      case "codex_tags":
+        return one(browserSnapshotComponent("codex-tag", id()), true);
+      case "codex_detail_definitions":
+        return one(
+          { kind: "codex-detail-definition", definitionId: id() },
+          true,
+        );
+      case "codex_detail_semantic_bindings":
+        return one(
+          browserSnapshotComponent("codex_semantic_binding", id()),
+          true,
+        );
+      case "codex_detail_values":
+        return one({ kind: "codex-detail-value", valueId: id() }, true);
+      case "codex_entry_tags":
+      case "codex_quick_pins":
+      case "codex_dismissed_relations":
+        return one({ kind: "codex-entry", entryId: id("entry_id") }, false);
+      case "codex_phase_detail_overrides":
+        return one({ kind: "codex-phase", phaseId: id("phase_id") }, false);
+      case "snippet_entry_tags":
+        return one(
+          browserSnapshotComponent("snippet", id("snippet_id")),
+          false,
+        );
+      case "labels":
+        return one(browserSnapshotComponent("label", id()), true);
+      case "tree_node_labels": {
+        const nodeId = id("node_id");
+        const node = queryOne("SELECT node_type FROM tree_nodes WHERE id = ?", [
+          nodeId,
+        ]);
+        return node?.node_type === "scene"
+          ? one({ kind: "scene", sceneId: nodeId }, false)
+          : one(browserSnapshotComponent("tree-node", nodeId), false);
+      }
+      case "scene_codex_pins":
+      case "scene_codex_mentions":
+      case "scene_beat_pov_cache":
+      case "post_effect_annotations":
+      case "lint_ignored_diagnostics":
+        return one({ kind: "scene", sceneId: id("scene_id") }, false);
+      case "foreshadow_setups":
+        return one({ kind: "foreshadow-setup", setupId: id() }, true);
+      case "foreshadow_payoffs":
+        return one({ kind: "foreshadow-payoff", payoffId: id() }, true);
+      case "foreshadow_setup_payoff_links":
+        return [
+          {
+            objectKey: { kind: "foreshadow-setup", setupId: id("setup_id") },
+            root: false,
+          },
+          {
+            objectKey: {
+              kind: "foreshadow-payoff",
+              payoffId: id("payoff_id"),
+            },
+            root: false,
+          },
+        ];
+      case "foreshadow_codex_links":
+        return one(
+          { kind: "foreshadow", foreshadowId: id("foreshadow_id") },
+          false,
+        );
+      case "plot_thread_scene_links":
+        return one({ kind: "plot-marker", markerId: id() }, true);
+      case "plot_thread_branches":
+        return one({ kind: "plot-branch", branchId: id() }, true);
+      case "scene_events":
+      case "event_participants":
+        return one({ kind: "chronicle-event", eventId: id("event_id") }, false);
+      case "event_relations": {
+        const cause = id("cause_event_id");
+        const effect = id("effect_event_id");
+        return [
+          {
+            objectKey: { kind: "chronicle-event", eventId: cause },
+            root: false,
+          },
+          ...(effect === cause
+            ? []
+            : [
+                {
+                  objectKey: { kind: "chronicle-event", eventId: effect },
+                  root: false,
+                },
+              ]),
+        ];
+      }
+      case "map_boards":
+        return one(browserSnapshotComponent("map-board", id()), true);
+      case "map_ai_branches":
+        return one(browserSnapshotComponent("map-ai-branch", id()), true);
+      case "map_stickies":
+        return one(browserSnapshotComponent("map-sticky", id()), true);
+      case "editor_stickies":
+        return one(browserSnapshotComponent("editor-sticky", id()), true);
+      case "map_frames":
+        return one(browserSnapshotComponent("map-frame", id()), true);
+      case "map_node_positions":
+        return one(browserSnapshotComponent("map-position", id()), true);
+      case "map_edges":
+        return one(browserSnapshotComponent("map-edge", id()), true);
+      case "lint_term_dictionary":
+        return one(browserSnapshotComponent("lint-term", id()), true);
+      case "generation_logs":
+        return typeof row.scene_node_id === "string"
+          ? one({ kind: "scene", sceneId: row.scene_node_id }, false)
+          : one(browserSnapshotComponent("generation-log", id()), true);
+      case "post_effect_annotation_relations":
+        return one(
+          browserSnapshotComponent("post-effect-relation", id()),
+          true,
+        );
+      case "authorship_spans": {
+        for (const [field, kind] of [
+          ["node_id", "scene"],
+          ["codex_entry_id", "codex-entry"],
+          ["snippet_id", "snippet"],
+          ["detail_value_id", "codex_detail_value"],
+          ["sticky_id", "map-sticky"],
+        ] as const) {
+          const ownerId = row[field];
+          if (typeof ownerId !== "string") continue;
+          if (kind === "scene") {
+            return one({ kind: "scene", sceneId: ownerId }, false);
+          }
+          if (kind === "codex-entry") {
+            return one({ kind: "codex-entry", entryId: ownerId }, false);
+          }
+          if (kind === "codex_detail_value") {
+            return one({ kind: "codex-detail-value", valueId: ownerId }, false);
+          }
+          return one(browserSnapshotComponent(kind, ownerId), false);
+        }
+        return one(browserSnapshotComponent("authorship-span", id()), true);
+      }
+      default:
+        throw new Error(`unsupported project snapshot Feed table '${table}'`);
+    }
+  }
+
+  function browserSnapshotFeedChangeKind(
+    table: string,
+  ): BrowserNarrativeChangeEventInput["changeKind"] {
+    if (
+      [
+        "tree_nodes",
+        "authorship_spans",
+        "generation_logs",
+        "post_effect_annotations",
+      ].includes(table)
+    ) {
+      return "content";
+    }
+    if (table === "project_calendar") return "calendar";
+    if (["lint_term_dictionary", "lint_ignored_diagnostics"].includes(table)) {
+      return "policy";
+    }
+    if (
+      [
+        "plot_thread_scene_links",
+        "plot_thread_branches",
+        "scene_events",
+        "event_participants",
+        "event_relations",
+        "codex_entry_tags",
+        "snippet_entry_tags",
+        "tree_node_labels",
+        "foreshadow_setup_payoff_links",
+        "foreshadow_codex_links",
+        "map_node_positions",
+        "map_edges",
+      ].includes(table)
+    ) {
+      return "association";
+    }
+    return "metadata";
+  }
+
+  function browserSnapshotMergeChangeKind(
+    current: BrowserNarrativeChangeEventInput["changeKind"],
+    incoming: BrowserNarrativeChangeEventInput["changeKind"],
+  ): BrowserNarrativeChangeEventInput["changeKind"] {
+    const rank = (kind: BrowserNarrativeChangeEventInput["changeKind"]) =>
+      kind === "content"
+        ? 4
+        : kind === "calendar" || kind === "policy"
+          ? 3
+          : kind === "association"
+            ? 2
+            : 1;
+    return rank(incoming) > rank(current) ? incoming : current;
+  }
+
+  function captureBrowserSnapshotFeedState(
+    projectId: string,
+    scopes: ReadonlySet<RestoreScope>,
+  ): Map<string, BrowserSnapshotFeedState> {
+    const tables: Array<{
+      table: string;
+      where: string;
+      binds: number;
+    }> = [];
+    if (scopes.has("body")) {
+      tables.push({ table: "tree_nodes", where: "project_id = ?", binds: 1 });
+    }
+    if (scopes.has("codex")) {
+      tables.push({
+        table: "codex_entries",
+        where: "project_id = ?",
+        binds: 1,
+      });
+    }
+    if (scopes.has("snippet")) {
+      tables.push({ table: "snippets", where: "project_id = ?", binds: 1 });
+    }
+    for (const scope of AUX_SCOPES) {
+      if (!scopes.has(AUX_SCOPE_OWNER[scope])) continue;
+      tables.push({
+        table: AUX_TABLE[scope],
+        where: AUX_PROJECT_FILTER[scope].where,
+        binds: AUX_PROJECT_FILTER[scope].binds,
+      });
+    }
+    const state = new Map<string, BrowserSnapshotFeedState>();
+    for (const { table, where, binds } of tables) {
+      let rowsForTable: Record<string, SqlValue>[];
+      try {
+        rowsForTable = queryAll(
+          `SELECT * FROM "${table}" WHERE ${where}`,
+          Array<SqlValue>(binds).fill(projectId),
+        );
+      } catch {
+        continue;
+      }
+      rowsForTable.sort((left, right) =>
+        browserSnapshotPrimaryKey(table, left as RawRow).localeCompare(
+          browserSnapshotPrimaryKey(table, right as RawRow),
+        ),
+      );
+      for (const raw of rowsForTable) {
+        const row = raw as RawRow;
+        const rowToken = `${table}:${browserSnapshotPrimaryKey(table, row)}`;
+        const rowVersion =
+          typeof row.version === "number" && Number.isSafeInteger(row.version)
+            ? row.version
+            : null;
+        for (const { objectKey, root } of browserSnapshotFeedObjectKeys(
+          table,
+          row,
+        )) {
+          const token = JSON.stringify(objectKey);
+          const existing = state.get(token);
+          if (!existing) {
+            state.set(token, {
+              objectKey,
+              rows: new Map([[rowToken, { ...row }]]),
+              canonicalSnapshot: null,
+              version: rowVersion,
+              hasRootVersion: root && rowVersion !== null,
+              changeKind: browserSnapshotFeedChangeKind(table),
+            });
+            continue;
+          }
+          existing.changeKind = browserSnapshotMergeChangeKind(
+            existing.changeKind,
+            browserSnapshotFeedChangeKind(table),
+          );
+          if ((root || !existing.hasRootVersion) && rowVersion !== null) {
+            existing.version = rowVersion;
+            existing.hasRootVersion = root;
+          }
+          existing.rows.set(rowToken, { ...row });
+        }
+      }
+    }
+    for (const object of state.values()) {
+      object.canonicalSnapshot = browserSnapshotCanonicalState(
+        projectId,
+        object,
+      );
+      if (
+        isRecord(object.canonicalSnapshot) &&
+        typeof object.canonicalSnapshot.version === "number" &&
+        Number.isSafeInteger(object.canonicalSnapshot.version)
+      ) {
+        object.version = object.canonicalSnapshot.version;
+      }
+    }
+    return state;
+  }
+
+  function browserSnapshotGroupedState(
+    state: BrowserSnapshotFeedState,
+  ): Record<string, unknown> {
+    return {
+      objectKey: state.objectKey,
+      rows: [...state.rows.entries()].map(([identity, row]) => ({
+        identity,
+        row,
+      })),
+    };
+  }
+
+  function browserSnapshotRootRow(
+    state: BrowserSnapshotFeedState,
+    table: string,
+  ): RawRow | null {
+    for (const [identity, row] of state.rows) {
+      if (identity.startsWith(`${table}:`)) return { ...row };
+    }
+    return null;
+  }
+
+  function loadBrowserCodexDetailValueSnapshot(
+    valueId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const row = queryOne(
+      `SELECT value.id, value.entry_id AS entryId,
+              value.definition_id AS definitionId, value.value,
+              value.version, value.created_at AS createdAt,
+              value.updated_at AS updatedAt
+         FROM codex_detail_values value
+         JOIN codex_entries entry ON entry.id = value.entry_id
+         JOIN codex_detail_definitions definition
+           ON definition.id = value.definition_id
+        WHERE value.id = ? AND entry.project_id = ?
+          AND definition.project_id = ?`,
+      [valueId, projectId, projectId],
     );
-    const projectId = String(payload.projectId);
-    const snapshotId = String(payload.snapshotId);
+    return row
+      ? {
+          id: String(row.id),
+          entryId: String(row.entryId),
+          definitionId: String(row.definitionId),
+          value: row.value == null ? null : String(row.value),
+          version: Number(row.version),
+          createdAt: String(row.createdAt),
+          updatedAt: String(row.updatedAt),
+        }
+      : null;
+  }
+
+  function loadBrowserPlotMarkerSnapshot(
+    markerId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const row = queryOne(
+      `SELECT marker.*
+         FROM plot_thread_scene_links marker
+         JOIN plot_threads thread ON thread.id = marker.thread_id
+        WHERE marker.id = ? AND thread.project_id = ?`,
+      [markerId, projectId],
+    );
+    return row ?? null;
+  }
+
+  function loadBrowserPlotBranchSnapshot(
+    branchId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    return (
+      queryOne(
+        `SELECT * FROM plot_thread_branches
+          WHERE id = ? AND project_id = ?`,
+        [branchId, projectId],
+      ) ?? null
+    );
+  }
+
+  function loadBrowserForeshadowChildSnapshot(
+    kind: "setup" | "payoff",
+    childId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const table = kind === "setup" ? "foreshadow_setups" : "foreshadow_payoffs";
+    const row = queryOne(
+      `SELECT child.*
+         FROM ${table} child
+         JOIN foreshadows root ON root.id = child.foreshadow_id
+        WHERE child.id = ? AND root.project_id = ?`,
+      [childId, projectId],
+    );
+    return row ?? null;
+  }
+
+  function browserSnapshotDetailDefinitionState(
+    definitionId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const row = queryOne(
+      `SELECT type_slug AS typeSlug, name, field_type AS fieldType,
+              field_config AS fieldConfig, sort_order AS sortOrder,
+              include_in_context AS includeInContext, version
+         FROM codex_detail_definitions
+        WHERE id = ? AND project_id = ?`,
+      [definitionId, projectId],
+    );
+    return row
+      ? {
+          typeSlug: String(row.typeSlug),
+          name: String(row.name),
+          fieldType: String(row.fieldType),
+          fieldConfig: row.fieldConfig == null ? null : String(row.fieldConfig),
+          sortOrder: Number(row.sortOrder),
+          includeInContext: Number(row.includeInContext),
+          version: Number(row.version),
+        }
+      : null;
+  }
+
+  function browserSnapshotCanonicalState(
+    projectId: string,
+    state: BrowserSnapshotFeedState,
+  ): unknown {
+    const kind = state.objectKey.kind;
+    let canonical: unknown = null;
+    if (kind === "scene") {
+      canonical = browserTreeNodeRow(
+        String(state.objectKey.sceneId),
+        projectId,
+      );
+    } else if (kind === "codex-entry") {
+      const snapshot = loadBrowserCodexEntrySnapshot(
+        String(state.objectKey.entryId),
+        projectId,
+      );
+      canonical = snapshot ? browserCanonicalCodexEntryState(snapshot) : null;
+    } else if (kind === "codex-relation") {
+      canonical = loadBrowserCodexRelationFeedState(
+        String(state.objectKey.relationId),
+        projectId,
+      );
+    } else if (kind === "codex-phase") {
+      canonical = loadBrowserPhaseAggregateSnapshot(
+        String(state.objectKey.phaseId),
+        projectId,
+      );
+    } else if (kind === "codex-detail-definition") {
+      canonical = browserSnapshotDetailDefinitionState(
+        String(state.objectKey.definitionId),
+        projectId,
+      );
+    } else if (kind === "codex-detail-value") {
+      canonical = loadBrowserCodexDetailValueSnapshot(
+        String(state.objectKey.valueId),
+        projectId,
+      );
+    } else if (kind === "chronicle-event") {
+      canonical = loadBrowserEventSnapshot(
+        String(state.objectKey.eventId),
+        projectId,
+      );
+    } else if (kind === "plot-marker") {
+      canonical = loadBrowserPlotMarkerSnapshot(
+        String(state.objectKey.markerId),
+        projectId,
+      );
+    } else if (kind === "plot-branch") {
+      canonical = loadBrowserPlotBranchSnapshot(
+        String(state.objectKey.branchId),
+        projectId,
+      );
+    } else if (kind === "foreshadow") {
+      canonical = loadBrowserForeshadowAggregateSnapshot(
+        String(state.objectKey.foreshadowId),
+        projectId,
+      );
+    } else if (kind === "foreshadow-setup") {
+      canonical = loadBrowserForeshadowChildSnapshot(
+        "setup",
+        String(state.objectKey.setupId),
+        projectId,
+      );
+    } else if (kind === "foreshadow-payoff") {
+      canonical = loadBrowserForeshadowChildSnapshot(
+        "payoff",
+        String(state.objectKey.payoffId),
+        projectId,
+      );
+    } else if (kind === "calendar") {
+      canonical = selectProjectCalendarRow(projectId);
+    } else if (kind === "component") {
+      const componentId = String(state.objectKey.componentId);
+      if (componentId.startsWith("snippet:")) {
+        const snapshot = loadBrowserSnippetSnapshot(
+          componentId.slice("snippet:".length),
+          projectId,
+        );
+        canonical = snapshot ? browserCanonicalSnippetState(snapshot) : null;
+      } else if (componentId.startsWith("codex-detail-value:")) {
+        const logicalKey = componentId.slice("codex-detail-value:".length);
+        const separator = logicalKey.indexOf(":");
+        canonical =
+          separator < 1
+            ? null
+            : loadBrowserCodexDetailCanonicalState(
+                logicalKey.slice(0, separator),
+                logicalKey.slice(separator + 1),
+                projectId,
+              );
+      } else if (componentId.startsWith("codex-detail-definition:")) {
+        canonical = browserSnapshotDetailDefinitionState(
+          componentId.slice("codex-detail-definition:".length),
+          projectId,
+        );
+      } else if (componentId.startsWith("codex-type:")) {
+        const row = queryOne(
+          "SELECT * FROM codex_types WHERE id = ? AND project_id = ?",
+          [componentId.slice("codex-type:".length), projectId],
+        );
+        canonical = row ? browserCodexCatalogFeedState(row, false) : null;
+      } else if (componentId.startsWith("codex-tag:")) {
+        const row = queryOne(
+          "SELECT * FROM codex_tags WHERE id = ? AND project_id = ?",
+          [componentId.slice("codex-tag:".length), projectId],
+        );
+        canonical = row ? browserCodexCatalogFeedState(row, true) : null;
+      } else if (componentId.startsWith("tree-node:")) {
+        canonical = browserTreeNodeRow(
+          componentId.slice("tree-node:".length),
+          projectId,
+        );
+      } else {
+        const table = [
+          ["map-board:", "map_boards"],
+          ["map-ai-branch:", "map_ai_branches"],
+          ["map-sticky:", "map_stickies"],
+          ["editor-sticky:", "editor_stickies"],
+          ["map-frame:", "map_frames"],
+          ["map-position:", "map_node_positions"],
+          ["map-edge:", "map_edges"],
+        ].find(([prefix]) => componentId.startsWith(prefix))?.[1];
+        if (table) canonical = browserSnapshotRootRow(state, table);
+      }
+    }
+    return canonical ?? browserSnapshotGroupedState(state);
+  }
+
+  function buildBrowserSnapshotFeedEvents(
+    projectId: string,
+    before: Map<string, BrowserSnapshotFeedState>,
+    after: Map<string, BrowserSnapshotFeedState>,
+  ): BrowserNarrativeChangeEventInput[] {
+    const groupedState = (state: Map<string, BrowserSnapshotFeedState>) =>
+      [...state.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([token, value]) => ({
+          token,
+          objectKey: value.objectKey,
+          rows: [...value.rows.entries()].map(([identity, row]) => ({
+            identity,
+            row,
+          })),
+          canonicalSnapshot: value.canonicalSnapshot,
+          version: value.version,
+          changeKind: value.changeKind,
+        }));
+    const beforeState = groupedState(before);
+    const afterState = groupedState(after);
+    const beforeDigest = browserNarrativeStateDigest(beforeState);
+    const afterDigest = browserNarrativeStateDigest(afterState);
+    if (beforeDigest === afterDigest) return [];
+    return [
+      {
+        objectKey: { kind: "project", projectId },
+        changeKind: "schema",
+        mutationKind: "update",
+        beforeVersion: null,
+        beforeState,
+        afterVersion: null,
+        afterState,
+        changedPaths: ["/"],
+        structuralImpact: {
+          event: "project-restored",
+          requiresFullRebuild: true,
+        },
+      },
+    ];
+  }
+
+  async function handleProjectSnapshotApplyRestore(
+    args: Record<string, unknown>,
+  ): Promise<{
+    canonicalSequence: number;
+    changeEventUid: string | null;
+    maintenanceTransactionId: string | null;
+    noOp: boolean;
+  }> {
+    const command = "project_snapshot_apply_restore";
+    const payload = browserSnapshotPayload(args, command);
+    const projectId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "projectId",
+    );
+    const requestId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "requestId",
+    );
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "sessionId",
+    );
+    const snapshotId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "snapshotId",
+    );
+    if (!Array.isArray(payload.scopes) || payload.scopes.length === 0) {
+      throw new Error("project snapshot restore requires at least one scope");
+    }
     const scopes = new Set(payload.scopes as RestoreScope[]);
+    if (scopes.size !== payload.scopes.length) {
+      throw new Error("project snapshot restore scopes must be unique");
+    }
+    for (const scope of scopes) {
+      if (
+        ![
+          "body",
+          "codex",
+          "snippet",
+          "map",
+          "foreshadow",
+          "labels",
+          "lint",
+        ].includes(scope)
+      ) {
+        throw new Error(
+          `unsupported project snapshot restore scope '${scope}'`,
+        );
+      }
+    }
     browserSnapshotOwned(projectId, snapshotId);
     if (
       !queryOne(
@@ -7698,7 +16432,119 @@ export async function createBrowserMock(
       throw new Error("legacy project snapshots cannot use structural restore");
     }
 
-    const restoresCalendar = (payload.inserts as Array<{ table: string }>).some(
+    if (!Array.isArray(payload.inserts)) {
+      throw new Error("project snapshot restore inserts must be an array");
+    }
+    const requestedInserts = payload.inserts as BrowserSnapshotInsertPlan[];
+    for (const insert of requestedInserts) {
+      if (!browserSnapshotRestoreTables.has(insert.table)) {
+        throw new Error(
+          `project snapshot restore table '${insert.table}' is not allowed`,
+        );
+      }
+      const owner = browserSnapshotTableOwner(insert.table);
+      if (owner === null || !scopes.has(owner)) {
+        throw new Error(
+          `project snapshot restore table '${insert.table}' is outside the selected scopes`,
+        );
+      }
+      if (
+        insert.row.project_id !== undefined &&
+        insert.row.project_id !== projectId
+      ) {
+        throw new Error(
+          `project snapshot restore table '${insert.table}' has a foreign project_id`,
+        );
+      }
+      if (insert.mode === "replace" && insert.table !== "codex_types") {
+        throw new Error(
+          "project snapshot replace mode is only valid for codex_types",
+        );
+      }
+    }
+    const canonicalInserts = browserValidateSnapshotRestorePlan(
+      projectId,
+      snapshotId,
+      scopes,
+      requestedInserts,
+    );
+    const requestHash = await browserPayloadFingerprint(
+      "project_snapshot_restore",
+      {
+        projectId,
+        snapshotId,
+        scopes: [...scopes].sort(),
+      },
+    );
+    const conflictMarker = "PROJECT_SNAPSHOT_RESTORE_IDEMPOTENCY_CONFLICT";
+    const loadReplay = (): {
+      canonicalSequence: number;
+      changeEventUid: string | null;
+      maintenanceTransactionId: string | null;
+      noOp: boolean;
+    } | null => {
+      const ledger = queryOne(
+        `SELECT project_id, payload_hash, tombstone_json
+           FROM idempotency_requests
+          WHERE domain = 'project_snapshot_restore' AND request_id = ?`,
+        [requestId],
+      );
+      if (!ledger) return null;
+      if (
+        String(ledger.project_id) !== projectId ||
+        String(ledger.payload_hash) !== requestHash
+      ) {
+        throw new Error(
+          `${conflictMarker}: request id reused with different snapshot, scope, or project`,
+        );
+      }
+      let response: unknown;
+      try {
+        response = JSON.parse(String(ledger.tombstone_json)) as unknown;
+      } catch {
+        throw new Error(`${conflictMarker}: committed receipt is invalid`);
+      }
+      if (!isRecord(response)) {
+        throw new Error(`${conflictMarker}: committed receipt is invalid`);
+      }
+      const noOp = response.noOp === true;
+      const changeEventUid =
+        typeof response.changeEventUid === "string"
+          ? response.changeEventUid
+          : null;
+      const maintenanceTransactionId =
+        typeof response.maintenanceTransactionId === "string"
+          ? response.maintenanceTransactionId
+          : null;
+      if (
+        !noOp &&
+        (!changeEventUid ||
+          !maintenanceTransactionId ||
+          !queryOne(
+            `SELECT 1 AS tracked
+               FROM narrative_change_transactions transaction_row
+               JOIN change_events canonical
+                 ON canonical.project_id = transaction_row.project_id
+                AND canonical.event_uid = transaction_row.source_change_event_uid
+              WHERE transaction_row.project_id = ?
+                AND transaction_row.id = ?
+                AND canonical.event_uid = ?`,
+            [projectId, maintenanceTransactionId, changeEventUid],
+          ))
+      ) {
+        throw new Error(`${conflictMarker}: committed history is missing`);
+      }
+      return {
+        canonicalSequence: Number(response.canonicalSequence),
+        changeEventUid,
+        maintenanceTransactionId,
+        noOp,
+      };
+    };
+    const replay = loadReplay();
+    if (replay) return replay;
+
+    const restoresCalendar = canonicalInserts.some(
       (insert) => insert.table === "project_calendar",
     );
     let calendarRestoreVersion: number | null = null;
@@ -7889,35 +16735,7 @@ export async function createBrowserMock(
       );
     }
 
-    for (const insert of payload.inserts as Array<{
-      table: string;
-      row: RawRow;
-      mode: "insert" | "replace";
-    }>) {
-      if (!browserSnapshotRestoreTables.has(insert.table)) {
-        throw new Error(
-          `project snapshot restore table '${insert.table}' is not allowed`,
-        );
-      }
-      const owner = browserSnapshotTableOwner(insert.table);
-      if (owner === null || !scopes.has(owner)) {
-        throw new Error(
-          `project snapshot restore table '${insert.table}' is outside the selected scopes`,
-        );
-      }
-      if (
-        insert.row.project_id !== undefined &&
-        insert.row.project_id !== projectId
-      ) {
-        throw new Error(
-          `project snapshot restore table '${insert.table}' has a foreign project_id`,
-        );
-      }
-      if (insert.mode === "replace" && insert.table !== "codex_types") {
-        throw new Error(
-          "project snapshot replace mode is only valid for codex_types",
-        );
-      }
+    for (const insert of canonicalInserts) {
       const row =
         insert.table === "project_calendar"
           ? {
@@ -7925,7 +16743,9 @@ export async function createBrowserMock(
               version: calendarRestoreVersion,
               updated_at: calendarRestoreUpdatedAt,
             }
-          : insert.row;
+          : insert.table === "scene_events"
+            ? { ...insert.row, incarnation_token: crypto.randomUUID() }
+            : insert.row;
       statements.push(
         browserSnapshotInsertStatement(insert.table, row, insert.mode),
       );
@@ -8005,7 +16825,450 @@ export async function createBrowserMock(
         },
       );
     }
-    handleDbExecuteBatch({ statements });
+    return withAppendLedgerLock(async () => {
+      const committed = loadReplay();
+      if (committed) return committed;
+      const timestamp = Date.now();
+      const occurredAt = new Date(timestamp).toISOString();
+      const changeEventUid = crypto.randomUUID();
+      const orderedScopes = [...scopes].sort();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: changeEventUid,
+        projectId,
+        sceneId: null,
+        domain: "revision",
+        opType: "project.snapshot.restore",
+        entityType: "project_snapshot",
+        entityId: snapshotId,
+        payload: JSON.stringify({
+          snapshotId,
+          requestId,
+          scopes: orderedScopes,
+        }),
+        sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const insideReplay = loadReplay();
+        if (insideReplay) {
+          db.run("COMMIT");
+          return insideReplay;
+        }
+        browserSnapshotOwned(projectId, snapshotId);
+        const feedBefore = captureBrowserSnapshotFeedState(projectId, scopes);
+        for (const statement of statements) {
+          executeBrowserDbStatement(db, statement.sql, statement.params);
+        }
+        const feedAfter = captureBrowserSnapshotFeedState(projectId, scopes);
+        const feedEvents = buildBrowserSnapshotFeedEvents(
+          projectId,
+          feedBefore,
+          feedAfter,
+        );
+        let response: {
+          canonicalSequence: number;
+          changeEventUid: string | null;
+          maintenanceTransactionId: string | null;
+          noOp: boolean;
+        };
+        if (feedEvents.length === 0) {
+          const tail = readTimelapseTail(projectId);
+          response = {
+            canonicalSequence: tail.sequence,
+            changeEventUid: null,
+            maintenanceTransactionId: null,
+            noOp: true,
+          };
+        } else {
+          const identity: BrowserCanonicalWriteIdentity = {
+            projectId,
+            requestId,
+            sessionId,
+            eventUid: changeEventUid,
+            origin: "restore",
+            originalTransactionId: null,
+            undoJournalId: null,
+          };
+          const maintenanceTransactionId = insertBrowserNarrativeChange({
+            preparedEvent,
+            identity,
+            requestHash,
+            undoJournalId: null,
+            occurredAt,
+            events: feedEvents,
+          });
+          response = {
+            canonicalSequence: preparedEvent.sequence,
+            changeEventUid,
+            maintenanceTransactionId,
+            noOp: false,
+          };
+        }
+        db.run(
+          `INSERT INTO idempotency_requests
+            (domain, request_id, project_id, payload_hash,
+             tombstone_json, created_at)
+           VALUES ('project_snapshot_restore', ?, ?, ?, ?, ?)`,
+          [
+            requestId,
+            projectId,
+            requestHash,
+            JSON.stringify(response),
+            occurredAt,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error("project snapshot restore receipt was not persisted");
+        }
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical snapshot restore failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  interface BrowserSceneRevisionRestoreResult extends Record<string, unknown> {
+    sceneId: string;
+    revisionId: string;
+    safetyRevisionId: string;
+    version: number;
+    updatedAt: string;
+    changeEventUid: string;
+    canonicalSequence: number;
+    maintenanceTransactionId: string;
+    replayed: boolean;
+  }
+
+  function browserRevisionJsonDocument(value: string, field: string): unknown {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value) as unknown;
+    } catch (error) {
+      throw new Error(
+        `${field} must be valid ProseMirror JSON: ${String(error)}`,
+        { cause: error },
+      );
+    }
+    if (!isRecord(parsed)) {
+      throw new Error(`${field} must be a JSON object`);
+    }
+    return parsed;
+  }
+
+  function browserRevisionJsonMatches(left: string, right: string): boolean {
+    try {
+      return (
+        JSON.stringify(canonicalizeJson(JSON.parse(left) as unknown)) ===
+        JSON.stringify(canonicalizeJson(JSON.parse(right) as unknown))
+      );
+    } catch {
+      return left === right;
+    }
+  }
+
+  async function handleRevisionSceneRestore(
+    args: Record<string, unknown>,
+  ): Promise<BrowserSceneRevisionRestoreResult> {
+    const command = "revision_scene_restore";
+    const payload = browserCommandPayload(command, args);
+    const allowedKeys = new Set([
+      "requestId",
+      "sessionId",
+      "projectId",
+      "entityType",
+      "entityId",
+      "revisionId",
+      "content",
+      "currentContent",
+      "expectedVersion",
+      "charCount",
+      "placedBeatPreview",
+    ]);
+    for (const key of Object.keys(payload)) {
+      if (!allowedKeys.has(key)) {
+        throw new Error(`${command}: unknown field '${key}'`);
+      }
+    }
+    const requestId = requiredBrowserString(command, payload, "requestId");
+    const sessionId = requiredBrowserString(command, payload, "sessionId");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const entityId = requiredBrowserString(command, payload, "entityId");
+    const revisionId = requiredBrowserString(command, payload, "revisionId");
+    if (payload.entityType !== "scene") {
+      throw new Error(
+        "REVISION_CONTENT_RESTORE_UNSUPPORTED_ENTITY_TYPE: only scene revisions can be restored",
+      );
+    }
+    if (typeof payload.content !== "string") {
+      throw new Error(`${command}: content must be a string`);
+    }
+    if (typeof payload.currentContent !== "string") {
+      throw new Error(`${command}: currentContent must be a string`);
+    }
+    const content = payload.content;
+    const currentContent = payload.currentContent;
+    browserRevisionJsonDocument(content, "content");
+    browserRevisionJsonDocument(currentContent, "currentContent");
+    const expectedVersion = payload.expectedVersion;
+    const charCount = payload.charCount;
+    for (const [key, value] of [
+      ["expectedVersion", expectedVersion],
+      ["charCount", charCount],
+    ] as const) {
+      if (
+        typeof value !== "number" ||
+        !Number.isSafeInteger(value) ||
+        value < 0
+      ) {
+        throw new Error(`${command}: ${key} must be a non-negative integer`);
+      }
+    }
+    const validatedExpectedVersion = expectedVersion as number;
+    const validatedCharCount = charCount as number;
+    if (!Object.hasOwn(payload, "placedBeatPreview")) {
+      throw new Error(`${command}: placedBeatPreview is required`);
+    }
+    const placedBeatPreview = payload.placedBeatPreview;
+    if (placedBeatPreview !== null && typeof placedBeatPreview !== "string") {
+      throw new Error(`${command}: placedBeatPreview must be a string or null`);
+    }
+    if (typeof placedBeatPreview === "string") {
+      let parsedPreview: unknown;
+      try {
+        parsedPreview = JSON.parse(placedBeatPreview) as unknown;
+      } catch (error) {
+        throw new Error(`placedBeatPreview must be JSON: ${String(error)}`, {
+          cause: error,
+        });
+      }
+      if (!Array.isArray(parsedPreview)) {
+        throw new Error("placedBeatPreview must be a JSON array or null");
+      }
+    }
+
+    const fingerprintPayload = structuredClone(payload);
+    fingerprintPayload.sessionId = "";
+    const requestHash = await browserPayloadFingerprint(
+      command,
+      fingerprintPayload,
+    );
+    const identity: BrowserCanonicalWriteIdentity = {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid: crypto.randomUUID(),
+      origin: "restore",
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+    const conflictMarker = "REVISION_CONTENT_RESTORE_IDEMPOTENCY_CONFLICT";
+    const loadReplay = (): BrowserSceneRevisionRestoreResult | null => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      return replay
+        ? ({ ...replay, replayed: true } as BrowserSceneRevisionRestoreResult)
+        : null;
+    };
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadReplay();
+      if (replay) return replay;
+
+      const before = browserTreeNodeRow(entityId, projectId);
+      if (!before || before.nodeType !== "scene") {
+        throw new Error(
+          `REVISION_CONTENT_RESTORE_PROJECT_MISMATCH: scene '${entityId}' is not owned by project '${projectId}'`,
+        );
+      }
+      if (before.version !== validatedExpectedVersion) {
+        throw new Error(
+          `REVISION_CONTENT_RESTORE_VERSION_MISMATCH: expected scene version ${validatedExpectedVersion}, found ${String(before.version)}`,
+        );
+      }
+      if (!browserRevisionJsonMatches(String(before.content), currentContent)) {
+        throw new Error(
+          "REVISION_CONTENT_RESTORE_CURRENT_CONTENT_MISMATCH: editor content is not the persisted scene head",
+        );
+      }
+      const revision = queryOne(
+        `SELECT entity_type, entity_id, content
+           FROM content_versions WHERE id = ?`,
+        [revisionId],
+      );
+      if (!revision) {
+        throw new Error(
+          `REVISION_CONTENT_RESTORE_REVISION_NOT_FOUND: revision '${revisionId}' does not exist`,
+        );
+      }
+      if (revision.entity_type !== "scene" || revision.entity_id !== entityId) {
+        throw new Error(
+          "REVISION_CONTENT_RESTORE_REVISION_SCOPE_MISMATCH: revision is not owned by the target scene",
+        );
+      }
+      if (!browserRevisionJsonMatches(String(revision.content), content)) {
+        throw new Error(
+          "REVISION_CONTENT_RESTORE_REVISION_CONTENT_MISMATCH: selected content does not match the persisted revision",
+        );
+      }
+
+      const timestamp = Date.now();
+      const occurredAt = new Date(timestamp).toISOString();
+      const safetyRevisionId = crypto.randomUUID();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId,
+        sceneId: entityId,
+        domain: "revision",
+        opType: "content.restore",
+        entityType: "scene",
+        entityId,
+        payload: JSON.stringify({
+          sceneId: entityId,
+          revisionId,
+          safetyRevisionId,
+          version: validatedExpectedVersion + 1,
+        }),
+        sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadReplay();
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const current = browserTreeNodeRow(entityId, projectId);
+        if (
+          !current ||
+          current.nodeType !== "scene" ||
+          current.version !== validatedExpectedVersion ||
+          !browserRevisionJsonMatches(String(current.content), currentContent)
+        ) {
+          throw new Error(
+            `REVISION_CONTENT_RESTORE_VERSION_MISMATCH: scene '${entityId}' changed during restore`,
+          );
+        }
+        const currentRevision = queryOne(
+          `SELECT entity_type, entity_id, content
+             FROM content_versions WHERE id = ?`,
+          [revisionId],
+        );
+        if (
+          !currentRevision ||
+          currentRevision.entity_type !== "scene" ||
+          currentRevision.entity_id !== entityId ||
+          !browserRevisionJsonMatches(String(currentRevision.content), content)
+        ) {
+          throw new Error(
+            "REVISION_CONTENT_RESTORE_REVISION_SCOPE_MISMATCH: selected revision changed during restore",
+          );
+        }
+
+        db.run(
+          `INSERT INTO content_versions
+            (id, entity_type, entity_id, content, version_number,
+             snapshot_type, created_at)
+           VALUES (?, 'scene', ?, ?,
+             (SELECT COALESCE(MAX(version_number), 0) + 1
+                FROM content_versions
+               WHERE entity_type = 'scene' AND entity_id = ?),
+             'manual', ?)`,
+          [
+            safetyRevisionId,
+            entityId,
+            String(current.content),
+            entityId,
+            occurredAt,
+          ],
+        );
+        db.run(
+          `UPDATE tree_nodes
+              SET content = ?, char_count = ?, placed_beat_preview = ?,
+                  version = version + 1, updated_at = ?
+            WHERE id = ? AND project_id = ? AND node_type = 'scene'
+              AND version = ?`,
+          [
+            String(currentRevision.content),
+            validatedCharCount,
+            placedBeatPreview,
+            occurredAt,
+            entityId,
+            projectId,
+            validatedExpectedVersion,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `REVISION_CONTENT_RESTORE_VERSION_MISMATCH: scene '${entityId}' changed during restore`,
+          );
+        }
+        const after = browserTreeNodeRow(entityId, projectId);
+        if (!after) {
+          throw new Error("scene disappeared during revision restore");
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: null,
+          occurredAt,
+          events: [
+            {
+              objectKey: { kind: "scene", sceneId: entityId },
+              changeKind: "content",
+              mutationKind: "update",
+              beforeVersion: Number(current.version),
+              beforeState: current,
+              afterVersion: Number(after.version),
+              afterState: after,
+              changedPaths: ["/charCount", "/content", "/placedBeatPreview"],
+            },
+          ],
+        });
+        const response: BrowserSceneRevisionRestoreResult = {
+          sceneId: entityId,
+          revisionId,
+          safetyRevisionId,
+          version: Number(after.version),
+          updatedAt: String(after.updatedAt),
+          changeEventUid: identity.eventUid,
+          canonicalSequence: preparedEvent.sequence,
+          maintenanceTransactionId,
+          replayed: false,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now: occurredAt,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical revision restore failure.
+        }
+        throw error;
+      }
+    });
   }
 
   function browserCommandPayload(
@@ -8097,82 +17360,404 @@ export async function createBrowserMock(
     );
   }
 
-  async function runBrowserIdempotentCreate(request: {
-    domain: string;
-    requestId: string | null;
+  const BROWSER_PLOT_MUTATION_ORIGINS = new Set([
+    "human",
+    "ai-apply",
+    "import",
+    "undo",
+    "redo",
+    "restore",
+  ]);
+
+  function browserPlotMutationIdentity(
+    payload: Record<string, unknown>,
+    command: string,
+  ): BrowserCanonicalWriteIdentity {
+    const projectId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "projectId",
+    );
+    const requestId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "requestId",
+    );
+    const sessionId = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "sessionId",
+    );
+    const eventUid = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "eventUid",
+    );
+    const origin = browserCodexRequiredNonEmptyPayloadString(payload, "origin");
+    if (!BROWSER_PLOT_MUTATION_ORIGINS.has(origin)) {
+      throw new Error(`${command}: unsupported Change Feed origin '${origin}'`);
+    }
+    const lineage = payload.originalTransactionId;
+    if (
+      lineage !== undefined &&
+      lineage !== null &&
+      (typeof lineage !== "string" || lineage.trim().length === 0)
+    ) {
+      throw new Error(
+        `${command}: originalTransactionId must be a non-empty string or null`,
+      );
+    }
+    const originalTransactionId = typeof lineage === "string" ? lineage : null;
+    const replaysHistory = origin === "undo" || origin === "redo";
+    if (replaysHistory !== (originalTransactionId !== null)) {
+      throw new Error(
+        `${command}: undo/redo requires originalTransactionId and forward mutations forbid it`,
+      );
+    }
+    return {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid,
+      origin: origin as BrowserCanonicalWriteOrigin,
+      originalTransactionId,
+      undoJournalId: null,
+    };
+  }
+
+  function browserPlotFeedEvent(input: {
+    entityKind: "thread" | "marker" | "branch";
     entityId: string;
+    changeKind: "catalog" | "metadata" | "association";
+    mutationKind: "create" | "update" | "delete" | "restore";
+    beforeVersion: number | null;
+    afterVersion: number | null;
+    changedPaths: string[];
+  }): BrowserNarrativeChangeEventInput {
+    const objectKey =
+      input.entityKind === "thread"
+        ? { kind: "plot-thread", threadId: input.entityId }
+        : input.entityKind === "marker"
+          ? { kind: "plot-marker", markerId: input.entityId }
+          : { kind: "plot-branch", branchId: input.entityId };
+    return {
+      objectKey,
+      changeKind: input.changeKind,
+      mutationKind: input.mutationKind,
+      beforeVersion: input.beforeVersion,
+      afterVersion: input.afterVersion,
+      changedPaths: input.changedPaths,
+    };
+  }
+
+  function browserPlotVersion(
+    row: Record<string, unknown> | null,
+  ): number | null {
+    if (row === null) return null;
+    const value = row.version;
+    return typeof value === "number" && Number.isSafeInteger(value)
+      ? value
+      : null;
+  }
+
+  const BROWSER_PLOT_THREAD_AUTHORITY_PATHS = [
+    "/name",
+    "/description",
+    "/color",
+    "/sortOrder",
+    "/startNodeId",
+    "/endNodeId",
+  ] as const;
+  const BROWSER_PLOT_MARKER_AUTHORITY_PATHS = [
+    "/threadId",
+    "/sceneId",
+    "/phaseType",
+    "/note",
+    "/sortOrder",
+    "/semanticKey",
+  ] as const;
+  const BROWSER_PLOT_BRANCH_AUTHORITY_PATHS = [
+    "/fromThreadId",
+    "/toThreadId",
+    "/atSceneId",
+    "/kind",
+    "/semanticKey",
+  ] as const;
+
+  function recordBrowserPlotFieldAuthority(input: {
     projectId: string;
+    entityKind: "plot-thread" | "plot-marker" | "plot-branch";
+    entityId: string;
+    fieldPaths: readonly string[];
+    updatedAt: string;
+  }): void {
+    for (const fieldPath of input.fieldPaths) {
+      db.run(
+        `INSERT INTO narrative_field_authority
+           (project_id, entity_kind, entity_id, field_path, owner_kind,
+            explicit_lock, version, updated_at)
+         VALUES (?, ?, ?, ?, 'human', 0, 0, ?)
+         ON CONFLICT(project_id, entity_kind, entity_id, field_path)
+         DO UPDATE SET owner_kind = 'human',
+             version = narrative_field_authority.version + 1,
+             updated_at = excluded.updated_at`,
+        [
+          input.projectId,
+          input.entityKind,
+          input.entityId,
+          fieldPath,
+          input.updatedAt,
+        ],
+      );
+    }
+  }
+
+  function loadBrowserPlotMutationReplay(input: {
+    domain: string;
+    identity: BrowserCanonicalWriteIdentity;
+    payloadHash: string;
+    conflictMarker: string;
+  }): Record<string, unknown> | null {
+    const ledger = queryOne(
+      `SELECT project_id, payload_hash, tombstone_json
+         FROM idempotency_requests
+        WHERE domain = ? AND request_id = ?`,
+      [input.domain, input.identity.requestId],
+    );
+    if (!ledger) return null;
+    if (
+      String(ledger.project_id) !== input.identity.projectId ||
+      String(ledger.payload_hash) !== input.payloadHash
+    ) {
+      throw new Error(
+        `${input.conflictMarker}: request id reused with different payload or project`,
+      );
+    }
+    const parsed = JSON.parse(String(ledger.tombstone_json)) as unknown;
+    if (!isRecord(parsed)) {
+      throw new Error(`${input.conflictMarker}: committed receipt is invalid`);
+    }
+    return parsed;
+  }
+
+  interface BrowserPlotMutationResult {
+    response: Record<string, unknown>;
+    events: BrowserNarrativeChangeEventInput[];
+  }
+
+  async function runBrowserPlotMutation(request: {
+    domain: string;
+    identity: BrowserCanonicalWriteIdentity;
     fingerprintPayload: Record<string, unknown>;
     conflictMarker: string;
-    loadEntity: () => Record<string, SqlValue> | null;
-    createEntity: () => Record<string, SqlValue>;
+    operation: string;
+    entityType: string;
+    entityId: string;
+    mutate: (occurredAt: string) => BrowserPlotMutationResult;
   }): Promise<Record<string, unknown>> {
-    const payloadHash = await browserPayloadFingerprint(
-      request.domain,
-      request.fingerprintPayload,
-    );
-    db.run("BEGIN IMMEDIATE");
-    try {
-      const ledger =
-        request.requestId === null
-          ? null
-          : queryOne(
-              `SELECT payload_hash, tombstone_json
-           FROM idempotency_requests
-          WHERE domain = ? AND request_id = ?`,
-              [request.domain, request.requestId],
-            );
-      if (ledger) {
-        if (String(ledger.payload_hash) !== payloadHash) {
-          throw new Error(
-            `${request.conflictMarker}: request id reused with different payload`,
-          );
-        }
-        const current = request.loadEntity();
-        const tombstone = JSON.parse(String(ledger.tombstone_json)) as {
-          id?: unknown;
-        };
-        const replayEntityId =
-          typeof tombstone.id === "string" ? tombstone.id : request.entityId;
-        db.run("COMMIT");
-        return {
-          ...(current ?? { id: replayEntityId }),
-          __idempotency: {
-            replayed: true,
-            entityPresent: current !== null,
-          },
-        };
-      }
+    return withAppendLedgerLock(async () => {
+      const payloadHash = await browserPayloadFingerprint(
+        request.domain,
+        request.fingerprintPayload,
+      );
+      const replay = loadBrowserPlotMutationReplay({
+        domain: request.domain,
+        identity: request.identity,
+        payloadHash,
+        conflictMarker: request.conflictMarker,
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const occurredAt = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: request.identity.eventUid,
+        projectId: request.identity.projectId,
+        sceneId: null,
+        domain: "plot",
+        opType: request.operation,
+        entityType: request.entityType,
+        entityId: request.entityId,
+        payload: JSON.stringify({
+          requestId: request.identity.requestId,
+          origin: request.identity.origin,
+        }),
+        sessionId: request.identity.sessionId,
+        timestamp,
+      });
 
-      const created = request.createEntity();
-      if (request.requestId !== null) {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserPlotMutationReplay({
+          domain: request.domain,
+          identity: request.identity,
+          payloadHash,
+          conflictMarker: request.conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const mutation = request.mutate(occurredAt);
+        let response = mutation.response;
+        if (mutation.events.length > 0) {
+          const maintenanceTransactionId = insertBrowserNarrativeChange({
+            preparedEvent,
+            identity: request.identity,
+            requestHash: payloadHash,
+            undoJournalId: null,
+            typedInverseEntity: {
+              domain: "plot",
+              entityId: request.entityId,
+            },
+            occurredAt,
+            events: mutation.events,
+          });
+          response = { ...response, maintenanceTransactionId };
+        }
         db.run(
           `INSERT INTO idempotency_requests
-           (domain, request_id, project_id, payload_hash, tombstone_json)
-         VALUES (?, ?, ?, ?, ?)`,
+            (domain, request_id, project_id, payload_hash, tombstone_json,
+             created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
           [
             request.domain,
-            request.requestId,
-            request.projectId,
+            request.identity.requestId,
+            request.identity.projectId,
             payloadHash,
-            JSON.stringify({ id: request.entityId }),
+            JSON.stringify(response),
+            occurredAt,
           ],
         );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Plot mutation failure.
+        }
+        throw error;
       }
-      db.run("COMMIT");
-      options.onDatabaseDirty?.();
-      return {
-        ...created,
-        __idempotency: { replayed: false, entityPresent: true },
-      };
-    } catch (error) {
+    });
+  }
+
+  async function runBrowserIdempotentCreate(request: {
+    domain: string;
+    identity: BrowserCanonicalWriteIdentity;
+    entityId: string;
+    fingerprintPayload: Record<string, unknown>;
+    conflictMarker: string;
+    operation: string;
+    entityType: string;
+    canonicalEntityId: string;
+    loadEntity: () => Record<string, unknown> | null;
+    createEntity: (occurredAt: string) => Record<string, unknown>;
+    feedEvents: (
+      created: Record<string, unknown>,
+    ) => BrowserNarrativeChangeEventInput[];
+  }): Promise<Record<string, unknown>> {
+    return withAppendLedgerLock(async () => {
+      const payloadHash = await browserPayloadFingerprint(
+        request.domain,
+        request.fingerprintPayload,
+      );
+      const timestamp = Date.now();
+      const occurredAt = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: request.identity.eventUid,
+        projectId: request.identity.projectId,
+        sceneId: null,
+        domain: "plot",
+        opType: request.operation,
+        entityType: request.entityType,
+        entityId: request.canonicalEntityId,
+        payload: JSON.stringify({
+          requestId: request.identity.requestId,
+          origin: request.identity.origin,
+        }),
+        sessionId: request.identity.sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
       try {
-        db.run("ROLLBACK");
-      } catch {
-        /* noop */
+        const ledger = queryOne(
+          `SELECT project_id, payload_hash, tombstone_json
+             FROM idempotency_requests
+            WHERE domain = ? AND request_id = ?`,
+          [request.domain, request.identity.requestId],
+        );
+        if (ledger) {
+          if (
+            String(ledger.project_id) !== request.identity.projectId ||
+            String(ledger.payload_hash) !== payloadHash
+          ) {
+            throw new Error(
+              `${request.conflictMarker}: request id reused with different payload or project`,
+            );
+          }
+          const current = request.loadEntity();
+          const tombstone = JSON.parse(String(ledger.tombstone_json)) as {
+            id?: unknown;
+            maintenanceTransactionId?: unknown;
+          };
+          const replayEntityId =
+            typeof tombstone.id === "string" ? tombstone.id : request.entityId;
+          const maintenanceTransactionId =
+            typeof tombstone.maintenanceTransactionId === "string"
+              ? tombstone.maintenanceTransactionId
+              : undefined;
+          db.run("COMMIT");
+          return {
+            ...(current ?? { id: replayEntityId }),
+            ...(maintenanceTransactionId ? { maintenanceTransactionId } : {}),
+            __idempotency: {
+              replayed: true,
+              entityPresent: current !== null,
+            },
+          };
+        }
+
+        const created = request.createEntity(occurredAt);
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity: request.identity,
+          requestHash: payloadHash,
+          undoJournalId: null,
+          typedInverseEntity: {
+            domain: "plot",
+            entityId: request.canonicalEntityId,
+          },
+          occurredAt,
+          events: request.feedEvents(created),
+        });
+        db.run(
+          `INSERT INTO idempotency_requests
+            (domain, request_id, project_id, payload_hash, tombstone_json,
+             created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [
+            request.domain,
+            request.identity.requestId,
+            request.identity.projectId,
+            payloadHash,
+            JSON.stringify({ id: request.entityId, maintenanceTransactionId }),
+            occurredAt,
+          ],
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          ...created,
+          maintenanceTransactionId,
+          __idempotency: { replayed: false, entityPresent: true },
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Plot create failure.
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
   }
 
   async function handlePlotThreadCreate(
@@ -8180,8 +17765,9 @@ export async function createBrowserMock(
   ): Promise<Record<string, unknown>> {
     const command = "plot_thread_create";
     const payload = browserCommandPayload(command, args);
+    const identity = browserPlotMutationIdentity(payload, command);
     const id = requiredBrowserString(command, payload, "id");
-    const projectId = requiredBrowserString(command, payload, "projectId");
+    const projectId = identity.projectId;
     const name = requiredBrowserString(command, payload, "name");
     const color = nullableBrowserString(command, payload, "color");
     const description = nullableBrowserString(command, payload, "description");
@@ -8193,19 +17779,23 @@ export async function createBrowserMock(
       color,
       description,
       sortOrder,
+      origin: identity.origin,
+      originalTransactionId: identity.originalTransactionId,
     };
     const loadEntity = () =>
       queryOne("SELECT * FROM plot_threads WHERE id = ?", [id]);
 
     return runBrowserIdempotentCreate({
       domain: command,
-      requestId: id,
+      identity,
       entityId: id,
-      projectId,
       fingerprintPayload,
       conflictMarker: "PLOT_THREAD_IDEMPOTENCY_CONFLICT",
+      operation: "plot.thread.create",
+      entityType: "plot-thread",
+      canonicalEntityId: id,
       loadEntity,
-      createEntity: () => {
+      createEntity: (occurredAt) => {
         try {
           db.run(
             `INSERT INTO plot_threads
@@ -8237,8 +17827,26 @@ export async function createBrowserMock(
             "plot thread create completed without a persisted row",
           );
         }
+        recordBrowserPlotFieldAuthority({
+          projectId,
+          entityKind: "plot-thread",
+          entityId: id,
+          fieldPaths: BROWSER_PLOT_THREAD_AUTHORITY_PATHS,
+          updatedAt: occurredAt,
+        });
         return created;
       },
+      feedEvents: (created) => [
+        browserPlotFeedEvent({
+          entityKind: "thread",
+          entityId: id,
+          changeKind: "catalog",
+          mutationKind: "create",
+          beforeVersion: null,
+          afterVersion: browserPlotVersion(created),
+          changedPaths: ["/"],
+        }),
+      ],
     });
   }
 
@@ -8247,6 +17855,7 @@ export async function createBrowserMock(
   ): Promise<Record<string, unknown>> {
     const command = "plot_thread_link_create";
     const payload = browserCommandPayload(command, args);
+    const identity = browserPlotMutationIdentity(payload, command);
     const id = requiredBrowserString(command, payload, "id");
     const threadId = requiredBrowserString(command, payload, "threadId");
     const nodeId = requiredBrowserString(command, payload, "nodeId");
@@ -8260,24 +17869,25 @@ export async function createBrowserMock(
       phaseType,
       note,
       sortOrder,
+      projectId: identity.projectId,
+      origin: identity.origin,
+      originalTransactionId: identity.originalTransactionId,
     };
     const loadEntity = () =>
       queryOne("SELECT * FROM plot_thread_scene_links WHERE id = ?", [id]);
 
-    const thread = queryOne(
-      "SELECT project_id FROM plot_threads WHERE id = ?",
-      [threadId],
-    );
-    const projectId = String(thread?.project_id ?? "");
+    const projectId = identity.projectId;
     return runBrowserIdempotentCreate({
       domain: command,
-      requestId: id,
+      identity,
       entityId: id,
-      projectId,
       fingerprintPayload,
       conflictMarker: "PLOT_THREAD_LINK_IDEMPOTENCY_CONFLICT",
+      operation: "plot.marker.create",
+      entityType: "plot-marker",
+      canonicalEntityId: id,
       loadEntity,
-      createEntity: () => {
+      createEntity: (occurredAt) => {
         if (
           !["introduce", "develop", "turn", "climax", "resolve"].includes(
             phaseType,
@@ -8296,6 +17906,7 @@ export async function createBrowserMock(
         if (
           !currentThread ||
           !node ||
+          currentThread.project_id !== projectId ||
           currentThread.project_id !== node.project_id ||
           node.node_type !== "scene"
         ) {
@@ -8336,8 +17947,26 @@ export async function createBrowserMock(
             "plot thread link create completed without a persisted row",
           );
         }
+        recordBrowserPlotFieldAuthority({
+          projectId,
+          entityKind: "plot-marker",
+          entityId: id,
+          fieldPaths: BROWSER_PLOT_MARKER_AUTHORITY_PATHS,
+          updatedAt: occurredAt,
+        });
         return created;
       },
+      feedEvents: (created) => [
+        browserPlotFeedEvent({
+          entityKind: "marker",
+          entityId: id,
+          changeKind: "association",
+          mutationKind: "create",
+          beforeVersion: null,
+          afterVersion: browserPlotVersion(created),
+          changedPaths: ["/"],
+        }),
+      ],
     });
   }
 
@@ -8346,8 +17975,9 @@ export async function createBrowserMock(
   ): Promise<Record<string, unknown>> {
     const command = "plot_thread_branch_create";
     const payload = browserCommandPayload(command, args);
+    const identity = browserPlotMutationIdentity(payload, command);
     const id = requiredBrowserString(command, payload, "id");
-    const projectId = requiredBrowserString(command, payload, "projectId");
+    const projectId = identity.projectId;
     const fromThreadId = requiredBrowserString(
       command,
       payload,
@@ -8363,19 +17993,23 @@ export async function createBrowserMock(
       toThreadId,
       atNodeId,
       kind,
+      origin: identity.origin,
+      originalTransactionId: identity.originalTransactionId,
     };
     const loadEntity = () =>
       queryOne("SELECT * FROM plot_thread_branches WHERE id = ?", [id]);
 
     return runBrowserIdempotentCreate({
       domain: command,
-      requestId: id,
+      identity,
       entityId: id,
-      projectId,
       fingerprintPayload,
       conflictMarker: "PLOT_THREAD_BRANCH_IDEMPOTENCY_CONFLICT",
+      operation: "plot.branch.create",
+      entityType: "plot-branch",
+      canonicalEntityId: id,
       loadEntity,
-      createEntity: () => {
+      createEntity: (occurredAt) => {
         if (!["branch", "merge"].includes(kind)) {
           throw new Error(`invalid plot branch kind: ${kind}`);
         }
@@ -8447,8 +18081,26 @@ export async function createBrowserMock(
             "plot thread branch create completed without a persisted row",
           );
         }
+        recordBrowserPlotFieldAuthority({
+          projectId,
+          entityKind: "plot-branch",
+          entityId: id,
+          fieldPaths: BROWSER_PLOT_BRANCH_AUTHORITY_PATHS,
+          updatedAt: occurredAt,
+        });
         return created;
       },
+      feedEvents: (created) => [
+        browserPlotFeedEvent({
+          entityKind: "branch",
+          entityId: id,
+          changeKind: "association",
+          mutationKind: "create",
+          beforeVersion: null,
+          afterVersion: browserPlotVersion(created),
+          changedPaths: ["/"],
+        }),
+      ],
     });
   }
 
@@ -8478,59 +18130,235 @@ export async function createBrowserMock(
     return value;
   }
 
-  function handlePlotThreadUpdate(
+  async function handlePlotThreadUpdate(
     args: Record<string, unknown>,
-  ): Record<string, unknown> | null {
+  ): Promise<Record<string, unknown>> {
     const command = "plot_thread_update";
     const id = requiredBrowserString(command, args, "id");
     const patch = browserPatchRecord(command, args);
+    const identity = browserPlotMutationIdentity(patch, command);
     const baseVersion = requiredBrowserBaseVersion(command, patch);
-    const current = queryOne("SELECT * FROM plot_threads WHERE id = ?", [id]);
-    if (!current) throw new Error(`plot thread not found: ${id}`);
-    if (Number(current.version) !== baseVersion) {
-      throw new Error(`plot thread '${id}' version conflict during update`);
-    }
-    const assignments: string[] = [];
-    const params: SqlValue[] = [];
-    for (const [key, column] of [
-      ["name", "name"],
-      ["color", "color"],
-      ["description", "description"],
-      ["sortOrder", "sort_order"],
-    ] as const) {
-      if (!Object.hasOwn(patch, key)) continue;
-      assignments.push(`${column} = ?`);
-      params.push((patch[key] ?? null) as SqlValue);
-    }
-    if (assignments.length === 0) return current;
-    assignments.push("version = version + 1", "updated_at = ?");
-    params.push(new Date().toISOString(), id, baseVersion);
-    db.run(
-      `UPDATE plot_threads SET ${assignments.join(", ")}
-        WHERE id = ? AND version = ?`,
-      params,
+    const writes = ["name", "color", "description", "sortOrder"].filter(
+      (key) =>
+        Object.hasOwn(patch, key) &&
+        !((key === "name" || key === "sortOrder") && patch[key] === null),
     );
-    if (db.getRowsModified() !== 1) {
-      throw new Error(`plot thread '${id}' version conflict during update`);
-    }
-    const updated = queryOne("SELECT * FROM plot_threads WHERE id = ?", [id]);
-    if (!updated) throw new Error(`plot thread not found: ${id}`);
-    options.onDatabaseDirty?.();
-    return updated;
+    return runBrowserPlotMutation({
+      domain: command,
+      identity,
+      fingerprintPayload: {
+        id,
+        projectId: identity.projectId,
+        origin: identity.origin,
+        originalTransactionId: identity.originalTransactionId,
+        name: Object.hasOwn(patch, "name") ? patch.name : null,
+        color: Object.hasOwn(patch, "color") ? patch.color : null,
+        description: Object.hasOwn(patch, "description")
+          ? patch.description
+          : null,
+        sortOrder: Object.hasOwn(patch, "sortOrder") ? patch.sortOrder : null,
+        baseVersion,
+      },
+      conflictMarker: "PLOT_THREAD_UPDATE_IDEMPOTENCY_CONFLICT",
+      operation: "plot.thread.update",
+      entityType: "plot-thread",
+      entityId: id,
+      mutate: (occurredAt) => {
+        const before = queryOne("SELECT * FROM plot_threads WHERE id = ?", [
+          id,
+        ]);
+        if (!before) throw new Error(`plot thread not found: ${id}`);
+        if (String(before.project_id) !== identity.projectId) {
+          throw new Error(
+            "plot thread update target belongs to another project",
+          );
+        }
+        const currentVersion = Number(before.version);
+        if (currentVersion !== baseVersion) {
+          throw new Error(
+            `PLOT_THREAD_VERSION_MISMATCH: expected ${baseVersion}, found ${currentVersion}`,
+          );
+        }
+        const assignments: string[] = [];
+        const params: SqlValue[] = [];
+        for (const [key, column, nullable] of [
+          ["name", "name", false],
+          ["color", "color", true],
+          ["description", "description", true],
+          ["sortOrder", "sort_order", false],
+        ] as const) {
+          if (!Object.hasOwn(patch, key)) continue;
+          const value = patch[key];
+          if (value === null && !nullable) continue;
+          if (value !== null && typeof value !== "string") {
+            throw new Error(
+              `${command}: ${key} must be a string${nullable ? " or null" : ""}`,
+            );
+          }
+          assignments.push(`${column} = ?`);
+          params.push((value ?? null) as SqlValue);
+        }
+        if (assignments.length === 0) {
+          return { response: before, events: [] };
+        }
+        assignments.push("version = version + 1", "updated_at = ?");
+        params.push(occurredAt);
+        db.run(
+          `UPDATE plot_threads SET ${assignments.join(", ")}
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          [...params, id, identity.projectId, baseVersion],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `PLOT_THREAD_VERSION_MISMATCH: expected base version ${baseVersion}`,
+          );
+        }
+        const updated = queryOne(
+          "SELECT * FROM plot_threads WHERE id = ? AND project_id = ?",
+          [id, identity.projectId],
+        );
+        if (!updated) throw new Error(`plot thread not found: ${id}`);
+        recordBrowserPlotFieldAuthority({
+          projectId: identity.projectId,
+          entityKind: "plot-thread",
+          entityId: id,
+          fieldPaths: BROWSER_PLOT_THREAD_AUTHORITY_PATHS,
+          updatedAt: occurredAt,
+        });
+        return {
+          response: updated,
+          events: [
+            browserPlotFeedEvent({
+              entityKind: "thread",
+              entityId: id,
+              changeKind: "metadata",
+              mutationKind: "update",
+              beforeVersion: currentVersion,
+              afterVersion: Number(updated.version),
+              changedPaths: writes.map((key) => `/${key}`),
+            }),
+          ],
+        };
+      },
+    });
   }
 
-  function handlePlotThreadDelete(args: Record<string, unknown>): void {
-    const command = "plot_thread_delete";
-    const id = requiredBrowserString(command, args, "id");
-    const baseVersion = requiredBrowserBaseVersion(command, args);
-    db.run("DELETE FROM plot_threads WHERE id = ? AND version = ?", [
-      id,
-      baseVersion,
-    ]);
-    if (db.getRowsModified() !== 1) {
-      throw new Error(`PLOT_THREAD_VERSION_MISMATCH: expected ${baseVersion}`);
-    }
-    options.onDatabaseDirty?.();
+  async function handleCanonicalPlotDelete(
+    args: Record<string, unknown>,
+    config: {
+      command:
+        | "plot_thread_delete"
+        | "plot_thread_link_delete"
+        | "plot_thread_branch_delete";
+      table:
+        | "plot_threads"
+        | "plot_thread_scene_links"
+        | "plot_thread_branches";
+      operation:
+        | "plot.thread.delete"
+        | "plot.marker.delete"
+        | "plot.branch.delete";
+      entityType: "plot-thread" | "plot-marker" | "plot-branch";
+      conflictMarker: string;
+      versionMarker: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    const payload = browserCommandPayload(config.command, args);
+    const identity = browserPlotMutationIdentity(payload, config.command);
+    const id = requiredBrowserString(config.command, payload, "id");
+    const baseVersion = requiredBrowserBaseVersion(config.command, payload);
+    return runBrowserPlotMutation({
+      domain: config.command,
+      identity,
+      fingerprintPayload: {
+        id,
+        projectId: identity.projectId,
+        baseVersion,
+        origin: identity.origin,
+        originalTransactionId: identity.originalTransactionId,
+      },
+      conflictMarker: config.conflictMarker,
+      operation: config.operation,
+      entityType: config.entityType,
+      entityId: id,
+      mutate: (occurredAt) => {
+        const before = queryOne(`SELECT * FROM ${config.table} WHERE id = ?`, [
+          id,
+        ]);
+        if (!before) {
+          throw new Error(`${config.table} row not found: ${id}`);
+        }
+        const actualProjectId =
+          config.table === "plot_thread_scene_links"
+            ? queryOne(
+                `SELECT thread.project_id AS project_id
+                   FROM plot_thread_scene_links link
+                   JOIN plot_threads thread ON thread.id = link.thread_id
+                  WHERE link.id = ?`,
+                [id],
+              )?.project_id
+            : before.project_id;
+        if (actualProjectId !== identity.projectId) {
+          throw new Error("plot delete target belongs to another project");
+        }
+        db.run(`DELETE FROM ${config.table} WHERE id = ? AND version = ?`, [
+          id,
+          baseVersion,
+        ]);
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `${config.versionMarker}: expected ${baseVersion}, found ${String(before.version)}`,
+          );
+        }
+        const [entityKind, fieldPaths] =
+          config.table === "plot_threads"
+            ? (["plot-thread", BROWSER_PLOT_THREAD_AUTHORITY_PATHS] as const)
+            : config.table === "plot_thread_scene_links"
+              ? (["plot-marker", BROWSER_PLOT_MARKER_AUTHORITY_PATHS] as const)
+              : (["plot-branch", BROWSER_PLOT_BRANCH_AUTHORITY_PATHS] as const);
+        recordBrowserPlotFieldAuthority({
+          projectId: identity.projectId,
+          entityKind,
+          entityId: id,
+          fieldPaths,
+          updatedAt: occurredAt,
+        });
+        const feedEntityKind =
+          config.table === "plot_threads"
+            ? "thread"
+            : config.table === "plot_thread_scene_links"
+              ? "marker"
+              : "branch";
+        return {
+          response: { id, deleted: true },
+          events: [
+            browserPlotFeedEvent({
+              entityKind: feedEntityKind,
+              entityId: id,
+              changeKind:
+                feedEntityKind === "thread" ? "catalog" : "association",
+              mutationKind: "delete",
+              beforeVersion: Number(before.version),
+              afterVersion: null,
+              changedPaths: ["/"],
+            }),
+          ],
+        };
+      },
+    });
+  }
+
+  function handlePlotThreadDelete(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return handleCanonicalPlotDelete(args, {
+      command: "plot_thread_delete",
+      table: "plot_threads",
+      operation: "plot.thread.delete",
+      entityType: "plot-thread",
+      conflictMarker: "PLOT_THREAD_DELETE_IDEMPOTENCY_CONFLICT",
+      versionMarker: "PLOT_THREAD_VERSION_MISMATCH",
+    });
   }
 
   function browserPlotSemanticKeyForUpdate(
@@ -8548,251 +18376,335 @@ export async function createBrowserMock(
       : nextNaturalKey;
   }
 
-  function handlePlotThreadLinkUpdate(
+  async function handlePlotThreadLinkUpdate(
     args: Record<string, unknown>,
-  ): Record<string, unknown> | null {
+  ): Promise<Record<string, unknown>> {
     const command = "plot_thread_link_update";
     const id = requiredBrowserString(command, args, "id");
     const patch = browserPatchRecord(command, args);
+    const identity = browserPlotMutationIdentity(patch, command);
     const baseVersion = requiredBrowserBaseVersion(command, patch);
-    db.run("BEGIN IMMEDIATE");
-    try {
-      const current = queryOne(
-        "SELECT * FROM plot_thread_scene_links WHERE id = ?",
-        [id],
-      );
-      if (!current) {
-        throw new Error(`plot thread link not found: ${id}`);
-      }
-      if (Number(current.version) !== baseVersion) {
-        throw new Error(
-          `PLOT_THREAD_LINK_VERSION_MISMATCH: expected ${baseVersion}, found ${String(current.version)}`,
-        );
-      }
-      const owner = queryOne(
-        "SELECT project_id FROM plot_threads WHERE id = ?",
-        [current.thread_id as SqlValue],
-      );
-      if (!owner) {
-        throw new Error(`plot thread link '${id}' has no owning thread`);
-      }
-      const ownerProjectId = String(owner.project_id);
-      const threadId = Object.hasOwn(patch, "threadId")
-        ? requiredBrowserString(command, patch, "threadId")
-        : String(current.thread_id);
-      const nodeId = Object.hasOwn(patch, "nodeId")
-        ? requiredBrowserString(command, patch, "nodeId")
-        : String(current.node_id);
-      const phaseType = Object.hasOwn(patch, "phaseType")
-        ? requiredBrowserString(command, patch, "phaseType")
-        : String(current.phase_type);
-      if (
-        !["introduce", "develop", "turn", "climax", "resolve"].includes(
-          phaseType,
-        )
-      ) {
-        throw new Error(`invalid phase_type: ${phaseType}`);
-      }
-      const thread = queryOne(
-        "SELECT project_id FROM plot_threads WHERE id = ?",
-        [threadId],
-      );
-      const node = queryOne(
-        "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
-        [nodeId],
-      );
-      if (
-        !thread ||
-        !node ||
-        thread.project_id !== ownerProjectId ||
-        node.project_id !== ownerProjectId ||
-        node.node_type !== "scene"
-      ) {
-        throw new Error(
-          "plot thread link move must stay within its owning project",
-        );
-      }
-      const assignments: string[] = [];
-      const params: SqlValue[] = [];
-      for (const [key, column] of [
-        ["threadId", "thread_id"],
-        ["nodeId", "node_id"],
-        ["phaseType", "phase_type"],
-        ["note", "note"],
-        ["sortOrder", "sort_order"],
-      ] as const) {
-        if (!Object.hasOwn(patch, key)) continue;
-        assignments.push(`${column} = ?`);
-        params.push((patch[key] ?? null) as SqlValue);
-      }
-      if (assignments.length === 0) {
-        db.run("COMMIT");
-        return current;
-      }
-      assignments.push(
-        "semantic_key = ?",
-        "version = version + 1",
-        "updated_at = ?",
-      );
-      const naturalSemanticKey = `${threadId}|${nodeId}|${phaseType}`;
-      params.push(
-        browserPlotSemanticKeyForUpdate(
-          current.semantic_key,
-          naturalSemanticKey,
-        ),
-        new Date().toISOString(),
+    const changedPaths = [
+      ["threadId", "/threadId", false],
+      ["nodeId", "/sceneId", false],
+      ["phaseType", "/phaseType", false],
+      ["note", "/note", true],
+      ["sortOrder", "/sortOrder", true],
+    ]
+      .filter(
+        ([key, , nullable]) =>
+          Object.hasOwn(patch, key as string) &&
+          !(!nullable && patch[key as string] === null),
+      )
+      .map(([, path]) => path as string);
+    return runBrowserPlotMutation({
+      domain: command,
+      identity,
+      fingerprintPayload: {
         id,
+        projectId: identity.projectId,
+        origin: identity.origin,
+        originalTransactionId: identity.originalTransactionId,
+        threadId: Object.hasOwn(patch, "threadId") ? patch.threadId : null,
+        nodeId: Object.hasOwn(patch, "nodeId") ? patch.nodeId : null,
+        phaseType: Object.hasOwn(patch, "phaseType") ? patch.phaseType : null,
+        note: Object.hasOwn(patch, "note") ? patch.note : null,
+        sortOrder: Object.hasOwn(patch, "sortOrder") ? patch.sortOrder : null,
         baseVersion,
-      );
-      db.run(
-        `UPDATE plot_thread_scene_links SET ${assignments.join(", ")}
-          WHERE id = ? AND version = ?`,
-        params,
-      );
-      if (db.getRowsModified() !== 1) {
-        throw new Error(
-          `PLOT_THREAD_LINK_VERSION_MISMATCH: expected ${baseVersion}`,
+      },
+      conflictMarker: "PLOT_THREAD_LINK_UPDATE_IDEMPOTENCY_CONFLICT",
+      operation: "plot.marker.update",
+      entityType: "plot-marker",
+      entityId: id,
+      mutate: (occurredAt) => {
+        const before = queryOne(
+          "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+          [id],
         );
-      }
-      const updated = queryOne(
-        "SELECT * FROM plot_thread_scene_links WHERE id = ?",
-        [id],
-      );
-      if (!updated) throw new Error(`plot thread link not found: ${id}`);
-      db.run("COMMIT");
-      options.onDatabaseDirty?.();
-      return updated;
-    } catch (error) {
-      try {
-        db.run("ROLLBACK");
-      } catch {
-        // Preserve the link update failure.
-      }
-      throw error;
-    }
+        if (!before) throw new Error(`plot thread link not found: ${id}`);
+        const currentVersion = Number(before.version);
+        if (currentVersion !== baseVersion) {
+          throw new Error(
+            `PLOT_THREAD_LINK_VERSION_MISMATCH: expected ${baseVersion}, found ${currentVersion}`,
+          );
+        }
+        const currentThreadId = String(before.thread_id);
+        const ownerProjectId = queryOne(
+          "SELECT project_id FROM plot_threads WHERE id = ?",
+          [currentThreadId],
+        )?.project_id;
+        if (ownerProjectId !== identity.projectId) {
+          throw new Error(
+            "plot thread link update target belongs to another project",
+          );
+        }
+        if (changedPaths.length === 0) {
+          return { response: before, events: [] };
+        }
+        const requiredPatchString = (
+          key: string,
+          current: SqlValue,
+        ): string => {
+          if (!Object.hasOwn(patch, key) || patch[key] === null) {
+            return String(current);
+          }
+          return requiredBrowserString(command, patch, key);
+        };
+        const threadId = requiredPatchString("threadId", before.thread_id);
+        const nodeId = requiredPatchString("nodeId", before.node_id);
+        const phaseType = requiredPatchString("phaseType", before.phase_type);
+        if (
+          !["introduce", "develop", "turn", "climax", "resolve"].includes(
+            phaseType,
+          )
+        ) {
+          throw new Error(`invalid phase_type: ${phaseType}`);
+        }
+        const nextThread = queryOne(
+          "SELECT project_id FROM plot_threads WHERE id = ?",
+          [threadId],
+        );
+        const node = queryOne(
+          "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+          [nodeId],
+        );
+        if (
+          nextThread?.project_id !== identity.projectId ||
+          node?.project_id !== identity.projectId ||
+          node.node_type !== "scene"
+        ) {
+          throw new Error(
+            "plot thread link move must stay within the same project",
+          );
+        }
+        const note = Object.hasOwn(patch, "note")
+          ? nullableBrowserString(command, patch, "note")
+          : (before.note ?? null);
+        const sortOrder = Object.hasOwn(patch, "sortOrder")
+          ? nullableBrowserString(command, patch, "sortOrder")
+          : (before.sort_order ?? null);
+        const semanticKey = browserPlotSemanticKeyForUpdate(
+          before.semantic_key,
+          `${threadId}|${nodeId}|${phaseType}`,
+        );
+        db.run(
+          `UPDATE plot_thread_scene_links
+              SET thread_id = ?, node_id = ?, phase_type = ?, note = ?,
+                  sort_order = ?, semantic_key = ?, version = version + 1,
+                  updated_at = ?
+            WHERE id = ? AND version = ?`,
+          [
+            threadId,
+            nodeId,
+            phaseType,
+            note as SqlValue,
+            sortOrder as SqlValue,
+            semanticKey,
+            occurredAt,
+            id,
+            baseVersion,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `PLOT_THREAD_LINK_VERSION_MISMATCH: expected ${baseVersion}`,
+          );
+        }
+        const updated = queryOne(
+          "SELECT * FROM plot_thread_scene_links WHERE id = ?",
+          [id],
+        );
+        if (!updated) throw new Error(`plot thread link not found: ${id}`);
+        recordBrowserPlotFieldAuthority({
+          projectId: identity.projectId,
+          entityKind: "plot-marker",
+          entityId: id,
+          fieldPaths: BROWSER_PLOT_MARKER_AUTHORITY_PATHS,
+          updatedAt: occurredAt,
+        });
+        return {
+          response: updated,
+          events: [
+            browserPlotFeedEvent({
+              entityKind: "marker",
+              entityId: id,
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: currentVersion,
+              afterVersion: Number(updated.version),
+              changedPaths,
+            }),
+          ],
+        };
+      },
+    });
   }
 
-  function handlePlotThreadLinkDelete(args: Record<string, unknown>): void {
-    const command = "plot_thread_link_delete";
-    const id = requiredBrowserString(command, args, "id");
-    const baseVersion = requiredBrowserBaseVersion(command, args);
-    db.run("DELETE FROM plot_thread_scene_links WHERE id = ? AND version = ?", [
-      id,
-      baseVersion,
-    ]);
-    if (db.getRowsModified() !== 1) {
-      throw new Error(
-        `PLOT_THREAD_LINK_VERSION_MISMATCH: expected ${baseVersion}`,
-      );
-    }
-    options.onDatabaseDirty?.();
-  }
-
-  function handlePlotThreadBranchUpdate(
+  function handlePlotThreadLinkDelete(
     args: Record<string, unknown>,
-  ): Record<string, unknown> {
+  ): Promise<Record<string, unknown>> {
+    return handleCanonicalPlotDelete(args, {
+      command: "plot_thread_link_delete",
+      table: "plot_thread_scene_links",
+      operation: "plot.marker.delete",
+      entityType: "plot-marker",
+      conflictMarker: "PLOT_THREAD_LINK_DELETE_IDEMPOTENCY_CONFLICT",
+      versionMarker: "PLOT_THREAD_LINK_VERSION_MISMATCH",
+    });
+  }
+
+  async function handlePlotThreadBranchUpdate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
     const command = "plot_thread_branch_update";
     const id = requiredBrowserString(command, args, "id");
     const patch = browserPatchRecord(command, args);
+    const identity = browserPlotMutationIdentity(patch, command);
     const baseVersion = requiredBrowserBaseVersion(command, patch);
-    const current = queryOne(
-      "SELECT * FROM plot_thread_branches WHERE id = ?",
-      [id],
-    );
-    if (!current) throw new Error(`plot thread branch not found: ${id}`);
-    const currentVersion = Number(current.version ?? 0);
-    if (currentVersion !== baseVersion) {
-      throw new Error(
-        `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${baseVersion}, found ${currentVersion}`,
-      );
-    }
-    const projectId = String(current.project_id);
-    const fromThreadId = Object.hasOwn(patch, "fromThreadId")
-      ? requiredBrowserString(command, patch, "fromThreadId")
-      : String(current.from_thread_id);
-    const toThreadId = Object.hasOwn(patch, "toThreadId")
-      ? requiredBrowserString(command, patch, "toThreadId")
-      : String(current.to_thread_id);
-    const atNodeId = Object.hasOwn(patch, "atNodeId")
-      ? requiredBrowserString(command, patch, "atNodeId")
-      : String(current.at_node_id);
-    if (fromThreadId === toThreadId) {
-      throw new Error(
-        "plot thread branch cannot reference the same thread twice",
-      );
-    }
-    if (
-      !Object.hasOwn(patch, "fromThreadId") &&
-      !Object.hasOwn(patch, "toThreadId") &&
-      !Object.hasOwn(patch, "atNodeId")
-    ) {
-      return current;
-    }
-    requireBrowserProjectMember(
-      "plot_threads",
-      fromThreadId,
-      projectId,
-      "plot thread branch source must stay in its project",
-    );
-    requireBrowserProjectMember(
-      "plot_threads",
-      toThreadId,
-      projectId,
-      "plot thread branch target must stay in its project",
-    );
-    requireBrowserPlotScene(
-      atNodeId,
-      projectId,
-      "plot thread branch must reference a scene in its project",
-    );
-    const naturalSemanticKey = `${fromThreadId}|${toThreadId}|${atNodeId}|${String(current.kind)}`;
-    db.run(
-      `UPDATE plot_thread_branches
-          SET from_thread_id = ?, to_thread_id = ?, at_node_id = ?,
-              semantic_key = ?, version = ?, updated_at = ?
-        WHERE id = ? AND version = ?`,
-      [
-        fromThreadId,
-        toThreadId,
-        atNodeId,
-        browserPlotSemanticKeyForUpdate(
-          current.semantic_key,
-          naturalSemanticKey,
-        ),
-        currentVersion + 1,
-        new Date().toISOString(),
+    const changedPaths = [
+      ["fromThreadId", "/fromThreadId"],
+      ["toThreadId", "/toThreadId"],
+      ["atNodeId", "/atSceneId"],
+    ]
+      .filter(
+        ([key]) => Object.hasOwn(patch, key) && patch[key as string] !== null,
+      )
+      .map(([, path]) => path);
+    return runBrowserPlotMutation({
+      domain: command,
+      identity,
+      fingerprintPayload: {
         id,
-        currentVersion,
-      ],
-    );
-    if (db.getRowsModified() !== 1) {
-      throw new Error(
-        `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${currentVersion}`,
-      );
-    }
-    const updated = queryOne(
-      "SELECT * FROM plot_thread_branches WHERE id = ?",
-      [id],
-    );
-    if (!updated) throw new Error(`plot thread branch not found: ${id}`);
-    options.onDatabaseDirty?.();
-    return updated;
+        projectId: identity.projectId,
+        origin: identity.origin,
+        originalTransactionId: identity.originalTransactionId,
+        fromThreadId: Object.hasOwn(patch, "fromThreadId")
+          ? patch.fromThreadId
+          : null,
+        toThreadId: Object.hasOwn(patch, "toThreadId")
+          ? patch.toThreadId
+          : null,
+        atNodeId: Object.hasOwn(patch, "atNodeId") ? patch.atNodeId : null,
+        baseVersion,
+      },
+      conflictMarker: "PLOT_THREAD_BRANCH_UPDATE_IDEMPOTENCY_CONFLICT",
+      operation: "plot.branch.update",
+      entityType: "plot-branch",
+      entityId: id,
+      mutate: (occurredAt) => {
+        const before = queryOne(
+          "SELECT * FROM plot_thread_branches WHERE id = ?",
+          [id],
+        );
+        if (!before) throw new Error(`plot thread branch not found: ${id}`);
+        const currentVersion = Number(before.version ?? 0);
+        if (currentVersion !== baseVersion) {
+          throw new Error(
+            `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${baseVersion}, found ${currentVersion}`,
+          );
+        }
+        if (before.project_id !== identity.projectId) {
+          throw new Error(
+            "plot thread branch update target belongs to another project",
+          );
+        }
+        if (changedPaths.length === 0) {
+          return { response: before, events: [] };
+        }
+        const next = (key: string, current: SqlValue): string =>
+          Object.hasOwn(patch, key) && patch[key] !== null
+            ? requiredBrowserString(command, patch, key)
+            : String(current);
+        const fromThreadId = next("fromThreadId", before.from_thread_id);
+        const toThreadId = next("toThreadId", before.to_thread_id);
+        const atNodeId = next("atNodeId", before.at_node_id);
+        if (fromThreadId === toThreadId) {
+          throw new Error(
+            "plot thread branch cannot reference the same thread twice",
+          );
+        }
+        requireBrowserProjectMember(
+          "plot_threads",
+          fromThreadId,
+          identity.projectId,
+          "plot thread branch source must stay in its project",
+        );
+        requireBrowserProjectMember(
+          "plot_threads",
+          toThreadId,
+          identity.projectId,
+          "plot thread branch target must stay in its project",
+        );
+        requireBrowserPlotScene(
+          atNodeId,
+          identity.projectId,
+          "plot thread branch must reference a scene in its project",
+        );
+        const semanticKey = browserPlotSemanticKeyForUpdate(
+          before.semantic_key,
+          `${fromThreadId}|${toThreadId}|${atNodeId}|${String(before.kind)}`,
+        );
+        db.run(
+          `UPDATE plot_thread_branches
+              SET from_thread_id = ?, to_thread_id = ?, at_node_id = ?,
+                  semantic_key = ?, version = version + 1, updated_at = ?
+            WHERE id = ? AND version = ?`,
+          [
+            fromThreadId,
+            toThreadId,
+            atNodeId,
+            semanticKey,
+            occurredAt,
+            id,
+            baseVersion,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${baseVersion}`,
+          );
+        }
+        const updated = queryOne(
+          "SELECT * FROM plot_thread_branches WHERE id = ?",
+          [id],
+        );
+        if (!updated) throw new Error(`plot thread branch not found: ${id}`);
+        recordBrowserPlotFieldAuthority({
+          projectId: identity.projectId,
+          entityKind: "plot-branch",
+          entityId: id,
+          fieldPaths: BROWSER_PLOT_BRANCH_AUTHORITY_PATHS,
+          updatedAt: occurredAt,
+        });
+        return {
+          response: updated,
+          events: [
+            browserPlotFeedEvent({
+              entityKind: "branch",
+              entityId: id,
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: currentVersion,
+              afterVersion: Number(updated.version),
+              changedPaths,
+            }),
+          ],
+        };
+      },
+    });
   }
 
-  function handlePlotThreadBranchDelete(args: Record<string, unknown>): void {
-    const command = "plot_thread_branch_delete";
-    const id = requiredBrowserString(command, args, "id");
-    const baseVersion = requiredBrowserBaseVersion(command, args);
-    db.run("DELETE FROM plot_thread_branches WHERE id = ? AND version = ?", [
-      id,
-      baseVersion,
-    ]);
-    if (db.getRowsModified() !== 1) {
-      throw new Error(
-        `PLOT_THREAD_BRANCH_VERSION_MISMATCH: expected ${baseVersion}`,
-      );
-    }
-    options.onDatabaseDirty?.();
+  function handlePlotThreadBranchDelete(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    return handleCanonicalPlotDelete(args, {
+      command: "plot_thread_branch_delete",
+      table: "plot_thread_branches",
+      operation: "plot.branch.delete",
+      entityType: "plot-branch",
+      conflictMarker: "PLOT_THREAD_BRANCH_DELETE_IDEMPOTENCY_CONFLICT",
+      versionMarker: "PLOT_THREAD_BRANCH_VERSION_MISMATCH",
+    });
   }
 
   function browserSnapshotRecord(
@@ -9034,13 +18946,237 @@ export async function createBrowserMock(
     }
   }
 
+  function browserPlotOrderedFeedEvents(
+    rows: Array<{
+      rank: number;
+      entityId: string;
+      event: BrowserNarrativeChangeEventInput;
+    }>,
+  ): BrowserNarrativeChangeEventInput[] {
+    return rows
+      .sort(
+        (left, right) =>
+          left.rank - right.rank || compareUtf8(left.entityId, right.entityId),
+      )
+      .map(({ event }) => event);
+  }
+
+  function browserPlotMarkerChangedPaths(
+    before: BrowserPlotLinkSnapshot,
+    after: BrowserPlotLinkSnapshot,
+  ): string[] {
+    const paths = [
+      before.threadId !== after.threadId ? "/threadId" : null,
+      before.nodeId !== after.nodeId ? "/sceneId" : null,
+      before.phaseType !== after.phaseType ? "/phaseType" : null,
+      before.note !== after.note ? "/note" : null,
+      before.sortOrder !== after.sortOrder ? "/sortOrder" : null,
+      before.semanticKey !== after.semanticKey ? "/semanticKey" : null,
+    ].filter((path): path is string => path !== null);
+    return paths.length > 0 ? paths : ["/"];
+  }
+
+  function browserPlotBranchChangedPaths(
+    before: BrowserPlotBranchSnapshot,
+    after: BrowserPlotBranchSnapshot,
+  ): string[] {
+    const paths = [
+      before.fromThreadId !== after.fromThreadId ? "/fromThreadId" : null,
+      before.toThreadId !== after.toThreadId ? "/toThreadId" : null,
+      before.atNodeId !== after.atNodeId ? "/atSceneId" : null,
+      before.kind !== after.kind ? "/kind" : null,
+      before.semanticKey !== after.semanticKey ? "/semanticKey" : null,
+    ].filter((path): path is string => path !== null);
+    return paths.length > 0 ? paths : ["/"];
+  }
+
+  function browserPlotMoveFeedEvents(
+    markerBefore: BrowserPlotLinkSnapshot,
+    markerAfter: BrowserPlotLinkSnapshot,
+    transitions: BrowserPlotBranchTransition[],
+    origin: BrowserCanonicalWriteOrigin,
+  ): BrowserNarrativeChangeEventInput[] {
+    const ordered: Array<{
+      rank: number;
+      entityId: string;
+      event: BrowserNarrativeChangeEventInput;
+    }> = [
+      {
+        rank: 0,
+        entityId: markerBefore.id,
+        event: browserPlotFeedEvent({
+          entityKind: "marker",
+          entityId: markerBefore.id,
+          changeKind: "association",
+          mutationKind: "update",
+          beforeVersion: markerBefore.version,
+          afterVersion: markerAfter.version,
+          changedPaths: browserPlotMarkerChangedPaths(
+            markerBefore,
+            markerAfter,
+          ),
+        }),
+      },
+    ];
+    for (const transition of transitions) {
+      const branch = transition.after ?? transition.before;
+      if (!branch) continue;
+      const mutationKind =
+        transition.before === null
+          ? origin === "undo" || origin === "redo"
+            ? "restore"
+            : "create"
+          : transition.after === null
+            ? "delete"
+            : "update";
+      ordered.push({
+        rank: 1,
+        entityId: branch.id,
+        event: browserPlotFeedEvent({
+          entityKind: "branch",
+          entityId: branch.id,
+          changeKind: "association",
+          mutationKind,
+          beforeVersion: transition.before?.version ?? null,
+          afterVersion: transition.after?.version ?? null,
+          changedPaths:
+            transition.before && transition.after
+              ? browserPlotBranchChangedPaths(
+                  transition.before,
+                  transition.after,
+                )
+              : ["/"],
+        }),
+      });
+    }
+    return browserPlotOrderedFeedEvents(ordered);
+  }
+
+  function browserPlotRestoreFeedEvents(input: {
+    thread: BrowserPlotThreadSnapshot | null;
+    links: BrowserPlotLinkSnapshot[];
+    branches: BrowserPlotBranchSnapshot[];
+  }): BrowserNarrativeChangeEventInput[] {
+    const ordered: Array<{
+      rank: number;
+      entityId: string;
+      event: BrowserNarrativeChangeEventInput;
+    }> = [];
+    if (input.thread) {
+      ordered.push({
+        rank: 0,
+        entityId: input.thread.id,
+        event: browserPlotFeedEvent({
+          entityKind: "thread",
+          entityId: input.thread.id,
+          changeKind: "catalog",
+          mutationKind: "restore",
+          beforeVersion: null,
+          afterVersion: input.thread.version,
+          changedPaths: ["/"],
+        }),
+      });
+    }
+    for (const link of input.links) {
+      ordered.push({
+        rank: 1,
+        entityId: link.id,
+        event: browserPlotFeedEvent({
+          entityKind: "marker",
+          entityId: link.id,
+          changeKind: "association",
+          mutationKind: "restore",
+          beforeVersion: null,
+          afterVersion: link.version,
+          changedPaths: ["/"],
+        }),
+      });
+    }
+    for (const branch of input.branches) {
+      ordered.push({
+        rank: 2,
+        entityId: branch.id,
+        event: browserPlotFeedEvent({
+          entityKind: "branch",
+          entityId: branch.id,
+          changeKind: "association",
+          mutationKind: "restore",
+          beforeVersion: null,
+          afterVersion: branch.version,
+          changedPaths: ["/"],
+        }),
+      });
+    }
+    return browserPlotOrderedFeedEvents(ordered);
+  }
+
+  function browserPlotDeleteSnapshotFeedEvents(input: {
+    thread: BrowserPlotThreadSnapshot | null;
+    link: BrowserPlotLinkSnapshot | null;
+    links: BrowserPlotLinkSnapshot[];
+    branches: BrowserPlotBranchSnapshot[];
+  }): BrowserNarrativeChangeEventInput[] {
+    const ordered: Array<{
+      rank: number;
+      entityId: string;
+      event: BrowserNarrativeChangeEventInput;
+    }> = [];
+    if (input.thread) {
+      ordered.push({
+        rank: 0,
+        entityId: input.thread.id,
+        event: browserPlotFeedEvent({
+          entityKind: "thread",
+          entityId: input.thread.id,
+          changeKind: "catalog",
+          mutationKind: "delete",
+          beforeVersion: input.thread.version,
+          afterVersion: null,
+          changedPaths: ["/"],
+        }),
+      });
+    }
+    for (const link of [...(input.link ? [input.link] : []), ...input.links]) {
+      ordered.push({
+        rank: 1,
+        entityId: link.id,
+        event: browserPlotFeedEvent({
+          entityKind: "marker",
+          entityId: link.id,
+          changeKind: "association",
+          mutationKind: "delete",
+          beforeVersion: link.version,
+          afterVersion: null,
+          changedPaths: ["/"],
+        }),
+      });
+    }
+    for (const branch of input.branches) {
+      ordered.push({
+        rank: 2,
+        entityId: branch.id,
+        event: browserPlotFeedEvent({
+          entityKind: "branch",
+          entityId: branch.id,
+          changeKind: "association",
+          mutationKind: "delete",
+          beforeVersion: branch.version,
+          afterVersion: null,
+          changedPaths: ["/"],
+        }),
+      });
+    }
+    return browserPlotOrderedFeedEvents(ordered);
+  }
+
   async function handlePlotThreadMoveMarkerBundle(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const command = "plot_thread_move_marker_bundle";
     const payload = browserCommandPayload(command, args);
-    const requestId = requiredBrowserString(command, payload, "requestId");
-    const projectId = requiredBrowserString(command, payload, "projectId");
+    const identity = browserPlotMutationIdentity(payload, command);
+    const requestId = identity.requestId;
+    const projectId = identity.projectId;
     const parsedMarkerBefore = parseBrowserLinkSnapshot(
       command,
       browserSnapshotRecord(command, payload.markerBefore, "markerBefore"),
@@ -9231,7 +19367,7 @@ export async function createBrowserMock(
       branches: branchesAfter,
       deletedBranchIds,
     });
-    const loadEntity = (): Record<string, SqlValue> | null => {
+    const loadEntity = (): Record<string, unknown> | null => {
       const marker = queryOne(
         "SELECT * FROM plot_thread_scene_links WHERE id = ?",
         [markerAfter.id],
@@ -9265,18 +19401,22 @@ export async function createBrowserMock(
 
     return runBrowserIdempotentCreate({
       domain: command,
-      requestId,
+      identity,
       entityId: requestId,
-      projectId,
       fingerprintPayload: {
         projectId,
+        origin: identity.origin,
+        originalTransactionId: identity.originalTransactionId,
         markerBefore,
         markerAfter,
         branchTransitions,
       },
       conflictMarker: "PLOT_THREAD_MOVE_MARKER_IDEMPOTENCY_CONFLICT",
+      operation: "plot.marker.move",
+      entityType: "plot-marker",
+      canonicalEntityId: markerAfter.id,
       loadEntity,
-      createEntity: () => {
+      createEntity: (occurredAt) => {
         if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
           throw new Error("plot marker move project does not exist");
         }
@@ -9354,7 +19494,7 @@ export async function createBrowserMock(
             .flatMap((transition) =>
               transition.before === null ? [] : [transition.before.id],
             )
-            .sort();
+            .sort(compareUtf8);
           if (
             currentDependencyIds.join("\u0000") !==
             snapshotDependencyIds.join("\u0000")
@@ -9480,6 +19620,25 @@ export async function createBrowserMock(
           }
         }
 
+        recordBrowserPlotFieldAuthority({
+          projectId,
+          entityKind: "plot-marker",
+          entityId: markerAfter.id,
+          fieldPaths: BROWSER_PLOT_MARKER_AUTHORITY_PATHS,
+          updatedAt: occurredAt,
+        });
+        for (const transition of branchTransitions) {
+          const branch = transition.after ?? transition.before;
+          if (!branch) continue;
+          recordBrowserPlotFieldAuthority({
+            projectId,
+            entityKind: "plot-branch",
+            entityId: branch.id,
+            fieldPaths: BROWSER_PLOT_BRANCH_AUTHORITY_PATHS,
+            updatedAt: occurredAt,
+          });
+        }
+
         for (const branch of branchesAfter) {
           const duplicate = queryOne(
             `SELECT id
@@ -9502,6 +19661,13 @@ export async function createBrowserMock(
         }
         return response() as unknown as Record<string, SqlValue>;
       },
+      feedEvents: () =>
+        browserPlotMoveFeedEvents(
+          markerBefore,
+          markerAfter,
+          branchTransitions,
+          identity.origin,
+        ),
     });
   }
 
@@ -9510,8 +19676,9 @@ export async function createBrowserMock(
   ): Promise<Record<string, unknown>> {
     const command = "plot_thread_restore_snapshot";
     const payload = browserCommandPayload(command, args);
-    const requestId = requiredBrowserString(command, payload, "requestId");
-    const projectId = requiredBrowserString(command, payload, "projectId");
+    const identity = browserPlotMutationIdentity(payload, command);
+    const requestId = identity.requestId;
+    const projectId = identity.projectId;
     const rawThread = payload.thread;
     const sourceThread =
       rawThread === null || rawThread === undefined
@@ -9599,7 +19766,7 @@ export async function createBrowserMock(
       links,
       branches,
     });
-    const loadEntity = (): Record<string, SqlValue> | null => {
+    const loadEntity = (): Record<string, unknown> | null => {
       if (thread !== null) {
         const row = queryOne("SELECT * FROM plot_threads WHERE id = ?", [
           thread.id,
@@ -9625,16 +19792,21 @@ export async function createBrowserMock(
 
     return runBrowserIdempotentCreate({
       domain: command,
-      requestId,
+      identity,
       entityId: requestId,
-      projectId,
       fingerprintPayload: {
         projectId,
         thread: sourceThread,
         links: sourceLinks,
         branches: sourceBranches,
+        origin: identity.origin,
+        originalTransactionId: identity.originalTransactionId,
       },
       conflictMarker: "PLOT_THREAD_RESTORE_IDEMPOTENCY_CONFLICT",
+      operation: "plot.history.restore",
+      entityType: "plot-history",
+      canonicalEntityId:
+        thread?.id ?? links[0]?.id ?? branches[0]?.id ?? requestId,
       loadEntity,
       createEntity: () => {
         if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
@@ -9806,6 +19978,8 @@ export async function createBrowserMock(
         }
         return response() as unknown as Record<string, SqlValue>;
       },
+      feedEvents: () =>
+        browserPlotRestoreFeedEvents({ thread, links, branches }),
     });
   }
 
@@ -9814,8 +19988,9 @@ export async function createBrowserMock(
   ): Promise<Record<string, unknown>> {
     const command = "plot_thread_delete_snapshot";
     const payload = browserCommandPayload(command, args);
-    const requestId = requiredBrowserString(command, payload, "requestId");
-    const projectId = requiredBrowserString(command, payload, "projectId");
+    const identity = browserPlotMutationIdentity(payload, command);
+    const requestId = identity.requestId;
+    const projectId = identity.projectId;
     const rawThread = payload.thread;
     const rawLink = payload.link;
     const thread =
@@ -9871,7 +20046,7 @@ export async function createBrowserMock(
         browserPlotBranchNaturalKey(branch),
       );
     }
-    const loadEntity = (): Record<string, SqlValue> | null => {
+    const loadEntity = (): Record<string, unknown> | null => {
       if (thread !== null) {
         if (queryOne("SELECT id FROM plot_threads WHERE id = ?", [thread.id])) {
           return null;
@@ -9890,7 +20065,7 @@ export async function createBrowserMock(
         ) {
           return null;
         }
-        return { id: requestId, deleted: 1 };
+        return { id: requestId, deleted: true };
       }
       if (link === null) return null;
       if (
@@ -9909,16 +20084,26 @@ export async function createBrowserMock(
       ) {
         return null;
       }
-      return { id: requestId, deleted: 1 };
+      return { id: requestId, deleted: true };
     };
 
     return runBrowserIdempotentCreate({
       domain: command,
-      requestId,
+      identity,
       entityId: requestId,
-      projectId,
-      fingerprintPayload: { projectId, thread, link, links, branches },
+      fingerprintPayload: {
+        projectId,
+        thread,
+        link,
+        links,
+        branches,
+        origin: identity.origin,
+        originalTransactionId: identity.originalTransactionId,
+      },
       conflictMarker: "PLOT_THREAD_DELETE_IDEMPOTENCY_CONFLICT",
+      operation: "plot.history.delete",
+      entityType: "plot-history",
+      canonicalEntityId: thread?.id ?? link?.id ?? requestId,
       loadEntity,
       createEntity: () => {
         if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
@@ -9958,7 +20143,7 @@ export async function createBrowserMock(
             [thread.id],
           );
           const currentLinkIds = currentLinks.map((row) => String(row.id));
-          const snapshotLinkIds = links.map((row) => row.id).sort();
+          const snapshotLinkIds = links.map((row) => row.id).sort(compareUtf8);
           if (
             currentLinkIds.join("\u0000") !== snapshotLinkIds.join("\u0000")
           ) {
@@ -10005,7 +20190,9 @@ export async function createBrowserMock(
             [thread.id, thread.id],
           );
           const currentBranchIds = currentBranches.map((row) => String(row.id));
-          const snapshotBranchIds = branches.map((row) => row.id).sort();
+          const snapshotBranchIds = branches
+            .map((row) => row.id)
+            .sort(compareUtf8);
           if (
             currentBranchIds.join("\u0000") !== snapshotBranchIds.join("\u0000")
           ) {
@@ -10071,7 +20258,7 @@ export async function createBrowserMock(
               "PLOT_THREAD_DELETE_PRECONDITION_FAILED: thread version changed",
             );
           }
-          return { id: requestId, deleted: 1 };
+          return { id: requestId, deleted: true };
         }
         if (link === null) {
           throw new Error("plot delete snapshot is missing its target");
@@ -10132,10 +20319,10 @@ export async function createBrowserMock(
                 return String(row.id);
               });
         if (
-          [...expected].sort().join("\u0000") !==
+          [...expected].sort(compareUtf8).join("\u0000") !==
           branches
             .map((branch) => branch.id)
-            .sort()
+            .sort(compareUtf8)
             .join("\u0000")
         ) {
           throw new Error(
@@ -10204,8 +20391,15 @@ export async function createBrowserMock(
             "PLOT_THREAD_DELETE_PRECONDITION_FAILED: link version changed",
           );
         }
-        return { id: requestId, deleted: 1 };
+        return { id: requestId, deleted: true };
       },
+      feedEvents: () =>
+        browserPlotDeleteSnapshotFeedEvents({
+          thread,
+          link,
+          links,
+          branches,
+        }),
     });
   }
 
@@ -10228,20 +20422,55 @@ export async function createBrowserMock(
     }
   }
 
+  function browserForeshadowMutationIdentity(
+    payload: Record<string, unknown>,
+    command: string,
+  ): BrowserCanonicalWriteIdentity {
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const requestId = requiredBrowserString(command, payload, "requestId");
+    const sessionId = requiredBrowserString(command, payload, "sessionId");
+    const eventUid = requiredBrowserString(command, payload, "eventUid");
+    const origin = requiredBrowserString(command, payload, "origin");
+    if (!BROWSER_CANONICAL_WRITE_ORIGINS.has(origin)) {
+      throw new Error(`${command}: unsupported Change Feed origin '${origin}'`);
+    }
+    const originalTransactionId = browserCanonicalNullableIdentity(
+      payload,
+      "originalTransactionId",
+      command,
+    );
+    const undoJournalId = Object.hasOwn(payload, "undoJournalId")
+      ? browserCanonicalNullableIdentity(payload, "undoJournalId", command)
+      : null;
+    const replaysHistory = origin === "undo" || origin === "redo";
+    if (
+      replaysHistory !== (originalTransactionId !== null) ||
+      (!replaysHistory && undoJournalId !== null)
+    ) {
+      throw new Error(
+        `${command}: undo/redo requires originalTransactionId and forward writes forbid undoJournalId`,
+      );
+    }
+    return {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid,
+      origin: origin as BrowserCanonicalWriteOrigin,
+      originalTransactionId,
+      undoJournalId,
+    };
+  }
+
   async function handleForeshadowCreate(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const command = "foreshadow_create";
     const payload = browserCommandPayload(command, args);
+    const identity = browserForeshadowMutationIdentity(payload, command);
     const suppliedId = optionalBrowserString(command, payload, "id");
-    const suppliedRequestId = optionalBrowserString(
-      command,
-      payload,
-      "requestId",
-    );
-    const requestId = suppliedRequestId ?? suppliedId;
-    const id = suppliedId ?? requestId ?? crypto.randomUUID();
-    const projectId = requiredBrowserString(command, payload, "projectId");
+    const id = suppliedId ?? identity.requestId;
+    const projectId = identity.projectId;
     const title = requiredBrowserString(command, payload, "title");
     const intent = nullableBrowserString(command, payload, "intent");
     const notes = nullableBrowserString(command, payload, "notes");
@@ -10284,19 +20513,68 @@ export async function createBrowserMock(
       secret,
       loadBearing,
       codexLinkDirtyAt,
+      origin: identity.origin,
+      originalTransactionId: identity.originalTransactionId,
     };
     const loadEntity = () =>
       queryOne("SELECT * FROM foreshadows WHERE id = ?", [id]);
-
-    return runBrowserIdempotentCreate({
-      domain: command,
-      requestId,
-      entityId: id,
-      projectId,
-      fingerprintPayload,
-      conflictMarker: "FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT",
-      loadEntity,
-      createEntity: () => {
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserPayloadFingerprint(
+        command,
+        fingerprintPayload,
+      );
+      const conflictMarker = "FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT";
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) {
+        const row = loadEntity();
+        return {
+          ...(row ?? { id }),
+          ...replay,
+          __idempotency: {
+            replayed: true,
+            entityPresent: row !== null,
+          },
+        };
+      }
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId,
+        sceneId: null,
+        domain: "foreshadow",
+        opType: "foreshadow.create",
+        entityType: "foreshadow",
+        entityId: id,
+        payload: JSON.stringify({ requestHash }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          const row = loadEntity();
+          db.run("COMMIT");
+          return {
+            ...(row ?? { id }),
+            ...committed,
+            __idempotency: {
+              replayed: true,
+              entityPresent: row !== null,
+            },
+          };
+        }
         if (
           loadBearing !== null &&
           !["critical", "supporting", "optional"].includes(loadBearing)
@@ -10325,7 +20603,6 @@ export async function createBrowserMock(
         if (payoffSceneId !== null) {
           requireBrowserForeshadowPayoffScene(payoffSceneId, projectId);
         }
-        const timestamp = Date.now();
         try {
           db.run(
             `INSERT INTO foreshadows
@@ -10382,8 +20659,60 @@ export async function createBrowserMock(
             "foreshadow create completed without a persisted row",
           );
         }
-        return created;
-      },
+        const createdState = loadBrowserForeshadowAggregateSnapshot(
+          id,
+          projectId,
+        );
+        if (!createdState) {
+          throw new Error(
+            "foreshadow create completed without a canonical aggregate",
+          );
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: null,
+          typedInverseEntity: { domain: "foreshadow", entityId: id },
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "foreshadow", foreshadowId: id },
+              changeKind: "catalog",
+              mutationKind: "create",
+              beforeVersion: null,
+              afterVersion: Number(created.version ?? 0),
+              afterState: createdState,
+              changedPaths: ["/"],
+            },
+          ],
+        });
+        const response = {
+          maintenanceTransactionId,
+          changeEventUid: identity.eventUid,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          ...created,
+          ...response,
+          __idempotency: { replayed: false, entityPresent: true },
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical foreshadow create failure.
+        }
+        throw error;
+      }
     });
   }
 
@@ -10417,12 +20746,13 @@ export async function createBrowserMock(
       : base;
   }
 
-  function handleForeshadowUpdate(
+  async function handleForeshadowUpdate(
     args: Record<string, unknown>,
-  ): Record<string, unknown> | null {
+  ): Promise<Record<string, unknown>> {
     const command = "foreshadow_update";
     const id = requiredBrowserString(command, args, "id");
     const patch = browserPatchRecord(command, args);
+    const identity = browserForeshadowMutationIdentity(patch, command);
     if (
       typeof patch.baseVersion !== "number" ||
       !Number.isSafeInteger(patch.baseVersion) ||
@@ -10459,17 +20789,7 @@ export async function createBrowserMock(
         throw new Error(`${command}: ${key} must be an integer or null`);
       }
     }
-    const current = queryOne("SELECT * FROM foreshadows WHERE id = ?", [id]);
-    if (!current) {
-      throw new Error("FORESHADOW_VERSION_MISMATCH: row missing");
-    }
-    const currentVersion = Number(current.version ?? 0);
-    const baseVersion = patch.baseVersion;
-    if (baseVersion !== currentVersion) {
-      throw new Error(
-        `foreshadow version conflict: expected ${baseVersion}, found ${currentVersion}`,
-      );
-    }
+    const baseVersion = Number(patch.baseVersion);
     if (
       Object.hasOwn(patch, "loadBearing") &&
       patch.loadBearing !== null &&
@@ -10481,50 +20801,7 @@ export async function createBrowserMock(
         `invalid load_bearing value: ${String(patch.loadBearing)}`,
       );
     }
-    const projectId = String(current.project_id);
-    const payoffSceneId = Object.hasOwn(patch, "payoffSceneId")
-      ? patch.payoffSceneId == null
-        ? null
-        : String(patch.payoffSceneId)
-      : current.payoff_scene_id == null
-        ? null
-        : String(current.payoff_scene_id);
-    const payoffFromPos = Object.hasOwn(patch, "payoffFromPos")
-      ? patch.payoffFromPos == null
-        ? null
-        : Number(patch.payoffFromPos)
-      : current.payoff_from_pos == null
-        ? null
-        : Number(current.payoff_from_pos);
-    const payoffToPos = Object.hasOwn(patch, "payoffToPos")
-      ? patch.payoffToPos == null
-        ? null
-        : Number(patch.payoffToPos)
-      : current.payoff_to_pos == null
-        ? null
-        : Number(current.payoff_to_pos);
-    if (payoffSceneId !== null) {
-      requireBrowserForeshadowPayoffScene(payoffSceneId, projectId);
-    }
-    if (
-      payoffSceneId === null
-        ? payoffFromPos !== null || payoffToPos !== null
-        : !(
-            (payoffFromPos === null && payoffToPos === null) ||
-            (payoffFromPos !== null &&
-              payoffToPos !== null &&
-              Number.isSafeInteger(payoffFromPos) &&
-              Number.isSafeInteger(payoffToPos) &&
-              0 <= payoffFromPos &&
-              payoffFromPos <= payoffToPos)
-          )
-    ) {
-      throw new Error("foreshadow payoff anchor is invalid");
-    }
-
-    const assignments: string[] = [];
-    const params: SqlValue[] = [];
-    for (const [key, column] of [
+    const fields = [
       ["title", "title"],
       ["intent", "intent"],
       ["notes", "notes"],
@@ -10535,46 +20812,274 @@ export async function createBrowserMock(
       ["abandoned", "abandoned"],
       ["secret", "secret"],
       ["loadBearing", "load_bearing"],
-    ] as const) {
-      if (!Object.hasOwn(patch, key)) continue;
-      assignments.push(`${column} = ?`);
-      const value = patch[key];
-      params.push(
-        typeof value === "boolean"
-          ? value
-            ? 1
-            : 0
-          : ((value ?? null) as SqlValue),
+    ] as const;
+    const changedFields = fields.filter(([key]) => Object.hasOwn(patch, key));
+    if (changedFields.length === 0) {
+      const current = queryOne(
+        "SELECT * FROM foreshadows WHERE id = ? AND project_id = ? AND version = ?",
+        [id, identity.projectId, baseVersion],
       );
+      if (!current) {
+        throw new Error(
+          `FORESHADOW_VERSION_MISMATCH: row missing or expected version ${baseVersion} is stale`,
+        );
+      }
+      return current;
     }
-    if (assignments.length === 0) return current;
-    assignments.push("version = version + 1", "updated_at = ?");
-    params.push(Date.now(), id, currentVersion);
-    db.run(
-      `UPDATE foreshadows SET ${assignments.join(", ")}
-        WHERE id = ? AND version = ?`,
-      params,
-    );
-    if (db.getRowsModified() !== 1) {
-      throw new Error(
-        `foreshadow version conflict: expected ${currentVersion}`,
-      );
-    }
-    const updated = queryOne("SELECT * FROM foreshadows WHERE id = ?", [id]);
-    if (!updated) throw new Error(`foreshadow not found: ${id}`);
-    options.onDatabaseDirty?.();
-    return updated;
+    const changedPaths: Record<string, string> = {
+      title: "/title",
+      intent: "/intent",
+      notes: "/notes",
+      payoffSceneId: "/payoff/sceneId",
+      payoffFromPos: "/payoff/fromPos",
+      payoffToPos: "/payoff/toPos",
+      payoffConfirmed: "/payoff/confirmed",
+      abandoned: "/abandoned",
+      secret: "/secret",
+      loadBearing: "/loadBearing",
+    };
+    const requestHash = await browserPayloadFingerprint(command, {
+      id,
+      projectId: identity.projectId,
+      baseVersion,
+      ...Object.fromEntries(fields.map(([key]) => [key, patch[key] ?? null])),
+      origin: identity.origin,
+      originalTransactionId: identity.originalTransactionId,
+    });
+    const conflictMarker = "FORESHADOW_UPDATE_IDEMPOTENCY_CONFLICT";
+
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: null,
+        domain: "foreshadow",
+        opType: "foreshadow.update",
+        entityType: "foreshadow",
+        entityId: id,
+        payload: JSON.stringify({
+          fields: changedFields.map(([key]) => key).sort(),
+          requestHash,
+        }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const before = queryOne(
+          "SELECT * FROM foreshadows WHERE id = ? AND project_id = ?",
+          [id, identity.projectId],
+        );
+        if (!before) {
+          throw new Error("FORESHADOW_VERSION_MISMATCH: row missing");
+        }
+        const beforeState = loadBrowserForeshadowAggregateSnapshot(
+          id,
+          identity.projectId,
+        );
+        if (!beforeState) {
+          throw new Error("FORESHADOW_VERSION_MISMATCH: aggregate missing");
+        }
+        const currentVersion = Number(before.version ?? 0);
+        if (currentVersion !== baseVersion) {
+          throw new Error(
+            `foreshadow version conflict: expected ${baseVersion}, found ${currentVersion}`,
+          );
+        }
+        const payoffSceneId = Object.hasOwn(patch, "payoffSceneId")
+          ? patch.payoffSceneId == null
+            ? null
+            : String(patch.payoffSceneId)
+          : before.payoff_scene_id == null
+            ? null
+            : String(before.payoff_scene_id);
+        const payoffFromPos = Object.hasOwn(patch, "payoffFromPos")
+          ? patch.payoffFromPos == null
+            ? null
+            : Number(patch.payoffFromPos)
+          : before.payoff_from_pos == null
+            ? null
+            : Number(before.payoff_from_pos);
+        const payoffToPos = Object.hasOwn(patch, "payoffToPos")
+          ? patch.payoffToPos == null
+            ? null
+            : Number(patch.payoffToPos)
+          : before.payoff_to_pos == null
+            ? null
+            : Number(before.payoff_to_pos);
+        if (payoffSceneId !== null) {
+          requireBrowserForeshadowPayoffScene(
+            payoffSceneId,
+            identity.projectId,
+          );
+        }
+        if (
+          payoffSceneId === null
+            ? payoffFromPos !== null || payoffToPos !== null
+            : !(
+                (payoffFromPos === null && payoffToPos === null) ||
+                (payoffFromPos !== null &&
+                  payoffToPos !== null &&
+                  Number.isSafeInteger(payoffFromPos) &&
+                  Number.isSafeInteger(payoffToPos) &&
+                  0 <= payoffFromPos &&
+                  payoffFromPos <= payoffToPos)
+              )
+        ) {
+          throw new Error("foreshadow payoff anchor is invalid");
+        }
+        const assignments: string[] = [];
+        const params: SqlValue[] = [];
+        for (const [key, column] of changedFields) {
+          assignments.push(`${column} = ?`);
+          const value = patch[key];
+          params.push(
+            typeof value === "boolean"
+              ? value
+                ? 1
+                : 0
+              : ((value ?? null) as SqlValue),
+          );
+        }
+        assignments.push("version = version + 1", "updated_at = ?");
+        params.push(timestamp, id, identity.projectId, baseVersion);
+        db.run(
+          `UPDATE foreshadows SET ${assignments.join(", ")}
+            WHERE id = ? AND project_id = ? AND version = ?`,
+          params,
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `foreshadow version conflict: expected ${baseVersion}`,
+          );
+        }
+        const after = queryOne(
+          "SELECT * FROM foreshadows WHERE id = ? AND project_id = ?",
+          [id, identity.projectId],
+        );
+        if (!after || Number(after.version) !== baseVersion + 1) {
+          throw new Error(`foreshadow not found after update: ${id}`);
+        }
+        const afterState = loadBrowserForeshadowAggregateSnapshot(
+          id,
+          identity.projectId,
+        );
+        if (!afterState) {
+          throw new Error(`foreshadow aggregate not found after update: ${id}`);
+        }
+        const undoJournalId = identity.undoJournalId ?? identity.requestId;
+        if (identity.origin !== "undo" && identity.origin !== "redo") {
+          db.run(
+            `INSERT INTO undo_journal
+              (id, project_id, surface, entity_kind, entity_id, op_kind,
+               before_json, after_json, base_version, result_version,
+               change_event_uid, created_at)
+             VALUES (?, ?, ?, 'foreshadow', ?, 'update', ?, ?, ?, ?, ?, ?)`,
+            [
+              undoJournalId,
+              identity.projectId,
+              identity.origin === "ai-apply" ? "in-app-agent" : "manual",
+              id,
+              JSON.stringify(beforeState),
+              JSON.stringify(afterState),
+              baseVersion,
+              baseVersion + 1,
+              identity.eventUid,
+              now,
+            ],
+          );
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId,
+          typedInverseEntity: { domain: "foreshadow", entityId: id },
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "foreshadow", foreshadowId: id },
+              changeKind: "metadata",
+              mutationKind: "update",
+              beforeVersion: baseVersion,
+              beforeState,
+              afterVersion: baseVersion + 1,
+              afterState,
+              changedPaths: changedFields
+                .map(([key]) => changedPaths[key])
+                .sort(),
+            },
+          ],
+        });
+        const response = {
+          ...after,
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical foreshadow update failure.
+        }
+        throw error;
+      }
+    });
   }
 
   async function handleForeshadowDelete(
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const command = "foreshadow_delete";
-    const id = requiredBrowserString(command, args, "id");
-    const projectId = requiredBrowserString(command, args, "projectId");
-    const sessionId = requiredBrowserString(command, args, "sessionId");
-    const baseVersion = requiredBrowserBaseVersion(command, args);
+    const payload = browserCommandPayload(command, args);
+    const identity = browserForeshadowMutationIdentity(payload, command);
+    const id = requiredBrowserString(command, payload, "id");
+    const projectId = identity.projectId;
+    const sessionId = identity.sessionId;
+    const baseVersion = requiredBrowserBaseVersion(command, payload);
     return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        command,
+        payload,
+      );
+      const conflictMarker = "FORESHADOW_DELETE_IDEMPOTENCY_CONFLICT";
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
       const captured = loadBrowserForeshadowAggregateSnapshot(id, projectId);
       if (!captured) {
         throw new Error("FORESHADOW_VERSION_MISMATCH: row missing");
@@ -10584,9 +21089,10 @@ export async function createBrowserMock(
           `FORESHADOW_VERSION_MISMATCH: expected ${baseVersion}, found ${captured.version}`,
         );
       }
-      const eventUid = crypto.randomUUID();
+      const eventUid = identity.eventUid;
       const undoJournalId = crypto.randomUUID();
       const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
         projectId,
@@ -10601,6 +21107,16 @@ export async function createBrowserMock(
       });
       db.run("BEGIN IMMEDIATE");
       try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
         const current = loadBrowserForeshadowAggregateSnapshot(id, projectId);
         if (!current || current.version !== baseVersion) {
           throw new Error(
@@ -10617,7 +21133,6 @@ export async function createBrowserMock(
             `FORESHADOW_VERSION_MISMATCH: expected ${baseVersion}`,
           );
         }
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
         db.run(
           `INSERT INTO undo_journal
             (id, project_id, surface, entity_kind, entity_id, op_kind,
@@ -10632,18 +21147,46 @@ export async function createBrowserMock(
             current.version,
             current.version,
             eventUid,
-            new Date(timestamp).toISOString(),
+            now,
           ],
         );
-        db.run("COMMIT");
-        options.onDatabaseDirty?.();
-        return {
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId,
+          typedInverseEntity: { domain: "foreshadow", entityId: id },
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "foreshadow", foreshadowId: id },
+              changeKind: "catalog",
+              mutationKind: "delete",
+              beforeVersion: current.version,
+              beforeState: current,
+              afterVersion: null,
+              changedPaths: ["/"],
+            },
+          ],
+        });
+        const response = {
           entityId: id,
           projectId,
           version: current.version,
           changeEventUid: eventUid,
           undoJournalId,
+          maintenanceTransactionId,
         };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -10665,13 +21208,15 @@ export async function createBrowserMock(
 
   function finishBrowserForeshadowChildWrite(
     foreshadowId: string,
+    projectId: string,
     changed: boolean,
     baseVersion: number,
     now: number,
   ): Record<string, SqlValue> | null {
-    const current = queryOne("SELECT * FROM foreshadows WHERE id = ?", [
-      foreshadowId,
-    ]);
+    const current = queryOne(
+      "SELECT * FROM foreshadows WHERE id = ? AND project_id = ?",
+      [foreshadowId, projectId],
+    );
     if (!current) return null;
     if (changed) {
       const currentVersion = Number(current.version ?? 0);
@@ -10683,38 +21228,275 @@ export async function createBrowserMock(
       db.run(
         `UPDATE foreshadows
             SET version = version + 1, updated_at = ?
-          WHERE id = ? AND version = ?`,
-        [now, foreshadowId, baseVersion],
+          WHERE id = ? AND project_id = ? AND version = ?`,
+        [now, foreshadowId, projectId, baseVersion],
       );
       if (db.getRowsModified() !== 1) {
         throw new Error(`FORESHADOW_VERSION_MISMATCH: expected ${baseVersion}`);
       }
     }
-    return queryOne("SELECT * FROM foreshadows WHERE id = ?", [foreshadowId]);
+    return queryOne(
+      "SELECT * FROM foreshadows WHERE id = ? AND project_id = ?",
+      [foreshadowId, projectId],
+    );
   }
 
-  function runBrowserForeshadowChildWrite<T>(
-    operation: () => { value: T; changed: boolean },
-  ): T {
-    db.run("BEGIN IMMEDIATE");
-    try {
-      const { value, changed } = operation();
-      db.run("COMMIT");
-      if (changed) options.onDatabaseDirty?.();
-      return value;
-    } catch (error) {
-      try {
-        db.run("ROLLBACK");
-      } catch {
-        // Preserve the original child-write conflict/failure.
-      }
-      throw error;
+  function browserForeshadowJsonPointerSegment(value: string): string {
+    return value.replaceAll("~", "~0").replaceAll("/", "~1");
+  }
+
+  function browserForeshadowMaintenanceIds(value: unknown): string[] {
+    if (Array.isArray(value)) {
+      return [...new Set(value.flatMap(browserForeshadowMaintenanceIds))];
     }
+    if (!isRecord(value)) return [];
+    const ids = new Set<string>();
+    if (
+      typeof value.maintenanceTransactionId === "string" &&
+      value.maintenanceTransactionId.length > 0
+    ) {
+      ids.add(value.maintenanceTransactionId);
+    }
+    if (Object.hasOwn(value, "foreshadow")) {
+      browserForeshadowMaintenanceIds(value.foreshadow).forEach((id) =>
+        ids.add(id),
+      );
+    }
+    return [...ids];
   }
 
-  function handleForeshadowUpdateSetup(
+  function loadBrowserForeshadowMutationReplay(input: {
+    operation: string;
+    identity: BrowserCanonicalWriteIdentity;
+    requestHash: string;
+    conflictMarker: string;
+  }): { response: unknown } | null {
+    const ledger = queryOne(
+      `SELECT project_id, payload_hash, tombstone_json
+         FROM idempotency_requests
+        WHERE domain = ? AND request_id = ?`,
+      [input.operation, input.identity.requestId],
+    );
+    if (!ledger) return null;
+    if (
+      String(ledger.project_id) !== input.identity.projectId ||
+      String(ledger.payload_hash) !== input.requestHash
+    ) {
+      throw new Error(
+        `${input.conflictMarker}: request id reused with different payload or project`,
+      );
+    }
+    let response: unknown;
+    try {
+      response = JSON.parse(String(ledger.tombstone_json)) as unknown;
+    } catch {
+      throw new Error(`${input.conflictMarker}: committed receipt is invalid`);
+    }
+    const transaction = queryOne(
+      `SELECT transaction_row.id, transaction_row.source_change_event_uid
+         FROM narrative_change_transactions transaction_row
+         JOIN change_events canonical
+           ON canonical.project_id = transaction_row.project_id
+          AND canonical.event_uid = transaction_row.source_change_event_uid
+        WHERE transaction_row.project_id = ?
+          AND transaction_row.request_id = ?
+          AND transaction_row.source_domain = ?`,
+      [input.identity.projectId, input.identity.requestId, input.operation],
+    );
+    const maintenanceIds = browserForeshadowMaintenanceIds(response);
+    if (transaction) {
+      if (
+        maintenanceIds.length !== 1 ||
+        maintenanceIds[0] !== String(transaction.id)
+      ) {
+        throw new Error(
+          `${input.conflictMarker}: committed history is invalid`,
+        );
+      }
+    } else if (maintenanceIds.length > 0) {
+      throw new Error(`${input.conflictMarker}: committed history is missing`);
+    }
+    return { response };
+  }
+
+  function attachBrowserForeshadowMaintenanceTransaction<T>(
+    value: T,
+    transactionId: string,
+  ): T {
+    if (Array.isArray(value)) {
+      return value.map((row) =>
+        isRecord(row)
+          ? { ...row, maintenanceTransactionId: transactionId }
+          : row,
+      ) as T;
+    }
+    if (!isRecord(value)) return value;
+    if (Object.hasOwn(value, "foreshadow")) {
+      return {
+        ...value,
+        foreshadow: isRecord(value.foreshadow)
+          ? {
+              ...value.foreshadow,
+              maintenanceTransactionId: transactionId,
+            }
+          : value.foreshadow,
+      } as T;
+    }
+    return { ...value, maintenanceTransactionId: transactionId } as T;
+  }
+
+  interface BrowserForeshadowChildWriteResult<T> {
+    value: T;
+    changed: boolean;
+    foreshadowId: string | null;
+    changedPaths: string[];
+  }
+
+  async function runBrowserForeshadowChildWrite<T>(input: {
+    command: string;
+    operation: string;
+    identityPayload: Record<string, unknown>;
+    fingerprintPayload: Record<string, unknown>;
+    expectedForeshadowId: string | null;
+    conflictMarker: string;
+    mutate: () => BrowserForeshadowChildWriteResult<T>;
+  }): Promise<T> {
+    const identity = browserForeshadowMutationIdentity(
+      input.identityPayload,
+      input.command,
+    );
+    const requestHash = await browserCanonicalWriteFingerprint(
+      input.operation,
+      input.fingerprintPayload,
+    );
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserForeshadowMutationReplay({
+        operation: input.operation,
+        identity,
+        requestHash,
+        conflictMarker: input.conflictMarker,
+      });
+      if (replay) return replay.response as T;
+      const timestamp = Date.now();
+      const occurredAt = new Date(timestamp).toISOString();
+      const preparedEvent = input.expectedForeshadowId
+        ? await prepareBrowserTrackedChangeEvent({
+            eventUid: identity.eventUid,
+            projectId: identity.projectId,
+            sceneId: null,
+            domain: "foreshadow",
+            opType: input.operation,
+            entityType: "foreshadow",
+            entityId: input.expectedForeshadowId,
+            payload: JSON.stringify({
+              requestId: identity.requestId,
+              origin: identity.origin,
+            }),
+            sessionId: identity.sessionId,
+            timestamp,
+          })
+        : null;
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserForeshadowMutationReplay({
+          operation: input.operation,
+          identity,
+          requestHash,
+          conflictMarker: input.conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed.response as T;
+        }
+        const before = input.expectedForeshadowId
+          ? loadBrowserForeshadowAggregateSnapshot(
+              input.expectedForeshadowId,
+              identity.projectId,
+            )
+          : null;
+        if (input.expectedForeshadowId && !before) {
+          throw new Error(
+            `${input.command}: foreshadow is outside the requested project`,
+          );
+        }
+        const result = input.mutate();
+        let response = result.value;
+        if (result.changed) {
+          if (
+            !preparedEvent ||
+            !before ||
+            !result.foreshadowId ||
+            result.foreshadowId !== input.expectedForeshadowId
+          ) {
+            throw new Error(
+              `${input.command}: changed aggregate identity is invalid`,
+            );
+          }
+          const after = loadBrowserForeshadowAggregateSnapshot(
+            result.foreshadowId,
+            identity.projectId,
+          );
+          if (!after) {
+            throw new Error(
+              `${input.command}: foreshadow vanished after child mutation`,
+            );
+          }
+          const maintenanceTransactionId = insertBrowserNarrativeChange({
+            preparedEvent,
+            identity,
+            requestHash,
+            undoJournalId: null,
+            typedInverseEntity: {
+              domain: "foreshadow",
+              entityId: result.foreshadowId,
+            },
+            occurredAt,
+            events: [
+              {
+                objectKey: {
+                  kind: "foreshadow",
+                  foreshadowId: result.foreshadowId,
+                },
+                changeKind: "association",
+                mutationKind: "update",
+                beforeVersion: before.version,
+                beforeState: before,
+                afterVersion: after.version,
+                afterState: after,
+                changedPaths: result.changedPaths,
+              },
+            ],
+          });
+          response = attachBrowserForeshadowMaintenanceTransaction(
+            response,
+            maintenanceTransactionId,
+          );
+        }
+        insertBrowserTrackedWriteReceipt({
+          domain: input.operation,
+          projectId: identity.projectId,
+          requestId: identity.requestId,
+          requestHash,
+          response,
+          now: occurredAt,
+        });
+        db.run("COMMIT");
+        if (result.changed) options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original canonical child-write failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleForeshadowUpdateSetup(
     args: Record<string, unknown>,
-  ): Record<string, SqlValue> | null {
+  ): Promise<Record<string, SqlValue> | null> {
     const command = "foreshadow_update_setup";
     const id = requiredBrowserString(command, args, "id");
     const patch = browserPatchRecord(command, args);
@@ -10744,39 +21526,68 @@ export async function createBrowserMock(
       );
       valuesByColumn.set(column, params.at(-1) ?? null);
     }
-    return runBrowserForeshadowChildWrite(() => {
-      const current = queryOne("SELECT * FROM foreshadow_setups WHERE id = ?", [
-        id,
-      ]);
-      if (!current) return { value: null, changed: false };
-      const changed = [...valuesByColumn].some(
-        ([column, value]) => current[column] !== value,
-      );
-      const now = Date.now();
-      if (changed && assignments.length > 0) {
-        assignments.push("updated_at = ?");
-        params.push(now, id);
-        db.run(
-          `UPDATE foreshadow_setups SET ${assignments.join(", ")} WHERE id = ?`,
-          params,
+    const root = queryOne(
+      "SELECT foreshadow_id FROM foreshadow_setups WHERE id = ?",
+      [id],
+    );
+    const foreshadowId = root ? String(root.foreshadow_id) : null;
+    return runBrowserForeshadowChildWrite({
+      command,
+      operation: "foreshadow.setup.update",
+      identityPayload: patch,
+      fingerprintPayload: { id, ...patch },
+      expectedForeshadowId: foreshadowId,
+      conflictMarker: "FORESHADOW_SETUP_UPDATE_IDEMPOTENCY_CONFLICT",
+      mutate: () => {
+        const current = queryOne(
+          "SELECT * FROM foreshadow_setups WHERE id = ?",
+          [id],
         );
-        if (db.getRowsModified() !== 1) {
-          throw new Error(`foreshadow setup '${id}' vanished during update`);
+        if (!current) {
+          return {
+            value: null,
+            changed: false,
+            foreshadowId: null,
+            changedPaths: [
+              `/setups/${browserForeshadowJsonPointerSegment(id)}`,
+            ],
+          };
         }
-      }
-      const row = finishBrowserForeshadowChildWrite(
-        String(current.foreshadow_id),
-        changed,
-        baseVersion,
-        now,
-      );
-      return { value: row, changed };
+        const changed = [...valuesByColumn].some(
+          ([column, value]) => current[column] !== value,
+        );
+        const now = Date.now();
+        if (changed && assignments.length > 0) {
+          assignments.push("updated_at = ?");
+          params.push(now, id);
+          db.run(
+            `UPDATE foreshadow_setups SET ${assignments.join(", ")} WHERE id = ?`,
+            params,
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(`foreshadow setup '${id}' vanished during update`);
+          }
+        }
+        const row = finishBrowserForeshadowChildWrite(
+          String(current.foreshadow_id),
+          String(patch.projectId),
+          changed,
+          baseVersion,
+          now,
+        );
+        return {
+          value: row,
+          changed,
+          foreshadowId: String(current.foreshadow_id),
+          changedPaths: [`/setups/${browserForeshadowJsonPointerSegment(id)}`],
+        };
+      },
     });
   }
 
-  function handleForeshadowSetupCreateAi(
+  async function handleForeshadowSetupCreateAi(
     args: Record<string, unknown>,
-  ): Record<string, SqlValue> | null {
+  ): Promise<Record<string, SqlValue> | null> {
     const command = "foreshadow_setup_create_ai";
     const id = requiredBrowserString(command, args, "id");
     const foreshadowId = requiredBrowserString(command, args, "foreshadowId");
@@ -10803,48 +21614,56 @@ export async function createBrowserMock(
       !owner ||
       !scene ||
       scene.node_type !== "scene" ||
-      owner.project_id !== scene.project_id
+      owner.project_id !== scene.project_id ||
+      owner.project_id !== args.projectId
     ) {
       throw new Error("foreshadow setup must stay within one project");
-    }
-    const existing = queryOne(
-      `SELECT foreshadow_id, scene_id, semantic_key, from_pos, to_pos, is_orphan
-         FROM foreshadow_setups WHERE id = ?`,
-      [id],
-    );
-    if (
-      existing &&
-      (String(existing.foreshadow_id) !== foreshadowId ||
-        String(existing.scene_id) !== sceneId)
-    ) {
-      throw new Error(
-        `foreshadow setup '${id}' owner or scene conflicts with the existing row`,
-      );
     }
     const strength = requireBrowserForeshadowStrength(command, args.strength);
     const aiStrength = requireBrowserForeshadowStrength(
       command,
       args.aiStrength,
     );
-    const now = Date.now();
-    const semanticKey = browserForeshadowSetupSemanticKey(
-      id,
-      foreshadowId,
-      sceneId,
-      fromPos,
-      toPos,
-      existing?.semantic_key,
-    );
-    const changed =
-      !existing ||
-      Number(existing.from_pos) !== fromPos ||
-      Number(existing.to_pos) !== toPos ||
-      String(existing.semantic_key) !== semanticKey ||
-      Number(existing.is_orphan) !== 0;
-    return runBrowserForeshadowChildWrite(() => {
-      if (changed) {
-        db.run(
-          `INSERT INTO foreshadow_setups
+    return runBrowserForeshadowChildWrite({
+      command,
+      operation: "foreshadow.setup.create",
+      identityPayload: args,
+      fingerprintPayload: args,
+      expectedForeshadowId: foreshadowId,
+      conflictMarker: "FORESHADOW_SETUP_CREATE_IDEMPOTENCY_CONFLICT",
+      mutate: () => {
+        const existing = queryOne(
+          `SELECT foreshadow_id, scene_id, semantic_key, from_pos, to_pos, is_orphan
+           FROM foreshadow_setups WHERE id = ?`,
+          [id],
+        );
+        if (
+          existing &&
+          (String(existing.foreshadow_id) !== foreshadowId ||
+            String(existing.scene_id) !== sceneId)
+        ) {
+          throw new Error(
+            `foreshadow setup '${id}' owner or scene conflicts with the existing row`,
+          );
+        }
+        const now = Date.now();
+        const semanticKey = browserForeshadowSetupSemanticKey(
+          id,
+          foreshadowId,
+          sceneId,
+          fromPos,
+          toPos,
+          existing?.semantic_key,
+        );
+        const changed =
+          !existing ||
+          Number(existing.from_pos) !== fromPos ||
+          Number(existing.to_pos) !== toPos ||
+          String(existing.semantic_key) !== semanticKey ||
+          Number(existing.is_orphan) !== 0;
+        if (changed) {
+          db.run(
+            `INSERT INTO foreshadow_setups
         (id, foreshadow_id, scene_id, from_pos, to_pos, kind, strength,
          ai_strength, attribution, ai_rationale, ai_reasoning,
          last_evaluated_at, is_orphan, semantic_key, created_at, updated_at)
@@ -10855,45 +21674,59 @@ export async function createBrowserMock(
          semantic_key = excluded.semantic_key,
          is_orphan = 0,
          updated_at = excluded.updated_at`,
-          [
-            id,
-            foreshadowId,
-            sceneId,
-            fromPos,
-            toPos,
-            String(args.kind ?? "designated_existing"),
-            strength,
-            aiStrength,
-            String(args.attribution ?? "human"),
-            args.aiRationale == null ? null : String(args.aiRationale),
-            args.aiReasoning == null ? null : String(args.aiReasoning),
-            args.lastEvaluatedAt == null ? null : Number(args.lastEvaluatedAt),
-            semanticKey,
-            now,
-            now,
-          ],
+            [
+              id,
+              foreshadowId,
+              sceneId,
+              fromPos,
+              toPos,
+              String(args.kind ?? "designated_existing"),
+              strength,
+              aiStrength,
+              String(args.attribution ?? "human"),
+              args.aiRationale == null ? null : String(args.aiRationale),
+              args.aiReasoning == null ? null : String(args.aiReasoning),
+              args.lastEvaluatedAt == null
+                ? null
+                : Number(args.lastEvaluatedAt),
+              semanticKey,
+              now,
+              now,
+            ],
+          );
+        }
+        const row = finishBrowserForeshadowChildWrite(
+          foreshadowId,
+          String(args.projectId),
+          changed,
+          baseVersion,
+          now,
         );
-      }
-      const row = finishBrowserForeshadowChildWrite(
-        foreshadowId,
-        changed,
-        baseVersion,
-        now,
-      );
-      return { value: row, changed };
+        return {
+          value: row,
+          changed,
+          foreshadowId,
+          changedPaths: [`/setups/${browserForeshadowJsonPointerSegment(id)}`],
+        };
+      },
     });
   }
 
-  function handleForeshadowLinkCodex(
+  async function handleForeshadowLinkCodex(
     args: Record<string, unknown>,
     linked: boolean,
-  ): Record<string, SqlValue> | null {
+  ): Promise<Record<string, SqlValue> | null> {
     const command = linked
       ? "foreshadow_link_codex"
       : "foreshadow_unlink_codex";
-    const foreshadowId = requiredBrowserString(command, args, "foreshadowId");
-    const codexId = requiredBrowserString(command, args, "codexId");
-    const baseVersion = requiredBrowserBaseVersion(command, args);
+    const payload = browserCommandPayload(command, args);
+    const foreshadowId = requiredBrowserString(
+      command,
+      payload,
+      "foreshadowId",
+    );
+    const codexId = requiredBrowserString(command, payload, "codexId");
+    const baseVersion = requiredBrowserBaseVersion(command, payload);
     if (linked) {
       const foreshadow = queryOne(
         "SELECT project_id FROM foreshadows WHERE id = ?",
@@ -10903,143 +21736,184 @@ export async function createBrowserMock(
         "SELECT project_id FROM codex_entries WHERE id = ?",
         [codexId],
       );
-      if (!foreshadow || !codex || foreshadow.project_id !== codex.project_id) {
+      if (
+        !foreshadow ||
+        !codex ||
+        foreshadow.project_id !== codex.project_id ||
+        foreshadow.project_id !== payload.projectId
+      ) {
         throw new Error("foreshadow Codex link must stay within one project");
       }
     }
-    return runBrowserForeshadowChildWrite(() => {
-      if (linked) {
-        db.run(
-          `INSERT OR IGNORE INTO foreshadow_codex_links
+    return runBrowserForeshadowChildWrite({
+      command,
+      operation: linked
+        ? "foreshadow.codex-link.create"
+        : "foreshadow.codex-link.delete",
+      identityPayload: payload,
+      fingerprintPayload: payload,
+      expectedForeshadowId: foreshadowId,
+      conflictMarker: linked
+        ? "FORESHADOW_CODEX_LINK_CREATE_IDEMPOTENCY_CONFLICT"
+        : "FORESHADOW_CODEX_LINK_DELETE_IDEMPOTENCY_CONFLICT",
+      mutate: () => {
+        if (linked) {
+          db.run(
+            `INSERT OR IGNORE INTO foreshadow_codex_links
             (foreshadow_id, codex_entry_id) VALUES (?, ?)`,
-          [foreshadowId, codexId],
-        );
-      } else {
-        db.run(
-          `DELETE FROM foreshadow_codex_links
+            [foreshadowId, codexId],
+          );
+        } else {
+          db.run(
+            `DELETE FROM foreshadow_codex_links
             WHERE foreshadow_id = ? AND codex_entry_id = ?`,
-          [foreshadowId, codexId],
-        );
-      }
-      const changed = db.getRowsModified() === 1;
-      const row = finishBrowserForeshadowChildWrite(
-        foreshadowId,
-        changed,
-        baseVersion,
-        Date.now(),
-      );
-      return { value: row, changed };
-    });
-  }
-
-  function handleForeshadowMarkLinkedCodexDirty(
-    args: Record<string, unknown>,
-  ): Record<string, SqlValue>[] {
-    const command = "foreshadow_mark_linked_codex_dirty";
-    const projectId = requiredBrowserString(command, args, "projectId");
-    const codexEntryId = requiredBrowserString(command, args, "codexEntryId");
-    const now = Date.now();
-    db.run("BEGIN IMMEDIATE");
-    try {
-      db.run(
-        `UPDATE foreshadows
-          SET codex_link_dirty_at = ?, updated_at = ?, version = version + 1
-        WHERE project_id = ?
-          AND id IN (
-            SELECT foreshadow_id FROM foreshadow_codex_links
-             WHERE codex_entry_id = ?
-          )`,
-        [now, now, projectId, codexEntryId],
-      );
-      const mutated = db.getRowsModified() > 0;
-      const rows = queryAll(
-        `SELECT foreshadow.*
-           FROM foreshadows foreshadow
-           JOIN foreshadow_codex_links link
-             ON link.foreshadow_id = foreshadow.id
-          WHERE foreshadow.project_id = ? AND link.codex_entry_id = ?
-          ORDER BY foreshadow.id`,
-        [projectId, codexEntryId],
-      );
-      db.run("COMMIT");
-      if (mutated) options.onDatabaseDirty?.();
-      return rows;
-    } catch (error) {
-      try {
-        db.run("ROLLBACK");
-      } catch {
-        // Preserve the dirty-mark failure.
-      }
-      throw error;
-    }
-  }
-
-  function handleForeshadowSetSetupStrength(
-    args: Record<string, unknown>,
-  ): Record<string, SqlValue> | null {
-    const command = "foreshadow_set_setup_strength";
-    const setupId = requiredBrowserString(command, args, "setupId");
-    const strength = requireBrowserForeshadowStrength(command, args.strength);
-    const baseVersion = requiredBrowserBaseVersion(command, args);
-    return runBrowserForeshadowChildWrite(() => {
-      const current = queryOne("SELECT * FROM foreshadow_setups WHERE id = ?", [
-        setupId,
-      ]);
-      if (!current) return { value: null, changed: false };
-      const changed = current.strength !== strength;
-      const now = Date.now();
-      if (changed) {
-        db.run(
-          "UPDATE foreshadow_setups SET strength = ?, updated_at = ? WHERE id = ?",
-          [strength, now, setupId],
-        );
-      }
-      const row = finishBrowserForeshadowChildWrite(
-        String(current.foreshadow_id),
-        changed,
-        baseVersion,
-        now,
-      );
-      return { value: row, changed };
-    });
-  }
-
-  function handleForeshadowResolveOrphan(
-    args: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const command = "foreshadow_resolve_orphan";
-    const payload = browserCommandPayload(command, args);
-    const setupId = requiredBrowserString(command, payload, "setupId");
-    const action = requiredBrowserString(command, payload, "action");
-    const baseVersion = requiredBrowserBaseVersion(command, payload);
-    if (action === "delete") {
-      return runBrowserForeshadowChildWrite(() => {
-        const current = queryOne(
-          "SELECT foreshadow_id FROM foreshadow_setups WHERE id = ?",
-          [setupId],
-        );
-        if (!current) {
-          return {
-            value: { setupId: null, foreshadow: null },
-            changed: false,
-          };
+            [foreshadowId, codexId],
+          );
         }
-        db.run("DELETE FROM foreshadow_setups WHERE id = ?", [setupId]);
         const changed = db.getRowsModified() === 1;
-        const foreshadow = finishBrowserForeshadowChildWrite(
-          String(current.foreshadow_id),
+        const row = finishBrowserForeshadowChildWrite(
+          foreshadowId,
+          String(payload.projectId),
           changed,
           baseVersion,
           Date.now(),
         );
         return {
-          value: { setupId: null, foreshadow },
+          value: row,
           changed,
+          foreshadowId,
+          changedPaths: [
+            `/codexLinks/${browserForeshadowJsonPointerSegment(codexId)}`,
+          ],
         };
-      });
-    }
-    if (action !== "reanchor" && action !== "reinsert") {
+      },
+    });
+  }
+
+  async function handleForeshadowSetSetupStrength(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, SqlValue> | null> {
+    const command = "foreshadow_set_setup_strength";
+    const payload = browserCommandPayload(command, args);
+    const setupId = requiredBrowserString(command, payload, "setupId");
+    const strength = requireBrowserForeshadowStrength(
+      command,
+      payload.strength,
+    );
+    const baseVersion = requiredBrowserBaseVersion(command, payload);
+    const root = queryOne(
+      "SELECT foreshadow_id FROM foreshadow_setups WHERE id = ?",
+      [setupId],
+    );
+    const foreshadowId = root ? String(root.foreshadow_id) : null;
+    return runBrowserForeshadowChildWrite({
+      command,
+      operation: "foreshadow.setup.strength",
+      identityPayload: payload,
+      fingerprintPayload: payload,
+      expectedForeshadowId: foreshadowId,
+      conflictMarker: "FORESHADOW_SETUP_UPDATE_IDEMPOTENCY_CONFLICT",
+      mutate: () => {
+        const current = queryOne(
+          "SELECT * FROM foreshadow_setups WHERE id = ?",
+          [setupId],
+        );
+        if (!current) {
+          return {
+            value: null,
+            changed: false,
+            foreshadowId: null,
+            changedPaths: [
+              `/setups/${browserForeshadowJsonPointerSegment(setupId)}`,
+            ],
+          };
+        }
+        const changed = current.strength !== strength;
+        const now = Date.now();
+        if (changed) {
+          db.run(
+            "UPDATE foreshadow_setups SET strength = ?, updated_at = ? WHERE id = ?",
+            [strength, now, setupId],
+          );
+        }
+        const row = finishBrowserForeshadowChildWrite(
+          String(current.foreshadow_id),
+          String(payload.projectId),
+          changed,
+          baseVersion,
+          now,
+        );
+        return {
+          value: row,
+          changed,
+          foreshadowId: String(current.foreshadow_id),
+          changedPaths: [
+            `/setups/${browserForeshadowJsonPointerSegment(setupId)}`,
+          ],
+        };
+      },
+    });
+  }
+
+  async function handleForeshadowResolveOrphan(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "foreshadow_resolve_orphan";
+    const payload = browserCommandPayload(command, args);
+    const setupId = requiredBrowserString(command, payload, "setupId");
+    const action = requiredBrowserString(command, payload, "action");
+    const baseVersion = requiredBrowserBaseVersion(command, payload);
+    browserForeshadowMutationIdentity(payload, command);
+    if (action !== "delete" && action !== "reanchor" && action !== "reinsert") {
       return { setupId: null, foreshadow: null };
+    }
+    const root = queryOne(
+      "SELECT foreshadow_id FROM foreshadow_setups WHERE id = ?",
+      [setupId],
+    );
+    const foreshadowId = root ? String(root.foreshadow_id) : null;
+    if (action === "delete") {
+      return runBrowserForeshadowChildWrite<Record<string, unknown>>({
+        command,
+        operation: "foreshadow.orphan.resolve",
+        identityPayload: payload,
+        fingerprintPayload: payload,
+        expectedForeshadowId: foreshadowId,
+        conflictMarker: "FORESHADOW_ORPHAN_RESOLVE_IDEMPOTENCY_CONFLICT",
+        mutate: () => {
+          const current = queryOne(
+            "SELECT foreshadow_id FROM foreshadow_setups WHERE id = ?",
+            [setupId],
+          );
+          if (!current) {
+            return {
+              value: { setupId: null, foreshadow: null },
+              changed: false,
+              foreshadowId: null,
+              changedPaths: [
+                `/setups/${browserForeshadowJsonPointerSegment(setupId)}`,
+              ],
+            };
+          }
+          db.run("DELETE FROM foreshadow_setups WHERE id = ?", [setupId]);
+          const changed = db.getRowsModified() === 1;
+          const foreshadow = finishBrowserForeshadowChildWrite(
+            String(current.foreshadow_id),
+            String(payload.projectId),
+            changed,
+            baseVersion,
+            Date.now(),
+          );
+          return {
+            value: { setupId: null, foreshadow },
+            changed,
+            foreshadowId: String(current.foreshadow_id),
+            changedPaths: [
+              `/setups/${browserForeshadowJsonPointerSegment(setupId)}`,
+            ],
+          };
+        },
+      });
     }
     const sceneId = requiredBrowserString(command, payload, "sceneId");
     const fromPos = Number(payload.fromPos);
@@ -11054,18 +21928,128 @@ export async function createBrowserMock(
     }
     if (action === "reinsert") {
       const newId = crypto.randomUUID();
-      db.run("BEGIN IMMEDIATE");
-      try {
-        const current = queryOne(
-          `SELECT setup.*, foreshadow.project_id
+      return runBrowserForeshadowChildWrite<Record<string, unknown>>({
+        command,
+        operation: "foreshadow.orphan.resolve",
+        identityPayload: payload,
+        fingerprintPayload: payload,
+        expectedForeshadowId: foreshadowId,
+        conflictMarker: "FORESHADOW_ORPHAN_RESOLVE_IDEMPOTENCY_CONFLICT",
+        mutate: () => {
+          const current = queryOne(
+            `SELECT setup.*, foreshadow.project_id
              FROM foreshadow_setups setup
              JOIN foreshadows foreshadow ON foreshadow.id = setup.foreshadow_id
             WHERE setup.id = ?`,
+            [setupId],
+          );
+          if (!current) {
+            return {
+              value: { setupId: null, foreshadow: null },
+              changed: false,
+              foreshadowId: null,
+              changedPaths: [
+                `/setups/${browserForeshadowJsonPointerSegment(setupId)}`,
+              ],
+            };
+          }
+          const scene = queryOne(
+            "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
+            [sceneId],
+          );
+          if (
+            scene?.node_type !== "scene" ||
+            scene.project_id !== current.project_id ||
+            current.project_id !== payload.projectId
+          ) {
+            throw new Error(
+              "foreshadow orphan anchor must stay within one project",
+            );
+          }
+          const now = Date.now();
+          const semanticKey = browserForeshadowSetupSemanticKey(
+            newId,
+            String(current.foreshadow_id),
+            sceneId,
+            fromPos,
+            toPos,
+          );
+          db.run("DELETE FROM foreshadow_setups WHERE id = ?", [setupId]);
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              `foreshadow setup '${setupId}' vanished during reinsert`,
+            );
+          }
+          db.run(
+            `INSERT INTO foreshadow_setups
+            (id, foreshadow_id, scene_id, from_pos, to_pos, kind, role,
+             strength, ai_strength, ai_reasoning, attribution, ai_rationale,
+             last_evaluated_at, is_orphan, evidence_anchor_id, semantic_key,
+             created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'inserted_new', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+            [
+              newId,
+              current.foreshadow_id,
+              sceneId,
+              fromPos,
+              toPos,
+              current.role,
+              current.strength,
+              current.ai_strength,
+              current.ai_reasoning,
+              current.attribution,
+              current.ai_rationale,
+              current.last_evaluated_at,
+              current.evidence_anchor_id,
+              semanticKey,
+              now,
+              now,
+            ],
+          );
+          const foreshadow = finishBrowserForeshadowChildWrite(
+            String(current.foreshadow_id),
+            String(payload.projectId),
+            true,
+            baseVersion,
+            now,
+          );
+          return {
+            value: { setupId: newId, foreshadow },
+            changed: true,
+            foreshadowId: String(current.foreshadow_id),
+            changedPaths: [
+              `/setups/${browserForeshadowJsonPointerSegment(setupId)}`,
+              `/setups/${browserForeshadowJsonPointerSegment(newId)}`,
+            ],
+          };
+        },
+      });
+    }
+
+    return runBrowserForeshadowChildWrite<Record<string, unknown>>({
+      command,
+      operation: "foreshadow.orphan.resolve",
+      identityPayload: payload,
+      fingerprintPayload: payload,
+      expectedForeshadowId: foreshadowId,
+      conflictMarker: "FORESHADOW_ORPHAN_RESOLVE_IDEMPOTENCY_CONFLICT",
+      mutate: () => {
+        const current = queryOne(
+          `SELECT setup.*, foreshadow.project_id
+           FROM foreshadow_setups setup
+           JOIN foreshadows foreshadow ON foreshadow.id = setup.foreshadow_id
+          WHERE setup.id = ?`,
           [setupId],
         );
         if (!current) {
-          db.run("COMMIT");
-          return { setupId: null, foreshadow: null };
+          return {
+            value: { setupId: null, foreshadow: null },
+            changed: false,
+            foreshadowId: null,
+            changedPaths: [
+              `/setups/${browserForeshadowJsonPointerSegment(setupId)}`,
+            ],
+          };
         }
         const scene = queryOne(
           "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
@@ -11073,7 +22057,8 @@ export async function createBrowserMock(
         );
         if (
           scene?.node_type !== "scene" ||
-          scene.project_id !== current.project_id
+          scene.project_id !== current.project_id ||
+          current.project_id !== payload.projectId
         ) {
           throw new Error(
             "foreshadow orphan anchor must stay within one project",
@@ -11081,136 +22066,60 @@ export async function createBrowserMock(
         }
         const now = Date.now();
         const semanticKey = browserForeshadowSetupSemanticKey(
-          newId,
+          setupId,
           String(current.foreshadow_id),
           sceneId,
           fromPos,
           toPos,
+          current.semantic_key,
         );
-        db.run("DELETE FROM foreshadow_setups WHERE id = ?", [setupId]);
-        if (db.getRowsModified() !== 1) {
-          throw new Error(
-            `foreshadow setup '${setupId}' vanished during reinsert`,
-          );
-        }
-        db.run(
-          `INSERT INTO foreshadow_setups
-            (id, foreshadow_id, scene_id, from_pos, to_pos, kind, role,
-             strength, ai_strength, ai_reasoning, attribution, ai_rationale,
-             last_evaluated_at, is_orphan, evidence_anchor_id, semantic_key,
-             created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'inserted_new', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-          [
-            newId,
-            current.foreshadow_id,
-            sceneId,
-            fromPos,
-            toPos,
-            current.role,
-            current.strength,
-            current.ai_strength,
-            current.ai_reasoning,
-            current.attribution,
-            current.ai_rationale,
-            current.last_evaluated_at,
-            current.evidence_anchor_id,
-            semanticKey,
-            now,
-            now,
-          ],
-        );
-        const foreshadow = finishBrowserForeshadowChildWrite(
-          String(current.foreshadow_id),
-          true,
-          baseVersion,
-          now,
-        );
-        db.run("COMMIT");
-        options.onDatabaseDirty?.();
-        return { setupId: newId, foreshadow };
-      } catch (error) {
-        try {
-          db.run("ROLLBACK");
-        } catch {
-          // Preserve the original orphan reinsert failure.
-        }
-        throw error;
-      }
-    }
-
-    return runBrowserForeshadowChildWrite(() => {
-      const current = queryOne(
-        `SELECT setup.*, foreshadow.project_id
-           FROM foreshadow_setups setup
-           JOIN foreshadows foreshadow ON foreshadow.id = setup.foreshadow_id
-          WHERE setup.id = ?`,
-        [setupId],
-      );
-      if (!current) {
-        return {
-          value: { setupId: null, foreshadow: null },
-          changed: false,
-        };
-      }
-      const scene = queryOne(
-        "SELECT project_id, node_type FROM tree_nodes WHERE id = ?",
-        [sceneId],
-      );
-      if (
-        scene?.node_type !== "scene" ||
-        scene.project_id !== current.project_id
-      ) {
-        throw new Error(
-          "foreshadow orphan anchor must stay within one project",
-        );
-      }
-      const now = Date.now();
-      const semanticKey = browserForeshadowSetupSemanticKey(
-        setupId,
-        String(current.foreshadow_id),
-        sceneId,
-        fromPos,
-        toPos,
-        current.semantic_key,
-      );
-      const changed =
-        String(current.scene_id) !== sceneId ||
-        Number(current.from_pos) !== fromPos ||
-        Number(current.to_pos) !== toPos ||
-        String(current.semantic_key) !== semanticKey ||
-        Number(current.is_orphan) !== 0;
-      if (changed) {
-        db.run(
-          `UPDATE foreshadow_setups
+        const changed =
+          String(current.scene_id) !== sceneId ||
+          Number(current.from_pos) !== fromPos ||
+          Number(current.to_pos) !== toPos ||
+          String(current.semantic_key) !== semanticKey ||
+          Number(current.is_orphan) !== 0;
+        if (changed) {
+          db.run(
+            `UPDATE foreshadow_setups
               SET scene_id = ?, from_pos = ?, to_pos = ?, semantic_key = ?,
                   is_orphan = 0, updated_at = ?
             WHERE id = ?`,
-          [sceneId, fromPos, toPos, semanticKey, now, setupId],
+            [sceneId, fromPos, toPos, semanticKey, now, setupId],
+          );
+        }
+        const foreshadow = finishBrowserForeshadowChildWrite(
+          String(current.foreshadow_id),
+          String(payload.projectId),
+          changed,
+          baseVersion,
+          now,
         );
-      }
-      const foreshadow = finishBrowserForeshadowChildWrite(
-        String(current.foreshadow_id),
-        changed,
-        baseVersion,
-        now,
-      );
-      return {
-        value: { setupId: null, foreshadow },
-        changed,
-      };
+        return {
+          value: { setupId: null, foreshadow },
+          changed,
+          foreshadowId: String(current.foreshadow_id),
+          changedPaths: [
+            `/setups/${browserForeshadowJsonPointerSegment(setupId)}`,
+          ],
+        };
+      },
     });
   }
 
-  function handleForeshadowSaveAnchorsForScene(
+  async function handleForeshadowSaveAnchorsForScene(
     args: Record<string, unknown>,
-  ): Record<string, SqlValue>[] {
+  ): Promise<Record<string, SqlValue>[]> {
     const command = "foreshadow_save_anchors_for_scene";
-    const sceneId = requiredBrowserString(command, args, "sceneId");
-    const setups = args.setups;
-    const payoffs = args.payoffs;
+    const operation = "foreshadow.anchors.save";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserForeshadowMutationIdentity(payload, command);
+    const sceneId = requiredBrowserString(command, payload, "sceneId");
+    const setups = payload.setups;
+    const payoffs = payload.payoffs;
     const rawBaseVersions = browserSnapshotRecord(
       command,
-      args.baseVersions,
+      payload.baseVersions,
       "baseVersions",
     );
     const baseVersions = new Map<string, number>();
@@ -11226,7 +22135,7 @@ export async function createBrowserMock(
       }
       baseVersions.set(foreshadowId, rawVersion);
     }
-    const docContentSize = Number(args.docContentSize);
+    const docContentSize = Number(payload.docContentSize);
     if (!Array.isArray(setups) || !Array.isArray(payoffs)) {
       throw new Error(`${command}: setups and payoffs must be arrays`);
     }
@@ -11241,7 +22150,10 @@ export async function createBrowserMock(
     );
     if (!scene || scene.node_type !== "scene")
       throw new Error(`foreshadow anchor scene '${sceneId}' not found`);
-    const projectId = String(scene.project_id);
+    if (scene.project_id !== identity.projectId) {
+      throw new Error("foreshadow anchor save scene cannot cross projects");
+    }
+    const projectId = identity.projectId;
     const parsedSetups = setups.map((raw, index) => {
       const setup = browserSnapshotRecord(command, raw, `setups[${index}]`);
       const id = requiredBrowserString(command, setup, "id");
@@ -11323,55 +22235,106 @@ export async function createBrowserMock(
       return { foreshadowId, baseVersion, fromPos, toPos };
     });
 
-    const now = Date.now();
-    const touchedRoots = new Set<string>();
-    const changedRoots = new Set<string>();
-    const authoritative: Record<string, SqlValue>[] = [];
-    db.run("BEGIN IMMEDIATE");
-    try {
-      for (const setup of parsedSetups) {
-        const existing = queryOne(
-          `SELECT setup.foreshadow_id, setup.scene_id, setup.semantic_key,
+    const requestHash = await browserCanonicalWriteFingerprint(
+      operation,
+      payload,
+    );
+    const conflictMarker = "FORESHADOW_ANCHOR_SAVE_IDEMPOTENCY_CONFLICT";
+    return withAppendLedgerLock(async () => {
+      const replay = loadBrowserForeshadowMutationReplay({
+        operation,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay.response as Record<string, SqlValue>[];
+      const now = Date.now();
+      const occurredAt = new Date(now).toISOString();
+      const touchedRoots = new Set<string>();
+      const changedRoots = new Set<string>();
+      const changedPaths = new Map<string, Set<string>>();
+      const beforeRoots = new Map<string, BrowserForeshadowAggregateSnapshot>();
+      const authoritative: Record<string, SqlValue>[] = [];
+      const captureBefore = (foreshadowId: string): void => {
+        if (beforeRoots.has(foreshadowId)) return;
+        const before = loadBrowserForeshadowAggregateSnapshot(
+          foreshadowId,
+          projectId,
+        );
+        if (!before) {
+          throw new Error(
+            `${command}: foreshadow '${foreshadowId}' is outside the scene project`,
+          );
+        }
+        beforeRoots.set(foreshadowId, before);
+      };
+      const recordChangedPath = (
+        foreshadowId: string,
+        changedPath: string,
+      ): void => {
+        const paths = changedPaths.get(foreshadowId) ?? new Set<string>();
+        paths.add(changedPath);
+        changedPaths.set(foreshadowId, paths);
+      };
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserForeshadowMutationReplay({
+          operation,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed.response as Record<string, SqlValue>[];
+        }
+        for (const setup of parsedSetups) {
+          const existing = queryOne(
+            `SELECT setup.foreshadow_id, setup.scene_id, setup.semantic_key,
                   setup.from_pos, setup.to_pos, setup.is_orphan,
                   stored_scene.project_id AS scene_project_id,
                   stored_scene.node_type AS scene_node_type
              FROM foreshadow_setups setup
              JOIN tree_nodes stored_scene ON stored_scene.id = setup.scene_id
             WHERE setup.id = ?`,
-          [setup.id],
-        );
-        if (existing && String(existing.foreshadow_id) !== setup.foreshadowId) {
-          throw new Error(
-            `${command}: setup '${setup.id}' belongs to a different foreshadow`,
+            [setup.id],
           );
-        }
-        if (
-          existing &&
-          (existing.scene_project_id !== projectId ||
-            existing.scene_node_type !== "scene")
-        ) {
-          throw new Error(
-            `${command}: setup '${setup.id}' scene is outside the target project`,
+          if (
+            existing &&
+            String(existing.foreshadow_id) !== setup.foreshadowId
+          ) {
+            throw new Error(
+              `${command}: setup '${setup.id}' belongs to a different foreshadow`,
+            );
+          }
+          if (
+            existing &&
+            (existing.scene_project_id !== projectId ||
+              existing.scene_node_type !== "scene")
+          ) {
+            throw new Error(
+              `${command}: setup '${setup.id}' scene is outside the target project`,
+            );
+          }
+          const semanticKey = browserForeshadowSetupSemanticKey(
+            setup.id,
+            setup.foreshadowId,
+            sceneId,
+            setup.fromPos,
+            setup.toPos,
+            existing?.semantic_key,
           );
-        }
-        const semanticKey = browserForeshadowSetupSemanticKey(
-          setup.id,
-          setup.foreshadowId,
-          sceneId,
-          setup.fromPos,
-          setup.toPos,
-          existing?.semantic_key,
-        );
-        const changed =
-          !existing ||
-          String(existing.scene_id) !== sceneId ||
-          Number(existing.from_pos) !== setup.fromPos ||
-          Number(existing.to_pos) !== setup.toPos ||
-          String(existing.semantic_key) !== semanticKey ||
-          Number(existing.is_orphan) !== 0;
-        if (changed) {
-          db.run(
-            `INSERT INTO foreshadow_setups
+          const changed =
+            !existing ||
+            String(existing.scene_id) !== sceneId ||
+            Number(existing.from_pos) !== setup.fromPos ||
+            Number(existing.to_pos) !== setup.toPos ||
+            String(existing.semantic_key) !== semanticKey ||
+            Number(existing.is_orphan) !== 0;
+          if (changed) {
+            captureBefore(setup.foreshadowId);
+            db.run(
+              `INSERT INTO foreshadow_setups
             (id, foreshadow_id, scene_id, from_pos, to_pos, kind,
              attribution, is_orphan, semantic_key, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, 'designated_existing', 'human', 0, ?, ?, ?)
@@ -11382,124 +22345,206 @@ export async function createBrowserMock(
              semantic_key = excluded.semantic_key,
              is_orphan = 0,
              updated_at = excluded.updated_at`,
-            [
-              setup.id,
+              [
+                setup.id,
+                setup.foreshadowId,
+                sceneId,
+                setup.fromPos,
+                setup.toPos,
+                semanticKey,
+                now,
+                now,
+              ],
+            );
+            changedRoots.add(setup.foreshadowId);
+            recordChangedPath(
               setup.foreshadowId,
-              sceneId,
-              setup.fromPos,
-              setup.toPos,
-              semanticKey,
-              now,
-              now,
-            ],
-          );
-          changedRoots.add(setup.foreshadowId);
-        }
-        touchedRoots.add(setup.foreshadowId);
-      }
-      for (const payoff of parsedPayoffs) {
-        const current = queryOne(
-          "SELECT * FROM foreshadows WHERE id = ? AND project_id = ?",
-          [payoff.foreshadowId, projectId],
-        );
-        if (!current) {
-          throw new Error(`${command}: payoff foreshadow vanished`);
-        }
-        const unchanged =
-          current.payoff_scene_id === sceneId &&
-          current.payoff_from_pos !== null &&
-          current.payoff_to_pos !== null &&
-          Number(current.payoff_from_pos) === payoff.fromPos &&
-          Number(current.payoff_to_pos) === payoff.toPos;
-        if (!unchanged) {
-          const currentVersion = Number(current.version ?? 0);
-          if (currentVersion !== payoff.baseVersion) {
-            throw new Error(
-              `FORESHADOW_VERSION_MISMATCH: payoff '${payoff.foreshadowId}' expected ${payoff.baseVersion}, found ${currentVersion}`,
+              `/setups/${browserForeshadowJsonPointerSegment(setup.id)}/anchor`,
             );
           }
-          db.run(
-            `UPDATE foreshadows
-              SET payoff_scene_id = ?, payoff_from_pos = ?, payoff_to_pos = ?,
-                  updated_at = updated_at
-             WHERE id = ? AND project_id = ? AND version = ?`,
-            [
-              sceneId,
-              payoff.fromPos,
-              payoff.toPos,
-              payoff.foreshadowId,
-              projectId,
-              payoff.baseVersion,
-            ],
-          );
-          if (db.getRowsModified() !== 1) {
-            throw new Error(
-              `FORESHADOW_VERSION_MISMATCH: payoff '${payoff.foreshadowId}' expected ${payoff.baseVersion}`,
-            );
-          }
-          changedRoots.add(payoff.foreshadowId);
+          touchedRoots.add(setup.foreshadowId);
         }
-        touchedRoots.add(payoff.foreshadowId);
-      }
-      const validSetupIds = new Set(parsedSetups.map((setup) => setup.id));
-      if (parsedSetups.length > 0 || docContentSize <= 2) {
-        const sceneSetups = queryAll(
-          `SELECT id, foreshadow_id, is_orphan
-             FROM foreshadow_setups WHERE scene_id = ?`,
-          [sceneId],
-        );
-        for (const setup of sceneSetups) {
-          const setupId = String(setup.id);
-          if (!validSetupIds.has(setupId) && Number(setup.is_orphan) !== 1) {
-            const foreshadowId = String(setup.foreshadow_id);
-            if (!baseVersions.has(foreshadowId)) {
+        for (const payoff of parsedPayoffs) {
+          const current = queryOne(
+            "SELECT * FROM foreshadows WHERE id = ? AND project_id = ?",
+            [payoff.foreshadowId, projectId],
+          );
+          if (!current) {
+            throw new Error(`${command}: payoff foreshadow vanished`);
+          }
+          const unchanged =
+            current.payoff_scene_id === sceneId &&
+            current.payoff_from_pos !== null &&
+            current.payoff_to_pos !== null &&
+            Number(current.payoff_from_pos) === payoff.fromPos &&
+            Number(current.payoff_to_pos) === payoff.toPos;
+          if (!unchanged) {
+            captureBefore(payoff.foreshadowId);
+            const currentVersion = Number(current.version ?? 0);
+            if (currentVersion !== payoff.baseVersion) {
               throw new Error(
-                `FORESHADOW_VERSION_MISMATCH: scene snapshot has no baseVersion for '${foreshadowId}'`,
+                `FORESHADOW_VERSION_MISMATCH: payoff '${payoff.foreshadowId}' expected ${payoff.baseVersion}, found ${currentVersion}`,
               );
             }
             db.run(
-              `UPDATE foreshadow_setups
+              `UPDATE foreshadows
+              SET payoff_scene_id = ?, payoff_from_pos = ?, payoff_to_pos = ?,
+                  updated_at = updated_at
+             WHERE id = ? AND project_id = ? AND version = ?`,
+              [
+                sceneId,
+                payoff.fromPos,
+                payoff.toPos,
+                payoff.foreshadowId,
+                projectId,
+                payoff.baseVersion,
+              ],
+            );
+            if (db.getRowsModified() !== 1) {
+              throw new Error(
+                `FORESHADOW_VERSION_MISMATCH: payoff '${payoff.foreshadowId}' expected ${payoff.baseVersion}`,
+              );
+            }
+            changedRoots.add(payoff.foreshadowId);
+            recordChangedPath(payoff.foreshadowId, "/payoff/anchor");
+          }
+          touchedRoots.add(payoff.foreshadowId);
+        }
+        const validSetupIds = new Set(parsedSetups.map((setup) => setup.id));
+        if (parsedSetups.length > 0 || docContentSize <= 2) {
+          const sceneSetups = queryAll(
+            `SELECT id, foreshadow_id, is_orphan
+             FROM foreshadow_setups WHERE scene_id = ?`,
+            [sceneId],
+          );
+          for (const setup of sceneSetups) {
+            const setupId = String(setup.id);
+            if (!validSetupIds.has(setupId) && Number(setup.is_orphan) !== 1) {
+              const foreshadowId = String(setup.foreshadow_id);
+              if (!baseVersions.has(foreshadowId)) {
+                throw new Error(
+                  `FORESHADOW_VERSION_MISMATCH: scene snapshot has no baseVersion for '${foreshadowId}'`,
+                );
+              }
+              captureBefore(foreshadowId);
+              db.run(
+                `UPDATE foreshadow_setups
                   SET is_orphan = 1, updated_at = ?
                 WHERE id = ? AND is_orphan IS NOT 1`,
-              [now, setupId],
-            );
-            if (db.getRowsModified() === 1) {
-              changedRoots.add(foreshadowId);
-              touchedRoots.add(foreshadowId);
+                [now, setupId],
+              );
+              if (db.getRowsModified() === 1) {
+                changedRoots.add(foreshadowId);
+                touchedRoots.add(foreshadowId);
+                recordChangedPath(
+                  foreshadowId,
+                  `/setups/${browserForeshadowJsonPointerSegment(setupId)}/orphan`,
+                );
+              }
             }
           }
         }
-      }
-      for (const foreshadowId of [...touchedRoots].sort()) {
-        const baseVersion = baseVersions.get(foreshadowId);
-        if (baseVersion === undefined) {
-          throw new Error(
-            `FORESHADOW_VERSION_MISMATCH: scene snapshot has no baseVersion for '${foreshadowId}'`,
+        for (const foreshadowId of [...touchedRoots].sort()) {
+          const baseVersion = baseVersions.get(foreshadowId);
+          if (baseVersion === undefined) {
+            throw new Error(
+              `FORESHADOW_VERSION_MISMATCH: scene snapshot has no baseVersion for '${foreshadowId}'`,
+            );
+          }
+          const row = finishBrowserForeshadowChildWrite(
+            foreshadowId,
+            projectId,
+            changedRoots.has(foreshadowId),
+            baseVersion,
+            now,
+          );
+          if (!row) {
+            throw new Error(
+              `${command}: foreshadow '${foreshadowId}' vanished`,
+            );
+          }
+          authoritative.push(row);
+        }
+        let response = authoritative;
+        const orderedChangedRoots = [...changedRoots].sort();
+        if (orderedChangedRoots.length > 0) {
+          const canonicalEntityId = orderedChangedRoots[0];
+          const preparedEvent = await prepareBrowserTrackedChangeEvent({
+            eventUid: identity.eventUid,
+            projectId,
+            sceneId: null,
+            domain: "foreshadow",
+            opType: operation,
+            entityType: "foreshadow",
+            entityId: canonicalEntityId,
+            payload: JSON.stringify({
+              requestId: identity.requestId,
+              origin: identity.origin,
+            }),
+            sessionId: identity.sessionId,
+            timestamp: now,
+          });
+          const events = orderedChangedRoots.map((foreshadowId) => {
+            const before = beforeRoots.get(foreshadowId);
+            const after = loadBrowserForeshadowAggregateSnapshot(
+              foreshadowId,
+              projectId,
+            );
+            if (!before || !after) {
+              throw new Error(
+                `${command}: aggregate snapshot is missing for '${foreshadowId}'`,
+              );
+            }
+            return {
+              objectKey: { kind: "foreshadow", foreshadowId },
+              changeKind: "association" as const,
+              mutationKind: "update" as const,
+              beforeVersion: before.version,
+              beforeState: before,
+              afterVersion: after.version,
+              afterState: after,
+              changedPaths: [
+                ...(changedPaths.get(foreshadowId) ?? ["/setups"]),
+              ],
+            };
+          });
+          const maintenanceTransactionId = insertBrowserNarrativeChange({
+            preparedEvent,
+            identity,
+            requestHash,
+            undoJournalId: null,
+            typedInverseEntity: {
+              domain: "foreshadow",
+              entityId: canonicalEntityId,
+            },
+            occurredAt,
+            events,
+          });
+          response = attachBrowserForeshadowMaintenanceTransaction(
+            authoritative,
+            maintenanceTransactionId,
           );
         }
-        const row = finishBrowserForeshadowChildWrite(
-          foreshadowId,
-          changedRoots.has(foreshadowId),
-          baseVersion,
-          now,
-        );
-        if (!row) {
-          throw new Error(`${command}: foreshadow '${foreshadowId}' vanished`);
+        insertBrowserTrackedWriteReceipt({
+          domain: operation,
+          projectId,
+          requestId: identity.requestId,
+          requestHash,
+          response,
+          now: occurredAt,
+        });
+        db.run("COMMIT");
+        if (orderedChangedRoots.length > 0) options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original anchor persistence failure.
         }
-        authoritative.push(row);
+        throw error;
       }
-      const mutated = changedRoots.size > 0;
-      db.run("COMMIT");
-      if (mutated) options.onDatabaseDirty?.();
-      return authoritative;
-    } catch (error) {
-      try {
-        db.run("ROLLBACK");
-      } catch {
-        // Preserve the original anchor persistence failure.
-      }
-      throw error;
-    }
+    });
   }
 
   interface BrowserForeshadowSnapshot {
@@ -12023,11 +23068,20 @@ export async function createBrowserMock(
   ): Promise<Record<string, unknown>> {
     const command = "agent_foreshadow_create";
     const p = browserCommandPayload(command, args);
+    const requestId = requiredBrowserString(command, p, "requestId");
     const projectId = requiredBrowserString(command, p, "projectId");
     const sessionId = requiredBrowserString(command, p, "sessionId");
+    const identity: BrowserCanonicalWriteIdentity = {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid: crypto.randomUUID(),
+      origin: "ai-apply",
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
     const foreshadowId = requiredBrowserString(command, p, "foreshadowId");
     const title = requiredBrowserString(command, p, "title");
-    const requestId = optionalBrowserString(command, p, "requestId");
     const intent = nullableBrowserString(command, p, "intent");
     const notes = nullableBrowserString(command, p, "notes");
     const loadBearing = nullableBrowserString(command, p, "loadBearing");
@@ -12053,43 +23107,38 @@ export async function createBrowserMock(
         command,
         fingerprintPayload,
       );
-      if (requestId !== null) {
-        const ledger = queryOne(
-          `SELECT payload_hash, tombstone_json
-             FROM idempotency_requests
-            WHERE domain = ? AND request_id = ?`,
-          [command, requestId],
+      const conflictMarker = "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT";
+      const loadReplay = (): Record<string, unknown> | null => {
+        const replay = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (!replay) return null;
+        const receipt = browserCanonicalReceiptFromResponse(replay);
+        const journal = queryOne(
+          `SELECT id, change_event_uid
+             FROM undo_journal
+            WHERE id = ? AND project_id = ? AND entity_kind = 'foreshadow'
+              AND entity_id = ? AND op_kind = 'create'`,
+          [receipt.undoJournalId, projectId, foreshadowId],
         );
-        if (ledger) {
-          if (String(ledger.payload_hash) !== requestHash) {
-            throw new Error(
-              "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: request id reused with different payload",
-            );
-          }
-          const journal = queryOne(
-            `SELECT id, result_version, change_event_uid
-               FROM undo_journal
-              WHERE id = ? AND project_id = ? AND entity_kind = 'foreshadow'
-                AND entity_id = ? AND op_kind = 'create'`,
-            [requestId, projectId, foreshadowId],
-          );
-          if (!journal) {
-            throw new Error(
-              "AGENT_FORESHADOW_CREATE_IDEMPOTENCY_CONFLICT: original state is missing",
-            );
-          }
-          return {
-            entityId: foreshadowId,
-            version: Number(journal.result_version),
-            changeEventUid: String(journal.change_event_uid),
-            undoJournalId: String(journal.id),
-          };
+        if (
+          !journal ||
+          String(journal.change_event_uid) !== receipt.changeEventUid
+        ) {
+          throw new Error(`${conflictMarker}: original history is missing`);
         }
-      }
+        return replay;
+      };
+      const replay = loadReplay();
+      if (replay) return replay;
 
       const timestamp = Date.now();
-      const eventUid = crypto.randomUUID();
-      const undoJournalId = requestId ?? crypto.randomUUID();
+      const eventUid = identity.eventUid;
+      const undoJournalId = requestId;
+      const now = new Date(timestamp).toISOString();
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
         projectId,
@@ -12104,6 +23153,11 @@ export async function createBrowserMock(
       });
       db.run("BEGIN IMMEDIATE");
       try {
+        const committed = loadReplay();
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
         if (!queryOne("SELECT id FROM projects WHERE id = ?", [projectId])) {
           throw new Error(`project '${projectId}' not found`);
         }
@@ -12127,7 +23181,13 @@ export async function createBrowserMock(
         );
         const after = loadBrowserForeshadowSnapshot(foreshadowId, projectId);
         if (!after) throw new Error("foreshadow row missing after insert");
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        const afterState = loadBrowserForeshadowAggregateSnapshot(
+          foreshadowId,
+          projectId,
+        );
+        if (!afterState) {
+          throw new Error("foreshadow aggregate missing after insert");
+        }
         db.run(
           `INSERT INTO undo_journal
             (id, project_id, surface, entity_kind, entity_id, op_kind,
@@ -12142,31 +23202,44 @@ export async function createBrowserMock(
             JSON.stringify(after),
             after.version,
             eventUid,
-            new Date(timestamp).toISOString(),
+            now,
           ],
         );
-        if (requestId !== null) {
-          db.run(
-            `INSERT INTO idempotency_requests
-              (domain, request_id, project_id, payload_hash, tombstone_json)
-             VALUES (?, ?, ?, ?, ?)`,
-            [
-              command,
-              requestId,
-              projectId,
-              requestHash,
-              JSON.stringify({ id: foreshadowId }),
-            ],
-          );
-        }
-        db.run("COMMIT");
-        options.onDatabaseDirty?.();
-        return {
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "foreshadow", foreshadowId },
+              changeKind: "metadata",
+              mutationKind: "create",
+              beforeVersion: null,
+              afterVersion: after.version,
+              afterState,
+              changedPaths: ["/"],
+            },
+          ],
+        });
+        const response = {
           entityId: foreshadowId,
           version: after.version,
           changeEventUid: eventUid,
           undoJournalId,
+          maintenanceTransactionId,
         };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -12183,8 +23256,18 @@ export async function createBrowserMock(
   ): Promise<Record<string, unknown>> {
     const command = "agent_foreshadow_update";
     const p = browserCommandPayload(command, args);
+    const requestId = requiredBrowserString(command, p, "requestId");
     const projectId = requiredBrowserString(command, p, "projectId");
     const sessionId = requiredBrowserString(command, p, "sessionId");
+    const identity: BrowserCanonicalWriteIdentity = {
+      projectId,
+      requestId,
+      sessionId,
+      eventUid: crypto.randomUUID(),
+      origin: "ai-apply",
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
     const foreshadowId = requiredBrowserString(command, p, "foreshadowId");
     const requestedBaseVersion = p.baseVersion;
     if (
@@ -12232,6 +23315,26 @@ export async function createBrowserMock(
     }
 
     return withAppendLedgerLock(async () => {
+      const requestHash = await browserPayloadFingerprint(command, {
+        projectId,
+        foreshadowId,
+        baseVersion: requestedBaseVersion,
+        title: p.title ?? null,
+        intent: p.intent ?? null,
+        notes: p.notes ?? null,
+        loadBearing: p.loadBearing ?? null,
+        payoffConfirmed: p.payoffConfirmed ?? null,
+        abandoned: p.abandoned ?? null,
+        secret: p.secret ?? null,
+      });
+      const conflictMarker = "AGENT_FORESHADOW_UPDATE_IDEMPOTENCY_CONFLICT";
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
       const captured = loadBrowserForeshadowSnapshot(foreshadowId, projectId);
       if (!captured) {
         throw new Error(`Foreshadow ${foreshadowId} not found after reload`);
@@ -12242,8 +23345,9 @@ export async function createBrowserMock(
         );
       }
       const timestamp = Math.max(Date.now(), captured.updatedAt + 1);
-      const eventUid = crypto.randomUUID();
-      const undoJournalId = crypto.randomUUID();
+      const eventUid = identity.eventUid;
+      const undoJournalId = requestId;
+      const now = new Date(timestamp).toISOString();
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
         eventUid,
         projectId,
@@ -12252,12 +23356,22 @@ export async function createBrowserMock(
         opType: "foreshadow.update",
         entityType: "foreshadow",
         entityId: foreshadowId,
-        payload: JSON.stringify({ fields }),
+        payload: JSON.stringify({ fields, requestHash }),
         sessionId,
         timestamp,
       });
       db.run("BEGIN IMMEDIATE");
       try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
         const before = loadBrowserForeshadowSnapshot(foreshadowId, projectId);
         if (
           !before ||
@@ -12267,6 +23381,13 @@ export async function createBrowserMock(
           throw new Error(
             "foreshadow changed during tracked update preparation",
           );
+        }
+        const beforeState = loadBrowserForeshadowAggregateSnapshot(
+          foreshadowId,
+          projectId,
+        );
+        if (!beforeState) {
+          throw new Error("foreshadow aggregate missing before tracked update");
         }
         const assignments: string[] = [];
         const params: SqlValue[] = [];
@@ -12304,7 +23425,13 @@ export async function createBrowserMock(
         ) {
           throw new Error("foreshadow row missing after tracked update");
         }
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        const afterState = loadBrowserForeshadowAggregateSnapshot(
+          foreshadowId,
+          projectId,
+        );
+        if (!afterState) {
+          throw new Error("foreshadow aggregate missing after tracked update");
+        }
         db.run(
           `INSERT INTO undo_journal
             (id, project_id, surface, entity_kind, entity_id, op_kind,
@@ -12321,17 +23448,45 @@ export async function createBrowserMock(
             before.version,
             after.version,
             eventUid,
-            new Date(timestamp).toISOString(),
+            now,
           ],
         );
-        db.run("COMMIT");
-        options.onDatabaseDirty?.();
-        return {
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "foreshadow", foreshadowId },
+              changeKind: "metadata",
+              mutationKind: "update",
+              beforeVersion: before.version,
+              beforeState,
+              afterVersion: after.version,
+              afterState,
+              changedPaths: fields.map((field) => `/${field}`).sort(),
+            },
+          ],
+        });
+        const response = {
           entityId: foreshadowId,
           version: after.version,
           changeEventUid: eventUid,
           undoJournalId,
+          maintenanceTransactionId,
         };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -12715,9 +23870,10 @@ export async function createBrowserMock(
   ): Promise<Record<string, unknown>> {
     const command = "agent_scene_event_link_batch";
     const p = browserCommandPayload(command, args);
-    const requestId = requiredBrowserString(command, p, "requestId");
-    const projectId = requiredBrowserString(command, p, "projectId");
-    const sessionId = requiredBrowserString(command, p, "sessionId");
+    const identity = browserEventMutationIdentity(p, command);
+    const requestId = identity.requestId;
+    const projectId = identity.projectId;
+    const sessionId = identity.sessionId;
     const eventId = requiredBrowserString(command, p, "eventId");
     if (!Array.isArray(p.sceneIds) || p.sceneIds.length === 0) {
       throw new Error(
@@ -12742,7 +23898,8 @@ export async function createBrowserMock(
         `agent scene event link batch deduped sceneIds must contain at most ${MAX_BROWSER_SCENE_EVENT_LINK_BATCH_SIZE} ids`,
       );
     }
-    const surface = String(p.surface ?? "in-app-agent");
+    const surface =
+      browserCodexOptionalPayloadString(p.surface, "surface") ?? "in-app-agent";
 
     return withAppendLedgerLock(async () => {
       const requestHash = await browserPayloadFingerprint(command, {
@@ -12750,16 +23907,19 @@ export async function createBrowserMock(
         eventId,
         sceneIds,
       });
-      const replayLedger = queryOne(
-        `SELECT payload_hash FROM idempotency_requests
-          WHERE domain = ? AND request_id = ?`,
-        [command, requestId],
-      );
-      if (replayLedger) {
-        if (String(replayLedger.payload_hash) !== requestHash) {
-          throw new Error(
-            "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT: request id reused with different payload",
-          );
+      const conflictMarker =
+        "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT";
+      const loadReplay = (): Record<string, unknown> | null => {
+        const replay = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (!replay) return null;
+        const receipt = browserCanonicalReceiptFromResponse(replay);
+        if (receipt.undoJournalId !== requestId) {
+          throw new Error(`${conflictMarker}: original journal is invalid`);
         }
         const journal = queryOne(
           `SELECT result_version, change_event_uid, after_json
@@ -12769,9 +23929,10 @@ export async function createBrowserMock(
           [requestId, projectId, eventId],
         );
         if (!journal) {
-          throw new Error(
-            "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT: original receipt is missing",
-          );
+          throw new Error(`${conflictMarker}: original journal is missing`);
+        }
+        if (String(journal.change_event_uid) !== receipt.changeEventUid) {
+          throw new Error(`${conflictMarker}: original history is invalid`);
         }
         const current = collectBrowserSceneEventLinkBatchState(
           eventId,
@@ -12796,16 +23957,13 @@ export async function createBrowserMock(
           !ownedDeltaMatches
         ) {
           throw new Error(
-            "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT: association state changed after original request",
+            `${conflictMarker}: association state changed after original request`,
           );
         }
-        return {
-          entityId: eventId,
-          version: Number(journal.result_version),
-          changeEventUid: String(journal.change_event_uid),
-          undoJournalId: requestId,
-        };
-      }
+        return replay;
+      };
+      const replay = loadReplay();
+      if (replay) return replay;
 
       const capturedRequestedState = collectBrowserSceneEventLinkBatchState(
         eventId,
@@ -12814,10 +23972,9 @@ export async function createBrowserMock(
       const addedSceneIds = capturedRequestedState.sceneLinks
         .filter((link) => !link.linked)
         .map((link) => link.sceneId);
-      const eventUid = crypto.randomUUID();
       const timestamp = Date.now();
       const preparedEvent = await prepareBrowserTrackedChangeEvent({
-        eventUid,
+        eventUid: identity.eventUid,
         projectId,
         sceneId: null,
         domain: "event",
@@ -12835,6 +23992,11 @@ export async function createBrowserMock(
       const now = new Date(timestamp).toISOString();
       db.run("BEGIN IMMEDIATE");
       try {
+        const committed = loadReplay();
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
         const event = queryOne(
           "SELECT version FROM events WHERE id = ? AND project_id = ?",
           [eventId, projectId],
@@ -12870,6 +24032,12 @@ export async function createBrowserMock(
             "AGENT_SCENE_EVENT_LINK_BATCH_STATE_DRIFT: association state changed while preparing the request",
           );
         }
+        const beforeState = loadBrowserEventSnapshot(eventId, projectId);
+        if (!beforeState) {
+          throw new Error(
+            `event '${eventId}' not found in project '${projectId}'`,
+          );
+        }
         const before = browserSceneEventLinkBatchSnapshot(
           eventId,
           addedSceneIds,
@@ -12896,7 +24064,10 @@ export async function createBrowserMock(
           true,
           addedIncarnations,
         );
-        insertPreparedBrowserTrackedChangeEvent(preparedEvent);
+        const afterState = loadBrowserEventSnapshot(eventId, projectId);
+        if (!afterState) {
+          throw new Error(`event '${eventId}' disappeared during batch link`);
+        }
         db.run(
           `INSERT INTO undo_journal
             (id, project_id, surface, entity_kind, entity_id, op_kind,
@@ -12912,31 +24083,46 @@ export async function createBrowserMock(
             JSON.stringify(after),
             eventVersion,
             eventVersion,
-            eventUid,
+            identity.eventUid,
             now,
           ],
         );
-        db.run(
-          `INSERT INTO idempotency_requests
-            (domain, request_id, project_id, payload_hash, tombstone_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [
-            command,
-            requestId,
-            projectId,
-            requestHash,
-            JSON.stringify({ id: eventId }),
-            now,
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: requestId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: { kind: "chronicle-event", eventId },
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: eventVersion,
+              beforeState,
+              afterVersion: eventVersion,
+              afterState,
+              changedPaths: ["/sceneIds"],
+            },
           ],
-        );
-        db.run("COMMIT");
-        options.onDatabaseDirty?.();
-        return {
+        });
+        const response = {
           entityId: eventId,
           version: eventVersion,
-          changeEventUid: eventUid,
+          changeEventUid: identity.eventUid,
           undoJournalId: requestId,
+          maintenanceTransactionId,
         };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
       } catch (error) {
         try {
           db.run("ROLLBACK");
@@ -13095,6 +24281,17 @@ export async function createBrowserMock(
       const projectId = args.projectId as string;
       const sessionId = args.sessionId as string;
       const events = (args.events ?? []) as TimelapseAppendEvent[];
+      if (
+        events.some(
+          (event) =>
+            event.domain === "timelapse-internal" &&
+            event.opType === "doc.step.coverage",
+        )
+      ) {
+        throw new Error(
+          "TIMELAPSE_COVERAGE_RESERVED: renderer append batches cannot create Native-owned coverage",
+        );
+      }
 
       // Per-event idempotency (mirror of the Rust allocator): a committed-but-
       // rejected flush can be re-sent merged with new events; skip the
@@ -13197,6 +24394,728 @@ export async function createBrowserMock(
         tailSequence: sequence,
         tailHash: prevHash,
       };
+    });
+  }
+
+  async function handleTimelapseGenesisBaselinesAppend(
+    args: Record<string, unknown>,
+  ): Promise<{
+    insertedCount: number;
+    skippedExistingBaselineCount: number;
+    skippedExistingBodyStepCount: number;
+  }> {
+    const command = "timelapse_genesis_baselines_append";
+    const exactString = (key: string, maxLength: number): string => {
+      const value = args[key];
+      if (
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value !== value.trim() ||
+        value.length > maxLength
+      ) {
+        throw new Error(`${command} ${key} is invalid`);
+      }
+      return value;
+    };
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "kind",
+      "entityIds",
+      "anchorTimestamp",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    const expectedWorkspacePath = exactString("expectedWorkspacePath", 16_384);
+    const projectId = exactString("projectId", 512);
+    const kind = args.kind;
+    if (kind !== "scene" && kind !== "codex" && kind !== "snippet") {
+      throw new Error(`${command} kind is invalid`);
+    }
+    if (
+      !Array.isArray(args.entityIds) ||
+      args.entityIds.length < 1 ||
+      args.entityIds.length > 64
+    ) {
+      throw new Error(`${command} entityIds must contain 1..64 ids`);
+    }
+    const entityIds = args.entityIds.map((value, index) => {
+      if (
+        typeof value !== "string" ||
+        value.length === 0 ||
+        value !== value.trim() ||
+        value.length > 512
+      ) {
+        throw new Error(`${command} entityIds[${index}] is invalid`);
+      }
+      return value;
+    });
+    if (new Set(entityIds).size !== entityIds.length) {
+      throw new Error(`${command} entityIds must be unique`);
+    }
+    const anchorTimestamp = args.anchorTimestamp;
+    if (
+      typeof anchorTimestamp !== "number" ||
+      !Number.isSafeInteger(anchorTimestamp) ||
+      anchorTimestamp < 0
+    ) {
+      throw new Error(`${command} anchorTimestamp is invalid`);
+    }
+
+    const settingsIdentity = handleGetGlobalSettings().lastActiveWorkspace;
+    const activeWorkspacePath =
+      options.workspaceIdentity ??
+      (typeof settingsIdentity === "string" && settingsIdentity.trim()
+        ? settingsIdentity
+        : BROWSER_WORKSPACE_PATH);
+    if (expectedWorkspacePath !== activeWorkspacePath) {
+      throw new Error(
+        `TIMELAPSE_GENESIS_WORKSPACE_CHANGED: expected ${expectedWorkspacePath}, active ${activeWorkspacePath}`,
+      );
+    }
+
+    const spec =
+      kind === "scene"
+        ? {
+            table: "tree_nodes",
+            domain: "editor",
+            entityType: "scene",
+            extraPredicate: "AND node_type = 'scene'",
+          }
+        : kind === "codex"
+          ? {
+              table: "codex_entries",
+              domain: "codex",
+              entityType: "codex_entry",
+              extraPredicate: "",
+            }
+          : {
+              table: "snippets",
+              domain: "snippet",
+              entityType: "snippet",
+              extraPredicate: "",
+            };
+
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        // Match Native ordering: validate every requested ownership scope from
+        // IDs only before reading any potentially-large editor content.
+        for (const entityId of entityIds) {
+          const row = queryOne(
+            `SELECT id FROM ${spec.table}
+              WHERE id = ? AND project_id = ? ${spec.extraPredicate}`,
+            [entityId, projectId],
+          );
+          if (!row) {
+            throw new Error(
+              `TIMELAPSE_GENESIS_ENTITY_NOT_FOUND: ${kind} '${entityId}' is not owned by project '${projectId}'`,
+            );
+          }
+        }
+
+        let insertedCount = 0;
+        const placeholders = entityIds.map(() => "?").join(", ");
+        const existingBaselineIds = new Set(
+          queryAll(
+            `SELECT entity_id FROM state_snapshots
+              WHERE project_id = ? AND domain = ?
+                AND entity_id IN (${placeholders})`,
+            [projectId, spec.domain, ...entityIds],
+          ).map((row) => String(row.entity_id)),
+        );
+        const skippedExistingBaselineCount = existingBaselineIds.size;
+        let skippedExistingBodyStepCount = 0;
+        const unsnapshottedIds = entityIds.filter(
+          (entityId) => !existingBaselineIds.has(entityId),
+        );
+        if (unsnapshottedIds.length === 0) {
+          db.run("COMMIT");
+          return {
+            insertedCount,
+            skippedExistingBaselineCount,
+            skippedExistingBodyStepCount,
+          };
+        }
+
+        const candidatePlaceholders = unsnapshottedIds
+          .map(() => "?")
+          .join(", ");
+        options.onTimelapseGenesisLedgerReadForTest?.();
+        const bodyStepRows = queryAll(
+          `SELECT entity_id FROM change_events
+            WHERE project_id = ? AND domain = ? AND op_type = 'doc.step'
+              AND (entity_id IN (${candidatePlaceholders})
+                OR entity_id IS NULL OR entity_id = '')`,
+          [projectId, spec.domain, ...unsnapshottedIds],
+        );
+        const existingBodyStepIds = new Set<string>();
+        let ambiguousDomainStep = false;
+        for (const row of bodyStepRows) {
+          if (typeof row.entity_id === "string" && row.entity_id.length > 0) {
+            existingBodyStepIds.add(row.entity_id);
+          } else {
+            ambiguousDomainStep = true;
+          }
+        }
+        const eligibleIds = unsnapshottedIds.filter((entityId) => {
+          if (ambiguousDomainStep || existingBodyStepIds.has(entityId)) {
+            skippedExistingBodyStepCount += 1;
+            return false;
+          }
+          return true;
+        });
+
+        const entities = eligibleIds.map((entityId) => {
+          const row = queryOne(
+            `SELECT content FROM ${spec.table}
+              WHERE id = ? AND project_id = ? ${spec.extraPredicate}`,
+            [entityId, projectId],
+          );
+          if (!row || typeof row.content !== "string") {
+            throw new Error(
+              `TIMELAPSE_GENESIS_ENTITY_NOT_FOUND: ${kind} '${entityId}' is not owned by project '${projectId}'`,
+            );
+          }
+          return { entityId, content: row.content };
+        });
+        if (
+          entities.length > 1 &&
+          entities.reduce(
+            (bytes, entity) =>
+              bytes + new TextEncoder().encode(entity.content).byteLength,
+            0,
+          ) >
+            8 * 1024 * 1024
+        ) {
+          throw new Error("TIMELAPSE_GENESIS_BASELINE_BATCH_TOO_LARGE");
+        }
+
+        for (const entity of entities) {
+          db.run(
+            `INSERT INTO state_snapshots
+              (project_id, domain, entity_type, entity_id, anchor_sequence,
+               anchor_timestamp, payload, encoding, created_at)
+             VALUES (?, ?, ?, ?, 0, ?, ?, 'json', ?)`,
+            [
+              projectId,
+              spec.domain,
+              spec.entityType,
+              entity.entityId,
+              anchorTimestamp,
+              entity.content,
+              anchorTimestamp,
+            ],
+          );
+          insertedCount += 1;
+        }
+        db.run("COMMIT");
+        if (insertedCount > 0) options.onDatabaseDirty?.();
+        return {
+          insertedCount,
+          skippedExistingBaselineCount,
+          skippedExistingBodyStepCount,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the atomic append failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  function assertBrowserTimelapseWorkspace(
+    args: Record<string, unknown>,
+  ): void {
+    if (
+      typeof args.expectedWorkspacePath !== "string" ||
+      !args.expectedWorkspacePath.trim()
+    ) {
+      throw new Error("expectedWorkspacePath is required");
+    }
+    const settingsIdentity = handleGetGlobalSettings().lastActiveWorkspace;
+    const activeWorkspacePath =
+      options.workspaceIdentity ??
+      (typeof settingsIdentity === "string" && settingsIdentity.trim()
+        ? settingsIdentity
+        : BROWSER_WORKSPACE_PATH);
+    if (args.expectedWorkspacePath !== activeWorkspacePath) {
+      throw new Error(
+        `TIMELAPSE_WORKSPACE_CHANGED: expected ${args.expectedWorkspacePath}, active ${activeWorkspacePath}`,
+      );
+    }
+  }
+
+  function readTimelapseTailWithTimestamp(projectId: string): {
+    sequence: number;
+    timestamp: number;
+  } {
+    const row = queryOne(
+      "select sequence, timestamp from change_events where project_id = ? order by sequence desc limit 1",
+      [projectId],
+    );
+    return row
+      ? { sequence: Number(row.sequence), timestamp: Number(row.timestamp) }
+      : { sequence: 0, timestamp: Date.now() };
+  }
+
+  function readTimelapseResetSequence(projectId: string): number {
+    const row = queryOne(
+      `select value from project_settings
+        where project_id = ? and key = 'timelapse.resetSequence'`,
+      [projectId],
+    );
+    if (!row) return 0;
+
+    const value = row.value;
+    if (typeof value !== "string" || !/^[+-]?[0-9]+$/u.test(value)) {
+      throw new Error(
+        "TIMELAPSE_HISTORY_INVALID_RESET_SEQUENCE: stored reset sequence is not an integer",
+      );
+    }
+    const sequence = Number(value);
+    if (!Number.isSafeInteger(sequence) || sequence < 0) {
+      throw new Error(
+        "TIMELAPSE_HISTORY_INVALID_RESET_SEQUENCE: stored reset sequence is outside the safe integer range",
+      );
+    }
+    return sequence;
+  }
+
+  function assertTimelapseProject(projectId: string): void {
+    if (
+      typeof projectId !== "string" ||
+      !projectId ||
+      projectId !== projectId.trim() ||
+      projectId.length > 512
+    ) {
+      throw new Error("timelapse projectId is invalid");
+    }
+    if (!queryOne("select 1 from projects where id = ?", [projectId])) {
+      throw new Error(`TIMELAPSE_PROJECT_NOT_FOUND: ${projectId}`);
+    }
+  }
+
+  async function handleTimelapseBodyBaselinesAppend(
+    args: Record<string, unknown>,
+  ): Promise<{
+    insertedCount: number;
+    skippedExistingCount: number;
+    anchorSequence: number;
+    anchorTimestamp: number;
+  }> {
+    const command = "timelapse_body_baselines_append";
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "targets",
+      "expectedAnchorSequence",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    assertBrowserTimelapseWorkspace(args);
+    const projectId = typeof args.projectId === "string" ? args.projectId : "";
+    assertTimelapseProject(projectId);
+    if (
+      !Array.isArray(args.targets) ||
+      args.targets.length < 1 ||
+      args.targets.length > 64
+    ) {
+      throw new Error(`${command} targets must contain 1..64 identities`);
+    }
+    const targets = args.targets.map((value, index) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error(`${command} targets[${index}] is invalid`);
+      }
+      const target = value as Record<string, unknown>;
+      if (
+        Object.keys(target).length !== 2 ||
+        !Object.hasOwn(target, "kind") ||
+        !Object.hasOwn(target, "id")
+      ) {
+        throw new Error(`${command} targets[${index}] requires kind and id`);
+      }
+      if (
+        target.kind !== "scene" &&
+        target.kind !== "codex" &&
+        target.kind !== "snippet"
+      ) {
+        throw new Error(`${command} targets[${index}].kind is invalid`);
+      }
+      if (
+        typeof target.id !== "string" ||
+        !target.id ||
+        target.id !== target.id.trim() ||
+        target.id.length > 512
+      ) {
+        throw new Error(`${command} targets[${index}].id is invalid`);
+      }
+      return { kind: target.kind, id: target.id } as {
+        kind: "scene" | "codex" | "snippet";
+        id: string;
+      };
+    });
+    const identities = targets.map(
+      (target) => `${target.kind}\u0000${target.id}`,
+    );
+    if (new Set(identities).size !== identities.length) {
+      throw new Error(`${command} targets must be unique`);
+    }
+    const expectedAnchorSequence = args.expectedAnchorSequence;
+    if (
+      expectedAnchorSequence !== null &&
+      (typeof expectedAnchorSequence !== "number" ||
+        !Number.isSafeInteger(expectedAnchorSequence) ||
+        expectedAnchorSequence < 0)
+    ) {
+      throw new Error(`${command} expectedAnchorSequence is invalid`);
+    }
+
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const tail = readTimelapseTailWithTimestamp(String(projectId));
+        if (
+          expectedAnchorSequence !== null &&
+          expectedAnchorSequence !== tail.sequence
+        ) {
+          throw new Error(
+            `TIMELAPSE_BODY_SNAPSHOT_ANCHOR_MISMATCH: expected tail ${expectedAnchorSequence}, current tail ${tail.sequence}`,
+          );
+        }
+        const specs = {
+          scene: {
+            table: "tree_nodes",
+            domain: "editor",
+            entityType: "scene",
+            predicate: " AND node_type = 'scene'",
+          },
+          codex: {
+            table: "codex_entries",
+            domain: "codex",
+            entityType: "codex_entry",
+            predicate: "",
+          },
+          snippet: {
+            table: "snippets",
+            domain: "snippet",
+            entityType: "snippet",
+            predicate: "",
+          },
+        } as const;
+        const trusted = new Map<string, string>();
+        for (const target of targets) {
+          const spec = specs[target.kind];
+          const row = queryOne(
+            `select content from ${spec.table} where id = ? and project_id = ?${spec.predicate}`,
+            [target.id, projectId],
+          );
+          if (!row || typeof row.content !== "string") {
+            throw new Error(
+              `TIMELAPSE_BODY_SNAPSHOT_ENTITY_SCOPE_MISMATCH: ${target.kind} '${target.id}' is not owned by project '${projectId}'`,
+            );
+          }
+          trusted.set(`${target.kind}\u0000${target.id}`, row.content);
+        }
+        let insertedCount = 0;
+        let skippedExistingCount = 0;
+        for (const target of targets) {
+          const spec = specs[target.kind];
+          const body = trusted.get(
+            `${target.kind}\u0000${target.id}`,
+          ) as string;
+          const rows = queryAll(
+            `select entity_type, anchor_timestamp, payload, encoding from state_snapshots
+              where project_id = ? and domain = ? and entity_id = ? and anchor_sequence = ?`,
+            [projectId, spec.domain, target.id, tail.sequence],
+          );
+          if (rows.length > 0) {
+            for (const row of rows) {
+              if (
+                row.entity_type !== null &&
+                row.entity_type !== spec.entityType
+              ) {
+                throw new Error(
+                  `${command} existing snapshot scope is invalid`,
+                );
+              }
+              if (
+                Number(row.anchor_timestamp) !== tail.timestamp ||
+                row.payload !== body ||
+                row.encoding !== "json"
+              ) {
+                throw new Error(
+                  `${command} existing snapshot does not match trusted body`,
+                );
+              }
+            }
+            skippedExistingCount += 1;
+            continue;
+          }
+          db.run(
+            `insert into state_snapshots
+              (project_id, domain, entity_type, entity_id, anchor_sequence,
+               anchor_timestamp, payload, encoding, created_at)
+             values (?, ?, ?, ?, ?, ?, ?, 'json', ?)`,
+            [
+              projectId,
+              spec.domain,
+              spec.entityType,
+              target.id,
+              tail.sequence,
+              tail.timestamp,
+              body,
+              tail.timestamp,
+            ],
+          );
+          insertedCount += 1;
+        }
+        db.run("COMMIT");
+        if (insertedCount > 0) options.onDatabaseDirty?.();
+        return {
+          insertedCount,
+          skippedExistingCount,
+          anchorSequence: tail.sequence,
+          anchorTimestamp: tail.timestamp,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original append failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleTimelapseHistoryPurge(
+    args: Record<string, unknown>,
+  ): Promise<{ deletedEventCount: number; deletedSnapshotCount: number }> {
+    const command = "timelapse_history_purge";
+    const allowedKeys = new Set(["expectedWorkspacePath", "projectId"]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    assertBrowserTimelapseWorkspace(args);
+    const projectId = typeof args.projectId === "string" ? args.projectId : "";
+    assertTimelapseProject(projectId);
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const previousResetSequence = readTimelapseResetSequence(projectId);
+        const currentTailSequence = Number(
+          queryOne(
+            "select coalesce(max(sequence), 0) as sequence from change_events where project_id = ?",
+            [projectId],
+          )?.sequence ?? 0,
+        );
+        if (
+          !Number.isSafeInteger(currentTailSequence) ||
+          currentTailSequence < 0
+        ) {
+          throw new Error(
+            "TIMELAPSE_HISTORY_INVALID_TAIL: canonical tail is outside the safe integer range",
+          );
+        }
+        const deletedEventCount = Number(
+          queryOne(
+            `select count(*) as count from change_events
+              where project_id = ? and sequence > ? and sequence <= ?`,
+            [projectId, previousResetSequence, currentTailSequence],
+          )?.count ?? 0,
+        );
+        const deletedSnapshotCount = Number(
+          queryOne(
+            "select count(*) as count from state_snapshots where project_id = ?",
+            [projectId],
+          )?.count ?? 0,
+        );
+        db.run("delete from state_snapshots where project_id = ?", [projectId]);
+        db.run(
+          `insert into project_settings (project_id, key, value)
+           values (?, 'timelapse.resetSequence', ?)
+           on conflict(project_id, key) do update set value = excluded.value`,
+          [projectId, String(currentTailSequence)],
+        );
+        db.run("COMMIT");
+        if (deletedEventCount + deletedSnapshotCount > 0) {
+          options.onDatabaseDirty?.();
+        }
+        return { deletedEventCount, deletedSnapshotCount };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original purge failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleTimelapseEnabledSet(
+    args: Record<string, unknown>,
+  ): Promise<{ enabled: boolean }> {
+    const command = "timelapse_enabled_set";
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "enabled",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    assertBrowserTimelapseWorkspace(args);
+    const projectId = String(args.projectId);
+    assertTimelapseProject(projectId);
+    const enabled = args.enabled;
+    if (typeof enabled !== "boolean") {
+      throw new Error(`${command} enabled is invalid`);
+    }
+    return withAppendLedgerLock(async () => {
+      db.run(
+        `insert into project_settings (project_id, key, value)
+         values (?, 'timelapse.enabled', ?)
+         on conflict(project_id, key) do update set value = excluded.value`,
+        [projectId, enabled ? "true" : "false"],
+      );
+      options.onDatabaseDirty?.();
+      return { enabled };
+    });
+  }
+
+  async function handleTimelapseLayoutSnapshotRecord(
+    args: Record<string, unknown>,
+  ): Promise<{
+    inserted: boolean;
+    anchorSequence: number;
+    anchorTimestamp: number;
+  }> {
+    const command = "timelapse_layout_snapshot_record";
+    const allowedKeys = new Set([
+      "expectedWorkspacePath",
+      "projectId",
+      "payload",
+      "expectedAnchorSequence",
+    ]);
+    if (
+      Object.keys(args).length !== allowedKeys.size ||
+      Object.keys(args).some((key) => !allowedKeys.has(key))
+    ) {
+      throw new Error(`${command} requires the exact typed payload`);
+    }
+    assertBrowserTimelapseWorkspace(args);
+    const projectId = String(args.projectId);
+    assertTimelapseProject(projectId);
+    const payload = args.payload;
+    if (
+      typeof payload !== "object" ||
+      payload === null ||
+      Array.isArray(payload)
+    ) {
+      throw new Error(`${command} payload is invalid`);
+    }
+    const payloadRecord = payload as Record<string, unknown>;
+    if (
+      !Object.hasOwn(payloadRecord, "layout") ||
+      typeof payloadRecord.layout !== "object" ||
+      payloadRecord.layout === null ||
+      Array.isArray(payloadRecord.layout) ||
+      Object.keys(payloadRecord).some(
+        (key) =>
+          !new Set(["layout", "activePresetId", "hiddenStripePanels"]).has(key),
+      )
+    ) {
+      throw new Error(`${command} payload scope is invalid`);
+    }
+    if (
+      Object.hasOwn(payloadRecord, "activePresetId") &&
+      payloadRecord.activePresetId !== null &&
+      typeof payloadRecord.activePresetId !== "string"
+    ) {
+      throw new Error(`${command} activePresetId is invalid`);
+    }
+    if (
+      Object.hasOwn(payloadRecord, "hiddenStripePanels") &&
+      (!Array.isArray(payloadRecord.hiddenStripePanels) ||
+        payloadRecord.hiddenStripePanels.length > 128 ||
+        payloadRecord.hiddenStripePanels.some(
+          (panel) => typeof panel !== "string",
+        ))
+    ) {
+      throw new Error(`${command} hiddenStripePanels is invalid`);
+    }
+    const expectedAnchorSequence = args.expectedAnchorSequence;
+    if (
+      expectedAnchorSequence !== null &&
+      (typeof expectedAnchorSequence !== "number" ||
+        !Number.isSafeInteger(expectedAnchorSequence) ||
+        expectedAnchorSequence < 0)
+    ) {
+      throw new Error(`${command} expectedAnchorSequence is invalid`);
+    }
+    const payloadJson = JSON.stringify(payload);
+    if (payloadJson.length > 4 * 1024 * 1024) {
+      throw new Error(`${command} payload is too large`);
+    }
+    return withAppendLedgerLock(async () => {
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const tail = readTimelapseTailWithTimestamp(projectId);
+        if (
+          expectedAnchorSequence !== null &&
+          expectedAnchorSequence !== tail.sequence
+        ) {
+          throw new Error(
+            `TIMELAPSE_LAYOUT_SNAPSHOT_ANCHOR_MISMATCH: expected tail ${expectedAnchorSequence}, current tail ${tail.sequence}`,
+          );
+        }
+        db.run(
+          `insert into state_snapshots
+            (project_id, domain, entity_type, entity_id, anchor_sequence,
+             anchor_timestamp, payload, encoding, created_at)
+           values (?, 'layout', 'workspace', 'workspace', ?, ?, ?, 'json', ?)`,
+          [
+            projectId,
+            tail.sequence,
+            tail.timestamp,
+            payloadJson,
+            tail.timestamp,
+          ],
+        );
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return {
+          inserted: true,
+          anchorSequence: tail.sequence,
+          anchorTimestamp: tail.timestamp,
+        };
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the original append failure.
+        }
+        throw error;
+      }
     });
   }
 
@@ -14181,6 +26100,1496 @@ export async function createBrowserMock(
     return result.rows[0] ?? null;
   }
 
+  function browserTreeObjectKey(
+    row: Record<string, unknown>,
+    nodeId: string,
+  ): Record<string, unknown> {
+    return row.nodeType === "scene"
+      ? { kind: "scene", sceneId: nodeId }
+      : { kind: "component", componentId: `tree-node:${nodeId}` };
+  }
+
+  function browserTreeWriteResponse(
+    row: Record<string, unknown>,
+    receipt: {
+      changeEventUid: string;
+      maintenanceTransactionId: string;
+      undoJournalId: string;
+    },
+  ): Record<string, unknown> {
+    return { ...row, __writeReceipt: receipt };
+  }
+
+  function insertBrowserTreeUndoJournal(input: {
+    id: string;
+    identity: BrowserCanonicalWriteIdentity;
+    nodeId: string;
+    opKind: "create" | "update" | "delete";
+    before: Record<string, unknown> | null;
+    after: Record<string, unknown> | null;
+    baseVersion?: number;
+    resultVersion?: number;
+    now: string;
+  }): void {
+    db.run(
+      `INSERT INTO undo_journal
+        (id, project_id, surface, entity_kind, entity_id, op_kind,
+         before_json, after_json, base_version, result_version,
+         change_event_uid, created_at)
+       VALUES (?, ?, 'tree', 'tree_node', ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.identity.projectId,
+        input.nodeId,
+        input.opKind,
+        input.before === null ? null : JSON.stringify(input.before),
+        input.after === null ? null : JSON.stringify(input.after),
+        input.baseVersion ?? Number(input.before?.version ?? 0),
+        input.resultVersion ?? Number(input.after?.version ?? 0),
+        input.identity.eventUid,
+        input.now,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`tree undo journal '${input.id}' was not persisted`);
+    }
+  }
+
+  function browserTreeSubtreeRows(
+    rootId: string,
+    projectId: string,
+  ): Record<string, unknown>[] {
+    const members = queryAll(
+      `WITH RECURSIVE subtree(id, project_id, depth, path) AS (
+         SELECT id, project_id, 0, char(31) || id || char(31)
+           FROM tree_nodes
+          WHERE id = ? AND project_id = ?
+         UNION ALL
+         SELECT child.id,
+                child.project_id,
+                parent.depth + 1,
+                parent.path || child.id || char(31)
+           FROM tree_nodes child
+           JOIN subtree parent ON child.parent_id = parent.id
+          WHERE instr(parent.path, char(31) || child.id || char(31)) = 0
+       )
+       SELECT id, project_id AS projectId
+         FROM subtree
+        ORDER BY depth, id`,
+      [rootId, projectId],
+    );
+    if (members.length === 0) {
+      throw new Error(
+        `tree node '${rootId}' not found in project '${projectId}'`,
+      );
+    }
+    for (const member of members) {
+      if (member.projectId !== projectId) {
+        throw new Error(
+          `TREE_SUBTREE_CROSS_PROJECT: node '${String(member.id)}' belongs to project '${String(member.projectId)}'`,
+        );
+      }
+    }
+    return members.map((member) => {
+      const row = browserTreeNodeRow(String(member.id), projectId);
+      if (!row)
+        throw new Error(`tree subtree node '${String(member.id)}' disappeared`);
+      return row;
+    });
+  }
+
+  function requireBrowserCanonicalProject(
+    identity: BrowserCanonicalWriteIdentity,
+  ): void {
+    if (
+      !queryOne("SELECT 1 AS owned FROM projects WHERE id = ?", [
+        identity.projectId,
+      ])
+    ) {
+      throw new Error(`project '${identity.projectId}' not found`);
+    }
+  }
+
+  async function handleCanonicalTreeNodeCreate(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "tree_node_create";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    const id = requiredBrowserString(command, payload, "id");
+    const nodeType = requiredBrowserString(command, payload, "nodeType");
+    const title = requiredBrowserString(command, payload, "title");
+    const sortOrder = requiredBrowserString(command, payload, "sortOrder");
+    if (!["folder", "scene", "note"].includes(nodeType)) {
+      throw new Error(`${command}: invalid nodeType '${nodeType}'`);
+    }
+    const parentId = nullableBrowserString(command, payload, "parentId");
+    const synopsis = nullableBrowserString(command, payload, "synopsis");
+    const status = nullableBrowserString(command, payload, "status");
+    const sourceUri = nullableBrowserString(command, payload, "sourceUri");
+    const sourceMtime = nullableBrowserString(command, payload, "sourceMtime");
+    const content = nullableBrowserString(command, payload, "content");
+    const journalId = identity.undoJournalId ?? identity.requestId;
+
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        command,
+        payload,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker: "TREE_NODE_CREATE_REQUEST_CONFLICT",
+      });
+      if (replay) return replay;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: nodeType === "scene" ? id : null,
+        domain: "tree",
+        opType: "tree.node.create",
+        entityType: "tree_node",
+        entityId: id,
+        payload: JSON.stringify(
+          payload.canonicalPayload ?? { parentId, sortOrder, title },
+        ),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker: "TREE_NODE_CREATE_REQUEST_CONFLICT",
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        requireBrowserCanonicalProject(identity);
+        if (
+          parentId !== null &&
+          !queryOne(
+            `SELECT 1 AS owned FROM tree_nodes
+              WHERE id = ? AND project_id = ? AND node_type = 'folder'`,
+            [parentId, identity.projectId],
+          )
+        ) {
+          throw new Error(
+            `tree node parent '${parentId}' is not a folder in project '${identity.projectId}'`,
+          );
+        }
+        db.run(
+          `INSERT INTO tree_nodes
+            (id, project_id, parent_id, node_type, title, sort_order, synopsis,
+             status, source_uri, source_mtime, content, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            id,
+            identity.projectId,
+            parentId,
+            nodeType,
+            title,
+            sortOrder,
+            synopsis,
+            status,
+            sourceUri,
+            sourceMtime,
+            content ?? "{}",
+            now,
+            now,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`tree node '${id}' was not created`);
+        }
+        const row = browserTreeNodeRow(id, identity.projectId);
+        if (!row) throw new Error("tree node not found after create");
+        if (identity.origin !== "undo" && identity.origin !== "redo") {
+          insertBrowserTreeUndoJournal({
+            id: journalId,
+            identity,
+            nodeId: id,
+            opKind: "create",
+            before: null,
+            after: row,
+            now,
+          });
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: journalId,
+          occurredAt: now,
+          events: [
+            {
+              objectKey: browserTreeObjectKey(row, id),
+              changeKind: nodeType === "scene" ? "content" : "metadata",
+              mutationKind: "create",
+              beforeVersion: null,
+              afterVersion: Number(row.version),
+              afterState: row,
+              changedPaths: ["/"],
+            },
+          ],
+        });
+        const response = browserTreeWriteResponse(row, {
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId: journalId,
+        });
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Tree create failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleCanonicalTreeNodeDelete(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "tree_node_delete";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    const nodeId = requiredBrowserString(command, payload, "nodeId");
+    const journalId = identity.undoJournalId ?? identity.requestId;
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        command,
+        payload,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker: "TREE_NODE_DELETE_REQUEST_CONFLICT",
+      });
+      if (replay) return replay;
+      const beforeRows = browserTreeSubtreeRows(nodeId, identity.projectId);
+      const before = beforeRows[0]!;
+      const timestamp = Date.now();
+      const now = new Date(timestamp).toISOString();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        // The scene row is removed before the canonical event is inserted, so
+        // the nullable scene FK cannot point at the deleted aggregate.
+        sceneId: null,
+        domain: "tree",
+        opType: "tree.node.delete",
+        entityType: "tree_node",
+        entityId: nodeId,
+        payload: JSON.stringify(payload.canonicalPayload ?? { id: nodeId }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const currentRows = browserTreeSubtreeRows(nodeId, identity.projectId);
+        if (JSON.stringify(currentRows) !== JSON.stringify(beforeRows)) {
+          throw new Error(`tree node '${nodeId}' changed before delete`);
+        }
+        db.run("DELETE FROM tree_nodes WHERE id = ? AND project_id = ?", [
+          nodeId,
+          identity.projectId,
+        ]);
+        if (db.getRowsModified() !== 1) {
+          throw new Error(`tree node '${nodeId}' not found`);
+        }
+        if (identity.origin !== "undo" && identity.origin !== "redo") {
+          insertBrowserTreeUndoJournal({
+            id: journalId,
+            identity,
+            nodeId,
+            opKind: "delete",
+            before: { rootId: nodeId, nodes: beforeRows },
+            after: null,
+            baseVersion: Number(before.version),
+            resultVersion: 0,
+            now,
+          });
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: journalId,
+          occurredAt: now,
+          events: beforeRows.map((row) => ({
+            objectKey: browserTreeObjectKey(row, String(row.id)),
+            changeKind: row.nodeType === "scene" ? "content" : "metadata",
+            mutationKind: "delete",
+            beforeVersion: Number(row.version),
+            beforeState: row,
+            afterVersion: null,
+            changedPaths: ["/"],
+          })),
+        });
+        const response = {
+          entityId: nodeId,
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId: journalId,
+          deletedIds: beforeRows.map((row) => String(row.id)),
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Tree delete failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function handleCanonicalTreeNodePatch(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "tree_node_patch";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    const nodeId = requiredBrowserString(command, payload, "nodeId");
+    const updatedAt = requiredBrowserString(command, payload, "updatedAt");
+    if (typeof payload.bumpVersion !== "boolean") {
+      throw new Error(`${command}: bumpVersion must be a boolean`);
+    }
+    if (
+      Object.hasOwn(payload, "baseVersion") &&
+      (typeof payload.baseVersion !== "number" ||
+        !Number.isSafeInteger(payload.baseVersion) ||
+        payload.baseVersion < 0)
+    ) {
+      throw new Error(`${command}: baseVersion must be a non-negative integer`);
+    }
+    if (!isRecord(payload.patch)) {
+      throw new Error(`${command}: patch must be an object`);
+    }
+    const patch = payload.patch;
+    const columnMap: Record<string, string> = {
+      parentId: "parent_id",
+      title: "title",
+      synopsis: "synopsis",
+      intent: "intent",
+      sortOrder: "sort_order",
+      storyTimeOrder: "story_time_order",
+      storyTimeLabel: "story_time_label",
+      povCharacterId: "pov_character_id",
+      locationId: "location_id",
+      chronicleStartTime: "chronicle_start_time",
+      chronicleStartMinute: "chronicle_start_minute",
+      chronicleStartGranularity: "chronicle_start_granularity",
+      chronicleEndTime: "chronicle_end_time",
+      chronicleEndMinute: "chronicle_end_minute",
+      chronicleEndGranularity: "chronicle_end_granularity",
+      chroniclePrecision: "chronicle_precision",
+      status: "status",
+      content: "content",
+      unplacedBeatsDoc: "unplaced_beats_doc",
+      charCount: "char_count",
+      unplacedBeatPreview: "unplaced_beat_preview",
+      placedBeatPreview: "placed_beat_preview",
+      sourceUri: "source_uri",
+      sourceMtime: "source_mtime",
+      archivedAt: "archived_at",
+      contextMode: "context_mode",
+      aliases: "aliases",
+      excludedAliases: "excluded_aliases",
+    };
+    const integerFields = new Set([
+      "chronicleStartTime",
+      "chronicleStartMinute",
+      "chronicleEndTime",
+      "chronicleEndMinute",
+      "charCount",
+    ]);
+    for (const [key, value] of Object.entries(patch)) {
+      if (!columnMap[key]) {
+        throw new Error(`unsupported tree node patch field: ${key}`);
+      }
+      if (
+        integerFields.has(key) &&
+        value !== null &&
+        (typeof value !== "number" || !Number.isSafeInteger(value))
+      ) {
+        throw new Error(`${command}: ${key} must be an integer or null`);
+      }
+      if (
+        !integerFields.has(key) &&
+        value !== null &&
+        typeof value !== "string"
+      ) {
+        throw new Error(`${command}: ${key} must be a string or null`);
+      }
+    }
+    const journalId = identity.undoJournalId ?? identity.requestId;
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        command,
+        payload,
+      );
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker: "TREE_NODE_PATCH_REQUEST_CONFLICT",
+      });
+      if (replay) return replay;
+      const before = browserTreeNodeRow(nodeId, identity.projectId);
+      if (!before) {
+        throw new Error(
+          `tree node '${nodeId}' not found in project '${identity.projectId}'`,
+        );
+      }
+      const isRestore = identity.origin === "restore";
+      const sourceDomain = isRestore
+        ? "content.restore"
+        : payload.changeEvent
+          ? "scene.content_update"
+          : "tree.node.patch";
+      const timestamp =
+        isRecord(payload.changeEvent) &&
+        typeof payload.changeEvent.timestamp === "number"
+          ? payload.changeEvent.timestamp
+          : Date.parse(updatedAt) || Date.now();
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId: before.nodeType === "scene" ? nodeId : null,
+        domain: isRestore
+          ? "revision"
+          : payload.changeEvent
+            ? "editor"
+            : "tree",
+        opType: sourceDomain,
+        entityType: payload.changeEvent ? "tree_batch" : "tree_node",
+        entityId: nodeId,
+        payload: JSON.stringify(
+          payload.canonicalPayload ?? {
+            fields: Object.keys(patch).sort(),
+            before,
+            after: patch,
+          },
+        ),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const current = browserTreeNodeRow(nodeId, identity.projectId);
+        if (!current || JSON.stringify(current) !== JSON.stringify(before)) {
+          throw new Error(`tree node '${nodeId}' changed before patch`);
+        }
+        const parentId = Object.hasOwn(patch, "parentId")
+          ? nullableBrowserString(command, patch, "parentId")
+          : null;
+        if (parentId === nodeId)
+          throw new Error("tree node cannot be its own parent");
+        if (
+          Object.hasOwn(patch, "parentId") &&
+          parentId !== null &&
+          !queryOne(
+            `SELECT 1 AS owned FROM tree_nodes
+              WHERE id = ? AND project_id = ? AND node_type = 'folder'`,
+            [parentId, identity.projectId],
+          )
+        ) {
+          throw new Error(
+            `tree node parent '${parentId}' is not a folder in project '${identity.projectId}'`,
+          );
+        }
+        if (
+          Object.hasOwn(patch, "parentId") &&
+          parentId !== null &&
+          queryOne(
+            `WITH RECURSIVE ancestors(id, parent_id) AS (
+               SELECT id, parent_id FROM tree_nodes WHERE id = ? AND project_id = ?
+               UNION
+               SELECT parent.id, parent.parent_id
+                 FROM tree_nodes parent JOIN ancestors child ON parent.id = child.parent_id
+                WHERE parent.project_id = ?
+             ) SELECT 1 AS cycle FROM ancestors WHERE id = ? LIMIT 1`,
+            [parentId, identity.projectId, identity.projectId, nodeId],
+          )
+        ) {
+          throw new Error("tree node parent would create a descendant cycle");
+        }
+        for (const [key, label] of [
+          ["povCharacterId", "POV character"],
+          ["locationId", "location"],
+        ] as const) {
+          if (!Object.hasOwn(patch, key) || patch[key] === null) continue;
+          if (
+            !queryOne(
+              "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
+              [patch[key] as string, identity.projectId],
+            )
+          ) {
+            throw new Error(
+              `tree node ${label} '${String(patch[key])}' is not in project '${identity.projectId}'`,
+            );
+          }
+        }
+        const assignments: string[] = [];
+        const params: SqlValue[] = [];
+        for (const [key, value] of Object.entries(patch)) {
+          assignments.push(`${columnMap[key]} = ?`);
+          params.push((value ?? null) as SqlValue);
+        }
+        assignments.push("updated_at = ?");
+        params.push(updatedAt);
+        if (payload.bumpVersion) assignments.push("version = version + 1");
+        params.push(nodeId, identity.projectId);
+        let sql = `UPDATE tree_nodes SET ${assignments.join(", ")}
+          WHERE id = ? AND project_id = ?`;
+        if (Object.hasOwn(payload, "baseVersion")) {
+          sql += " AND version = ?";
+          params.push(payload.baseVersion as number);
+        }
+        db.run(sql, params);
+        if (db.getRowsModified() !== 1) {
+          if (Object.hasOwn(payload, "baseVersion")) {
+            throw new Error(
+              `TREE_NODE_VERSION_MISMATCH: node '${nodeId}' version conflict; expected base version ${String(payload.baseVersion)}`,
+            );
+          }
+          throw new Error(
+            `tree node '${nodeId}' not found in project '${identity.projectId}'`,
+          );
+        }
+        const row = browserTreeNodeRow(nodeId, identity.projectId);
+        if (!row) throw new Error("tree node not found after patch");
+        if (identity.origin !== "undo" && identity.origin !== "redo") {
+          insertBrowserTreeUndoJournal({
+            id: journalId,
+            identity,
+            nodeId,
+            opKind: "update",
+            before,
+            after: row,
+            now: updatedAt,
+          });
+        }
+        const paths = Object.keys(patch)
+          .map((key) => `/${key}`)
+          .sort();
+        if (paths.length === 0) paths.push("/updatedAt");
+        const changeKind = paths.some((path) => path === "/content")
+          ? "content"
+          : paths.some((path) =>
+                ["/parentId", "/sortOrder", "/storyTimeOrder"].includes(path),
+              )
+            ? "order"
+            : "metadata";
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: journalId,
+          occurredAt: updatedAt,
+          events: [
+            {
+              objectKey: browserTreeObjectKey(row, nodeId),
+              changeKind,
+              mutationKind: isRestore ? "restore" : "update",
+              beforeVersion: isRestore ? null : Number(before.version),
+              ...(isRestore ? {} : { beforeState: before }),
+              afterVersion: Number(row.version),
+              afterState: row,
+              changedPaths: paths,
+            },
+          ],
+        });
+        const response = browserTreeWriteResponse(row, {
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId: journalId,
+        });
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now: updatedAt,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical Tree patch failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  interface BrowserTemporalSceneSnapshot {
+    id: string;
+    storyTimeOrder: string | null;
+    storyTimeLabel: string | null;
+    startTime: number | null;
+    startMinute: number | null;
+    startGranularity: string;
+    endTime: number | null;
+    endMinute: number | null;
+    endGranularity: string;
+    precision: string;
+    version: number;
+  }
+
+  function browserTemporalSceneSnapshot(
+    sceneId: string,
+    projectId: string,
+  ): BrowserTemporalSceneSnapshot | null {
+    const row = queryOne(
+      `SELECT id, story_time_order, story_time_label,
+              chronicle_start_time, chronicle_start_minute,
+              chronicle_start_granularity, chronicle_end_time,
+              chronicle_end_minute, chronicle_end_granularity,
+              chronicle_precision, version
+         FROM tree_nodes
+        WHERE id = ? AND project_id = ? AND node_type = 'scene'`,
+      [sceneId, projectId],
+    );
+    if (!row) return null;
+    return {
+      id: String(row.id),
+      storyTimeOrder:
+        row.story_time_order === null ? null : String(row.story_time_order),
+      storyTimeLabel:
+        row.story_time_label === null ? null : String(row.story_time_label),
+      startTime:
+        row.chronicle_start_time === null
+          ? null
+          : Number(row.chronicle_start_time),
+      startMinute:
+        row.chronicle_start_minute === null
+          ? null
+          : Number(row.chronicle_start_minute),
+      startGranularity: String(row.chronicle_start_granularity),
+      endTime:
+        row.chronicle_end_time === null ? null : Number(row.chronicle_end_time),
+      endMinute:
+        row.chronicle_end_minute === null
+          ? null
+          : Number(row.chronicle_end_minute),
+      endGranularity: String(row.chronicle_end_granularity),
+      precision: String(row.chronicle_precision),
+      version: Number(row.version),
+    };
+  }
+
+  function browserTemporalNullableString(
+    command: string,
+    payload: Record<string, unknown>,
+    key: string,
+  ): string | null {
+    if (!Object.hasOwn(payload, key)) {
+      throw new Error(`${command}: ${key} is required`);
+    }
+    const value = payload[key];
+    if (value !== null && typeof value !== "string") {
+      throw new Error(`${command}: ${key} must be a string or null`);
+    }
+    return value as string | null;
+  }
+
+  function browserTemporalNullableInteger(
+    command: string,
+    payload: Record<string, unknown>,
+    key: string,
+  ): number | null {
+    if (!Object.hasOwn(payload, key)) {
+      throw new Error(`${command}: ${key} is required`);
+    }
+    const value = payload[key];
+    if (
+      value !== null &&
+      (typeof value !== "number" || !Number.isSafeInteger(value))
+    ) {
+      throw new Error(`${command}: ${key} must be an integer or null`);
+    }
+    return value as number | null;
+  }
+
+  function validateBrowserTemporalEndpoint(
+    command: string,
+    endpoint: "start" | "end",
+    day: number | null,
+    minute: number | null,
+    granularity: string,
+  ): void {
+    if (
+      !new Set(["none", "season", "year", "month", "day", "time"]).has(
+        granularity,
+      )
+    ) {
+      throw new Error(
+        `${command}: ${endpoint}Granularity '${granularity}' is invalid`,
+      );
+    }
+    if (granularity === "none" && (day !== null || minute !== null)) {
+      throw new Error(
+        `${command}: ${endpoint}Granularity none requires no day or minute`,
+      );
+    }
+    if (
+      ["season", "year", "month", "day"].includes(granularity) &&
+      (day === null || minute !== null)
+    ) {
+      throw new Error(
+        `${command}: ${endpoint}Granularity ${granularity} requires a day and no minute`,
+      );
+    }
+    if (
+      granularity === "time" &&
+      (day === null || minute === null || minute < 0 || minute >= 24 * 60)
+    ) {
+      throw new Error(
+        `${command}: ${endpoint}Granularity time requires a day and minute in range`,
+      );
+    }
+  }
+
+  function insertBrowserTemporalSceneJournal(input: {
+    id: string;
+    identity: BrowserCanonicalWriteIdentity;
+    sceneId: string;
+    before: BrowserTemporalSceneSnapshot;
+    after: BrowserTemporalSceneSnapshot;
+    now: string;
+  }): void {
+    db.run(
+      `INSERT INTO undo_journal
+        (id, project_id, surface, entity_kind, entity_id, op_kind,
+         before_json, after_json, base_version, result_version,
+         change_event_uid, created_at)
+       VALUES (?, ?, 'tree', 'scene_temporal', ?, 'update', ?, ?, ?, ?, ?, ?)`,
+      [
+        input.id,
+        input.identity.projectId,
+        input.sceneId,
+        JSON.stringify(input.before),
+        JSON.stringify(input.after),
+        input.before.version,
+        input.after.version,
+        input.identity.eventUid,
+        input.now,
+      ],
+    );
+    if (db.getRowsModified() !== 1) {
+      throw new Error(`temporal scene journal '${input.id}' was not persisted`);
+    }
+  }
+
+  async function handleCanonicalTemporalScenePatch(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "temporal_scene_patch";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    const replaysHistory =
+      identity.origin === "undo" || identity.origin === "redo";
+    if (
+      !replaysHistory &&
+      (identity.originalTransactionId !== null ||
+        identity.undoJournalId !== null)
+    ) {
+      throw new Error(
+        `${command}: only undo/redo may carry canonical transaction lineage`,
+      );
+    }
+    const sceneId = requiredBrowserString(command, payload, "targetId");
+    const baseVersion = payload.baseVersion;
+    if (
+      typeof baseVersion !== "number" ||
+      !Number.isSafeInteger(baseVersion) ||
+      baseVersion < 0
+    ) {
+      throw new Error(`${command}: baseVersion must be a non-negative integer`);
+    }
+    const storyTimeOrder = browserTemporalNullableString(
+      command,
+      payload,
+      "storyTimeOrder",
+    );
+    const storyTimeLabel = browserTemporalNullableString(
+      command,
+      payload,
+      "storyTimeLabel",
+    );
+    const startTime = browserTemporalNullableInteger(
+      command,
+      payload,
+      "startTime",
+    );
+    const startMinute = browserTemporalNullableInteger(
+      command,
+      payload,
+      "startMinute",
+    );
+    const startGranularity = requiredBrowserString(
+      command,
+      payload,
+      "startGranularity",
+    );
+    const endTime = browserTemporalNullableInteger(command, payload, "endTime");
+    const endMinute = browserTemporalNullableInteger(
+      command,
+      payload,
+      "endMinute",
+    );
+    const endGranularity = requiredBrowserString(
+      command,
+      payload,
+      "endGranularity",
+    );
+    const precision = requiredBrowserString(command, payload, "precision");
+    validateBrowserTemporalEndpoint(
+      command,
+      "start",
+      startTime,
+      startMinute,
+      startGranularity,
+    );
+    validateBrowserTemporalEndpoint(
+      command,
+      "end",
+      endTime,
+      endMinute,
+      endGranularity,
+    );
+    if (endGranularity !== "none" && startGranularity === "none") {
+      throw new Error(`${command}: end endpoint requires a start endpoint`);
+    }
+    if (startTime !== null && endTime !== null) {
+      const startAbsolute =
+        BigInt(startTime) * 1440n + BigInt(startMinute ?? 0);
+      const endAbsolute = BigInt(endTime) * 1440n + BigInt(endMinute ?? 0);
+      if (endAbsolute < startAbsolute) {
+        throw new Error(`${command}: end timestamp must not precede start`);
+      }
+    }
+
+    const journalId = identity.undoJournalId ?? identity.requestId;
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        command,
+        payload,
+      );
+      const conflictMarker = "TEMPORAL_SCENE_REQUEST_CONFLICT";
+      const replay = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker,
+      });
+      if (replay) return replay;
+      const before = browserTemporalSceneSnapshot(sceneId, identity.projectId);
+      if (!before) {
+        throw new Error(
+          `scene '${sceneId}' not found in project '${identity.projectId}'`,
+        );
+      }
+      if (before.version !== baseVersion) {
+        throw new Error(
+          `NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '${sceneId}' expected version ${baseVersion}, found ${before.version}`,
+        );
+      }
+      const beforeRoot = browserTreeNodeRow(sceneId, identity.projectId);
+      if (!beforeRoot || Number(beforeRoot.version) !== before.version) {
+        throw new Error(`scene '${sceneId}' canonical snapshot is missing`);
+      }
+      const nextVersion = before.version + 1;
+      if (!Number.isSafeInteger(nextVersion)) {
+        throw new Error("temporal scene version overflow");
+      }
+      // One writer-owned timestamp is shared by the domain row, canonical
+      // Change Event, Change Feed, Undo Journal, and idempotency receipt.
+      const timestamp = Date.now();
+      const occurredAt = new Date(timestamp).toISOString();
+      const expectedAfter: BrowserTemporalSceneSnapshot = {
+        id: sceneId,
+        storyTimeOrder,
+        storyTimeLabel,
+        startTime,
+        startMinute,
+        startGranularity,
+        endTime,
+        endMinute,
+        endGranularity,
+        precision,
+        version: nextVersion,
+      };
+      const fieldPaths = [
+        ["endGranularity", "/endGranularity"],
+        ["endMinute", "/endMinute"],
+        ["endTime", "/endTime"],
+        ["precision", "/precision"],
+        ["startGranularity", "/startGranularity"],
+        ["startMinute", "/startMinute"],
+        ["startTime", "/startTime"],
+        ["storyTimeLabel", "/storyTimeLabel"],
+        ["storyTimeOrder", "/storyTimeOrder"],
+      ] as const;
+      const changedPaths: string[] = fieldPaths
+        .filter(([field]) => before[field] !== expectedAfter[field])
+        .map(([, path]) => path);
+      if (changedPaths.length === 0) changedPaths.push("/version");
+      const preparedEvent = await prepareBrowserTrackedChangeEvent({
+        eventUid: identity.eventUid,
+        projectId: identity.projectId,
+        sceneId,
+        domain: "tree",
+        opType: "temporal.scene.patch",
+        entityType: "scene",
+        entityId: sceneId,
+        payload: JSON.stringify({
+          fields: changedPaths,
+          before,
+          after: expectedAfter,
+        }),
+        sessionId: identity.sessionId,
+        timestamp,
+      });
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const committed = loadBrowserCanonicalWriteReplay({
+          domain: command,
+          identity,
+          requestHash,
+          conflictMarker,
+        });
+        if (committed) {
+          db.run("COMMIT");
+          return committed;
+        }
+        const current = browserTemporalSceneSnapshot(
+          sceneId,
+          identity.projectId,
+        );
+        if (!current || JSON.stringify(current) !== JSON.stringify(before)) {
+          throw new Error(
+            `NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '${sceneId}' changed before patch`,
+          );
+        }
+        db.run(
+          `UPDATE tree_nodes
+              SET story_time_order = ?, story_time_label = ?,
+                  chronicle_start_time = ?, chronicle_start_minute = ?,
+                  chronicle_start_granularity = ?, chronicle_end_time = ?,
+                  chronicle_end_minute = ?, chronicle_end_granularity = ?,
+                  chronicle_precision = ?, version = ?, updated_at = ?
+            WHERE id = ? AND project_id = ? AND node_type = 'scene'
+              AND version = ?`,
+          [
+            storyTimeOrder,
+            storyTimeLabel,
+            startTime,
+            startMinute,
+            startGranularity,
+            endTime,
+            endMinute,
+            endGranularity,
+            precision,
+            nextVersion,
+            occurredAt,
+            sceneId,
+            identity.projectId,
+            baseVersion,
+          ],
+        );
+        if (db.getRowsModified() !== 1) {
+          throw new Error(
+            `NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '${sceneId}' patch conflict`,
+          );
+        }
+        const after = browserTemporalSceneSnapshot(sceneId, identity.projectId);
+        if (!after || JSON.stringify(after) !== JSON.stringify(expectedAfter)) {
+          throw new Error(`scene '${sceneId}' missing after temporal patch`);
+        }
+        const afterRoot = browserTreeNodeRow(sceneId, identity.projectId);
+        if (!afterRoot || Number(afterRoot.version) !== after.version) {
+          throw new Error(`scene '${sceneId}' canonical snapshot is missing`);
+        }
+        if (!replaysHistory) {
+          insertBrowserTemporalSceneJournal({
+            id: journalId,
+            identity,
+            sceneId,
+            before,
+            after,
+            now: occurredAt,
+          });
+        }
+        const maintenanceTransactionId = insertBrowserNarrativeChange({
+          preparedEvent,
+          identity,
+          requestHash,
+          undoJournalId: journalId,
+          occurredAt,
+          events: [
+            {
+              objectKey: { kind: "scene", sceneId },
+              changeKind: changedPaths.some(
+                (path) =>
+                  path === "/storyTimeOrder" || path === "/storyTimeLabel",
+              )
+                ? "order"
+                : "calendar",
+              mutationKind: "update",
+              beforeVersion: before.version,
+              beforeState: beforeRoot,
+              afterVersion: after.version,
+              afterState: afterRoot,
+              changedPaths,
+            },
+          ],
+        });
+        const response = {
+          sceneId,
+          version: after.version,
+          updatedAt: occurredAt,
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId: journalId,
+        };
+        insertBrowserCanonicalWriteReceipt({
+          domain: command,
+          identity,
+          requestHash,
+          response,
+          now: occurredAt,
+        });
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the temporal scene patch failure.
+        }
+        throw error;
+      }
+    });
+  }
+
+  function handleIntegrityCheck(
+    args: Record<string, unknown>,
+  ): Record<string, number> {
+    const command = "integrity_check";
+    const projectId = requiredBrowserString(command, args, "projectId");
+    const counts = queryOne(
+      `SELECT
+         (SELECT COUNT(*) FROM codex_entries entry
+           WHERE entry.project_id = ?
+             AND entry.source_chat_message_id IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM chat_messages message
+                 JOIN chat_sessions session ON session.id = message.session_id
+                WHERE message.id = entry.source_chat_message_id
+                  AND session.project_id = entry.project_id
+             )) AS orphanedCodexSources,
+         (SELECT COUNT(*) FROM snippets snippet
+           WHERE snippet.project_id = ?
+             AND snippet.source_chat_message_id IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1
+                 FROM chat_messages message
+                 JOIN chat_sessions session ON session.id = message.session_id
+                WHERE message.id = snippet.source_chat_message_id
+                  AND session.project_id = snippet.project_id
+             )) AS orphanedSnippetSources,
+         (SELECT COUNT(*) FROM snippets snippet
+           WHERE snippet.project_id = ?
+             AND snippet.scene_id IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM tree_nodes scene
+                WHERE scene.id = snippet.scene_id
+                  AND scene.project_id = snippet.project_id
+             )) AS orphanedSnippetScenes`,
+      [projectId, projectId, projectId],
+    );
+    return {
+      orphanedCodexSources: Number(counts?.orphanedCodexSources ?? 0),
+      orphanedSnippetSources: Number(counts?.orphanedSnippetSources ?? 0),
+      orphanedSnippetScenes: Number(counts?.orphanedSnippetScenes ?? 0),
+    };
+  }
+
+  function loadBrowserIntegrityRepairReplay(input: {
+    identity: BrowserCanonicalWriteIdentity;
+    requestHash: string;
+  }): Record<string, unknown> | null {
+    const ledger = queryOne(
+      `SELECT project_id, payload_hash, tombstone_json
+         FROM idempotency_requests
+        WHERE domain = 'repair_integrity' AND request_id = ?`,
+      [input.identity.requestId],
+    );
+    if (!ledger) return null;
+    if (
+      ledger.project_id !== input.identity.projectId ||
+      ledger.payload_hash !== input.requestHash
+    ) {
+      throw new Error(
+        "REPAIR_INTEGRITY_IDEMPOTENCY_CONFLICT: request id reused with different payload or project",
+      );
+    }
+    let response: unknown;
+    try {
+      response = JSON.parse(String(ledger.tombstone_json));
+    } catch {
+      throw new Error(
+        "REPAIR_INTEGRITY_IDEMPOTENCY_CONFLICT: committed receipt is invalid",
+      );
+    }
+    if (!isRecord(response)) {
+      throw new Error(
+        "REPAIR_INTEGRITY_IDEMPOTENCY_CONFLICT: committed receipt is invalid",
+      );
+    }
+    if (typeof response.maintenanceTransactionId === "string") {
+      const tracked = queryOne(
+        `SELECT 1 AS tracked
+           FROM narrative_change_transactions transaction_row
+           JOIN change_events canonical
+             ON canonical.project_id = transaction_row.project_id
+            AND canonical.event_uid = transaction_row.source_change_event_uid
+          WHERE transaction_row.project_id = ?
+            AND transaction_row.id = ?
+            AND transaction_row.request_id = ?`,
+        [
+          input.identity.projectId,
+          response.maintenanceTransactionId,
+          input.identity.requestId,
+        ],
+      );
+      if (!tracked) {
+        throw new Error(
+          "REPAIR_INTEGRITY_IDEMPOTENCY_CONFLICT: committed history is missing",
+        );
+      }
+    }
+    return response;
+  }
+
+  async function handleRepairIntegrity(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "repair_integrity";
+    const payload = browserCommandPayload(command, args);
+    for (const key of [
+      "projectId",
+      "requestId",
+      "sessionId",
+      "eventUid",
+      "occurredAt",
+    ]) {
+      requiredBrowserString(command, payload, key);
+    }
+    const occurredAt = String(payload.occurredAt);
+    const timestamp = Date.parse(occurredAt);
+    if (!Number.isFinite(timestamp)) {
+      throw new Error(`${command}: occurredAt must be an RFC3339 timestamp`);
+    }
+    const identity = browserCanonicalWriteIdentity(
+      {
+        ...payload,
+        origin: "restore",
+        originalTransactionId: null,
+        undoJournalId: null,
+      },
+      command,
+    );
+
+    return withAppendLedgerLock(async () => {
+      const requestHash = await browserCanonicalWriteFingerprint(
+        command,
+        payload,
+      );
+      const replay = loadBrowserIntegrityRepairReplay({
+        identity,
+        requestHash,
+      });
+      if (replay) return replay;
+      if (
+        !queryOne("SELECT 1 AS owned FROM projects WHERE id = ?", [
+          identity.projectId,
+        ])
+      ) {
+        throw new Error(
+          `integrity repair project '${identity.projectId}' does not exist`,
+        );
+      }
+
+      const codexTargets = queryAll(
+        `SELECT entry.id, entry.version
+           FROM codex_entries entry
+          WHERE entry.project_id = ?
+            AND entry.source_chat_message_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1
+                FROM chat_messages message
+                JOIN chat_sessions session ON session.id = message.session_id
+               WHERE message.id = entry.source_chat_message_id
+                 AND session.project_id = entry.project_id
+            )
+          ORDER BY entry.id`,
+        [identity.projectId],
+      );
+      const snippetTargets = queryAll(
+        `SELECT snippet.id,
+                snippet.version,
+                snippet.source_chat_message_id AS sourceChatMessageId,
+                snippet.scene_id AS sceneId,
+                CASE WHEN snippet.source_chat_message_id IS NOT NULL
+                       AND NOT EXISTS (
+                         SELECT 1
+                           FROM chat_messages message
+                           JOIN chat_sessions session ON session.id = message.session_id
+                          WHERE message.id = snippet.source_chat_message_id
+                            AND session.project_id = snippet.project_id
+                       )
+                     THEN 1 ELSE 0 END AS repairSource,
+                CASE WHEN snippet.scene_id IS NOT NULL
+                       AND NOT EXISTS (
+                         SELECT 1 FROM tree_nodes scene
+                          WHERE scene.id = snippet.scene_id
+                            AND scene.project_id = snippet.project_id
+                       )
+                     THEN 1 ELSE 0 END AS repairScene
+           FROM snippets snippet
+          WHERE snippet.project_id = ?
+            AND (
+              (snippet.source_chat_message_id IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM chat_messages message
+                   JOIN chat_sessions session ON session.id = message.session_id
+                  WHERE message.id = snippet.source_chat_message_id
+                    AND session.project_id = snippet.project_id
+               ))
+              OR
+              (snippet.scene_id IS NOT NULL
+               AND NOT EXISTS (
+                 SELECT 1 FROM tree_nodes scene
+                  WHERE scene.id = snippet.scene_id
+                    AND scene.project_id = snippet.project_id
+               ))
+            )
+          ORDER BY snippet.id`,
+        [identity.projectId],
+      );
+      const snippetSourcesFixed = snippetTargets.filter(
+        (target) => Number(target.repairSource) === 1,
+      ).length;
+      const snippetScenesFixed = snippetTargets.filter(
+        (target) => Number(target.repairScene) === 1,
+      ).length;
+      const changed = codexTargets.length > 0 || snippetTargets.length > 0;
+      const preparedEvent = changed
+        ? await prepareBrowserTrackedChangeEvent({
+            eventUid: identity.eventUid,
+            projectId: identity.projectId,
+            sceneId: null,
+            domain: "integrity",
+            opType: "integrity.repair",
+            entityType: "project",
+            entityId: identity.projectId,
+            payload: JSON.stringify({
+              codexSourcesFixed: codexTargets.length,
+              projectId: identity.projectId,
+              snippetScenesFixed,
+              snippetSourcesFixed,
+              authorityRoute: "restore-or-migration",
+              authorityCaller: "integrity-repair",
+              authorityEvidence: {
+                validated: true,
+                status: "validated",
+                authorityRoute: "restore-or-migration",
+                caller: "integrity-repair",
+                origin: "restore",
+              },
+            }),
+            sessionId: identity.sessionId,
+            timestamp,
+          })
+        : null;
+
+      db.run("BEGIN IMMEDIATE");
+      try {
+        for (const target of codexTargets) {
+          db.run(
+            `UPDATE codex_entries
+                SET source_chat_message_id = NULL,
+                    version = version + 1,
+                    updated_at = ?
+              WHERE id = ? AND project_id = ? AND version = ?`,
+            [
+              occurredAt,
+              String(target.id),
+              identity.projectId,
+              Number(target.version),
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error("integrity repair Codex target changed");
+          }
+        }
+        for (const target of snippetTargets) {
+          db.run(
+            `UPDATE snippets
+                SET source_chat_message_id = CASE WHEN ? = 1 THEN NULL ELSE source_chat_message_id END,
+                    scene_id = CASE WHEN ? = 1 THEN NULL ELSE scene_id END,
+                    version = version + 1,
+                    updated_at = ?
+              WHERE id = ? AND project_id = ? AND version = ?`,
+            [
+              Number(target.repairSource),
+              Number(target.repairScene),
+              occurredAt,
+              String(target.id),
+              identity.projectId,
+              Number(target.version),
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error("integrity repair Snippet target changed");
+          }
+        }
+
+        let maintenanceTransactionId: string | undefined;
+        if (preparedEvent) {
+          const events: BrowserNarrativeChangeEventInput[] = [];
+          for (const target of codexTargets) {
+            events.push({
+              objectKey: {
+                kind: "codex-entry",
+                entryId: String(target.id),
+              },
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: Number(target.version),
+              afterVersion: Number(target.version) + 1,
+              changedPaths: ["/sourceChatMessageId"],
+            });
+          }
+          for (const target of snippetTargets) {
+            const changedPaths: string[] = [];
+            if (Number(target.repairScene) === 1) changedPaths.push("/sceneId");
+            if (Number(target.repairSource) === 1)
+              changedPaths.push("/sourceChatMessageId");
+            events.push({
+              objectKey: {
+                kind: "component",
+                componentId: `snippet:${String(target.id)}`,
+              },
+              changeKind: "association",
+              mutationKind: "update",
+              beforeVersion: Number(target.version),
+              afterVersion: Number(target.version) + 1,
+              changedPaths,
+            });
+          }
+          maintenanceTransactionId = insertBrowserNarrativeChange({
+            preparedEvent,
+            identity,
+            requestHash,
+            undoJournalId: null,
+            occurredAt,
+            events,
+          });
+        }
+        const response: Record<string, unknown> = {
+          codexSourcesFixed: codexTargets.length,
+          snippetSourcesFixed,
+          snippetScenesFixed,
+          ...(preparedEvent
+            ? {
+                changeEventUid: identity.eventUid,
+                maintenanceTransactionId,
+              }
+            : {}),
+        };
+        if (preparedEvent) {
+          insertBrowserCanonicalWriteReceipt({
+            domain: command,
+            identity,
+            requestHash,
+            response,
+            now: occurredAt,
+          });
+        } else {
+          db.run(
+            `INSERT INTO idempotency_requests
+              (domain, request_id, project_id, payload_hash, tombstone_json, created_at)
+             VALUES ('repair_integrity', ?, ?, ?, ?, ?)`,
+            [
+              identity.requestId,
+              identity.projectId,
+              requestHash,
+              JSON.stringify(response),
+              occurredAt,
+            ],
+          );
+          if (db.getRowsModified() !== 1) {
+            throw new Error(
+              `repair_integrity: idempotency receipt '${identity.requestId}' was not persisted`,
+            );
+          }
+        }
+        db.run("COMMIT");
+        options.onDatabaseDirty?.();
+        return response;
+      } catch (error) {
+        try {
+          db.run("ROLLBACK");
+        } catch {
+          // Preserve the canonical integrity repair failure.
+        }
+        throw error;
+      }
+    });
+  }
+
   async function invoke<T = unknown>(
     cmd: string,
     args: Record<string, unknown> = {},
@@ -14203,6 +27612,10 @@ export async function createBrowserMock(
         return handleDbExecute(args) as T;
       case "db_execute_batch":
         return handleDbExecuteBatch(args) as T;
+      case "project_create":
+        return (await handleProjectCreate(args)) as T;
+      case "project_patch":
+        return (await handleProjectPatch(args)) as T;
       case "project_delete": {
         const command = "project_delete";
         const payload = browserCommandPayload(command, args);
@@ -14229,19 +27642,48 @@ export async function createBrowserMock(
         return undefined as T;
       }
       case "agent_codex_create":
+      case "codex_create":
         return handleAgentCodexCreate(args) as T;
       case "agent_codex_update":
+      case "codex_update":
         return handleAgentCodexUpdate(args) as T;
       case "agent_codex_delete":
+      case "codex_delete":
         return handleAgentCodexDelete(args) as T;
       case "agent_codex_mutate":
+      case "codex_mutate":
         return handleAgentCodexMutate(args) as T;
       case "agent_foreshadow_create":
         return (await handleAgentForeshadowCreate(args)) as T;
       case "agent_foreshadow_update":
         return (await handleAgentForeshadowUpdate(args)) as T;
+      case "agent_event_create":
+      case "event_create":
+        return (await handleAgentEventCreate(args)) as T;
+      case "agent_event_update":
+      case "event_update":
+        return (await handleAgentEventUpdate(args)) as T;
+      case "agent_event_delete":
+      case "event_delete":
+        return (await handleAgentEventDelete(args)) as T;
+      case "agent_event_set_participants":
+      case "event_participants_set":
+        return (await handleAgentEventSetParticipants(args)) as T;
+      case "agent_scene_event_link":
+      case "scene_event_link":
+        return (await handleAgentSceneEventMutation(args, true)) as T;
       case "agent_scene_event_link_batch":
+      case "scene_event_link_batch":
         return (await handleAgentSceneEventLinkBatch(args)) as T;
+      case "agent_scene_event_unlink":
+      case "scene_event_unlink":
+        return (await handleAgentSceneEventMutation(args, false)) as T;
+      case "agent_event_relation_add":
+      case "event_relation_add":
+        return (await handleAgentEventRelationMutation(args, true)) as T;
+      case "agent_event_relation_remove":
+      case "event_relation_remove":
+        return (await handleAgentEventRelationMutation(args, false)) as T;
       case "agent_apply_undo_journal":
         return handleBrowserApplyUndoJournal(args) as T;
       case "editor_sticky_list":
@@ -14285,34 +27727,33 @@ export async function createBrowserMock(
       case "event_get_version":
         return handleEventGetVersion(args) as T;
       case "event_set_participants":
-        return handleEventSetParticipants(args) as T;
+        return (await handleEventSetParticipants(args)) as T;
       case "project_calendar_upsert":
-        return handleProjectCalendarUpsert(args) as T;
+        return (await handleProjectCalendarUpsert(args)) as T;
       case "authorship_replace_lane":
         handleAuthorshipReplaceLane(args);
         return undefined as T;
       case "entity_tags_set":
-        handleEntityTagsSet(args);
+        await handleEntityTagsSet(args);
         return undefined as T;
+      case "snippet_create":
+        return (await handleSnippetWrite(args, "create")) as T;
+      case "snippet_update":
+        return (await handleSnippetWrite(args, "update")) as T;
+      case "snippet_delete":
+        return (await handleSnippetWrite(args, "delete")) as T;
       case "codex_rename_undo":
-        return handleCodexRenameUndo(args) as T;
-      case "codex_rename_apply": {
-        const renameResult = handleCodexRenameUndo(args);
-        return {
-          entityId: String((args.payload as Record<string, unknown>).entryId),
-          version: renameResult.versions.at(-1)?.version ?? 0,
-          versions: renameResult.versions,
-          changeEventUid: crypto.randomUUID(),
-          undoJournalId: crypto.randomUUID(),
-        } as T;
-      }
+        return (await handleCodexRename(args, "undo")) as T;
+      case "codex_rename_apply":
+        return (await handleCodexRename(args, "apply")) as T;
       case "scan_staging_project_create":
         handleScanStagingProjectCreate(args);
         return undefined as T;
-      case "tree_plan_undo":
-        handleTreePlanUndo(args);
-        return undefined as T;
       case "tree_node_create": {
+        return (await handleCanonicalTreeNodeCreate(args)) as T;
+        /* c8 ignore start -- pre-C1 Browser Mock implementation retained
+         * temporarily below for diff-locality while the canonical handler is
+         * exercised by the cutover tests. */
         const command = "tree_node_create";
         const payload = browserCommandPayload(command, args);
         const now = new Date().toISOString();
@@ -14385,8 +27826,11 @@ export async function createBrowserMock(
           }
           throw error;
         }
+        /* c8 ignore stop */
       }
       case "tree_node_delete": {
+        return (await handleCanonicalTreeNodeDelete(args)) as T;
+        /* c8 ignore start */
         const command = "tree_node_delete";
         const payload = browserCommandPayload(command, args);
         db.run("DELETE FROM tree_nodes WHERE id = ? AND project_id = ?", [
@@ -14395,8 +27839,11 @@ export async function createBrowserMock(
         ]);
         if (db.getRowsModified() > 0) options.onDatabaseDirty?.();
         return undefined as T;
+        /* c8 ignore stop */
       }
       case "tree_node_patch": {
+        return (await handleCanonicalTreeNodePatch(args)) as T;
+        /* c8 ignore start */
         const command = "tree_node_patch";
         const payload = browserCommandPayload(command, args);
         const projectId = requiredBrowserString(command, payload, "projectId");
@@ -14409,7 +27856,7 @@ export async function createBrowserMock(
           Object.hasOwn(payload, "baseVersion") &&
           (typeof payload.baseVersion !== "number" ||
             !Number.isSafeInteger(payload.baseVersion) ||
-            payload.baseVersion < 0)
+            Number(payload.baseVersion) < 0)
         ) {
           throw new Error(
             `${command}: baseVersion must be a non-negative integer`,
@@ -14505,7 +27952,7 @@ export async function createBrowserMock(
               typeof codexId !== "string" ||
               !queryOne(
                 "SELECT 1 AS owned FROM codex_entries WHERE id = ? AND project_id = ?",
-                [codexId, projectId],
+                [codexId as string, projectId],
               )
             ) {
               throw new Error(
@@ -14568,7 +28015,7 @@ export async function createBrowserMock(
           if (!row) throw new Error("tree node not found");
           if (
             Object.hasOwn(payload, "baseVersion") &&
-            row.version !==
+            row!.version !==
               (payload.baseVersion as number) + (payload.bumpVersion ? 1 : 0)
           ) {
             throw new Error("TREE_NODE_VERSION_MISMATCH");
@@ -14584,79 +28031,40 @@ export async function createBrowserMock(
           }
           throw error;
         }
+        /* c8 ignore stop */
       }
       case "temporal_scene_patch": {
-        const payload = args.payload as Record<string, unknown>;
-        db.run(
-          `UPDATE tree_nodes SET story_time_order = ?, story_time_label = ?,
-            chronicle_start_time = ?, chronicle_start_minute = ?,
-            chronicle_start_granularity = ?, chronicle_end_time = ?,
-            chronicle_end_minute = ?, chronicle_end_granularity = ?,
-            chronicle_precision = ?, version = version + 1, updated_at = ?
-           WHERE id = ? AND project_id = ? AND node_type = 'scene'
-             AND version = ?`,
-          [
-            payload.storyTimeOrder as SqlValue,
-            payload.storyTimeLabel as SqlValue,
-            payload.startTime as SqlValue,
-            payload.startMinute as SqlValue,
-            payload.startGranularity as SqlValue,
-            payload.endTime as SqlValue,
-            payload.endMinute as SqlValue,
-            payload.endGranularity as SqlValue,
-            payload.precision as SqlValue,
-            new Date().toISOString(),
-            payload.targetId as string,
-            payload.projectId as string,
-            payload.baseVersion as number,
-          ],
-        );
-        options.onDatabaseDirty?.();
-        const row = browserTreeNodeRow(
-          payload.targetId as string,
-          payload.projectId as string,
-        );
-        if (!row || row.version !== (payload.baseVersion as number) + 1) {
-          throw new Error("NEX_TEMPORAL_SCENE_VERSION_MISMATCH");
-        }
-        return {
-          sceneId: payload.targetId,
-          version: row.version,
-          updatedAt: row.updatedAt,
-        } as T;
+        return (await handleCanonicalTemporalScenePatch(args)) as T;
       }
       case "map_write_bundle":
-        handleMapWriteBundle(args);
-        return undefined as T;
+        return (await handleMapWriteBundle(args)) as T;
       case "project_snapshot_create":
         handleProjectSnapshotCreate(args);
         return undefined as T;
       case "project_snapshot_restore_context":
         return handleProjectSnapshotRestoreContext(args) as T;
       case "project_snapshot_apply_restore":
-        handleProjectSnapshotApplyRestore(args);
-        return undefined as T;
+        return (await handleProjectSnapshotApplyRestore(args)) as T;
+      case "revision_scene_restore":
+        return (await handleRevisionSceneRestore(args)) as T;
       case "plot_thread_create":
         return (await handlePlotThreadCreate(args)) as T;
       case "plot_thread_update":
-        return handlePlotThreadUpdate(args) as T;
+        return (await handlePlotThreadUpdate(args)) as T;
       case "plot_thread_delete":
-        handlePlotThreadDelete(args);
-        return undefined as T;
+        return (await handlePlotThreadDelete(args)) as T;
       case "plot_thread_link_create":
         return (await handlePlotThreadLinkCreate(args)) as T;
       case "plot_thread_link_update":
-        return handlePlotThreadLinkUpdate(args) as T;
+        return (await handlePlotThreadLinkUpdate(args)) as T;
       case "plot_thread_link_delete":
-        handlePlotThreadLinkDelete(args);
-        return undefined as T;
+        return (await handlePlotThreadLinkDelete(args)) as T;
       case "plot_thread_branch_create":
         return (await handlePlotThreadBranchCreate(args)) as T;
       case "plot_thread_branch_update":
-        return handlePlotThreadBranchUpdate(args) as T;
+        return (await handlePlotThreadBranchUpdate(args)) as T;
       case "plot_thread_branch_delete":
-        handlePlotThreadBranchDelete(args);
-        return undefined as T;
+        return (await handlePlotThreadBranchDelete(args)) as T;
       case "plot_thread_move_marker_bundle":
         return (await handlePlotThreadMoveMarkerBundle(args)) as T;
       case "plot_thread_restore_snapshot":
@@ -14666,33 +28074,35 @@ export async function createBrowserMock(
       case "foreshadow_create":
         return (await handleForeshadowCreate(args)) as T;
       case "foreshadow_update":
-        return handleForeshadowUpdate(args) as T;
+        return (await handleForeshadowUpdate(args)) as T;
       case "foreshadow_delete":
         return (await handleForeshadowDelete(args)) as T;
       case "foreshadow_get_setup":
         return handleForeshadowGetSetup(args) as T;
       case "foreshadow_update_setup":
-        return handleForeshadowUpdateSetup(args) as T;
+        return (await handleForeshadowUpdateSetup(args)) as T;
       case "foreshadow_setup_create_ai":
-        return handleForeshadowSetupCreateAi(args) as T;
+        return (await handleForeshadowSetupCreateAi(args)) as T;
       case "foreshadow_resolve_orphan":
-        return handleForeshadowResolveOrphan(args) as T;
+        return (await handleForeshadowResolveOrphan(args)) as T;
       case "foreshadow_link_codex":
-        return handleForeshadowLinkCodex(args, true) as T;
+        return (await handleForeshadowLinkCodex(args, true)) as T;
       case "foreshadow_unlink_codex":
-        return handleForeshadowLinkCodex(args, false) as T;
-      case "foreshadow_mark_linked_codex_dirty":
-        return handleForeshadowMarkLinkedCodexDirty(args) as T;
+        return (await handleForeshadowLinkCodex(args, false)) as T;
       case "foreshadow_set_setup_strength":
-        return handleForeshadowSetSetupStrength(args) as T;
+        return (await handleForeshadowSetSetupStrength(args)) as T;
       case "foreshadow_save_anchors_for_scene":
-        return handleForeshadowSaveAnchorsForScene(args) as T;
+        return (await handleForeshadowSaveAnchorsForScene(args)) as T;
       case "vacuum_database":
         db.run("VACUUM");
         options.onDatabaseDirty?.();
         return undefined as T;
       case "fts_search":
         return handleFtsSearch(args) as T;
+      case "integrity_check":
+        return handleIntegrityCheck(args) as T;
+      case "repair_integrity":
+        return (await handleRepairIntegrity(args)) as T;
       case "semantic_search":
       case "codex_semantic_search":
       case "events_semantic_search":
@@ -14756,6 +28166,16 @@ export async function createBrowserMock(
         } as T;
       case "timelapse_append_batch":
         return (await handleTimelapseAppendBatch(args)) as T;
+      case "timelapse_genesis_baselines_append":
+        return (await handleTimelapseGenesisBaselinesAppend(args)) as T;
+      case "timelapse_body_baselines_append":
+        return (await handleTimelapseBodyBaselinesAppend(args)) as T;
+      case "timelapse_history_purge":
+        return (await handleTimelapseHistoryPurge(args)) as T;
+      case "timelapse_enabled_set":
+        return (await handleTimelapseEnabledSet(args)) as T;
+      case "timelapse_layout_snapshot_record":
+        return (await handleTimelapseLayoutSnapshotRecord(args)) as T;
       case "ime_export_get_status":
       case "ime_export_refresh":
       case "ime_export_set_active_project":

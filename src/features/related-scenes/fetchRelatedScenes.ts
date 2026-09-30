@@ -23,17 +23,22 @@ import {
   type RelatedScene,
 } from "./selectRelatedScenes";
 import { buildSparseQuery } from "./seedTerms";
+import { fetchNir1RelatedPastScenes } from "./fetchNir1RelatedScenes";
+import type {
+  Nir1RelatedScenesFetchOptions,
+  Nir1RelatedScenesFetchResult,
+} from "./nir1RelatedScenesFetchTypes";
+import {
+  RELATED_SCENES_MAX,
+  RELATED_SCENES_FETCH_LIMIT,
+  RELATED_SCENES_RELATIVE_GAP,
+} from "./relatedScenesConfig";
 
-/** パネルに表示する関連過去シーンの最大件数。 */
-export const RELATED_SCENES_MAX = 8;
-/** dense 検索の取得件数。床/集約で間引く前提で広めに取る。 */
-export const RELATED_SCENES_FETCH_LIMIT = 30;
-/**
- * 相対救済 (二段ガード) の標準化 gap。シーンの cosine が pool 中央値より この値以上
- * 際立つときだけ床ぎりぎり下を救済する。browse UI なので保守的に。実ログでの較正前提
- * ([[grimodex-ruri-cosine-baseline]] の②)。
- */
-export const RELATED_SCENES_RELATIVE_GAP = 0.05;
+export {
+  RELATED_SCENES_MAX,
+  RELATED_SCENES_FETCH_LIMIT,
+  RELATED_SCENES_RELATIVE_GAP,
+} from "./relatedScenesConfig";
 
 /**
  * 現在編集中シーンに意味的に関連する「読書順で前の (既読) シーン」を取得する。
@@ -51,9 +56,23 @@ export const RELATED_SCENES_RELATIVE_GAP = 0.05;
  * 静かに「該当なし」を出す。sparse だけ失敗した場合は dense 単独へグレースフルに退避
  * する (= 従来挙動)。chat の semanticRecall と同じ契約。
  */
+export function fetchRelatedPastScenes(
+  sceneId: string,
+): Promise<RelatedScene[]>;
+export function fetchRelatedPastScenes(
+  sceneId: string,
+  options: Nir1RelatedScenesFetchOptions,
+): Promise<Nir1RelatedScenesFetchResult>;
+export function fetchRelatedPastScenes(
+  sceneId: string,
+  options?: Nir1RelatedScenesFetchOptions,
+): Promise<RelatedScene[] | Nir1RelatedScenesFetchResult>;
 export async function fetchRelatedPastScenes(
   sceneId: string,
-): Promise<RelatedScene[]> {
+  options?: Nir1RelatedScenesFetchOptions,
+): Promise<RelatedScene[] | Nir1RelatedScenesFetchResult> {
+  if (options?.mode === "hybrid")
+    return fetchNir1RelatedPastScenes(sceneId, options);
   const projectId = getCurrentProjectId();
   if (!projectId || !sceneId) return [];
 

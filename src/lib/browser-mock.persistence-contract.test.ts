@@ -10,6 +10,7 @@ interface PersistentBrowserMock extends BrowserMock {
 interface BrowserMockPersistenceOptions {
   databaseBytes?: Uint8Array;
   onDatabaseDirty?: () => void;
+  allowProtectedWriterTestFixtures?: boolean;
 }
 
 type PersistentBrowserMockFactory = (
@@ -24,7 +25,10 @@ const ownedMocks: PersistentBrowserMock[] = [];
 async function createMock(
   options?: BrowserMockPersistenceOptions,
 ): Promise<PersistentBrowserMock> {
-  const mock = await createPersistentBrowserMock(options);
+  const mock = await createPersistentBrowserMock({
+    allowProtectedWriterTestFixtures: true,
+    ...options,
+  });
   ownedMocks.push(mock);
   return mock;
 }
@@ -116,6 +120,10 @@ describe("BrowserMock persistence contract", () => {
       id: "migrated-browser-foreshadow",
       requestId: "migrated-browser-foreshadow",
       projectId: "default-project",
+      sessionId: "migrated-browser-foreshadow-session",
+      eventUid: "migrated-browser-foreshadow-event",
+      origin: "human",
+      originalTransactionId: null,
       title: "Migrated durable create",
       intent: null,
       notes: null,
@@ -572,6 +580,12 @@ describe("BrowserMock persistence contract", () => {
       migrated.invoke("plot_thread_link_create", {
         payload: {
           id: "legacy-domain-link-new",
+          projectId: "default-project",
+          requestId: "legacy-domain-link-new",
+          sessionId: "legacy-domain-plot-session",
+          eventUid: "legacy-domain-link-new-event",
+          origin: "human",
+          originalTransactionId: null,
           threadId: "legacy-domain-thread-a",
           nodeId: "legacy-domain-scene-b",
           phaseType: "develop",
@@ -588,6 +602,11 @@ describe("BrowserMock persistence contract", () => {
         payload: {
           id: "legacy-domain-branch-new",
           projectId: "default-project",
+          requestId: "legacy-domain-branch-new",
+          sessionId: "legacy-domain-plot-session",
+          eventUid: "legacy-domain-branch-new-event",
+          origin: "human",
+          originalTransactionId: null,
           fromThreadId: "legacy-domain-thread-a",
           toThreadId: "legacy-domain-thread-b",
           atNodeId: "legacy-domain-scene-b",
@@ -600,6 +619,12 @@ describe("BrowserMock persistence contract", () => {
       version: 0,
     });
     await migrated.invoke("foreshadow_setup_create_ai", {
+      projectId: "default-project",
+      requestId: "legacy-domain-setup-new-request",
+      sessionId: "legacy-domain-foreshadow-session",
+      eventUid: "legacy-domain-setup-new-event",
+      origin: "human",
+      originalTransactionId: null,
       id: "legacy-domain-setup-new",
       foreshadowId: "legacy-domain-foreshadow",
       baseVersion: 0,
@@ -850,10 +875,16 @@ describe("BrowserMock persistence contract", () => {
     const receipt = await reopened.invoke<{ undoJournalId: string }>(
       "foreshadow_delete",
       {
-        id: "repair-foreshadow",
-        projectId: "default-project",
-        baseVersion: 1,
-        sessionId: "repair-delete",
+        payload: {
+          id: "repair-foreshadow",
+          projectId: "default-project",
+          requestId: "repair-foreshadow-delete",
+          sessionId: "repair-delete",
+          eventUid: "repair-foreshadow-delete-event",
+          origin: "human",
+          originalTransactionId: null,
+          baseVersion: 1,
+        },
       },
     );
     expect(
@@ -996,13 +1027,31 @@ describe("BrowserMock persistence contract", () => {
     await expect(
       repaired.invoke("foreshadow_update", {
         id: "child-only-foreshadow",
-        patch: { baseVersion: 0, title: "Stale root write" },
+        patch: {
+          projectId: "default-project",
+          requestId: "child-only-stale-root-write",
+          sessionId: "child-only-stale-session",
+          eventUid: "child-only-stale-event",
+          origin: "human",
+          originalTransactionId: null,
+          baseVersion: 0,
+          title: "Stale root write",
+        },
       }),
     ).rejects.toThrow(/FORESHADOW_VERSION_MISMATCH|version conflict/i);
     await expect(
       repaired.invoke("foreshadow_update_setup", {
         id: "child-only-setup",
-        patch: { baseVersion: 0, strength: "overt" },
+        patch: {
+          projectId: "default-project",
+          requestId: "child-only-stale-setup-write",
+          sessionId: "child-only-stale-session",
+          eventUid: "child-only-stale-setup-event",
+          origin: "human",
+          originalTransactionId: null,
+          baseVersion: 0,
+          strength: "overt",
+        },
       }),
     ).rejects.toThrow(/FORESHADOW_VERSION_MISMATCH|version conflict/i);
 

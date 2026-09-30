@@ -65,6 +65,7 @@ pub struct CodexEntrySummary {
     pub context_mode: String,
     pub created_at: String,
     pub updated_at: String,
+    pub version: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -291,7 +292,7 @@ pub fn list_codex_entries(
     let mut sql = String::from(
         "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type) as type_slug,
                 e.name, e.aliases, e.summary, e.tags_cache, e.context_mode,
-                e.created_at, e.updated_at
+                e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
          WHERE e.project_id = ?1",
@@ -343,6 +344,7 @@ fn map_codex_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CodexEntrySumm
         context_mode: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
+        version: row.get(11)?,
     })
 }
 
@@ -359,7 +361,7 @@ pub fn get_codex_entry_full(
             "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type) as type_slug,
                     e.name, e.aliases, e.summary, e.tags_cache, e.context_mode,
                     e.created_at, e.updated_at, e.content, e.notes, e.icon,
-                    e.children_budget, e.source_chat_message_id
+                    e.children_budget, e.source_chat_message_id, e.version
              FROM codex_entries e
              LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
              WHERE e.id = ?1 AND e.project_id = ?2",
@@ -378,6 +380,7 @@ pub fn get_codex_entry_full(
                         context_mode: row.get(8)?,
                         created_at: row.get(9)?,
                         updated_at: row.get(10)?,
+                        version: row.get(16)?,
                     },
                     row.get::<_, String>(11)?,         // content
                     row.get::<_, Option<String>>(12)?, // notes
@@ -448,7 +451,7 @@ pub fn get_codex_entry_full(
     let mut stmt = conn.prepare(
         "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type),
                 e.name, e.aliases, e.summary, e.tags_cache, e.context_mode,
-                e.created_at, e.updated_at
+                e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
          WHERE e.parent_id = ?1 ORDER BY e.name",
@@ -481,7 +484,7 @@ pub fn find_codex_by_name(
     let mut stmt = conn.prepare(
         "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type),
                 e.name, e.aliases, e.summary, e.tags_cache, e.context_mode,
-                e.created_at, e.updated_at
+                e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
          WHERE e.project_id = ?1 AND e.name LIKE ?2 ORDER BY e.name",
@@ -1930,8 +1933,12 @@ pub struct ChronicleCalendarRaw {
 }
 
 /// camelCase write result (same shape as foreshadow/codex `AgentWriteResult`).
+// The MCP tool surface now delegates to the canonical agent writers. These
+// helpers remain for the legacy db-level test fixtures until those fixtures
+// are migrated to the tool boundary.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct EventWriteResult {
     pub entity_id: String,
     pub version: i64,
@@ -2145,6 +2152,7 @@ pub fn chronicle_scene_nodes(
 // ─── Chronicle writes (tracked, surface="mcp") ───────────────────────────────
 
 /// Run `f` inside a BEGIN IMMEDIATE transaction; COMMIT on Ok, ROLLBACK on Err.
+#[allow(dead_code)]
 fn in_immediate_tx<T>(
     conn: &Connection,
     f: impl FnOnce(&Connection) -> anyhow::Result<T>,
@@ -2167,6 +2175,7 @@ fn in_immediate_tx<T>(
 /// relations (both directions). Byte-identical shape to
 /// `agent_writes.rs::collect_event_snapshot` so undo payloads are cross-surface
 /// portable.
+#[allow(dead_code)]
 fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<serde_json::Value> {
     use serde_json::json;
     let event_json: String = conn.query_row(
@@ -2245,6 +2254,7 @@ fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<s
     }))
 }
 
+#[allow(dead_code)]
 fn event_snapshot_related_ids(snapshot: &serde_json::Value) -> Vec<String> {
     let mut related = std::collections::BTreeSet::new();
     for key in ["asCause", "asEffect"] {
@@ -2262,6 +2272,7 @@ fn event_snapshot_related_ids(snapshot: &serde_json::Value) -> Vec<String> {
     related.into_iter().collect()
 }
 
+#[allow(dead_code)]
 fn collect_participants_json(
     conn: &Connection,
     event_id: &str,
@@ -2292,6 +2303,7 @@ fn collect_participants_json(
 /// 書込み対象 event の存在ゲート。AI 秘匿(fail-closed): MCP は現在シーンを持てない
 /// ため secret=1 を「存在しない」扱いにし、update/delete/stamp/participants/relation
 /// すべての write-by-id を一律遮断する(存在 oracle 化を防ぐ・spec §2.4.4)。
+#[allow(dead_code)]
 fn visible_event_version(
     conn: &Connection,
     project_id: &str,
@@ -2307,6 +2319,7 @@ fn visible_event_version(
     .map_err(Into::into)
 }
 
+#[allow(dead_code)]
 struct VisibleEventDateState {
     version: i64,
     start_time: Option<i64>,
@@ -2317,6 +2330,7 @@ struct VisibleEventDateState {
     end_granularity: String,
 }
 
+#[allow(dead_code)]
 fn visible_event_date_state(
     conn: &Connection,
     project_id: &str,
@@ -2345,6 +2359,7 @@ fn visible_event_date_state(
     .map_err(Into::into)
 }
 
+#[allow(dead_code)]
 fn ensure_chronicle_codex_in_project(
     conn: &Connection,
     project_id: &str,
@@ -2364,6 +2379,7 @@ fn ensure_chronicle_codex_in_project(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn ensure_chronicle_scene_in_project(
     conn: &Connection,
     project_id: &str,
@@ -2386,6 +2402,7 @@ fn ensure_chronicle_scene_in_project(
 /// Parameters for `chronicle_create_event` (defaults match
 /// `agent_event_create_impl`: title="", ordinal="a0", precision="exact",
 /// kind="generic"). XPROJ: the event's `project_id` is the server scope.
+#[allow(dead_code)]
 pub struct ChronicleCreateInput<'a> {
     pub project_id: &'a str,
     pub session_id: &'a str,
@@ -2412,6 +2429,7 @@ pub struct ChronicleCreateInput<'a> {
     pub scene_ids: &'a [String],
 }
 
+#[allow(dead_code)]
 pub fn chronicle_create_event(
     conn: &Connection,
     input: ChronicleCreateInput<'_>,
@@ -2562,6 +2580,7 @@ pub fn chronicle_create_event(
 }
 
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct ChroniclePatch<'a> {
     pub title: Option<&'a str>,
     pub note: Option<&'a str>,
@@ -2583,6 +2602,7 @@ pub struct ChroniclePatch<'a> {
 }
 
 /// `Ok(None)` = event not found in this project (XPROJ-safe; nothing written).
+#[allow(dead_code)]
 pub fn chronicle_update_event(
     conn: &Connection,
     project_id: &str,
@@ -2825,6 +2845,7 @@ pub fn chronicle_update_event(
 
 /// `Ok(None)` = event not found in this project. Cascade snapshot is captured
 /// BEFORE the DELETE fires ON DELETE CASCADE so undo can fully restore.
+#[allow(dead_code)]
 pub fn chronicle_delete_event(
     conn: &Connection,
     project_id: &str,
@@ -2915,6 +2936,7 @@ pub fn chronicle_delete_event(
 }
 
 /// Replace the participant set (delete-all → insert). `Ok(None)` = not found.
+#[allow(dead_code)]
 pub fn chronicle_set_participants(
     conn: &Connection,
     project_id: &str,
@@ -3014,6 +3036,7 @@ pub fn chronicle_set_participants(
 
 /// Stamp/unstamp a scene↔event link. `Ok(None)` = scene or event not found in
 /// this project (XPROJ: both must belong to the active project).
+#[allow(dead_code)]
 pub fn chronicle_scene_event(
     conn: &Connection,
     project_id: &str,
@@ -3136,6 +3159,7 @@ pub fn chronicle_scene_event(
 
 /// Add/remove a causal edge. `Ok(None)` = either event missing in this project.
 /// Self-loop (cause == effect) must be rejected by the caller before this runs.
+#[allow(dead_code)]
 pub fn chronicle_event_relation(
     conn: &Connection,
     project_id: &str,
@@ -3352,11 +3376,13 @@ pub(crate) mod tests {
                 type TEXT NOT NULL DEFAULT 'character',
                 name TEXT NOT NULL DEFAULT 'Untitled',
                 aliases TEXT, excluded_aliases TEXT,
+                readings TEXT,
                 summary TEXT, content TEXT NOT NULL DEFAULT '{}',
                 icon TEXT, tags_cache TEXT,
                 context_mode TEXT NOT NULL DEFAULT 'mentioned',
                 children_budget TEXT NOT NULL DEFAULT 'compact',
                 source_chat_message_id TEXT, notes TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -3439,6 +3465,7 @@ pub(crate) mod tests {
                 scene_id TEXT,
                 source_chat_message_id TEXT,
                 usage_count INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -3459,6 +3486,7 @@ pub(crate) mod tests {
                 model TEXT,
                 timestamp TEXT,
                 chat_msg_id TEXT,
+                trace_id TEXT,
                 phase_id TEXT
             );
             CREATE TABLE foreshadows (
@@ -3487,6 +3515,7 @@ pub(crate) mod tests {
                 from_pos INTEGER NOT NULL DEFAULT 0,
                 to_pos INTEGER NOT NULL DEFAULT 0,
                 kind TEXT NOT NULL DEFAULT 'designated_existing',
+                role TEXT NOT NULL DEFAULT 'unspecified',
                 strength TEXT,
                 ai_strength TEXT,
                 ai_reasoning TEXT,
@@ -3494,8 +3523,41 @@ pub(crate) mod tests {
                 ai_rationale TEXT,
                 last_evaluated_at INTEGER,
                 is_orphan INTEGER NOT NULL DEFAULT 0,
+                evidence_anchor_id TEXT,
+                semantic_key TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE foreshadow_codex_links (
+                foreshadow_id TEXT NOT NULL,
+                codex_entry_id TEXT NOT NULL,
+                PRIMARY KEY (foreshadow_id, codex_entry_id)
+            );
+            CREATE TABLE foreshadow_payoffs (
+                id TEXT PRIMARY KEY,
+                foreshadow_id TEXT NOT NULL,
+                scene_id TEXT NOT NULL,
+                from_pos INTEGER,
+                to_pos INTEGER,
+                role TEXT NOT NULL DEFAULT 'unspecified',
+                confirmed INTEGER NOT NULL DEFAULT 0,
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                attribution TEXT NOT NULL DEFAULT 'human',
+                ai_rationale TEXT,
+                is_orphan INTEGER NOT NULL DEFAULT 0,
+                evidence_anchor_id TEXT,
+                semantic_key TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE foreshadow_setup_payoff_links (
+                foreshadow_id TEXT NOT NULL,
+                setup_id TEXT NOT NULL,
+                payoff_id TEXT NOT NULL,
+                bridge_kind TEXT NOT NULL DEFAULT 'unspecified',
+                explanation TEXT,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (foreshadow_id, setup_id, payoff_id)
             );
             CREATE TABLE events (
                 id TEXT PRIMARY KEY,
@@ -3551,6 +3613,111 @@ pub(crate) mod tests {
                 age_reckoning TEXT NOT NULL DEFAULT 'full',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            -- Feed append checks optional NIR1 index metadata even when no
+            -- index has been built. Match the current migration's table shape.
+            CREATE TABLE narrative_semantic_index_metadata (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                index_key TEXT NOT NULL CHECK(length(index_key) > 0),
+                generation INTEGER NOT NULL CHECK(generation >= 0),
+                built_at TEXT NOT NULL,
+                source_digest TEXT NOT NULL CHECK(length(source_digest) > 0),
+                dependency_set_digest TEXT NOT NULL CHECK(length(dependency_set_digest) > 0),
+                dirty_cache_flag INTEGER NOT NULL CHECK(dirty_cache_flag IN (0, 1)),
+                producer_id TEXT,
+                producer_version TEXT,
+                PRIMARY KEY(project_id, index_key)
+            );
+            CREATE TABLE narrative_change_transactions (
+                id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                request_id TEXT NOT NULL CHECK(length(request_id) > 0),
+                source_domain TEXT NOT NULL CHECK(length(source_domain) > 0),
+                source_change_event_uid TEXT NOT NULL CHECK(length(source_change_event_uid) > 0),
+                source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0),
+                cause_kind TEXT NOT NULL CHECK(cause_kind IN ('forward','undo','redo')),
+                origin TEXT NOT NULL CHECK(origin IN ('human','ai-apply','import','undo','redo','restore','migration')),
+                original_transaction_id TEXT,
+                commit_id TEXT,
+                journal_id TEXT,
+                undo_journal_id TEXT,
+                application_ids_json TEXT NOT NULL DEFAULT '[]'
+                    CHECK(json_valid(application_ids_json) AND json_type(application_ids_json) = 'array'),
+                payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, id),
+                UNIQUE(project_id, source_domain, request_id),
+                UNIQUE(project_id, source_change_event_uid),
+                FOREIGN KEY(project_id, source_change_event_uid)
+                    REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT,
+                FOREIGN KEY(project_id, original_transaction_id)
+                    REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE
+            );
+            CREATE TABLE narrative_change_events (
+                id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                transaction_id TEXT NOT NULL,
+                canonical_change_event_uid TEXT NOT NULL,
+                canonical_sequence INTEGER NOT NULL CHECK(canonical_sequence > 0),
+                event_ordinal INTEGER NOT NULL CHECK(event_ordinal >= 0),
+                object_key_json TEXT NOT NULL CHECK(json_valid(object_key_json)),
+                change_kind TEXT NOT NULL
+                    CHECK(change_kind IN ('content','metadata','order','association','catalog','calendar','policy','schema','unknown')),
+                mutation_kind TEXT NOT NULL CHECK(mutation_kind IN ('create','update','delete','restore')),
+                before_version INTEGER,
+                before_digest TEXT,
+                after_version INTEGER,
+                after_digest TEXT,
+                changed_paths_json TEXT NOT NULL
+                    CHECK(json_valid(changed_paths_json) AND json_type(changed_paths_json) = 'array'),
+                text_impact_json TEXT CHECK(text_impact_json IS NULL OR json_valid(text_impact_json)),
+                structural_impact_json TEXT CHECK(structural_impact_json IS NULL OR json_valid(structural_impact_json)),
+                occurred_at TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, id),
+                UNIQUE(project_id, canonical_change_event_uid, event_ordinal),
+                FOREIGN KEY(project_id, transaction_id)
+                    REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE,
+                FOREIGN KEY(project_id, canonical_change_event_uid)
+                    REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT
+            );
+            CREATE TABLE narrative_change_object_heads (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                object_identity TEXT NOT NULL,
+                after_version INTEGER,
+                after_digest TEXT,
+                event_id TEXT NOT NULL,
+                canonical_sequence INTEGER NOT NULL CHECK(canonical_sequence > 0),
+                event_ordinal INTEGER NOT NULL CHECK(event_ordinal >= 0),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, object_identity),
+                FOREIGN KEY(project_id, event_id)
+                    REFERENCES narrative_change_events(project_id, id) ON DELETE CASCADE
+            );
+            CREATE INDEX idx_narrative_change_object_heads_project_sequence
+                ON narrative_change_object_heads(project_id, canonical_sequence, event_ordinal);
+            CREATE TABLE idempotency_requests (
+                domain TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                payload_hash TEXT NOT NULL,
+                tombstone_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(domain, request_id)
+            );
+            CREATE TABLE narrative_field_authority (
+                project_id TEXT NOT NULL,
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                field_path TEXT NOT NULL,
+                owner_kind TEXT NOT NULL
+                    CHECK(owner_kind IN ('human','ai','system','unknown')),
+                explicit_lock INTEGER NOT NULL DEFAULT 0
+                    CHECK(explicit_lock IN (0,1)),
+                version INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, entity_kind, entity_id, field_path)
             );",
         )
         .unwrap();
@@ -4465,6 +4632,7 @@ pub(crate) mod tests {
                 secret: false,
                 request_id: None,
                 request_hash: None,
+                event_uid: None,
             },
         )
         .unwrap();
@@ -4498,6 +4666,7 @@ pub(crate) mod tests {
                 secret: true,
                 request_id: None,
                 request_hash: None,
+                event_uid: None,
             },
         )
         .unwrap();

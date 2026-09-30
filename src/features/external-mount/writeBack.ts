@@ -4,7 +4,10 @@ import { pmJsonToMarkdown } from "./markdownBridge";
 import * as mountApi from "./api";
 import { useExternalRootStore } from "./externalRootStore";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 
 interface WriteBackDraft {
   sourceUri: string;
@@ -233,7 +236,7 @@ export async function flushWriteBacksForScenes(
 }
 
 registerQuiescenceProvider({
-  id: "external-file-write-back",
+  id: createQuiescenceProviderId("external-file-write-back"),
   stage: "external-write-back",
   flush: flushAllWriteBacksStrict,
   recovery: () =>

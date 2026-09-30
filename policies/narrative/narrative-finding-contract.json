@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-finding-contract",
+  "reasonCodes": [
+    "source-revision-changed",
+    "source-missing",
+    "evidence-overlap",
+    "context-overlap",
+    "exact-content-relocated",
+    "quote-not-found",
+    "quote-ambiguous",
+    "read-set-drift",
+    "normalizer-incompatible",
+    "component-incompatible",
+    "target-modified"
+  ],
+  "unknownReasonCodePolicy": "fail-closed",
+  "observationStorageClass": "rebuildable-derived-state",
+  "epochBinding": "required",
+  "freshnessSnapshotPolicy": "diagnostic-only",
+  "currentFreshnessLookup": "narrative-consumer-freshness",
+  "rules": [
+    {
+      "ruleId": "narrative.consumer-freshness",
+      "version": 1,
+      "identityScope": "edge",
+      "observationFields": [
+        "stableSubject",
+        "edgeId",
+        "reasonCode",
+        "evidenceFreshness"
+      ],
+      "materialBasisFields": [
+        "stableSubject",
+        "edgeId",
+        "reasonCode",
+        "evidenceFreshness"
+      ]
+    },
+    {
+      "ruleId": "narrative.maintenance-contract-failure",
+      "version": 2,
+      "identityScope": "maintenance-work",
+      "observationStorageClass": "durable-derived-history",
+      "writerAuthority": "maintenance-run-finalization-transaction",
+      "observationFields": [
+        "stableSubject",
+        "failureCode",
+        "reasonCode",
+        "evidenceFreshness",
+        "evidenceDetailDigest"
+      ],
+      "materialBasisFields": [
+        "stableSubject",
+        "failureCode",
+        "reasonCode",
+        "evidenceFreshness",
+        "evidenceDetailDigest"
+      ]
+    }
+  ],
+  "negativeFixture": "editing a Finding Observation row alone must not change the current Freshness shown in the Maintenance Inbox; only narrative_consumer_freshness governs the current value"
+}

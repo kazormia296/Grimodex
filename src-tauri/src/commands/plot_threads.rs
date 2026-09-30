@@ -121,7 +121,9 @@ pub(crate) fn plot_thread_branch_delete(
     id: String,
     base_version: i64,
 ) -> Result<(), AppError> {
-    with_db(&ws_state, |db| plot_threads::branch_delete(db, id, base_version))
+    with_db(&ws_state, |db| {
+        plot_threads::branch_delete(db, id, base_version)
+    })
 }
 
 #[tauri::command(async)]

@@ -2,7 +2,7 @@ import { db } from "@/db/client";
 import { codexDismissedRelations, codexEntries } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
-import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 /**
  * List all dismissed relation IDs for a given entry.
@@ -66,10 +66,10 @@ export async function setParentRelation(
     .limit(1);
   const entry = current[0];
   if (!entry) return;
-  await invoke("agent_codex_update", {
+  await invoke("codex_update", {
     payload: {
+      ...createCanonicalWriteContext(),
       projectId: entry.projectId,
-      sessionId: getRecorderSessionId(),
       surface: "manual",
       entryId: childId,
       baseVersion: entry.version,

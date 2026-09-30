@@ -5,7 +5,8 @@ export type NarrativeExtractionRunStatus =
   | "running"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "superseded";
 
 export type NarrativeExtractionTaskStatus =
   | "queued"

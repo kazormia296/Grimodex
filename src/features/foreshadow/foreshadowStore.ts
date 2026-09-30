@@ -25,8 +25,7 @@ import {
 } from "@/lib/createResultMetadata";
 import { loadSceneContents, saveSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import { rebaselineScenesAtTail } from "@/features/timelapse/rebaseline";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -53,7 +52,8 @@ import {
 } from "@/features/trash-bin/captureHooks";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { createPendingCreateRequestRegistry } from "@/lib/pendingCreateRequestRegistry";
-import { IpcInvokeError } from "@/lib/tauri";
+import { IpcInvokeError, isD2aEgressDenied } from "@/lib/tauri";
+import { getNativeMutationMetadata } from "@/lib/nativeMutationMetadata";
 import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type {
   ForeshadowRow,
@@ -71,20 +71,12 @@ export { publishAuthoritativeForeshadowRows } from "./authoritativeRows";
  * Foreshadow undo/redo re-bakes payoff marks by writing scene content directly
  * (`saveSceneContent`) and, when the editor is live, `setContent(..., {
  * emitUpdate: false })` — both bypass the editor's doc.step recording. This is
- * an out-of-band body write, so record it and re-anchor the scene's editor
- * baseline at the chain tail (same treatment as a snapshot restore) to keep
- * timelapse replay coherent. no-op when recording is off / no scene.
+ * an out-of-band body write. The canonical native scene writer owns the one
+ * Change Event; this helper only re-anchors the editor baseline at that chain
+ * tail (same treatment as a snapshot restore).
  */
 async function recordForeshadowMarkBake(sceneId: string | null): Promise<void> {
   if (!sceneId) return;
-  recordChangeEvent({
-    domain: "foreshadow",
-    opType: "mark.update",
-    entityType: "scene",
-    entityId: sceneId,
-    sceneId,
-    payload: { sceneId },
-  });
   await rebaselineScenesAtTail(getCurrentProjectId(), [sceneId]);
 }
 
@@ -246,13 +238,15 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       } catch (e) {
         if (generation === foreshadowLoadGeneration) {
           set({ isLoading: false });
-          toast.error(
-            i18next.t(
-              "foreshadow.store.loadFailed",
-              "伏線の読み込みに失敗しました",
-            ),
-          );
-          debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+          if (!isD2aEgressDenied(e)) {
+            toast.error(
+              i18next.t(
+                "foreshadow.store.loadFailed",
+                "伏線の読み込みに失敗しました",
+              ),
+            );
+            debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+          }
         }
         throw e;
       }
@@ -307,18 +301,18 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           return item;
         }
         set((s) => ({ items: [item, ...s.items] }));
-        recordChangeEvent({
-          domain: "foreshadow",
-          opType: "create",
-          entityType: "foreshadow",
-          entityId: item.id,
-          payload: { foreshadowId: item.id, title: item.title },
-        });
       } else {
         set((s) => ({ items: [item, ...s.items] }));
       }
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
+        const originalTransactionId =
+          getNativeMutationMetadata(row)?.maintenanceTransactionId;
+        if (!originalTransactionId) {
+          throw new Error(
+            "foreshadow create did not return maintenance transaction lineage",
+          );
+        }
         const cap = { ...row };
         let deleteJournalId: string | undefined;
         useGlobalHistoryStore.getState().push({
@@ -332,6 +326,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
                 cap.id,
                 getForeshadowHistoryVersion(cap.projectId, cap.id, cap.version),
                 cap.projectId,
+                { origin: "undo", originalTransactionId },
               );
               deleteJournalId = receipt.undoJournalId;
               foreshadowHistoryVersions.set(
@@ -384,7 +379,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
     let updated: ForeshadowRow;
     try {
-      updated = await updateForeshadow(id, patch, before.version);
+      updated = await updateForeshadow(id, patch, before.version, projectId);
       setForeshadowHistoryVersion(updated);
 
       if (patch.payoffSceneId === null) {
@@ -414,6 +409,12 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }
 
     if (useGlobalHistoryStore.getState().isReplaying) return;
+    const mutationMetadata = getNativeMutationMetadata(updated);
+    const originalTransactionId = mutationMetadata?.maintenanceTransactionId;
+    const undoJournalId = mutationMetadata?.undoJournalId;
+    if (!originalTransactionId || !undoJournalId) {
+      throw new Error("foreshadow update did not return complete undo lineage");
+    }
 
     // payoffSceneId を null にした更新の場合、本文の payoff mark を物理削除
     // しているため、Undo 側で「対象シーンが現在開かれていれば mark を再付与
@@ -443,6 +444,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           id,
           undoPatch,
           getForeshadowHistoryVersion(projectId, id, undoBaseVersion),
+          projectId,
+          { origin: "undo", originalTransactionId, undoJournalId },
         );
         redoBaseVersion = restored.version;
         setForeshadowHistoryVersion(restored);
@@ -481,6 +484,8 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           id,
           patch,
           getForeshadowHistoryVersion(projectId, id, redoBaseVersion),
+          projectId,
+          { origin: "redo", originalTransactionId, undoJournalId },
         );
         undoBaseVersion = reapplied.version;
         setForeshadowHistoryVersion(reapplied);

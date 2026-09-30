@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const invokeMock = vi.fn();
 const scheduleImeExportRefreshMock = vi.fn();
+const publishAuthoritativeForeshadowRowsMock = vi.fn();
 let selectQueue: unknown[][] = [];
 
 function takeSelectResult(): Promise<unknown[]> {
@@ -42,6 +44,15 @@ vi.mock("./impactBaselineVisibility", () => ({
 
 vi.mock("./mentionRescanQueue", () => ({ enqueueRescan: vi.fn() }));
 
+vi.mock("@/features/foreshadow/normalizeForeshadowRow", () => ({
+  normalizeForeshadowRow: (row: unknown) => row,
+}));
+
+vi.mock("@/features/foreshadow/authoritativeRows", () => ({
+  publishAuthoritativeForeshadowRows: (...args: unknown[]) =>
+    publishAuthoritativeForeshadowRowsMock(...args),
+}));
+
 import { updateCodexEntry } from "./api";
 import { CodexVersionConflictError } from "./occ";
 
@@ -56,36 +67,90 @@ const currentEntry = {
 };
 
 beforeEach(() => {
+  publishCurrentProjectId("p");
   invokeMock.mockReset();
-  invokeMock.mockResolvedValue(undefined);
+  invokeMock.mockResolvedValue({
+    entityId: "e1",
+    version: 3,
+    changeEventUid: "native-event",
+    maintenanceTransactionId: "native-transaction",
+    undoJournalId: "native-journal",
+    relatedForeshadows: [],
+  });
   scheduleImeExportRefreshMock.mockReset();
+  publishAuthoritativeForeshadowRowsMock.mockReset();
   selectQueue = [];
 });
 
 describe("updateCodexEntry OCC (base_version)", () => {
   it("baseVersion 一致で typed writer を呼び、永続化後の version を返す", async () => {
+    const content = JSON.stringify({
+      type: "doc",
+      content: [{ type: "text", text: "x" }],
+    });
     selectQueue.push(
       [currentEntry],
-      [{ ...currentEntry, version: 3, content: "x" }],
+      [{ ...currentEntry, version: 3, content }],
     );
 
     const result = await updateCodexEntry(
       "p",
       "e1",
-      { content: "x" },
+      { content },
       { baseVersion: 2 },
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         projectId: "p",
         entryId: "e1",
         surface: "manual",
         baseVersion: 2,
-        content: "x",
+        content,
+        canonicalPayload: {
+          fields: ["content"],
+          diffs: {
+            content: {
+              segments: [[1, "x"]],
+            },
+          },
+        },
       }),
     });
     expect(result?.version).toBe(3);
+    expect(result?.__writeReceipt).toEqual({
+      changeEventUid: "native-event",
+      maintenanceTransactionId: "native-transaction",
+      undoJournalId: "native-journal",
+    });
+    expect(Object.keys(result ?? {})).not.toContain("__writeReceipt");
+    expect(JSON.stringify(result)).not.toContain("__writeReceipt");
+  });
+
+  it("publishes linked Foreshadow dirty rows returned by the same native write", async () => {
+    const relatedForeshadows = [
+      { id: "foreshadow-b", projectId: "p", version: 4 },
+      { id: "foreshadow-a", projectId: "p", version: 7 },
+    ];
+    invokeMock.mockResolvedValueOnce({
+      entityId: "e1",
+      version: 3,
+      changeEventUid: "native-event",
+      maintenanceTransactionId: "native-transaction",
+      undoJournalId: "native-journal",
+      relatedForeshadows,
+    });
+    selectQueue.push(
+      [currentEntry],
+      [{ ...currentEntry, version: 3, name: "B" }],
+    );
+
+    await updateCodexEntry("p", "e1", { name: "B" });
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(publishAuthoritativeForeshadowRowsMock).toHaveBeenCalledWith(
+      relatedForeshadows,
+    );
   });
 
   it("typed writer の CAS 失敗を CodexVersionConflictError に変換する", async () => {
@@ -119,7 +184,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
 
     const result = await updateCodexEntry("p", "e1", { content: "x" });
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         projectId: "p",
         entryId: "e1",
@@ -148,7 +213,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
       },
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         entryId: "e1",
         baseVersion: 2,
@@ -221,7 +286,7 @@ describe("updateCodexEntry IME refresh trigger", () => {
 
       await updateCodexEntry("p", "e1", patch);
 
-      expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+      expect(invokeMock).toHaveBeenCalledWith("codex_update", {
         payload: expect.objectContaining({
           projectId: "p",
           entryId: "e1",

@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
+afterEach(() => {
+  setCurrentWorkspaceIdentity(null);
+});
 
 const getRunReviewBundleMock = vi.hoisted(() => vi.fn());
 const getRunMock = vi.hoisted(() => vi.fn());
@@ -105,6 +110,7 @@ function sampleRelationProposal(
 
 describe("getCodexStructureExtractionReview cold-start restore", () => {
   beforeEach(() => {
+    setCurrentWorkspaceIdentity({ path: "/ws", openRevision: 1 });
     resetNarrativeArtifactIndexForTests();
     resetCodexStructureExtractionStoreForTests();
     resetCodexStructureExtractionApiCachesForTests();
@@ -114,6 +120,7 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
   });
 
   it("hydrates from Native envelopes + evidence artifact without publishing store", async () => {
+    setCurrentWorkspaceIdentity({ path: "/ws/cold", openRevision: 3 });
     const entity = sampleEntityProposal("prop-entity-cold");
     const relation = sampleRelationProposal("prop-rel-cold", [
       "prop-entity-cold",
@@ -301,6 +308,7 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
   });
 
   it("restores Phase/Base Detail metadata with Native status, revision, and payload authority", async () => {
+    setCurrentWorkspaceIdentity({ path: "/ws/cold", openRevision: 3 });
     const baseProposal = createSetCodexBaseDetailProposal({
       narrativeEntityId: "ne-state",
       definitionRef: "D0001",
@@ -1799,6 +1807,7 @@ describe("getCodexStructureExtractionReview cold-start restore", () => {
 
 describe("restoreCodexStructureExtractionReview folder + candidate fallback", () => {
   beforeEach(() => {
+    setCurrentWorkspaceIdentity({ path: "/ws/cold", openRevision: 3 });
     resetNarrativeArtifactIndexForTests();
     resetCodexStructureExtractionStoreForTests();
     resetCodexStructureExtractionApiCachesForTests();

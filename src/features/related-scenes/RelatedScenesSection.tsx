@@ -1,93 +1,30 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { usePhaseStore } from "@/features/codex/phaseStore";
-import { requestSceneChunkJump } from "@/features/semantic-search/sceneChunkJump";
 import { CollapsibleSection } from "@/features/layout/CollapsibleSection";
-import { fetchRelatedPastScenes } from "./fetchRelatedScenes";
-import type { RelatedScene } from "./selectRelatedScenes";
-
-/** シーン切替直後の連打を抑える debounce (ms)。 */
-const FETCH_DEBOUNCE_MS = 400;
-
-/**
- * 関連過去シーンの行クリックで、該当シーンを開き一致チャンクへスクロール+選択する。
- * ジャンプの順序契約 (requestJump → setActiveScene → showPanel) は
- * requestSceneChunkJump に集約 (意味検索ダイアログと共有)。
- *
- * 表示中の list は取得時点のスナップショットなので、クリックまでにそのシーンが
- * 削除されている場合がある。削除済みシーンへ setActiveScene すると空エディタが
- * 開く恐れがあるため、現在の tree に存在する時だけジャンプする。
- */
-function navigateToScene(scene: RelatedScene): void {
-  const exists = useTreeStore
-    .getState()
-    .nodes.some((n) => n.id === scene.sceneId);
-  if (!exists) return;
-  requestSceneChunkJump(scene.sceneId, scene.chunkText);
-}
+import { Nir1RelatedSceneRow } from "./Nir1RelatedSceneRow";
+import { useNir1RelatedScenes } from "./useNir1RelatedScenes";
 
 interface RelatedScenesSectionProps {
-  /**
-   * 親パネルがアクティブ(表示中)か。非表示パネルや折りたたみ時は意味検索を
-   * 打たない (keepalive)。`enabled && open` の時だけ取得する。
-   */
   enabled?: boolean;
 }
 
-/**
- * 「関連する過去シーン」セクション。Scene Context パネルの一部として、
- * 現在編集中シーンに意味的に関連する読書順で前の (既読) シーンを提示し、
- * クリックで該当箇所へジャンプできる。TALK→EXTRACT→RECALL ループの RECALL を
- * 人間向け UI として出す read-only セクション。
- */
 export function RelatedScenesSection({
   enabled = true,
 }: RelatedScenesSectionProps = {}) {
   const { t } = useTranslation();
-  const activeSceneId = useTreeStore((s) => s.activeSceneId);
-  // 順序軸 (reading/story/auto) が変わったら関連シーンを取り直す。fetchRelatedPastScenes が
-  // この mode に従って既読境界を計算するので、Settings での切替を即反映させる。
-  const resolutionMode = usePhaseStore((s) => s.resolutionMode);
-  const [scenes, setScenes] = useState<RelatedScene[]>([]);
-  const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(true);
-
-  // 折りたたみ中・非表示中は検索しない。
-  const shouldFetch = enabled && open;
-
-  useEffect(() => {
-    if (!shouldFetch || !activeSceneId) {
-      setScenes([]);
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    const handle = setTimeout(() => {
-      fetchRelatedPastScenes(activeSceneId)
-        .then((result) => {
-          if (!cancelled) setScenes(result);
-        })
-        .catch(() => {
-          if (!cancelled) setScenes([]);
-        })
-        .finally(() => {
-          if (!cancelled) setLoading(false);
-        });
-    }, FETCH_DEBOUNCE_MS);
-    return () => {
-      cancelled = true;
-      clearTimeout(handle);
-    };
-  }, [shouldFetch, activeSceneId, resolutionMode]);
-
+  const { sceneId, fetch, loading } = useNir1RelatedScenes(enabled && open);
+  const result = fetch?.result;
+  const unavailable =
+    result?.kind === "raw" && result.ir.status === "unavailable"
+      ? result.ir.reason
+      : null;
   return (
     <CollapsibleSection
       title={t("sceneContext.scenesSection")}
       open={open}
-      onToggle={() => setOpen((v) => !v)}
+      onToggle={() => setOpen((value) => !value)}
       actions={
         loading ? (
           <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
@@ -95,35 +32,47 @@ export function RelatedScenesSection({
       }
     >
       <div className="py-1">
-        {!activeSceneId ? (
+        {unavailable && (
+          <p
+            data-testid="nir1-unavailable"
+            className="px-3 py-2 text-[11px] text-muted-foreground"
+          >
+            {t(
+              unavailable === "unsupported-query"
+                ? "relatedScenes.irUnsupported"
+                : "relatedScenes.irUnavailable",
+            )}
+          </p>
+        )}
+        {!sceneId ? (
           <p className="px-3 py-2 text-[11px] text-muted-foreground">
             {t("relatedScenes.noActiveScene")}
           </p>
-        ) : scenes.length === 0 ? (
+        ) : !fetch || !result?.scenes.length ? (
           <p className="px-3 py-2 text-[11px] text-muted-foreground">
-            {loading ? t("relatedScenes.loading") : t("relatedScenes.empty")}
+            {t(loading ? "relatedScenes.loading" : "relatedScenes.empty")}
           </p>
+        ) : result.kind === "raw" ? (
+          result.scenes.map((raw) => (
+            <Nir1RelatedSceneRow
+              key={raw.sceneId}
+              sceneId={raw.sceneId}
+              sceneTitle={raw.sceneTitle}
+              raw={raw}
+              fetch={fetch}
+            />
+          ))
         ) : (
-          scenes.map((scene) => (
-            <button
-              type="button"
+          result.scenes.map((scene) => (
+            <Nir1RelatedSceneRow
               key={scene.sceneId}
-              data-testid="related-scene-row"
-              onClick={() => navigateToScene(scene)}
-              className="flex w-full cursor-pointer flex-col gap-0.5 px-2 py-1.5 text-left hover:bg-accent/50"
-            >
-              <span className="flex items-center gap-2">
-                <span className="flex-1 truncate text-xs font-medium text-foreground">
-                  {scene.sceneTitle || t("relatedScenes.untitled")}
-                </span>
-                <span className="shrink-0 rounded bg-primary/10 px-1 py-0.5 text-[10px] font-medium text-primary">
-                  {Math.round(scene.score * 100)}%
-                </span>
-              </span>
-              <span className="line-clamp-2 text-[11px] text-muted-foreground">
-                {scene.chunkText}
-              </span>
-            </button>
+              sceneId={scene.sceneId}
+              sceneTitle={scene.sceneTitle}
+              rank={scene.rank1}
+              raw={scene.kind !== "ir" ? scene.raw : undefined}
+              ir={scene.kind !== "raw" ? scene.ir : undefined}
+              fetch={fetch}
+            />
           ))
         )}
       </div>

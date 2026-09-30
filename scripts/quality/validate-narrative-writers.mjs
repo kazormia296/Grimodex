@@ -55,6 +55,7 @@ const EXCLUDED_PATH_FRAGMENTS = [
  * Domain cutovers should keep this map in sync when adding tables.
  */
 const TABLE_TO_DRIZZLE_IDENTIFIERS = {
+  projects: ["projects"],
   foreshadows: ["foreshadows"],
   foreshadow_setups: ["foreshadowSetups"],
   foreshadow_payoffs: ["foreshadowPayoffs"],
@@ -67,11 +68,18 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   scene_events: ["sceneEvents"],
   event_relations: ["eventRelations"],
   tree_nodes: ["treeNodes"],
+  codex_types: ["codexTypes"],
   codex_entries: ["codexEntries"],
+  codex_tags: ["codexTags"],
+  codex_entry_tags: ["codexEntryTags"],
+  snippets: ["snippets"],
+  snippet_entry_tags: ["snippetEntryTags"],
   codex_relations: ["codexRelations"],
   codex_entry_phases: ["codexEntryPhases"],
+  codex_phase_detail_overrides: ["codexPhaseDetailOverrides"],
   codex_detail_definitions: ["codexDetailDefinitions"],
   codex_detail_values: ["codexDetailValues"],
+  codex_detail_semantic_bindings: ["codexDetailSemanticBindings"],
   narrative_runtime_policy: ["narrativeRuntimePolicy"],
   project_calendar: ["projectCalendar"],
   narrative_protected_fixture: ["narrativeProtectedFixture"],
@@ -80,16 +88,92 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   narrative_projection_freshness: ["narrativeProjectionFreshness"],
   narrative_projection_dependencies: ["narrativeProjectionDependencies"],
   narrative_field_authority: ["narrativeFieldAuthority"],
+  narrative_change_transactions: ["narrativeChangeTransactions"],
+  narrative_change_events: ["narrativeChangeEvents"],
+  change_events: ["changeEvents"],
+  state_snapshots: ["stateSnapshots"],
+  narrative_change_object_heads: ["narrativeChangeObjectHeads"],
+  narrative_change_cursors: ["narrativeChangeCursors"],
+  narrative_change_sets: ["narrativeChangeSets"],
+  narrative_dependency_declaration_sets: ["narrativeDependencyDeclarationSets"],
+  narrative_dependency_declaration_entries: [
+    "narrativeDependencyDeclarationEntries",
+  ],
+  narrative_dependency_declaration_heads: [
+    "narrativeDependencyDeclarationHeads",
+  ],
+  narrative_extraction_tasks: ["narrativeExtractionTasks"],
+  narrative_extraction_attempts: ["narrativeExtractionAttempts"],
+  narrative_extraction_artifacts: ["narrativeExtractionArtifacts"],
+  // C2A stage provenance tables are durable SCHEMA 34 Native-owned rows. The
+  // typed Rust stage-provenance writer is their sole production writer.
+  narrative_extraction_stage_model_bindings: [
+    "narrativeExtractionStageModelBindings",
+  ],
+  narrative_extraction_stage_receipts: ["narrativeExtractionStageReceipts"],
+  nir1_generation_attempts: ["nir1GenerationAttempts"],
+  nir1_generation_message_versions: ["nir1GenerationMessageVersions"],
+  nir1_generation_input_refs: ["nir1GenerationInputRefs"],
+  nir1_generation_qualification_refs: ["nir1GenerationQualificationRefs"],
+  nir1_chat_input_captures: ["nir1ChatInputCaptures"],
+  nir1_chat_input_submission_keys: ["nir1ChatInputSubmissionKeys"],
+  narrative_scope_registries: ["narrativeScopeRegistries"],
+  narrative_scene_scope_bindings: ["narrativeSceneScopeBindings"],
+  narrative_semantic_epochs: ["narrativeSemanticEpochs"],
+  narrative_extraction_runs: ["narrativeExtractionRuns"],
+  narrative_dependency_edges: ["narrativeDependencyEdges"],
+  narrative_dependency_edge_states: ["narrativeDependencyEdgeStates"],
+  narrative_consumer_freshness: ["narrativeConsumerFreshness"],
+  narrative_semantic_index_metadata: ["narrativeSemanticIndexMetadata"],
+  narrative_maintenance_finding_lifecycle: [
+    "narrativeMaintenanceFindingLifecycle",
+  ],
+  narrative_maintenance_finding_observations: [
+    "narrativeMaintenanceFindingObservations",
+  ],
+  narrative_maintenance_repair_leases: ["narrativeMaintenanceRepairLeases"],
 };
 
 // These tables are Native-only authority/provenance state. Keep the list
 // explicit so adding one to schema.ts without a protected writer entry fails
 // the inverse coverage gate.
 const NARRATIVE_AUTHORITY_TABLES = [
+  "change_events",
+  "state_snapshots",
   "narrative_revision_source_basis",
   "narrative_projection_freshness",
   "narrative_projection_dependencies",
   "narrative_field_authority",
+  "narrative_change_transactions",
+  "narrative_change_events",
+  "narrative_change_object_heads",
+  "narrative_change_cursors",
+  "narrative_change_sets",
+  "narrative_dependency_declaration_sets",
+  "narrative_dependency_declaration_entries",
+  "narrative_dependency_declaration_heads",
+  "narrative_extraction_tasks",
+  "narrative_extraction_attempts",
+  "narrative_extraction_artifacts",
+  "narrative_extraction_stage_model_bindings",
+  "narrative_extraction_stage_receipts",
+  "nir1_generation_attempts",
+  "nir1_generation_message_versions",
+  "nir1_generation_input_refs",
+  "nir1_generation_qualification_refs",
+  "nir1_chat_input_captures",
+  "nir1_chat_input_submission_keys",
+  "narrative_scope_registries",
+  "narrative_scene_scope_bindings",
+  "narrative_semantic_epochs",
+  "narrative_extraction_runs",
+  "narrative_dependency_edges",
+  "narrative_dependency_edge_states",
+  "narrative_consumer_freshness",
+  "narrative_semantic_index_metadata",
+  "narrative_maintenance_finding_lifecycle",
+  "narrative_maintenance_finding_observations",
+  "narrative_maintenance_repair_leases",
 ];
 
 const MUTATION_METHODS = new Set(["insert", "update", "delete"]);
@@ -130,9 +214,11 @@ function findUnregisteredNarrativeAuthorityTables(repoRoot, registry) {
   if (!existsSync(schemaPath)) return [];
   const schema = readFileSync(schemaPath, "utf8");
   const schemaTables = new Set(
-    [...schema.matchAll(/sqliteTable\(\s*["'](narrative_[a-z0-9_]+)["']/g)].map(
-      (match) => match[1],
-    ),
+    [
+      ...schema.matchAll(
+        /sqliteTable\(\s*["']((?:narrative_[a-z0-9_]+|change_events|state_snapshots))["']/g,
+      ),
+    ].map((match) => match[1]),
   );
   const registered = new Set(registry.map((entry) => entry.table));
   return NARRATIVE_AUTHORITY_TABLES.filter(
@@ -314,13 +400,16 @@ function findDrizzleMutations(
           if (!isNativeSqlBuilderMutation(node)) violations.add(table);
         } else {
           const columns = collectObjectLiteralKeys(updateSetArgument(node));
+          const hasNoProtectedColumns =
+            entry.columns.length === 0 && !entry.versionColumn;
           if (
-            columns === null ||
-            [...columns].some(
-              (column) =>
-                entry.columns.includes(column) ||
-                column === entry.versionColumn,
-            )
+            !hasNoProtectedColumns &&
+            (columns === null ||
+              [...columns].some(
+                (column) =>
+                  entry.columns.includes(column) ||
+                  column === entry.versionColumn,
+              ))
           ) {
             violations.add(table);
           }
@@ -357,7 +446,7 @@ function findRawSqlMutations(sourceFile, tableNames) {
   if (!tableAlternation) return [];
 
   const dmlPattern = new RegExp(
-    `\\b(?:INSERT\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+(?:["'\`])?(${tableAlternation})\\b`,
+    `\\b(?:INSERT(?:\\s+OR\\s+\\w+)?\\s+INTO|REPLACE\\s+INTO|UPDATE|DELETE\\s+FROM)\\s+(?:["'\`])?(${tableAlternation})\\b`,
     "i",
   );
 

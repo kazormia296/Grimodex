@@ -1,7 +1,17 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from "vitest";
 import { db } from "@/db/client";
-import { projects, treeNodes } from "@/db/schema";
+import {
+  changeEvents,
+  idempotencyRequests,
+  narrativeChangeCursors,
+  narrativeChangeEvents,
+  narrativeChangeSets,
+  narrativeChangeTransactions,
+  projects,
+  treeNodes,
+  undoJournal,
+} from "@/db/schema";
 import {
   listNodes,
   listAllNodes,
@@ -57,6 +67,13 @@ async function insertNode(
 }
 
 beforeEach(async () => {
+  await db.delete(narrativeChangeEvents);
+  await db.delete(narrativeChangeTransactions);
+  await db.delete(narrativeChangeCursors);
+  await db.delete(narrativeChangeSets);
+  await db.delete(undoJournal);
+  await db.delete(changeEvents);
+  await db.delete(idempotencyRequests);
   await db.delete(treeNodes);
 });
 
@@ -220,6 +237,7 @@ describe("loadProjectNarrativeSourceRows", () => {
       title: "First source",
       content: SCENE_DOC,
       sortOrder: "a1",
+      storyTimeOrder: "story-a",
       version: 3,
       updatedAt: "2026-08-01T00:00:00.003Z",
       sourceUri: "external-root://drafts/first.md",
@@ -231,6 +249,7 @@ describe("loadProjectNarrativeSourceRows", () => {
       title: "Second source",
       content: SCENE_DOC_2,
       sortOrder: "a2",
+      storyTimeOrder: null,
       version: 7,
       updatedAt: "2026-08-01T00:00:00.007Z",
       sourceUri: null,
@@ -245,6 +264,7 @@ describe("loadProjectNarrativeSourceRows", () => {
         title: "Second source",
         content: SCENE_DOC_2,
         sortOrder: "a2",
+        storyTimeOrder: null,
         orderIndex: 0,
         version: 7,
         updatedAt: "2026-08-01T00:00:00.007Z",
@@ -256,6 +276,7 @@ describe("loadProjectNarrativeSourceRows", () => {
         title: "First source",
         content: SCENE_DOC,
         sortOrder: "a1",
+        storyTimeOrder: "story-a",
         orderIndex: 1,
         version: 3,
         updatedAt: "2026-08-01T00:00:00.003Z",

@@ -1,16 +1,21 @@
 //! Atomic undo / redo for narrative apply commits (Chronicle + Codex).
 
 use chrono::Utc;
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::change_feed::{
+    append_narrative_change_transaction_in_tx, application_ids_for_commit,
+    events_from_journal_entities, transaction_id_for_source_event,
+    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeOrigin,
+};
 use super::codex_undo::{
     delete_codex_relation_checked, ensure_patch_pre_redo_matches_before,
     reapply_codex_entry_create_snapshot, reapply_codex_relation_snapshot,
     restore_codex_entry_patch, undo_created_codex_entry,
 };
-use super::commit::{load_commit_by_id, load_commit_by_request, CommitRow};
+use super::commit::{load_commit_by_id, CommitRow};
 use super::detail_operations::collect_detail_value_snapshot;
 use super::foreshadow_operations::collect_aggregate_snapshot;
 use super::models::UndoCommitPayload;
@@ -26,6 +31,7 @@ use super::plot_thread_undo::{
     reapply_plot_thread_create_snapshot, restore_plot_thread_patch, undo_created_plot_branch,
     undo_created_plot_marker, undo_created_plot_thread,
 };
+use super::repository::validate_current_chronicle_live_catalog;
 use super::semantic_bindings::collect_semantic_binding_snapshot;
 use super::task_leases::with_immediate_transaction;
 use super::temporal_undo::{
@@ -39,6 +45,9 @@ use crate::agent_writes::{
     delete_event_cascade,
 };
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+use crate::idempotency::{
+    insert_idempotent_response, load_idempotent_response, payload_fingerprint, IdempotencyRequest,
+};
 use crate::narrative_runtime_policy::{
     require_narrative_redo_allowed, require_narrative_undo_allowed,
 };
@@ -68,24 +77,75 @@ enum UndoDirection {
     Redo,
 }
 
+impl UndoDirection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Undo => "undo",
+            Self::Redo => "redo",
+        }
+    }
+
+    fn idempotency_domain(self) -> &'static str {
+        match self {
+            Self::Undo => "narrative_commit_undo",
+            Self::Redo => "narrative_commit_redo",
+        }
+    }
+
+    fn conflict_marker(self) -> &'static str {
+        match self {
+            Self::Undo => "NEX_COMMIT_UNDO_IDEMPOTENCY_CONFLICT",
+            Self::Redo => "NEX_COMMIT_REDO_IDEMPOTENCY_CONFLICT",
+        }
+    }
+}
+
 fn mutate_commit(
     db: &Database,
     payload: &UndoCommitPayload,
     direction: UndoDirection,
 ) -> anyhow::Result<Value> {
+    let action_request_id = payload
+        .request_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("requestId is required for narrative commit replay"))?;
     let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
     let timestamp = Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         with_immediate_transaction(conn, |conn| {
+            let commit = resolve_commit(conn, payload)?;
+            let request_hash = payload_fingerprint(
+                direction.idempotency_domain(),
+                &json!({
+                    "projectId": &payload.project_id,
+                    "commitId": &commit.commit_id,
+                    "direction": direction.as_str(),
+                }),
+            )?;
+            let idempotency_request = IdempotencyRequest {
+                domain: direction.idempotency_domain(),
+                request_id: Some(action_request_id),
+                payload_hash: &request_hash,
+                conflict_marker: direction.conflict_marker(),
+            };
+            if let Some(response) = load_idempotent_response(conn, &idempotency_request)? {
+                return Ok(response);
+            }
             match direction {
                 UndoDirection::Undo => require_narrative_undo_allowed(conn)?,
                 UndoDirection::Redo => require_narrative_redo_allowed(conn)?,
             }
-            let commit = resolve_commit(conn, payload)?;
-            let journal_after = load_journal_after(conn, &commit.commit_id)?;
+            let (journal_id, journal_after) = load_journal_after(conn, &commit.commit_id)?;
             let entities = journal_entities(&journal_after)?;
+            let application_ids =
+                application_ids_for_commit(conn, &payload.project_id, &commit.commit_id)?;
+            let parsed_receipt = commit
+                .receipt_json
+                .as_deref()
+                .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
             let entity_bindings = journal_after
                 .get("entityBindings")
                 .cloned()
@@ -104,9 +164,30 @@ fn mutate_commit(
                         preflight_undo_entity(conn, &payload.project_id, entity)?;
                     }
 
+                    // Legacy commits may not yet have their root Forward
+                    // maintenance transaction. Materialize it while the
+                    // post-apply objects are still live so Feed ownership
+                    // validation can prove their project scope.
+                    let original_transaction_id = ensure_original_maintenance_transaction(
+                        conn,
+                        &payload.project_id,
+                        &commit,
+                        &journal_id,
+                        &entities,
+                        &application_ids,
+                        parsed_receipt.as_ref(),
+                    )?;
+
                     // Reverse order: relations first, then entry delete/patch restore, then events.
+                    let mut scene_scope_refresh_events = Vec::new();
                     for entity in entities.iter().rev() {
-                        undo_one_entity(conn, &payload.project_id, entity, &now)?;
+                        undo_one_entity(
+                            conn,
+                            &payload.project_id,
+                            entity,
+                            &now,
+                            &mut scene_scope_refresh_events,
+                        )?;
                     }
 
                     // Refresh journal after_json so the next Redo→Undo cycle has
@@ -167,7 +248,7 @@ fn mutate_commit(
                     )?;
 
                     let change_uid = Uuid::new_v4().to_string();
-                    append_change_events_in_tx(
+                    let canonical_append = append_change_events_in_tx(
                         conn,
                         &payload.project_id,
                         &payload.session_id,
@@ -180,12 +261,50 @@ fn mutate_commit(
                             entity_id: Some(commit.commit_id.clone()),
                             payload: json!({
                                 "commitId": commit.commit_id,
-                                "requestId": commit.request_id,
+                                "requestId": action_request_id,
+                                "applyRequestId": commit.request_id,
                             })
                             .to_string(),
                             timestamp,
                         }],
                     )?;
+                    anyhow::ensure!(
+                        canonical_append.inserted_count == 1,
+                        "NEX_CHANGE_EVENT_CORRELATION_FAILED: canonical undo event was not appended"
+                    );
+                    let mut maintenance_events = events_from_journal_entities(
+                        &after_entities,
+                        NarrativeChangeCauseKind::Undo,
+                    )?;
+                    maintenance_events.extend(scene_scope_refresh_events);
+                    let maintenance_transaction = if maintenance_events.is_empty() {
+                        None
+                    } else {
+                        let original_transaction_id =
+                            original_transaction_id.as_ref().ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "maintenance Undo requires a root forward transaction"
+                                )
+                            })?;
+                        Some(append_narrative_change_transaction_in_tx(
+                            conn,
+                            &AppendNarrativeChangeTransactionInput {
+                                project_id: payload.project_id.clone(),
+                                request_id: action_request_id.to_string(),
+                                source_domain: "narrative.commit.undo".to_string(),
+                                source_change_event_uid: change_uid.clone(),
+                                cause_kind: NarrativeChangeCauseKind::Undo,
+                                origin: NarrativeChangeOrigin::Undo,
+                                original_transaction_id: Some(original_transaction_id.clone()),
+                                commit_id: Some(commit.commit_id.clone()),
+                                journal_id: Some(journal_id.clone()),
+                                undo_journal_id: None,
+                                application_ids: application_ids.clone(),
+                                occurred_at: now.clone(),
+                                events: maintenance_events,
+                            },
+                        )?)
+                    };
 
                     let receipt = update_receipt_status(
                         conn,
@@ -193,6 +312,16 @@ fn mutate_commit(
                         STATUS_UNDONE,
                         &now,
                         Some(&change_uid),
+                        maintenance_transaction
+                            .as_ref()
+                            .map(|transaction| transaction.transaction_id.as_str()),
+                        original_transaction_id.as_deref(),
+                    )?;
+                    insert_idempotent_response(
+                        conn,
+                        &idempotency_request,
+                        &payload.project_id,
+                        &receipt,
                     )?;
                     Ok(receipt)
                 }
@@ -203,6 +332,21 @@ fn mutate_commit(
                         commit.status
                     );
 
+                    // Undo removes Event creates made by the original
+                    // Chronicle Apply, so an unchanged workspace is once
+                    // again byte-identical to the Run's sealed match catalog.
+                    // Recheck that catalog under this Redo transaction before
+                    // restoring any journal entity. This blocks a different-id
+                    // duplicate added after Undo while preserving a legitimate
+                    // Redo of the original Event.
+                    if let Some(run_id) = commit.run_id.as_deref() {
+                        validate_current_chronicle_live_catalog(
+                            conn,
+                            &payload.project_id,
+                            run_id,
+                        )?;
+                    }
+
                     // Preflight: current state must still match the post-Undo expectation
                     // before we re-apply after-snapshots (especially patch summary/aliases).
                     for entity in &entities {
@@ -210,6 +354,7 @@ fn mutate_commit(
                     }
 
                     let mut restored = Vec::new();
+                    let mut scene_scope_refresh_events = Vec::new();
                     let mut after_entities = Vec::new();
                     for entity in &entities {
                         let entity_kind = entity_kind(entity)?;
@@ -565,13 +710,15 @@ fn mutate_commit(
                                     params![entity_id],
                                     |row| row.get(0),
                                 )?;
-                                let replay_version = restore_scene_chronicle_patch(
-                                    conn,
-                                    entity_id,
-                                    &snapshot,
-                                    live_version,
-                                    &now,
-                                )?;
+                                let (replay_version, scope_refresh_event) =
+                                    restore_scene_chronicle_patch(
+                                        conn,
+                                        entity_id,
+                                        &snapshot,
+                                        live_version,
+                                        &now,
+                                    )?;
+                                scene_scope_refresh_events.push(scope_refresh_event);
                                 (replay_version, snapshot.clone())
                             }
                             "temporal_event_chronicle" => {
@@ -595,13 +742,15 @@ fn mutate_commit(
                                     params![entity_id],
                                     |row| row.get(0),
                                 )?;
-                                let replay_version = restore_scene_story_order_patch(
-                                    conn,
-                                    entity_id,
-                                    &snapshot,
-                                    live_version,
-                                    &now,
-                                )?;
+                                let (replay_version, scope_refresh_event) =
+                                    restore_scene_story_order_patch(
+                                        conn,
+                                        entity_id,
+                                        &snapshot,
+                                        live_version,
+                                        &now,
+                                    )?;
+                                scene_scope_refresh_events.push(scope_refresh_event);
                                 (replay_version, snapshot.clone())
                             }
                             "temporal_projection" => {
@@ -750,8 +899,23 @@ fn mutate_commit(
 
                     update_journal_after(conn, &commit.commit_id, &after_entities, &entity_bindings)?;
 
+                    // During Redo, entities created by the original commit do
+                    // not exist until replay has completed. Defer legacy root
+                    // materialization until now so live ownership validation
+                    // observes the restored aggregate. This remains atomic
+                    // with the replay and rolls back on any later failure.
+                    let original_transaction_id = ensure_original_maintenance_transaction(
+                        conn,
+                        &payload.project_id,
+                        &commit,
+                        &journal_id,
+                        &after_entities,
+                        &application_ids,
+                        parsed_receipt.as_ref(),
+                    )?;
+
                     let change_uid = Uuid::new_v4().to_string();
-                    append_change_events_in_tx(
+                    let canonical_append = append_change_events_in_tx(
                         conn,
                         &payload.project_id,
                         &payload.session_id,
@@ -764,16 +928,69 @@ fn mutate_commit(
                             entity_id: Some(commit.commit_id.clone()),
                             payload: json!({
                                 "commitId": commit.commit_id,
-                                "requestId": commit.request_id,
+                                "requestId": action_request_id,
+                                "applyRequestId": commit.request_id,
                                 "restored": restored,
                             })
                             .to_string(),
                             timestamp,
                         }],
                     )?;
+                    anyhow::ensure!(
+                        canonical_append.inserted_count == 1,
+                        "NEX_CHANGE_EVENT_CORRELATION_FAILED: canonical redo event was not appended"
+                    );
+                    let mut maintenance_events = events_from_journal_entities(
+                        &after_entities,
+                        NarrativeChangeCauseKind::Redo,
+                    )?;
+                    maintenance_events.extend(scene_scope_refresh_events);
+                    let maintenance_transaction = if maintenance_events.is_empty() {
+                        None
+                    } else {
+                        let original_transaction_id =
+                            original_transaction_id.as_ref().ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "maintenance Redo requires a root forward transaction"
+                                )
+                            })?;
+                        Some(append_narrative_change_transaction_in_tx(
+                            conn,
+                            &AppendNarrativeChangeTransactionInput {
+                                project_id: payload.project_id.clone(),
+                                request_id: action_request_id.to_string(),
+                                source_domain: "narrative.commit.redo".to_string(),
+                                source_change_event_uid: change_uid.clone(),
+                                cause_kind: NarrativeChangeCauseKind::Redo,
+                                origin: NarrativeChangeOrigin::Redo,
+                                original_transaction_id: Some(original_transaction_id.clone()),
+                                commit_id: Some(commit.commit_id.clone()),
+                                journal_id: Some(journal_id.clone()),
+                                undo_journal_id: None,
+                                application_ids: application_ids.clone(),
+                                occurred_at: now.clone(),
+                                events: maintenance_events,
+                            },
+                        )?)
+                    };
 
-                    let receipt =
-                        update_receipt_status(conn, &commit, STATUS_REDONE, &now, Some(&change_uid))?;
+                    let receipt = update_receipt_status(
+                        conn,
+                        &commit,
+                        STATUS_REDONE,
+                        &now,
+                        Some(&change_uid),
+                        maintenance_transaction
+                            .as_ref()
+                            .map(|transaction| transaction.transaction_id.as_str()),
+                        original_transaction_id.as_deref(),
+                    )?;
+                    insert_idempotent_response(
+                        conn,
+                        &idempotency_request,
+                        &payload.project_id,
+                        &receipt,
+                    )?;
                     Ok(receipt)
                 }
             }
@@ -1157,6 +1374,7 @@ fn undo_one_entity(
     project_id: &str,
     entity: &Value,
     now: &str,
+    scene_scope_refresh_events: &mut Vec<super::change_feed::NarrativeChangeEventInput>,
 ) -> anyhow::Result<()> {
     let entity_kind = entity_kind(entity)?;
     let entity_id = entity_id(entity)?;
@@ -1283,7 +1501,14 @@ fn undo_one_entity(
                 anyhow::anyhow!("scene chronicle patch journal missing beforeSnapshot")
             })?;
             let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
-            restore_scene_chronicle_patch(conn, entity_id, &before, expected_after_version, now)?;
+            let (_, scope_refresh_event) = restore_scene_chronicle_patch(
+                conn,
+                entity_id,
+                &before,
+                expected_after_version,
+                now,
+            )?;
+            scene_scope_refresh_events.push(scope_refresh_event);
         }
         "temporal_event_chronicle" => {
             let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
@@ -1297,7 +1522,14 @@ fn undo_one_entity(
                 anyhow::anyhow!("scene story-order patch journal missing beforeSnapshot")
             })?;
             let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
-            restore_scene_story_order_patch(conn, entity_id, &before, expected_after_version, now)?;
+            let (_, scope_refresh_event) = restore_scene_story_order_patch(
+                conn,
+                entity_id,
+                &before,
+                expected_after_version,
+                now,
+            )?;
+            scene_scope_refresh_events.push(scope_refresh_event);
         }
         "temporal_projection" => {
             let op_kind = entity
@@ -1396,13 +1628,12 @@ fn resolve_commit(
     conn: &rusqlite::Connection,
     payload: &UndoCommitPayload,
 ) -> anyhow::Result<CommitRow> {
-    let row = if let Some(commit_id) = payload.commit_id.as_deref() {
-        load_commit_by_id(conn, &payload.project_id, commit_id)?
-    } else if let Some(request_id) = payload.request_id.as_deref() {
-        load_commit_by_request(conn, &payload.project_id, request_id)?
-    } else {
-        anyhow::bail!("commitId or requestId is required");
-    };
+    let commit_id = payload
+        .commit_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("commitId is required"))?;
+    let row = load_commit_by_id(conn, &payload.project_id, commit_id)?;
     row.ok_or_else(|| anyhow::anyhow!("narrative apply commit not found"))
 }
 
@@ -1435,16 +1666,19 @@ fn update_journal_after(
     Ok(())
 }
 
-fn load_journal_after(conn: &rusqlite::Connection, commit_id: &str) -> anyhow::Result<Value> {
-    let raw: String = conn.query_row(
-        "SELECT after_json FROM narrative_commit_journals
+fn load_journal_after(
+    conn: &rusqlite::Connection,
+    commit_id: &str,
+) -> anyhow::Result<(String, Value)> {
+    let (journal_id, raw): (String, String) = conn.query_row(
+        "SELECT id, after_json FROM narrative_commit_journals
           WHERE commit_id = ?1
           ORDER BY created_at DESC
           LIMIT 1",
         params![commit_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    serde_json::from_str(&raw).map_err(Into::into)
+    Ok((journal_id, serde_json::from_str(&raw)?))
 }
 
 fn journal_entities(after: &Value) -> anyhow::Result<Vec<Value>> {
@@ -1453,6 +1687,274 @@ fn journal_entities(after: &Value) -> anyhow::Result<Vec<Value>> {
         .and_then(Value::as_array)
         .cloned()
         .ok_or_else(|| anyhow::anyhow!("commit journal missing entities"))
+}
+
+/// SCHEMA 20 workspaces can contain commits that predate the maintenance feed.
+/// Lazily materialize their root forward transaction from the immutable commit
+/// journal and canonical apply event before recording the first post-upgrade
+/// Undo/Redo. The backfill shares the mutation transaction, so a later failure
+/// cannot leave a partial lineage behind.
+fn ensure_original_maintenance_transaction(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    commit: &CommitRow,
+    journal_id: &str,
+    entities: &[Value],
+    application_ids: &[String],
+    receipt: Option<&Value>,
+) -> anyhow::Result<Option<String>> {
+    let original_transaction_id = ensure_original_maintenance_root_transaction(
+        conn,
+        project_id,
+        commit,
+        journal_id,
+        entities,
+        application_ids,
+        receipt,
+    )?;
+    if commit.status == STATUS_UNDONE {
+        if let Some(original_transaction_id) = original_transaction_id.as_deref() {
+            ensure_historical_undo_maintenance_transaction(
+                conn,
+                project_id,
+                commit,
+                journal_id,
+                entities,
+                application_ids,
+                original_transaction_id,
+            )?;
+        }
+    }
+    Ok(original_transaction_id)
+}
+
+fn ensure_original_maintenance_root_transaction(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    commit: &CommitRow,
+    journal_id: &str,
+    entities: &[Value],
+    application_ids: &[String],
+    receipt: Option<&Value>,
+) -> anyhow::Result<Option<String>> {
+    let forward_events = events_from_journal_entities(entities, NarrativeChangeCauseKind::Forward)?;
+    if forward_events.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(transaction_id) = receipt
+        .and_then(|receipt| receipt.get("maintenanceOriginalTransactionId"))
+        .and_then(Value::as_str)
+    {
+        anyhow::ensure!(
+            is_matching_original_maintenance_transaction(
+                conn,
+                project_id,
+                &commit.commit_id,
+                journal_id,
+                transaction_id,
+            )?,
+            "maintenance original transaction does not match the commit root"
+        );
+        return Ok(Some(transaction_id.to_string()));
+    }
+    if let Some(transaction_id) = receipt
+        .and_then(|receipt| receipt.get("maintenanceTransactionId"))
+        .and_then(Value::as_str)
+    {
+        if is_matching_original_maintenance_transaction(
+            conn,
+            project_id,
+            &commit.commit_id,
+            journal_id,
+            transaction_id,
+        )? {
+            return Ok(Some(transaction_id.to_string()));
+        }
+    }
+
+    // A SCHEMA 20 receipt's changeEventUid identifies its latest operation.
+    // After an Undo or Redo that UID is not the root apply event, so recover
+    // the root strictly from canonical commit identity instead.
+    let source_change_event_uid: String = conn.query_row(
+        "SELECT event_uid
+           FROM change_events
+          WHERE project_id = ?1
+            AND op_type = 'narrative.commit.apply'
+            AND entity_type = 'narrative_apply_commit'
+            AND entity_id = ?2
+            AND event_uid IS NOT NULL
+          ORDER BY sequence ASC
+          LIMIT 1",
+        params![project_id, commit.commit_id],
+        |row| row.get(0),
+    )?;
+
+    if let Some(transaction_id) =
+        transaction_id_for_source_event(conn, project_id, &source_change_event_uid)?
+    {
+        anyhow::ensure!(
+            is_matching_original_maintenance_transaction(
+                conn,
+                project_id,
+                &commit.commit_id,
+                journal_id,
+                &transaction_id,
+            )?,
+            "maintenance transaction for canonical apply event does not match the commit root"
+        );
+        return Ok(Some(transaction_id));
+    }
+
+    let result = append_narrative_change_transaction_in_tx(
+        conn,
+        &AppendNarrativeChangeTransactionInput {
+            project_id: project_id.to_string(),
+            request_id: commit.request_id.clone(),
+            source_domain: "narrative.commit.apply".to_string(),
+            source_change_event_uid,
+            cause_kind: NarrativeChangeCauseKind::Forward,
+            origin: NarrativeChangeOrigin::AiApply,
+            original_transaction_id: None,
+            commit_id: Some(commit.commit_id.clone()),
+            journal_id: Some(journal_id.to_string()),
+            undo_journal_id: None,
+            application_ids: application_ids.to_vec(),
+            occurred_at: commit
+                .completed_at
+                .clone()
+                .unwrap_or_else(|| commit.created_at.clone()),
+            events: forward_events,
+        },
+    )?;
+    Ok(Some(result.transaction_id))
+}
+
+/// A pre-Feed commit can already be undone when it is first replayed after
+/// migration. Backfilling only its original Forward transaction would leave
+/// the Feed head at the post-apply state, so the next Redo (absent -> live)
+/// would be discontinuous. Reconstruct the canonical historical Undo as well
+/// before appending the new Redo transaction.
+fn ensure_historical_undo_maintenance_transaction(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    commit: &CommitRow,
+    journal_id: &str,
+    entities: &[Value],
+    application_ids: &[String],
+    original_transaction_id: &str,
+) -> anyhow::Result<()> {
+    let historical_undo: Option<(String, String, i64)> = conn
+        .query_row(
+            "SELECT event_uid, payload, timestamp
+               FROM change_events
+              WHERE project_id = ?1
+                AND op_type = 'narrative.commit.undo'
+                AND entity_type = 'narrative_apply_commit'
+                AND entity_id = ?2
+                AND event_uid IS NOT NULL
+              ORDER BY sequence DESC
+              LIMIT 1",
+            params![project_id, commit.commit_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((source_change_event_uid, raw_payload, timestamp)) = historical_undo else {
+        anyhow::bail!(
+            "undone narrative commit '{}' has no canonical Undo event for maintenance backfill",
+            commit.commit_id
+        );
+    };
+
+    if let Some(existing_transaction_id) =
+        transaction_id_for_source_event(conn, project_id, &source_change_event_uid)?
+    {
+        let matches: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                  FROM narrative_change_transactions
+                 WHERE project_id = ?1
+                   AND id = ?2
+                   AND cause_kind = 'undo'
+                   AND original_transaction_id = ?3
+                   AND commit_id = ?4
+                   AND journal_id = ?5
+            )",
+            params![
+                project_id,
+                existing_transaction_id,
+                original_transaction_id,
+                commit.commit_id,
+                journal_id
+            ],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            matches,
+            "maintenance transaction for canonical Undo event does not match the commit lineage"
+        );
+        return Ok(());
+    }
+
+    let undo_events = events_from_journal_entities(entities, NarrativeChangeCauseKind::Undo)?;
+    if undo_events.is_empty() {
+        return Ok(());
+    }
+    let canonical_payload = serde_json::from_str::<Value>(&raw_payload).unwrap_or(Value::Null);
+    let request_id = canonical_payload
+        .get("requestId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("legacy-undo-{source_change_event_uid}"));
+    let occurred_at = chrono::DateTime::<Utc>::from_timestamp_millis(timestamp)
+        .map(|value| value.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+        .unwrap_or_else(|| commit.created_at.clone());
+
+    append_narrative_change_transaction_in_tx(
+        conn,
+        &AppendNarrativeChangeTransactionInput {
+            project_id: project_id.to_string(),
+            request_id,
+            source_domain: "narrative.commit.undo".to_string(),
+            source_change_event_uid,
+            cause_kind: NarrativeChangeCauseKind::Undo,
+            origin: NarrativeChangeOrigin::Undo,
+            original_transaction_id: Some(original_transaction_id.to_string()),
+            commit_id: Some(commit.commit_id.clone()),
+            journal_id: Some(journal_id.to_string()),
+            undo_journal_id: None,
+            application_ids: application_ids.to_vec(),
+            occurred_at,
+            events: undo_events,
+        },
+    )?;
+    Ok(())
+}
+
+fn is_matching_original_maintenance_transaction(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    commit_id: &str,
+    journal_id: &str,
+    transaction_id: &str,
+) -> anyhow::Result<bool> {
+    let row: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT cause_kind, commit_id, journal_id
+               FROM narrative_change_transactions
+              WHERE project_id = ?1 AND id = ?2",
+            params![project_id, transaction_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    Ok(matches!(
+        row,
+        Some((cause_kind, Some(stored_commit_id), Some(stored_journal_id)))
+            if cause_kind == "forward"
+                && stored_commit_id == commit_id
+                && stored_journal_id == journal_id
+    ))
 }
 
 fn entity_id(entity: &Value) -> anyhow::Result<&str> {
@@ -1484,6 +1986,8 @@ fn update_receipt_status(
     status: &str,
     now: &str,
     change_event_uid: Option<&str>,
+    maintenance_transaction_id: Option<&str>,
+    maintenance_original_transaction_id: Option<&str>,
 ) -> anyhow::Result<Value> {
     let mut receipt = if let Some(raw) = commit.receipt_json.as_deref() {
         serde_json::from_str::<Value>(raw).unwrap_or_else(|_| json!({}))
@@ -1506,6 +2010,18 @@ fn update_receipt_status(
         obj.insert("status".to_string(), Value::String(status.to_string()));
         if let Some(uid) = change_event_uid {
             obj.insert("changeEventUid".to_string(), Value::String(uid.to_string()));
+        }
+        if let Some(transaction_id) = maintenance_transaction_id {
+            obj.insert(
+                "maintenanceTransactionId".to_string(),
+                Value::String(transaction_id.to_string()),
+            );
+        }
+        if let Some(transaction_id) = maintenance_original_transaction_id {
+            obj.insert(
+                "maintenanceOriginalTransactionId".to_string(),
+                Value::String(transaction_id.to_string()),
+            );
         }
     }
 

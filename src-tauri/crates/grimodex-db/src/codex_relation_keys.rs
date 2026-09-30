@@ -44,11 +44,7 @@ pub fn build_codex_relation_semantic_key(
         } else {
             (to_codex_id, from_codex_id)
         };
-        let label = if forward.is_empty() {
-            inverse
-        } else {
-            forward
-        };
+        let label = if forward.is_empty() { inverse } else { forward };
         format!("s\t{project_id}\t{left}\t{right}\t{relation_type}\t{label}")
     } else {
         format!(

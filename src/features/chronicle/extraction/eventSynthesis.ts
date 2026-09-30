@@ -12,7 +12,8 @@ export interface NormalizeSynthesisOptions {
 
 /**
  * Normalize a synthesis AI payload into EventHypothesis rows. Unknown
- * observation refs / wrong cluster refs are rejected.
+ * observation refs / wrong cluster refs are rejected. Parser-accepted `rumored`
+ * actuality remains a hypothesis and is filtered at the proposal gate.
  */
 export function normalizeEventSynthesis(
   raw: unknown,
@@ -30,13 +31,6 @@ export function normalizeEventSynthesis(
       options.allowedObservationRefs.has(ref),
     );
     if (observationRefs.length === 0) continue;
-    if (
-      event.actuality !== "actual" &&
-      event.actuality !== "attempted" &&
-      event.actuality !== "prevented"
-    ) {
-      continue;
-    }
     hypotheses.push({
       hypothesisId: createId(),
       clusterRef: options.clusterRef,

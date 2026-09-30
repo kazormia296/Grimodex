@@ -19,8 +19,10 @@ import {
   persistedVersion,
   type VersionedSaveOutcome,
 } from "@/lib/saveOutcome";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
+import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
+import type { CanonicalWriteReceipt } from "@/features/native-writes/writeContext";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
+import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
 import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
@@ -103,7 +105,11 @@ interface SnippetState {
     data: Partial<
       Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
     >,
-    options?: { baseVersion?: number },
+    options?: {
+      baseVersion?: number;
+      timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: QuiescenceProviderFlushOptions["preexistingDraft"];
+    },
   ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
   incrementUsageCount: (id: string) => Promise<void>;
@@ -225,41 +231,48 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         ...data,
       });
       set((state) => ({ entries: [...state.entries, created] }));
-      recordChangeEvent({
-        domain: "snippet",
-        opType: "snippet.create",
-        entityType: "snippet",
-        entityId: created.id,
-        sceneId: created.sceneId ?? null,
-        payload: { title: created.title, sceneId: created.sceneId },
-      });
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const captured = { ...created };
-        useGlobalHistoryStore.getState().push({
-          kind: "snippets",
-          label: i18next.t("history.snippets.created"),
-          entityId: captured.id,
-          async undo() {
-            await snippetApi.deleteSnippet(captured.projectId, captured.id);
-            set((state) => ({
-              entries: state.entries.filter((e) => e.id !== captured.id),
-            }));
-          },
-          async redo() {
-            await snippetApi.createSnippet({
-              id: captured.id,
-              projectId: captured.projectId,
-              title: captured.title,
-              content: captured.content,
-              tagsCache: captured.tagsCache ?? undefined,
-              sceneId: captured.sceneId ?? undefined,
-              sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
-              contentSource: captured.contentSource ?? undefined,
-            });
-            set((state) => ({ entries: [...state.entries, captured] }));
-          },
-        });
+        const journalId = created.__writeReceipt.undoJournalId;
+        if (journalId) {
+          useGlobalHistoryStore.getState().push({
+            kind: "snippets",
+            label: i18next.t("history.snippets.created"),
+            operationId: journalId,
+            entityId: captured.id,
+            async undo() {
+              await applyUndoJournal(journalId, "undo");
+              set((state) => ({
+                entries: state.entries.filter((e) => e.id !== captured.id),
+                selectedSnippet:
+                  state.selectedSnippet?.id === captured.id
+                    ? null
+                    : state.selectedSnippet,
+              }));
+            },
+            async redo() {
+              await applyUndoJournal(journalId, "redo");
+              const restored = await snippetApi.getSnippet(
+                captured.projectId,
+                captured.id,
+              );
+              if (!restored) {
+                throw new Error(`Snippet ${captured.id} was not restored`);
+              }
+              set((state) => ({
+                entries: [
+                  ...state.entries.filter((e) => e.id !== captured.id),
+                  restored,
+                ],
+                selectedSnippet:
+                  state.selectedSnippet?.id === captured.id
+                    ? restored
+                    : state.selectedSnippet,
+              }));
+            },
+          });
+        }
       }
       // Background re-sync to fix race condition: if useEffect's loadEntries() was
       // in-flight (e.g., after a layout preset change or during Tauri startup),
@@ -286,7 +299,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
 
   update: async (id, data, options) => {
     const before = get().entries.find((e) => e.id === id);
-    let updated: Snippet | undefined;
+    let updated: snippetApi.SnippetWriteResult | undefined;
 
     try {
       // OCC: 読み込み時点の version を baseVersion として渡す。別窓 / 別プロセスが
@@ -297,7 +310,13 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
         getCurrentProjectId(),
         id,
         data,
-        { baseVersion: options?.baseVersion ?? before?.version ?? 0 },
+        {
+          baseVersion: options?.baseVersion ?? before?.version ?? 0,
+          ...(options?.timelapseDocument
+            ? { timelapseDocument: options.timelapseDocument }
+            : {}),
+          ...(options?.preexistingDraft ? { preexistingDraft: true } : {}),
+        },
       );
       // 行なし (スコープ miss / 削除済み) = 保存されていない。
       // false の全経路はここで必ず通知する契約 (衝突=conflict handler /
@@ -324,77 +343,54 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       return SAVE_NOT_PERSISTED;
     }
 
-    // 本文 (content, ProseMirror JSON) の変更差分を timelapse に記録する。
-    const diffs: Record<string, BodyDiff> = {};
-    const nextContent = (data as { content?: unknown }).content;
-    if (typeof nextContent === "string") {
-      const d = computeDocDiff(before?.content ?? "", nextContent);
-      if (d) diffs.content = d;
-    }
-    recordChangeEvent({
-      domain: "snippet",
-      opType: "snippet.update",
-      entityType: "snippet",
-      entityId: id,
-      payload:
-        Object.keys(diffs).length > 0
-          ? { fields: Object.keys(data), diffs }
-          : { fields: Object.keys(data) },
-    });
-
     // ここから先は保存成功 (undo 履歴の登録可否は成否と無関係)
     if (!before) return persistedVersion(updated.version);
     if (useGlobalHistoryStore.getState().isReplaying) {
       return persistedVersion(updated.version);
     }
 
-    const undoPatch: Record<string, unknown> = {};
-    for (const key of Object.keys(data)) {
-      const v = (before as unknown as Record<string, unknown>)[key];
-      undoPatch[key] = v ?? undefined;
+    const journalId = updated.__writeReceipt.undoJournalId;
+    if (journalId) {
+      const projectId = updated.projectId;
+      const syncReplayed = async (): Promise<void> => {
+        const replayed = await snippetApi.getSnippet(projectId, id);
+        if (!replayed) throw new Error(`Snippet ${id} was not restored`);
+        set((state) => ({
+          entries: state.entries.map((e) => (e.id === id ? replayed : e)),
+          selectedSnippet:
+            state.selectedSnippet?.id === id ? replayed : state.selectedSnippet,
+        }));
+      };
+      useGlobalHistoryStore.getState().push({
+        kind: "snippets",
+        label: i18next.t("history.snippets.updated"),
+        operationId: journalId,
+        entityId: id,
+        async undo() {
+          await applyUndoJournal(journalId, "undo");
+          await syncReplayed();
+        },
+        async redo() {
+          await applyUndoJournal(journalId, "redo");
+          await syncReplayed();
+        },
+      });
     }
-
-    // undo/redo クロージャは blind (baseVersion 無し) で固定する。replay 中に
-    // version が動くと、その後の OCC 保存 (update) が in-memory の version と
-    // 食い違って自己衝突するため。
-    useGlobalHistoryStore.getState().push({
-      kind: "snippets",
-      label: i18next.t("history.snippets.updated"),
-      entityId: id,
-      async undo() {
-        const restored = await snippetApi.updateSnippet(
-          getCurrentProjectId(),
-          id,
-          undoPatch as Parameters<typeof snippetApi.updateSnippet>[2],
-        );
-        if (restored) {
-          set((state) => ({
-            entries: state.entries.map((e) => (e.id === id ? restored : e)),
-          }));
-        }
-      },
-      async redo() {
-        const reapplied = await snippetApi.updateSnippet(
-          getCurrentProjectId(),
-          id,
-          data,
-        );
-        if (reapplied) {
-          set((state) => ({
-            entries: state.entries.map((e) => (e.id === id ? reapplied : e)),
-          }));
-        }
-      },
-    });
     return persistedVersion(updated.version);
   },
 
   remove: async (id) => {
     const before = get().entries.find((e) => e.id === id);
+    let deletionReceipt: CanonicalWriteReceipt | undefined;
     try {
-      await snippetApi.deleteSnippet(getCurrentProjectId(), id);
+      deletionReceipt = await snippetApi.deleteSnippet(
+        getCurrentProjectId(),
+        id,
+      );
       set((state) => ({
         entries: state.entries.filter((e) => e.id !== id),
+        selectedSnippet:
+          state.selectedSnippet?.id === id ? null : state.selectedSnippet,
       }));
     } catch (e) {
       toast.error(i18next.t("snippets.store.deleteFailed"));
@@ -402,15 +398,7 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       return;
     }
 
-    recordChangeEvent({
-      domain: "snippet",
-      opType: "snippet.delete",
-      entityType: "snippet",
-      entityId: id,
-      payload: { title: before?.title ?? null },
-    });
-
-    if (!before) return;
+    if (!before || !deletionReceipt) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
 
     const captured = { ...before };
@@ -420,28 +408,38 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       snippet: captured,
       tempId: trashTempId,
     });
+    const journalId = deletionReceipt.undoJournalId;
+    if (!journalId) return;
     useGlobalHistoryStore.getState().push({
       kind: "snippets",
       label: i18next.t("history.snippets.deleted"),
+      operationId: journalId,
       entityId: captured.id,
       async undo() {
         cancelPendingTrash(trashTempId);
-        await snippetApi.createSnippet({
-          id: captured.id,
-          projectId: captured.projectId,
-          title: captured.title,
-          content: captured.content,
-          tagsCache: captured.tagsCache ?? undefined,
-          sceneId: captured.sceneId ?? undefined,
-          sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
-          contentSource: captured.contentSource ?? undefined,
-        });
-        set((state) => ({ entries: [...state.entries, captured] }));
+        await applyUndoJournal(journalId, "undo");
+        const restored = await snippetApi.getSnippet(
+          captured.projectId,
+          captured.id,
+        );
+        if (!restored) {
+          throw new Error(`Snippet ${captured.id} was not restored`);
+        }
+        set((state) => ({
+          entries: [
+            ...state.entries.filter((e) => e.id !== captured.id),
+            restored,
+          ],
+        }));
       },
       async redo() {
-        await snippetApi.deleteSnippet(captured.projectId, captured.id);
+        await applyUndoJournal(journalId, "redo");
         set((state) => ({
           entries: state.entries.filter((e) => e.id !== captured.id),
+          selectedSnippet:
+            state.selectedSnippet?.id === captured.id
+              ? null
+              : state.selectedSnippet,
         }));
       },
     });

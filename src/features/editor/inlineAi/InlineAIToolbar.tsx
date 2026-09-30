@@ -146,7 +146,7 @@ export function InlineAIToolbar({
           className="flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium text-green-600 hover:bg-green-50 disabled:opacity-40 dark:hover:bg-green-950"
         >
           <Check className="h-3 w-3" strokeWidth={3} aria-hidden />
-          Accept
+          {t("inlineAi.accept")}
           {canAccept && (
             <kbd className="ml-0.5 rounded border border-border px-1 text-xs text-muted-foreground">
               Tab
@@ -160,7 +160,7 @@ export function InlineAIToolbar({
           className="flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-950"
         >
           <X className="h-3 w-3" aria-hidden />
-          Reject
+          {t("inlineAi.reject")}
           <kbd className="ml-0.5 rounded border border-border px-1 text-xs text-muted-foreground">
             Esc
           </kbd>
@@ -173,7 +173,7 @@ export function InlineAIToolbar({
               onClick={onRetry}
               className="rounded px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
             >
-              ↺ Retry
+              ↺ {t("common.retry")}
             </button>
           </>
         )}

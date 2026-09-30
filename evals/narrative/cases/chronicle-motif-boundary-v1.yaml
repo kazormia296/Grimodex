@@ -1,0 +1,358 @@
+schemaVersion: 1
+suiteId: chronicle-motif-boundary-v1
+cases:
+  - schemaVersion: 1
+    id: chronicle.micro.sword-recovered-015
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-22T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds:
+        [scene-sword-setup-recovered, scene-sword-use-recovered]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-sword-setup-recovered
+        title: 壁の儀礼剣
+        text: 謁見の間の壁には、刃こぼれした儀礼剣が一本掛けられていた。柄には王家の紋章が刻まれ、長いあいだ誰も触れていなかった。
+      - id: scene-sword-use-recovered
+        title: 地下牢の火
+        text: 火の粉が梁へ移り、地下牢の出口が塞がれかけた。ミナは壁の儀礼剣を引き抜き、捕虜を縛る縄を切った。捕虜は煙の薄い階段へ逃れた。
+    expected:
+      observations:
+        required:
+          - id: required-mina-cut-prisoner-rope
+            semanticKey: mina-cut-prisoner-rope
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-sword-use-recovered
+                  quote: ミナは壁の儀礼剣を引き抜き、捕虜を縛る縄を切った。
+              clustering: mina-cut-prisoner-rope
+              significance: major
+              proposalGate: propose
+        forbidden:
+          - id: forbidden-static-sword-as-event
+            semanticKey: ceremonial-sword-destiny
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-sword-setup-recovered
+                  quote: 謁見の間の壁には、刃こぼれした儀礼剣が一本掛けられていた。
+              clustering: ceremonial-sword-destiny
+              significance: major
+              proposalGate: propose
+    criticalViolationClasses: []
+
+  - schemaVersion: 1
+    id: chronicle.micro.sword-unrecovered-016
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-22T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds:
+        [scene-sword-setup-unrecovered, scene-sword-remains-unused]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-sword-setup-unrecovered
+        title: 壁の儀礼剣
+        text: 謁見の間の壁には、刃こぼれした儀礼剣が一本掛けられていた。柄には王家の紋章が刻まれ、長いあいだ誰も触れていなかった。
+      - id: scene-sword-remains-unused
+        title: 東階段への避難
+        text: 避難鐘が鳴り、宮廷の使用人たちは東階段から中庭へ移動した。儀礼剣には誰も触れず、夜明けまで壁に掛かったままだった。
+    expected:
+      observations:
+        required:
+          - id: required-court-staff-evacuation
+            semanticKey: court-staff-evacuation
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-sword-remains-unused
+                  quote: 避難鐘が鳴り、宮廷の使用人たちは東階段から中庭へ移動した。
+              clustering: court-staff-evacuation
+              significance: major
+              proposalGate: propose
+          - id: required-sword-use-negated
+            semanticKey: ceremonial-sword-use
+            dimensions:
+              eventDetection: false
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-sword-remains-unused
+                  quote: 儀礼剣には誰も触れず、夜明けまで壁に掛かったままだった。
+              clustering: ceremonial-sword-use
+              significance: none
+              proposalGate: suppress
+        forbidden:
+          - id: forbidden-unrecovered-sword-use
+            semanticKey: ceremonial-sword-use
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: untouched-sword-invented-use
+        description: An explicitly untouched ceremonial sword must not be reported as used.
+        match:
+          semanticKey: ceremonial-sword-use
+          dimension: eventDetection
+          value: true
+      - id: untouched-sword-proposed
+        description: An explicitly unused ceremonial sword must not become a Chronicle proposal.
+        match:
+          semanticKey: ceremonial-sword-use
+          dimension: proposalGate
+          value: propose
+
+  - schemaVersion: 1
+    id: chronicle.micro.sword-red-herring-017
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-22T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-stained-sword, scene-poison-needle-reveal]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-stained-sword
+        title: 玉座の黒い剣
+        text: 玉座の背後には黒ずんだ儀礼剣が飾られていた。刃元の暗い染みは、遠目には乾いた血のようにも見えた。
+      - id: scene-poison-needle-reveal
+        title: 前夜の仕込み
+        text: 前夜、侍医ロアンは毒針を王の杯の縁へ仕込んだ。翌朝の検分で、儀礼剣は鞘から抜かれておらず、黒ずみは古い錆だと判明した。
+    expected:
+      observations:
+        required:
+          - id: required-roan-planted-poison-needle
+            semanticKey: roan-planted-poison-needle
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: flashback
+              evidence:
+                - documentId: scene-poison-needle-reveal
+                  quote: 前夜、侍医ロアンは毒針を王の杯の縁へ仕込んだ。
+              clustering: roan-planted-poison-needle
+              significance: major
+              proposalGate: propose
+          - id: required-sword-attack-refuted
+            semanticKey: ceremonial-sword-attack
+            dimensions:
+              eventDetection: false
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-poison-needle-reveal
+                  quote: 儀礼剣は鞘から抜かれておらず、黒ずみは古い錆だと判明した。
+              clustering: ceremonial-sword-attack
+              significance: major
+              proposalGate: suppress
+        forbidden:
+          - id: forbidden-sword-as-attack-weapon
+            semanticKey: ceremonial-sword-attack
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: red-herring-sword-promoted
+        description: A refuted red-herring weapon must not be reported as the attack weapon.
+        match:
+          semanticKey: ceremonial-sword-attack
+          dimension: eventDetection
+          value: true
+      - id: red-herring-sword-proposed
+        description: A refuted red-herring weapon must not become a Chronicle proposal.
+        match:
+          semanticKey: ceremonial-sword-attack
+          dimension: proposalGate
+          value: propose
+
+  - schemaVersion: 1
+    id: chronicle.micro.sword-character-theory-018
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-22T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-guard-sword-theory]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-guard-sword-theory
+        title: 衛兵の断定
+        text: 衛兵ダリオは「あの儀礼剣が凶器に違いない」と主張した。検分すると封蝋は切れておらず、剣は鞘から抜かれていなかった。被害者の杯から毒が検出された。
+    expected:
+      observations:
+        required:
+          - id: required-dario-sword-theory
+            semanticKey: dario-sword-weapon-claim
+            dimensions:
+              eventDetection: true
+              actuality: rumored
+              attribution: "character:dario"
+              narrativeFrame: reported
+              evidence:
+                - documentId: scene-guard-sword-theory
+                  quote: 「あの儀礼剣が凶器に違いない」
+              clustering: ceremonial-sword-attack
+              significance: major
+              proposalGate: suppress
+          - id: required-sword-theory-refuted
+            semanticKey: ceremonial-sword-attack-refutation
+            dimensions:
+              eventDetection: false
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-guard-sword-theory
+                  quote: 封蝋は切れておらず、剣は鞘から抜かれていなかった。
+              clustering: ceremonial-sword-attack
+              significance: major
+              proposalGate: suppress
+          - id: required-poison-detected-in-cup
+            semanticKey: poison-detected-in-victim-cup
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-guard-sword-theory
+                  quote: 被害者の杯から毒が検出された。
+              clustering: poison-detected-in-victim-cup
+              significance: major
+              proposalGate: propose
+        forbidden:
+          - id: forbidden-character-theory-as-fact
+            semanticKey: dario-sword-weapon-claim
+            dimensions:
+              actuality: actual
+              attribution: narrator
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: character-theory-as-actual
+        description: A guard's unsupported weapon theory must not be promoted to actuality.
+        match:
+          semanticKey: dario-sword-weapon-claim
+          dimension: actuality
+          value: actual
+      - id: character-theory-as-narrator
+        description: A guard's unsupported theory must retain character attribution.
+        match:
+          semanticKey: dario-sword-weapon-claim
+          dimension: attribution
+          value: narrator
+      - id: character-theory-proposed
+        description: A refuted character theory must not become a Chronicle proposal.
+        match:
+          semanticKey: dario-sword-weapon-claim
+          dimension: proposalGate
+          value: propose
+      - id: sword-refutation-as-event
+        description: An explicit refutation of sword use must not be reported as a sword attack event.
+        match:
+          semanticKey: ceremonial-sword-attack-refutation
+          dimension: eventDetection
+          value: true
+      - id: sword-refutation-proposed
+        description: An explicit refutation of sword use must not become a Chronicle proposal.
+        match:
+          semanticKey: ceremonial-sword-attack-refutation
+          dimension: proposalGate
+          value: propose
+
+  - schemaVersion: 1
+    id: chronicle.micro.sword-atmosphere-019
+    scope: { slice: chronicle, tier: micro }
+    locale: ja-JP
+    timezone: Asia/Tokyo
+    frozenTime: "2026-08-22T00:00:00.000Z"
+    coverage:
+      mode: complete
+      includedDocumentIds: [scene-armory-blue-light, scene-west-gate-alarm]
+      omittedDocumentIds: []
+    documents:
+      - id: scene-armory-blue-light
+        title: 青い武器庫
+        text: 地下武器庫には百本の錆びた剣が並び、天井の青い燐光が刃の上をゆっくり移っていた。剣はすべて鎖で壁に固定されていた。
+      - id: scene-west-gate-alarm
+        title: 西塔の警鐘
+        text: 西塔の窓からも同じ青い燐光が見えた。誰も武器庫へ入らず、剣の鎖も封印も破れていなかった。直後、西門の警鐘が鳴り、守備隊は門扉を閉ざした。
+    expected:
+      observations:
+        required:
+          - id: required-armory-awakening-negated
+            semanticKey: armory-swords-awaken
+            dimensions:
+              eventDetection: false
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-west-gate-alarm
+                  quote: 誰も武器庫へ入らず、剣の鎖も封印も破れていなかった。
+              clustering: armory-swords-awaken
+              significance: none
+              proposalGate: suppress
+          - id: required-west-gate-closure
+            semanticKey: west-gate-closure
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-west-gate-alarm
+                  quote: 西門の警鐘が鳴り、守備隊は門扉を閉ざした。
+              clustering: west-gate-closure
+              significance: major
+              proposalGate: propose
+        forbidden:
+          - id: forbidden-blue-light-caused-awakening
+            semanticKey: blue-light-awakened-armory-swords
+            dimensions:
+              eventDetection: true
+              actuality: actual
+              attribution: narrator
+              narrativeFrame: story-world
+              evidence:
+                - documentId: scene-armory-blue-light
+                  quote: 天井の青い燐光が刃の上をゆっくり移っていた。
+                - documentId: scene-west-gate-alarm
+                  quote: 西塔の窓からも同じ青い燐光が見えた。
+              clustering: blue-light-awakened-armory-swords
+              significance: major
+              proposalGate: propose
+    criticalViolationClasses:
+      - id: atmosphere-as-sword-awakening
+        description: Repeated atmospheric imagery must not override explicit evidence that the swords remained sealed.
+        match:
+          semanticKey: armory-swords-awaken
+          dimension: eventDetection
+          value: true
+      - id: atmosphere-proposed-as-event
+        description: A negated atmospheric sword awakening must not become a Chronicle proposal.
+        match:
+          semanticKey: armory-swords-awaken
+          dimension: proposalGate
+          value: propose

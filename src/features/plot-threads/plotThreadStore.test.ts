@@ -7,6 +7,11 @@ vi.mock("@/application/project/currentProjectAuthority", () => ({
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
 }));
+vi.mock("@/lib/nativeMutationMetadata", () => ({
+  getNativeMutationMetadata: () => ({
+    maintenanceTransactionId: "plot-test-tx",
+  }),
+}));
 vi.mock("./api", () => ({
   listPlotThreads: vi.fn(async () => []),
   listPlotThreadLinks: vi.fn(async () => []),
@@ -364,6 +369,7 @@ describe("plotThreadStore", () => {
     await usePlotThreadStore.getState().addMarker("t1", "s1", "develop");
     expect(createPlotThreadLink).toHaveBeenCalledWith({
       id: expect.any(String),
+      projectId: "p1",
       threadId: "t1",
       nodeId: "s1",
       phaseType: "develop",
@@ -434,6 +440,7 @@ describe("plotThreadStore", () => {
     });
     await p;
     expect(mock(updatePlotThread)).toHaveBeenCalledWith("t1", {
+      projectId: "p1",
       sortOrder: "a2",
       baseVersion: 0,
     });
@@ -614,7 +621,7 @@ describe("plotThreadStore", () => {
         .threads.filter(({ id }) => id === firstPayload.id),
     ).toHaveLength(1);
     expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
-    expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+    expect(recordChangeEvent).not.toHaveBeenCalled();
 
     await usePlotThreadStore.getState().addThread("p1", "retry", "#123456");
     const [afterSuccessPayload] = mock(createPlotThread).mock.calls[2];
@@ -682,7 +689,7 @@ describe("plotThreadStore", () => {
     expect(firstBranchPayload.id).toBeTruthy();
 
     expect(useGlobalHistoryStore.getState().past).toHaveLength(2);
-    expect(recordChangeEvent).toHaveBeenCalledTimes(2);
+    expect(recordChangeEvent).not.toHaveBeenCalled();
   });
 
   it("異なる unknown create を並べても各 thread の retry ID を保持する", async () => {
@@ -990,9 +997,9 @@ describe("plotThreadStore", () => {
       expect(
         mock(updatePlotThread).mock.calls.map(([, patch]) => patch),
       ).toEqual([
-        { color: null, baseVersion: 2 },
-        { color: "#123456", baseVersion: 3 },
-        { color: null, baseVersion: 4 },
+        { projectId: "p1", color: null, baseVersion: 2 },
+        { projectId: "p1", color: "#123456", baseVersion: 3 },
+        { projectId: "p1", color: null, baseVersion: 4 },
       ]);
       expect(usePlotThreadStore.getState().threads[0]).toMatchObject({
         color: null,
@@ -1007,9 +1014,9 @@ describe("plotThreadStore", () => {
       expect(
         mock(updatePlotThreadLink).mock.calls.map(([, patch]) => patch),
       ).toEqual([
-        { note: null, baseVersion: 5 },
-        { note: "marker note", baseVersion: 6 },
-        { note: null, baseVersion: 7 },
+        { projectId: "p1", note: null, baseVersion: 5 },
+        { projectId: "p1", note: "marker note", baseVersion: 6 },
+        { projectId: "p1", note: null, baseVersion: 7 },
       ]);
       expect(usePlotThreadStore.getState().links[0]).toMatchObject({
         note: null,
@@ -1045,8 +1052,24 @@ describe("plotThreadStore", () => {
       await history().redo();
       await history().undo();
       expect(mock(deletePlotThreadLink).mock.calls).toEqual([
-        ["l1", { baseVersion: 2 }],
-        ["l1", { baseVersion: 3 }],
+        [
+          "l1",
+          {
+            projectId: "p1",
+            origin: "undo",
+            originalTransactionId: "plot-test-tx",
+            baseVersion: 2,
+          },
+        ],
+        [
+          "l1",
+          {
+            projectId: "p1",
+            origin: "undo",
+            originalTransactionId: "plot-test-tx",
+            baseVersion: 3,
+          },
+        ],
       ]);
 
       history().clear();
@@ -1058,8 +1081,16 @@ describe("plotThreadStore", () => {
       await history().undo();
       await history().redo();
       expect(mock(deletePlotThreadBranch).mock.calls).toEqual([
-        ["br1", { baseVersion: 5 }],
-        ["br1", { baseVersion: 6 }],
+        ["br1", { projectId: "p1", baseVersion: 5 }],
+        [
+          "br1",
+          {
+            projectId: "p1",
+            origin: "redo",
+            originalTransactionId: "plot-test-tx",
+            baseVersion: 6,
+          },
+        ],
       ]);
     });
 
@@ -1093,8 +1124,24 @@ describe("plotThreadStore", () => {
       await history().undo();
 
       expect(mock(deletePlotThreadLink).mock.calls).toEqual([
-        ["l1", { baseVersion: 2 }],
-        ["l1", { baseVersion: 5 }],
+        [
+          "l1",
+          {
+            projectId: "p1",
+            origin: "undo",
+            originalTransactionId: "plot-test-tx",
+            baseVersion: 2,
+          },
+        ],
+        [
+          "l1",
+          {
+            projectId: "p1",
+            origin: "undo",
+            originalTransactionId: "plot-test-tx",
+            baseVersion: 5,
+          },
+        ],
       ]);
 
       history().clear();
@@ -1237,6 +1284,9 @@ describe("plotThreadStore", () => {
 
       await history().undo();
       expect(deletePlotThreadLink).toHaveBeenCalledWith("l1", {
+        projectId: "p1",
+        origin: "undo",
+        originalTransactionId: "plot-test-tx",
         baseVersion: 0,
       });
       expect(usePlotThreadStore.getState().links).toHaveLength(0);
@@ -1246,6 +1296,8 @@ describe("plotThreadStore", () => {
       expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "p1",
+          origin: "redo",
+          originalTransactionId: "plot-test-tx",
           thread: null,
           links: [expect.objectContaining({ id: "l1" })],
           branches: [],
@@ -1266,10 +1318,18 @@ describe("plotThreadStore", () => {
       expect(history().canUndo).toBe(true);
 
       await history().undo();
-      expect(updatePlotThreadLink).toHaveBeenLastCalledWith("l1", {
-        phaseType: "develop",
-        baseVersion: 1,
-      });
+      expect(updatePlotThreadLink).toHaveBeenLastCalledWith(
+        "l1",
+        {
+          projectId: "p1",
+          phaseType: "develop",
+          baseVersion: 1,
+        },
+        {
+          origin: "undo",
+          originalTransactionId: "plot-test-tx",
+        },
+      );
       expect(usePlotThreadStore.getState().links[0].phaseType).toBe("develop");
 
       await history().redo();
@@ -1291,6 +1351,8 @@ describe("plotThreadStore", () => {
       expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "p1",
+          origin: "undo",
+          originalTransactionId: "plot-test-tx",
           thread: null,
           links: [expect.objectContaining({ id: "m1" })],
           branches: [expect.objectContaining({ id: "br1" })],
@@ -1325,6 +1387,9 @@ describe("plotThreadStore", () => {
 
       await history().undo();
       expect(deletePlotThreadBranch).toHaveBeenCalledWith("br1", {
+        projectId: "p1",
+        origin: "undo",
+        originalTransactionId: "plot-test-tx",
         baseVersion: 0,
       });
       expect(usePlotThreadStore.getState().branches).toHaveLength(0);
@@ -1333,6 +1398,8 @@ describe("plotThreadStore", () => {
       expect(restorePlotThreadSnapshot).toHaveBeenCalledWith(
         expect.objectContaining({
           projectId: "p1",
+          origin: "redo",
+          originalTransactionId: "plot-test-tx",
           thread: null,
           links: [],
           branches: [expect.objectContaining({ id: "br1" })],
@@ -1535,10 +1602,18 @@ describe("plotThreadStore", () => {
       expect(usePlotThreadStore.getState().threads[0].name).toBe("renamed");
 
       await history().undo();
-      expect(updatePlotThread).toHaveBeenLastCalledWith("t1", {
-        name: "t1",
-        baseVersion: 1,
-      });
+      expect(updatePlotThread).toHaveBeenLastCalledWith(
+        "t1",
+        {
+          projectId: "p1",
+          name: "t1",
+          baseVersion: 1,
+        },
+        {
+          origin: "undo",
+          originalTransactionId: "plot-test-tx",
+        },
+      );
       expect(usePlotThreadStore.getState().threads[0].name).toBe("t1");
 
       await history().redo();

@@ -65,7 +65,7 @@ fn subprocess_kill_after_live_seal_does_not_drop_wal_commits_silently() {
     let marker = read_incomplete_restore_session(&workspace)
         .expect("read marker")
         .expect("restore session marker must remain after kill");
-    assert_eq!(marker.phase, "live-sealed");
+    assert_eq!(marker.phase, "epoch-minted");
     assert_eq!(marker.safety_kind, "logical");
 
     let reopen = migration_supervisor::open_or_migrate_workspace_db(&workspace)
@@ -104,7 +104,13 @@ fn subprocess_kill_after_live_seal_does_not_drop_wal_commits_silently() {
 
 #[test]
 fn subprocess_kill_after_live_seal_then_restore_candidate_reaches_ready() {
-    let root = temp_ws("restore-journey");
+    for phase in ["restore.after_live_seal", "restore.after_replace"] {
+        interrupted_install_then_explicit_recovery_reaches_ready(phase);
+    }
+}
+
+fn interrupted_install_then_explicit_recovery_reaches_ready(phase: &str) {
+    let root = temp_ws(phase);
     let workspace = root.join("workspace");
     fs::create_dir_all(workspace.join("backups")).expect("mkdir");
     let live = workspace.join("grimodex.db");
@@ -115,20 +121,21 @@ fn subprocess_kill_after_live_seal_then_restore_candidate_reaches_ready() {
     create_migrated_db(&candidate, "backup");
 
     let ready_path = root.join("restore-journey-ready");
-    let mut child = spawn_restore_harness(
-        &workspace,
-        &candidate,
-        "restore.after_live_seal",
-        &ready_path,
-    );
-    wait_for_ready(&mut child, &ready_path, "restore.after_live_seal");
+    let mut child = spawn_restore_harness(&workspace, &candidate, phase, &ready_path);
+    wait_for_ready(&mut child, &ready_path, phase);
+    let stopped_at = Instant::now();
     child.kill().expect("kill");
-    let _ = child.wait();
+    let status = child.wait().expect("observe actual Restore worker exit");
+    assert!(!status.success());
+    eprintln!(
+        "BC-2 {phase} kill-to-exit: {:.3} ms (crash recovery, not cooperative cancellation)",
+        stopped_at.elapsed().as_secs_f64() * 1000.0
+    );
 
     let ws_state = WorkspaceState {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
-        switching: std::sync::atomic::AtomicBool::new(false),
+        switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
         open_lock: Mutex::new(()),
     };
     let gs_path = GlobalSettingsPath {
@@ -209,6 +216,108 @@ fn subprocess_kill_after_live_seal_then_restore_candidate_reaches_ready() {
         .expect("marker read")
         .is_none());
 
+    let _ = fs::remove_dir_all(&root);
+}
+
+/// A concurrent shared authority that starts writing immediately after the
+/// restore's exclusive→shared handoff must never lose its WAL to the restore
+/// publish: every candidate write (Epoch mint, FTS, seal, digest) belongs
+/// inside the exclusive boundary, and nothing after the handoff may seal,
+/// checkpoint, or delete sidecars on the live image.
+#[test]
+fn concurrent_shared_writer_after_handoff_survives_restore_publish() {
+    let root = temp_ws("restore-handoff-writer");
+    let workspace = root.join("workspace");
+    fs::create_dir_all(workspace.join("backups")).expect("mkdir");
+    let live = workspace.join("grimodex.db");
+    create_migrated_db(&live, "live");
+    let backup_name = "grimodex-20200101-000000.db";
+    create_migrated_db(&workspace.join("backups").join(backup_name), "backup");
+
+    let ws_state = WorkspaceState {
+        inner: Mutex::new(None),
+        safe_mode: grimodex_db::recovery::SafeModeState::default(),
+        switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
+        open_lock: Mutex::new(()),
+    };
+    let gs_path = GlobalSettingsPath {
+        path: root.join("global-settings.json"),
+        write_lock: Mutex::new(()),
+    };
+    let mut on_swapped = 0u32;
+    let mut hook = || on_swapped += 1;
+    let mut deps = OpenDeps {
+        gs_path: &gs_path,
+        on_swapped: &mut hook,
+    };
+    let opened = open_workspace_sync(&ws_state, &mut deps, &workspace.to_string_lossy())
+        .expect("open workspace");
+    assert!(opened.is_authority_published(), "got {opened:?}");
+
+    let handoff_ready = root.join("handoff-ready");
+    let handoff_continue = root.join("handoff-continue");
+    std::env::set_var("GRIMODEX_RESTORE_HANDOFF_READY_PATH", &handoff_ready);
+    std::env::set_var("GRIMODEX_RESTORE_HANDOFF_CONTINUE_PATH", &handoff_continue);
+
+    let writer_ready = root.join("writer-ready");
+    let writer_exit = root.join("writer-exit");
+    let restore_result = thread::scope(|scope| {
+        let restore = scope.spawn(|| {
+            grimodex_db::backup_restore::restore_backup_core(&ws_state, backup_name, || {})
+        });
+
+        let deadline = Instant::now() + READY_TIMEOUT;
+        while !handoff_ready.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "restore never reached the shared handoff rendezvous"
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+
+        let mut writer = Command::new(restore_harness_exe())
+            .arg("--workspace")
+            .arg(&workspace)
+            .arg("--wal-writer-ready")
+            .arg(&writer_ready)
+            .arg("--wal-writer-exit")
+            .arg(&writer_exit)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn wal writer");
+        let deadline = Instant::now() + READY_TIMEOUT;
+        while !writer_ready.exists() {
+            if let Ok(Some(status)) = writer.try_wait() {
+                panic!("wal writer exited early: {status}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "wal writer never became ready after the handoff"
+            );
+            thread::sleep(POLL_INTERVAL);
+        }
+
+        fs::write(&handoff_continue, b"go").expect("signal restore continue");
+        let restore_result = restore.join().expect("restore thread");
+
+        fs::write(&writer_exit, b"done").expect("signal writer exit");
+        let status = writer.wait().expect("wait wal writer");
+        assert!(status.success(), "wal writer failed: {status}");
+        restore_result
+    });
+    std::env::remove_var("GRIMODEX_RESTORE_HANDOFF_READY_PATH");
+    std::env::remove_var("GRIMODEX_RESTORE_HANDOFF_CONTINUE_PATH");
+    restore_result.expect("restore with a concurrent shared writer must succeed");
+
+    // The writer's WAL-only commit is durable and visible; the restore result
+    // and its session marker are intact.
+    assert_eq!(wal_only_value(&live), "committed only in wal");
+    assert_eq!(recovery_marker(&live), "backup");
+    assert!(read_incomplete_restore_session(&workspace)
+        .expect("marker read")
+        .is_none());
     let _ = fs::remove_dir_all(&root);
 }
 

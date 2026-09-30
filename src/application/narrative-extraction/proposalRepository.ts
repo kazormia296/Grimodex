@@ -1,6 +1,10 @@
 import type {
   AppendDecisionPayload,
+  CreateHumanDerivedRevisionPayload,
+  CreateHumanDerivedRevisionResult,
   AppendRevisionPayload,
+  ChronicleStageReceiptRef,
+  NarrativeExtractionWorkspaceBinding,
   ProposalSeed,
   ReviseAndDecidePayload,
   SaveProposalSetPayload,
@@ -10,6 +14,7 @@ import {
   narrativeExtractionAppendDecision,
   narrativeExtractionAppendHumanDecision,
   narrativeExtractionAppendRevision,
+  createHumanDerivedNarrativeRevisionV2,
   narrativeExtractionReviseAndDecide,
   narrativeExtractionReviseAndDecideAsHuman,
   narrativeExtractionSaveProposalSet,
@@ -24,6 +29,7 @@ import type { NarrativeCorpusSnapshot } from "@/features/narrative-extraction/so
 import type {
   EvidenceSetEntry,
   ReconciliationEnvelopeV1,
+  ReconciliationEnvelopeV2,
   ReadSetEntry,
   SourceBasis,
 } from "@/features/narrative-extraction/reconciler/types";
@@ -203,6 +209,15 @@ export interface SaveChronicleProposalSetInput {
       readonly revisionToken?: string;
     }
   >;
+  readonly v2EnvelopeByProposalKey?: ReadonlyMap<
+    string,
+    ReconciliationEnvelopeV2<unknown>
+  >;
+  /**
+   * Only receipt references may cross the ProposalSet boundary. The full C1
+   * closure is FinishTask-only and must remain transport-ephemeral.
+   */
+  readonly stageReceiptRefs?: readonly ChronicleStageReceiptRef[];
   readonly proposals: readonly {
     readonly proposalKey: string;
     readonly payload: CreateChronicleEventProposalPayloadV1;
@@ -211,65 +226,100 @@ export interface SaveChronicleProposalSetInput {
 
 export async function saveProposalSet(
   payload: SaveProposalSetPayload,
+  workspaceBinding: NarrativeExtractionWorkspaceBinding,
 ): Promise<SaveProposalSetResult> {
-  return narrativeExtractionSaveProposalSet(payload);
+  return narrativeExtractionSaveProposalSet(payload, workspaceBinding);
 }
 
-export async function saveChronicleProposalSet(
+/**
+ * Build the immutable rows for Chronicle's terminal ProposalSet without
+ * persisting them.  The coordinator passes this exact payload through its
+ * typed plan Task finish so Native can commit the rows, plan artifact, and
+ * Task/Run completion atomically.
+ */
+export async function buildChronicleProposalSetPayload(
   input: SaveChronicleProposalSetInput,
-): Promise<SaveProposalSetResult> {
+): Promise<SaveProposalSetPayload> {
   const proposals: ProposalSeed[] = await Promise.all(
     input.proposals.map(async (proposal) => ({
       proposalKey: proposal.proposalKey,
       kind: CHRONICLE_EVENT_PROPOSAL_KIND,
       payloadJson: proposal.payload,
-      reconciliationEnvelope: await buildNativeReconciliationEnvelope({
-        runId: input.runId,
-        taskId: input.taskId,
-        sourceRevisionToken: input.sourceRevisionToken,
-        sourceBasis: input.sourceBasis,
-        proposalSchemaId: "narrative.chronicle-event.create",
-        reconcilerId: "grimodex.chronicle-extraction",
-        evidenceSet: proposal.payload.evidenceAnchorIds.map(
-          (evidenceRef, index) => {
-            const resolved = input.evidenceById?.get(evidenceRef);
-            const documentRef =
-              resolved?.documentRef ??
-              proposal.payload.evidenceDocumentRefs[index] ??
-              proposal.payload.evidenceDocumentRefs[0];
-            if (!documentRef || !resolved?.quote) {
-              throw new Error(
-                `Missing resolved evidence quote for chronicle proposal: ${evidenceRef}`,
-              );
-            }
-            const evidence = {
-              evidenceRef,
-              documentRef,
-              quote: resolved.quote,
-              ...(resolved?.quoteDigest
-                ? { quoteDigest: resolved.quoteDigest }
-                : {}),
-              ...(resolved?.sourceKey ? { sourceKey: resolved.sourceKey } : {}),
-              ...(resolved?.revisionToken
-                ? { revisionToken: resolved.revisionToken }
-                : {}),
-            };
-            return evidence;
-          },
-        ),
-      }),
+      reconciliationEnvelope:
+        input.v2EnvelopeByProposalKey?.get(proposal.proposalKey) ??
+        (await buildNativeReconciliationEnvelope({
+          runId: input.runId,
+          taskId: input.taskId,
+          sourceRevisionToken: input.sourceRevisionToken,
+          sourceBasis: input.sourceBasis,
+          proposalSchemaId: "narrative.chronicle-event.create",
+          reconcilerId: "grimodex.chronicle-extraction",
+          evidenceSet: proposal.payload.evidenceAnchorIds.map(
+            (evidenceRef, index) => {
+              const resolved = input.evidenceById?.get(evidenceRef);
+              const documentRef =
+                resolved?.documentRef ??
+                proposal.payload.evidenceDocumentRefs[index] ??
+                proposal.payload.evidenceDocumentRefs[0];
+              if (!documentRef || !resolved?.quote) {
+                throw new Error(
+                  `Missing resolved evidence quote for chronicle proposal: ${evidenceRef}`,
+                );
+              }
+              return {
+                evidenceRef,
+                documentRef,
+                quote: resolved.quote,
+                ...(resolved?.quoteDigest
+                  ? { quoteDigest: resolved.quoteDigest }
+                  : {}),
+                ...(resolved?.sourceKey
+                  ? { sourceKey: resolved.sourceKey }
+                  : {}),
+                ...(resolved?.revisionToken
+                  ? { revisionToken: resolved.revisionToken }
+                  : {}),
+              };
+            },
+          ),
+        })),
     })),
   );
-  return saveProposalSet({
+  return {
     runId: input.runId,
     projectId: input.projectId,
     proposalSetId: input.proposalSetId,
     setKind: "chronicle.extract.review@1",
-    summaryJson: input.summaryJson ?? {
+    summaryJson: {
+      ...(input.summaryJson ?? {}),
       proposalCount: proposals.length,
+      ...(input.stageReceiptRefs
+        ? { chronicleStageReceiptRefs: input.stageReceiptRefs }
+        : {}),
     },
     proposals,
-  });
+  };
+}
+
+/**
+ * Legacy direct save wrapper retained for non-terminal callers. Chronicle's
+ * production coordinator must use `buildChronicleProposalSetPayload` and the
+ * typed FinishTask boundary instead.
+ */
+export async function saveChronicleProposalSet(
+  input: SaveChronicleProposalSetInput,
+  workspaceBinding: NarrativeExtractionWorkspaceBinding,
+): Promise<SaveProposalSetResult> {
+  return saveProposalSet(
+    await buildChronicleProposalSetPayload(input),
+    workspaceBinding,
+  );
+}
+
+export async function createHumanDerivedRevision(
+  payload: CreateHumanDerivedRevisionPayload,
+): Promise<CreateHumanDerivedRevisionResult> {
+  return createHumanDerivedNarrativeRevisionV2(payload);
 }
 
 export async function appendRevision(
