@@ -151,6 +151,38 @@ describe("TrashBinCapturePlugin", () => {
     editor.destroy();
   });
 
+  it("strict participant flush は lease 中の fresh buffer を昇格させない", async () => {
+    vi.useFakeTimers();
+    const editor = createTestEditor("<p>これはテスト文章です</p>", {
+      kind: "scene",
+      id: "scene-1",
+    });
+    const lease = acquireQuiescenceLease("window-close");
+    try {
+      deleteRange(editor, 1, 5);
+      vi.advanceTimersByTime(600);
+
+      expect(pendingTexts()).toEqual([]);
+      await expect(flushQuiescenceParticipants()).rejects.toThrow(
+        "lifecycle participants failed to flush",
+      );
+      expect(pendingTexts()).toEqual([]);
+      expect(collectQuiescenceParticipantRecovery()).toEqual([
+        expect.objectContaining({
+          kind: "trash-capture",
+          projectId: "default-project",
+          text: "これはテ",
+        }),
+      ]);
+    } finally {
+      lease.release();
+    }
+
+    await flushQuiescenceParticipants();
+    expect(pendingTexts()).toEqual(["これはテ"]);
+    editor.destroy();
+  });
+
   it("削除時の Project identity を保持し、後の current Project で再ラベルしない", async () => {
     vi.useFakeTimers();
     useProjectStore.setState({ currentProjectId: "project-a" });
@@ -261,6 +293,40 @@ describe("TrashBinCapturePlugin", () => {
     // 範囲 1..5 を 「XYZ」 に置換
     editor.view.dispatch(editor.state.tr.insertText("XYZ", 1, 5));
     vi.advanceTimersByTime(600);
+    expect(pendingTexts()).toEqual([]);
+    editor.destroy();
+  });
+
+  it("emitUpdate:false の全 doc 置換は旧本文をキャプチャしない", () => {
+    vi.useFakeTimers();
+    const editor = createTestEditor("<p>外部からロードされた本文です</p>", {
+      kind: "scene",
+      id: "s1",
+    });
+
+    // TipTap's empty-document fallback inserts an empty paragraph. The
+    // resulting ReplaceStep has no text in its slice, so it must still be
+    // identified as a projection rather than a user deletion. `setContent`
+    // marks this transaction with preventUpdate when emitUpdate is false.
+    editor.commands.setContent("", { emitUpdate: false });
+    vi.advanceTimersByTime(600);
+
+    expect(pendingTexts()).toEqual([]);
+    editor.destroy();
+  });
+
+  it("emitUpdate:false の本文置換も旧本文をキャプチャしない", () => {
+    vi.useFakeTimers();
+    const editor = createTestEditor("<p>旧い投影本文です</p>", {
+      kind: "scene",
+      id: "s1",
+    });
+
+    editor.commands.setContent("<p>新しい投影本文です</p>", {
+      emitUpdate: false,
+    });
+    vi.advanceTimersByTime(600);
+
     expect(pendingTexts()).toEqual([]);
     editor.destroy();
   });

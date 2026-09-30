@@ -1,0 +1,663 @@
+{
+  "project": {
+    "id": "default-project",
+    "title": "The Bell That Never Rang",
+    "genre": "classic mystery",
+    "language": "en",
+    "ai_instructions": "Plant fair clues before the solution and never introduce decisive information only at the reveal. Keep Ritsu's observations concise and separate inference from fact. Give every suspect a reason to lie beyond murder, and keep the crime-night times and object movements consistent."
+  },
+  "tree_nodes": [
+    {
+      "id": "sample-folder-incident",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "Part One: The Silent Bell",
+      "synopsis": "A changed will and a death in a locked room on a storm night.",
+      "sort_order": "a0",
+      "status": "outline"
+    },
+    {
+      "id": "sample-scene-1",
+      "parent_id": "sample-folder-incident",
+      "node_type": "scene",
+      "title": "Chapter One: The Storm Invitation",
+      "synopsis": "Ritsu Otonashi arrives at Bellmist Manor to edit a memoir. The housekeeper says the bell cannot ring tonight.",
+      "sort_order": "a0",
+      "status": "complete",
+      "story_time_order": "a0",
+      "story_time_label": "November 1, 6:05 p.m.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"On November 1, the old coast road was nearly erased by the storm. Ritsu Otonashi reached Bellmist Manor a little after six in the evening.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The manor stood on the cliff, its central bell tower rising alone above the sea fog. The hands on the black clock face moved, yet the whole house seemed to be holding its breath.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Maho Kuze, the housekeeper, took Ritsu's wet coat and looked up at the tower.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"\\\"It is under repair. \"},{\"type\":\"text\",\"text\":\"The bell will not ring tonight\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-rope\",\"foreshadowId\":\"sample-foreshadow-rope\"}}]},{\"type\":\"text\",\"text\":\".\\\"\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Ritsu wrote the sentence in her notebook. She had come to organize Soichiro Kurose's memoir, but recording facts first was an old habit.\"}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-1\",\"collapsed\":false,\"beatType\":\"summary\",\"pov\":\"sample-codex-ritsu\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"Ritsu arrives. Establish the physical condition that the bell cannot ring and isolate the manor in the storm.\"}]}]}"
+    },
+    {
+      "id": "sample-scene-2",
+      "parent_id": "sample-folder-incident",
+      "node_type": "scene",
+      "title": "Chapter Two: The Last Dinner",
+      "synopsis": "Soichiro Kurose announces a new will. Toma pours tea into Soichiro's private celadon cup.",
+      "sort_order": "a1",
+      "status": "draft",
+      "story_time_order": "a1",
+      "story_time_label": "November 1, 8:00 p.m.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Dinner began at eight. At the long table sat Soichiro, his daughter Mio, his secretary Toma Saegusa, Dr. Chikage Tsubaki, Maho, and Ritsu.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"When tea arrived, Soichiro announced that he had rewritten his will. He would read the new terms to everyone the next morning.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Toma set down the tray: five white cups, and at Soichiro's place alone, \"},{\"type\":\"text\",\"text\":\"a chipped celadon cup\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-cup\",\"foreshadowId\":\"sample-foreshadow-cup\"}}]},{\"type\":\"text\",\"text\":\".\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"\\\"Nothing tastes right in any other cup,\\\" Soichiro said, and drank the tea Toma poured.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Mio left the table. Chikage watched Soichiro's color. Only Maho seemed to remember exactly who had touched each cup.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"At half past eleven, Soichiro carried his papers up to the bell-tower study. The door closed, and the key turned from inside.\"}]}]}"
+    },
+    {
+      "id": "sample-scene-3",
+      "parent_id": "sample-folder-incident",
+      "node_type": "scene",
+      "title": "Chapter Three: The Body at Midnight",
+      "synopsis": "A bell sounds twelve times at 11:50. At 12:10 Soichiro is found in the locked study.",
+      "sort_order": "a2",
+      "status": "draft",
+      "story_time_order": "a3",
+      "story_time_label": "November 2, 12:10 a.m.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"At eleven fifty, a low bell sounded twelve times somewhere in the manor.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Maho looked up. \\\"That is impossible. The bell rope has been removed.\\\"\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"At twelve ten, Mio knocked on the study door. There was no answer. When they opened it with the house key, Soichiro lay beside the desk. The window was latched; there was no second exit.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Under his right hand lay a silver pocket watch. \"},{\"type\":\"text\",\"text\":\"Its hands had stopped at 11:47\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-watch\",\"foreshadowId\":\"sample-foreshadow-watch\"}}]},{\"type\":\"text\",\"text\":\".\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"On the desk were the will, an inkpot, and an empty saucer. The celadon cup from dinner was missing.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"And everyone said the same thing: they had \"},{\"type\":\"text\",\"text\":\"heard the midnight bell\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-bell\",\"foreshadowId\":\"sample-foreshadow-bell\"}}]},{\"type\":\"text\",\"text\":\", so Soichiro must have been killed afterward.\"}]}]}"
+    },
+    {
+      "id": "sample-folder-investigation",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "Part Two: The Missing Fifteen Minutes",
+      "synopsis": "Separate statements from evidence and dismantle the false time of death.",
+      "sort_order": "a1",
+      "status": "outline"
+    },
+    {
+      "id": "sample-scene-4",
+      "parent_id": "sample-folder-investigation",
+      "node_type": "scene",
+      "title": "Flashback: 11:40 p.m.",
+      "synopsis": "Before the body is found, Maho passes Toma with an empty tray while Mio searches outside the study.",
+      "sort_order": "a0",
+      "status": "complete",
+      "story_time_order": "a2",
+      "story_time_label": "November 1, 11:40 p.m.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Flashback: 11:40 p.m.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"On her way back from the kitchen, Maho passed Toma. He carried an empty tray and was coming from the conservatory.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"\\\"Tea for the master?\\\" she asked. Toma shook his head. \\\"He has already gone up to the study.\\\"\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Then Soichiro coughed once at the top of the stairs.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"At the same time, Mio was in the corridor outside the study. She was looking for the new will, though she concealed that reason in her statement.\"}]}]}"
+    },
+    {
+      "id": "sample-scene-5",
+      "parent_id": "sample-folder-investigation",
+      "node_type": "scene",
+      "title": "Chapter Four: A Locked Room Without a Key",
+      "synopsis": "Ritsu reframes the locked room as a question of what the victim swallowed before entering.",
+      "sort_order": "a1",
+      "status": "revision",
+      "story_time_order": "a4",
+      "story_time_label": "November 2, 9:00 a.m.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The next morning Ritsu measured the bell-tower study. The door had a spring latch. Once Soichiro entered and locked it from inside, no killer needed to leave the room.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Even so, Mio found \"},{\"type\":\"text\",\"text\":\"a brass spare key\",\"marks\":[{\"type\":\"foreshadowSetup\",\"attrs\":{\"setupId\":\"sample-setup-key\",\"foreshadowId\":\"sample-foreshadow-key\"}}]},{\"type\":\"text\",\"text\":\" inside a blue book of poems. It was not the house key Maho had used.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"In the bell mechanism room, the rope had been removed and the striking hammer clamped in place. The tower bell could not physically have rung the night before.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Salt marked the window ledge, and a single flake of dry mud lay on the floor. Both clues looked too carefully arranged to prove an escape.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Ritsu removed the locked room from the problem of exits. The question was what Soichiro had swallowed before he turned the key.\"}]}]}"
+    },
+    {
+      "id": "sample-scene-6",
+      "parent_id": "sample-folder-investigation",
+      "node_type": "scene",
+      "title": "Chapter Five: Four Statements",
+      "synopsis": "Placed Beats separate Mio, Chikage, Maho, and Toma's lies by purpose.",
+      "sort_order": "a2",
+      "status": "draft",
+      "story_time_order": "a5",
+      "story_time_label": "November 2, 11:00 a.m.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Chapter Five: Four Statements\"}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-6a\",\"collapsed\":false,\"beatType\":\"dialogue\",\"pov\":\"sample-codex-mio\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"Mio's statement. She claims to have stayed in her room until 11:45, but she was actually outside the study looking for the will.\"}]},{\"type\":\"generatedProseBlock\",\"attrs\":{\"beatId\":\"sample-beat-6a\",\"modified\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Mio admitted that she hated her father. But before killing him, she said, she would have wanted to find the will.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Her lie concealed a theft, not a murder.\"}]}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-6b\",\"collapsed\":false,\"beatType\":\"guided\",\"pov\":\"sample-codex-chikage\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"Chikage's statement. Soichiro had a heart condition; an excessive dose of cardiac medicine could be fatal.\"}]},{\"type\":\"generatedProseBlock\",\"attrs\":{\"beatId\":\"sample-beat-6b\",\"modified\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Chikage withheld the fact that the medicine case had been opened. She feared blame for negligence.\"}]}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-6c\",\"collapsed\":false,\"beatType\":\"summary\",\"pov\":\"sample-codex-maho\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"Maho's statement. The rope and hammer were secured for repairs. When she cleared the table, only the celadon cup failed to return to the tray.\"}]},{\"type\":\"generatedProseBlock\",\"attrs\":{\"beatId\":\"sample-beat-6c\",\"modified\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Maho remembered procedures better than times. She washed five white cups. She did not wash the celadon one.\"}]}]},{\"type\":\"sceneBeat\",\"attrs\":{\"id\":\"sample-beat-6d\",\"collapsed\":false,\"beatType\":\"dialogue\",\"pov\":\"sample-codex-toma\",\"model\":null},\"content\":[{\"type\":\"text\",\"text\":\"Toma's statement. He claims he was alone in the conservatory after 11:30 and returned when he heard the bell.\"}]},{\"type\":\"generatedProseBlock\",\"attrs\":{\"beatId\":\"sample-beat-6d\",\"modified\":false},\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Only Toma insisted that the sound came from above the tower. The others merely said they heard it somewhere in the house.\"}]}]}]}"
+    },
+    {
+      "id": "sample-folder-solution",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "Part Three: The Counterfeit Midnight",
+      "synopsis": "Return the bell, poison, and locked room to one timeline.",
+      "sort_order": "a2",
+      "status": "outline"
+    },
+    {
+      "id": "sample-scene-7",
+      "parent_id": "sample-folder-solution",
+      "node_type": "scene",
+      "title": "Chapter Six: The Bell That Should Have Rung",
+      "synopsis": "Ritsu orders the case by the movement of objects and proposes a false-time trick.",
+      "sort_order": "a0",
+      "status": "outline",
+      "story_time_order": "a6",
+      "story_time_label": "November 2, 3:00 p.m.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"[OUTLINE — NOT YET DRAFTED]\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Ritsu rearranges every statement not by time, but by the movement of objects: the celadon cup from dining room to conservatory, the cylinder from conservatory to phonograph, Soichiro from tea to study.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Beat candidate: reverse the 11:50 bell from proof of time into a performance designed to make everyone believe a time.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Beat candidate: compare the stopped watch with Chikage's estimated time of death.\"}]}]}"
+    },
+    {
+      "id": "sample-scene-8",
+      "parent_id": "sample-folder-solution",
+      "node_type": "scene",
+      "title": "Final Chapter: The Voice on the Cylinder",
+      "synopsis": "The wax cylinder and celadon cup reconstruct the poisoning and counterfeit midnight.",
+      "sort_order": "a1",
+      "status": "final",
+      "story_time_order": "a7",
+      "story_time_label": "November 2, 8:00 p.m.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Ritsu gathered everyone in the dining room and opened the phonograph. Inside was an old wax cylinder recording the manor bell.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The sound they heard was not the tower bell, but this cylinder\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-bell\"}}]},{\"type\":\"text\",\"text\":\". With the rope removed and the hammer clamped, the recording became a perfect counterfeit.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Soichiro was not attacked inside the locked room. After dinner he drank \"},{\"type\":\"text\",\"text\":\"cardiac medicine mixed into the tea in his celadon cup\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-cup\"}}]},{\"type\":\"text\",\"text\":\", entered the study himself, and locked the door himself.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The pocket watch stopping at 11:47\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-watch\"}}]},{\"type\":\"text\",\"text\":\" marked the time he collapsed. The false midnight bell moved the apparent death time forward by more than fifteen minutes.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Mio had hidden the brass spare key only to search for the will; it was never used for the locked room\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-key\"}}]},{\"type\":\"text\",\"text\":\". One lie does not imply one crime.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Toma dosed Soichiro's private cup and arranged for the conservatory phonograph to play on a timer. Only he described the sound as coming from the tower because he was trying to give everyone the same memory.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The severed bell rope was the first clue that the bell could not have rung\",\"marks\":[{\"type\":\"foreshadowPayoff\",\"attrs\":{\"foreshadowId\":\"sample-foreshadow-rope\"}}]},{\"type\":\"text\",\"text\":\". Ritsu opened the notebook from chapter one and read its first line aloud.\"}]}]}"
+    },
+    {
+      "id": "sample-folder-notes",
+      "parent_id": null,
+      "node_type": "folder",
+      "title": "Case File Notes",
+      "synopsis": "Investigation notes and a guide to Grimodex features.",
+      "sort_order": "a3",
+      "status": "outline"
+    },
+    {
+      "id": "sample-note-guide",
+      "parent_id": "sample-folder-notes",
+      "node_type": "note",
+      "title": "How to Explore This Sample",
+      "synopsis": null,
+      "sort_order": "a0",
+      "status": "complete",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":1},\"content\":[{\"type\":\"text\",\"text\":\"How to Explore This Sample\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"\\\"The Bell That Never Rang\\\" is a sample case file designed to demonstrate Grimodex's major project features through one mystery novel. Finished prose, drafts, and outlines deliberately coexist.\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Scenes / Editor / Beat\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Scenes shows the three-part structure and reading order. Chapter Five contains placed Beats; Chapter Six contains unplaced Beats. In Editor, try the body, synopsis, intent, sticky note, and revision history.\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Grid / Matrix / Timeline / Chronicle\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Grid shows status, labels, Beats, and counts. Matrix crosses scenes with characters, POV, and locations. Timeline separates reading order from the flashback; Chronicle records the crime night minute by minute with causal links.\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Codex / Codex Quick / Map\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Characters, locations, evidence, and the bell mechanism are stored in Codex. Key entries are pinned in Codex Quick. Map lays out suspects, clues, and scenes as a relationship board.\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Chat / Snippet / Foreshadow / Review / Attribution\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Chat contains revision and testimony discussions. Snippet stores reusable passages. Foreshadow contains planted and paid-off clues. Review has a term dictionary; Attribution mixes human, AI, and unknown provenance.\"}]},{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Writing Stats / Trash / Export\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Writing Stats uses the seeded statuses and character counts. Trash contains a deleted paragraph and a discarded scene. Finish by exporting the sample to see the end-to-end workflow.\"}]}]}"
+    },
+    {
+      "id": "sample-note-case",
+      "parent_id": "sample-folder-notes",
+      "node_type": "note",
+      "title": "Investigation Note: Time of Death",
+      "synopsis": null,
+      "sort_order": "a1",
+      "status": "draft",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"heading\",\"attrs\":{\"level\":2},\"content\":[{\"type\":\"text\",\"text\":\"Investigation Note: Time of Death\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Established: Soichiro entered the bell-tower study after 11:30 and locked the door from inside.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Physical evidence: the watch stopped at 11:47. A bell was heard at 11:50, but the rope and hammer were secured.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Open question: the exact timer used to play the cylinder. One option is the conservatory irrigation clock.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Separate each suspect's lie by purpose. Mio: the will. Chikage: medical negligence. Maho: the house's secret. Toma: the false time of death.\"}]}]}"
+    }
+  ],
+  "codex_entries": [
+    {
+      "id": "sample-codex-ritsu",
+      "type": "character",
+      "name": "Ritsu Otonashi",
+      "aliases": "[\"Ritsu\",\"the editor\",\"the investigator\"]",
+      "summary": "A freelance editor and fact-checker invited to organize Soichiro Kurose's memoir. She becomes the recorder of the case.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Thirty-two. She trusts revisions and recorded times more than confident speech.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"She numbers observed facts in a small notebook and refuses to name an emotion before the evidence earns it.\"}]}]}",
+      "notes": null,
+      "context_mode": "always"
+    },
+    {
+      "id": "sample-codex-soichiro",
+      "type": "character",
+      "name": "Soichiro Kurose",
+      "aliases": "[\"Soichiro\",\"the master of the house\",\"the victim\"]",
+      "summary": "Master of Bellmist Manor and founder of a publishing house. He dies in the bell-tower study after announcing a new will.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Seventy-one, controlling, and accustomed to governing people by keeping their secrets.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"He had a heart condition and received cardiac medicine from Dr. Tsubaki.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-mio",
+      "type": "character",
+      "name": "Mio Kurose",
+      "aliases": "[\"Mio\",\"Soichiro's daughter\"]",
+      "summary": "Soichiro's only daughter. Afraid of the new will, she searches outside the study on the night of the crime.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"A sculptor in long conflict with her father.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"She hides the spare key; her lie conceals an attempted theft of the will, not murder.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-toma",
+      "type": "character",
+      "name": "Toma Saegusa",
+      "aliases": "[\"Toma\",\"Saegusa\",\"the secretary\"]",
+      "summary": "Soichiro's secretary. He serves the after-dinner tea and claims to have spent the late evening in the conservatory.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Meticulous, with a habit of making other people repeat events in the same words.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Soichiro had discovered altered accounts; the new will would remove Toma from his position.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-chikage",
+      "type": "character",
+      "name": "Dr. Chikage Tsubaki",
+      "aliases": "[\"Chikage\",\"Dr. Tsubaki\"]",
+      "summary": "The Kurose family physician, who knows Soichiro's heart condition and the danger of his medicine.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"She conceals that the medicine case seal was broken.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Not the killer, but afraid of blame for negligent control of the drugs.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-maho",
+      "type": "character",
+      "name": "Maho Kuze",
+      "aliases": "[\"Maho\",\"the housekeeper\"]",
+      "summary": "Housekeeper of Bellmist Manor. She knows the tableware, keys, and repair state of the bell better than anyone.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Her memory for clock time is imperfect; her memory for household procedure is exact.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"She notices that the celadon cup never returns to the tray.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-manor",
+      "type": "location",
+      "name": "Bellmist Manor",
+      "aliases": "[\"the manor\",\"the Kurose house\"]",
+      "summary": "An old house on a coastal cliff. The storm cuts the road and isolates everyone on the night of the crime.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"A central bell tower, conservatory to the east, and dining wing to the west.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Stone corridors distort the apparent direction of sound.\"}]}]}",
+      "notes": null,
+      "context_mode": "always"
+    },
+    {
+      "id": "sample-codex-tower",
+      "type": "location",
+      "name": "Bell-Tower Study",
+      "aliases": "[\"the study\",\"the bell tower\"]",
+      "summary": "Soichiro's private study, with a spring-latch door and locked window. It appears to be a sealed room.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The door latches automatically when closed and can be deadbolted from inside.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"A narrow maintenance stair leads to the mechanism room above.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-greenhouse",
+      "type": "location",
+      "name": "Conservatory",
+      "aliases": "[\"the glasshouse\",\"the conservatory\"]",
+      "summary": "A glass conservatory at the east end of the manor, containing a phonograph and irrigation timer.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Rain drowns small sounds, and the dining room cannot see inside.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Toma claims he was here alone after 11:30.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-watch",
+      "type": "item",
+      "name": "Stopped Pocket Watch",
+      "aliases": "[\"the pocket watch\",\"the silver watch\",\"the 11:47 watch\"]",
+      "summary": "A silver watch found under Soichiro's hand, stopped at 11:47.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The fall jammed its gears.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"It is fair physical evidence of a death before the counterfeit bell.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-cup",
+      "type": "item",
+      "name": "Celadon Cup",
+      "aliases": "[\"the celadon\",\"the chipped cup\",\"Soichiro's cup\"]",
+      "summary": "Soichiro's private chipped celadon teacup, missing when the body is found.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Its difference from the five white cups lets the killer target one drink.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"It was washed in the conservatory sink, leaving water traces rather than fragments.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-key",
+      "type": "item",
+      "name": "Brass Spare Key",
+      "aliases": "[\"the spare key\",\"the brass key\"]",
+      "summary": "A spare key to the study found inside a blue book of poems.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"It looks like the key to the locked-room trick, but Mio used it only while searching for the will.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-cylinder",
+      "type": "item",
+      "name": "Bell Wax Cylinder",
+      "aliases": "[\"the cylinder\",\"the bell recording\"]",
+      "summary": "An old phonograph cylinder recording Bellmist Manor's bell, found in the conservatory machine.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"It contains twelve strokes and a short wash of surf.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"A thread from the irrigation timer can drop the playback lever at 11:50.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    },
+    {
+      "id": "sample-codex-bell",
+      "type": "lore",
+      "name": "Bell-Tower Striking Mechanism",
+      "aliases": "[\"the striking mechanism\",\"bell rope\",\"striking hammer\"]",
+      "summary": "The linked rope, hammer, and clockwork of Bellmist Manor. It was physically unable to strike on the crime night.",
+      "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The rope had been removed the previous day and the hammer clamped.\"}]},{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"The clock hands ran independently on a separate weight.\"}]}]}",
+      "notes": null,
+      "context_mode": "mentioned"
+    }
+  ],
+  "chat_sessions": [
+    {
+      "id": "sample-session-1",
+      "node_id": "sample-scene-2",
+      "title": "Making the celadon cup a fair clue",
+      "model": "openrouter/anthropic/claude-sonnet-4.6"
+    },
+    {
+      "id": "sample-session-2",
+      "node_id": "sample-scene-6",
+      "title": "Separating the four statements",
+      "model": "openrouter/anthropic/claude-sonnet-4.6"
+    },
+    {
+      "id": "sample-session-3",
+      "node_id": null,
+      "title": "Testing the locked-room construction",
+      "model": "openrouter/anthropic/claude-sonnet-4.6"
+    }
+  ],
+  "chat_messages": [
+    {
+      "id": "sample-msg-1",
+      "session_id": "sample-session-1",
+      "role": "user",
+      "content": "I want the celadon cup to be a clue only the killer could exploit, but I do not want it to look suspicious on first reading. How much should I describe?"
+    },
+    {
+      "id": "sample-msg-2",
+      "session_id": "sample-session-1",
+      "role": "assistant",
+      "content": "Describe its color and chipped rim once, and place the person pouring the tea in the same paragraph. Let dialogue establish that only Soichiro uses it. Do not mention poison or medicine. On rereading, the reader can see how one drink was targeted."
+    },
+    {
+      "id": "sample-msg-3",
+      "session_id": "sample-session-1",
+      "role": "user",
+      "content": "Is putting Toma's name in the same paragraph too strong?"
+    },
+    {
+      "id": "sample-msg-4",
+      "session_id": "sample-session-1",
+      "role": "assistant",
+      "content": "It would be strong in isolation, but serving tea is ordinary. Immediately add other suspicious actions—Mio leaving, Chikage watching his color—so attention is divided fairly."
+    },
+    {
+      "id": "sample-msg-5",
+      "session_id": "sample-session-2",
+      "role": "user",
+      "content": "All four witnesses lie. I want each to remain a suspect, but I need the lies to feel different."
+    },
+    {
+      "id": "sample-msg-6",
+      "session_id": "sample-session-2",
+      "role": "assistant",
+      "content": "Give each lie a different object. Mio lies about place, Chikage about professional responsibility, Maho about the house's past, and Toma about time. Only the time lie reaches the murder, but every lie is worth hiding to its owner."
+    },
+    {
+      "id": "sample-msg-7",
+      "session_id": "sample-session-2",
+      "role": "user",
+      "content": "I also want Matrix to show how each witness relates to the scene."
+    },
+    {
+      "id": "sample-msg-8",
+      "session_id": "sample-session-2",
+      "role": "assistant",
+      "content": "Split Chapter Five into four Beats and assign each Beat a POV or target character. Then the prose structure and Matrix intersections reinforce one another; the testimony itself becomes the feature demonstration."
+    },
+    {
+      "id": "sample-msg-9",
+      "session_id": "sample-session-3",
+      "role": "user",
+      "content": "Does poisoning him at dinner and letting him enter the locked room himself make the locked-room mystery feel weak?"
+    },
+    {
+      "id": "sample-msg-10",
+      "session_id": "sample-session-3",
+      "role": "assistant",
+      "content": "It creates a classical reversal: the reader assumes the killer had to leave. Seed the spare key as a red herring, but establish the spring latch and self-locking sequence early so the solution is not withheld information."
+    },
+    {
+      "id": "sample-msg-11",
+      "session_id": "sample-session-3",
+      "role": "user",
+      "content": "When should I reveal the bell recording?"
+    },
+    {
+      "id": "sample-msg-12",
+      "session_id": "sample-session-3",
+      "role": "assistant",
+      "content": "Reveal the phonograph in Part One, but keep the cylinder's contents until the final chapter. First establish the impossible condition—the real bell cannot ring—then delay only the substitute source, leaving the reader room to infer it."
+    }
+  ],
+  "foreshadows": [
+    {
+      "id": "sample-foreshadow-rope",
+      "title": "The Severed Bell Rope",
+      "intent": "Establish that the real bell cannot sound, then use that impossibility to prove the recording in the final chapter.",
+      "notes": "Planted in the housekeeper's line in Chapter One; paid off in the final chapter.",
+      "payoff_scene_id": "sample-scene-8"
+    },
+    {
+      "id": "sample-foreshadow-cup",
+      "title": "The Celadon Cup",
+      "intent": "Plant the one cup that lets the killer target Soichiro's drink without making the service look unnatural.",
+      "notes": "Planted at dinner; paid off as the poison route.",
+      "payoff_scene_id": "sample-scene-8"
+    },
+    {
+      "id": "sample-foreshadow-watch",
+      "title": "The Stopped Pocket Watch",
+      "intent": "Preserve the actual collapse time, 11:47, and put it in conflict with the false midnight.",
+      "notes": "Found with the body; resolves the true time of death.",
+      "payoff_scene_id": "sample-scene-8"
+    },
+    {
+      "id": "sample-foreshadow-key",
+      "title": "The Brass Spare Key",
+      "intent": "A red herring for the locked room that explains Mio's separate lie but not the murder.",
+      "notes": "Found in Chapter Four; ruled unused in the solution.",
+      "payoff_scene_id": "sample-scene-8"
+    },
+    {
+      "id": "sample-foreshadow-bell",
+      "title": "The 11:50 Bell",
+      "intent": "Make a heard sound look like proof of time, then reverse it into a phonograph performance.",
+      "notes": "The central critical clue.",
+      "payoff_scene_id": "sample-scene-8"
+    }
+  ],
+  "snippets": [
+    {
+      "id": "sample-snippet-1",
+      "title": "The Bell at 11:50",
+      "content": "<p>At eleven fifty, a low bell sounded twelve times somewhere in the manor.</p><p>Only Toma insisted on the direction of the sound.</p>",
+      "content_source": "ai"
+    },
+    {
+      "id": "sample-snippet-2",
+      "title": "Ritsu's Observation Rule",
+      "content": "<p>Number facts. Put question marks after inferences.</p><p>When several witnesses repeat the same wording, suspect guidance rather than memory.</p>",
+      "content_source": "human"
+    },
+    {
+      "id": "sample-snippet-3",
+      "title": "The Celadon Cup",
+      "content": "<p>Five white cups. At Soichiro's place alone, a chipped celadon cup.</p><p>Ask not only who drank, but who alone could drink from it.</p>",
+      "content_source": "human"
+    }
+  ],
+  "foreshadow_setups": [
+    {
+      "id": "sample-setup-rope",
+      "foreshadow_id": "sample-foreshadow-rope",
+      "scene_id": "sample-scene-1",
+      "from_pos": 421,
+      "to_pos": 451,
+      "kind": "designated_existing",
+      "strength": "overt",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-cup",
+      "foreshadow_id": "sample-foreshadow-cup",
+      "scene_id": "sample-scene-2",
+      "from_pos": 341,
+      "to_pos": 362,
+      "kind": "designated_existing",
+      "strength": "moderate",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-watch",
+      "foreshadow_id": "sample-foreshadow-watch",
+      "scene_id": "sample-scene-3",
+      "from_pos": 382,
+      "to_pos": 412,
+      "kind": "designated_existing",
+      "strength": "overt",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-key",
+      "foreshadow_id": "sample-foreshadow-key",
+      "scene_id": "sample-scene-5",
+      "from_pos": 189,
+      "to_pos": 206,
+      "kind": "designated_existing",
+      "strength": "moderate",
+      "attribution": "human"
+    },
+    {
+      "id": "sample-setup-bell",
+      "foreshadow_id": "sample-foreshadow-bell",
+      "scene_id": "sample-scene-3",
+      "from_pos": 559,
+      "to_pos": 582,
+      "kind": "designated_existing",
+      "strength": "overt",
+      "attribution": "human"
+    }
+  ],
+  "authorship_spans": [
+    {
+      "id": "sample-auth-en-1",
+      "node_id": "sample-scene-1",
+      "from_pos": 1,
+      "to_pos": 139,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-2",
+      "node_id": "sample-scene-1",
+      "from_pos": 141,
+      "to_pos": 319,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-3",
+      "node_id": "sample-scene-1",
+      "from_pos": 400,
+      "to_pos": 453,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-4",
+      "node_id": "sample-scene-1",
+      "from_pos": 455,
+      "to_pos": 591,
+      "source": "unknown",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-5",
+      "node_id": "sample-scene-2",
+      "from_pos": 1,
+      "to_pos": 139,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-6",
+      "node_id": "sample-scene-2",
+      "from_pos": 269,
+      "to_pos": 363,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-7",
+      "node_id": "sample-scene-2",
+      "from_pos": 365,
+      "to_pos": 451,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-8",
+      "node_id": "sample-scene-2",
+      "from_pos": 453,
+      "to_pos": 569,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-9",
+      "node_id": "sample-scene-3",
+      "from_pos": 1,
+      "to_pos": 73,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-10",
+      "node_id": "sample-scene-3",
+      "from_pos": 146,
+      "to_pos": 332,
+      "source": "unknown",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-11",
+      "node_id": "sample-scene-3",
+      "from_pos": 334,
+      "to_pos": 413,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-12",
+      "node_id": "sample-scene-3",
+      "from_pos": 516,
+      "to_pos": 628,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-13",
+      "node_id": "sample-scene-8",
+      "from_pos": 1,
+      "to_pos": 127,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-14",
+      "node_id": "sample-scene-8",
+      "from_pos": 129,
+      "to_pos": 282,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-15",
+      "node_id": "sample-scene-8",
+      "from_pos": 284,
+      "to_pos": 467,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-16",
+      "node_id": "sample-scene-8",
+      "from_pos": 765,
+      "to_pos": 972,
+      "source": "ai",
+      "model": "anthropic/claude-sonnet-4.6",
+      "timestamp": "2026-01-01T00:00:00Z"
+    },
+    {
+      "id": "sample-auth-en-17",
+      "node_id": "sample-scene-8",
+      "from_pos": 974,
+      "to_pos": 1123,
+      "source": "human",
+      "model": null,
+      "timestamp": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

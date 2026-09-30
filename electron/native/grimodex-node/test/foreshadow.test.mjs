@@ -31,9 +31,65 @@ process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project"; // migrate seed
 
-async function run(sql, params = []) {
-  await backend.dbExecute(sql, params, "run");
+function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
+  const isInteractiveAgent = origin === "ai-apply";
+  const isRestore = origin === "restore";
+  return {
+    requestId,
+    projectId,
+    sessionId: `${requestId}:session`,
+    eventUid: `${requestId}:event`,
+    origin,
+    authorityRoute: isInteractiveAgent
+      ? "interactive-agent-command"
+      : isRestore
+        ? "restore-or-migration"
+        : "human-direct",
+    caller: isInteractiveAgent
+      ? "chat-tool-executor"
+      : isRestore
+        ? "restore-controller"
+        : "manual-wrapper",
+    controls: isInteractiveAgent
+      ? [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "field-authority",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ]
+      : isRestore
+        ? [
+            "exclusive-system-operation",
+            "semantic-epoch-event",
+            "full-rebuild-marker",
+          ]
+        : [
+            "runtime-policy",
+            "actor-context",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+          ],
+    provenance: isInteractiveAgent
+      ? {
+          requestId,
+          traceId: `${requestId}:trace`,
+          executionId: `${requestId}:execution`,
+          mainOwnedProvenanceId: `${requestId}:main-provenance`,
+        }
+      : null,
+    writesAuthorityProtectedField: false,
+    originalTransactionId: null,
+    undoJournalId: null,
+  };
 }
+
 /** WHERE で一意に絞った SELECT の 1 行（無ければ undefined）を返す。 */
 async function row(sql, params = []) {
   const res = JSON.parse(await backend.dbExecute(sql, params, "all"));
@@ -42,6 +98,27 @@ async function row(sql, params = []) {
 async function firstForeshadow() {
   return JSON.parse(await backend.foreshadowListWithLabels(PROJECT))
     .foreshadows[0];
+}
+
+async function createScene(id, projectId = PROJECT) {
+  const requestId = `foreshadow-scene-create:${projectId}:${id}`;
+  return JSON.parse(
+    await backend.treeNodeCreate({
+      ...mutationIdentity(requestId, projectId),
+      undoJournalId: null,
+      id,
+      projectId,
+      parentId: null,
+      nodeType: "scene",
+      title: id,
+      sortOrder: `test-${id}`,
+      synopsis: null,
+      status: null,
+      sourceUri: null,
+      sourceMtime: null,
+      content: "{}",
+    }),
+  );
 }
 
 test("workspace 未オープンの foreshadowListWithLabels は 'No workspace is open' で reject", async () => {
@@ -56,6 +133,7 @@ test("foreshadowCreate は load_bearing を検証する（ワイヤエラー文�
 
   await assert.rejects(
     backend.foreshadowCreate({
+      ...mutationIdentity("foreshadow-invalid-load-bearing"),
       projectId: PROJECT,
       title: "不正",
       intent: null,
@@ -68,12 +146,113 @@ test("foreshadowCreate は load_bearing を検証する（ワイヤエラー文�
   );
 });
 
-test("foreshadowCreate → update: Option<Option> は Some(Some)=set / null・欠落=no-op（Tauri パリティ）", async () => {
-  await run(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order) VALUES ('foreshadow-payoff-scene', ?, 'scene', 'Payoff', '{}', 'a-foreshadow')",
-    [PROJECT],
+test("renderer canonical create は未知の caller を mutation 前に拒否する", async () => {
+  const invalidTree = {
+    ...mutationIdentity("renderer-authority-invalid-tree"),
+    undoJournalId: null,
+    caller: "background-maintenance-v2",
+    id: "renderer-authority-invalid-tree",
+    parentId: null,
+    nodeType: "scene",
+    title: "拒否されるシーン",
+    sortOrder: "authority-invalid-tree",
+    synopsis: null,
+    status: null,
+    sourceUri: null,
+    sourceMtime: null,
+    content: "{}",
+  };
+  await assert.rejects(backend.treeNodeCreate(invalidTree), /Forbidden caller/);
+  assert.equal(
+    await row("SELECT id FROM tree_nodes WHERE id = ?", [invalidTree.id]),
+    undefined,
   );
+
+  const invalidForeshadow = {
+    ...mutationIdentity("renderer-authority-invalid-foreshadow"),
+    caller: "background-maintenance-v2",
+    id: "renderer-authority-invalid-foreshadow",
+    title: "拒否される伏線",
+    intent: null,
+    notes: null,
+    loadBearing: null,
+  };
+  await assert.rejects(
+    backend.foreshadowCreate(invalidForeshadow),
+    /Forbidden caller/,
+  );
+  assert.equal(
+    await row("SELECT id FROM foreshadows WHERE id = ?", [
+      invalidForeshadow.id,
+    ]),
+    undefined,
+  );
+});
+
+test("tree renderer writes persist canonical authority evidence for every mutation", async () => {
+  const sceneId = "tree-authority-evidence-scene";
+  const created = JSON.parse(
+    await backend.treeNodeCreate({
+      ...mutationIdentity("tree-authority-evidence-create"),
+      id: sceneId,
+      projectId: PROJECT,
+      parentId: null,
+      nodeType: "scene",
+      title: "Authority scene",
+      sortOrder: "authority-scene",
+      synopsis: null,
+      status: null,
+      sourceUri: null,
+      sourceMtime: null,
+      content: "{}",
+    }),
+  );
+  const createdEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-create:event"],
+  );
+  const createdPayload = JSON.parse(createdEvent.payload);
+  assert.equal(createdPayload.authorityRoute, "human-direct");
+  assert.equal(createdPayload.authorityEvidence.validated, true);
+
+  const patched = JSON.parse(
+    await backend.treeNodePatch({
+      ...mutationIdentity("tree-authority-evidence-patch"),
+      projectId: PROJECT,
+      nodeId: sceneId,
+      patch: { title: "Authority scene (patched)" },
+      baseVersion: created.version,
+      bumpVersion: true,
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  const patchedEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-patch:event"],
+  );
+  const patchedPayload = JSON.parse(patchedEvent.payload);
+  assert.equal(patchedPayload.authorityRoute, "human-direct");
+  assert.equal(patchedPayload.authorityEvidence.validated, true);
+
+  await backend.treeNodeDelete({
+    ...mutationIdentity("tree-authority-evidence-delete"),
+    projectId: PROJECT,
+    nodeId: sceneId,
+  });
+  const deletedEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-delete:event"],
+  );
+  const deletedPayload = JSON.parse(deletedEvent.payload);
+  assert.equal(deletedPayload.authorityRoute, "human-direct");
+  assert.equal(deletedPayload.authorityEvidence.validated, true);
+  assert.equal(patched.id, sceneId);
+});
+
+test("foreshadowCreate → update は nullable field の null と欠落を区別する", async () => {
+  await createScene("foreshadow-payoff-scene");
   const createPayload = {
+    ...mutationIdentity("foreshadow-napi-request-1"),
     id: "foreshadow-napi-request-1",
     projectId: PROJECT,
     title: "刹那の伏線",
@@ -106,6 +285,14 @@ test("foreshadowCreate → update: Option<Option> は Some(Some)=set / null・�
     replayed: false,
     entityPresent: true,
   });
+  const createEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [createPayload.eventUid],
+  );
+  const createEventPayload = JSON.parse(createEvent.payload);
+  assert.equal(createEventPayload.authorityRoute, "human-direct");
+  assert.equal(createEventPayload.authorityCaller, "manual-wrapper");
+  assert.equal(createEventPayload.authorityEvidence.validated, true);
   const replay = JSON.parse(await backend.foreshadowCreate(createPayload));
   assert.equal(replay.id, created.id);
   assert.deepEqual(replay.__idempotency, {
@@ -119,32 +306,69 @@ test("foreshadowCreate → update: Option<Option> は Some(Some)=set / null・�
 
   // Some(Some) — 値セットは効く（到達可能な唯一の書き込み経路）。
   const setted = JSON.parse(
-    await backend.foreshadowUpdate(fid, { intent: "改訂した意図" }),
+    await backend.foreshadowUpdate(fid, {
+      ...mutationIdentity("foreshadow-napi-update-intent"),
+      baseVersion: created.version,
+      intent: "改訂した意図",
+    }),
   );
   assert.equal(setted.intent, "改訂した意図");
   assert.equal(setted.title, "刹那の伏線", "title は不変");
+  const updateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-update-intent:event"],
+  );
+  const updateEventPayload = JSON.parse(updateEvent.payload);
+  assert.equal(updateEventPayload.authorityRoute, "human-direct");
+  assert.equal(updateEventPayload.authorityEvidence.validated, true);
 
-  // intent: null は serde が Option<Option<T>> を外側 None に畳むため **no-op**。
-  // これは Tauri のコマンド引数 deserialize と同一挙動（"clear-to-null" は wire から
-  // 到達不能 = 既存パリティ。from_wire で非対称に "修正" してはならない）。
+  // Nullable fields omitted from a patch stay unchanged at the N-API boundary.
+  const omitted = JSON.parse(
+    await backend.foreshadowUpdate(fid, {
+      ...mutationIdentity("foreshadow-napi-update-title"),
+      baseVersion: setted.version,
+      title: "刹那の伏線（改題）",
+    }),
+  );
+  assert.equal(omitted.intent, "改訂した意図");
+  assert.equal(omitted.notes, "full-row note");
+  assert.equal(omitted.payoff_scene_id, "foreshadow-payoff-scene");
+  assert.equal(omitted.load_bearing, "critical");
+
+  // Explicit JSON null clears every nullable Foreshadow patch field.
   const nulled = JSON.parse(
-    await backend.foreshadowUpdate(fid, { intent: null }),
+    await backend.foreshadowUpdate(fid, {
+      ...mutationIdentity("foreshadow-napi-update-nullable"),
+      baseVersion: omitted.version,
+      intent: null,
+      notes: null,
+      payoffSceneId: null,
+      payoffFromPos: null,
+      payoffToPos: null,
+      loadBearing: null,
+    }),
   );
-  assert.equal(
-    nulled.intent,
-    "改訂した意図",
-    "null は no-op（Tauri パリティ）",
-  );
+  assert.equal(nulled.intent, null);
+  assert.equal(nulled.notes, null);
+  assert.equal(nulled.payoff_scene_id, null);
+  assert.equal(nulled.payoff_from_pos, null);
+  assert.equal(nulled.payoff_to_pos, null);
+  assert.equal(nulled.load_bearing, null);
 
   // 空 patch は現行行をそのまま返す。
-  const noop = JSON.parse(await backend.foreshadowUpdate(fid, {}));
+  const noop = JSON.parse(
+    await backend.foreshadowUpdate(fid, {
+      ...mutationIdentity("foreshadow-napi-update-noop"),
+      baseVersion: nulled.version,
+    }),
+  );
   assert.equal(noop.id, fid);
+  assert.equal(noop.version, nulled.version);
 });
 
 test("foreshadowCreate requestId-only は同じ entity と ledger を replay する", async () => {
   const payload = {
-    requestId: "foreshadow-napi-request-only",
-    projectId: PROJECT,
+    ...mutationIdentity("foreshadow-napi-request-only"),
     title: "request only",
     intent: null,
     loadBearing: null,
@@ -161,15 +385,28 @@ test("foreshadowCreate requestId-only は同じ entity と ledger を replay す
 
 test("foreshadowCreate は delete 後も request tombstone を replay し deliberate restore を区別する", async () => {
   const payload = {
+    ...mutationIdentity("foreshadow-napi-request-deleted"),
     id: "foreshadow-napi-entity-deleted",
-    requestId: "foreshadow-napi-request-deleted",
-    projectId: PROJECT,
     title: "削除後に復活しない伏線",
     intent: "SECRET_NAPI_FORESHADOW_SENTINEL",
     loadBearing: null,
   };
-  await backend.foreshadowCreate(payload);
-  await backend.foreshadowDelete(payload.id);
+  const created = JSON.parse(await backend.foreshadowCreate(payload));
+  const deleted = JSON.parse(
+    await backend.foreshadowDelete({
+      ...mutationIdentity("foreshadow-napi-delete"),
+      id: payload.id,
+      baseVersion: created.version,
+    }),
+  );
+  assert.equal(typeof deleted.undoJournalId, "string");
+  const deleteEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-delete:event"],
+  );
+  const deleteEventPayload = JSON.parse(deleteEvent.payload);
+  assert.equal(deleteEventPayload.authorityRoute, "human-direct");
+  assert.equal(deleteEventPayload.authorityEvidence.validated, true);
 
   const replay = JSON.parse(await backend.foreshadowCreate(payload));
   assert.equal(replay.id, payload.id);
@@ -185,7 +422,11 @@ test("foreshadowCreate は delete 後も request tombstone を replay し delibe
   const restored = JSON.parse(
     await backend.foreshadowCreate({
       ...payload,
-      requestId: "foreshadow-napi-history-restore",
+      ...mutationIdentity(
+        "foreshadow-napi-history-restore",
+        PROJECT,
+        "restore",
+      ),
     }),
   );
   assert.equal(restored.id, payload.id);
@@ -196,26 +437,43 @@ test("foreshadowCreate は delete 後も request tombstone を replay し delibe
 });
 
 test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され camelCase mark で返る", async () => {
-  await run(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order) VALUES ('sc1', ?, 'scene', 'S', '{}', 'a0')",
-    [PROJECT],
-  );
+  await createScene("sc1");
   const fs = await firstForeshadow();
 
-  await backend.foreshadowSetupCreateAi({
-    id: "setup-ai-1",
-    foreshadowId: fs.id,
-    sceneId: "sc1",
-    fromPos: 10,
-    toPos: 20,
-    kind: "designated_existing",
-    strength: null,
-    aiStrength: null,
-    attribution: "ai",
-    aiRationale: null,
-    aiReasoning: null,
-    lastEvaluatedAt: 1783664540830, // Date.now() 相当（f64→i64 正規化の検証）
-  });
+  const setupCreated = JSON.parse(
+    await backend.foreshadowSetupCreateAi({
+      ...mutationIdentity(
+        "foreshadow-napi-setup-create-ai",
+        PROJECT,
+        "ai-apply",
+      ),
+      id: "setup-ai-1",
+      foreshadowId: fs.id,
+      baseVersion: fs.version,
+      sceneId: "sc1",
+      fromPos: 10,
+      toPos: 20,
+      kind: "designated_existing",
+      strength: "overt",
+      aiStrength: "medium",
+      attribution: "ai",
+      aiRationale: null,
+      aiReasoning: "preserve me",
+      lastEvaluatedAt: 1783664540830, // Date.now() 相当（f64→i64 正規化の検証）
+    }),
+  );
+
+  const setupCreateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-setup-create-ai:event"],
+  );
+  const setupCreateEventPayload = JSON.parse(setupCreateEvent.payload);
+  assert.equal(
+    setupCreateEventPayload.authorityRoute,
+    "interactive-agent-command",
+  );
+  assert.equal(setupCreateEventPayload.authorityCaller, "chat-tool-executor");
+  assert.equal(setupCreateEventPayload.authorityEvidence.validated, true);
 
   // DB に i64 がそのまま入っている（REAL 混入していない）。
   const r = await row(
@@ -232,20 +490,87 @@ test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され
   assert.equal(setupMark.to, 20);
   assert.equal(setupMark.attrs.setupId, "setup-ai-1");
   assert.equal(setupMark.attrs.foreshadowId, fs.id);
+  assert.equal(setupMark.attrs.baseVersion, setupCreated.version);
+
+  const setupOmitted = JSON.parse(
+    await backend.foreshadowUpdateSetup("setup-ai-1", {
+      ...mutationIdentity("foreshadow-napi-setup-update-orphan"),
+      baseVersion: setupCreated.version,
+      isOrphan: false,
+    }),
+  );
+  assert.equal(setupOmitted.version, setupCreated.version);
+  let setupRow = await row(
+    "SELECT strength, ai_strength, ai_reasoning, last_evaluated_at FROM foreshadow_setups WHERE id = 'setup-ai-1'",
+  );
+  assert.equal(setupRow.strength, "overt");
+  assert.equal(setupRow.ai_strength, "medium");
+  assert.equal(setupRow.ai_reasoning, "preserve me");
+  assert.equal(setupRow.last_evaluated_at, 1783664540830);
+
+  const setupCleared = JSON.parse(
+    await backend.foreshadowUpdateSetup("setup-ai-1", {
+      ...mutationIdentity("foreshadow-napi-setup-update-clear"),
+      baseVersion: setupOmitted.version,
+      strength: null,
+      aiStrength: null,
+      aiReasoning: null,
+      lastEvaluatedAt: null,
+    }),
+  );
+  assert.equal(setupCleared.version, setupCreated.version + 1);
+  setupRow = await row(
+    "SELECT strength, ai_strength, ai_reasoning, last_evaluated_at FROM foreshadow_setups WHERE id = 'setup-ai-1'",
+  );
+  assert.equal(setupRow.strength, null);
+  assert.equal(setupRow.ai_strength, null);
+  assert.equal(setupRow.ai_reasoning, null);
+  assert.equal(setupRow.last_evaluated_at, null);
+
+  const setupUpdateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-setup-update-clear:event"],
+  );
+  const setupUpdateEventPayload = JSON.parse(setupUpdateEvent.payload);
+  assert.equal(setupUpdateEventPayload.authorityRoute, "human-direct");
+  assert.equal(setupUpdateEventPayload.authorityEvidence.validated, true);
 });
 
 test("save_anchors_for_scene の doc_content_size i64 ガード（境界 2 / 50）", async () => {
   // 現状 sc1 には非 orphan setup が 1 件（setup-ai-1）ある。
 
   // docContentSize=50（本文あり）+ setups 空 → bulk-orphan スキップ。
-  await backend.foreshadowSaveAnchorsForScene("sc1", [], [], 50);
+  await backend.foreshadowSaveAnchorsForScene({
+    ...mutationIdentity("foreshadow-napi-anchor-save-nonempty"),
+    sceneId: "sc1",
+    setups: [],
+    payoffs: [],
+    baseVersions: {},
+    docContentSize: 50,
+  });
   const a = await row(
     "SELECT is_orphan FROM foreshadow_setups WHERE id = 'setup-ai-1'",
   );
   assert.equal(a.is_orphan, 0, "本文ありのとき bulk-orphan しない");
 
   // docContentSize=2（空 doc）+ setups 空 → bulk-orphan 発火。
-  await backend.foreshadowSaveAnchorsForScene("sc1", [], [], 2);
+  const beforeOrphan = await row(
+    `SELECT root.id, root.version
+       FROM foreshadows root
+       JOIN foreshadow_setups setup ON setup.foreshadow_id = root.id
+      WHERE setup.id = 'setup-ai-1'`,
+  );
+  const orphaned = JSON.parse(
+    await backend.foreshadowSaveAnchorsForScene({
+      ...mutationIdentity("foreshadow-napi-anchor-save-empty"),
+      sceneId: "sc1",
+      setups: [],
+      payoffs: [],
+      baseVersions: { [beforeOrphan.id]: beforeOrphan.version },
+      docContentSize: 2,
+    }),
+  );
+  assert.equal(orphaned[0].version, beforeOrphan.version + 1);
   const b = await row(
     "SELECT is_orphan FROM foreshadow_setups WHERE id = 'setup-ai-1'",
   );
@@ -260,19 +585,29 @@ test("save_anchors_for_scene の doc_content_size i64 ガード（境界 2 / 50�
   );
 });
 
-test("resolve_orphan reinsert は Option<String> の new_id を返し、delete は null", async () => {
+test("resolve_orphan reinsert/delete は authoritative Foreshadow receipt を返す", async () => {
   // setup-ai-1 は今 orphan。reinsert で新 id を採番し旧行を削除（原子的）。
-  const newId = JSON.parse(
+  const beforeResolve = await row(
+    `SELECT root.version
+       FROM foreshadows root
+       JOIN foreshadow_setups setup ON setup.foreshadow_id = root.id
+      WHERE setup.id = 'setup-ai-1'`,
+  );
+  const reinsert = JSON.parse(
     await backend.foreshadowResolveOrphan({
+      ...mutationIdentity("foreshadow-napi-orphan-reinsert"),
       setupId: "setup-ai-1",
+      baseVersion: beforeResolve.version,
       action: "reinsert",
       sceneId: "sc1",
       fromPos: 3,
       toPos: 8,
     }),
   );
+  const newId = reinsert.setupId;
   assert.equal(typeof newId, "string", "reinsert は new_id 文字列を返す");
   assert.notEqual(newId, "setup-ai-1");
+  assert.equal(reinsert.foreshadow.version, beforeResolve.version + 1);
 
   // 旧行は消えている。
   const old = await row(
@@ -281,27 +616,61 @@ test("resolve_orphan reinsert は Option<String> の new_id を返し、delete �
   assert.equal(old, undefined, "旧 setup は削除済み");
 
   // action=delete は None → null。
-  const del = JSON.parse(
-    await backend.foreshadowResolveOrphan({ setupId: newId, action: "delete" }),
+  const deleted = JSON.parse(
+    await backend.foreshadowResolveOrphan({
+      ...mutationIdentity("foreshadow-napi-orphan-delete"),
+      setupId: newId,
+      baseVersion: reinsert.foreshadow.version,
+      action: "delete",
+    }),
   );
-  assert.equal(del, null, "delete は null を返す");
+  assert.equal(deleted.setupId, null);
+  assert.equal(deleted.foreshadow.version, reinsert.foreshadow.version + 1);
 });
 
 test("link_codex / list_linked_codex / unlink_codex の roundtrip", async () => {
   // type は DEFAULT 'character'（migrate トリガが default-project に seed 済み）。
-  await run(
-    "INSERT INTO codex_entries (id, project_id, name) VALUES ('cx1', ?, '主人公')",
-    [PROJECT],
+  const codex = JSON.parse(
+    await backend.agentCodexCreate({
+      ...mutationIdentity("foreshadow-napi-codex-create", PROJECT, "ai-apply"),
+      undoJournalId: null,
+      entryId: "cx1",
+      projectId: PROJECT,
+      sessionId: "foreshadow-napi-session",
+      surface: "manual",
+      typeSlug: "character",
+      name: "主人公",
+      summary: "",
+      content: "{}",
+      authorshipSpans: [],
+    }),
   );
+  assert.equal(codex.entityId, "cx1");
   const fs = await firstForeshadow();
 
-  await backend.foreshadowLinkCodex(fs.id, "cx1");
+  const linkedRoot = JSON.parse(
+    await backend.foreshadowLinkCodex({
+      ...mutationIdentity("foreshadow-napi-codex-link"),
+      foreshadowId: fs.id,
+      codexId: "cx1",
+      baseVersion: fs.version,
+    }),
+  );
+  assert.equal(linkedRoot.version, fs.version + 1);
   let linked = JSON.parse(await backend.foreshadowListLinkedCodex(fs.id));
   assert.equal(linked.length, 1);
   assert.equal(linked[0].id, "cx1");
   assert.equal(linked[0].name, "主人公");
 
-  await backend.foreshadowUnlinkCodex(fs.id, "cx1");
+  const unlinkedRoot = JSON.parse(
+    await backend.foreshadowUnlinkCodex({
+      ...mutationIdentity("foreshadow-napi-codex-unlink"),
+      foreshadowId: fs.id,
+      codexId: "cx1",
+      baseVersion: linkedRoot.version,
+    }),
+  );
+  assert.equal(unlinkedRoot.version, linkedRoot.version + 1);
   linked = JSON.parse(await backend.foreshadowListLinkedCodex(fs.id));
   assert.deepEqual(linked, []);
 });

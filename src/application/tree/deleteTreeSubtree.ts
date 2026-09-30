@@ -20,8 +20,7 @@ export interface DeleteTreeSubtreePorts {
   getActiveSceneId(): string;
   loadSceneContent(id: string): Promise<string>;
   deletePersisted(id: string): Promise<void>;
-  restorePersisted(node: TreeNodeData): Promise<void>;
-  saveSceneContent(id: string, content: string): Promise<void>;
+  restorePersisted(node: TreeNodeData, content?: string): Promise<void>;
   applyNodes(nodes: TreeNodeData[], activeSceneId: string): void;
   recomputeSceneOrder(nodes: readonly TreeNodeData[]): void;
   isReplaying(): boolean;
@@ -115,18 +114,13 @@ async function deleteTreeSubtreeWithAuthority(
     }
   }
 
-  const successfullyDeleted = new Set<string>();
-  let partialFailure = false;
-  for (const deletedId of [...targetIds].reverse()) {
-    try {
-      await ports.deletePersisted(deletedId);
-      successfullyDeleted.add(deletedId);
-    } catch (error) {
-      partialFailure = true;
-      ports.notifyDeleteFailure(error);
-      break;
-    }
+  try {
+    await ports.deletePersisted(id);
+  } catch (error) {
+    ports.notifyDeleteFailure(error);
+    return;
   }
+  const successfullyDeleted = targetIds;
 
   const remaining = nodes.filter((node) => !successfullyDeleted.has(node.id));
   const nextActive = successfullyDeleted.has(previousActiveSceneId)
@@ -139,12 +133,10 @@ async function deleteTreeSubtreeWithAuthority(
   ports.recordChange({
     rootId: id,
     deletedIds: [...successfullyDeleted],
-    partialFailure,
+    partialFailure: false,
     previousActiveSceneId,
   });
   for (const deletedId of successfullyDeleted) ports.closeTabs(deletedId);
-  if (partialFailure) return;
-
   const trashTempIds = new Map<string, string>();
   if (trackHistory) {
     for (const node of deletedNodes) {
@@ -167,6 +159,7 @@ async function deleteTreeSubtreeWithAuthority(
   }
 
   if (!trackHistory) return;
+  const restoredIds = new Set<string>();
   ports.pushHistory({
     kind: "scenes",
     label: ports.deletedLabel,
@@ -181,13 +174,12 @@ async function deleteTreeSubtreeWithAuthority(
       try {
         for (const tempId of trashTempIds.values()) ports.cancelTrash(tempId);
         for (const node of parentsFirst(deletedNodes)) {
-          await ports.restorePersisted(node);
-          if (
-            node.nodeType === "scene" &&
-            contentSnapshots[node.id] !== undefined
-          ) {
-            await ports.saveSceneContent(node.id, contentSnapshots[node.id]!);
-          }
+          if (restoredIds.has(node.id)) continue;
+          await ports.restorePersisted(
+            node,
+            node.nodeType === "scene" ? contentSnapshots[node.id] : undefined,
+          );
+          restoredIds.add(node.id);
         }
         const restored = [...ports.getNodes(), ...deletedNodes];
         ports.applyNodes(restored, previousActiveSceneId);
@@ -202,9 +194,8 @@ async function deleteTreeSubtreeWithAuthority(
       try {
         const current = [...ports.getNodes()];
         const currentIds = descendants(current, id);
-        for (const deletedId of [...currentIds].reverse()) {
-          await ports.deletePersisted(deletedId);
-        }
+        await ports.deletePersisted(id);
+        restoredIds.clear();
         const next = current.filter((node) => !currentIds.has(node.id));
         const active = currentIds.has(ports.getActiveSceneId())
           ? (next.find((node) => node.nodeType === "scene")?.id ?? "")

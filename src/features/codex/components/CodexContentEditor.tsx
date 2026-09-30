@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { AuthorshipMark } from "@/features/attribution/AuthorshipMark";
@@ -14,14 +14,25 @@ import { useFocusedContentEditorStore } from "@/store/focusedContentEditorStore"
 import { useLicenseEditableSync } from "@/features/license/useLicenseEditableSync";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import type { DocumentKey } from "@/features/editor/document/documentKey";
+import {
+  createLoadedMiniEditorTimelapseAuthority,
+  recordMiniEditorTransaction,
+  type LoadedMiniEditorTimelapseAuthority,
+} from "@/features/editor/miniEditorTimelapse";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 
 // Sentinel group index — distinguishes mini-editor updates from pane 0 / pane 1
 const CODEX_MINI_GROUP = 99;
 
 interface CodexContentEditorProps {
   content: string;
-  onContentChange: (content: string) => void;
+  onContentChange: (
+    content: string,
+    timelapseDocument?: TimelapseDocumentRef,
+  ) => void;
   entryId?: string;
+  /** Project that owns the body actually loaded into this editor instance. */
+  projectId?: string;
   /**
    * Canonical live-sync target. `undefined` keeps the legacy entryId-derived
    * target, while `null` explicitly disables live sync (Phase preview).
@@ -54,6 +65,7 @@ export function CodexContentEditor({
   content,
   onContentChange,
   entryId,
+  projectId,
   liveDocumentKey,
   entryKind = "codex",
   onExternalSync,
@@ -71,6 +83,11 @@ export function CodexContentEditor({
   const documentKey =
     liveDocumentKey === undefined ? defaultDocumentKey : liveDocumentKey;
   const isApplyingExternalUpdate = useRef(false);
+  const loadedTimelapseAuthorityRef =
+    useRef<LoadedMiniEditorTimelapseAuthority | null>(null);
+  const [loadedTimelapseInstanceKey, setLoadedTimelapseInstanceKey] = useState<
+    string | null
+  >(null);
   const onExternalSyncRef = useRef(onExternalSync);
   onExternalSyncRef.current = onExternalSync;
   const contentRef = useRef(content);
@@ -81,30 +98,87 @@ export function CodexContentEditor({
   );
 
   const parsedContent = parseContent(content);
+  const timelapseAuthority = useMemo(() => {
+    if (
+      !projectId ||
+      !isCodexEntry ||
+      !entryId ||
+      documentKey?.kind !== "codex" ||
+      documentKey.id !== entryId ||
+      documentKey.phaseId !== null ||
+      externalContent != null
+    ) {
+      return null;
+    }
+    return createLoadedMiniEditorTimelapseAuthority(projectId, documentKey);
+  }, [documentKey, entryId, externalContent, isCodexEntry, projectId]);
+  const timelapseInstanceKey = timelapseAuthority
+    ? `${timelapseAuthority.projectId}\u0000${timelapseAuthority.documentKey.id}`
+    : "disabled";
+  const timelapseInstanceKeyRef = useRef(timelapseInstanceKey);
+  if (timelapseInstanceKeyRef.current !== timelapseInstanceKey) {
+    // The render-time target may advance before TipTap has replaced its
+    // document. Revoke old authority synchronously; onCreate publishes the
+    // new immutable descriptor only after the new editor owns its content.
+    timelapseInstanceKeyRef.current = timelapseInstanceKey;
+    loadedTimelapseAuthorityRef.current = null;
+  }
 
-  const editor = useEditor({
-    extensions: [StarterKit.configure(), AuthorshipMark],
-    content: parsedContent,
-    onUpdate: ({ editor: e }) => {
-      if (isApplyingExternalUpdate.current) return;
-      try {
-        const json = e.getJSON();
-        const serialized = JSON.stringify(json);
-        onContentChange(serialized);
-        // Publish to sceneContentStore so the EditorPane tab stays in sync
-        if (documentKey) {
-          useSceneContentStore
-            .getState()
-            .setLiveContent(documentKey, json, CODEX_MINI_GROUP);
+  const editor = useEditor(
+    {
+      extensions: [StarterKit.configure(), AuthorshipMark],
+      content: parsedContent,
+      onCreate: () => {
+        loadedTimelapseAuthorityRef.current = timelapseAuthority;
+        setLoadedTimelapseInstanceKey(timelapseInstanceKey);
+      },
+      onDestroy: () => {
+        loadedTimelapseAuthorityRef.current = null;
+        setLoadedTimelapseInstanceKey(null);
+      },
+      onUpdate: ({ editor: e }) => {
+        if (isApplyingExternalUpdate.current) return;
+        try {
+          const json = e.getJSON();
+          const serialized = JSON.stringify(json);
+          onContentChange(
+            serialized,
+            loadedTimelapseAuthorityRef.current?.document,
+          );
+          // Publish to sceneContentStore so the EditorPane tab stays in sync
+          if (documentKey) {
+            useSceneContentStore
+              .getState()
+              .setLiveContent(documentKey, json, CODEX_MINI_GROUP);
+          }
+        } catch {
+          // ignore serialization errors
         }
-      } catch {
-        // ignore serialization errors
-      }
+      },
+      onTransaction: ({ transaction }) => {
+        recordMiniEditorTransaction({
+          transaction,
+          authority: loadedTimelapseAuthorityRef.current,
+          isApplyingExternalUpdate: isApplyingExternalUpdate.current,
+        });
+      },
     },
-  });
+    [timelapseInstanceKey],
+  );
 
   useAttribution(editor);
-  useLicenseEditableSync(editor, readOnly);
+  const loadedFenceDocumentKey =
+    loadedTimelapseInstanceKey === timelapseInstanceKey ? documentKey : null;
+  const loadedFenceProjectId =
+    loadedTimelapseInstanceKey === timelapseInstanceKey
+      ? (timelapseAuthority?.projectId ?? null)
+      : null;
+  useLicenseEditableSync(
+    editor,
+    readOnly,
+    loadedFenceDocumentKey,
+    loadedFenceProjectId,
+  );
   useCodexHighlight(editor, {
     excludeEntryIds: entryId ? [entryId] : [],
     skipMatchedIds: true,

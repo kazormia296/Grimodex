@@ -1,7 +1,16 @@
 import { db } from "@/db/client";
 import { codexRelations } from "@/db/schema";
 import { and, asc, eq, or, inArray } from "drizzle-orm";
+import {
+  buildCodexRelationSemanticKey,
+  type CodexRelationDirectionalityStored,
+} from "@/features/codex/extraction/relationVocabulary";
 import { notifyCodexRelationsChanged } from "./codexRelationEvents";
+import { invoke } from "@/lib/tauri";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
 
 export type CodexRelationRow = typeof codexRelations.$inferSelect;
 export type NewCodexRelation = typeof codexRelations.$inferInsert;
@@ -54,24 +63,53 @@ export async function createCodexRelation(
     | "label"
     | "depthHint"
     | "sourceMapEdgeId"
-  > & { id?: string },
+  > & {
+    id?: string;
+    directionality?: CodexRelationDirectionalityStored;
+    inverseLabel?: string | null;
+  },
+  options: { writeContext?: CanonicalWriteContext } = {},
 ): Promise<CodexRelationRow> {
-  const now = new Date().toISOString();
-  const rows = await db
-    .insert(codexRelations)
-    .values({
-      id: data.id ?? crypto.randomUUID(),
+  const directionality = data.directionality ?? "directed";
+  const forwardLabel = data.label ?? "";
+  const inverseLabel =
+    directionality === "symmetric"
+      ? (data.inverseLabel ?? forwardLabel)
+      : (data.inverseLabel ?? null);
+  const relationType = data.relationType ?? "custom";
+  const semanticKey = buildCodexRelationSemanticKey({
+    projectId: data.projectId,
+    fromCodexId: data.fromCodexId,
+    toCodexId: data.toCodexId,
+    relationType,
+    directionality,
+    forwardLabel,
+    inverseLabel,
+  });
+  const id = data.id ?? crypto.randomUUID();
+  await invoke("codex_mutate", {
+    payload: {
+      operation: "relation.create",
       projectId: data.projectId,
+      ...(options.writeContext ?? createCanonicalWriteContext()),
+      surface: "manual",
+      relationId: id,
       fromCodexId: data.fromCodexId,
       toCodexId: data.toCodexId,
-      relationType: data.relationType ?? "custom",
+      relationType,
       label: data.label ?? null,
+      directionality,
+      inverseLabel,
+      semanticKey,
       depthHint: data.depthHint ?? null,
       sourceMapEdgeId: data.sourceMapEdgeId ?? null,
-      createdAt: now,
-      updatedAt: now,
-    })
-    .returning();
+    },
+  });
+  const rows = await db
+    .select()
+    .from(codexRelations)
+    .where(eq(codexRelations.id, id))
+    .limit(1);
   notifyCodexRelationsChanged(data.projectId);
   return rows[0];
 }
@@ -83,9 +121,18 @@ export async function deleteCodexRelation(id: string): Promise<void> {
     .from(codexRelations)
     .where(eq(codexRelations.id, id))
     .limit(1);
-  await db.delete(codexRelations).where(eq(codexRelations.id, id));
   const projectId = existing[0]?.projectId;
-  if (projectId) notifyCodexRelationsChanged(projectId);
+  if (!projectId) return;
+  await invoke("codex_mutate", {
+    payload: {
+      operation: "relation.delete",
+      projectId,
+      ...createCanonicalWriteContext(),
+      surface: "manual",
+      relationId: id,
+    },
+  });
+  notifyCodexRelationsChanged(projectId);
 }
 
 /**

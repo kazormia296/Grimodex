@@ -28,6 +28,7 @@ import path from "node:path";
 import { JsonRpcConnection, JsonRpcRemoteError } from "./jsonRpcConnection.js";
 import {
   CodexAppServerProcess,
+  isCodexAppServerTerminationUnconfirmedError,
   type CodexAppServerProcessOptions,
 } from "./process.js";
 import {
@@ -221,6 +222,8 @@ export interface CodexAppServerManager {
   handleWorkspaceChanged(): Promise<void>;
   handleOwnerDestroyed(ownerId: number): Promise<void>;
   dispose(): Promise<void>;
+  /** Main-only D2a barrier: stop and await app-server transports. */
+  quiesceForProfileEgress(): Promise<void>;
 }
 
 export class CodexAppServerError extends Error {
@@ -714,12 +717,55 @@ export function createCodexAppServerManager(
   let process: CodexAppServerProcessLike | null = null;
   let connection: JsonRpcConnection | null = null;
   let startFlight: Promise<void> | null = null;
+  const startTurnFlights = new Set<Promise<unknown>>();
+  let disposeFlight: Promise<void> | null = null;
   let disposed = false;
   const activeTurns = new Map<string, ActiveTurn>();
   const startingTurns = new Map<string, StartingTurn>();
   const completedTurns = new Map<string, CompletedTurnReceipt>();
   const pendingRequests = new Map<string, PendingServerRequest>();
   const sessionOperationTails = new Map<string, Promise<void>>();
+  const teardownFlights = new Set<Promise<void>>();
+  let teardownFailure: Error | null = null;
+  let startFlightTerminationFailure: Error | null = null;
+
+  const rememberStartFlightTerminationFailure = (cause: unknown): void => {
+    if (!isCodexAppServerTerminationUnconfirmedError(cause)) return;
+    startFlightTerminationFailure ??= cause;
+  };
+
+  const trackTeardown = (operation: Promise<void>): Promise<void> => {
+    const tracked = operation.catch((cause) => {
+      const error = cause instanceof Error ? cause : new Error(String(cause));
+      teardownFailure ??= error;
+      throw error;
+    });
+    teardownFlights.add(tracked);
+    void tracked.then(
+      () => teardownFlights.delete(tracked),
+      () => teardownFlights.delete(tracked),
+    );
+    return tracked;
+  };
+  const beginTeardown = (target: CodexAppServerProcessLike): Promise<void> => {
+    try {
+      return trackTeardown(target.dispose());
+    } catch (cause) {
+      return trackTeardown(Promise.reject(cause));
+    }
+  };
+  const awaitTeardowns = async (): Promise<void> => {
+    while (teardownFlights.size > 0) {
+      await Promise.allSettled([...teardownFlights]);
+    }
+    const failures = [teardownFailure, startFlightTerminationFailure].filter(
+      (failure): failure is Error => failure !== null,
+    );
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Codex App Server teardown failed");
+    }
+  };
 
   const withSessionOperation = async <T>(
     projectId: string,
@@ -914,7 +960,7 @@ export function createCodexAppServerManager(
     const message = cause instanceof Error ? cause.message : String(cause);
     status = { ...status, state: "failed", lastError: message };
     failActiveTurns(cause);
-    await currentProcess?.dispose().catch(() => {});
+    if (currentProcess) await beginTeardown(currentProcess);
   };
 
   const setFailure = (cause: unknown): CodexAppServerError => {
@@ -1232,11 +1278,12 @@ export function createCodexAppServerManager(
         try {
           child = await createProcess();
         } catch (cause) {
+          rememberStartFlightTerminationFailure(cause);
           if (disposed) throw cause;
           throw setFailure(cause);
         }
         if (disposed) {
-          await child.dispose();
+          await beginTeardown(child);
           throw new Error("Codex App Server manager is disposed");
         }
         process = child;
@@ -1259,7 +1306,7 @@ export function createCodexAppServerManager(
                 };
                 connection = null;
                 if (process === child) process = null;
-                void child.dispose();
+                void beginTeardown(child);
                 failActiveTurns(cause ?? new Error("Codex app-server closed"));
               }
             },
@@ -1296,9 +1343,10 @@ export function createCodexAppServerManager(
             startedAt: nowIso(now),
           };
         } catch (cause) {
+          rememberStartFlightTerminationFailure(cause);
           connection?.dispose();
           connection = null;
-          await child.dispose();
+          await beginTeardown(child);
           if (process === child) process = null;
           if (disposed) throw cause;
           throw setFailure(cause);
@@ -1876,7 +1924,7 @@ export function createCodexAppServerManager(
     }
   };
 
-  const startTurn = async (
+  const startTurnOperation = async (
     input: StartCodexAppTurnPayload,
     ownerId: number | null = null,
   ): Promise<{
@@ -1884,6 +1932,9 @@ export function createCodexAppServerManager(
     codexTurnId: string;
     reusedThread: boolean;
   }> => {
+    if (disposed) {
+      throw new Error("Codex App Server manager is disposed");
+    }
     if (isPendingHistoryRevision(input.historyRevision)) {
       throw new CodexAppServerError(
         "Codex history revision uses a reserved internal prefix",
@@ -1954,6 +2005,23 @@ export function createCodexAppServerManager(
     } finally {
       startingTurns.delete(turnKey);
     }
+  };
+
+  const startTurn = (
+    input: StartCodexAppTurnPayload,
+    ownerId: number | null = null,
+  ): Promise<{
+    codexThreadId: string;
+    codexTurnId: string;
+    reusedThread: boolean;
+  }> => {
+    const operation = startTurnOperation(input, ownerId);
+    startTurnFlights.add(operation);
+    void operation.then(
+      () => startTurnFlights.delete(operation),
+      () => startTurnFlights.delete(operation),
+    );
+    return operation;
   };
 
   const interruptTurn = async (
@@ -2242,9 +2310,12 @@ export function createCodexAppServerManager(
     }
   };
 
-  const dispose = async (): Promise<void> => {
-    if (disposed) return;
+  const dispose = (): Promise<void> => {
+    if (disposeFlight) return disposeFlight;
     disposed = true;
+    for (const starting of startingTurns.values()) {
+      starting.interruptRequested = true;
+    }
     status = { ...status, state: "closing" };
     for (const pending of pendingRequests.values()) {
       clearTimeout(pending.timeout);
@@ -2255,14 +2326,22 @@ export function createCodexAppServerManager(
     connection = null;
     const flight = startFlight;
     const currentProcess = process;
-    await currentProcess?.dispose();
-    await flight?.catch(() => {});
-    if (process && process !== currentProcess) await process.dispose();
-    process = null;
-    activeTurns.clear();
-    startingTurns.clear();
-    completedTurns.clear();
-    status = { ...status, state: "stopped" };
+    const currentStartTurns = [...startTurnFlights];
+    disposeFlight = (async () => {
+      if (currentProcess) beginTeardown(currentProcess);
+      await flight?.catch(() => {});
+      if (process && process !== currentProcess) beginTeardown(process);
+      await Promise.all(
+        currentStartTurns.map((operation) => operation.catch(() => {})),
+      );
+      await awaitTeardowns();
+      process = null;
+      activeTurns.clear();
+      startingTurns.clear();
+      completedTurns.clear();
+      status = { ...status, state: "stopped" };
+    })();
+    return disposeFlight;
   };
 
   const createHandlers = (ownerId: number | null): ShellCommandHandlers => ({
@@ -2389,5 +2468,6 @@ export function createCodexAppServerManager(
     handleWorkspaceChanged,
     handleOwnerDestroyed,
     dispose,
+    quiesceForProfileEgress: dispose,
   };
 }

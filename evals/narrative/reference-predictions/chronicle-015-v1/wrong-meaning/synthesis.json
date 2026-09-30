@@ -1,0 +1,15 @@
+{
+  "clusterRef": "__CLUSTER_REF__",
+  "resolution": "single-event",
+  "events": [
+    {
+      "observationRefs": [
+        "__OBSERVATION_REF_1__"
+      ],
+      "titleSuggestion": "捕虜がミナの縄を切る",
+      "summary": "捕虜が儀礼剣を使って、ミナを縛る縄を切った。",
+      "actuality": "actual",
+      "significance": "major"
+    }
+  ]
+}

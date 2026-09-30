@@ -14,6 +14,7 @@ import type {
   AdvanceHistoryRevisionRequest,
   RuntimeThreadBindingStore,
 } from "./threadBindingStore.js";
+import { CodexAppServerTerminationUnconfirmedError } from "./process.js";
 
 const TEST_WORKSPACE = process.cwd();
 
@@ -170,6 +171,61 @@ class FakeProcess {
     for (const respond of this.deferredThreadStartResponses.splice(0)) {
       respond();
     }
+  }
+}
+
+class DeferredDisposeProcess extends FakeProcess {
+  private readonly disposeCompletion: Promise<void>;
+  private rejectDispose!: (cause: Error) => void;
+
+  constructor() {
+    super();
+    this.disposeCompletion = new Promise((_resolve, reject) => {
+      this.rejectDispose = reject;
+    });
+  }
+
+  override async dispose(): Promise<void> {
+    this.disposeCalls += 1;
+    await this.disposeCompletion;
+  }
+
+  failDispose(cause: Error): void {
+    this.rejectDispose(cause);
+  }
+}
+
+class DeferredStartTerminationProcess extends FakeProcess {
+  private readonly startCompletion: Promise<void>;
+  private rejectStart!: (cause: Error) => void;
+
+  constructor() {
+    super();
+    this.startCompletion = new Promise((_resolve, reject) => {
+      this.rejectStart = reject;
+    });
+  }
+
+  override async start(): Promise<void> {
+    this.startCalls += 1;
+    await this.startCompletion;
+  }
+
+  failStart(cause: Error): void {
+    this.rejectStart(cause);
+  }
+}
+
+class FailingStartProcess extends FakeProcess {
+  constructor(
+    private readonly failure = new Error("Codex CLI executable was not found"),
+  ) {
+    super();
+  }
+
+  override async start(): Promise<void> {
+    this.startCalls += 1;
+    throw this.failure;
   }
 }
 
@@ -2459,6 +2515,87 @@ describe("Codex App Server manager", () => {
     expect(process.disposeCalls).toBeGreaterThanOrEqual(1);
   });
 
+  it("quiesces a pending app-server start before the child can start", async () => {
+    let resolveProcess!: (process: FakeProcess) => void;
+    const process = new FakeProcess();
+    const manager = createCodexAppServerManager({
+      createProcess: () =>
+        new Promise((resolve) => {
+          resolveProcess = resolve;
+        }),
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+
+    const listing = manager.listModels();
+    await vi.waitFor(() => expect(resolveProcess).toBeTypeOf("function"));
+    const quiescing = manager.quiesceForProfileEgress();
+    resolveProcess(process);
+
+    await quiescing;
+    await expect(listing).rejects.toThrow("manager is disposed");
+    expect(process.startCalls).toBe(0);
+    expect(process.disposeCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("quiesces an active app-server turn before activation resolves", async () => {
+    const process = new FakeProcess();
+    const events: unknown[] = [];
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      broadcast: (_channel, payload) => events.push(payload),
+    });
+    await manager.startTurn(input("profile-egress-quiesce"));
+
+    await manager.quiesceForProfileEgress();
+    expect(process.disposeCalls).toBeGreaterThan(0);
+    const eventCount = events.length;
+    process.emitData(
+      JSON.stringify({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: { id: "turn-1", status: "completed", items: [] },
+        },
+      }) + "\n",
+    );
+    expect(events).toHaveLength(eventCount);
+  });
+
+  it("quiesces an in-flight turn start before turn/start dispatch", async () => {
+    const process = new FakeProcess();
+    let resolveMcp!: (value: null) => void;
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+      getReadOnlyMcpServer: async () =>
+        new Promise((resolve) => {
+          resolveMcp = resolve;
+        }),
+    });
+    const starting = manager.startTurn(input("profile-egress-start"));
+    await vi.waitFor(() => expect(resolveMcp).toBeTypeOf("function"));
+
+    let quiesced = false;
+    const quiescing = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    expect(quiesced).toBe(false);
+    resolveMcp(null);
+    await expect(starting).rejects.toThrow(/disposed|connection|interrupted/i);
+    await quiescing;
+    expect(quiesced).toBe(true);
+    expect(
+      process.writes.some((request) => request.method === "thread/start"),
+    ).toBe(false);
+    expect(
+      process.writes.some((request) => request.method === "turn/start"),
+    ).toBe(false);
+  });
+
   it("disposes the ready process after malformed server output", async () => {
     const process = new FakeProcess();
     const manager = createCodexAppServerManager({
@@ -2472,5 +2609,90 @@ describe("Codex App Server manager", () => {
     await vi.waitFor(() => expect(process.disposeCalls).toBeGreaterThan(0));
     expect(manager.getStatus()).toMatchObject({ state: "failed" });
     await manager.dispose();
+  });
+
+  it("awaits an unexpected process teardown and propagates an unconfirmed close", async () => {
+    const process = new DeferredDisposeProcess();
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+    await manager.listModels();
+
+    process.emitClose(new Error("app-server closed unexpectedly"));
+    await vi.waitFor(() => expect(process.disposeCalls).toBe(1));
+
+    let quiesced = false;
+    const quiescing = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    await Promise.resolve();
+    expect(quiesced).toBe(false);
+
+    process.failDispose(new Error("termination unconfirmed"));
+    await expect(quiescing).rejects.toThrow("termination unconfirmed");
+    expect(quiesced).toBe(false);
+  });
+
+  it("does not resolve profile quiescence after a detector termination failure", async () => {
+    const process = new DeferredStartTerminationProcess();
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+    const listing = manager.listModels();
+    await vi.waitFor(() => expect(process.startCalls).toBe(1));
+
+    let quiesced = false;
+    const quiescing = manager.quiesceForProfileEgress().then(() => {
+      quiesced = true;
+    });
+    await Promise.resolve();
+    expect(quiesced).toBe(false);
+
+    process.failStart(
+      new CodexAppServerTerminationUnconfirmedError(
+        "Codex CLI detector child termination was not confirmed",
+      ),
+    );
+    await expect(listing).rejects.toThrow(
+      "Codex CLI detector child termination was not confirmed",
+    );
+    await expect(quiescing).rejects.toThrow(
+      "Codex CLI detector child termination was not confirmed",
+    );
+    expect(quiesced).toBe(false);
+  });
+
+  it("does not make an ordinary start failure sticky for profile quiescence", async () => {
+    const process = new FailingStartProcess();
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+
+    await expect(manager.listModels()).rejects.toThrow(
+      /executable was not found/,
+    );
+    await expect(manager.quiesceForProfileEgress()).resolves.toBeUndefined();
+  });
+
+  it("does not make a dispose-only detector failure sticky for profile quiescence", async () => {
+    const process = new FailingStartProcess(
+      new Error("detector dispose failed"),
+    );
+    const manager = createCodexAppServerManager({
+      createProcess: () => process,
+      threadBindings: createBindings(),
+      getWorkspacePath: async () => TEST_WORKSPACE,
+    });
+
+    await expect(manager.listModels()).rejects.toThrow(
+      "detector dispose failed",
+    );
+    await expect(manager.quiesceForProfileEgress()).resolves.toBeUndefined();
   });
 });

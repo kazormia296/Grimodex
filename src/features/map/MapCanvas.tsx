@@ -86,6 +86,7 @@ import {
   getAiBranchSnapshot,
   restoreAiBranchSnapshot,
   eraseAiBranchSnapshot,
+  createMapHistoryWriteLease,
   createAiBranch,
   setNodePinned,
   deleteNodePosition,
@@ -726,8 +727,9 @@ export function MapCanvas() {
         confirmLabel: t("common.delete"),
       });
       if (!ok) return;
+      let forwardReceipt: Awaited<ReturnType<typeof eraseAiBranchSnapshot>>;
       try {
-        await eraseAiBranchSnapshot(snapshot);
+        forwardReceipt = await eraseAiBranchSnapshot(snapshot);
       } catch (err) {
         toast.error(t("map.toast.aiBranchBulkDeleteFailed"), {
           description: String(err),
@@ -749,11 +751,14 @@ export function MapCanvas() {
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const cap = snapshot;
+        const undoLease = createMapHistoryWriteLease("undo", forwardReceipt);
+        const redoLease = createMapHistoryWriteLease("redo", forwardReceipt);
         useGlobalHistoryStore.getState().push({
           kind: "map",
           label: t("map.history.aiBranchBulkDelete"),
           async undo() {
-            await restoreAiBranchSnapshot(cap);
+            await restoreAiBranchSnapshot(cap, undoLease.acquire());
+            undoLease.committed();
             setAiBranches((prev) => [...prev, cap.branch]);
             setStickies((prev) => [...prev, ...cap.stickies]);
             setPositions((prev) => [
@@ -766,7 +771,8 @@ export function MapCanvas() {
             }
           },
           async redo() {
-            await eraseAiBranchSnapshot(cap);
+            await eraseAiBranchSnapshot(cap, redoLease.acquire());
+            redoLease.committed();
             const reStickyIds = new Set(cap.stickies.map((s) => s.id));
             const rePosIds = new Set([
               cap.branchPosition.id,
@@ -976,7 +982,7 @@ export function MapCanvas() {
                 .filter((e) => e.fromPositionId === branchPos.id)
                 .map((e) => e.id)
             : [];
-          await deleteAiBranch(branchId);
+          const forwardReceipt = await deleteAiBranch(branchId);
           setAiBranches((prev) => prev.filter((b) => b.id !== branchId));
           if (cascadedEdgeIds.length > 0) {
             setUserEdges((prev) =>
@@ -987,13 +993,22 @@ export function MapCanvas() {
           if (snapshot) {
             const cap = snapshot;
             const edgeIds = cap.edges.map((e) => e.id);
+            const undoLease = createMapHistoryWriteLease(
+              "undo",
+              forwardReceipt,
+            );
+            const redoLease = createMapHistoryWriteLease(
+              "redo",
+              forwardReceipt,
+            );
             useGlobalHistoryStore.getState().push({
               kind: "map",
               label: t("map.history.aiBranchDelete"),
               async undo() {
                 // restoreAiBranchSnapshot re-links orphan stickies' aiBranchId
                 // and re-inserts the branch row, branch position, and dashed edges.
-                await restoreAiBranchSnapshot(cap);
+                await restoreAiBranchSnapshot(cap, undoLease.acquire());
+                undoLease.committed();
                 setAiBranches((prev) => [...prev, cap.branch]);
                 setPositions((prev) => [
                   ...prev,
@@ -1004,7 +1019,8 @@ export function MapCanvas() {
                 }
               },
               async redo() {
-                await deleteAiBranch(cap.branch.id);
+                await deleteAiBranch(cap.branch.id, redoLease.acquire());
+                redoLease.committed();
                 setAiBranches((prev) =>
                   prev.filter((b) => b.id !== cap.branch.id),
                 );
@@ -1702,6 +1718,14 @@ export function MapCanvas() {
           const snapshot = await getAiBranchSnapshot(result.branch.id);
           if (snapshot) {
             const cap = snapshot;
+            const undoLease = createMapHistoryWriteLease(
+              "undo",
+              result.writeReceipt,
+            );
+            const redoLease = createMapHistoryWriteLease(
+              "redo",
+              result.writeReceipt,
+            );
             const stickyIds = cap.stickies.map((s) => s.id);
             const posIds = cap.stickyPositions
               .map((p) => p.id)
@@ -1711,7 +1735,8 @@ export function MapCanvas() {
               kind: "map",
               label: t("map.history.aiBranchGenerate"),
               async undo() {
-                await eraseAiBranchSnapshot(cap);
+                await eraseAiBranchSnapshot(cap, undoLease.acquire());
+                undoLease.committed();
                 setAiBranches((prev) =>
                   prev.filter((b) => b.id !== cap.branch.id),
                 );
@@ -1726,7 +1751,8 @@ export function MapCanvas() {
                 );
               },
               async redo() {
-                await restoreAiBranchSnapshot(cap);
+                await restoreAiBranchSnapshot(cap, redoLease.acquire());
+                redoLease.committed();
                 setAiBranches((prev) => [...prev, cap.branch]);
                 setStickies((prev) => [...prev, ...cap.stickies]);
                 setPositions((prev) => [

@@ -1,11 +1,8 @@
 ---
 name: bump-version
 description: >
-  Grimodex の Electron リリースバージョンを上げ、リリースノート、commit、
-  branch、PR、merge、注釈付き Release tag、GitHub Draft Release の確認まで進める。
-  Release は公開せず、Draft のまま停止する。
-  「バージョン上げて」「パッチ／マイナー／メジャーバージョン」
-  「リリースタグ」「リリース準備して」で使用する。
+  Grimodex の Electron バージョン更新とリリース準備を、依頼された段階まで進める。
+  tag 作成後の終端は GitHub Draft Release の確認とし、Release は公開しない。
 ---
 
 # Bump Version
@@ -72,12 +69,38 @@ electron-builder、`app.getVersion()`、v2 release workflow の tag gate は、�
    - `git add -A` は使わず、`package.json` と2つのリリースノートを明示パスで stage する。
    - commit 例: `chore(release): バージョンを<旧>から<新>に上げる`
    - repository の規約で要求される場合だけ `Co-Authored-By` trailer を付ける。
-7. **push、PR、merge を行う**
+7. **候補commit後のQuickとverify（PR／release証跡のみ）**
+   - release commit後のcleanなHEADで`candidate_base`／`candidate_head`を一度だけ解決し、同じ値をQuickと直後のverifyへ渡すのは、PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合だけとする。
+   - commit-onlyまたはCI明示除外の依頼では候補commitを保持してQuickを開始せず、merge／release readinessを主張しない。ユーザーがcommit／PRを依頼していない場合はQuickのためだけにcommitを作らず、CIも開始しない。
+   - 失敗、blocked、partial、dry-runを成功扱いせず、候補変更後は旧receiptを再利用しない。
+   - 上記のPR／release条件を満たす場合だけ、次の固定値でQuickと直後のverifyを実行する。
+
+   ```bash
+   candidate_base="$(git rev-parse 'origin/master^{commit}')"
+   candidate_head="$(git rev-parse 'HEAD^{commit}')"
+   pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
+   pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
+   ```
+8. **push、PR、mergeを行う**
    - release commit を作成して作業ツリーが clean になった後、`/ship-branch` をbranchのpush／PR／mergeフローとして使用する。
    - ユーザーが依頼したゴールに含まれる push、PR、merge まで進める。
-   - `/ship-branch` の CI、mergeability、レビュー、HEAD 固定、base 反映確認を満たす。
-8. **注釈付き tag をpushし、Draft Releaseを確認する**
-   - merge 後の `origin/master` を fetch し、release commit を確認する。
+   - `/ship-branch` のcompleteなローカルFull、mergeability、レビュー、HEAD固定、base反映確認を満たす。
+9. **merge済みrelease goalのFull、注釈付きtag、Draft Release**
+   - tag／Draft Releaseが依頼範囲に含まれ、CIが許可され、mergeが完了した場合だけ、merge後の `origin/master` を fetch してrelease commitを確認し、release commitそのものをcleanなcheckout／worktreeの現在HEADにする。
+   - その条件を満たす場合、`origin/master`とHEADがrelease commitを指す状態で、最初のstageからFullを実行し直して直後にverifyする。squash前のbranch HEADに対するFull receiptは、merge後のrelease commitの証跡として再利用しない。
+   - local／commit-only／PR-only、またはCI明示除外の依頼ではこのStep 9のFull／verify／tag／Draft Releaseを開始せず、候補commitを保持してrelease readinessを主張しない。
+   - 上記のrelease／CI／merge条件を満たす場合だけ、次の固定値でrelease Fullと直後のverifyを実行する。
+
+     ```bash
+     release_base="$(git rev-parse 'origin/master^{commit}')"
+     release_head="$(git rev-parse 'HEAD^{commit}')"
+     pnpm ci:local:full -- --base "$release_base" --head "$release_head"
+     pnpm ci:local:verify -- full --base "$release_base" --head "$release_head"
+     ```
+
+   - `--from`によるpartial runと`--dry-run`はrelease認証に使わない。必須toolchain、依存、
+     host capabilityの不足、candidate不一致、base移動があればtagを作らず停止し、release commitを
+     固定し直して`--from`なしのFullを最初からやり直す。
    - ゴールに tag／Draft Release 作成が含まれる場合、`origin/master` の release commit に `v<新バージョン>` を付ける。
    - `git tag -a v<新バージョン> <release-commit> -m "Release v<新バージョン>"`
    - lightweight tag は使わない。

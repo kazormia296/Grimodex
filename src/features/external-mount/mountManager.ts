@@ -17,7 +17,7 @@ import {
   updateNode,
 } from "@/features/tree/api";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import { rebaselineScenesAtTail } from "@/features/timelapse/rebaseline";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
@@ -35,7 +35,12 @@ import {
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
 import { awaitPendingSceneContentWrite } from "@/features/tree/pendingSceneWrites";
-import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import {
+  canScheduleQuiescenceMutation,
+  isQuiescenceLeaseActive,
+  schedulePreexistingParticipantMutation,
+  waitForQuiescenceMutationAdmission,
+} from "@/application/lifecycle/quiescenceLease";
 import {
   discardAutoSavesForDocument,
   hasPendingOrFailedAutoSaveForDocument,
@@ -58,6 +63,7 @@ import { cancelWriteBack, hasPendingWriteBack } from "./writeBack";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { scheduleBodyMentionScan } from "@/features/editor/persistSceneBody";
 import { publishExternalDocumentReload } from "@/lib/externalDocumentReloadRegistry";
+import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 
 const ARCHIVE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const RENAME_WINDOW_MS = 5000;
@@ -78,6 +84,185 @@ interface PendingArchive {
 }
 
 const pendingArchives: PendingArchive[] = [];
+interface TrackedFileEvent {
+  readonly keys: ReadonlySet<string>;
+  readonly isAuthorityCurrent: MountAuthorityGuard;
+  readonly observedDuringNarrativeSnapshot: boolean;
+  admitted: boolean;
+  permitUnderQuiescence: boolean;
+  readonly permitSignal: Promise<void>;
+  readonly grantQuiescencePermit: () => void;
+}
+
+function createTrackedFileEvent(
+  keys: ReadonlySet<string>,
+  isAuthorityCurrent: MountAuthorityGuard,
+  observedDuringNarrativeSnapshot: boolean,
+): TrackedFileEvent {
+  let resolvePermit!: () => void;
+  let permitGranted = false;
+  const permitSignal = new Promise<void>((resolve) => {
+    resolvePermit = resolve;
+  });
+  const tracked: TrackedFileEvent = {
+    keys,
+    isAuthorityCurrent,
+    observedDuringNarrativeSnapshot,
+    admitted: false,
+    permitUnderQuiescence: false,
+    permitSignal,
+    grantQuiescencePermit: () => {
+      if (permitGranted) return;
+      permitGranted = true;
+      tracked.permitUnderQuiescence = true;
+      resolvePermit();
+    },
+  };
+  return tracked;
+}
+
+const activeFileEvents = new Map<Promise<void>, TrackedFileEvent>();
+const fileEventRootChains = new Map<string, Promise<void>>();
+interface FailedFileEvent {
+  readonly error: unknown;
+  readonly revision: number;
+  readonly isAuthorityCurrent: MountAuthorityGuard;
+}
+
+const failedFileEvents = new Map<string, FailedFileEvent>();
+let fileEventFailureRevision = 0;
+const MAX_FILE_EVENT_DRAIN_ROUNDS = 50;
+
+function rootFileEventChainKey(rootId: string, authorityToken: number): string {
+  return `${rootId}\u0000${authorityToken}`;
+}
+
+function beginRootFileEvent<T>(
+  rootId: string,
+  authorityToken: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const chainKey = rootFileEventChainKey(rootId, authorityToken);
+  const previous = fileEventRootChains.get(chainKey);
+  return previous ? previous.then(operation) : operation();
+}
+
+function extendRootFileEventChain(
+  rootId: string,
+  authorityToken: number,
+  completedTask: Promise<unknown>,
+): void {
+  const chainKey = rootFileEventChainKey(rootId, authorityToken);
+  const tail = completedTask.then(
+    () => undefined,
+    () => undefined,
+  );
+  fileEventRootChains.set(chainKey, tail);
+  void tail.finally(() => {
+    if (fileEventRootChains.get(chainKey) === tail) {
+      fileEventRootChains.delete(chainKey);
+    }
+  });
+}
+
+function externalPathKey(rootId: string, relPath: string): string {
+  return `${rootId}\u0000${relPath}`;
+}
+
+function externalRootWideKey(rootId: string): string {
+  return `${rootId}\u0000\u0000`;
+}
+
+function rootWideKeyForPathKey(pathKey: string): string {
+  const separator = pathKey.indexOf("\u0000");
+  return externalRootWideKey(pathKey.slice(0, separator));
+}
+
+function keysAffectTargets(
+  keys: ReadonlySet<string>,
+  targets: ReadonlySet<string>,
+): boolean {
+  for (const key of keys) {
+    if (targets.has(key)) return true;
+    const keySeparator = key.indexOf("\u0000");
+    const keyRootId = key.slice(0, keySeparator);
+    const keyRelPath = key.slice(keySeparator + 1);
+    for (const target of targets) {
+      if (rootWideKeyForPathKey(target) !== externalRootWideKey(keyRootId)) {
+        continue;
+      }
+      if (key === externalRootWideKey(keyRootId)) return true;
+      const targetRelPath = target.slice(target.indexOf("\u0000") + 1);
+      if (
+        targetRelPath === ".mount" ||
+        keyRelPath.startsWith(`${targetRelPath.replace(/\/+$/, "")}/`)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function sourceUriPathKey(sourceUri: string): string | null {
+  const parsed = parseSourceUri(sourceUri);
+  return parsed ? externalPathKey(parsed.rootId, parsed.relPath) : null;
+}
+
+export function hasExternalMountReloadConflictForScene(
+  sceneId: string,
+): boolean {
+  return useExternalRootStore
+    .getState()
+    .conflicts.some((conflict) => conflict.sceneId === sceneId);
+}
+
+function eventPathKeys(event: FileEvent): ReadonlySet<string> {
+  const keys = new Set([externalPathKey(event.rootId, event.relPath)]);
+  if (event.oldRelPath) {
+    keys.add(externalPathKey(event.rootId, event.oldRelPath));
+  }
+  return keys;
+}
+
+function recordFileEventFailure(
+  keys: ReadonlySet<string>,
+  error: unknown,
+  isAuthorityCurrent: MountAuthorityGuard,
+): void {
+  if (!isAuthorityCurrent()) return;
+  fileEventFailureRevision += 1;
+  const failure = {
+    error,
+    revision: fileEventFailureRevision,
+    isAuthorityCurrent,
+  };
+  for (const key of keys) failedFileEvents.set(key, failure);
+}
+
+function clearFileEventFailures(
+  keys: ReadonlySet<string>,
+  throughRevision = Number.POSITIVE_INFINITY,
+): void {
+  for (const key of keys) {
+    const failure = failedFileEvents.get(key);
+    if (failure && failure.revision <= throughRevision) {
+      failedFileEvents.delete(key);
+    }
+  }
+}
+
+function clearFileEventFailuresForRoot(
+  rootId: string,
+  throughRevision = Number.POSITIVE_INFINITY,
+): void {
+  const prefix = `${rootId}\u0000`;
+  for (const [key, failure] of failedFileEvents) {
+    if (key.startsWith(prefix) && failure.revision <= throughRevision) {
+      failedFileEvents.delete(key);
+    }
+  }
+}
 
 function cancelPendingArchive(rootId: string, relPath: string): void {
   const idx = pendingArchives.findIndex(
@@ -92,6 +277,220 @@ function cancelPendingArchive(rootId: string, relPath: string): void {
 export function _resetPendingArchives(): void {
   for (const p of pendingArchives) clearTimeout(p.timer);
   pendingArchives.length = 0;
+}
+
+export interface ExternalMountSourceExpectation {
+  readonly sourceUri: string;
+  /** Omit during preflight when the DB may legitimately be ahead of write-back. */
+  readonly content?: string;
+}
+
+async function verifyExternalMountSourcesOnDisk(
+  targets: ReadonlySet<string>,
+  expectations: readonly ExternalMountSourceExpectation[],
+): Promise<void> {
+  const expectedByUri = new Map<string, ExternalMountSourceExpectation>();
+  for (const expectation of expectations) {
+    if (expectedByUri.has(expectation.sourceUri)) {
+      throw new Error(
+        `Multiple persisted Scenes share an external source: ${expectation.sourceUri}`,
+      );
+    }
+    expectedByUri.set(expectation.sourceUri, expectation);
+  }
+  const targetsByRoot = new Map<
+    string,
+    Array<{ key: string; relPath: string }>
+  >();
+  for (const key of targets) {
+    const separator = key.indexOf("\u0000");
+    const rootId = key.slice(0, separator);
+    const relPath = key.slice(separator + 1);
+    targetsByRoot.set(rootId, [
+      ...(targetsByRoot.get(rootId) ?? []),
+      { key, relPath },
+    ]);
+  }
+
+  for (const [rootId, rootTargets] of targetsByRoot) {
+    const scan = await mountApi.scanMount(rootId);
+    const filesByPath = new Map(scan.files.map((file) => [file.relPath, file]));
+    const directoryPaths = new Set(scan.dirs.map((dir) => dir.relPath));
+    for (const target of rootTargets) {
+      const sourceUri = buildSourceUri(rootId, target.relPath);
+      const expectation = expectedByUri.get(sourceUri);
+      if (expectation) {
+        const file = filesByPath.get(target.relPath);
+        if (!file) throw new Error(`External source is missing: ${sourceUri}`);
+        if (expectation.content === undefined) continue;
+        const [diskHash, persistedHash] = await Promise.all([
+          hashForDiskContent(file.content),
+          hashForNode({ content: expectation.content }),
+        ]);
+        if (!persistedHash || diskHash !== persistedHash) {
+          throw new Error(
+            `External source differs from its persisted Scene: ${sourceUri}`,
+          );
+        }
+        continue;
+      }
+
+      if (target.relPath === ".mount") {
+        for (const file of scan.files) {
+          if (!expectedByUri.has(buildSourceUri(rootId, file.relPath))) {
+            throw new Error(
+              `External mount contains an unpersisted source: ${file.relPath}`,
+            );
+          }
+        }
+        continue;
+      }
+      if (!directoryPaths.has(target.relPath)) {
+        throw new Error(`External source path is missing: ${sourceUri}`);
+      }
+      const descendantPrefix = `${target.relPath.replace(/\/+$/, "")}/`;
+      for (const file of scan.files) {
+        if (
+          file.relPath.startsWith(descendantPrefix) &&
+          !expectedByUri.has(buildSourceUri(rootId, file.relPath))
+        ) {
+          throw new Error(
+            `External folder contains an unpersisted source: ${file.relPath}`,
+          );
+        }
+      }
+    }
+  }
+}
+
+/** Wait for pre-existing watcher work touching the selected source files. */
+export async function settleExternalMountMutationsForSourceUris(
+  sourceUris: readonly string[],
+  expectations?: readonly ExternalMountSourceExpectation[],
+): Promise<void> {
+  const targets = new Set<string>();
+  for (const sourceUri of sourceUris) {
+    const key = sourceUriPathKey(sourceUri);
+    if (!key) throw new Error(`External source URI is invalid: ${sourceUri}`);
+    targets.add(key);
+  }
+  if (targets.size === 0) return;
+  const targetRoots = new Set(
+    [...targets].map((target) => rootWideKeyForPathKey(target)),
+  );
+
+  for (let round = 0; round < MAX_FILE_EVENT_DRAIN_ROUNDS; round += 1) {
+    const active = [...activeFileEvents.entries()]
+      .filter(([, tracked]) => tracked.isAuthorityCurrent())
+      .map(([task, tracked], index) => ({
+        task,
+        tracked,
+        index,
+        affectsTargets: keysAffectTargets(tracked.keys, targets),
+        roots: new Set(
+          [...tracked.keys].map((key) => rootWideKeyForPathKey(key)),
+        ),
+      }));
+    const lastMatchingIndexByRoot = new Map<string, number>();
+    for (const entry of active) {
+      if (!entry.affectsTargets) continue;
+      for (const root of entry.roots) {
+        if (targetRoots.has(root))
+          lastMatchingIndexByRoot.set(root, entry.index);
+      }
+    }
+    const pending = active.filter((entry) =>
+      [...entry.roots].some(
+        (root) =>
+          targetRoots.has(root) &&
+          entry.index <= (lastMatchingIndexByRoot.get(root) ?? -1),
+      ),
+    );
+    if (pending.length > 0) {
+      if (
+        pending.some(
+          ({ tracked, affectsTargets }) =>
+            affectsTargets && tracked.observedDuringNarrativeSnapshot,
+        )
+      ) {
+        throw new Error(
+          "An external source changed during narrative snapshot creation",
+        );
+      }
+      for (const { tracked } of pending) {
+        tracked.grantQuiescencePermit();
+      }
+      const failures = (
+        await Promise.all(
+          pending.map(async ({ task, tracked, affectsTargets }) => {
+            try {
+              await task;
+              return undefined;
+            } catch (error) {
+              return affectsTargets && tracked.isAuthorityCurrent()
+                ? error
+                : undefined;
+            }
+          }),
+        )
+      ).filter((error) => error !== undefined);
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          "One or more external source mutations failed",
+        );
+      }
+      continue;
+    }
+
+    const stickyFailures = [
+      ...new Set(
+        [...failedFileEvents.entries()]
+          .filter(
+            ([key, failure]) =>
+              failure.isAuthorityCurrent() &&
+              keysAffectTargets(new Set([key]), targets),
+          )
+          .map(([, failure]) => failure),
+      ),
+    ];
+    if (stickyFailures.length > 0) {
+      throw new AggregateError(
+        stickyFailures.map((failure) => failure.error),
+        "One or more external source mutations previously failed",
+      );
+    }
+
+    const archivePending = pendingArchives.some((archive) =>
+      keysAffectTargets(
+        new Set([externalPathKey(archive.rootId, archive.relPath)]),
+        targets,
+      ),
+    );
+    if (archivePending) {
+      throw new Error(
+        "An external source removal is still inside the rename window",
+      );
+    }
+
+    const hasUnresolvedConflict = useExternalRootStore
+      .getState()
+      .conflicts.some((conflict) =>
+        keysAffectTargets(
+          new Set([externalPathKey(conflict.rootId, conflict.relPath)]),
+          targets,
+        ),
+      );
+    if (hasUnresolvedConflict) {
+      throw new Error("An external source has an unresolved conflict");
+    }
+    if (expectations) {
+      await verifyExternalMountSourcesOnDisk(targets, expectations);
+    }
+    return;
+  }
+
+  throw new Error("External source mutations did not reach quiescence");
 }
 
 /** @internal test helper */
@@ -198,6 +597,10 @@ export function _resetMountAuthorityForTests(): void {
   inFlightInit = null;
   _resetPendingArchives();
   recentDeletes.length = 0;
+  activeFileEvents.clear();
+  fileEventRootChains.clear();
+  failedFileEvents.clear();
+  fileEventFailureRevision = 0;
 }
 
 let inFlightInit: {
@@ -487,6 +890,15 @@ export async function addExternalMount(
   path: string,
   label?: string,
 ): Promise<void> {
+  return runTreeTopologyMutation(() =>
+    addExternalMountWithAuthority(path, label),
+  );
+}
+
+async function addExternalMountWithAuthority(
+  path: string,
+  label?: string,
+): Promise<void> {
   const authority = captureMountAuthority();
   if (!authority) return;
   const { projectId, isCurrent } = authority;
@@ -521,6 +933,12 @@ export async function addExternalMount(
 }
 
 export async function removeExternalMount(rootId: string): Promise<void> {
+  return runTreeTopologyMutation(() =>
+    removeExternalMountWithAuthority(rootId),
+  );
+}
+
+async function removeExternalMountWithAuthority(rootId: string): Promise<void> {
   const authority = captureMountAuthority(rootId);
   if (!authority) return;
   const { projectId, isCurrent } = authority;
@@ -549,11 +967,23 @@ export async function removeExternalMount(rootId: string): Promise<void> {
   await useTreeStore
     .getState()
     .loadTree(projectId, authority.workspaceOpenRevision);
+  clearFileEventFailuresForRoot(rootId);
   toast.success(i18next.t("externalMount.toast.removed"));
 }
 
 function rootPrefix(rootId: string): string {
   return `external-root://${rootId}/`;
+}
+
+function externalFileParentId(
+  relPath: string,
+  mountFolderId: string,
+  folderIds: ReadonlyMap<string, string>,
+): string {
+  const parentRel = dirname(relPath);
+  return parentRel == null
+    ? mountFolderId
+    : (folderIds.get(parentRel) ?? mountFolderId);
 }
 
 async function reconcileRoot(
@@ -562,6 +992,7 @@ async function reconcileRoot(
   projectId = getCurrentProjectId(),
   isCurrent: MountAuthorityGuard = () => true,
 ): Promise<void> {
+  const failureRevisionAtStart = fileEventFailureRevision;
   assertMountAuthorityCurrent(isCurrent);
   const allNodes = await listAllNodes(projectId);
   assertMountAuthorityCurrent(isCurrent);
@@ -601,6 +1032,22 @@ async function reconcileRoot(
     isCurrent,
   );
   assertMountAuthorityCurrent(isCurrent);
+  const diskFolderPaths = new Set(scan.dirs.map((dir) => dir.relPath));
+  for (const folder of allNodes) {
+    if (
+      folder.nodeType !== "folder" ||
+      folder.archivedAt ||
+      !folder.sourceUri?.startsWith(prefix) ||
+      folder.sourceUri === mountFolderUri
+    ) {
+      continue;
+    }
+    const parsed = parseSourceUri(folder.sourceUri);
+    if (!parsed || diskFolderPaths.has(parsed.relPath)) continue;
+    assertMountAuthorityCurrent(isCurrent);
+    await softArchiveNode(folder.id);
+    assertMountAuthorityCurrent(isCurrent);
+  }
 
   // Boot-time rename detection via normalized-markdown content hash.
   // scan.files[].contentHash は disk の生 markdown を直接 SHA-256 したもので、
@@ -642,11 +1089,18 @@ async function reconcileRoot(
         : undefined;
     if (match) {
       const newUri = buildSourceUri(root.id, match.relPath);
+      const parentId = externalFileParentId(
+        match.relPath,
+        mountFolder.id,
+        folderIds,
+      );
       assertMountAuthorityCurrent(isCurrent);
       await updateNode(node.id, {
         sourceUri: newUri,
         title: titleFromFilename(basename(match.relPath)),
         sourceMtime: match.mtime,
+        parentId,
+        sortOrder: sortOrderForFilename(match.relPath),
       });
       assertMountAuthorityCurrent(isCurrent);
       diskOnly.splice(diskOnly.indexOf(match), 1);
@@ -659,10 +1113,24 @@ async function reconcileRoot(
     }
   }
 
+  // Boot reconciliation compares the canonical PM documents in one body read
+  // batch. Metadata-only mtime/title drift must not emit a body mutation (or a
+  // new timelapse segment) when disk and DB already describe the same doc.
+  const existingFileIds = scan.files
+    .map((file) => dbByUri.get(buildSourceUri(root.id, file.relPath))?.id)
+    .filter((id): id is string => id !== undefined);
+  const existingFileContents = await loadSceneContents(existingFileIds);
+  assertMountAuthorityCurrent(isCurrent);
+
   for (const file of scan.files) {
     assertMountAuthorityCurrent(isCurrent);
     const uri = buildSourceUri(root.id, file.relPath);
     const existing = dbByUri.get(uri);
+    const parentId = externalFileParentId(
+      file.relPath,
+      mountFolder.id,
+      folderIds,
+    );
     if (existing?.archivedAt) {
       assertMountAuthorityCurrent(isCurrent);
       await updateNode(existing.id, {
@@ -672,7 +1140,21 @@ async function reconcileRoot(
       assertMountAuthorityCurrent(isCurrent);
     }
     if (existing) {
-      await syncFileCache(existing.id, file, isCurrent);
+      if (existing.parentId !== parentId) {
+        assertMountAuthorityCurrent(isCurrent);
+        await updateNode(existing.id, {
+          parentId,
+          sortOrder: sortOrderForFilename(file.relPath),
+        });
+        assertMountAuthorityCurrent(isCurrent);
+      }
+      await syncFileCache(
+        existing.id,
+        file,
+        projectId,
+        isCurrent,
+        existingFileContents.get(existing.id),
+      );
     } else {
       await upsertSceneFromFile(
         root,
@@ -685,6 +1167,7 @@ async function reconcileRoot(
     }
     assertMountAuthorityCurrent(isCurrent);
   }
+  clearFileEventFailuresForRoot(root.id, failureRevisionAtStart);
 }
 
 async function hashForNode(node: { content: string }): Promise<string | null> {
@@ -732,13 +1215,13 @@ async function ensureFolderTree(
   for (const dir of sortedDirs) {
     assertMountAuthorityCurrent(isCurrent);
     const uri = buildSourceUri(root.id, dir.relPath);
+    const parentRel = dirname(dir.relPath);
+    const parentId =
+      parentRel == null
+        ? mountFolderId
+        : (folderIds.get(parentRel) ?? mountFolderId);
     let node = allNodes.find((n) => n.sourceUri === uri);
     if (!node) {
-      const parentRel = dirname(dir.relPath);
-      const parentId =
-        parentRel == null
-          ? mountFolderId
-          : (folderIds.get(parentRel) ?? mountFolderId);
       node = await createNode({
         id: crypto.randomUUID(),
         projectId,
@@ -750,6 +1233,11 @@ async function ensureFolderTree(
       });
       assertMountAuthorityCurrent(isCurrent);
       allNodes.push(node);
+    } else if (node.archivedAt || node.parentId !== parentId) {
+      assertMountAuthorityCurrent(isCurrent);
+      await updateNode(node.id, { archivedAt: null, parentId });
+      assertMountAuthorityCurrent(isCurrent);
+      node = { ...node, archivedAt: null, parentId };
     }
     folderIds.set(dir.relPath, node.id);
   }
@@ -764,7 +1252,10 @@ export async function buildDbByUriMap(
   isCurrent: MountAuthorityGuard = () => true,
 ): Promise<Map<string, Awaited<ReturnType<typeof listAllNodes>>[number]>> {
   const candidates = allNodes.filter(
-    (n) => n.sourceUri?.startsWith(prefix) && n.sourceUri !== mountFolderUri,
+    (n) =>
+      n.nodeType === "scene" &&
+      n.sourceUri?.startsWith(prefix) &&
+      n.sourceUri !== mountFolderUri,
   );
   const grouped = new Map<string, typeof candidates>();
   for (const node of candidates) {
@@ -818,31 +1309,36 @@ async function upsertSceneFromFile(
       });
       assertMountAuthorityCurrent(isCurrent);
     }
-    await syncFileCache(existing.id, file, isCurrent);
+    await syncFileCache(existing.id, file, projectId, isCurrent);
     return;
   }
 
-  const parentRel = dirname(file.relPath);
-  const parentId =
-    parentRel == null
-      ? mountFolderId
-      : (folderIds.get(parentRel) ?? mountFolderId);
+  const parentId = externalFileParentId(file.relPath, mountFolderId, folderIds);
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
-  const charCount = countSceneBodyCharsFromJson(pmJson);
+  const nodeId = crypto.randomUUID();
   assertMountAuthorityCurrent(isCurrent);
-  const node = await createNode({
-    id: crypto.randomUUID(),
-    projectId,
-    nodeType: "scene",
-    title: titleFromFilename(basename(file.relPath)),
-    sortOrder: sortOrderForFilename(file.relPath),
-    parentId,
-    sourceUri: uri,
-    sourceMtime: file.mtime,
-    content: pmJson,
-  });
-  assertMountAuthorityCurrent(isCurrent);
-  await saveSceneContent(node.id, { content: pmJson, charCount });
+  const node = await createNode(
+    {
+      id: nodeId,
+      projectId,
+      nodeType: "scene",
+      title: titleFromFilename(basename(file.relPath)),
+      sortOrder: sortOrderForFilename(file.relPath),
+      parentId,
+      sourceUri: uri,
+      sourceMtime: file.mtime,
+      content: pmJson,
+    },
+    {
+      timelapseDocumentIdentity: {
+        projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId: nodeId,
+        storage: "file",
+      },
+    },
+  );
   assertMountAuthorityCurrent(isCurrent);
   scheduleSceneIndex(node.id);
 }
@@ -850,19 +1346,66 @@ async function upsertSceneFromFile(
 async function syncFileCache(
   nodeId: string,
   file: ScannedFile,
+  projectId: string,
   isCurrent: MountAuthorityGuard = () => true,
+  knownPersistedContent?: string,
 ): Promise<void> {
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
   const charCount = countSceneBodyCharsFromJson(pmJson);
   assertMountAuthorityCurrent(isCurrent);
-  await saveSceneContent(nodeId, { content: pmJson, charCount });
+  const persistedContent =
+    knownPersistedContent ?? (await loadSceneContent(nodeId));
   assertMountAuthorityCurrent(isCurrent);
+  const bodyChanged =
+    normalizePmJsonForComparison(persistedContent) !==
+    normalizePmJsonForComparison(pmJson);
+  if (bodyChanged) {
+    await saveSceneContent(nodeId, {
+      content: pmJson,
+      charCount,
+      projectId,
+      timelapseDocumentIdentity: {
+        projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId: nodeId,
+        storage: "file",
+      },
+    });
+    assertMountAuthorityCurrent(isCurrent);
+  }
   await updateNode(nodeId, {
     sourceMtime: file.mtime,
     title: titleFromFilename(basename(file.relPath)),
   });
   assertMountAuthorityCurrent(isCurrent);
+  if (bodyChanged) {
+    // The body and metadata writes are canonical Native mutations. Query the
+    // durable chain tail after both complete; renderer memory can lag a Native
+    // append and is not an acceptable replay anchor.
+    await rebaselineScenesAtTail(projectId, [nodeId]);
+    assertMountAuthorityCurrent(isCurrent);
+  }
   scheduleSceneIndex(nodeId);
+}
+
+function normalizePmJsonForComparison(content: string): string | null {
+  try {
+    const normalize = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(normalize);
+      if (value !== null && typeof value === "object") {
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, nested]) => [key, normalize(nested)]),
+        );
+      }
+      return value;
+    };
+    return JSON.stringify(normalize(JSON.parse(content)));
+  } catch {
+    return null;
+  }
 }
 
 function sortOrderForFilename(relPath: string): string {
@@ -903,17 +1446,173 @@ export async function purgeExpiredArchives(
   return deletedCount;
 }
 
-export async function handleFileEvent(event: FileEvent): Promise<void> {
-  const authority = captureMountAuthority(event.rootId);
-  if (!authority) return;
+export function handleFileEvent(event: FileEvent): Promise<void> {
+  const capturedEvent: FileEvent = {
+    rootId: event.rootId,
+    relPath: event.relPath,
+    kind: event.kind,
+    ...(typeof event.oldRelPath === "string"
+      ? { oldRelPath: event.oldRelPath }
+      : {}),
+  };
+  // Bind the watcher fact to the authority that observed it. A Project or
+  // Workspace switch may complete while the event waits behind its lease;
+  // that stale fact must not be replayed into the newly opened scope.
+  const authority = captureMountAuthority(capturedEvent.rootId);
+  if (!authority) return Promise.resolve();
+  if (capturedEvent.kind === "changed" || capturedEvent.kind === "added") {
+    cancelPendingArchive(capturedEvent.rootId, capturedEvent.relPath);
+  } else if (capturedEvent.kind === "renamed") {
+    cancelPendingArchive(capturedEvent.rootId, capturedEvent.relPath);
+    if (capturedEvent.oldRelPath) {
+      cancelPendingArchive(capturedEvent.rootId, capturedEvent.oldRelPath);
+    }
+  }
+  if (
+    useExternalRootStore
+      .getState()
+      .isMuted(capturedEvent.rootId, capturedEvent.relPath)
+  ) {
+    const mutedBarrier = beginRootFileEvent(
+      capturedEvent.rootId,
+      authority.token,
+      async () => {
+        if (!authority.isCurrent()) return;
+        if (
+          capturedEvent.kind === "changed" ||
+          capturedEvent.kind === "added"
+        ) {
+          cancelPendingArchive(capturedEvent.rootId, capturedEvent.relPath);
+        } else if (capturedEvent.kind === "renamed") {
+          cancelPendingArchive(capturedEvent.rootId, capturedEvent.relPath);
+          if (capturedEvent.oldRelPath) {
+            cancelPendingArchive(
+              capturedEvent.rootId,
+              capturedEvent.oldRelPath,
+            );
+          }
+        }
+      },
+    );
+    extendRootFileEventChain(
+      capturedEvent.rootId,
+      authority.token,
+      mutedBarrier,
+    );
+    return mutedBarrier;
+  }
+  const observedDuringNarrativeSnapshot =
+    isQuiescenceLeaseActive("narrative-snapshot");
+  const failureKeys = new Set(eventPathKeys(capturedEvent));
+  const activeKeys = new Set(failureKeys);
+  if (capturedEvent.kind === "added" || capturedEvent.kind === "renamed") {
+    // Either event can fall back to full-root reconciliation after awaiting a
+    // scan. Track that conservative scope from observation so a snapshot
+    // cannot pass settlement during the pre-reconcile await window.
+    activeKeys.add(externalRootWideKey(capturedEvent.rootId));
+  }
+  const markRootWide = (): void => {
+    // Sticky failure scope is narrower: only a task that actually began a
+    // root reconciliation can poison every source path in that root.
+    failureKeys.add(externalRootWideKey(capturedEvent.rootId));
+  };
+  const markFailurePath = (relPath: string): void => {
+    failureKeys.add(externalPathKey(capturedEvent.rootId, relPath));
+  };
+  const tracked = createTrackedFileEvent(
+    activeKeys,
+    authority.isCurrent,
+    observedDuringNarrativeSnapshot,
+  );
+  let failureRevisionAtStart = fileEventFailureRevision;
+  const run = async (): Promise<FileEventReconciliation> => {
+    // The event may have waited behind an earlier fact for the same root. Its
+    // successful retry must be able to clear a failure emitted by that fact.
+    failureRevisionAtStart = fileEventFailureRevision;
+    while (!canScheduleQuiescenceMutation()) {
+      if (tracked.permitUnderQuiescence) {
+        if (!authority.isCurrent()) return { kind: "none" };
+        return await schedulePreexistingParticipantMutation(() => {
+          tracked.admitted = true;
+          return handleFileEventImpl(
+            capturedEvent,
+            authority,
+            markRootWide,
+            markFailurePath,
+            () => tracked.permitUnderQuiescence,
+          );
+        });
+      }
+      const admission = await Promise.race([
+        waitForQuiescenceMutationAdmission().then((allowed) => ({
+          kind: "admission" as const,
+          allowed,
+        })),
+        tracked.permitSignal.then(() => ({ kind: "permit" as const })),
+      ]);
+      if (admission.kind === "permit") continue;
+      if (!admission.allowed) {
+        return { kind: "none" };
+      }
+    }
+    if (!authority.isCurrent()) return { kind: "none" };
+    tracked.grantQuiescencePermit();
+    tracked.admitted = true;
+    return await handleFileEventImpl(
+      capturedEvent,
+      authority,
+      markRootWide,
+      markFailurePath,
+      () => tracked.permitUnderQuiescence,
+    );
+  };
+  const operation = beginRootFileEvent(
+    capturedEvent.rootId,
+    authority.token,
+    run,
+  );
+  const task = operation
+    .then((reconciled) => {
+      if (reconciled.kind === "paths") {
+        clearFileEventFailures(reconciled.keys, failureRevisionAtStart);
+      } else if (reconciled.kind === "root") {
+        clearFileEventFailuresForRoot(
+          reconciled.rootId,
+          failureRevisionAtStart,
+        );
+      }
+    })
+    .catch((error: unknown) => {
+      recordFileEventFailure(failureKeys, error, authority.isCurrent);
+      throw error;
+    });
+  extendRootFileEventChain(capturedEvent.rootId, authority.token, task);
+  activeFileEvents.set(task, tracked);
+  return task.finally(() => {
+    activeFileEvents.delete(task);
+  });
+}
+
+type FileEventReconciliation =
+  | { readonly kind: "none" }
+  | { readonly kind: "paths"; readonly keys: ReadonlySet<string> }
+  | { readonly kind: "root"; readonly rootId: string };
+
+async function handleFileEventImpl(
+  event: FileEvent,
+  authority: CapturedMountAuthority,
+  markRootWide: () => void,
+  markFailurePath: (relPath: string) => void,
+  isQuiescenceMutationPermitted: () => boolean,
+): Promise<FileEventReconciliation> {
   if (useExternalRootStore.getState().isMuted(event.rootId, event.relPath)) {
-    return;
+    return { kind: "none" };
   }
 
   const root = useExternalRootStore
     .getState()
     .roots.find((r) => r.id === event.rootId);
-  if (!root) return;
+  if (!root) return { kind: "none" };
 
   try {
     switch (event.kind) {
@@ -924,17 +1623,19 @@ export async function handleFileEvent(event: FileEvent): Promise<void> {
           authority.projectId,
           authority.isCurrent,
           authority.workspaceOpenRevision,
+          isQuiescenceMutationPermitted,
         );
-        break;
+        return { kind: "paths", keys: eventPathKeys(event) };
       case "added":
-        await handleFileAdded(
+        return await handleFileAdded(
           root,
           event.relPath,
           authority.projectId,
           authority.isCurrent,
           authority.workspaceOpenRevision,
+          markRootWide,
+          markFailurePath,
         );
-        break;
       case "removed":
         await handleFileRemoved(
           root,
@@ -942,23 +1643,27 @@ export async function handleFileEvent(event: FileEvent): Promise<void> {
           authority.projectId,
           authority.isCurrent,
           authority.workspaceOpenRevision,
+          authority.token,
         );
-        break;
+        return { kind: "none" };
       case "renamed":
         if (event.oldRelPath) {
-          await handleFileRenamed(
+          return await handleFileRenamed(
             root,
             event.oldRelPath,
             event.relPath,
             authority.projectId,
             authority.isCurrent,
             authority.workspaceOpenRevision,
+            markRootWide,
+            markFailurePath,
           );
         }
-        break;
+        return { kind: "none" };
     }
   } catch (err) {
     if (!(err instanceof ExternalMountAuthoritySupersededError)) throw err;
+    return { kind: "none" };
   }
 }
 
@@ -968,6 +1673,7 @@ async function handleFileChanged(
   projectId: string,
   isCurrent: MountAuthorityGuard,
   workspaceOpenRevision?: number,
+  isQuiescenceMutationPermitted: () => boolean = () => false,
 ): Promise<void> {
   assertMountAuthorityCurrent(isCurrent);
   cancelPendingArchive(root.id, relPath);
@@ -1000,7 +1706,12 @@ async function handleFileChanged(
   // Fast-path obvious conflicts before acquiring the exact-document lease.
   // A destructive global lifecycle is already draining this authority, so a
   // watcher callback must not start a new import behind it.
-  if (hasLocalDraft() || !canScheduleQuiescenceMutation()) {
+  if (
+    hasLocalDraft() ||
+    !canScheduleQuiescenceMutation({
+      preexistingDraft: isQuiescenceMutationPermitted(),
+    })
+  ) {
     assertMountAuthorityCurrent(isCurrent);
     useExternalRootStore.getState().enqueueConflict(conflict);
     return;
@@ -1056,6 +1767,14 @@ async function applyExternalContent(
   const { contentVersion, contentUpdatedAt } = await saveSceneContent(nodeId, {
     content: pmJson,
     charCount,
+    projectId,
+    timelapseDocumentIdentity: {
+      projectId,
+      domain: "editor",
+      entityType: "scene",
+      entityId: nodeId,
+      storage: "file",
+    },
   });
   // Publish the authoritative DB replacement before any fallible metadata,
   // timelapse, tree, mention, or chat side effect. Mounted editors subscribe
@@ -1140,40 +1859,59 @@ async function handleFileAdded(
   projectId: string,
   isCurrent: MountAuthorityGuard,
   workspaceOpenRevision?: number,
-): Promise<void> {
+  markRootWide: () => void = () => {},
+  markFailurePath: (relPath: string) => void = () => {},
+  allowRecentRename = true,
+): Promise<FileEventReconciliation> {
   assertMountAuthorityCurrent(isCurrent);
   cancelPendingArchive(root.id, relPath);
-  const scan = await mountApi.scanMount(root.id);
-  assertMountAuthorityCurrent(isCurrent);
+  let scan: ScanResult;
+  let fileHash: string;
+  try {
+    scan = await mountApi.scanMount(root.id);
+    assertMountAuthorityCurrent(isCurrent);
+    const scannedFile = scan.files.find((file) => file.relPath === relPath);
+    if (!scannedFile) return { kind: "none" };
+    fileHash = await hashForDiskContent(scannedFile.content);
+    assertMountAuthorityCurrent(isCurrent);
+  } catch (error) {
+    markRootWide();
+    throw error;
+  }
   const file = scan.files.find((f) => f.relPath === relPath);
-  if (!file) return;
+  if (!file) return { kind: "none" };
 
   // recentDeletes は handleFileRemoved 側で hashForNode (pmJsonToMarkdown 経路)
   // で計算しているので、disk 側も同じ正規化経路の hashForDiskContent で揃える。
-  const fileHash = await hashForDiskContent(file.content);
-  assertMountAuthorityCurrent(isCurrent);
   const recent = recentDeletes.find(
     (d) =>
       d.rootId === root.id &&
       d.contentHash === fileHash &&
       Date.now() - d.at < RENAME_WINDOW_MS,
   );
-  if (recent) {
-    await handleFileRenamed(
+  const rootWideFailure = failedFileEvents.get(externalRootWideKey(root.id));
+  const requiresRootRecovery =
+    rootWideFailure !== undefined && rootWideFailure.isAuthorityCurrent();
+  if (recent && allowRecentRename && !requiresRootRecovery) {
+    markFailurePath(recent.relPath);
+    return await handleFileRenamed(
       root,
       recent.relPath,
       relPath,
       projectId,
       isCurrent,
       workspaceOpenRevision,
+      markRootWide,
+      markFailurePath,
     );
-    return;
   }
 
+  markRootWide();
   await reconcileRoot(root, scan, projectId, isCurrent);
   assertMountAuthorityCurrent(isCurrent);
   await useTreeStore.getState().loadTree(projectId, workspaceOpenRevision);
   assertMountAuthorityCurrent(isCurrent);
+  return { kind: "root", rootId: root.id };
 }
 
 async function handleFileRemoved(
@@ -1182,6 +1920,7 @@ async function handleFileRemoved(
   projectId: string,
   isCurrent: MountAuthorityGuard,
   workspaceOpenRevision?: number,
+  authorityToken = 0,
 ): Promise<void> {
   assertMountAuthorityCurrent(isCurrent);
   const uri = buildSourceUri(root.id, relPath);
@@ -1218,11 +1957,47 @@ async function handleFileRemoved(
   const capturedUri = uri;
   const timer = setTimeout(() => {
     cancelPendingArchive(root.id, relPath);
-    void (async () => {
+    const keys = new Set([externalPathKey(root.id, relPath)]);
+    const tracked = createTrackedFileEvent(
+      keys,
+      isCurrent,
+      isQuiescenceLeaseActive("narrative-snapshot"),
+    );
+    let failureRevisionAtStart = fileEventFailureRevision;
+    const archiveTask = beginRootFileEvent(
+      root.id,
+      authorityToken,
+      async (): Promise<boolean> => {
+        while (!canScheduleQuiescenceMutation()) {
+          if (tracked.permitUnderQuiescence) {
+            if (!isCurrent()) return false;
+            return await schedulePreexistingParticipantMutation(() => {
+              tracked.admitted = true;
+              return executeDeferredArchive();
+            });
+          }
+          const admission = await Promise.race([
+            waitForQuiescenceMutationAdmission().then((allowed) => ({
+              kind: "admission" as const,
+              allowed,
+            })),
+            tracked.permitSignal.then(() => ({ kind: "permit" as const })),
+          ]);
+          if (admission.kind === "permit") continue;
+          if (!admission.allowed) return false;
+        }
+        if (!isCurrent()) return false;
+        tracked.grantQuiescencePermit();
+        tracked.admitted = true;
+        return await executeDeferredArchive();
+      },
+    );
+    async function executeDeferredArchive(): Promise<boolean> {
+      failureRevisionAtStart = fileEventFailureRevision;
       try {
-        if (!isCurrent()) return;
+        if (!isCurrent()) return false;
         const still = await findNodeByUri(capturedUri, projectId, isCurrent);
-        if (!still || still.archivedAt) return;
+        if (!still || still.archivedAt) return true;
         assertMountAuthorityCurrent(isCurrent);
         await softArchiveNode(still.id);
         assertMountAuthorityCurrent(isCurrent);
@@ -1238,10 +2013,33 @@ async function handleFileRemoved(
               "外部で削除されたファイル「{{name}}」をアーカイブしました",
           }),
         );
+        return true;
       } catch (err) {
         if (!(err instanceof ExternalMountAuthoritySupersededError)) throw err;
+        return false;
       }
-    })();
+    }
+    const completedArchiveTask = archiveTask
+      .then((reconciled) => {
+        if (reconciled) {
+          clearFileEventFailures(keys, failureRevisionAtStart);
+        }
+      })
+      .catch((error: unknown) => {
+        recordFileEventFailure(keys, error, isCurrent);
+        throw error;
+      });
+    extendRootFileEventChain(root.id, authorityToken, completedArchiveTask);
+    activeFileEvents.set(completedArchiveTask, tracked);
+    void completedArchiveTask
+      .catch((error: unknown) => {
+        debugLog.error(
+          "ExternalMount",
+          "Deferred external archive failed",
+          errorDetail(error),
+        );
+      })
+      .finally(() => activeFileEvents.delete(completedArchiveTask));
   }, RENAME_WINDOW_MS);
   pendingArchives.push({ rootId: root.id, relPath, timer });
 }
@@ -1253,27 +2051,63 @@ async function handleFileRenamed(
   projectId: string,
   isCurrent: MountAuthorityGuard,
   workspaceOpenRevision?: number,
-): Promise<void> {
+  markRootWide: () => void = () => {},
+  markFailurePath: (relPath: string) => void = () => {},
+): Promise<FileEventReconciliation> {
   assertMountAuthorityCurrent(isCurrent);
   cancelPendingArchive(root.id, oldRelPath);
   cancelPendingArchive(root.id, newRelPath);
   const oldUri = buildSourceUri(root.id, oldRelPath);
-  const node = await findNodeByUri(oldUri, projectId, isCurrent);
+  assertMountAuthorityCurrent(isCurrent);
+  const nodes = await listAllNodes(projectId);
+  assertMountAuthorityCurrent(isCurrent);
+  const node = nodes.find((candidate) => candidate.sourceUri === oldUri);
   if (!node) {
-    await handleFileAdded(
+    return await handleFileAdded(
       root,
       newRelPath,
       projectId,
       isCurrent,
       workspaceOpenRevision,
+      markRootWide,
+      markFailurePath,
+      false,
     );
-    return;
   }
   const newUri = buildSourceUri(root.id, newRelPath);
+  let parentId = node.parentId;
+  if (dirname(oldRelPath) !== dirname(newRelPath)) {
+    const newParentRel = dirname(newRelPath);
+    const newParentUri =
+      newParentRel === null
+        ? buildMountFolderUri(root.id)
+        : buildSourceUri(root.id, newParentRel);
+    const newParent = nodes.find(
+      (candidate) =>
+        candidate.nodeType === "folder" &&
+        candidate.sourceUri === newParentUri &&
+        !candidate.archivedAt,
+    );
+    if (!newParent) {
+      return await handleFileAdded(
+        root,
+        newRelPath,
+        projectId,
+        isCurrent,
+        workspaceOpenRevision,
+        markRootWide,
+        markFailurePath,
+        false,
+      );
+    }
+    parentId = newParent.id;
+  }
   assertMountAuthorityCurrent(isCurrent);
   await updateNode(node.id, {
     sourceUri: newUri,
     title: titleFromFilename(basename(newRelPath)),
+    parentId,
+    sortOrder: sortOrderForFilename(newRelPath),
   });
   assertMountAuthorityCurrent(isCurrent);
   await useTreeStore.getState().loadTree(projectId, workspaceOpenRevision);
@@ -1283,6 +2117,13 @@ async function handleFileRenamed(
       title: titleFromFilename(basename(newRelPath)),
     }),
   );
+  return {
+    kind: "paths",
+    keys: new Set([
+      externalPathKey(root.id, oldRelPath),
+      externalPathKey(root.id, newRelPath),
+    ]),
+  };
 }
 
 async function findNodeByUri(

@@ -13,6 +13,7 @@ import {
 } from "./api";
 import type {
   CodexEntry,
+  CodexEntryWriteResult,
   CodexEntryType,
   CodexMatchRow,
   NewCodexEntry,
@@ -28,16 +29,11 @@ import {
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { _clearCodexCrossMentionCaches } from "./codexCrossMentions";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
-import {
-  computeBodyDiff,
-  computeDocDiff,
-  type BodyDiff,
-} from "@/features/timelapse/bodyDiff";
 import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 import {
   parseReadings,
   resolveUnsetReadingTargetForSurface,
@@ -55,6 +51,11 @@ import {
 } from "@/lib/saveOutcome";
 import { hasExternalEditConflictForId } from "@/lib/externalEditConflictRegistry";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
+import {
+  createCanonicalHistoryWriteLease,
+  type CanonicalHistoryWriteLease,
+  type CanonicalWriteReceipt,
+} from "@/features/native-writes/writeContext";
 
 export type CodexSortOrder =
   | "category"
@@ -134,6 +135,19 @@ function labelForPatch(data: StructuralPatch): string {
   return i18next.t("codex.history.updated");
 }
 
+function codexHistoryWriteLease(
+  origin: "undo" | "redo",
+  receipt: CanonicalWriteReceipt,
+): CanonicalHistoryWriteLease {
+  if (!receipt.undoJournalId) {
+    throw new Error("Codex history write is missing its Undo Journal lineage");
+  }
+  return createCanonicalHistoryWriteLease(origin, {
+    originalTransactionId: receipt.maintenanceTransactionId,
+    undoJournalId: receipt.undoJournalId,
+  });
+}
+
 interface CodexState {
   entries: CodexEntry[];
   /**
@@ -191,7 +205,10 @@ interface CodexState {
   update: (
     id: string,
     data: StructuralPatch,
-    options?: { baseVersion?: number },
+    options?: {
+      baseVersion?: number;
+      timelapseDocument?: TimelapseDocumentRef;
+    },
   ) => Promise<VersionedSaveOutcome>;
   /**
    * Type + summary detail form save. Persists both fields in one OCC-protected
@@ -217,7 +234,11 @@ interface CodexState {
   updateText: (
     id: string,
     data: TextPatch,
-    options?: { baseVersion?: number },
+    options?: {
+      baseVersion?: number;
+      timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: boolean;
+    },
   ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
@@ -442,12 +463,19 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const captured = { ...entry };
+        const receipt = entry.__writeReceipt;
+        const undoWrite = codexHistoryWriteLease("undo", receipt);
+        const redoWrite = codexHistoryWriteLease("redo", receipt);
         useGlobalHistoryStore.getState().push({
           kind: "codex",
           label: i18next.t("codex.history.created"),
           entityId: captured.id,
           async undo() {
-            await deleteCodexEntry(captured.projectId, captured.id);
+            await deleteCodexEntry(captured.projectId, captured.id, {
+              writeContext: undoWrite.acquire(),
+              baseVersion: captured.version,
+            });
+            undoWrite.committed();
             if (!isCurrentMutationAuthority(authority)) return;
             set((state) => ({
               entries: state.entries.filter((e) => e.id !== captured.id),
@@ -458,27 +486,30 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
             }));
           },
           async redo() {
-            await createCodexEntry({
-              id: captured.id,
-              projectId: captured.projectId,
-              type: captured.type,
-              name: captured.name,
-              summary: captured.summary ?? undefined,
-              tagsCache: captured.tagsCache ?? undefined,
-              aliases: captured.aliases ?? undefined,
-              excludedAliases: captured.excludedAliases ?? undefined,
-              readings: captured.readings ?? undefined,
-              parentId: captured.parentId ?? undefined,
-              sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
-            });
-            // Apply remaining fields not accepted by createCodexEntry
-            await updateCodexEntry(captured.projectId, captured.id, {
-              content: captured.content ?? undefined,
-              contextMode: captured.contextMode ?? undefined,
-              icon: captured.icon ?? undefined,
-              childrenBudget: captured.childrenBudget ?? undefined,
-              notes: captured.notes ?? undefined,
-            });
+            await createCodexEntry(
+              {
+                id: captured.id,
+                projectId: captured.projectId,
+                type: captured.type,
+                name: captured.name,
+                summary: captured.summary ?? undefined,
+                content: captured.content ?? undefined,
+                tagsCache: captured.tagsCache ?? undefined,
+                aliases: captured.aliases ?? undefined,
+                excludedAliases: captured.excludedAliases ?? undefined,
+                readings: captured.readings ?? undefined,
+                parentId: captured.parentId ?? undefined,
+                contextMode: captured.contextMode ?? undefined,
+                icon: captured.icon ?? undefined,
+                childrenBudget: captured.childrenBudget ?? undefined,
+                notes: captured.notes ?? undefined,
+                sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
+              },
+              {
+                writeContext: redoWrite.acquire(),
+              },
+            );
+            redoWrite.committed();
             if (!isCurrentMutationAuthority(authority)) return;
             const { filterType } = get();
             set((state) => ({
@@ -494,18 +525,6 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           },
         });
       }
-      recordChangeEvent({
-        domain: "codex",
-        opType: "entry.create",
-        projectId,
-        entityType: "codex_entry",
-        entityId: entry.id,
-        payload: {
-          type: entry.type,
-          name: entry.name,
-          parentId: entry.parentId,
-        },
-      });
       return entry;
     } catch (e) {
       if (
@@ -527,7 +546,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     const before =
       snapshot.entries.find((e) => e.id === id) ??
       (snapshot.selectedEntry?.id === id ? snapshot.selectedEntry : undefined);
-    let updated: CodexEntry | undefined;
+    let updated: CodexEntryWriteResult | undefined;
 
     try {
       updated =
@@ -561,18 +580,6 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       return SAVE_NOT_PERSISTED;
     }
 
-    recordChangeEvent({
-      domain: "codex",
-      opType: "entry.update",
-      entityType: "codex_entry",
-      entityId: id,
-      payload: {
-        fields: Object.keys(data),
-        // before/after は keys のみで巨大な content を chain に含めない。
-        // body 差分は AuthorshipMark + editor onTransaction が別経路で捕捉する。
-      },
-    });
-
     if (!before) return persistedVersion(updated.version);
     if (useGlobalHistoryStore.getState().isReplaying) {
       return persistedVersion(updated.version);
@@ -586,6 +593,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
     // Defensive copy so later mutation of `data` by the caller cannot change
     // the redo behavior captured in this closure.
     const redoPatch = { ...data };
+    const receipt = updated.__writeReceipt;
+    const undoWrite = codexHistoryWriteLease("undo", receipt);
+    const redoWrite = codexHistoryWriteLease("redo", receipt);
+    let undoBaseVersion = updated.version;
+    let redoBaseVersion: number | undefined;
 
     useGlobalHistoryStore.getState().push({
       kind: "codex",
@@ -596,8 +608,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           getCurrentProjectId(),
           id,
           undoPatch as StructuralPatch,
+          {
+            baseVersion: undoBaseVersion,
+            writeContext: undoWrite.acquire(),
+          },
         );
         if (restored) {
+          redoBaseVersion = restored.version;
+          undoWrite.committed();
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? restored : e)),
             completionTargets: upsertCompletionTarget(
@@ -614,8 +632,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
           getCurrentProjectId(),
           id,
           redoPatch,
+          {
+            baseVersion: redoBaseVersion,
+            writeContext: redoWrite.acquire(),
+          },
         );
         if (reapplied) {
+          undoBaseVersion = reapplied.version;
+          redoWrite.committed();
           set((state) => ({
             entries: state.entries.map((e) => (e.id === id ? reapplied : e)),
             completionTargets: upsertCompletionTarget(
@@ -649,7 +673,7 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       getCurrentProjectId,
     );
     const { projectId } = authority;
-    let updated: CodexEntry | undefined;
+    let updated: CodexEntryWriteResult | undefined;
     try {
       const outcome = await runAuthoritativeMutation(authority, () =>
         updateCodexEntry(
@@ -714,6 +738,9 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
 
     if (!useGlobalHistoryStore.getState().isReplaying) {
       const redoPatch = { ...changedPatch };
+      const receipt = updated.__writeReceipt;
+      const undoWrite = codexHistoryWriteLease("undo", receipt);
+      const redoWrite = codexHistoryWriteLease("redo", receipt);
       let undoBaseVersion = updated.version;
       let redoBaseVersion: number | undefined;
       useGlobalHistoryStore.getState().push({
@@ -723,9 +750,11 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         async undo() {
           const restored = await updateCodexEntry(projectId, id, undoPatch, {
             baseVersion: undoBaseVersion,
+            writeContext: undoWrite.acquire(),
           });
           if (!restored) return;
           redoBaseVersion = restored.version;
+          undoWrite.committed();
           syncUpdatedEntry(restored);
         },
         async redo() {
@@ -734,34 +763,20 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
             id,
             redoPatch,
             redoBaseVersion === undefined
-              ? undefined
-              : { baseVersion: redoBaseVersion },
+              ? { writeContext: redoWrite.acquire() }
+              : {
+                  baseVersion: redoBaseVersion,
+                  writeContext: redoWrite.acquire(),
+                },
           );
           if (!reapplied) return;
           undoBaseVersion = reapplied.version;
+          redoWrite.committed();
           syncUpdatedEntry(reapplied);
         },
       });
     }
 
-    const diffs: Record<string, BodyDiff> = {};
-    if (changedFields.includes("summary")) {
-      const summaryDiff = computeBodyDiff(
-        before.summary ?? "",
-        updated.summary ?? "",
-      );
-      if (summaryDiff) diffs.summary = summaryDiff;
-    }
-    recordChangeEvent({
-      domain: "codex",
-      opType: "entry.update",
-      entityType: "codex_entry",
-      entityId: id,
-      payload: {
-        fields: changedFields,
-        ...(Object.keys(diffs).length > 0 ? { diffs } : {}),
-      },
-    });
     return true;
   },
 
@@ -817,16 +832,13 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         ),
       }));
 
-      recordChangeEvent({
-        domain: "codex",
-        opType: "entry.update",
-        entityType: "codex_entry",
-        entityId: expectedEntryId,
-        payload: { fields: ["readings"] },
-      });
-
       if (!useGlobalHistoryStore.getState().isReplaying) {
         const beforeReadings = before.readings;
+        const receipt = updated.__writeReceipt;
+        const undoWrite = codexHistoryWriteLease("undo", receipt);
+        const redoWrite = codexHistoryWriteLease("redo", receipt);
+        let undoBaseVersion = updated.version;
+        let redoBaseVersion: number | undefined;
         useGlobalHistoryStore.getState().push({
           kind: "codex",
           label: labelForPatch(patch),
@@ -838,8 +850,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               {
                 readings: beforeReadings,
               },
+              {
+                baseVersion: undoBaseVersion,
+                writeContext: undoWrite.acquire(),
+              },
             );
             if (restored) {
+              redoBaseVersion = restored.version;
+              undoWrite.committed();
               set((state) => ({
                 entries: state.entries.map((entry) =>
                   entry.id === expectedEntryId ? restored : entry,
@@ -856,8 +874,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
               projectId,
               expectedEntryId,
               patch,
+              {
+                baseVersion: redoBaseVersion,
+                writeContext: redoWrite.acquire(),
+              },
             );
             if (reapplied) {
+              undoBaseVersion = reapplied.version;
+              redoWrite.committed();
               set((state) => ({
                 entries: state.entries.map((entry) =>
                   entry.id === expectedEntryId ? reapplied : entry,
@@ -899,6 +923,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
       updated = await updateCodexEntry(getCurrentProjectId(), id, data, {
         baseVersion: options?.baseVersion ?? before?.version ?? 0,
+        ...(options?.timelapseDocument
+          ? { timelapseDocument: options.timelapseDocument }
+          : {}),
+        ...(options?.preexistingDraft ? { preexistingDraft: true } : {}),
       });
       if (!updated) {
         toast.error(i18next.t("codex.store.updateFailed"));
@@ -921,36 +949,14 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       return SAVE_NOT_PERSISTED;
     }
 
-    // 本文系 (content / summary) の変更差分を timelapse に記録する。notes は
-    // 対象外。差分が無ければイベントは出さない (純 notes 編集は従来通り無記録)。
-    // content は ProseMirror JSON なので抽出テキストで diff、summary はプレーン
-    // テキストなのでそのまま diff する。
-    const diffs: Record<string, BodyDiff> = {};
-    if ("content" in data) {
-      const d = computeDocDiff(before?.content ?? "", data.content ?? "");
-      if (d) diffs.content = d;
-    }
-    if ("summary" in data) {
-      const d = computeBodyDiff(before?.summary ?? "", data.summary ?? "");
-      if (d) diffs.summary = d;
-    }
-    const fields = Object.keys(diffs);
-    if (fields.length > 0) {
-      recordChangeEvent({
-        domain: "codex",
-        opType: "entry.update",
-        entityType: "codex_entry",
-        entityId: id,
-        payload: { fields, diffs },
-      });
-    }
     return persistedVersion(updated.version);
   },
 
   remove: async (id) => {
     const before = get().entries.find((e) => e.id === id);
+    let deletionReceipt: CanonicalWriteReceipt | undefined;
     try {
-      await deleteCodexEntry(getCurrentProjectId(), id);
+      deletionReceipt = await deleteCodexEntry(getCurrentProjectId(), id);
       await get().loadEntries();
     } catch (e) {
       toast.error(i18next.t("codex.store.deleteFailed"));
@@ -958,16 +964,15 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       return;
     }
 
-    recordChangeEvent({
-      domain: "codex",
-      opType: "entry.delete",
-      entityType: "codex_entry",
-      entityId: id,
-      payload: { name: before?.name ?? null, type: before?.type ?? null },
-    });
-
-    if (before && !useGlobalHistoryStore.getState().isReplaying) {
+    if (
+      before &&
+      deletionReceipt &&
+      !useGlobalHistoryStore.getState().isReplaying
+    ) {
       const captured = { ...before };
+      const undoWrite = codexHistoryWriteLease("undo", deletionReceipt);
+      const redoWrite = codexHistoryWriteLease("redo", deletionReceipt);
+      let redoBaseVersion: number | undefined;
       const trashTempId = `trash-codex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const matchedType = get().types.find((t) => t.slug === captured.type);
       captureCodexDeletion({
@@ -983,30 +988,37 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
         entityId: captured.id,
         async undo() {
           cancelPendingTrash(trashTempId);
-          await createCodexEntry({
-            id: captured.id,
-            projectId: captured.projectId,
-            type: captured.type,
-            name: captured.name,
-            summary: captured.summary ?? undefined,
-            tagsCache: captured.tagsCache ?? undefined,
-            aliases: captured.aliases ?? undefined,
-            excludedAliases: captured.excludedAliases ?? undefined,
-            readings: captured.readings ?? undefined,
-            parentId: captured.parentId ?? undefined,
-            sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
-          });
-          await updateCodexEntry(captured.projectId, captured.id, {
-            content: captured.content ?? undefined,
-            contextMode: captured.contextMode ?? undefined,
-            icon: captured.icon ?? undefined,
-            childrenBudget: captured.childrenBudget ?? undefined,
-            notes: captured.notes ?? undefined,
-          });
+          const restored = await createCodexEntry(
+            {
+              id: captured.id,
+              projectId: captured.projectId,
+              type: captured.type,
+              name: captured.name,
+              summary: captured.summary ?? undefined,
+              content: captured.content ?? undefined,
+              tagsCache: captured.tagsCache ?? undefined,
+              aliases: captured.aliases ?? undefined,
+              excludedAliases: captured.excludedAliases ?? undefined,
+              readings: captured.readings ?? undefined,
+              parentId: captured.parentId ?? undefined,
+              contextMode: captured.contextMode,
+              icon: captured.icon ?? undefined,
+              childrenBudget: captured.childrenBudget,
+              notes: captured.notes ?? undefined,
+              sourceChatMessageId: captured.sourceChatMessageId ?? undefined,
+            },
+            { writeContext: undoWrite.acquire() },
+          );
+          redoBaseVersion = restored.version;
+          undoWrite.committed();
           await get().loadEntries();
         },
         async redo() {
-          await deleteCodexEntry(captured.projectId, captured.id);
+          await deleteCodexEntry(captured.projectId, captured.id, {
+            baseVersion: redoBaseVersion,
+            writeContext: redoWrite.acquire(),
+          });
+          redoWrite.committed();
           await get().loadEntries();
         },
       });

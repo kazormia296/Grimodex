@@ -1,0 +1,429 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/certifications/schemas/gate-b2-report-v1.schema.json",
+  "title": "Gate B2 Certification Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractVersion",
+    "gateId",
+    "assuranceScope",
+    "manifestDigest",
+    "generatedAt",
+    "freezeId",
+    "certificationRunId",
+    "candidate",
+    "environment",
+    "verdict",
+    "summary",
+    "suites",
+    "blockedReasons"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contractVersion": { "type": "integer", "const": 8 },
+    "gateId": { "const": "gate-b2" },
+    "assuranceScope": { "$ref": "#/$defs/assuranceScope" },
+    "manifestDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "startedAt": { "type": ["string", "null"], "format": "date-time" },
+    "completedAt": { "type": ["string", "null"], "format": "date-time" },
+    "freezeId": { "type": ["string", "null"], "minLength": 1 },
+    "certificationRunId": { "type": "string", "minLength": 1 },
+    "mode": {
+      "type": "string",
+      "enum": ["preflight", "light", "heavy", "journeys", "full", "decision"]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commitSha",
+        "treeSha",
+        "baseMasterSha",
+        "schemaVersion",
+        "writerRegistryDigest",
+        "aiPathRegistryDigest",
+        "qualityManifestDigest",
+        "narrativeEvalManifestDigest",
+        "attemptAuthoritySourceDigest",
+        "attemptWorkflowDigest",
+        "fullCiEvidenceWriterDigest",
+        "freezeId",
+        "attemptAuthority",
+        "frozen",
+        "dirty"
+      ],
+      "properties": {
+        "commitSha": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "treeSha": { "type": ["string", "null"], "pattern": "^[0-9a-f]{40}$" },
+        "baseMasterSha": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "schemaVersion": { "type": "integer", "const": 20 },
+        "writerRegistryDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "aiPathRegistryDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "qualityManifestDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "narrativeEvalManifestDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "freezeId": { "type": ["string", "null"], "minLength": 1 },
+        "adrChecklistDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "classificationDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certificationManifestDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certifyBootstrapDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certifyRunnerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "certifyBindingsDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "qualityEvaluationRuntimeDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "adrValidatorDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reportSchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "decisionSchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "journeySchemaDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "journeyRunnerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "webConsentBrowserJourneyDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "webConsentBrowserRunnerDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "webConsentBrowserConfigDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptAuthoritySourceDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptWorkflowDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "fullCiEvidenceWriterDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "attemptAuthority": { "$ref": "#/$defs/attemptAuthority" },
+        "boundVia": { "type": "string" },
+        "frozen": { "type": "boolean" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "platform", "arch", "digest"],
+      "properties": {
+        "node": { "type": "string" },
+        "platform": { "type": "string" },
+        "arch": { "type": "string" },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "HOLD", "BLOCK", "INCOMPLETE"]
+    },
+    "verdictReasons": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requiredLight",
+        "requiredHeavy",
+        "requiredJourneys",
+        "informational",
+        "releaseAdjacent"
+      ],
+      "properties": {
+        "requiredLight": { "$ref": "#/$defs/bucketSummary" },
+        "requiredHeavy": { "$ref": "#/$defs/bucketSummary" },
+        "requiredJourneys": { "$ref": "#/$defs/bucketSummary" },
+        "informational": { "$ref": "#/$defs/bucketSummary" },
+        "releaseAdjacent": { "$ref": "#/$defs/bucketSummary" }
+      }
+    },
+    "suites": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/suiteResult" }
+    },
+    "artifactDigests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "digest"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "blockedReasons": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "firstFailure": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["suiteId", "result", "message"],
+      "properties": {
+        "suiteId": { "type": "string" },
+        "result": {
+          "type": "string",
+          "enum": ["failed", "blocked", "hold"]
+        },
+        "message": { "type": "string" }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "verdict": { "const": "PASS" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": {
+          "freezeId": { "type": "string", "minLength": 1 },
+          "candidate": {
+            "properties": {
+              "commitSha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "treeSha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "frozen": { "const": true },
+              "dirty": { "const": false },
+              "attemptAuthority": {
+                "properties": {
+                  "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+                  "runAttempt": { "const": 1 }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "assuranceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engineeringSafety",
+        "liveProviderExecution",
+        "modelQuality",
+        "externalCredentialsUsed"
+      ],
+      "properties": {
+        "engineeringSafety": { "const": "certified" },
+        "liveProviderExecution": { "const": "excluded" },
+        "modelQuality": { "const": "excluded" },
+        "externalCredentialsUsed": { "const": false }
+      }
+    },
+    "attemptAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "configDigest",
+        "repository",
+        "workflowPath",
+        "event",
+        "runId",
+        "runAttempt"
+      ],
+      "properties": {
+        "provider": { "const": "github-actions" },
+        "configDigest": {
+          "const": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4"
+        },
+        "repository": { "const": "kazormia296/Grimodex" },
+        "workflowPath": {
+          "const": ".github/workflows/gate-b2-certification.yml"
+        },
+        "event": { "const": "workflow_dispatch" },
+        "runId": {
+          "type": ["string", "null"],
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "runAttempt": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 1
+        }
+      }
+    },
+    "bucketSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total",
+        "passed",
+        "failed",
+        "blocked",
+        "hold",
+        "notRun",
+        "deferred"
+      ],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "integer", "minimum": 0 },
+        "hold": { "type": "integer", "minimum": 0 },
+        "notRun": { "type": "integer", "minimum": 0 },
+        "deferred": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "suiteResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "suiteId",
+        "bucket",
+        "attempt",
+        "startedAt",
+        "completedAt",
+        "exitCode",
+        "environmentDigest",
+        "commandDigest",
+        "stdoutDigest",
+        "stderrDigest",
+        "artifactDigests",
+        "result"
+      ],
+      "properties": {
+        "suiteId": { "type": "string", "minLength": 1 },
+        "bucket": {
+          "type": "string",
+          "enum": [
+            "requiredLight",
+            "requiredHeavy",
+            "requiredJourneys",
+            "informational",
+            "releaseAdjacent"
+          ]
+        },
+        "attempt": { "const": 1 },
+        "startedAt": { "type": ["string", "null"] },
+        "completedAt": { "type": ["string", "null"] },
+        "exitCode": { "type": ["integer", "null"] },
+        "environmentDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "commandDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "stdoutDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "stderrDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "artifactDigests": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "blocked",
+            "hold",
+            "not-run",
+            "deferred",
+            "informational"
+          ]
+        },
+        "message": { "type": "string" },
+        "runId": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "command": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

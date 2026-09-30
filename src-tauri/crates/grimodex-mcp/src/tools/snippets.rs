@@ -72,6 +72,8 @@ pub async fn list_snippets(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CreateSnippetParams {
+    /// Stable logical request id. Reuse it only when retrying the same write.
+    pub request_id: String,
     pub title: String,
     /// Optional plain Markdown body (converted to ProseMirror JSON).
     pub content: Option<String>,
@@ -116,36 +118,49 @@ pub async fn create_snippet(
     let snippet_id = uuid::Uuid::new_v4().to_string();
     let content_text_len = grimodex_core::pm_text::pm_doc_text_len(&content_pm);
     let spans = if content_text_len > 0 {
-        vec![grimodex_core::writes::codex::AuthorshipSpanInput {
+        vec![grimodex_db::agent_writes::AuthorshipSpanInput {
             from_pos: 0,
             to_pos: content_text_len,
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+            timestamp: None,
             chat_msg_id: None,
             trace_id: None,
-            lane: Some("content".to_string()),
         }]
     } else {
         vec![]
     };
 
-    let conn = server.conn.lock().map_err(internal_err)?;
-
-    grimodex_core::writes::snippet::tracked_snippet_create(
-        &conn,
-        grimodex_core::writes::snippet::TrackedSnippetCreateInput {
-            project_id: &server.project_id(),
-            session_id: &server.session_id,
-            surface: "mcp",
-            snippet_id: &snippet_id,
-            title: &title,
-            content: &content_pm,
-            scene_id: params.scene_id.as_deref(),
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let write = grimodex_db::agent_writes::agent_snippet_create_with_surface_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentSnippetCreatePayload {
+            request_id: Some(request_id.to_string()),
+            snippet_id: Some(snippet_id),
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            title: title.clone(),
+            content: Some(content_pm),
+            scene_id: params.scene_id,
             source_chat_message_id: None,
-            authorship_spans: &spans,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: spans,
         },
+        "mcp",
     )
     .map_err(internal_err)?;
+    let snippet_id = write["entityId"]
+        .as_str()
+        .ok_or_else(|| internal_err("Snippet writer returned no entityId"))?
+        .to_string();
 
     let result = CreateSnippetResult {
         id: snippet_id,
@@ -155,4 +170,86 @@ pub async fn create_snippet(
     Ok(CallToolResult::success(vec![
         rmcp::model::ContentBlock::text(json),
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::tests::make_simple_db;
+    use crate::server::GrimodexServer;
+
+    fn make_writable_server() -> GrimodexServer {
+        let conn = make_simple_db();
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
+            [],
+        )
+        .expect("seed MCP project");
+        let policy = grimodex_core::policy::load_policy(&conn, "p1").expect("load writable policy");
+        GrimodexServer::new(
+            conn,
+            "p1".to_string(),
+            false,
+            false,
+            "snippet-mcp-session".to_string(),
+            policy,
+        )
+    }
+
+    #[tokio::test]
+    async fn create_snippet_is_idempotent_and_appends_the_feed_on_mcp_surface() {
+        let server = make_writable_server();
+        let request_id = "mcp-snippet-create-1";
+        for _ in 0..2 {
+            create_snippet(
+                &server,
+                CreateSnippetParams {
+                    request_id: request_id.to_string(),
+                    title: "Clue".to_string(),
+                    content: Some("The brass key.".to_string()),
+                    scene_id: None,
+                },
+            )
+            .await
+            .expect("create/retry Snippet");
+        }
+
+        let conn = server.conn.lock().expect("lock MCP database");
+        let counts: (i64, i64, i64, i64, String, i64) = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM snippets WHERE project_id = 'p1'),
+                    (SELECT COUNT(*) FROM undo_journal
+                      WHERE project_id = 'p1' AND id = ?1),
+                    (SELECT COUNT(*) FROM narrative_change_transactions
+                      WHERE project_id = 'p1' AND request_id = ?1
+                        AND origin = 'ai-apply'),
+                    (SELECT COUNT(*) FROM narrative_change_events event
+                      JOIN narrative_change_transactions tx
+                        ON tx.project_id = event.project_id
+                       AND tx.id = event.transaction_id
+                      WHERE tx.request_id = ?1),
+                    (SELECT surface FROM undo_journal
+                      WHERE project_id = 'p1' AND id = ?1),
+                    (SELECT COUNT(*) FROM narrative_field_authority
+                      WHERE project_id = 'p1'
+                        AND entity_kind = 'snippet'
+                        AND entity_id = (SELECT entity_id FROM undo_journal
+                                          WHERE project_id = 'p1' AND id = ?1)
+                        AND owner_kind = 'ai')",
+                [request_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("query canonical Snippet ledgers");
+        assert_eq!(counts, (1, 1, 1, 1, "mcp".to_string(), 3));
+    }
 }

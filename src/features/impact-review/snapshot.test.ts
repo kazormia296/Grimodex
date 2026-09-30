@@ -88,7 +88,9 @@ beforeEach(() => {
 
 describe("buildCodexSnapshot", () => {
   it("runs the atomic snapshot query against the browser mock connection", async () => {
-    const browser = await createBrowserMock();
+    const browser = await createBrowserMock({
+      allowProtectedWriterTestFixtures: true,
+    });
     const now = new Date().toISOString();
     await browser.invoke("db_execute", {
       sql: `INSERT INTO codex_entries

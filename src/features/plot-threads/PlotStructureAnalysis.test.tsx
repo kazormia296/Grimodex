@@ -50,6 +50,7 @@ function thread(id: string, name: string): PlotThreadRow {
     sortOrder: "a0",
     startNodeId: null,
     endNodeId: null,
+    version: 0,
     createdAt: "",
     updatedAt: "",
   };
@@ -66,6 +67,8 @@ function link(
     phaseType,
     note: null,
     sortOrder: null,
+    semanticKey: "",
+    version: 0,
     createdAt: "",
     updatedAt: "",
   };

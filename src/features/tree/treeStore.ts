@@ -31,7 +31,6 @@ import {
 import { recomputeCodexSceneOrder } from "@/features/codex/phaseProjection";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { cmpKeys, generateKeyBetween } from "./fractionalIndex";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { moveTreeNode } from "@/application/tree/moveTreeNode";
 import { createTreeNode } from "@/application/tree/createTreeNode";
 import { deleteTreeSubtree } from "@/application/tree/deleteTreeSubtree";
@@ -60,6 +59,7 @@ import {
 } from "@/lib/chatNavigationGuard";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { publishSceneAuthorityCommit } from "@/application/tree/sceneAuthorityRegistry";
+import { tryAcquireTreeTopologyMutationLease } from "@/application/tree/treeTopologyMutationRegistry";
 
 export type { NodeType, SceneStatus, TreeNodeData } from "./types";
 
@@ -86,13 +86,35 @@ async function withTreeCreationAuthority<T>(
 }
 
 function tryAcquireTreeNavigationAuthority() {
-  if (!canScheduleQuiescenceMutation()) return null;
-  return tryAcquireTreeNavigationLease();
+  const topology = tryAcquireTreeTopologyMutationLease();
+  if (!topology) return null;
+  const navigation = tryAcquireTreeNavigationLease();
+  if (!navigation) {
+    topology.release();
+    return null;
+  }
+  return {
+    release() {
+      navigation.release();
+      topology.release();
+    },
+  };
 }
 
 function tryAcquireTreeCreationAuthority() {
-  if (!canScheduleQuiescenceMutation()) return null;
-  return tryAcquireTreeCreationLease();
+  const topology = tryAcquireTreeTopologyMutationLease();
+  if (!topology) return null;
+  const navigation = tryAcquireTreeCreationLease();
+  if (!navigation) {
+    topology.release();
+    return null;
+  }
+  return {
+    release() {
+      navigation.release();
+      topology.release();
+    },
+  };
 }
 
 /**
@@ -147,6 +169,11 @@ export type ChronicleDatePatch = Partial<
     | "chroniclePrecision"
   >
 >;
+
+/** Permit carried by a draft queued before lifecycle quiescence. */
+export interface TreeNodeMutationOptions {
+  preexistingDraft?: boolean;
+}
 
 const CHRONICLE_DATE_KEYS = [
   "chronicleStartTime",
@@ -524,6 +551,7 @@ function toNodeData(
     contextMode: n.contextMode ?? null,
     aliases: n.aliases ?? null,
     excludedAliases: n.excludedAliases ?? null,
+    version: "version" in n && typeof n.version === "number" ? n.version : 0,
     createdAt: n.createdAt,
     updatedAt: n.updatedAt,
   };
@@ -744,9 +772,17 @@ interface TreeState {
   // New tree operations
   createNode: (opts: CreateNodeOpts) => Promise<TreeNodeData | null>;
   patchNode: (id: string, patch: TreeNodePatch) => Promise<void>;
-  updateNodeTitle: (id: string, title: string) => Promise<void>;
+  updateNodeTitle: (
+    id: string,
+    title: string,
+    options?: TreeNodeMutationOptions,
+  ) => Promise<void>;
   deleteNode: (id: string) => Promise<void>;
-  updateSynopsis: (id: string, synopsis: string) => Promise<void>;
+  updateSynopsis: (
+    id: string,
+    synopsis: string,
+    options?: TreeNodeMutationOptions,
+  ) => Promise<void>;
   updateIntent: (id: string, intent: string) => Promise<void>;
   setStatus: (id: string, status: SceneStatus) => Promise<void>;
   moveNode: (
@@ -764,10 +800,19 @@ interface TreeState {
   updatePovCharacter: (
     id: string,
     codexEntryId: string | null,
+    options?: TreeNodeMutationOptions,
   ) => Promise<void>;
-  updateLocation: (id: string, codexEntryId: string | null) => Promise<void>;
+  updateLocation: (
+    id: string,
+    codexEntryId: string | null,
+    options?: TreeNodeMutationOptions,
+  ) => Promise<void>;
   /** シーンの作中暦日付（chronicle*）を永続化＋store 楽観更新する。 */
-  updateChronicleDate: (id: string, patch: ChronicleDatePatch) => Promise<void>;
+  updateChronicleDate: (
+    id: string,
+    patch: ChronicleDatePatch,
+    options?: TreeNodeMutationOptions,
+  ) => Promise<void>;
   /**
    * Chronicle の原子的な複数更新結果を、同じ baseUpdatedAt のシーンだけへ反映する。
    * Tree feature が自身の projection 更新を所有し、遅延応答で新しい編集を潰さない。
@@ -886,10 +931,21 @@ function nextSortOrder(
 
 /** Sort nodes so parents appear before their children (for restore operations). */
 
+function updateNodeWithMutationOptions(
+  id: string,
+  patch: Parameters<typeof api.updateNode>[1],
+  options?: TreeNodeMutationOptions,
+): ReturnType<typeof api.updateNode> {
+  return options?.preexistingDraft === true
+    ? api.updateNode(id, patch, { preexistingDraft: true })
+    : api.updateNode(id, patch);
+}
+
 async function persistChronicleDate(
   id: string,
   requestedPatch: ChronicleDatePatch,
   recordHistory: boolean,
+  options?: TreeNodeMutationOptions,
 ): Promise<void> {
   const scopedNode = useTreeStore
     .getState()
@@ -951,10 +1007,13 @@ async function persistChronicleDate(
       }
 
       // This outer, project-qualified chain serializes partial-date merge and
-      // validation. api.updateNode then joins the row-wide id chain shared
-      // with content/metadata writes; the keys intentionally differ, so this
-      // nested serialization cannot wait on itself.
-      const persisted = await api.updateNode(id, persistedPatch);
+      // validation. api.updateNode routes protected temporal fields through
+      // the typed Native writer while retaining the existing store contract.
+      const persisted = await updateNodeWithMutationOptions(
+        id,
+        persistedPatch,
+        options,
+      );
       const updatedAt = persisted?.updatedAt ?? node.updatedAt;
       useTreeStore.setState((state) => ({
         nodes: state.nodes.map((candidate) =>
@@ -1126,18 +1185,6 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         return { nodes, scenes: computeScenes(nodes) };
       });
       recomputeCodexSceneOrder(get().nodes);
-      recordChangeEvent({
-        domain: "grid",
-        opType: "scene.create",
-        entityType: "scene",
-        entityId: created.id,
-        sceneId: created.id,
-        payload: {
-          parentId: newNode.parentId,
-          sortOrder: newNode.sortOrder,
-          title: newNode.title,
-        },
-      });
       return created.id;
     });
   },
@@ -1164,17 +1211,6 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         const nodes = [...state.nodes, newNode];
         return { nodes, scenes: computeScenes(nodes) };
       });
-      recordChangeEvent({
-        domain: "grid",
-        opType: "note.create",
-        entityType: "note",
-        entityId: created.id,
-        payload: {
-          parentId: newNode.parentId,
-          sortOrder: newNode.sortOrder,
-          title: newNode.title,
-        },
-      });
       return created.id;
     });
   },
@@ -1185,14 +1221,6 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     try {
       const { scenes } = get();
       await api.deleteNode(id);
-      recordChangeEvent({
-        domain: "grid",
-        opType: "scene.delete",
-        entityType: "scene",
-        entityId: id,
-        sceneId: null,
-        payload: { id },
-      });
       const { activeSceneId } = get();
       const remaining = scenes.filter((s) => s.id !== id);
       const newActive =
@@ -1319,6 +1347,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           workspaceIdentity?.openRevision
       );
     };
+    let forwardReceipt: ReturnType<typeof api.treeWriteReceipt>;
     return createTreeNode(
       { nodeType, parentId, afterId, title, interaction },
       {
@@ -1340,20 +1369,31 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             title: record.title,
             sortOrder: record.sortOrder,
           });
+          forwardReceipt = api.treeWriteReceipt(created);
           return toNodeData(created);
         },
-        deletePersisted: (id) => api.deleteNode(id),
+        deletePersisted: (id) =>
+          api
+            .deleteNode(id, projectId, {
+              writeContext: api.historyWriteContext("undo", forwardReceipt),
+            })
+            .then(() => {}),
         recreatePersisted: async (node) => {
-          const recreated = await api.createNode({
-            id: node.id,
-            projectId: node.projectId,
-            parentId: node.parentId ?? undefined,
-            nodeType: node.nodeType,
-            title: node.title,
-            sortOrder: node.sortOrder,
-            synopsis: node.synopsis ?? undefined,
-            status: node.status ?? undefined,
-          });
+          const recreated = await api.createNode(
+            {
+              id: node.id,
+              projectId: node.projectId,
+              parentId: node.parentId ?? undefined,
+              nodeType: node.nodeType,
+              title: node.title,
+              sortOrder: node.sortOrder,
+              synopsis: node.synopsis ?? undefined,
+              status: node.status ?? undefined,
+            },
+            {
+              writeContext: api.historyWriteContext("redo", forwardReceipt),
+            },
+          );
           return toNodeData(recreated);
         },
         tryAcquireCreationAuthority: tryAcquireTreeCreationAuthority,
@@ -1410,22 +1450,19 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
         pushHistory: (command) =>
           useGlobalHistoryStore.getState().push(command),
-        recordChange: ({ entityType, entityId, sceneId, payload }) =>
-          recordChangeEvent({
-            domain: "grid",
-            opType: "node.create",
-            entityType,
-            entityId,
-            sceneId,
-            payload,
-          }),
+        recordChange: () => {},
       },
     );
   },
 
-  async updateNodeTitle(id, title) {
+  async updateNodeTitle(id, title, options) {
     const oldTitle = get().nodes.find((n) => n.id === id)?.title ?? "";
-    const persisted = await api.updateNode(id, { title });
+    const persisted = await updateNodeWithMutationOptions(
+      id,
+      { title },
+      options,
+    );
+    const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => {
       const nodes = state.nodes.map((n) =>
         n.id === id
@@ -1444,7 +1481,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         label: i18next.t("tree.undo.renamed"),
         entityId: id,
         async undo() {
-          const restored = await api.updateNode(id, { title: oldTitle });
+          const restored = await api.updateNode(
+            id,
+            { title: oldTitle },
+            { writeContext: api.historyWriteContext("undo", forwardReceipt) },
+          );
           set((state) => {
             const nodes = state.nodes.map((n) =>
               n.id === id
@@ -1459,7 +1500,13 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           });
         },
         async redo() {
-          const restored = await api.updateNode(id, { title });
+          const restored = await api.updateNode(
+            id,
+            { title },
+            {
+              writeContext: api.historyWriteContext("redo", forwardReceipt),
+            },
+          );
           set((state) => {
             const nodes = state.nodes.map((n) =>
               n.id === id
@@ -1478,27 +1525,40 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   },
 
   async deleteNode(id) {
+    let forwardReceipt: ReturnType<typeof api.treeWriteReceipt>;
     await deleteTreeSubtree(id, {
       guardPending: guardInlineAiPending,
       tryAcquireNavigationAuthority: tryAcquireTreeNavigationAuthority,
       getNodes: () => get().nodes,
       getActiveSceneId: () => get().activeSceneId,
       loadSceneContent: (nodeId) => api.loadSceneContent(nodeId),
-      deletePersisted: (nodeId) => api.deleteNode(nodeId),
-      restorePersisted: async (node) => {
-        await api.createNode({
-          id: node.id,
-          projectId: node.projectId,
-          parentId: node.parentId ?? undefined,
-          nodeType: node.nodeType,
-          title: node.title,
-          synopsis: node.synopsis ?? undefined,
-          sortOrder: node.sortOrder,
-          status: node.status ?? undefined,
+      deletePersisted: async (nodeId) => {
+        const replaying = useGlobalHistoryStore.getState().isReplaying;
+        const receipt = await api.deleteNode(nodeId, get().projectId, {
+          writeContext: replaying
+            ? api.historyWriteContext("redo", forwardReceipt)
+            : undefined,
         });
+        if (!replaying) forwardReceipt = receipt;
       },
-      saveSceneContent: (nodeId, content) =>
-        api.saveSceneContent(nodeId, content).then(() => {}),
+      restorePersisted: async (node, content) => {
+        await api.createNode(
+          {
+            id: node.id,
+            projectId: node.projectId,
+            parentId: node.parentId ?? undefined,
+            nodeType: node.nodeType,
+            title: node.title,
+            synopsis: node.synopsis ?? undefined,
+            sortOrder: node.sortOrder,
+            status: node.status ?? undefined,
+            content,
+          },
+          {
+            writeContext: api.historyWriteContext("undo", forwardReceipt),
+          },
+        );
+      },
       applyNodes: (nodes, activeSceneId) =>
         set({ nodes, scenes: computeScenes(nodes), activeSceneId }),
       recomputeSceneOrder: recomputeCodexSceneOrder,
@@ -1509,25 +1569,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       cancelTrash: cancelPendingTrash,
       makeTrashTempId: (node) =>
         `trash-${node.nodeType}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${node.id}`,
-      recordChange: ({
-        rootId,
-        deletedIds,
-        partialFailure,
-        previousActiveSceneId,
-      }) =>
-        recordChangeEvent({
-          domain: "grid",
-          opType: "node.delete",
-          entityType: "node",
-          entityId: id,
-          sceneId: null,
-          payload: {
-            rootId,
-            deletedIds,
-            partialFailure,
-            prevActiveSceneId: previousActiveSceneId,
-          },
-        }),
+      recordChange: () => {},
       notifyDeleteFailure: (error) =>
         toast.error(i18next.t("tree.errors.deleteFailed"), {
           description: String(error),
@@ -1536,9 +1578,14 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     });
   },
 
-  async updateSynopsis(id, synopsis) {
+  async updateSynopsis(id, synopsis, options) {
     const oldSynopsis = get().nodes.find((n) => n.id === id)?.synopsis ?? null;
-    const persisted = await api.updateNode(id, { synopsis });
+    const persisted = await updateNodeWithMutationOptions(
+      id,
+      { synopsis },
+      options,
+    );
+    const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id
@@ -1550,23 +1597,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           : n,
       ),
     }));
-    recordChangeEvent({
-      domain: "synopsis",
-      opType: "update",
-      entityType: "tree_node",
-      entityId: id,
-      sceneId: id,
-      payload: { before: oldSynopsis, after: synopsis },
-    });
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: i18next.t("tree.undo.synopsisUpdated"),
         entityId: id,
         async undo() {
-          const restored = await api.updateNode(id, {
-            synopsis: oldSynopsis,
-          });
+          const restored = await api.updateNode(
+            id,
+            { synopsis: oldSynopsis },
+            { writeContext: api.historyWriteContext("undo", forwardReceipt) },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1580,7 +1621,13 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           }));
         },
         async redo() {
-          const restored = await api.updateNode(id, { synopsis });
+          const restored = await api.updateNode(
+            id,
+            { synopsis },
+            {
+              writeContext: api.historyWriteContext("redo", forwardReceipt),
+            },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1600,6 +1647,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   async updateIntent(id, intent) {
     const oldIntent = get().nodes.find((n) => n.id === id)?.intent ?? null;
     const persisted = await api.updateNode(id, { intent });
+    const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id
@@ -1611,23 +1659,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           : n,
       ),
     }));
-    recordChangeEvent({
-      domain: "intent",
-      opType: "update",
-      entityType: "tree_node",
-      entityId: id,
-      sceneId: id,
-      payload: { before: oldIntent, after: intent },
-    });
     if (!useGlobalHistoryStore.getState().isReplaying) {
       useGlobalHistoryStore.getState().push({
         kind: "scenes",
         label: i18next.t("tree.undo.intentUpdated"),
         entityId: id,
         async undo() {
-          const restored = await api.updateNode(id, {
-            intent: oldIntent,
-          });
+          const restored = await api.updateNode(
+            id,
+            { intent: oldIntent },
+            { writeContext: api.historyWriteContext("undo", forwardReceipt) },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1641,7 +1683,13 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           }));
         },
         async redo() {
-          const restored = await api.updateNode(id, { intent });
+          const restored = await api.updateNode(
+            id,
+            { intent },
+            {
+              writeContext: api.historyWriteContext("redo", forwardReceipt),
+            },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1661,6 +1709,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
   async setStatus(id, status) {
     const oldStatus = get().nodes.find((n) => n.id === id)?.status ?? null;
     const persisted = await api.updateNode(id, { status });
+    const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id
@@ -1678,9 +1727,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         label: i18next.t("tree.undo.statusChanged"),
         entityId: id,
         async undo() {
-          const restored = await api.updateNode(id, {
-            status: oldStatus as SceneStatus | null,
-          });
+          const restored = await api.updateNode(
+            id,
+            { status: oldStatus as SceneStatus | null },
+            { writeContext: api.historyWriteContext("undo", forwardReceipt) },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1694,7 +1745,13 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           }));
         },
         async redo() {
-          const restored = await api.updateNode(id, { status });
+          const restored = await api.updateNode(
+            id,
+            { status },
+            {
+              writeContext: api.historyWriteContext("redo", forwardReceipt),
+            },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1718,11 +1775,12 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     const oldLabel = node.storyTimeLabel;
     const patch: Parameters<typeof api.updateNode>[1] = {
       // null is a persisted value (Unscheduled), while undefined means
-      // "leave unchanged" to Drizzle. Never collapse null into undefined.
+      // "leave unchanged" to the Native temporal writer.
       storyTimeOrder: order,
     };
     if (label !== undefined) patch.storyTimeLabel = label;
     const persisted = await api.updateNode(id, patch);
+    const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id
@@ -1746,7 +1804,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
             storyTimeOrder: oldOrder,
             storyTimeLabel: oldLabel,
           };
-          const restored = await api.updateNode(id, undoPatch);
+          const restored = await api.updateNode(id, undoPatch, {
+            writeContext: api.historyWriteContext("undo", forwardReceipt),
+          });
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1762,7 +1822,9 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           recomputeCodexSceneOrder(get().nodes);
         },
         async redo() {
-          const restored = await api.updateNode(id, patch);
+          const restored = await api.updateNode(id, patch, {
+            writeContext: api.historyWriteContext("redo", forwardReceipt),
+          });
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1782,14 +1844,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
-  async updatePovCharacter(id, codexEntryId) {
+  async updatePovCharacter(id, codexEntryId, options) {
     const node = get().nodes.find((n) => n.id === id);
     if (!node) return;
     const old = node.povCharacterId ?? null;
     if (old === codexEntryId) return; // 同値は書込み・履歴とも no-op（ドラッグ等の空振り対策）
-    const persisted = await api.updateNode(id, {
-      povCharacterId: codexEntryId,
-    });
+    const persisted = await updateNodeWithMutationOptions(
+      id,
+      { povCharacterId: codexEntryId },
+      options,
+    );
+    const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id
@@ -1807,7 +1872,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         label: i18next.t("tree.undo.povCharacterChanged"),
         entityId: id,
         async undo() {
-          const restored = await api.updateNode(id, { povCharacterId: old });
+          const restored = await api.updateNode(
+            id,
+            { povCharacterId: old },
+            { writeContext: api.historyWriteContext("undo", forwardReceipt) },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1821,9 +1890,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           }));
         },
         async redo() {
-          const restored = await api.updateNode(id, {
-            povCharacterId: codexEntryId,
-          });
+          const restored = await api.updateNode(
+            id,
+            { povCharacterId: codexEntryId },
+            { writeContext: api.historyWriteContext("redo", forwardReceipt) },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1840,12 +1911,17 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
-  async updateLocation(id, codexEntryId) {
+  async updateLocation(id, codexEntryId, options) {
     const node = get().nodes.find((n) => n.id === id);
     if (!node) return;
     const old = node.locationId ?? null;
     if (old === codexEntryId) return; // 同値は no-op
-    const persisted = await api.updateNode(id, { locationId: codexEntryId });
+    const persisted = await updateNodeWithMutationOptions(
+      id,
+      { locationId: codexEntryId },
+      options,
+    );
+    const forwardReceipt = api.treeWriteReceipt(persisted);
     set((state) => ({
       nodes: state.nodes.map((n) =>
         n.id === id
@@ -1863,7 +1939,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
         label: i18next.t("tree.undo.locationChanged"),
         entityId: id,
         async undo() {
-          const restored = await api.updateNode(id, { locationId: old });
+          const restored = await api.updateNode(
+            id,
+            { locationId: old },
+            { writeContext: api.historyWriteContext("undo", forwardReceipt) },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1877,9 +1957,11 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
           }));
         },
         async redo() {
-          const restored = await api.updateNode(id, {
-            locationId: codexEntryId,
-          });
+          const restored = await api.updateNode(
+            id,
+            { locationId: codexEntryId },
+            { writeContext: api.historyWriteContext("redo", forwardReceipt) },
+          );
           set((state) => ({
             nodes: state.nodes.map((n) =>
               n.id === id
@@ -1896,8 +1978,8 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
     }
   },
 
-  async updateChronicleDate(id, patch) {
-    await persistChronicleDate(id, patch, true);
+  async updateChronicleDate(id, patch, options) {
+    await persistChronicleDate(id, patch, true, options);
   },
 
   // --- UI state ---
@@ -1968,6 +2050,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
 
   async moveNode(id, newParentId, afterId) {
     await moveTreeNode(id, newParentId, afterId, {
+      tryAcquireNavigationAuthority: tryAcquireTreeNavigationAuthority,
       getNodes: () => get().nodes,
       applyNodes: (nodes) => set({ nodes, scenes: computeScenes(nodes) }),
       persist: async (nodeId, patch) => {
@@ -1977,15 +2060,7 @@ export const useTreeStore = create<TreeState>()((set, get) => ({
       recomputeSceneOrder: recomputeCodexSceneOrder,
       isReplaying: () => useGlobalHistoryStore.getState().isReplaying,
       pushHistory: (command) => useGlobalHistoryStore.getState().push(command),
-      recordChange: ({ entityType, entityId, sceneId, payload }) =>
-        recordChangeEvent({
-          domain: "grid",
-          opType: "node.move",
-          entityType,
-          entityId,
-          sceneId,
-          payload,
-        }),
+      recordChange: () => {},
       movedLabel: i18next.t("tree.undo.moved"),
     });
   },

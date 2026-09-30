@@ -8,6 +8,7 @@ import {
   type StructureNode,
   type StructureTemplate,
 } from "./structureTemplates";
+import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 
 export interface ApplyStructureTemplateResult {
   folders: number;
@@ -27,6 +28,16 @@ export interface ApplyStructureTemplateResult {
  * 履歴は捕捉していない（一括適用 = atomic な1操作とみなす）。
  */
 export async function applyStructureTemplate(
+  projectId: string,
+  templateKey: string,
+  containerId: string | null,
+): Promise<ApplyStructureTemplateResult> {
+  return runTreeTopologyMutation(() =>
+    applyStructureTemplateWithAuthority(projectId, templateKey, containerId),
+  );
+}
+
+async function applyStructureTemplateWithAuthority(
   projectId: string,
   templateKey: string,
   containerId: string | null,

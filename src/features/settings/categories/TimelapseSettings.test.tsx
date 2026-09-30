@@ -15,7 +15,7 @@ const confirmMock = vi.hoisted(() => ({
 vi.mock("@/features/project/projectStore", () => ({
   useCurrentProjectId: () => "p1",
 }));
-vi.mock("@/features/timelapse/toggle", () => toggleMock);
+vi.mock("@/features/timelapse/timelapseAdmin", () => toggleMock);
 vi.mock("@/features/trash-bin/ConfirmDialog", () => ({
   useConfirmDialog: () => ({ confirm: confirmMock.confirm, dialog: null }),
 }));

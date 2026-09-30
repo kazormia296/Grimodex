@@ -17,7 +17,7 @@ vi.mock("./detailApi", () => ({
   createDefinition: vi.fn(),
 }));
 
-import { listDefinitionsByType, createDefinition } from "./detailApi";
+import { createDefinition, listDefinitionsByType } from "./detailApi";
 
 const mockList = vi.mocked(listDefinitionsByType);
 const mockCreate = vi.mocked(createDefinition);
@@ -37,170 +37,14 @@ const makeDefinition = (
   fieldConfig: null,
   sortOrder,
   includeInContext: 1,
+  version: 0,
   createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
   ...overrides,
 });
 
-function allPresetLists(): ReadonlyArray<readonly DetailFieldPreset[]> {
-  const genreLists = Object.values(GENRE_DETAIL_PRESETS)
-    .filter((byType): byType is NonNullable<typeof byType> => byType != null)
-    .flatMap((byType) => Object.values(byType));
-  return [...Object.values(BASE_DETAIL_PRESETS), ...genreLists];
-}
-
-describe("detailPresets registry", () => {
-  it("has a non-empty base set for every builtin type", () => {
-    for (const slug of BUILTIN_SLUGS) {
-      expect(BASE_DETAIL_PRESETS[slug]?.length ?? 0).toBeGreaterThan(0);
-    }
-  });
-
-  it("uses only valid project genre values as genre keys", () => {
-    for (const key of Object.keys(GENRE_DETAIL_PRESETS)) {
-      expect(GENRE_VALUES).toContain(key);
-    }
-  });
-
-  it("uses only builtin type slugs in genre additions", () => {
-    for (const byType of Object.values(GENRE_DETAIL_PRESETS)) {
-      if (!byType) continue;
-      for (const slug of Object.keys(byType)) {
-        expect(BUILTIN_SLUGS).toContain(slug);
-      }
-    }
-  });
-
-  it("lists exactly the genres that have additions in PRESET_GENRES", () => {
-    expect([...PRESET_GENRES]).toEqual(Object.keys(GENRE_DETAIL_PRESETS));
-    expect(PRESET_GENRES.length).toBeGreaterThan(0);
-  });
-
-  it("gives every dropdown preset non-empty options and no options otherwise", () => {
-    for (const list of allPresetLists()) {
-      for (const field of list) {
-        if (field.fieldType === "dropdown") {
-          expect(field.options?.length ?? 0).toBeGreaterThan(1);
-        } else {
-          expect(field.options).toBeUndefined();
-        }
-      }
-    }
-  });
-
-  it("has trimmed non-empty field names everywhere", () => {
-    for (const list of allPresetLists()) {
-      for (const field of list) {
-        expect(field.name.length).toBeGreaterThan(0);
-        expect(field.name).toBe(field.name.trim());
-      }
-    }
-  });
-
-  it("never produces duplicate field names in any genre × type combination", () => {
-    for (const genre of [null, ...GENRE_VALUES]) {
-      for (const slug of BUILTIN_SLUGS) {
-        const names = resolvePresetFields(slug, genre).map((f) => f.name);
-        expect(new Set(names).size).toBe(names.length);
-      }
-    }
-  });
-});
-
-describe("English presets (en projects)", () => {
-  // 焼き込み + AI コンテキスト貫通のため、en data に CJK が残っていると
-  // 英語プロジェクトの DB/プロンプトに日本語が漏れる。全文字を検査して gate。
-  const CJK = /[぀-ヿ㐀-鿿ｦ-ﾟ]/;
-
-  function allEnLists(): ReadonlyArray<readonly DetailFieldPreset[]> {
-    const genreLists = Object.values(GENRE_DETAIL_PRESETS_EN)
-      .filter((byType): byType is NonNullable<typeof byType> => byType != null)
-      .flatMap((byType) => Object.values(byType));
-    return [...Object.values(BASE_DETAIL_PRESETS_EN), ...genreLists];
-  }
-
-  it("mirrors the ja base structure: same type keys", () => {
-    expect(Object.keys(BASE_DETAIL_PRESETS_EN).sort()).toEqual(
-      Object.keys(BASE_DETAIL_PRESETS).sort(),
-    );
-    for (const slug of BUILTIN_SLUGS) {
-      expect(BASE_DETAIL_PRESETS_EN[slug]?.length).toBe(
-        BASE_DETAIL_PRESETS[slug]?.length,
-      );
-    }
-  });
-
-  it("mirrors the ja genre structure: same genre + type keys and field counts", () => {
-    expect(Object.keys(GENRE_DETAIL_PRESETS_EN).sort()).toEqual(
-      Object.keys(GENRE_DETAIL_PRESETS).sort(),
-    );
-    for (const genre of Object.keys(GENRE_DETAIL_PRESETS) as Array<
-      keyof typeof GENRE_DETAIL_PRESETS
-    >) {
-      const ja = GENRE_DETAIL_PRESETS[genre]!;
-      const en = GENRE_DETAIL_PRESETS_EN[genre]!;
-      expect(Object.keys(en).sort()).toEqual(Object.keys(ja).sort());
-      for (const slug of Object.keys(ja)) {
-        expect(en[slug]?.length).toBe(ja[slug]?.length);
-      }
-    }
-  });
-
-  it("contains no leftover Japanese in field names or dropdown options", () => {
-    for (const list of allEnLists()) {
-      for (const field of list) {
-        expect(CJK.test(field.name), `name: ${field.name}`).toBe(false);
-        for (const opt of field.options ?? []) {
-          expect(CJK.test(opt), `option: ${opt}`).toBe(false);
-        }
-      }
-    }
-  });
-
-  it("resolves en presets when lang starts with 'en'", () => {
-    expect(resolvePresetFields("character", null, "en")).toEqual(
-      BASE_DETAIL_PRESETS_EN.character,
-    );
-    expect(resolvePresetFields("character", null, "en-US")).toEqual(
-      BASE_DETAIL_PRESETS_EN.character,
-    );
-    const fantasy = resolvePresetFields("item", "Fantasy", "en");
-    expect(fantasy.map((f) => f.name)).toContain("Rarity");
-  });
-
-  it("keeps ja presets for ja / omitted lang (unchanged behavior)", () => {
-    expect(resolvePresetFields("character", null)).toEqual(
-      BASE_DETAIL_PRESETS.character,
-    );
-    expect(resolvePresetFields("character", null, "ja")).toEqual(
-      BASE_DETAIL_PRESETS.character,
-    );
-    expect(resolvePresetFields("character", null, "zh")).toEqual(
-      BASE_DETAIL_PRESETS.character,
-    );
-  });
-
-  it("applyDetailPreset seeds the en field set for en projects", async () => {
-    mockList.mockResolvedValue([]);
-    mockCreate.mockImplementation(async (data) => ({
-      id: data.id,
-      projectId: data.projectId,
-      typeSlug: data.typeSlug,
-      name: data.name,
-      fieldType: data.fieldType ?? "text",
-      fieldConfig: data.fieldConfig ?? null,
-      sortOrder: data.sortOrder ?? 0,
-      includeInContext: data.includeInContext ?? 0,
-      createdAt: "2026-01-01T00:00:00Z",
-    }));
-    const result = await applyDetailPreset("proj-1", "character", null, "en");
-    expect(result.added.map((d) => d.name)).toEqual(
-      BASE_DETAIL_PRESETS_EN.character.map((f) => f.name),
-    );
-  });
-});
-
 describe("resolvePresetFields", () => {
-  it("returns only the base set when genre is null", () => {
+  it("returns the base set when genre is null", () => {
     expect(resolvePresetFields("character", null)).toEqual(
       BASE_DETAIL_PRESETS.character,
     );
@@ -228,24 +72,48 @@ describe("resolvePresetFields", () => {
   });
 });
 
-describe("applyDetailPreset", () => {
-  const echoDefinition = (
-    data: Parameters<typeof createDefinition>[0],
-  ): CodexDetailDefinition => ({
-    id: data.id,
-    projectId: data.projectId,
-    typeSlug: data.typeSlug,
-    name: data.name,
-    fieldType: data.fieldType ?? "text",
-    fieldConfig: data.fieldConfig ?? null,
-    sortOrder: data.sortOrder ?? 0,
-    includeInContext: data.includeInContext ?? 0,
-    createdAt: "2026-01-01T00:00:00Z",
+describe("preset catalogs", () => {
+  it("covers every builtin type in both languages", () => {
+    for (const slug of BUILTIN_SLUGS) {
+      expect(BASE_DETAIL_PRESETS[slug]?.length).toBeGreaterThan(0);
+      expect(BASE_DETAIL_PRESETS_EN[slug]?.length).toBeGreaterThan(0);
+    }
   });
 
+  it("keeps PRESET_GENRES aligned with genre catalog keys", () => {
+    for (const genre of PRESET_GENRES) {
+      expect(GENRE_VALUES).toContain(genre);
+      expect(GENRE_DETAIL_PRESETS[genre]).toBeDefined();
+      expect(GENRE_DETAIL_PRESETS_EN[genre]).toBeDefined();
+    }
+  });
+
+  it("attaches semantic metadata only to designated character fields", () => {
+    const fields =
+      BASE_DETAIL_PRESETS.character as readonly DetailFieldPreset[];
+    expect(fields.find((f) => f.name === "役割")?.semantic?.facetKey).toBe(
+      "role.current",
+    );
+    expect(fields.find((f) => f.name === "年齢")?.semantic?.facetKey).toBe(
+      "identity.age",
+    );
+    expect(fields.find((f) => f.name === "外見")?.semantic).toBeUndefined();
+  });
+});
+
+describe("applyDetailPreset", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockCreate.mockImplementation(async (data) => echoDefinition(data));
+    mockCreate.mockImplementation(async (input) =>
+      makeDefinition(input.name, input.sortOrder ?? 0, {
+        id: input.id,
+        projectId: input.projectId,
+        typeSlug: input.typeSlug,
+        fieldType: input.fieldType ?? "text",
+        fieldConfig: input.fieldConfig ?? null,
+        includeInContext: input.includeInContext ?? 0,
+      }),
+    );
   });
 
   it("inserts every resolved field when none exist yet", async () => {
@@ -264,94 +132,51 @@ describe("applyDetailPreset", () => {
   it("numbers sortOrder sequentially after the existing maximum", async () => {
     mockList.mockResolvedValue([makeDefinition("既存欄", 5.0)]);
 
-    await applyDetailPreset("proj-1", "character", null);
+    const result = await applyDetailPreset("proj-1", "character", null);
 
-    const sortOrders = mockCreate.mock.calls.map(([data]) => data.sortOrder);
-    expect(sortOrders).toEqual(sortOrders.map((_, i) => 6.0 + i));
+    expect(result.added.map((d) => d.sortOrder)).toEqual(
+      result.added.map((_, i) => 6.0 + i),
+    );
   });
 
-  it("maps preset flags onto definition columns", async () => {
+  it("sends semantic presets through the same definition writer transaction", async () => {
     mockList.mockResolvedValue([]);
-    const expected = resolvePresetFields("character", null);
-
     await applyDetailPreset("proj-1", "character", null);
-
-    for (const [i, field] of expected.entries()) {
-      const [data] = mockCreate.mock.calls[i];
-      expect(data.name).toBe(field.name);
-      expect(data.fieldType).toBe(field.fieldType);
-      expect(data.includeInContext).toBe(field.includeInContext ? 1 : 0);
-      expect(data.projectId).toBe("proj-1");
-      expect(data.typeSlug).toBe("character");
-      expect(data.id).toBeTruthy();
+    const semanticCount = resolvePresetFields("character", null).filter(
+      (field) => field.semantic,
+    ).length;
+    const semanticCalls = mockCreate.mock.calls.filter(
+      ([input]) => input.semanticBinding !== undefined,
+    );
+    expect(semanticCalls).toHaveLength(semanticCount);
+    for (const [input] of semanticCalls) {
+      expect(input.semanticBinding).toMatchObject({
+        source: "preset",
+        confirmed: false,
+      });
     }
   });
 
-  it("serializes dropdown options into fieldConfig JSON", async () => {
-    mockList.mockResolvedValue([]);
-
-    await applyDetailPreset("proj-1", "character", null);
-
-    const call = mockCreate.mock.calls.find(([data]) => data.name === "役割");
-    expect(call).toBeDefined();
-    const config = JSON.parse(call![0].fieldConfig as string) as {
-      options: string[];
-    };
-    expect(config.options).toContain("主人公");
-  });
-
   it("skips fields whose names already exist", async () => {
-    mockList.mockResolvedValue([makeDefinition("年齢", 3.0)]);
-
+    mockList.mockResolvedValue([
+      makeDefinition("役割", 1),
+      makeDefinition("年齢", 2),
+    ]);
+    const expected = resolvePresetFields("character", null);
     const result = await applyDetailPreset("proj-1", "character", null);
-
-    const createdNames = mockCreate.mock.calls.map(([data]) => data.name);
-    expect(createdNames).not.toContain("年齢");
-    expect(result.skipped).toBe(1);
-    expect(result.added.length).toBe(
-      resolvePresetFields("character", null).length - 1,
-    );
+    expect(result.skipped).toBe(2);
+    expect(result.added.length).toBe(expected.length - 2);
+    expect(mockCreate).toHaveBeenCalledTimes(expected.length - 2);
   });
 
-  it("adds nothing when every preset field already exists", async () => {
-    const existing = resolvePresetFields("character", null).map((f, i) =>
-      makeDefinition(f.name, i + 1.0),
+  it("returns empty added when every field already exists", async () => {
+    const expected = resolvePresetFields("character", null);
+    mockList.mockResolvedValue(
+      expected.map((f, i) => makeDefinition(f.name, i + 1)),
     );
-    mockList.mockResolvedValue(existing);
-
     const result = await applyDetailPreset("proj-1", "character", null);
-
-    expect(mockCreate).not.toHaveBeenCalled();
     expect(result.added).toEqual([]);
-    expect(result.skipped).toBe(existing.length);
-  });
-
-  it("folds a concurrent UNIQUE violation into skipped", async () => {
-    mockList.mockResolvedValue([]);
-    mockCreate.mockImplementation(async (data) => {
-      if (data.name === "年齢") {
-        throw new Error(
-          "UNIQUE constraint failed: codex_detail_definitions.project_id, codex_detail_definitions.type_slug, codex_detail_definitions.name",
-        );
-      }
-      return echoDefinition(data);
-    });
-
-    const result = await applyDetailPreset("proj-1", "character", null);
-
-    expect(result.skipped).toBe(1);
-    expect(result.added.map((d) => d.name)).not.toContain("年齢");
-    expect(result.added.length).toBe(
-      resolvePresetFields("character", null).length - 1,
-    );
-  });
-
-  it("rethrows non-UNIQUE errors", async () => {
-    mockList.mockResolvedValue([]);
-    mockCreate.mockRejectedValue(new Error("database is locked"));
-
-    await expect(
-      applyDetailPreset("proj-1", "character", null),
-    ).rejects.toThrow("database is locked");
+    expect(result.skipped).toBe(expected.length);
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 });

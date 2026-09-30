@@ -40,12 +40,17 @@ import {
 } from "@/features/concurrency/externalWriteStore";
 import { ExternalEditConflictBanner } from "@/features/editor/ExternalEditConflictBanner";
 import { rootCause } from "@/lib/debugLog";
+import type { QuiescenceProviderFlushOptions } from "@/lib/quiescenceProviders";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 
 interface DetailsTabProps {
   entry: CodexEntry;
   summary: string;
   onSummaryChange: (value: string) => void;
-  onContentChange: (content: string) => void;
+  onContentChange: (
+    content: string,
+    timelapseDocument?: TimelapseDocumentRef,
+  ) => void;
   onExternalSync?: (content: string) => void;
   contentReloadToken?: number;
   /** 別窓が同一 entry を編集中なら本文エディタを read-only にする。 */
@@ -313,6 +318,7 @@ export function DetailsTab({
       phaseId: string,
       initialVersion: number,
       data: Parameters<typeof updatePhase>[1],
+      context?: QuiescenceProviderFlushOptions,
     ) => {
       if (!phaseVersionsRef.current.has(phaseId)) {
         phaseVersionsRef.current.set(phaseId, initialVersion);
@@ -329,6 +335,7 @@ export function DetailsTab({
           const updated = await updatePhase(phaseId, data, {
             baseVersion:
               phaseVersionsRef.current.get(phaseId) ?? initialVersion,
+            ...(context?.preexistingDraft ? { preexistingDraft: true } : {}),
           });
           if (!updated) {
             throw new AlreadyNotifiedSaveError(
@@ -392,18 +399,26 @@ export function DetailsTab({
     pause: pausePhaseSummarySave,
     resume: resumePhaseSummarySave,
   } = useAutoSave(
-    useCallback(async () => {
-      const pending = [...pendingPhaseSummariesRef.current.entries()];
-      for (const [phaseId, snapshot] of pending) {
-        await persistPhasePatch(phaseId, snapshot.initialVersion, {
-          summaryOverride: snapshot.value,
-        });
-        if (pendingPhaseSummariesRef.current.get(phaseId) === snapshot) {
-          pendingPhaseSummariesRef.current.delete(phaseId);
+    useCallback(
+      async (context?: QuiescenceProviderFlushOptions) => {
+        const pending = [...pendingPhaseSummariesRef.current.entries()];
+        for (const [phaseId, snapshot] of pending) {
+          await persistPhasePatch(
+            phaseId,
+            snapshot.initialVersion,
+            {
+              summaryOverride: snapshot.value,
+            },
+            context,
+          );
+          if (pendingPhaseSummariesRef.current.get(phaseId) === snapshot) {
+            pendingPhaseSummariesRef.current.delete(phaseId);
+          }
+          clearPhaseDirtyIfSettled(phaseId);
         }
-        clearPhaseDirtyIfSettled(phaseId);
-      }
-    }, [clearPhaseDirtyIfSettled, persistPhasePatch]),
+      },
+      [clearPhaseDirtyIfSettled, persistPhasePatch],
+    ),
     1000,
   );
 
@@ -415,18 +430,26 @@ export function DetailsTab({
     pause: pausePhaseContentSave,
     resume: resumePhaseContentSave,
   } = useAutoSave(
-    useCallback(async () => {
-      const pending = [...pendingPhaseContentsRef.current.entries()];
-      for (const [phaseId, snapshot] of pending) {
-        await persistPhasePatch(phaseId, snapshot.initialVersion, {
-          contentOverride: snapshot.value,
-        });
-        if (pendingPhaseContentsRef.current.get(phaseId) === snapshot) {
-          pendingPhaseContentsRef.current.delete(phaseId);
+    useCallback(
+      async (context?: QuiescenceProviderFlushOptions) => {
+        const pending = [...pendingPhaseContentsRef.current.entries()];
+        for (const [phaseId, snapshot] of pending) {
+          await persistPhasePatch(
+            phaseId,
+            snapshot.initialVersion,
+            {
+              contentOverride: snapshot.value,
+            },
+            context,
+          );
+          if (pendingPhaseContentsRef.current.get(phaseId) === snapshot) {
+            pendingPhaseContentsRef.current.delete(phaseId);
+          }
+          clearPhaseDirtyIfSettled(phaseId);
         }
-        clearPhaseDirtyIfSettled(phaseId);
-      }
-    }, [clearPhaseDirtyIfSettled, persistPhasePatch]),
+      },
+      [clearPhaseDirtyIfSettled, persistPhasePatch],
+    ),
     2000,
   );
 
@@ -618,7 +641,10 @@ export function DetailsTab({
   };
 
   // Content変更ハンドラ
-  const handleContentChange = (newContent: string) => {
+  const handleContentChange = (
+    newContent: string,
+    timelapseDocument?: TimelapseDocumentRef,
+  ) => {
     if (isPreviewMode) return;
     if (isActivePhaseContentMode && activePhase) {
       markPhaseDirty(activePhase.id);
@@ -631,7 +657,7 @@ export function DetailsTab({
       });
       schedulePhaseContentSave();
     } else {
-      onContentChange(newContent);
+      onContentChange(newContent, timelapseDocument);
     }
   };
 
@@ -815,6 +841,7 @@ export function DetailsTab({
             content={contentForEditor}
             onContentChange={isPreviewMode ? () => {} : handleContentChange}
             entryId={contentEntryId}
+            projectId={entry.projectId}
             liveDocumentKey={contentLiveDocumentKey}
             onExternalSync={contentExternalSync}
             externalContent={contentExternalContent}
@@ -855,7 +882,11 @@ export function DetailsTab({
         entry={entry}
         activePhase={
           !isPreviewMode && activePhase
-            ? { id: activePhase.id, label: activePhase.label }
+            ? {
+                id: activePhase.id,
+                label: activePhase.label,
+                version: activePhase.version,
+              }
             : null
         }
         activeResolvedDetailValues={activeResolvedDetailValues}

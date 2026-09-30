@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "./api";
 import { useTreeStore } from "./treeStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import {
+  _resetQuiescenceLeasesForTests,
+  acquireQuiescenceLease,
+} from "@/application/lifecycle/quiescenceLease";
 
 const { mockRecomputeSceneOrder } = vi.hoisted(() => ({
   mockRecomputeSceneOrder: vi.fn(),
@@ -37,6 +41,7 @@ const DEFAULTS = {
 } as const;
 
 beforeEach(() => {
+  _resetQuiescenceLeasesForTests();
   vi.clearAllMocks();
   useGlobalHistoryStore.setState({
     past: [],
@@ -82,6 +87,10 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => {
+  _resetQuiescenceLeasesForTests();
+});
+
 describe("moveNode parentId persistence", () => {
   it("passes parentId=null to api.updateNode when moving a folder out to root", async () => {
     // Regression: previously `parentId: newParentId ?? undefined` coerced null
@@ -103,6 +112,18 @@ describe("moveNode parentId persistence", () => {
     const [id, data] = updateNode.mock.calls[0]!;
     expect(id).toBe("ch2");
     expect(data.parentId).toBe("P");
+  });
+
+  it("does not admit a new topology move during a narrative snapshot", async () => {
+    const lease = acquireQuiescenceLease("narrative-snapshot");
+
+    await useTreeStore.getState().moveNode("ch2", "P", undefined);
+
+    expect(updateNode).not.toHaveBeenCalled();
+    expect(
+      useTreeStore.getState().nodes.find((node) => node.id === "ch2"),
+    ).toMatchObject({ parentId: null, sortOrder: "a1" });
+    lease.release();
   });
 
   it("undo of move-to-root restores parentId to the original folder (not undefined)", async () => {

@@ -37,6 +37,7 @@ function makeF(p: {
     abandoned: false,
     secret: false,
     loadBearing: null,
+    version: 0,
     createdAt: new Date(0),
     updatedAt: new Date(0),
     label: p.label,

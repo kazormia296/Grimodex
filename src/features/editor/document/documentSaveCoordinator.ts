@@ -2,7 +2,10 @@ import {
   encodeDocumentKey,
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 
 const saveTails = new Map<string, Promise<unknown>>();
 const exclusiveDocumentLeaseCounts = new Map<string, number>();
@@ -42,6 +45,13 @@ export interface DocumentSaveSession {
 export interface DocumentSaveOptions<T> {
   session?: DocumentSaveSession;
   didPersist?: (result: T) => boolean;
+  /** Draft admitted before a lifecycle lease began draining autosaves. */
+  preexistingDraft?: boolean;
+}
+
+export interface DocumentSaveContext {
+  /** Carry the lifecycle permit into the canonical document save path. */
+  preexistingDraft?: boolean;
 }
 
 export interface DocumentMutationOptions<T> {
@@ -60,6 +70,16 @@ export interface DocumentMutationContext {
    * detached editor must already be stale at that point.
    */
   markAuthoritativeMutation: () => void;
+}
+
+/**
+ * Synchronously published admission barrier for an authoritative replacement.
+ * `commit` advances the renderer-local foreign revision only after the caller's
+ * canonical write succeeds; `release` merely re-opens editor admission.
+ */
+export interface ExclusiveDocumentMutationLease {
+  commit: () => void;
+  release: () => void;
 }
 
 export class StaleRetiredDocumentSaveError extends Error {
@@ -86,7 +106,9 @@ function notifyExclusiveDocumentLease(encoded: string): void {
   }
 }
 
-function acquireExclusiveDocumentLease(documentKey: DocumentKey): () => void {
+export function acquireExclusiveDocumentMutationLease(
+  documentKey: DocumentKey,
+): ExclusiveDocumentMutationLease {
   const encoded = encodeDocumentKey(documentKey);
   exclusiveDocumentLeaseCounts.set(
     encoded,
@@ -94,14 +116,22 @@ function acquireExclusiveDocumentLease(documentKey: DocumentKey): () => void {
   );
   notifyExclusiveDocumentLease(encoded);
 
+  let committed = false;
   let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const remaining = (exclusiveDocumentLeaseCounts.get(encoded) ?? 1) - 1;
-    if (remaining > 0) exclusiveDocumentLeaseCounts.set(encoded, remaining);
-    else exclusiveDocumentLeaseCounts.delete(encoded);
-    notifyExclusiveDocumentLease(encoded);
+  return {
+    commit() {
+      if (committed) return;
+      committed = true;
+      recordAuthoritativeDocumentMutation(encoded);
+    },
+    release() {
+      if (released) return;
+      released = true;
+      const remaining = (exclusiveDocumentLeaseCounts.get(encoded) ?? 1) - 1;
+      if (remaining > 0) exclusiveDocumentLeaseCounts.set(encoded, remaining);
+      else exclusiveDocumentLeaseCounts.delete(encoded);
+      notifyExclusiveDocumentLease(encoded);
+    },
   };
 }
 
@@ -111,6 +141,46 @@ export function isExclusiveDocumentLeaseActive(
   if (!documentKey) return false;
   return (
     (exclusiveDocumentLeaseCounts.get(encodeDocumentKey(documentKey)) ?? 0) > 0
+  );
+}
+
+export function hasPendingCoordinatedDocumentMutation(
+  documentKey: DocumentKey,
+): boolean {
+  const encoded = encodeDocumentKey(documentKey);
+  return (
+    saveTails.has(encoded) ||
+    (exclusiveDocumentLeaseCounts.get(encoded) ?? 0) > 0
+  );
+}
+
+/** Drain only persistence/replacement work for the requested documents. */
+export async function awaitCoordinatedDocumentMutationsForDocuments(
+  documentKeys: readonly DocumentKey[],
+): Promise<void> {
+  const targets = new Set<string>(documentKeys.map(encodeDocumentKey));
+  const failures: unknown[] = [];
+  for (let round = 0; round < MAX_COORDINATOR_DRAIN_ROUNDS; round += 1) {
+    const pending = [...saveTails.entries()]
+      .filter(([encoded]) => targets.has(encoded))
+      .map(([, task]) => task);
+    if (pending.length === 0) {
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          "One or more scoped document mutations failed",
+        );
+      }
+      return;
+    }
+    const results = await Promise.allSettled([...new Set(pending)]);
+    for (const result of results) {
+      if (result.status === "rejected") failures.push(result.reason);
+    }
+  }
+  throw new AggregateError(
+    failures,
+    "Scoped document mutations did not reach quiescence",
   );
 }
 
@@ -201,7 +271,7 @@ function recordAuthoritativeDocumentMutation(encoded: string): void {
  */
 export async function runCoordinatedDocumentSave<T>(
   documentKey: DocumentKey,
-  saveLatest: () => Promise<T>,
+  saveLatest: (context?: DocumentSaveContext) => Promise<T>,
   options: DocumentSaveOptions<T> = {},
 ): Promise<T> {
   const encoded = encodeDocumentKey(documentKey);
@@ -212,7 +282,9 @@ export async function runCoordinatedDocumentSave<T>(
   const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(
     async () => {
       assertSessionFresh(encoded, options.session);
-      const result = await saveLatest();
+      const result = await saveLatest(
+        options.preexistingDraft ? { preexistingDraft: true } : undefined,
+      );
       if (options.didPersist?.(result) ?? true) {
         recordSuccessfulSave(encoded, options.session);
       }
@@ -242,14 +314,14 @@ export async function runExclusiveDocumentMutation<T>(
   options: DocumentMutationOptions<T> = {},
 ): Promise<T> {
   const encoded = encodeDocumentKey(documentKey);
-  const releaseLease = acquireExclusiveDocumentLease(documentKey);
+  const lease = acquireExclusiveDocumentMutationLease(documentKey);
   const previous = saveTails.get(encoded);
   const run = (previous ? previous.catch(() => {}) : Promise.resolve()).then(
     async () => {
       let mutationRecorded = false;
       const markAuthoritativeMutation = () => {
         if (mutationRecorded) return;
-        recordAuthoritativeDocumentMutation(encoded);
+        lease.commit();
         mutationRecorded = true;
       };
       const result = await mutation({ markAuthoritativeMutation });
@@ -264,7 +336,7 @@ export async function runExclusiveDocumentMutation<T>(
     return await run;
   } finally {
     if (saveTails.get(encoded) === run) saveTails.delete(encoded);
-    releaseLease();
+    lease.release();
   }
 }
 
@@ -292,7 +364,7 @@ export async function awaitAllCoordinatedDocumentMutations(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "coordinated-document-mutations",
+  id: createQuiescenceProviderId("coordinated-document-mutations"),
   stage: "autosave",
   flush: awaitAllCoordinatedDocumentMutations,
 });

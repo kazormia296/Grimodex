@@ -35,7 +35,11 @@ import {
 } from "./layouts/forceEngine";
 import type { ForceNode, ForceLink } from "./layouts/forceLayout.worker";
 import { hashStringToSeed } from "./layouts/seededRandom";
-import { listBoards, serializeShowConfig } from "./mapApi";
+import {
+  createMapWriteContext,
+  listBoards,
+  serializeShowConfig,
+} from "./mapApi";
 import type { ShowFlags } from "./types";
 import i18next from "@/lib/i18n";
 
@@ -346,6 +350,7 @@ export async function generateCorrelationBoard(
   await invoke("map_write_bundle", {
     payload: {
       kind: "create-board",
+      ...createMapWriteContext(),
       projectId,
       board: boardRow,
       stickies: [],

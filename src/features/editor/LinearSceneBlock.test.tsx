@@ -22,7 +22,14 @@ const {
 } = vi.hoisted(() => ({
   mockLoadSceneFull: vi.fn(),
   mockLoadAuthorshipSpans: vi.fn().mockResolvedValue([]),
-  mockPersist: vi.fn().mockResolvedValue(undefined),
+  mockPersist: vi.fn().mockResolvedValue({
+    placedBeatPreview: null,
+    unplacedBeatPreview: null,
+    contentVersion: 1,
+    contentUpdatedAt: "2026-08-11T00:00:00.000Z",
+    dbTransactionCount: 1,
+    foreshadowRows: [],
+  }),
   mockToastError: vi.fn(),
   mockToastInfo: vi.fn(),
   createdEditors: [] as unknown[],
@@ -99,6 +106,12 @@ const mockUseLicenseEditableSync = vi.hoisted(() =>
         setEditable: (editable: boolean, emitUpdate: boolean) => void;
       } | null,
       forceReadOnly = false,
+      _documentKey: {
+        kind: "tree";
+        id: string;
+        storage: "database" | "file";
+      } | null = null,
+      _loadedProjectId: string | null = null,
     ) => {
       editor?.setEditable(!forceReadOnly, false);
     },
@@ -317,6 +330,18 @@ import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { useSceneContentStore } from "@/features/editor/sceneContentStore";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 import { useInlineAiStore } from "@/features/editor/inlineAi/inlineAiStore";
+import { useProjectStore } from "@/features/project/projectStore";
+
+const TEST_PROJECT_ID = "project-1";
+
+function sceneFull(content: string, unplacedBeatsDoc = "[]") {
+  return {
+    content,
+    unplacedBeatsDoc,
+    projectId: TEST_PROJECT_ID,
+    version: 0,
+  };
+}
 
 function lastEditor(): Editor {
   return createdEditors[createdEditors.length - 1] as Editor;
@@ -361,6 +386,7 @@ beforeEach(() => {
   inlineAiSpies.retry.mockClear();
   mockBuildContext.mockClear();
   mockMarkEditorInputReady.mockClear();
+  useProjectStore.setState({ currentProjectId: TEST_PROJECT_ID });
   // グローバル単一 store / オーナーはテスト間で漏らさない。
   useInlineAiStore.getState().reset();
   useLinearEditorStore.getState().setInlineAiOwner(null);
@@ -368,10 +394,7 @@ beforeEach(() => {
 
 describe("LinearSceneBlock: 本文消失ガード", () => {
   it("mention 入りシーンを失わずロードし、編集後の unmount flush は persistSceneBody に到達する", async () => {
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const { unmount } = renderBlock();
 
     await waitFor(() => {
@@ -387,6 +410,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
       lastEditor(),
       false,
       { kind: "tree", id: "scene-0001", storage: "database" },
+      TEST_PROJECT_ID,
     );
     expect(mockToastError).not.toHaveBeenCalled();
 
@@ -399,16 +423,20 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
         expect.anything(),
         {
           baseVersion: 0,
+          timelapseDocumentIdentity: {
+            domain: "editor",
+            entityId: "scene-0001",
+            entityType: "scene",
+            projectId: TEST_PROJECT_ID,
+            storage: "database",
+          },
         },
       );
     });
   });
 
   it("スキーマ未知ノードで読み込み失敗したら editable を落とし、保存をスキップする", async () => {
-    mockLoadSceneFull.mockResolvedValue({
-      content: ALIEN_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(ALIEN_CONTENT));
     const { unmount } = renderBlock();
 
     await waitFor(() => {
@@ -418,7 +446,8 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     expect(mockUseLicenseEditableSync).toHaveBeenLastCalledWith(
       lastEditor(),
       true,
-      { kind: "tree", id: "scene-0001", storage: "database" },
+      null,
+      null,
     );
 
     // 仮に doc が編集されても (commands は editable を無視する)、
@@ -432,10 +461,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     // Toolbar / SceneMetaPanel が「active シーンの editor」をフォーカス無しで
     // 引くための registry (フォーカス依存だとリニア入場直後にツールバーが
     // 消える)。
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const { unmount } = renderBlock();
     await waitFor(() => {
       expect(
@@ -452,10 +478,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
   });
 
   it("ロード完了まで skeleton を表示し、完了後に本文と文字数を出す", async () => {
-    let resolveLoad!: (v: {
-      content: string;
-      unplacedBeatsDoc: string;
-    }) => void;
+    let resolveLoad!: (v: ReturnType<typeof sceneFull>) => void;
     mockLoadSceneFull.mockReturnValue(
       new Promise((res) => {
         resolveLoad = res;
@@ -473,7 +496,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     expect(hiddenWrap).not.toBeNull();
     expect(hiddenWrap!.textContent).toContain("0 字");
 
-    resolveLoad({ content: MENTION_CONTENT, unplacedBeatsDoc: "[]" });
+    resolveLoad(sceneFull(MENTION_CONTENT));
     await waitFor(() => {
       expect(
         container.querySelector("[data-testid='editor-content-loading']"),
@@ -485,10 +508,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
   it("本文取得後も sidecar hydration 完了までは編集対象として公開しない", async () => {
     let resolveAuthorship!: (value: []) => void;
     const onFocus = vi.fn();
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     mockLoadAuthorshipSpans.mockReturnValue(
       new Promise<[]>((resolve) => {
         resolveAuthorship = resolve;
@@ -522,10 +542,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
   });
 
   it("active blockだけがcanonical key付きのlinear foreground readyを公開する", async () => {
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const view = renderBlock({ isActive: false });
 
     await waitFor(() => {
@@ -579,10 +596,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     // 設定UIのみ存在し contenteditable に届かなかった配線漏れの regression
     // gate。spellcheck は属性継承するため、ラッパー div に付けば中の
     // contenteditable に効く。
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const { container } = renderBlock();
     await waitFor(() => {
       expect(container.querySelector("div[spellcheck]")).not.toBeNull();
@@ -597,10 +611,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
     // これが schedule を arm すると「編集していないのに保存」が走り、
     // 未ロード窓では本文消失の引き金になる (実機で useLicenseEditableSync の
     // mount 同期が踏んでいた経路)。docChanged ゲートの回帰テスト。
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const { unmount } = renderBlock();
     await waitFor(() => {
       expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
@@ -630,10 +641,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
 
   it("file-backed シーンは縮小スキーマでロードされ taskList を保持する", async () => {
     isFileBackedNodeMock.mockReturnValue(true);
-    mockLoadSceneFull.mockResolvedValue({
-      content: TASKLIST_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(TASKLIST_CONTENT));
     renderBlock();
 
     await waitFor(() => {
@@ -652,10 +660,7 @@ describe("LinearSceneBlock: 本文消失ガード", () => {
 // が外部変更を巻き戻す — いずれも本文消失級 (2026-06-12 横断レビュー)。
 describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
   async function renderLoaded() {
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const utils = renderBlock();
     await waitFor(() => {
       expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
@@ -673,6 +678,13 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     await saveScene("scene-0001");
     expect(mockPersist).toHaveBeenCalledWith("scene-0001", expect.anything(), {
       baseVersion: 0,
+      timelapseDocumentIdentity: {
+        domain: "editor",
+        entityId: "scene-0001",
+        entityType: "scene",
+        projectId: TEST_PROJECT_ID,
+        storage: "database",
+      },
     });
 
     unmount();
@@ -786,6 +798,14 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
     mockPersist.mockImplementationOnce(async () => {
       // 保存の await 中に次の編集が入る
       lastEditor().commands.insertContentAt(1, "編集B");
+      return {
+        placedBeatPreview: null,
+        unplacedBeatPreview: null,
+        contentVersion: 1,
+        contentUpdatedAt: "2026-08-11T00:00:00.000Z",
+        dbTransactionCount: 1,
+        foreshadowRows: [],
+      };
     });
     mockSetTabDirty.mockClear();
     await saveScene("scene-0001");
@@ -827,18 +847,19 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
 
   it("別シーンの Inline AI が diffShown でも file-backed reloadNonce を反映する", async () => {
     isFileBackedNodeMock.mockReturnValue(true);
-    mockLoadSceneFull.mockResolvedValue({
-      content: JSON.stringify({
-        type: "doc",
-        content: [
-          {
-            type: "paragraph",
-            content: [{ type: "text", text: "取り込み前の本文" }],
-          },
-        ],
-      }),
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(
+      sceneFull(
+        JSON.stringify({
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "取り込み前の本文" }],
+            },
+          ],
+        }),
+      ),
+    );
     renderBlock();
     await waitFor(() =>
       expect(getDocText(lastEditor().state.doc)).toContain("取り込み前の本文"),
@@ -852,10 +873,7 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
         },
       ],
     });
-    mockLoadSceneFull.mockResolvedValueOnce({
-      content: RELOADED,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValueOnce(sceneFull(RELOADED));
     act(() => {
       useInlineAiStore.getState().startGeneration({
         commandId: "continue",
@@ -886,10 +904,7 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
   it("reloadNonce が進んだら DB から再ロードする (外部 write feed 配線)", async () => {
     await renderLoaded();
     expect(mockLoadSceneFull).toHaveBeenCalledTimes(1);
-    let releaseReload!: (value: {
-      content: string;
-      unplacedBeatsDoc: string;
-    }) => void;
+    let releaseReload!: (value: ReturnType<typeof sceneFull>) => void;
     mockLoadSceneFull.mockReturnValueOnce(
       new Promise((resolve) => {
         releaseReload = resolve;
@@ -908,16 +923,14 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
       expect(lastEditor().isEditable).toBe(false);
     });
 
-    releaseReload({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    releaseReload(sceneFull(MENTION_CONTENT));
     await waitFor(() => {
       expect(lastEditor().isEditable).toBe(true);
       expect(mockUseLicenseEditableSync).toHaveBeenLastCalledWith(
         lastEditor(),
         false,
         { kind: "tree", id: "scene-0001", storage: "database" },
+        TEST_PROJECT_ID,
       );
     });
   });
@@ -928,10 +941,7 @@ describe("LinearSceneBlock: flush/dirty/resync インフラ配線", () => {
 // CustomEvent を受けて実行するリスナーが EditorPane 専用だった。
 describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
   async function renderLoaded(opts: { isActive?: boolean } = {}) {
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const utils = renderBlock({ isActive: opts.isActive ?? false });
     await waitFor(() => {
       expect(getDocText(lastEditor().state.doc)).toContain("主人公は");
@@ -1106,10 +1116,7 @@ describe("LinearSceneBlock: スラッシュコマンド実行配線", () => {
 // 5675145c で除去済みの固定費がリニア経路に残っていた回帰の gate。
 describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
   it("打鍵バーストを 1 回の charCount 同期に畳み、200ms 休止後に表示へ反映する", async () => {
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const { container, unmount } = render(
       <LinearSceneBlock
         sceneId="scene-0001"
@@ -1170,10 +1177,7 @@ describe("LinearSceneBlock: 文字数同期の debounce (perf 契約)", () => {
     // ためヴァキュアス (mutation レビューで確認)。「unmount 後に tree 同期が
     // 走らない」を直接 assert する — cleanup の clearTimeout と isDestroyed
     // ガードの両方が消えたときに確実に落ちる。
-    mockLoadSceneFull.mockResolvedValue({
-      content: MENTION_CONTENT,
-      unplacedBeatsDoc: "[]",
-    });
+    mockLoadSceneFull.mockResolvedValue(sceneFull(MENTION_CONTENT));
     const { unmount } = render(
       <LinearSceneBlock
         sceneId="scene-0001"

@@ -2,6 +2,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { createEvent, deleteEvent, linkScenesToEvent, listEvents } from "./api";
@@ -25,25 +26,53 @@ export interface EventProposal {
   note?: string;
 }
 
+export type EventProposalParseDiagnostic =
+  | {
+      readonly code: "unknown-scene-reference";
+      readonly eventIndex: number;
+      readonly value: string;
+    }
+  | {
+      readonly code: "missing-evidence";
+      readonly eventIndex: number;
+    };
+
+export type EventProposalParseResult =
+  | {
+      readonly status: "parsed";
+      readonly proposals: readonly EventProposal[];
+      readonly diagnostics: readonly EventProposalParseDiagnostic[];
+    }
+  | {
+      readonly status: "invalid";
+      readonly reason:
+        | "json-not-found"
+        | "json-parse-failed"
+        | "events-not-array";
+    };
+
 /**
  * LLM 応答テキストから出来事候補を抽出・検証する純関数。
  * 許可 sceneId 外（ハルシネーション）は落とす。title 空 / events 非配列は除外。
  */
-export function parseEventProposals(
+export function parseEventProposalsResult(
   responseText: string,
   allowedSceneIds: Set<string>,
-): EventProposal[] {
+): EventProposalParseResult {
   const jsonText = extractJsonObject(responseText);
-  if (!jsonText) return [];
+  if (!jsonText) return { status: "invalid", reason: "json-not-found" };
   let parsed: { events?: unknown };
   try {
     parsed = JSON.parse(jsonText) as { events?: unknown };
   } catch {
-    return [];
+    return { status: "invalid", reason: "json-parse-failed" };
   }
-  if (!Array.isArray(parsed.events)) return [];
+  if (!Array.isArray(parsed.events)) {
+    return { status: "invalid", reason: "events-not-array" };
+  }
   const out: EventProposal[] = [];
-  for (const raw of parsed.events) {
+  const diagnostics: EventProposalParseDiagnostic[] = [];
+  for (const [eventIndex, raw] of parsed.events.entries()) {
     if (typeof raw !== "object" || raw === null) continue;
     const o = raw as Record<string, unknown>;
     const title = typeof o.title === "string" ? o.title.trim() : "";
@@ -53,10 +82,20 @@ export function parseEventProposals(
     const evidenceSceneIds: string[] = [];
     for (const id of ids) {
       if (typeof id !== "string") continue;
-      if (!allowedSceneIds.has(id)) continue;
+      if (!allowedSceneIds.has(id)) {
+        diagnostics.push({
+          code: "unknown-scene-reference",
+          eventIndex,
+          value: id,
+        });
+        continue;
+      }
       if (seen.has(id)) continue;
       seen.add(id);
       evidenceSceneIds.push(id);
+    }
+    if (evidenceSceneIds.length === 0) {
+      diagnostics.push({ code: "missing-evidence", eventIndex });
     }
     const note =
       typeof o.note === "string" ? o.note.trim() || undefined : undefined;
@@ -64,7 +103,15 @@ export function parseEventProposals(
       note ? { title, evidenceSceneIds, note } : { title, evidenceSceneIds },
     );
   }
-  return out;
+  return { status: "parsed", proposals: out, diagnostics };
+}
+
+export function parseEventProposals(
+  responseText: string,
+  allowedSceneIds: Set<string>,
+): EventProposal[] {
+  const result = parseEventProposalsResult(responseText, allowedSceneIds);
+  return result.status === "parsed" ? [...result.proposals] : [];
 }
 
 /** 出来事抽出プロンプトを組む純関数（catalog に依らずローカル定義）。 */
@@ -105,11 +152,13 @@ ${custom}
  * 本文を LLM 解析し、作中の出来事候補を提案する。モデルルーティングは
  * 既存 'plot_thread_propose'（structured ロール）を流用（同種の構造化抽出）。
  * ライブ出力の品質検証は実機 QA（キー必須）に委ねる。
+ *
+ * @deprecated ChronicleExtractionRun を使用すること（`startChronicleExtraction`）。
  */
 export async function proposeEvents(
   req: ExtractEventsRequest,
 ): Promise<EventProposal[]> {
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   const nonEmpty = req.scenes.filter((s) => s.bodyText.trim().length > 0);
   if (nonEmpty.length === 0) return [];
   const allowedSceneIds = new Set(nonEmpty.map((s) => s.sceneId));
@@ -165,6 +214,8 @@ function normalizeEventTitle(title: string): string {
  * 重複を返す）ため、ここで正規化タイトル一致を programmatic にスキップする。
  * `existingTitles` 未指定時は DB（listEvents）から取得＝呼び出し側を変えずに
  * 重複取り込みを防ぐ。同一バッチ内の重複も先勝ちでスキップする。
+ *
+ * @deprecated Narrative Commit を使用すること（`applyChronicleExtractionReview`）。
  */
 export async function importExtractedEvents(
   projectId: string,
@@ -198,4 +249,192 @@ export async function importExtractedEvents(
     );
     throw err;
   }
+}
+
+import {
+  selectChronicleProposalsForAtomicApply,
+  useChronicleExtractionStore,
+  type ChronicleReviewProposal,
+} from "./chronicleExtractionStore";
+
+/** Feature flag: Run-based Chronicle extraction is the only product path (PR6). */
+export const USE_NARRATIVE_EXTRACTION_RUN = true;
+
+export type { ChronicleReviewProposal } from "./chronicleExtractionStore";
+export type { StartChronicleExtractionRequest } from "./chronicleExtractionStore";
+export type { ChronicleExtractionReviewProjection } from "./chronicleExtractionStore";
+export type { ResumeChronicleExtractionRequest } from "./chronicleExtractionApi";
+
+export async function startChronicleExtraction(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").startChronicleExtraction
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").startChronicleExtraction
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.startChronicleExtraction(...args);
+}
+
+export async function discoverChronicleTaskResumeCandidates(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").discoverChronicleTaskResumeCandidates
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").discoverChronicleTaskResumeCandidates
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.discoverChronicleTaskResumeCandidates(...args);
+}
+
+export async function discardChronicleTaskResumeCandidate(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").discardChronicleTaskResumeCandidate
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").discardChronicleTaskResumeCandidate
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.discardChronicleTaskResumeCandidate(...args);
+}
+
+export async function resumeChronicleExtraction(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").resumeChronicleExtraction
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").resumeChronicleExtraction
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.resumeChronicleExtraction(...args);
+}
+
+export async function getChronicleExtractionReview(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").getChronicleExtractionReview
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").getChronicleExtractionReview
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.getChronicleExtractionReview(...args);
+}
+
+export async function restoreChronicleExtractionReview(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").restoreChronicleExtractionReview
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").restoreChronicleExtractionReview
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.restoreChronicleExtractionReview(...args);
+}
+
+/**
+ * Settle a historical partial Apply under the same exclusive renderer CAS as
+ * a normal Apply. Lease acquisition is synchronous, before the dynamic import
+ * yields, so review decisions cannot start in the gap.
+ */
+export function abandonChroniclePartialReview(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").abandonChroniclePartialReview
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").abandonChroniclePartialReview
+> {
+  const state = useChronicleExtractionStore.getState();
+  if (!state.tryBeginApplyMutation()) {
+    return Promise.reject(
+      new Error(
+        "NEX_CHRONICLE_PARTIAL_REVIEW_MUTATION_BUSY: Apply or review persistence is already in flight",
+      ),
+    );
+  }
+  return import("./chronicleExtractionApi")
+    .then((mod) => mod.abandonChroniclePartialReview(...args))
+    .finally(() => {
+      useChronicleExtractionStore.getState().endApplyMutation();
+    });
+}
+
+export async function buildChronicleExtractionReviewProjection(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").buildChronicleExtractionReviewProjection
+  >
+): Promise<
+  ReturnType<
+    typeof import("./chronicleExtractionApi").buildChronicleExtractionReviewProjection
+  >
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.buildChronicleExtractionReviewProjection(...args);
+}
+
+export async function recordChronicleProposalDecision(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").recordChronicleProposalDecision
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").recordChronicleProposalDecision
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.recordChronicleProposalDecision(...args);
+}
+
+export async function recordChronicleProposalRevision(
+  ...args: Parameters<
+    typeof import("./chronicleExtractionApi").recordChronicleProposalRevision
+  >
+): ReturnType<
+  typeof import("./chronicleExtractionApi").recordChronicleProposalRevision
+> {
+  const mod = await import("./chronicleExtractionApi");
+  return mod.recordChronicleProposalRevision(...args);
+}
+
+type CommitCoordinatorApi = {
+  readonly isCommitCoordinatorReady: () => boolean;
+  readonly applyChronicleExtractionCommit: (input: {
+    readonly projectId: string;
+    readonly proposals: readonly ChronicleReviewProposal[];
+  }) => Promise<number>;
+};
+
+let commitCoordinatorOverride: CommitCoordinatorApi | null = null;
+
+/** Tests may inject a stub commit coordinator. */
+export function __setCommitCoordinatorForTests(
+  api: CommitCoordinatorApi | null,
+): void {
+  commitCoordinatorOverride = api;
+}
+
+/**
+ * Apply approved Run proposals via the real commit coordinator
+ * (`prepareChronicleCommit` + `applyChronicleCommit`). Legacy
+ * `importExtractedEvents` is not used on the product path.
+ */
+export async function applyChronicleExtractionReview(args: {
+  readonly projectId: string;
+  readonly proposals: readonly ChronicleReviewProposal[];
+}): Promise<number> {
+  const approved = selectChronicleProposalsForAtomicApply(args.proposals);
+  if (approved.length === 0) return 0;
+
+  if (
+    commitCoordinatorOverride &&
+    commitCoordinatorOverride.isCommitCoordinatorReady()
+  ) {
+    return commitCoordinatorOverride.applyChronicleExtractionCommit({
+      projectId: args.projectId,
+      proposals: args.proposals,
+    });
+  }
+
+  const mod = await import("./chronicleExtractionApi");
+  return mod.applyChronicleExtractionCommit({
+    projectId: args.projectId,
+    proposals: args.proposals,
+  });
 }

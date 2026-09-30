@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "fixtureKind": "narrative-dependency-role-contract",
+  "requirementIds": [
+    "GDX-NARR-SEMANTIC-CONTRACT-001",
+    "GDX-TRACE-001"
+  ],
+  "cases": [
+    {
+      "id": "direct-evidence-content-changed",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "direct-evidence",
+        "consumerKind": "proposal-revision",
+        "changeClass": "source-content-changed"
+      },
+      "expected": {
+        "freshness": "stale",
+        "reasonCode": "source-revision-changed",
+        "buildAction": "rebuild-required",
+        "actionRequirement": "required"
+      }
+    },
+    {
+      "id": "catalog-content-change-is-stale-not-unknown",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "entity-resolution",
+        "consumerKind": "proposal-revision",
+        "changeClass": "source-content-changed"
+      },
+      "expected": {
+        "freshness": "stale",
+        "reasonCode": "source-revision-changed",
+        "buildAction": "resolve-only",
+        "actionRequirement": "required"
+      }
+    },
+    {
+      "id": "quality-context-remains-fresh-with-advisory-action",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "quality-context",
+        "consumerKind": "proposal-revision",
+        "changeClass": "quality-input-changed"
+      },
+      "expected": {
+        "freshness": "fresh",
+        "reasonCode": null,
+        "buildAction": "refresh-available",
+        "actionRequirement": "advisory"
+      }
+    },
+    {
+      "id": "ranking-input-recompiles-semantic-index",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "ranking-only",
+        "consumerKind": "semantic-index",
+        "changeClass": "ranking-input-changed"
+      },
+      "expected": {
+        "freshness": "stale",
+        "reasonCode": "source-revision-changed",
+        "buildAction": "recompile-only",
+        "actionRequirement": "required"
+      }
+    },
+    {
+      "id": "unknown-role-fails-closed",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "future-role",
+        "consumerKind": "proposal-revision",
+        "changeClass": "source-content-changed"
+      },
+      "expected": "reject",
+      "error": "unknown-role"
+    },
+    {
+      "id": "unknown-effect-combination-fails-closed",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "direct-evidence",
+        "consumerKind": "semantic-index",
+        "changeClass": "source-content-changed"
+      },
+      "expected": "reject",
+      "error": "missing-effect-rule"
+    },
+    {
+      "id": "unknown-selector-fails-closed",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "future-selector"
+      },
+      "expected": "reject",
+      "error": "unknown-selector"
+    },
+    {
+      "id": "utf16-range-rejects-surrogate-interior",
+      "kind": "selector-validation",
+      "source": "A😀B",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 2,
+        "to": 3,
+        "normalizerVersion": "gdx-canonical-text/1"
+      },
+      "expected": "reject",
+      "error": "surrogate-boundary"
+    },
+    {
+      "id": "whole-source-dependency-key-golden",
+      "kind": "dependency-key",
+      "role": "direct-evidence",
+      "selector": {
+        "kind": "whole-source"
+      },
+      "canonicalSelector": "{\"kind\":\"whole-source\"}",
+      "dependencyKey": "sha256:dc5ae15ade6f6ce31c7dece2a1ec161caed32628ae27e1c70f88bf035b54fc0c",
+      "expected": "accept"
+    },
+    {
+      "id": "mixed-actions-stay-independent",
+      "kind": "action-aggregation",
+      "effects": [
+        {
+          "freshness": "fresh",
+          "reasonCode": null,
+          "buildAction": "refresh-available",
+          "actionRequirement": "advisory"
+        },
+        {
+          "freshness": "stale",
+          "reasonCode": "source-revision-changed",
+          "buildAction": "resolve-only",
+          "actionRequirement": "required"
+        }
+      ],
+      "expected": {
+        "requiredActions": ["resolve-only"],
+        "advisoryActions": ["refresh-available"],
+        "compatibilityPrimaryAction": "resolve-only"
+      }
+    },
+    {
+      "id": "utf16-object-identity-order-golden",
+      "kind": "dependency-key",
+      "role": "direct-evidence",
+      "selector": {
+        "kind": "exact-object-set",
+        "objectIdentities": ["", "😀"],
+        "setDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "canonicalSelector": "{\"kind\":\"exact-object-set\",\"objectIdentities\":[\"😀\",\"\"],\"setDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "dependencyKey": "sha256:8dedfd58f1a60690fa2b22e3c597a6eebc190953ed5609a868104e9f2f8ddf87",
+      "expected": "accept"
+    },
+    {
+      "id": "utf16-dependency-set-tuple-order-golden",
+      "kind": "dependency-set-digest",
+      "entries": [
+        {
+          "sourceObjectIdentity": "",
+          "dependencyKey": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "selectorDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+        },
+        {
+          "sourceObjectIdentity": "😀",
+          "dependencyKey": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "selectorDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+        }
+      ],
+      "canonicalDependencySet": "[{\"dependencyKey\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"selectorDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"sourceObjectIdentity\":\"😀\"},{\"dependencyKey\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"selectorDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"sourceObjectIdentity\":\"\"}]",
+      "dependencySetDigest": "sha256:00b08a7612e648620c143dbbd1944aea1ac4a174ba633f286782e0b8a89ea09f",
+      "expected": "accept"
+    },
+    {
+      "id": "utf16-range-rejects-unsafe-integer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 9007199254740992,
+        "normalizerVersion": "gdx-canonical-text/1"
+      },
+      "expected": "reject",
+      "error": "invalid-range"
+    },
+    {
+      "id": "utf16-range-rejects-whitespace-normalizer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 1,
+        "normalizerVersion": " gdx-canonical-text/1 "
+      },
+      "expected": "reject",
+      "error": "invalid-range"
+    },
+    {
+      "id": "utf16-range-rejects-feff-normalizer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 1,
+        "normalizerVersion": "\uFEFFgdx-canonical-text/1"
+      },
+      "expected": "reject",
+      "error": "invalid-range"
+    },
+    {
+      "id": "utf16-range-rejects-next-line-normalizer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 1,
+        "normalizerVersion": "\u0085gdx-canonical-text/1"
+      },
+      "expected": "reject",
+      "error": "invalid-range"
+    },
+    {
+      "id": "utf16-range-accepts-ascii-normalizer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 1,
+        "normalizerVersion": "gdx-canonical-text/1"
+      },
+      "expected": "accept"
+    }
+  ]
+}

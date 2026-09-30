@@ -59,7 +59,7 @@ fn scoped_runtime_and_request(
     let request = runtime.pin_request(|| {
         let workspace = active_workspace_snapshot(&workspace_state)?;
         let active = workspace
-            .path
+            .path()
             .canonicalize()
             .map_err(|error| AppError::Anyhow(anyhow::anyhow!(error)))?;
         if active != expected {
@@ -69,7 +69,7 @@ fn scoped_runtime_and_request(
                 active.display()
             )));
         }
-        Ok(workspace.db)
+        Ok(Arc::clone(workspace.db()))
     })?;
     Ok((runtime, request))
 }

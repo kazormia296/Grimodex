@@ -90,6 +90,7 @@ export function TimelineInspector({
 
   useQuiescentDraftParticipant({
     id: `timeline-story-label:${node?.id ?? "none"}`,
+    scope: node ? { kind: "tree-node", entityId: node.id } : undefined,
     enabled:
       !!node &&
       labelController.dirty &&

@@ -1,0 +1,1879 @@
+import assert from "node:assert/strict";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import Ajv2020 from "ajv/dist/2020.js";
+import yaml from "js-yaml";
+import { certifyGateB2, parseCertifyArgs } from "./certify-gate-b2.mjs";
+import { validateJsonAgainstSchema } from "./certify-gate-b2-bindings.mjs";
+import {
+  deriveQualificationResult,
+  classifyChronicleQualificationReport,
+  parseLiveModelQualificationArgs,
+  runLiveModelQualification,
+  validateLiveModelQualificationManifest,
+} from "./run-live-model-qualification.mjs";
+import {
+  CHRONICLE_PRODUCTION_DIMENSION_SCORE_KEYS,
+  CHRONICLE_PRODUCTION_EXPECTED_DIMENSION_KEYS,
+  CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS,
+  CURRENT_NARRATIVE_EVAL_PROTOCOL,
+  sha256Buffer,
+  sha256Text,
+} from "./quality-evaluation-runtime.mjs";
+
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+const candidate = {
+  commitSha: "a".repeat(40),
+  treeSha: "b".repeat(40),
+  dirty: false,
+};
+
+function args(artifactRoot, suites = ["heavy-agent-tool-loop"]) {
+  return parseLiveModelQualificationArgs([
+    "--candidate",
+    "HEAD",
+    "--model",
+    "openai/gpt-5.6-luna",
+    "--reasoning-effort",
+    "medium",
+    "--artifact-root",
+    artifactRoot,
+    ...suites.flatMap((suite) => ["--suite", suite]),
+  ]);
+}
+
+function capture({
+  status = "passed",
+  exitCode = 0,
+  stdout = "",
+  stderr = "",
+} = {}) {
+  return {
+    status,
+    exitCode,
+    startedAt: "2026-08-13T00:00:00.000Z",
+    completedAt: "2026-08-13T00:00:01.000Z",
+    stdout: Buffer.from(stdout),
+    stderr: Buffer.from(stderr),
+  };
+}
+
+function chronicleEvaluation({
+  passed = true,
+  parseFailureCount = 0,
+  unresolvedEvidenceCount = 0,
+  criticalViolations = [],
+  unobservableDimensions = [],
+  dimensions = null,
+} = {}) {
+  const defaultDimensions = Object.fromEntries(
+    CHRONICLE_PRODUCTION_EXPECTED_DIMENSION_KEYS.map((dimension) => [
+      dimension,
+      Object.fromEntries(
+        CHRONICLE_PRODUCTION_DIMENSION_SCORE_KEYS.map((key) => [key, 0]),
+      ),
+    ]),
+  );
+  if (!passed) {
+    defaultDimensions.eventDetection.falsePositive = 1;
+    defaultDimensions.eventDetection.falseNegative = 1;
+  }
+  return {
+    passed,
+    parseFailureCount,
+    unresolvedEvidenceCount,
+    criticalViolations,
+    unobservableDimensions,
+    dimensions: dimensions ?? defaultDimensions,
+  };
+}
+
+function chronicleCase({
+  passed = true,
+  caseId = CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0],
+  evaluation = {},
+} = {}) {
+  return {
+    caseId,
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    evaluation: chronicleEvaluation({ passed, ...evaluation }),
+  };
+}
+
+function chronicleFailedCase({
+  caseId = CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0],
+  terminalFailure,
+} = {}) {
+  return {
+    caseId,
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    ...(terminalFailure === undefined ? {} : { terminalFailure }),
+  };
+}
+
+function chronicleReport({
+  cases = Array.from({ length: 14 }, (_, index) =>
+    chronicleCase({
+      caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[index],
+    }),
+  ),
+  failedCases = [],
+  summary = {
+    passed: cases.filter((entry) => entry.evaluation?.passed === true).length,
+    failed:
+      cases.filter((entry) => entry.evaluation?.passed === false).length +
+      failedCases.length,
+    parseFailureCount: 0,
+  },
+  ...overrides
+} = {}) {
+  return {
+    mode: "chronicle-production-live",
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    candidateCommitSha: candidate.commitSha,
+    candidateTreeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+    diagnosticOnly: false,
+    startedAt: "2026-08-13T00:00:00.000Z",
+    completedAt: "2026-08-13T00:01:00.000Z",
+    caseCount: cases.length + failedCases.length,
+    certificationEligible: false,
+    summary,
+    cases,
+    failedCases,
+    ...overrides,
+  };
+}
+
+const RAW_PROMPT_CANARY = "raw-prompt-must-not-persist";
+const RAW_RESPONSE_CANARY = "raw-response-must-not-persist";
+const FREE_ERROR_CANARY = "free-error-must-not-persist";
+const KEY_CANARY = "sk-or-v1-key-canary-must-not-persist";
+
+function chronicleDiagnosticCaseContext(caseId) {
+  return {
+    caseId,
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    versions: { ...CURRENT_NARRATIVE_EVAL_PROTOCOL.versions },
+    corpusDigest: sha256Text(`corpus:${caseId}`),
+    fixturePromptDigest: sha256Text(`fixture:${caseId}`),
+  };
+}
+
+function chronicleDiagnosticDispatch(caseId) {
+  return {
+    promptDigest: sha256Text(`prompt:${caseId}`),
+    responseDigest: sha256Text(`response:${caseId}`),
+    stageId: "narrative_observation_extract",
+    invocationIndex: 0,
+    finishReason: "stop",
+    stopReason: "end_turn",
+    rawPrompt: RAW_PROMPT_CANARY,
+    rawResponse: RAW_RESPONSE_CANARY,
+    sessionId: "session-must-not-persist",
+    generationId: "generation-must-not-persist",
+  };
+}
+
+function chronicleSourceReport(childEnv) {
+  const cases = CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS.map((caseId, index) => {
+    const context = chronicleDiagnosticCaseContext(caseId);
+    const dispatch = chronicleDiagnosticDispatch(caseId);
+    return {
+      ...chronicleCase({
+        caseId,
+        passed: index !== 0,
+        evaluation: index === 0 ? { parseFailureCount: 1 } : {},
+      }),
+      corpusDigest: context.corpusDigest,
+      fixturePromptDigest: context.fixturePromptDigest,
+      dispatches: [
+        {
+          promptDigest: dispatch.promptDigest,
+          responseDigest: dispatch.responseDigest,
+          resolvedModel: "provider-model-must-not-persist",
+          inputTokens: 1,
+          outputTokens: 1,
+          runtimeMs: 1,
+          costUsd: 0,
+        },
+      ],
+    };
+  });
+  return chronicleReport({
+    candidateCommitSha: childEnv.QUALITY_EVALUATION_CANDIDATE_COMMIT_SHA,
+    candidateTreeSha: childEnv.QUALITY_EVALUATION_CANDIDATE_TREE_SHA,
+    suiteId: childEnv.QUALITY_EVALUATION_SUITE_ID,
+    runId: childEnv.QUALITY_EVALUATION_RUN_ID,
+    commandDigest: childEnv.QUALITY_EVALUATION_COMMAND_DIGEST,
+    certificationEligible: false,
+    cases,
+    summary: { passed: 13, failed: 1, parseFailureCount: 1 },
+  });
+}
+
+function chronicleSourceDiagnostics(
+  childEnv,
+  { invalidIndex = 0, terminalFailure = null } = {},
+) {
+  return {
+    schemaVersion: 1,
+    mode: "chronicle-production-live-diagnostics",
+    evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+    receiptMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.receiptMode,
+    runId: childEnv.QUALITY_EVALUATION_RUN_ID,
+    attempt: 1,
+    nonAuthoritative: true,
+    diagnosticOnly: true,
+    certificationEligible: false,
+    startedAt: "2026-08-13T00:00:00.000Z",
+    completedAt: "2026-08-13T00:00:01.000Z",
+    candidateCommitSha: childEnv.QUALITY_EVALUATION_CANDIDATE_COMMIT_SHA,
+    candidateTreeSha: childEnv.QUALITY_EVALUATION_CANDIDATE_TREE_SHA,
+    qualityEvaluationSuiteId: childEnv.QUALITY_EVALUATION_SUITE_ID,
+    commandDigest: childEnv.QUALITY_EVALUATION_COMMAND_DIGEST,
+    model: {
+      provider: "provider-must-not-persist",
+      requestedModel: "model-must-not-persist",
+      effort: "medium",
+    },
+    caseCount: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS.length,
+    selectedCaseCapabilityReport: { message: FREE_ERROR_CANARY },
+    rawPrompt: RAW_PROMPT_CANARY,
+    rawResponse: RAW_RESPONSE_CANARY,
+    error: FREE_ERROR_CANARY,
+    apiKey: KEY_CANARY,
+    cases: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS.map((caseId, index) => {
+      const invalid = index === invalidIndex;
+      const context = chronicleDiagnosticCaseContext(caseId);
+      const dispatch = chronicleDiagnosticDispatch(caseId);
+      return {
+        ...context,
+        dispatches: [dispatch],
+        stageDiagnostics: [
+          {
+            stageId: dispatch.stageId,
+            invocationIndex: dispatch.invocationIndex,
+            evidenceMode: CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode,
+            json: { status: "object-found", rootType: "object" },
+            schema: {
+              status: invalid ? "invalid" : "valid",
+              errors: invalid
+                ? [
+                    {
+                      code: "SCHEMA_INVALID",
+                      path: "observations[0].payload.durationKind",
+                      message: FREE_ERROR_CANARY,
+                    },
+                    {
+                      code: "SCHEMA_UNKNOWN",
+                      path: `untrusted.${KEY_CANARY}`,
+                    },
+                  ]
+                : [],
+            },
+            refs: {
+              status: "valid",
+              checkedCount: 1,
+              rejectedCount: 0,
+              errors: [],
+            },
+            citation: invalid
+              ? {
+                  status: "not-evaluated",
+                  checkedCount: 0,
+                  rejectedCount: 0,
+                  resolvedCount: 0,
+                }
+              : {
+                  status: "resolved",
+                  checkedCount: 1,
+                  rejectedCount: 0,
+                  resolvedCount: 1,
+                },
+            output: invalid
+              ? {
+                  candidateCount: 1,
+                  schemaAcceptedCount: 0,
+                  schemaRejectedCount: 1,
+                  normalizerDroppedCount: 0,
+                  acceptedCount: 0,
+                  rejectedCount: 1,
+                  salvagedCount: 0,
+                }
+              : {
+                  candidateCount: 1,
+                  schemaAcceptedCount: 1,
+                  schemaRejectedCount: 0,
+                  normalizerDroppedCount: 0,
+                  acceptedCount: 1,
+                  rejectedCount: 0,
+                  salvagedCount: 0,
+                },
+            expectedParseStatus: invalid ? "invalid" : "parsed",
+            parseStatus: invalid ? "invalid" : "parsed",
+            rawResponse: RAW_RESPONSE_CANARY,
+            error: FREE_ERROR_CANARY,
+          },
+        ],
+        capability: { message: FREE_ERROR_CANARY },
+        evidenceAlias: "alias-must-not-persist",
+        catalogBinding: { quote: RAW_RESPONSE_CANARY },
+        ...(index === invalidIndex && terminalFailure
+          ? { terminalFailure }
+          : {}),
+      };
+    }),
+  };
+}
+
+function chronicleTerminalSourceReport(childEnv, terminalFailure) {
+  const report = chronicleSourceReport(childEnv);
+  const failedCase = report.cases.at(-1);
+  assert.ok(failedCase);
+  return {
+    ...report,
+    cases: report.cases
+      .slice(0, -1)
+      .map((entry, index) =>
+        index === 0 ? { ...entry, evaluation: chronicleEvaluation() } : entry,
+      ),
+    failedCases: [
+      {
+        caseId: failedCase.caseId,
+        evidenceMode: failedCase.evidenceMode,
+        receiptMode: failedCase.receiptMode,
+        versions: failedCase.versions,
+        corpusDigest: failedCase.corpusDigest,
+        fixturePromptDigest: failedCase.fixturePromptDigest,
+        dispatches: failedCase.dispatches,
+        terminalFailure,
+      },
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 1 },
+  };
+}
+
+async function writeChronicleSourceArtifacts(
+  childEnv,
+  {
+    report = chronicleSourceReport(childEnv),
+    diagnostics = chronicleSourceDiagnostics(childEnv),
+  } = {},
+) {
+  await writeFile(
+    childEnv.QUALITY_EVALUATION_OUTPUT_PATH,
+    JSON.stringify(report),
+    "utf8",
+  );
+  if (diagnostics === null) return;
+  const sourceRunDir = path.join(
+    childEnv.QUALITY_EVALUATION_ARTIFACT_ROOT,
+    childEnv.QUALITY_EVALUATION_RUN_ID,
+  );
+  await mkdir(sourceRunDir, { recursive: true });
+  await writeFile(
+    path.join(sourceRunDir, "diagnostics.json"),
+    typeof diagnostics === "string" ? diagnostics : JSON.stringify(diagnostics),
+    "utf8",
+  );
+}
+
+const fixedNow = () => new Date("2026-08-13T00:00:00.000Z");
+const fixedCandidate = async () => candidate;
+
+test("live qualification manifest is local-only and references five Quality Manifest Heavy commands", async () => {
+  const manifest = yaml.load(
+    await readFile(
+      path.join(repoRoot, "evals/qualifications/live-models.yaml"),
+      "utf8",
+    ),
+  );
+  const quality = yaml.load(
+    await readFile(path.join(repoRoot, "evals/quality-manifest.yaml"), "utf8"),
+  );
+  const heavyIds = new Set(quality.heavyEvaluations.map((entry) => entry.id));
+  assert.deepEqual(validateLiveModelQualificationManifest(manifest), []);
+  assert.equal(manifest.executionPolicy.allowGitHubActions, false);
+  assert.equal(manifest.executionPolicy.requiredForGateB2, false);
+  assert.equal(manifest.executionPolicy.requiredForMerge, false);
+  assert.equal(manifest.defaultProfile.length, 5);
+  assert.ok(manifest.defaultProfile.every((suiteId) => heavyIds.has(suiteId)));
+});
+
+test("Chronicle accounting IDs stay bound to the canonical micro corpus", async () => {
+  const manifest = yaml.load(
+    await readFile(
+      path.join(repoRoot, "evals/narrative/manifest.yaml"),
+      "utf8",
+    ),
+  );
+  const suite = manifest.suites.find(
+    (entry) => entry.id === "chronicle-micro-v1",
+  );
+  assert.ok(suite);
+  const corpus = yaml.load(
+    await readFile(
+      path.join(repoRoot, "evals/narrative", suite.caseFile),
+      "utf8",
+    ),
+  );
+  assert.equal(suite.caseCount, CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS.length);
+  assert.deepEqual(
+    corpus.cases.map((entry) => entry.id),
+    CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS,
+  );
+});
+
+test("GitHub Actions is refused before candidate resolution or child execution", async () => {
+  let resolved = 0;
+  let executed = 0;
+  await assert.rejects(
+    () =>
+      runLiveModelQualification({
+        repoRoot,
+        args: args("/tmp/unused-live-qualification"),
+        env: { GITHUB_ACTIONS: "true", OPENROUTER_API_KEY: "unused" },
+        candidateResolver: async () => {
+          resolved += 1;
+          return candidate;
+        },
+        executeCommand: async () => {
+          executed += 1;
+          return capture();
+        },
+      }),
+    /refuses GitHub Actions/i,
+  );
+  assert.equal(resolved, 0);
+  assert.equal(executed, 0);
+});
+
+test("missing credentials yield INCOMPLETE without starting a child", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-missing-"));
+  let executed = 0;
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp),
+      env: {},
+      candidateResolver: fixedCandidate,
+      executeCommand: async () => {
+        executed += 1;
+        return capture();
+      },
+      idFactory: () => "missing-key",
+      now: fixedNow,
+    });
+    assert.equal(executed, 0);
+    assert.equal(result.report.result, "INCOMPLETE");
+    assert.equal(result.report.suites.length, 0);
+    assert.match(result.report.reasons.join("\n"), /OPENROUTER_API_KEY/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("normal qualification pins citation-ID mode despite an ambient legacy selector", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-ambient-mode-"));
+  let observedMode;
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-narrative-chronicle-production"]),
+      env: {
+        OPENROUTER_API_KEY: "test-key",
+        NARRATIVE_EVAL_EVIDENCE_MODE: "legacy-v1",
+      },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        observedMode = childEnv.NARRATIVE_EVAL_EVIDENCE_MODE;
+        assert.equal(childEnv.NARRATIVE_EVAL_SUITE_ID, undefined);
+        await writeFile(
+          childEnv.QUALITY_EVALUATION_OUTPUT_PATH,
+          JSON.stringify(
+            chronicleReport({
+              candidateCommitSha:
+                childEnv.QUALITY_EVALUATION_CANDIDATE_COMMIT_SHA,
+              candidateTreeSha: childEnv.QUALITY_EVALUATION_CANDIDATE_TREE_SHA,
+              suiteId: childEnv.QUALITY_EVALUATION_SUITE_ID,
+              runId: childEnv.QUALITY_EVALUATION_RUN_ID,
+              commandDigest: childEnv.QUALITY_EVALUATION_COMMAND_DIGEST,
+              certificationEligible: true,
+            }),
+          ),
+          "utf8",
+        );
+        return capture();
+      },
+      idFactory: () => "ambient-mode",
+      now: fixedNow,
+    });
+    assert.equal(observedMode, CURRENT_NARRATIVE_EVAL_PROTOCOL.evidenceMode);
+    assert.equal(result.report.result, "QUALIFIED");
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Chronicle qualification rejects missing, legacy, and drifted current protocol bindings", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const current = chronicleReport();
+  for (const [name, report] of [
+    ["missing evidence mode", { ...current, evidenceMode: undefined }],
+    ["legacy evidence mode", { ...current, evidenceMode: "legacy-v1" }],
+    ["missing receipt mode", { ...current, receiptMode: undefined }],
+    [
+      "old parser version",
+      {
+        ...current,
+        versions: {
+          ...current.versions,
+          parser: "window-observation-normalizer/1",
+        },
+      },
+    ],
+  ]) {
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "failed", exitCode: 1 }),
+    );
+    assert.equal(result.result, "FAILED", name);
+    assert.match(result.message, /mode|version/i, name);
+  }
+});
+
+test("Chronicle qualification rejects per-case protocol drift and scorer disqualifiers", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const current = chronicleReport();
+  const mutateFirstCase = (mutate) =>
+    chronicleReport({
+      cases: current.cases.map((entry, index) =>
+        index === 0 ? mutate(entry) : entry,
+      ),
+    });
+  const protocolReports = [
+    [
+      "missing per-case evidence mode",
+      mutateFirstCase((entry) => ({ ...entry, evidenceMode: undefined })),
+    ],
+    [
+      "legacy per-case evidence mode",
+      mutateFirstCase((entry) => ({ ...entry, evidenceMode: "legacy-v1" })),
+    ],
+    [
+      "missing per-case receipt mode",
+      mutateFirstCase((entry) => ({ ...entry, receiptMode: undefined })),
+    ],
+    [
+      "drifted per-case parser",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        versions: {
+          ...entry.versions,
+          parser: "window-observation-normalizer/1",
+        },
+      })),
+    ],
+  ];
+  for (const [name, report] of protocolReports) {
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "failed", exitCode: 1 }),
+    );
+    assert.equal(result.result, "FAILED", name);
+    assert.match(result.message, /case|mode|version/i, name);
+  }
+
+  const cloneDimensions = (evaluation) =>
+    Object.fromEntries(
+      Object.entries(evaluation.dimensions).map(([dimension, score]) => [
+        dimension,
+        { ...score },
+      ]),
+    );
+  const scorerReports = [
+    [
+      "parse failure",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, parseFailureCount: 1 },
+      })),
+    ],
+    [
+      "missing parse failure count",
+      mutateFirstCase((entry) => {
+        const evaluation = { ...entry.evaluation };
+        delete evaluation.parseFailureCount;
+        return { ...entry, evaluation };
+      }),
+    ],
+    [
+      "unresolved evidence",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unresolvedEvidenceCount: 1 },
+      })),
+    ],
+    [
+      "negative unresolved evidence",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unresolvedEvidenceCount: -1 },
+      })),
+    ],
+    [
+      "critical violation",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: {
+          ...entry.evaluation,
+          passed: false,
+          criticalViolations: [{ classId: "critical" }],
+        },
+      })),
+    ],
+    [
+      "malformed critical violations",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, criticalViolations: {} },
+      })),
+    ],
+    [
+      "unobservable dimension list",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: {
+          ...entry.evaluation,
+          unobservableDimensions: [{ dimension: "eventDetection" }],
+        },
+      })),
+    ],
+    [
+      "malformed unobservable dimension list",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, unobservableDimensions: {} },
+      })),
+    ],
+    [
+      "dimension unobservable score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.unobservable = 1;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "missing dimension",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        delete dimensions.actuality;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "missing dimensions object",
+      mutateFirstCase((entry) => ({
+        ...entry,
+        evaluation: { ...entry.evaluation, dimensions: undefined },
+      })),
+    ],
+    [
+      "malformed dimension record",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.actuality = null;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "malformed dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.actuality = { ...dimensions.actuality };
+        delete dimensions.actuality.unobservable;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "negative dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.falsePositive = -1;
+        return {
+          ...entry,
+          evaluation: {
+            ...entry.evaluation,
+            passed: false,
+            dimensions,
+          },
+        };
+      }),
+    ],
+    [
+      "non-integer dimension score",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.truePositive = 0.5;
+        return { ...entry, evaluation: { ...entry.evaluation, dimensions } };
+      }),
+    ],
+    [
+      "passed consistency mismatch",
+      mutateFirstCase((entry) => {
+        const dimensions = cloneDimensions(entry.evaluation);
+        dimensions.eventDetection.falsePositive = 1;
+        dimensions.eventDetection.falseNegative = 1;
+        return {
+          ...entry,
+          evaluation: { ...entry.evaluation, passed: true, dimensions },
+        };
+      }),
+    ],
+  ];
+  for (const [name, report] of scorerReports) {
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "failed", exitCode: 1 }),
+    );
+    assert.equal(result.result, "FAILED", name);
+    assert.match(
+      result.message,
+      /case|evaluation|dimension|certification|semantic/i,
+      name,
+    );
+  }
+});
+
+test("Chronicle terminal communication and diagnostic parity failures are FAILED even with parseFailureCount zero", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  for (const terminalFailure of [
+    {
+      kind: "terminal-pipeline-failure",
+      stageId: "narrative_observation_extract",
+      invocationIndex: 0,
+      parseStatus: null,
+    },
+    {
+      kind: "diagnostic-parity-failure",
+      dispatchCount: 1,
+      diagnosticCount: 0,
+      dispatchKeys: ["narrative_observation_extract:0"],
+      diagnosticKeys: [],
+    },
+  ]) {
+    const report = chronicleReport({
+      cases: Array.from({ length: 13 }, (_, index) =>
+        chronicleCase({
+          caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[index],
+        }),
+      ),
+      failedCases: [
+        chronicleFailedCase({
+          caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+          terminalFailure,
+        }),
+      ],
+      summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+    });
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "failed", exitCode: 1 }),
+    );
+    assert.equal(result.result, "FAILED");
+    assert.match(result.message, /terminal|failed case|parity|execution/i);
+  }
+});
+
+test("Chronicle semantic-only threshold miss remains HOLD after complete scoring", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const cases = Array.from({ length: 14 }, (_, index) =>
+    chronicleCase({
+      caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[index],
+      passed: index !== 13,
+    }),
+  );
+  const result = classifyChronicleQualificationReport(
+    chronicleReport({
+      cases,
+      summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+    }),
+    expected,
+    capture({ status: "failed", exitCode: 1 }),
+  );
+  assert.equal(result.result, "HOLD");
+});
+
+test("Chronicle success requires complete current scored cases and a successful harness", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const result = classifyChronicleQualificationReport(
+    chronicleReport({
+      certificationEligible: true,
+      summary: { passed: 14, failed: 0, parseFailureCount: 0 },
+    }),
+    expected,
+    capture({ status: "passed", exitCode: 0 }),
+  );
+  assert.equal(result.result, "QUALIFIED");
+});
+
+test("Chronicle certification eligibility cannot override contradictory case accounting", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const scoredFailure = chronicleReport({
+    certificationEligible: true,
+    cases: Array.from({ length: 14 }, (_, index) =>
+      chronicleCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[index],
+        passed: index !== 13,
+      }),
+    ),
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  });
+  const terminalFailure = chronicleReport({
+    certificationEligible: true,
+    cases: chronicleReport().cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+        terminalFailure: {
+          kind: "terminal-pipeline-failure",
+          stageId: null,
+          invocationIndex: null,
+          parseStatus: null,
+        },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  });
+  const parseFailure = chronicleReport({
+    certificationEligible: true,
+    summary: { passed: 14, failed: 0, parseFailureCount: 1 },
+  });
+  for (const [name, report] of [
+    ["scored semantic failure", scoredFailure],
+    ["terminal failed case", terminalFailure],
+    ["parser failure", parseFailure],
+  ]) {
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "passed", exitCode: 0 }),
+    );
+    assert.equal(result.result, "FAILED", name);
+  }
+});
+
+test("Chronicle qualification rejects duplicate, unknown, missing, and malformed terminal case accounting", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const current = chronicleReport();
+  const duplicate = chronicleReport({
+    cases: current.cases.map((entry, index) =>
+      index === 13
+        ? { ...entry, caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0] }
+        : entry,
+    ),
+  });
+  const unknown = chronicleReport({
+    cases: current.cases.map((entry, index) =>
+      index === 0 ? { ...entry, caseId: "chronicle.micro.unknown-999" } : entry,
+    ),
+  });
+  const missing = chronicleReport({
+    cases: current.cases.slice(0, 13),
+    caseCount: 14,
+  });
+  const malformedTerminal = chronicleReport({
+    cases: current.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+        terminalFailure: { kind: "terminal-pipeline-failure" },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  });
+  const missingTerminalFailure = chronicleReport({
+    cases: current.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  });
+  for (const [name, report, message] of [
+    ["duplicate", duplicate, /duplicate/],
+    ["unknown", unknown, /unknown/],
+    ["missing", missing, /count|missing/],
+    ["malformed terminal", malformedTerminal, /terminalFailure/],
+    ["missing terminal failure", missingTerminalFailure, /terminalFailure/],
+  ]) {
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "failed", exitCode: 1 }),
+    );
+    assert.equal(result.result, "FAILED", name);
+    assert.match(result.message, message, name);
+  }
+});
+
+test("Chronicle qualification keeps scored and terminal case shapes disjoint", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const current = chronicleReport();
+  for (const [name, terminalFailure] of [
+    ["undefined", undefined],
+    ["null", null],
+    ["malformed", {}],
+    [
+      "valid",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: null,
+        parseStatus: null,
+      },
+    ],
+  ]) {
+    const report = chronicleReport({
+      cases: current.cases.map((entry, index) =>
+        index === 0 ? { ...entry, terminalFailure } : entry,
+      ),
+    });
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "failed", exitCode: 1 }),
+    );
+    assert.equal(result.result, "FAILED", `scored terminalFailure ${name}`);
+    assert.match(result.message, /terminalFailure/, name);
+  }
+
+  const crossArrayDuplicate = chronicleReport({
+    cases: current.cases.slice(0, 13),
+    failedCases: [
+      chronicleFailedCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0],
+        terminalFailure: {
+          kind: "terminal-pipeline-failure",
+          stageId: null,
+          invocationIndex: null,
+          parseStatus: null,
+        },
+      }),
+    ],
+    summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+  });
+  const duplicateResult = classifyChronicleQualificationReport(
+    crossArrayDuplicate,
+    expected,
+    capture({ status: "failed", exitCode: 1 }),
+  );
+  assert.equal(duplicateResult.result, "FAILED");
+  assert.match(duplicateResult.message, /duplicate/);
+
+  for (const [name, terminalFailure] of [
+    [
+      "null stage with invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: 0,
+        parseStatus: null,
+      },
+    ],
+    [
+      "stage with null invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: "narrative_observation_extract",
+        invocationIndex: null,
+        parseStatus: null,
+      },
+    ],
+    [
+      "parse status without invocation",
+      {
+        kind: "terminal-pipeline-failure",
+        stageId: null,
+        invocationIndex: null,
+        parseStatus: "invalid",
+      },
+    ],
+  ]) {
+    const report = chronicleReport({
+      cases: current.cases.slice(0, 13),
+      failedCases: [
+        chronicleFailedCase({
+          caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+          terminalFailure,
+        }),
+      ],
+      summary: { passed: 13, failed: 1, parseFailureCount: 0 },
+    });
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "failed", exitCode: 1 }),
+    );
+    assert.equal(result.result, "FAILED", name);
+    assert.match(result.message, /tuple|terminalFailure/);
+  }
+});
+
+test("Chronicle eligibility cannot hide a failed or non-semantic harness", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const completeSemanticMiss = chronicleReport({
+    cases: Array.from({ length: 14 }, (_, index) =>
+      chronicleCase({
+        caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[index],
+        passed: index !== 13,
+      }),
+    ),
+  });
+  assert.equal(
+    classifyChronicleQualificationReport(
+      { ...completeSemanticMiss, certificationEligible: true },
+      expected,
+      capture({ status: "failed", exitCode: 17 }),
+    ).result,
+    "FAILED",
+  );
+  assert.equal(
+    classifyChronicleQualificationReport(
+      completeSemanticMiss,
+      expected,
+      capture({ status: "passed", exitCode: 0 }),
+    ).result,
+    "FAILED",
+  );
+});
+
+test("Chronicle qualification rejects incomplete case and summary accounting", () => {
+  const expected = {
+    commitSha: candidate.commitSha,
+    treeSha: candidate.treeSha,
+    suiteId: "heavy-narrative-chronicle-production",
+    runId: "run-1",
+    commandDigest: `sha256:${"c".repeat(64)}`,
+    attempt: 1,
+  };
+  const current = chronicleReport();
+  for (const report of [
+    { ...current, cases: current.cases.slice(0, 13) },
+    { ...current, summary: { passed: 14, failed: 1, parseFailureCount: 0 } },
+    { ...current, caseCount: 13 },
+  ]) {
+    const result = classifyChronicleQualificationReport(
+      report,
+      expected,
+      capture({ status: "failed", exitCode: 1 }),
+    );
+    assert.equal(result.result, "FAILED");
+    assert.match(result.message, /case|summary|count|account/i);
+  }
+});
+
+test("unknown suite is rejected before artifact allocation or child execution", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-unknown-"));
+  let executed = 0;
+  try {
+    await assert.rejects(
+      () =>
+        runLiveModelQualification({
+          repoRoot,
+          args: args(temp, ["heavy-does-not-exist"]),
+          env: { OPENROUTER_API_KEY: "unused" },
+          candidateResolver: fixedCandidate,
+          executeCommand: async () => {
+            executed += 1;
+            return capture();
+          },
+        }),
+      /not allowed by the qualification profile/i,
+    );
+    assert.equal(executed, 0);
+    assert.deepEqual(await readdir(temp), []);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("captured logs, source artifacts, and reports never retain credential values", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-redact-"));
+  const secret = "sk-live-super-secret";
+  const unrelatedSecret = "sk-unrelated-provider-secret";
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp),
+      env: {
+        OPENROUTER_API_KEY: secret,
+        OPENAI_API_KEY: unrelatedSecret,
+        OPEN_ROUTER_API_KEY: "legacy-alias-must-not-propagate",
+        GH_TOKEN: "github-token-must-not-propagate",
+      },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        assert.equal(childEnv.OPENAI_API_KEY, undefined);
+        assert.equal(childEnv.OPEN_ROUTER_API_KEY, undefined);
+        assert.equal(childEnv.GH_TOKEN, undefined);
+        await writeFile(
+          childEnv.QUALITY_EVALUATION_OUTPUT_PATH,
+          JSON.stringify({ apiKey: secret, note: `token=${secret}` }),
+          "utf8",
+        );
+        return capture({
+          stdout: `Authorization: Bearer ${secret}\n${secret}`,
+          stderr: `https://user:${secret}@example.test/?api_key=${secret}\n${unrelatedSecret}`,
+        });
+      },
+      idFactory: () => "redacted",
+      now: fixedNow,
+    });
+    assert.equal(result.report.result, "QUALIFIED");
+    const files = await readdir(result.runDir, { recursive: true });
+    for (const relative of files) {
+      const absolute = path.join(result.runDir, relative);
+      if (relative.endsWith(".log") || relative.endsWith(".json")) {
+        assert.doesNotMatch(
+          await readFile(absolute, "utf8"),
+          new RegExp(secret),
+        );
+        assert.doesNotMatch(
+          await readFile(absolute, "utf8"),
+          new RegExp(unrelatedSecret),
+        );
+      }
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("persists only bounded Chronicle failure diagnostics after deleting the source root", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-diagnostics-"));
+  let ephemeralRoot;
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-narrative-chronicle-production"]),
+      env: { OPENROUTER_API_KEY: KEY_CANARY },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        ephemeralRoot = childEnv.QUALITY_EVALUATION_ARTIFACT_ROOT;
+        await writeChronicleSourceArtifacts(childEnv);
+        return capture({ status: "failed", exitCode: 1 });
+      },
+      idFactory: () => "failure-diagnostics",
+      now: fixedNow,
+    });
+
+    assert.equal(result.report.result, "FAILED");
+    const suiteReport = result.report.suites[0];
+    assert.ok(suiteReport);
+    assert.equal(suiteReport.result, "FAILED");
+    assert.match(suiteReport.failureDiagnosticsDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(suiteReport.failureDiagnosticsUnavailableReason, undefined);
+
+    const diagnosticsPath = path.join(
+      result.runDir,
+      "suites",
+      "heavy-narrative-chronicle-production",
+      "failure-diagnostics.json",
+    );
+    const bytes = await readFile(diagnosticsPath);
+    assert.equal(sha256Buffer(bytes), suiteReport.failureDiagnosticsDigest);
+    assert.deepEqual(JSON.parse(bytes.toString("utf8")), {
+      schemaVersion: 1,
+      mode: "live-model-qualification-failure-diagnostics",
+      nonAuthoritative: true,
+      diagnosticOnly: true,
+      certificationEligible: false,
+      runId: result.report.runId,
+      suiteId: "heavy-narrative-chronicle-production",
+      cases: [
+        {
+          caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0],
+          invocations: [
+            {
+              stageId: "narrative_observation_extract",
+              invocationIndex: 0,
+              promptTextDigest: sha256Text(
+                `prompt:${CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0]}`,
+              ),
+              responseTextDigest: sha256Text(
+                `response:${CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[0]}`,
+              ),
+              finishReason: "stop",
+              stopReason: "end_turn",
+              json: { status: "object-found", rootType: "object" },
+              schema: {
+                status: "invalid",
+                errors: [
+                  {
+                    code: "SCHEMA_INVALID",
+                    path: "observations[0].payload.durationKind",
+                  },
+                  { code: "SCHEMA_UNKNOWN", path: "<redacted>" },
+                ],
+              },
+              refs: {
+                status: "valid",
+                checkedCount: 1,
+                rejectedCount: 0,
+                errors: [],
+              },
+              citation: {
+                status: "not-evaluated",
+                checkedCount: 0,
+                rejectedCount: 0,
+                resolvedCount: 0,
+              },
+              output: {
+                candidateCount: 1,
+                schemaAcceptedCount: 0,
+                schemaRejectedCount: 1,
+                normalizerDroppedCount: 0,
+                acceptedCount: 0,
+                rejectedCount: 1,
+                salvagedCount: 0,
+              },
+              expectedParseStatus: "invalid",
+              parseStatus: "invalid",
+            },
+          ],
+        },
+      ],
+    });
+
+    if (process.platform !== "win32") {
+      assert.equal((await stat(result.runDir)).mode & 0o777, 0o700);
+      assert.equal((await stat(diagnosticsPath)).mode & 0o777, 0o600);
+    }
+    await assert.rejects(
+      () =>
+        readFile(
+          path.join(ephemeralRoot, result.report.runId, "diagnostics.json"),
+        ),
+      { code: "ENOENT" },
+    );
+
+    const persistedFiles = await readdir(result.runDir, { recursive: true });
+    const persistedText = (
+      await Promise.all(
+        persistedFiles
+          .filter(
+            (relative) =>
+              relative.endsWith(".json") || relative.endsWith(".log"),
+          )
+          .map((relative) =>
+            readFile(path.join(result.runDir, relative), "utf8"),
+          ),
+      )
+    ).join("\n");
+    for (const canary of [
+      RAW_PROMPT_CANARY,
+      RAW_RESPONSE_CANARY,
+      FREE_ERROR_CANARY,
+      KEY_CANARY,
+      "provider-model-must-not-persist",
+      "session-must-not-persist",
+      "generation-must-not-persist",
+      "alias-must-not-persist",
+    ]) {
+      assert.doesNotMatch(persistedText, new RegExp(canary));
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("diagnostics persistence rejection preserves the canonical FAILED report", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-persist-fail-"));
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-narrative-chronicle-production"]),
+      // The bounded finishReason contains this value, exercising the final
+      // credential collision guard before the durable file is created.
+      env: { OPENROUTER_API_KEY: "stop" },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        await writeChronicleSourceArtifacts(childEnv);
+        return capture({ status: "failed", exitCode: 1 });
+      },
+      idFactory: () => "persist-failure",
+      now: fixedNow,
+    });
+
+    assert.equal(result.report.result, "FAILED");
+    assert.equal(result.report.suites[0].result, "FAILED");
+    assert.equal(
+      result.report.suites[0].failureDiagnosticsUnavailableReason,
+      "projection-persist-failed",
+    );
+    assert.equal(result.report.suites[0].failureDiagnosticsDigest, undefined);
+    await assert.rejects(
+      () =>
+        readFile(
+          path.join(
+            result.runDir,
+            "suites",
+            "heavy-narrative-chronicle-production",
+            "failure-diagnostics.json",
+          ),
+        ),
+      { code: "ENOENT" },
+    );
+    assert.equal(
+      JSON.parse(await readFile(result.reportPath)).result,
+      "FAILED",
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("persists bounded terminal failed-case diagnostics from a 13 plus 1 report", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-terminal-"));
+  const terminalFailure = {
+    kind: "terminal-pipeline-failure",
+    stageId: "narrative_observation_extract",
+    invocationIndex: 0,
+    parseStatus: "invalid",
+  };
+  let ephemeralRoot;
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-narrative-chronicle-production"]),
+      env: { OPENROUTER_API_KEY: KEY_CANARY },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        ephemeralRoot = childEnv.QUALITY_EVALUATION_ARTIFACT_ROOT;
+        const report = chronicleTerminalSourceReport(childEnv, terminalFailure);
+        assert.equal(report.cases.length, 13);
+        assert.equal(report.failedCases.length, 1);
+        await writeChronicleSourceArtifacts(childEnv, {
+          report,
+          diagnostics: chronicleSourceDiagnostics(childEnv, {
+            invalidIndex: 13,
+            terminalFailure,
+          }),
+        });
+        return capture({ status: "failed", exitCode: 1 });
+      },
+      idFactory: () => "terminal-failure",
+      now: fixedNow,
+    });
+
+    assert.equal(result.report.result, "FAILED");
+    const diagnosticsPath = path.join(
+      result.runDir,
+      "suites",
+      "heavy-narrative-chronicle-production",
+      "failure-diagnostics.json",
+    );
+    const persistedText = await readFile(diagnosticsPath, "utf8");
+    const persisted = JSON.parse(persistedText);
+    assert.equal(persisted.cases.length, 1);
+    assert.equal(
+      persisted.cases[0].caseId,
+      CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13],
+    );
+    assert.deepEqual(persisted.cases[0].terminalFailure, {
+      code: "terminal-pipeline-failure",
+      stageId: "narrative_observation_extract",
+      invocationIndex: 0,
+      parseStatus: "invalid",
+    });
+    assert.equal(persisted.cases[0].invocations.length, 1);
+    assert.deepEqual(persisted.cases[0].invocations[0].schema, {
+      status: "invalid",
+      errors: [
+        {
+          code: "SCHEMA_INVALID",
+          path: "observations[0].payload.durationKind",
+        },
+        { code: "SCHEMA_UNKNOWN", path: "<redacted>" },
+      ],
+    });
+    assert.equal(
+      persisted.cases[0].invocations[0].responseTextDigest,
+      sha256Text(`response:${CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[13]}`),
+    );
+    await assert.rejects(() => stat(ephemeralRoot), { code: "ENOENT" });
+    for (const canary of [
+      RAW_PROMPT_CANARY,
+      RAW_RESPONSE_CANARY,
+      FREE_ERROR_CANARY,
+      KEY_CANARY,
+      "provider-model-must-not-persist",
+      "session-must-not-persist",
+    ]) {
+      assert.doesNotMatch(persistedText, new RegExp(canary));
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Chronicle source diagnostics fail closed with fixed unavailable reason codes", async (t) => {
+  const variants = [
+    {
+      name: "missing",
+      expectedReason: "source-missing",
+      build: () => null,
+    },
+    {
+      name: "malformed",
+      expectedReason: "source-malformed",
+      build: () => "{",
+    },
+    {
+      name: "oversize",
+      expectedReason: "source-oversize",
+      build: () => " ".repeat(2 * 1024 * 1024),
+    },
+    {
+      name: "depth limit",
+      expectedReason: "source-depth-limit",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        let nested = {};
+        for (let depth = 0; depth < 80; depth += 1) {
+          nested = { nested };
+        }
+        diagnostics.additionalNestedData = nested;
+        return diagnostics;
+      },
+    },
+    {
+      name: "cardinality limit",
+      expectedReason: "source-cardinality-limit",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        diagnostics.additionalCollection = Array.from(
+          { length: 5_000 },
+          () => null,
+        );
+        return diagnostics;
+      },
+    },
+    {
+      name: "binding mismatch",
+      expectedReason: "source-binding-mismatch",
+      build: (childEnv) => ({
+        ...chronicleSourceDiagnostics(childEnv),
+        runId: "different-run",
+      }),
+    },
+    {
+      name: "unknown enum",
+      expectedReason: "source-invalid",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        diagnostics.cases[0].dispatches[0].finishReason = FREE_ERROR_CANARY;
+        return diagnostics;
+      },
+    },
+    {
+      name: "invalid digest",
+      expectedReason: "source-invalid",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        diagnostics.cases[0].dispatches[0].responseDigest = KEY_CANARY;
+        return diagnostics;
+      },
+    },
+    {
+      name: "dispatch diagnostic parity mismatch",
+      expectedReason: "source-parity-mismatch",
+      build: (childEnv) => {
+        const diagnostics = chronicleSourceDiagnostics(childEnv);
+        diagnostics.cases[0].stageDiagnostics[0].invocationIndex = 1;
+        return diagnostics;
+      },
+    },
+  ];
+
+  for (const [index, variant] of variants.entries()) {
+    await t.test(variant.name, async () => {
+      const temp = await mkdtemp(
+        path.join(os.tmpdir(), `live-qual-diagnostics-${index}-`),
+      );
+      let ephemeralRoot;
+      try {
+        const result = await runLiveModelQualification({
+          repoRoot,
+          args: args(temp, ["heavy-narrative-chronicle-production"]),
+          env: { OPENROUTER_API_KEY: KEY_CANARY },
+          candidateResolver: fixedCandidate,
+          executeCommand: async (_command, _cwd, childEnv) => {
+            ephemeralRoot = childEnv.QUALITY_EVALUATION_ARTIFACT_ROOT;
+            await writeChronicleSourceArtifacts(childEnv, {
+              diagnostics: variant.build(childEnv),
+            });
+            return capture({ status: "failed", exitCode: 1 });
+          },
+          idFactory: () => `unavailable-${index}`,
+          now: fixedNow,
+        });
+
+        assert.equal(result.report.result, "FAILED");
+        const suiteReport = result.report.suites[0];
+        assert.ok(suiteReport);
+        assert.equal(
+          suiteReport.failureDiagnosticsUnavailableReason,
+          variant.expectedReason,
+        );
+        assert.equal(suiteReport.failureDiagnosticsDigest, undefined);
+        await assert.rejects(
+          () =>
+            readFile(
+              path.join(
+                result.runDir,
+                "suites",
+                "heavy-narrative-chronicle-production",
+                "failure-diagnostics.json",
+              ),
+            ),
+          { code: "ENOENT" },
+        );
+        await assert.rejects(() => stat(ephemeralRoot), { code: "ENOENT" });
+        const reportText = await readFile(result.reportPath, "utf8");
+        for (const canary of [
+          RAW_PROMPT_CANARY,
+          RAW_RESPONSE_CANARY,
+          FREE_ERROR_CANARY,
+          KEY_CANARY,
+        ]) {
+          assert.doesNotMatch(reportText, new RegExp(canary));
+        }
+      } finally {
+        await rm(temp, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("one failed suite prevents an overall QUALIFIED result", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-fail-"));
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-agent-tool-loop", "heavy-single-shot-surfaces"]),
+      env: { OPENROUTER_API_KEY: "test-key" },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (command) =>
+        command.includes("singleShot")
+          ? capture({ status: "failed", exitCode: 17, stderr: "failed" })
+          : capture(),
+      idFactory: () => "one-failure",
+      now: fixedNow,
+    });
+    assert.equal(result.report.result, "FAILED");
+    assert.deepEqual(
+      result.report.suites.map((suite) => suite.result),
+      ["QUALIFIED", "FAILED"],
+    );
+    for (const suite of result.report.suites) {
+      assert.equal(suite.failureDiagnosticsDigest, undefined);
+      assert.equal(suite.failureDiagnosticsUnavailableReason, undefined);
+    }
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("reruns allocate independent immutable run directories", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-rerun-"));
+  const ids = ["first", "second"];
+  try {
+    const common = {
+      repoRoot,
+      args: args(temp),
+      env: { OPENROUTER_API_KEY: "test-key" },
+      candidateResolver: fixedCandidate,
+      executeCommand: async () => capture(),
+      idFactory: () => ids.shift(),
+      now: fixedNow,
+    };
+    const first = await runLiveModelQualification(common);
+    const second = await runLiveModelQualification(common);
+    assert.notEqual(first.runDir, second.runDir);
+    assert.equal(
+      JSON.parse(await readFile(first.reportPath)).runId.endsWith("first"),
+      true,
+    );
+    assert.equal(
+      JSON.parse(await readFile(second.reportPath)).runId.endsWith("second"),
+      true,
+    );
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Chronicle semantic threshold misses become HOLD, not FAILED or QUALIFIED", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-hold-"));
+  try {
+    const result = await runLiveModelQualification({
+      repoRoot,
+      args: args(temp, ["heavy-narrative-chronicle-production"]),
+      env: { OPENROUTER_API_KEY: "test-key" },
+      candidateResolver: fixedCandidate,
+      executeCommand: async (_command, _cwd, childEnv) => {
+        await writeFile(
+          childEnv.QUALITY_EVALUATION_OUTPUT_PATH,
+          JSON.stringify(
+            chronicleReport({
+              candidateCommitSha:
+                childEnv.QUALITY_EVALUATION_CANDIDATE_COMMIT_SHA,
+              candidateTreeSha: childEnv.QUALITY_EVALUATION_CANDIDATE_TREE_SHA,
+              suiteId: childEnv.QUALITY_EVALUATION_SUITE_ID,
+              runId: childEnv.QUALITY_EVALUATION_RUN_ID,
+              commandDigest: childEnv.QUALITY_EVALUATION_COMMAND_DIGEST,
+              cases: Array.from({ length: 14 }, (_, index) =>
+                chronicleCase({
+                  caseId: CHRONICLE_PRODUCTION_EXPECTED_CASE_IDS[index],
+                  passed: index !== 13,
+                }),
+              ),
+              certificationEligible: false,
+            }),
+          ),
+          "utf8",
+        );
+        return capture({ status: "failed", exitCode: 1 });
+      },
+      idFactory: () => "semantic-hold",
+      now: fixedNow,
+    });
+    assert.equal(result.report.result, "HOLD");
+    assert.equal(result.report.suites[0].result, "HOLD");
+    assert.equal(
+      result.report.suites[0].failureDiagnosticsUnavailableReason,
+      undefined,
+    );
+    assert.equal(result.report.suites[0].failureDiagnosticsDigest, undefined);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("result aggregation preserves FAILED over HOLD and never invents execution", () => {
+  assert.equal(deriveQualificationResult([]), "INCOMPLETE");
+  assert.equal(
+    deriveQualificationResult([{ result: "QUALIFIED" }, { result: "HOLD" }]),
+    "HOLD",
+  );
+  assert.equal(
+    deriveQualificationResult([{ result: "HOLD" }, { result: "FAILED" }]),
+    "FAILED",
+  );
+});
+
+test("live report schema keeps failure diagnostics optional and FAILED-only", async () => {
+  const schema = JSON.parse(
+    await readFile(
+      path.join(
+        repoRoot,
+        "evals/qualifications/schemas/live-model-qualification-v1.schema.json",
+      ),
+      "utf8",
+    ),
+  );
+  const validateSuite = new Ajv2020({ strict: false }).compile(
+    schema.$defs.suiteResult,
+  );
+  const legacyFailed = {
+    suiteId: "heavy-narrative-chronicle-production",
+    startedAt: "2026-08-13T00:00:00.000Z",
+    completedAt: "2026-08-13T00:00:01.000Z",
+    exitCode: 1,
+    commandDigest: sha256Text("command"),
+    stdoutDigest: sha256Text("stdout"),
+    stderrDigest: sha256Text("stderr"),
+    sanitizedArtifactDigest: sha256Text("artifact"),
+    result: "FAILED",
+    message: "failed",
+  };
+  const digest = sha256Text("failure diagnostics");
+
+  assert.equal(validateSuite(legacyFailed), true);
+  assert.equal(
+    validateSuite({ ...legacyFailed, failureDiagnosticsDigest: digest }),
+    true,
+  );
+  assert.equal(
+    validateSuite({
+      ...legacyFailed,
+      failureDiagnosticsUnavailableReason: "source-missing",
+    }),
+    true,
+  );
+  for (const invalid of [
+    {
+      ...legacyFailed,
+      result: "QUALIFIED",
+      failureDiagnosticsDigest: digest,
+    },
+    {
+      ...legacyFailed,
+      result: "HOLD",
+      failureDiagnosticsUnavailableReason: "source-missing",
+    },
+    {
+      ...legacyFailed,
+      failureDiagnosticsDigest: digest,
+      failureDiagnosticsUnavailableReason: "source-missing",
+    },
+  ]) {
+    assert.equal(validateSuite(invalid), false);
+  }
+});
+
+test("Gate B2 and Live Qualification reports fail each other's schemas", async () => {
+  const temp = await mkdtemp(path.join(os.tmpdir(), "live-qual-schema-"));
+  try {
+    const live = await runLiveModelQualification({
+      repoRoot,
+      args: args(path.join(temp, "live")),
+      env: { OPENROUTER_API_KEY: "test-key" },
+      candidateResolver: fixedCandidate,
+      executeCommand: async () => capture(),
+      idFactory: () => "schema",
+      now: fixedNow,
+    });
+    const gate = await certifyGateB2({
+      repoRoot,
+      args: parseCertifyArgs([
+        "--preflight",
+        "--artifact-dir",
+        path.join(temp, "gate"),
+        "--report",
+        path.join(temp, "gate-report.json"),
+        "--format",
+        "json",
+      ]),
+    });
+    const gateSchema = JSON.parse(
+      await readFile(
+        path.join(
+          repoRoot,
+          "evals/certifications/schemas/gate-b2-report-v1.schema.json",
+        ),
+        "utf8",
+      ),
+    );
+    const liveSchema = JSON.parse(
+      await readFile(
+        path.join(
+          repoRoot,
+          "evals/qualifications/schemas/live-model-qualification-v1.schema.json",
+        ),
+        "utf8",
+      ),
+    );
+    assert.equal(validateJsonAgainstSchema(live.report, gateSchema).ok, false);
+    const validateLive = new Ajv2020({ strict: false }).compile(liveSchema);
+    assert.equal(validateLive(gate.report), false);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});

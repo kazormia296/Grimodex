@@ -25,6 +25,7 @@ import { ParagraphReorderExtension } from "@/features/editor/reorder/ParagraphRe
 import { ReorderInteractionExtension } from "@/features/editor/reorder/ReorderInteractionExtension";
 import { VerticalCaretNavExtension } from "@/features/editor/VerticalCaretNavExtension";
 import { InlineAtomNavigationExtension } from "@/features/editor/InlineAtomNavigationExtension";
+import { createParagraphIndentPlugin } from "@/features/editor/ParagraphIndentPlugin";
 import { SlashCommandExtension } from "@/features/editor/inlineAi/SlashCommandExtension";
 import { getTypographyExtensions } from "@/features/editor/TypographySettingsExtension";
 import { createLintDecorationPlugin } from "@/features/editor/LintDecorationPlugin";
@@ -64,6 +65,10 @@ export interface EditorExtensionOptions {
 // otherwise round-trip of `<p></p>` blank-paragraph markers is asymmetric and
 // `hashForDiskContent` drifts.
 export const ParagraphWithEmptyLineSupport = Paragraph.extend({
+  addProseMirrorPlugins() {
+    return [createParagraphIndentPlugin()];
+  },
+
   addStorage() {
     return {
       markdown: {

@@ -244,6 +244,8 @@ const bridge = {
     ): Promise<void> => call(IPC.panelOpen, label, opts),
     focusByLabel: (label: string): Promise<boolean> =>
       call(IPC.panelFocus, label),
+    existsByLabel: (label: string): Promise<boolean> =>
+      call(IPC.panelExists, label),
   },
 };
 

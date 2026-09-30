@@ -13,6 +13,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -76,7 +77,11 @@ export async function inferReadings(
   if (!isJapaneseProjectLanguage(lang)) return result;
   // 読みを Codex へ即書き込むため knowledgeWrite で gate する。
   // 日本語以外では policy toast すら出さず完全に no-op。
-  if (blockIfPolicyOff("knowledgeWrite")) return result;
+  if (
+    blockIfPolicyOff("knowledgeWrite") ||
+    blockIfUnlicensed("codex-yomi-license-blocked")
+  )
+    return result;
 
   // hallucination 照合先: id → その id で許可された surface 集合。
   const validSurfacesById = new Map<string, Set<string>>(

@@ -59,6 +59,7 @@ const STICKY_LEFT_OUTER_SHADOW =
   "0 1px 0 rgba(0, 0, 0, 0.04), 2px 3px 3px rgba(0, 0, 0, 0.06), 8px 14px 22px -10px rgba(0, 0, 0, 0.32)";
 const STICKY_TOP_OUTER_SHADOW =
   "0 1px 0 rgba(0, 0, 0, 0.04), 0 3px 3px rgba(0, 0, 0, 0.06), 0 14px 22px -10px rgba(0, 0, 0, 0.32)";
+const MASK_EDGE_BLEED = 1;
 
 const STICKY_ANIMATE = {
   opacity: 1,
@@ -493,12 +494,18 @@ export function EditorStickyCard({
                   id={maskId}
                   maskUnits="userSpaceOnUse"
                   maskContentUnits="userSpaceOnUse"
-                  x="0"
-                  y="0"
-                  width={width}
-                  height={height}
+                  x={-MASK_EDGE_BLEED}
+                  y={-MASK_EDGE_BLEED}
+                  width={width + MASK_EDGE_BLEED * 2}
+                  height={height + MASK_EDGE_BLEED * 2}
                 >
-                  <rect width={width} height={height} fill="white" />
+                  <rect
+                    x={-MASK_EDGE_BLEED}
+                    y={-MASK_EDGE_BLEED}
+                    width={width + MASK_EDGE_BLEED * 2}
+                    height={height + MASK_EDGE_BLEED * 2}
+                    fill="white"
+                  />
                   <g
                     data-testid="editor-sticky-mask-holes"
                     transform={`rotate(${-rotation} ${width / 2} ${height / 2})`}

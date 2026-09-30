@@ -7,7 +7,7 @@ Electronリリースで生成した `.deb` を [PKGBUILD](./PKGBUILD) で再パ�
 | 経路                     | 担当ワークフロー                              | 成果物                                                                                                             |
 | ------------------------ | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | GitHub Releases アセット | `release.yml` の `build-arch` ジョブ          | `grimodex-bin-<ver>-<pkgrel>-x86_64.pkg.tar.zst`（`sudo pacman -U` で導入）                                        |
-| AUR                      | `aur-publish.yml`（リリース**公開時**に発火） | AUR パッケージ [`grimodex-bin`](https://aur.archlinux.org/packages/grimodex-bin)（`yay -S grimodex-bin` 等で導入） |
+| AUR                      | `aur-publish.yml`（公開後に手動dispatch） | AUR パッケージ [`grimodex-bin`](https://aur.archlinux.org/packages/grimodex-bin)（`yay -S grimodex-bin` 等で導入） |
 
 ## PKGBUILD テンプレート
 
@@ -20,7 +20,7 @@ sed 置換してから使う。手で `makepkg` する場合も同様に置換�
   `release.yml` の `build-arch` ジョブは
   draft リリース段階で走るため URL からは取得できず、**同名の `.deb` を PKGBUILD の
   隣へ置く**ことで makepkg のローカルソース解決に拾わせている。
-- Elastic-2.0 は Arch の common license 集合外なので、ライセンス本文を
+- `LicenseRef-Grimodex-Proprietary` は独自ライセンスなので、ライセンス本文を
   `/usr/share/licenses/grimodex-bin/LICENSE` に同梱する（namcap の Error 対策）。
   `LICENSE-v<ver>` という取得名にしているのは SRCDEST キャッシュの stale 化防止。
 - `depends` はelectron-builder 26のdeb既定dependsをArch名へ対応させ、
@@ -47,8 +47,8 @@ mkdir /tmp/grimodex-pkg && cd /tmp/grimodex-pkg
 sed 's/@PKGVER@/2.0.0/' /path/to/repo/packaging/arch/PKGBUILD > PKGBUILD
 cp /path/to/repo/packaging/arch/grimodex-launcher .
 cp /path/to/repo/packaging/arch/grimodex-ime-identity.c .
-# 公開前リリースを試す場合は .deb と LICENSE をローカルに置く
-gh release download v2.0.0 --repo kazormia296/Grimodex --pattern 'Grimodex-2.0.0-linux-amd64.deb'
+# 公開前リリースを試す場合は target 配布repoの .deb と LICENSE をローカルに置く
+gh release download v2.0.0 --repo kazormia296/GrimodexReleases --pattern 'Grimodex-2.0.0-linux-amd64.deb'
 cp /path/to/repo/LICENSE LICENSE-v2.0.0
 updpkgsums          # sha256sums を実値に更新（pacman-contrib）
 makepkg -fd         # 依存チェックをスキップして再パッケージ
@@ -57,8 +57,8 @@ namcap grimodex-bin-*.pkg.tar.zst   # 依存・権限に想定外の指摘がな
 
 ## AUR 公開の初回セットアップ
 
-`aur-publish.yml` はリリースを Publish した時点で AUR の `grimodex-bin` リポジトリへ
-PKGBUILD / .SRCINFO を push する。動かすには以下の一度きりの準備が必要。
+`aur-publish.yml` はpublic配布repoのRelease公開後に手動dispatchし、AURの
+`grimodex-bin` リポジトリへ PKGBUILD / .SRCINFO を push する。動かすには以下の一度きりの準備が必要。
 
 1. [AUR アカウント](https://aur.archlinux.org/register) を作成する。
 2. AUR 専用の SSH 鍵を作る: `ssh-keygen -t ed25519 -f aur -C aur@grimodex -N ''`
@@ -79,8 +79,8 @@ PKGBUILD / .SRCINFO を push する。動かすには以下の一度きりの準
 - 最終公開 Tauri v0.10.4 には updater 設定がなく、Arch 上でもアプリ内更新はできない。
   **v0.10.4 の Arch ユーザーは pacman / AUR から `grimodex-bin` v2 へ更新する。**
   v1.0.0 Draft の deb channel は凍結し、Draft asset も再ビルドしない。
-- pacman / AUR 版の更新は、新リリースごとの `aur-publish.yml`（AUR 側）と
-  GitHub Releasesアセット再取得で配る。package markerでElectronアプリ内updaterを
+- pacman / AUR 版の更新は、新リリースごとに公開後の `aur-publish.yml` 手動dispatchと
+  public配布repoのGitHub Releasesアセット再取得で配る。package markerでElectronアプリ内updaterを
   明示的に無効化し、`.deb` updaterをArch上で誤起動させない。
 - デスクトップアイコン、`/usr/bin/grimodex`、従来の `/opt/Grimodex/grimodex` の
   いずれから起動しても、XWaylandとFcitx向けアプリ識別依存を含む同じElectron ELFが起動する。

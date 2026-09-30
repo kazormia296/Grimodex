@@ -21,6 +21,7 @@ function makeRow(overrides: Partial<ForeshadowRow> = {}): ForeshadowRow {
     abandoned: false,
     secret: false,
     loadBearing: null,
+    version: 0,
     createdAt: new Date("2024-01-01"),
     updatedAt: new Date("2024-01-01"),
     ...overrides,
@@ -57,6 +58,27 @@ function unknownCreateError(): IpcInvokeError {
     retryable: true,
     outcome: "unknown",
   });
+}
+
+function makeDeleteReceipt(
+  overrides: Partial<{
+    entityId: string;
+    projectId: string;
+    version: number;
+    changeEventUid: string;
+    undoJournalId: string;
+    maintenanceTransactionId: string;
+  }> = {},
+) {
+  return {
+    entityId: "f-1",
+    projectId: "proj-1",
+    version: 1,
+    changeEventUid: "delete-event-1",
+    undoJournalId: "delete-journal-1",
+    maintenanceTransactionId: "delete-maintenance-tx-1",
+    ...overrides,
+  };
 }
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -107,6 +129,15 @@ vi.mock("@/lib/debugLog", () => ({
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
 }));
+vi.mock("@/lib/nativeMutationMetadata", () => ({
+  getNativeMutationMetadata: vi.fn(() => ({
+    maintenanceTransactionId: "foreshadow-test-transaction",
+    undoJournalId: "foreshadow-test-journal",
+  })),
+}));
+vi.mock("@/features/agent-writes/undoJournal", () => ({
+  applyUndoJournal: vi.fn(),
+}));
 
 import {
   listForeshadowsWithLabels,
@@ -125,6 +156,7 @@ import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { useEditorStore } from "@/features/editor/editorStore";
 import { useSceneStore } from "@/features/tree/store";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
+import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 
 const mockListForeshadowsWithLabels = vi.mocked(listForeshadowsWithLabels);
 const mockCreateForeshadow = vi.mocked(createForeshadow);
@@ -138,6 +170,7 @@ const mockAuditChapter = vi.mocked(auditChapter);
 const mockDetectRelatedCodex = vi.mocked(detectRelatedCodex);
 const mockLoadSceneContents = vi.mocked(loadSceneContents);
 const mockSaveScene = vi.mocked(saveScene);
+const mockApplyUndoJournal = vi.mocked(applyUndoJournal);
 const mockUseEditorStore = vi.mocked(useEditorStore);
 const mockUseSceneStore = vi.mocked(useSceneStore);
 
@@ -159,6 +192,7 @@ describe("foreshadowStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCreateForeshadow.mockReset();
+    mockApplyUndoJournal.mockReset().mockResolvedValue(undefined);
     useGlobalHistoryStore.getState().clear();
     useForeshadowStore.getState().resetForProject();
   });
@@ -379,7 +413,7 @@ describe("foreshadowStore", () => {
         "f-1",
       ]);
       expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
-      expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+      expect(recordChangeEvent).not.toHaveBeenCalled();
     });
 
     it("unknown 後の明示リトライは同じ request ID を再利用し、成功後は解放する", async () => {
@@ -418,7 +452,7 @@ describe("foreshadowStore", () => {
           .items.filter(({ id }) => id === firstPayload.id),
       ).toHaveLength(1);
       expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
-      expect(recordChangeEvent).toHaveBeenCalledTimes(1);
+      expect(recordChangeEvent).not.toHaveBeenCalled();
 
       await useForeshadowStore.getState().create(input);
       const [afterSuccessPayload] = mockCreateForeshadow.mock.calls[2];
@@ -488,11 +522,20 @@ describe("foreshadowStore", () => {
       expect(secondPayload.id).not.toBe(firstPayload.id);
     });
 
-    it("create history は deliberate redo cycle ごとに fresh request ID を使う", async () => {
-      mockCreateForeshadow.mockImplementation(async (data) =>
-        makeRow({ id: data.id, title: data.title }),
+    it("create history は delete journal を undo/redo 方向で再生する", async () => {
+      let created = makeRow();
+      mockCreateForeshadow.mockImplementation(async (data) => {
+        created = makeRow({ id: data.id, title: data.title });
+        return created;
+      });
+      mockDeleteForeshadow.mockImplementation(async (id, _version, projectId) =>
+        makeDeleteReceipt({ entityId: id, projectId }),
       );
-      mockDeleteForeshadow.mockResolvedValue(undefined);
+      mockListForeshadowsWithLabels.mockImplementation(async () => ({
+        items: [{ ...created, label: "planned", setupCount: 0 }],
+        sceneInfoBySceneId: {},
+        setupScenesByForeshadowId: {},
+      }));
 
       await useForeshadowStore.getState().create({
         projectId: "proj-1",
@@ -506,30 +549,28 @@ describe("foreshadowStore", () => {
       await history.undo();
       await history.redo();
 
-      const firstRedoOptions = mockCreateForeshadow.mock.calls[1][1];
-      const secondRedoOptions = mockCreateForeshadow.mock.calls[2][1];
-      expect(firstRedoOptions?.requestId).toBeTruthy();
-      expect(secondRedoOptions?.requestId).toBeTruthy();
-      expect(secondRedoOptions?.requestId).not.toBe(
-        firstRedoOptions?.requestId,
-      );
+      expect(mockCreateForeshadow).toHaveBeenCalledTimes(1);
+      expect(mockDeleteForeshadow).toHaveBeenCalledTimes(1);
+      expect(mockApplyUndoJournal.mock.calls).toEqual([
+        ["delete-journal-1", "undo"],
+        ["delete-journal-1", "redo"],
+        ["delete-journal-1", "undo"],
+      ]);
       expect(useForeshadowStore.getState().items).toHaveLength(1);
     });
 
-    it("create history redo は削除済み replay を UI に復元しない", async () => {
-      mockCreateForeshadow
-        .mockImplementationOnce(async (data) =>
-          makeRow({ id: data.id, title: data.title }),
-        )
-        .mockImplementationOnce(async (data) =>
-          attachCreateResultMetadata(
-            makeRow({ id: data.id, title: data.title }),
-            {
-              __idempotency: { replayed: true, entityPresent: false },
-            },
-          ),
-        );
-      mockDeleteForeshadow.mockResolvedValue(undefined);
+    it("create history redo は authoritative reload で行不在なら失敗する", async () => {
+      mockCreateForeshadow.mockImplementationOnce(async (data) =>
+        makeRow({ id: data.id, title: data.title }),
+      );
+      mockDeleteForeshadow.mockImplementation(async (id, _version, projectId) =>
+        makeDeleteReceipt({ entityId: id, projectId }),
+      );
+      mockListForeshadowsWithLabels.mockResolvedValue({
+        items: [],
+        sceneInfoBySceneId: {},
+        setupScenesByForeshadowId: {},
+      });
 
       await useForeshadowStore.getState().create({
         projectId: "proj-1",
@@ -538,7 +579,9 @@ describe("foreshadowStore", () => {
         loadBearing: null,
       });
       await useGlobalHistoryStore.getState().undo();
-      await useGlobalHistoryStore.getState().redo();
+      await expect(useGlobalHistoryStore.getState().redo()).rejects.toThrow(
+        "foreshadow create redo restore is missing",
+      );
 
       expect(useForeshadowStore.getState().items).toEqual([]);
     });
@@ -548,7 +591,7 @@ describe("foreshadowStore", () => {
 
   describe("remove", () => {
     it("removes item from list on success", async () => {
-      mockDeleteForeshadow.mockResolvedValue(undefined);
+      mockDeleteForeshadow.mockResolvedValue(makeDeleteReceipt());
       useForeshadowStore.setState({
         items: [
           { ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 },
@@ -574,7 +617,7 @@ describe("foreshadowStore", () => {
       expect(useForeshadowStore.getState().items).toHaveLength(1);
     });
 
-    it("delete history は deliberate undo cycle ごとに fresh request ID を使う", async () => {
+    it("delete history は同じ delete journal を undo/redo 方向で再生する", async () => {
       const codexLinkDirtyAt = new Date("2024-01-02T03:04:05.000Z");
       const existing = {
         ...makeRow({
@@ -586,10 +629,14 @@ describe("foreshadowStore", () => {
         setupCount: 0,
       };
       useForeshadowStore.setState({ items: [existing] });
-      mockDeleteForeshadow.mockResolvedValue(undefined);
-      mockCreateForeshadow.mockImplementation(async (data) =>
-        makeRow({ id: data.id, title: data.title, intent: data.intent }),
+      mockDeleteForeshadow.mockResolvedValue(
+        makeDeleteReceipt({ entityId: existing.id }),
       );
+      mockListForeshadowsWithLabels.mockResolvedValue({
+        items: [existing],
+        sceneInfoBySceneId: {},
+        setupScenesByForeshadowId: {},
+      });
 
       await useForeshadowStore.getState().remove(existing.id);
       const history = useGlobalHistoryStore.getState();
@@ -597,37 +644,35 @@ describe("foreshadowStore", () => {
       await history.redo();
       await history.undo();
 
-      const firstUndoOptions = mockCreateForeshadow.mock.calls[0][1];
-      const secondUndoOptions = mockCreateForeshadow.mock.calls[1][1];
-      const firstUndoPayload = mockCreateForeshadow.mock.calls[0][0];
-      expect(firstUndoOptions?.requestId).toBeTruthy();
-      expect(secondUndoOptions?.requestId).toBeTruthy();
-      expect(secondUndoOptions?.requestId).not.toBe(
-        firstUndoOptions?.requestId,
-      );
-      expect(firstUndoPayload).toMatchObject({
-        secret: false,
-        codexLinkDirtyAt,
-      });
+      expect(mockCreateForeshadow).not.toHaveBeenCalled();
+      expect(mockApplyUndoJournal.mock.calls).toEqual([
+        ["delete-journal-1", "undo"],
+        ["delete-journal-1", "redo"],
+        ["delete-journal-1", "undo"],
+      ]);
       expect(useForeshadowStore.getState().items).toHaveLength(1);
     });
 
-    it("delete history undo は削除済み replay を UI に復元しない", async () => {
+    it("delete history undo は authoritative reload で行不在なら失敗する", async () => {
       const existing = {
         ...makeRow({ intent: "restore me" }),
         label: "planned" as const,
         setupCount: 0,
       };
       useForeshadowStore.setState({ items: [existing] });
-      mockDeleteForeshadow.mockResolvedValue(undefined);
-      mockCreateForeshadow.mockResolvedValue(
-        attachCreateResultMetadata(makeRow(), {
-          __idempotency: { replayed: true, entityPresent: false },
-        }),
+      mockDeleteForeshadow.mockResolvedValue(
+        makeDeleteReceipt({ entityId: existing.id }),
       );
+      mockListForeshadowsWithLabels.mockResolvedValue({
+        items: [],
+        sceneInfoBySceneId: {},
+        setupScenesByForeshadowId: {},
+      });
 
       await useForeshadowStore.getState().remove(existing.id);
-      await useGlobalHistoryStore.getState().undo();
+      await expect(useGlobalHistoryStore.getState().undo()).rejects.toThrow(
+        "foreshadow delete undo restore is missing",
+      );
 
       expect(useForeshadowStore.getState().items).toEqual([]);
     });
@@ -689,8 +734,9 @@ describe("foreshadowStore", () => {
     it("removes the setup row from setupsByForeshadowId", async () => {
       const s1 = makeSetup({ id: "s-1", foreshadowId: "f-1" });
       const s2 = makeSetup({ id: "s-2", foreshadowId: "f-1" });
-      mockDeleteSetup.mockResolvedValue(undefined);
+      mockDeleteSetup.mockResolvedValue(makeRow({ id: "f-1", version: 1 }));
       useForeshadowStore.setState({
+        items: [{ ...makeRow({ id: "f-1" }), label: "seeded", setupCount: 2 }],
         setupsByForeshadowId: { "f-1": [s1, s2] },
       });
 
@@ -699,13 +745,15 @@ describe("foreshadowStore", () => {
       expect(useForeshadowStore.getState().setupsByForeshadowId["f-1"]).toEqual(
         [s2],
       );
+      expect(mockDeleteSetup).toHaveBeenCalledWith("s-1", 0);
     });
 
     it("keeps other foreshadow entries untouched", async () => {
       const sa = makeSetup({ id: "s-a", foreshadowId: "f-a" });
       const sb = makeSetup({ id: "s-b", foreshadowId: "f-b" });
-      mockDeleteSetup.mockResolvedValue(undefined);
+      mockDeleteSetup.mockResolvedValue(makeRow({ id: "f-b", version: 1 }));
       useForeshadowStore.setState({
+        items: [{ ...makeRow({ id: "f-b" }), label: "seeded", setupCount: 1 }],
         setupsByForeshadowId: { "f-a": [sa], "f-b": [sb] },
       });
 
@@ -720,6 +768,7 @@ describe("foreshadowStore", () => {
       const s1 = makeSetup({ id: "s-1", foreshadowId: "f-1" });
       mockDeleteSetup.mockRejectedValue(new Error("DB error"));
       useForeshadowStore.setState({
+        items: [{ ...makeRow({ id: "f-1" }), label: "seeded", setupCount: 1 }],
         setupsByForeshadowId: { "f-1": [s1] },
       });
 
@@ -778,7 +827,9 @@ describe("foreshadowStore", () => {
       mockUseSceneStore.getState.mockReturnValue({
         activeSceneId: "scene-new",
       } as never);
-      mockReanchorOrphanSetup.mockResolvedValue(undefined);
+      mockReanchorOrphanSetup.mockResolvedValue(
+        makeRow({ id: "f-1", version: 1 }),
+      );
       useForeshadowStore.setState({
         items: [{ ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 }],
         setupsByForeshadowId: { "f-1": [orphanSetup] },
@@ -786,11 +837,15 @@ describe("foreshadowStore", () => {
 
       await useForeshadowStore.getState().reanchorSetup("s-1", "f-1");
 
-      expect(mockReanchorOrphanSetup).toHaveBeenCalledWith("s-1", {
-        sceneId: "scene-new",
-        fromPos: 10,
-        toPos: 20,
-      });
+      expect(mockReanchorOrphanSetup).toHaveBeenCalledWith(
+        "s-1",
+        {
+          sceneId: "scene-new",
+          fromPos: 10,
+          toPos: 20,
+        },
+        0,
+      );
       const setups = useForeshadowStore.getState().setupsByForeshadowId["f-1"];
       const updated = setups?.find((s) => s.id === "s-1");
       expect(updated?.isOrphan).toBe(false);
@@ -808,7 +863,9 @@ describe("foreshadowStore", () => {
       mockUseSceneStore.getState.mockReturnValue({
         activeSceneId: "sc-1",
       } as never);
-      mockReanchorOrphanSetup.mockResolvedValue(undefined);
+      mockReanchorOrphanSetup.mockResolvedValue(
+        makeRow({ id: "f-1", version: 1 }),
+      );
       useForeshadowStore.setState({
         items: [{ ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 }],
         setupsByForeshadowId: { "f-1": [orphanSetup] },
@@ -820,6 +877,7 @@ describe("foreshadowStore", () => {
       expect(editor._setMark).toHaveBeenCalledWith("foreshadowSetup", {
         setupId: "s-1",
         foreshadowId: "f-1",
+        baseVersion: 1,
       });
       expect(editor._run).toHaveBeenCalled();
     });
@@ -905,7 +963,10 @@ describe("foreshadowStore", () => {
       mockUseSceneStore.getState.mockReturnValue({
         activeSceneId: "sc-1",
       } as never);
-      mockReinsertOrphanSetup.mockResolvedValue(newSetup);
+      mockReinsertOrphanSetup.mockResolvedValue({
+        setup: newSetup,
+        foreshadow: makeRow({ id: "f-1", version: 1 }),
+      });
       useForeshadowStore.setState({
         items: [{ ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 }],
         setupsByForeshadowId: { "f-1": [orphanSetup] },
@@ -934,7 +995,10 @@ describe("foreshadowStore", () => {
       mockUseSceneStore.getState.mockReturnValue({
         activeSceneId: "sc-1",
       } as never);
-      mockReinsertOrphanSetup.mockResolvedValue(newSetup);
+      mockReinsertOrphanSetup.mockResolvedValue({
+        setup: newSetup,
+        foreshadow: makeRow({ id: "f-1", version: 1 }),
+      });
       useForeshadowStore.setState({
         items: [{ ...makeRow({ id: "f-1" }), label: "planned", setupCount: 0 }],
         setupsByForeshadowId: { "f-1": [orphanSetup] },
@@ -945,6 +1009,7 @@ describe("foreshadowStore", () => {
       expect(editor._setMark).toHaveBeenCalledWith("foreshadowSetup", {
         setupId: "s-new",
         foreshadowId: "f-1",
+        baseVersion: 1,
       });
       expect(editor._run).toHaveBeenCalled();
     });

@@ -5,6 +5,7 @@ import {
   restoreProjectSnapshot,
 } from "./projectSnapshotApi";
 import { RESTORE_SCOPES } from "./projectSnapshotScopes";
+import { saveSceneContent } from "@/features/tree/api";
 
 // Uses the browser-mock DB (in-memory SQLite via sql.js).
 
@@ -28,7 +29,24 @@ async function resetSnapshotTables() {
     plotThreads,
     plotThreadSceneLinks,
     plotThreadBranches,
+    narrativeChangeEvents,
+    narrativeChangeTransactions,
+    narrativeChangeCursors,
+    narrativeChangeSets,
+    changeEvents,
+    undoJournal,
+    idempotencyRequests,
   } = await import("@/db/schema");
+  // Each test reuses the default project and scene IDs. Clear the canonical
+  // history first so C1's per-object continuity chain cannot inherit a
+  // previous test's state after the fixture rows are recreated.
+  await db.delete(narrativeChangeEvents);
+  await db.delete(narrativeChangeTransactions);
+  await db.delete(narrativeChangeCursors);
+  await db.delete(narrativeChangeSets);
+  await db.delete(undoJournal);
+  await db.delete(changeEvents);
+  await db.delete(idempotencyRequests);
   await db.delete(editorStickies);
   await db.delete(projectSnapshotEntries);
   await db.delete(projectSnapshotTreeNodes);
@@ -232,12 +250,9 @@ describe("projectSnapshotApi", () => {
     const { db } = await import("@/db/client");
     const { treeNodes } = await import("@/db/schema");
     const { eq } = await import("drizzle-orm");
-    await db
-      .update(treeNodes)
-      .set({
-        content: '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
-      })
-      .where(eq(treeNodes.id, SCENE_ID));
+    await saveSceneContent(SCENE_ID, {
+      content: '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
+    });
 
     const result = await restoreProjectSnapshot(target.id, "checkpoint");
 
@@ -271,12 +286,9 @@ describe("projectSnapshotApi", () => {
       .where(eq(treeNodes.id, SCENE_ID));
     const first = await restoreProjectSnapshot(target.id, "checkpoint");
 
-    await db
-      .update(treeNodes)
-      .set({
-        content: '{"type":"doc","content":[{"type":"text","text":"v3"}]}',
-      })
-      .where(eq(treeNodes.id, SCENE_ID));
+    await saveSceneContent(SCENE_ID, {
+      content: '{"type":"doc","content":[{"type":"text","text":"v3"}]}',
+    });
     const second = await restoreProjectSnapshot(target.id, "checkpoint");
 
     expect(first.safetySnapshotId).not.toBe(second.safetySnapshotId);
@@ -371,21 +383,29 @@ describe("projectSnapshotApi", () => {
     expect(ids).not.toContain("added-after");
   });
 
-  it("legacy snapshot (no structural tables) falls back to content-only restore", async () => {
+  it("legacy snapshot restore fails closed without mutating scene or snippet content", async () => {
     await seedScene('{"type":"doc","content":[{"type":"text","text":"v1"}]}');
-    const target = await createProjectSnapshot({ name: "checkpoint" });
-
-    // Simulate a legacy snapshot by stripping structural data, leaving only
-    // the project_snapshot_entries / content_versions pair.
     const { db } = await import("@/db/client");
     const {
       projectSnapshotTreeNodes,
       projectSnapshotCodexEntries,
       projectSnapshotSnippets,
       projectSnapshotAux,
+      projectSnapshots,
       treeNodes,
+      snippets,
     } = await import("@/db/schema");
     const { eq } = await import("drizzle-orm");
+    await db.insert(snippets).values({
+      id: "legacy-snippet",
+      projectId: PROJECT_ID,
+      title: "Legacy snippet",
+      content: '{"type":"doc","content":[{"type":"text","text":"v1"}]}',
+    });
+    const target = await createProjectSnapshot({ name: "checkpoint" });
+
+    // Simulate a legacy snapshot by stripping structural data, leaving only
+    // the project_snapshot_entries / content_versions pair.
     await db
       .delete(projectSnapshotTreeNodes)
       .where(eq(projectSnapshotTreeNodes.snapshotId, target.id));
@@ -399,23 +419,38 @@ describe("projectSnapshotApi", () => {
       .delete(projectSnapshotAux)
       .where(eq(projectSnapshotAux.snapshotId, target.id));
 
-    // Mutate scene content, then restore: legacy path UPDATES content.
+    // Mutate both paths that the removed renderer fallback used to write.
     await db
       .update(treeNodes)
       .set({
         content: '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
       })
       .where(eq(treeNodes.id, SCENE_ID));
-    const result = await restoreProjectSnapshot(target.id, "checkpoint");
+    await db
+      .update(snippets)
+      .set({
+        content: '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
+      })
+      .where(eq(snippets.id, "legacy-snippet"));
 
-    expect(result.format).toBe("legacy");
+    await expect(
+      restoreProjectSnapshot(target.id, "checkpoint"),
+    ).rejects.toThrow(
+      "PROJECT_SNAPSHOT_LEGACY_RESTORE_REQUIRES_NATIVE_AGGREGATE",
+    );
     const rows = await db
       .select({ content: treeNodes.content })
       .from(treeNodes)
       .where(eq(treeNodes.id, SCENE_ID));
-    expect(rows[0]?.content).toBe(
-      '{"type":"doc","content":[{"type":"text","text":"v1"}]}',
-    );
+    expect(rows[0]?.content).toContain('"v2"');
+    const snippetRows = await db
+      .select({ content: snippets.content })
+      .from(snippets)
+      .where(eq(snippets.id, "legacy-snippet"));
+    expect(snippetRows[0]?.content).toContain('"v2"');
+    expect(
+      await db.select({ id: projectSnapshots.id }).from(projectSnapshots),
+    ).toHaveLength(1);
   });
 
   it("scope selection: restoring with empty body scope still restores codex if selected", async () => {
@@ -847,12 +882,38 @@ describe("projectSnapshotApi", () => {
       sortOrder: "a1",
     });
     await db.insert(plotThreads).values([
-      { id: "t-a", projectId: PROJECT_ID, name: "A", sortOrder: "a0" },
-      { id: "t-b", projectId: PROJECT_ID, name: "B", sortOrder: "a1" },
+      {
+        id: "t-a",
+        projectId: PROJECT_ID,
+        name: "A",
+        sortOrder: "a0",
+        version: 0,
+      },
+      {
+        id: "t-b",
+        projectId: PROJECT_ID,
+        name: "B",
+        sortOrder: "a1",
+        version: 0,
+      },
     ]);
     await db.insert(plotThreadSceneLinks).values([
-      { id: "m-a", threadId: "t-a", nodeId: "s1", phaseType: "develop" },
-      { id: "m-b", threadId: "t-b", nodeId: "s2", phaseType: "develop" },
+      {
+        id: "m-a",
+        threadId: "t-a",
+        nodeId: "s1",
+        phaseType: "develop",
+        semanticKey: "t-a|s1|develop",
+        version: 0,
+      },
+      {
+        id: "m-b",
+        threadId: "t-b",
+        nodeId: "s2",
+        phaseType: "develop",
+        semanticKey: "t-b|s2|develop",
+        version: 0,
+      },
     ]);
     await db.insert(plotThreadBranches).values({
       id: "br-1",
@@ -861,6 +922,8 @@ describe("projectSnapshotApi", () => {
       toThreadId: "t-b",
       atNodeId: "s1",
       kind: "branch",
+      semanticKey: "t-a|t-b|s1|branch",
+      version: 0,
     });
 
     const snap = await createProjectSnapshot({ name: "plot-checkpoint" });
@@ -950,6 +1013,7 @@ describe("projectSnapshotApi", () => {
     await run(`CREATE TABLE IF NOT EXISTS scene_events (
       scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
       event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      incarnation_token TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (scene_id, event_id)
     )`);
     await run(`CREATE TABLE IF NOT EXISTS event_participants (
@@ -1031,10 +1095,10 @@ describe("projectSnapshotApi", () => {
         now,
       ],
     );
-    await run("INSERT INTO scene_events (scene_id, event_id) VALUES (?,?)", [
-      "s1",
-      "e1",
-    ]);
+    await run(
+      "INSERT INTO scene_events (scene_id, event_id, incarnation_token) VALUES (?,?,?)",
+      ["s1", "e1", "captured-scene-event-incarnation"],
+    );
     await run(
       "INSERT INTO event_participants (event_id, codex_entry_id, role) VALUES (?,?,?)",
       ["e1", "cx-1", "protagonist"],
@@ -1044,18 +1108,20 @@ describe("projectSnapshotApi", () => {
       [PROJECT_ID, "e1", "e2"],
     );
     await run(
-      "INSERT INTO project_calendar (project_id, days_per_year, season_boundaries, created_at, updated_at) VALUES (?,?,?,?,?)",
-      [PROJECT_ID, 400, "[]", now, now],
+      "INSERT INTO project_calendar (project_id, days_per_year, season_boundaries, version, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+      [PROJECT_ID, 400, "[]", 7, now, "2000-01-01T00:00:00.000Z"],
     );
 
     const snap = await createProjectSnapshot({ name: "chronicle-checkpoint" });
 
     // Data loss after snapshot: deleting events cascades scene_events /
-    // event_participants / event_relations; calendar wiped on its own.
+    // event_participants / event_relations. The live Calendar continues to a
+    // later OCC generation before the old body snapshot is restored.
     await run("DELETE FROM events WHERE project_id = ?", [PROJECT_ID]);
-    await run("DELETE FROM project_calendar WHERE project_id = ?", [
-      PROJECT_ID,
-    ]);
+    await run(
+      "UPDATE project_calendar SET days_per_year = ?, version = ? WHERE project_id = ?",
+      [999, 12, PROJECT_ID],
+    );
     expect(
       (
         await all<{ id: string }>(
@@ -1077,11 +1143,25 @@ describe("projectSnapshotApi", () => {
     expect(ev.rows.map((r) => r.id)).toEqual(["e1", "e2"]);
     expect(ev.rows.find((r) => r.id === "e1")?.primary_codex_id).toBe("cx-1");
 
-    const links = await all<{ scene_id: string; event_id: string }>(
-      "SELECT scene_id, event_id FROM scene_events WHERE event_id IN (SELECT id FROM events WHERE project_id = ?)",
+    const links = await all<{
+      scene_id: string;
+      event_id: string;
+      incarnation_token: string;
+    }>(
+      "SELECT scene_id, event_id, incarnation_token FROM scene_events WHERE event_id IN (SELECT id FROM events WHERE project_id = ?)",
       [PROJECT_ID],
     );
-    expect(links.rows).toEqual([{ scene_id: "s1", event_id: "e1" }]);
+    expect(links.rows).toEqual([
+      {
+        scene_id: "s1",
+        event_id: "e1",
+        incarnation_token: expect.any(String),
+      },
+    ]);
+    expect(links.rows[0]?.incarnation_token).not.toBe(
+      "captured-scene-event-incarnation",
+    );
+    expect(links.rows[0]?.incarnation_token).not.toBe("");
 
     const rels = await all<{ cause_event_id: string; effect_event_id: string }>(
       "SELECT cause_event_id, effect_event_id FROM event_relations WHERE project_id = ?",
@@ -1097,11 +1177,68 @@ describe("projectSnapshotApi", () => {
     );
     expect(parts.rows).toEqual([{ event_id: "e1", codex_entry_id: "cx-1" }]);
 
-    const cal = await all<{ days_per_year: number }>(
-      "SELECT days_per_year FROM project_calendar WHERE project_id = ?",
+    const cal = await all<{
+      days_per_year: number;
+      version: number;
+      updated_at: string;
+    }>(
+      "SELECT days_per_year, version, updated_at FROM project_calendar WHERE project_id = ?",
       [PROJECT_ID],
     );
     expect(cal.rows[0]?.days_per_year).toBe(400);
+    expect(cal.rows[0]?.version).toBe(13);
+    expect(cal.rows[0]?.updated_at).not.toBe("2000-01-01T00:00:00.000Z");
+
+    // Neither the snapshot generation nor the live generation observed just
+    // before restore may become valid again after the restore operation.
+    await run(
+      "UPDATE project_calendar SET days_per_year = 401, version = version + 1 WHERE project_id = ? AND version = ?",
+      [PROJECT_ID, 7],
+    );
+    await run(
+      "UPDATE project_calendar SET days_per_year = 402, version = version + 1 WHERE project_id = ? AND version = ?",
+      [PROJECT_ID, 12],
+    );
+    const afterStaleWrites = await all<{
+      days_per_year: number;
+      version: number;
+    }>(
+      "SELECT days_per_year, version FROM project_calendar WHERE project_id = ?",
+      [PROJECT_ID],
+    );
+    expect(afterStaleWrites.rows).toEqual([
+      { days_per_year: 400, version: 13 },
+    ]);
+
+    const calendarAux = await all<{ payload_json: string }>(
+      "SELECT payload_json FROM project_snapshot_aux WHERE snapshot_id = ? AND scope = 'project_calendar'",
+      [snap.id],
+    );
+    const malformedCalendarPayload = JSON.parse(
+      calendarAux.rows[0]!.payload_json,
+    ) as { rows: Array<Record<string, unknown>> };
+    for (const malformedVersion of [null, "7"]) {
+      malformedCalendarPayload.rows[0]!.version = malformedVersion;
+      await run(
+        "UPDATE project_snapshot_aux SET payload_json = ? WHERE snapshot_id = ? AND scope = 'project_calendar'",
+        [JSON.stringify(malformedCalendarPayload), snap.id],
+      );
+      await expect(
+        restoreProjectSnapshot(snap.id, "chronicle-checkpoint", {
+          scopes: new Set(["body", "codex"]),
+        }),
+      ).rejects.toThrow(/snapshot project_calendar version|snapshot version/);
+    }
+    const afterMalformedRestore = await all<{
+      days_per_year: number;
+      version: number;
+    }>(
+      "SELECT days_per_year, version FROM project_calendar WHERE project_id = ?",
+      [PROJECT_ID],
+    );
+    expect(afterMalformedRestore.rows).toEqual([
+      { days_per_year: 400, version: 13 },
+    ]);
 
     // Cleanup (child-first) so other tests / re-runs start fresh.
     for (const t of [
@@ -1149,6 +1286,7 @@ describe("projectSnapshotApi", () => {
     await run(`CREATE TABLE IF NOT EXISTS scene_events (
       scene_id TEXT NOT NULL REFERENCES tree_nodes(id) ON DELETE CASCADE,
       event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+      incarnation_token TEXT NOT NULL DEFAULT '',
       PRIMARY KEY (scene_id, event_id)
     )`);
     await run(`CREATE TABLE IF NOT EXISTS event_participants (

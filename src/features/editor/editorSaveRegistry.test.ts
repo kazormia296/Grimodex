@@ -450,15 +450,20 @@ describe("エディタの save handler 登録 (ソース invariant)", () => {
       resolve(__dirname, "../project/projectStore.ts"),
       "utf-8",
     );
-    const workspaceStore = readFileSync(
-      resolve(__dirname, "../workspace/store.ts"),
+    const workspaceOpenLifecycle = readFileSync(
+      resolve(__dirname, "../workspace/workspaceOpenLifecycle.ts"),
       "utf-8",
     );
     expect(projectStore).toMatch(
       /flushProjectStrictQuiescence\([^;]*\);[\s\S]{0,160}?clearRetainedEditorRecoveryDraftsForScopeChange\(\)/,
     );
-    expect(workspaceStore).toMatch(
-      /flushStrictQuiescence\([^;]*\);[\s\S]{0,160}?clearRetainedEditorRecoveryDraftsForScopeChange\(\)/,
+    const quiescenceIndex = workspaceOpenLifecycle.indexOf(
+      "flushStrictQuiescence(undefined",
     );
+    const recoveryDraftCleanupIndex = workspaceOpenLifecycle.indexOf(
+      "clearRetainedEditorRecoveryDraftsForScopeChange()",
+    );
+    expect(quiescenceIndex).toBeGreaterThanOrEqual(0);
+    expect(recoveryDraftCleanupIndex).toBeGreaterThan(quiescenceIndex);
   });
 });

@@ -56,6 +56,21 @@ describe("BackgroundStudio", () => {
     expect(speedMode).toHaveValue("fast");
   });
 
+  it("defaults to Balanced resolution and offers Native and Performance", () => {
+    render(<BackgroundStudio open onClose={vi.fn()} />);
+
+    const resolution = screen.getByLabelText(
+      "settings.editor.zenResolutionMode",
+    );
+    expect(within(resolution).getAllByRole("option")).toHaveLength(3);
+    expect(resolution).toHaveValue("balanced");
+
+    fireEvent.change(resolution, { target: { value: "performance" } });
+    expect(
+      useSettingsStore.getState().cache["editor.zenBackground.resolutionMode"],
+    ).toBe("performance");
+  });
+
   it("can disable the ambient background without losing its configuration", () => {
     render(<BackgroundStudio open onClose={vi.fn()} />);
 

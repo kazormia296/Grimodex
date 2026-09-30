@@ -60,6 +60,10 @@ src/features/chat/calibration/embeddings.generated.json
 .superpowers/
 .worktrees/
 
+# Root Cargo outputs and local test/scratch checkouts are never source artifacts.
+/target/
+/.tmp-c2-5b-edit/
+
 # Electron シェル（Phase 2）: esbuild 出力 / napi クレートのビルド生成物
 dist-electron/
 release/electron/
