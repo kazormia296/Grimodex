@@ -26,6 +26,7 @@ import {
   createProductJourneyJournal,
   createProductJourneyHarness,
   invokeOk,
+  isMainProcessErrorMessage,
   killProcessTree,
   NARRATIVE_MAINTENANCE_NONCE_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
@@ -75,6 +76,33 @@ function runCommands(job) {
     .map((step) => step.run)
     .join("\n");
 }
+
+test("Native lifecycle evidence preserves existing stderr classifications", () => {
+  // Native records use E/P/J for returned-error/panic/non-panic JoinError.
+  // Metadata cannot turn an already allowed retry into an extra CI failure.
+  for (const cause of ["E", "P", "J"]) {
+    const record = `[workspace-lifecycle-diag] ${JSON.stringify({
+      version: 1,
+      pid: 1,
+      timestampMs: 1,
+      producer: "freshness",
+      cause,
+      boundary: "handoff",
+      site: null,
+      revision: 3,
+      state: "recovery-required",
+      shutdownRequested: false,
+      descriptorId: 1,
+      owner: "Maintenance",
+      rootOperationId: 1,
+    })}`;
+    assert.equal(isMainProcessErrorMessage(record), false);
+    assert.equal(
+      isMainProcessErrorMessage(`${record}\nactual worker failed`),
+      true,
+    );
+  }
+});
 
 test("package.json exposes the runner and canonical product journey contracts", async () => {
   const packageJson = JSON.parse(await read("package.json"));

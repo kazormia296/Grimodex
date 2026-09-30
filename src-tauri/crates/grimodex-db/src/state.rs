@@ -10,7 +10,8 @@ use crate::error::{AppError, AppResult};
 use crate::recovery::SafeModeState;
 use crate::workspace_lease::WorkspaceLease;
 use crate::workspace_lifecycle::{
-    LifecycleError, LifecycleState, WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
+    LifecycleDiagnostic, LifecycleError, LifecycleState, WorkspaceLifecycleCompatibilityView,
+    WorkspaceLifecycleCore, WorkspaceParticipant,
 };
 use crate::Database;
 
@@ -195,17 +196,58 @@ pub struct GlobalSettingsPath {
 /// 同じ DB（と shared lease）へ完了/失敗を保存する。通常の短命 command は
 /// `with_db_state` 経由で毎回解決する。どちらも switching / no-workspace の
 /// fail-closed 契約は同一。
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DbLifecycleRejectionSite {
+    DatabaseParticipant,
+    AuthorityParticipant,
+    AuthorityProjection,
+    /// The actual compatibility load occurs after the recorded core snapshot.
+    AuthorityCompatibility,
+}
+
+type RejectionObserver<'a> =
+    Option<&'a mut dyn FnMut(DbLifecycleRejectionSite, LifecycleDiagnostic)>;
+
+fn db_participant(
+    ws_state: &WorkspaceState,
+    site: DbLifecycleRejectionSite,
+    observer: &mut RejectionObserver<'_>,
+) -> AppResult<WorkspaceParticipant> {
+    let core = ws_state.lifecycle_core();
+    let result = match observer.as_mut() {
+        Some(on_rejection) => core.begin_workspace_participant_diagnosed(|evidence| {
+            on_rejection(site, evidence);
+        }),
+        None => core.begin_workspace_participant(),
+    };
+    result.map_err(|error| match error {
+        LifecycleError::ActiveOperations => AppError::WorkspaceSwitching,
+        other => AppError::from(other),
+    })
+}
+
 pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveWorkspaceSnapshot> {
-    let participant = ws_state
-        .lifecycle_core()
-        .begin_workspace_participant()
-        .map_err(|error| match error {
-            // A lifecycle transition is a retryable workspace-switch window
-            // for ordinary DB callers. Preserve the stable wire marker instead
-            // of leaking the core's ownership diagnostic to IPC consumers.
-            LifecycleError::ActiveOperations => AppError::WorkspaceSwitching,
-            other => AppError::from(other),
-        })?;
+    active_workspace_snapshot_inner(ws_state, None)
+}
+
+fn active_workspace_snapshot_inner(
+    ws_state: &WorkspaceState,
+    mut observer: RejectionObserver<'_>,
+) -> AppResult<ActiveWorkspaceSnapshot> {
+    let participant = db_participant(
+        ws_state,
+        DbLifecycleRejectionSite::AuthorityParticipant,
+        &mut observer,
+    )?;
+    resolve_workspace_snapshot(ws_state, participant, observer)
+}
+
+fn resolve_workspace_snapshot(
+    ws_state: &WorkspaceState,
+    participant: crate::workspace_lifecycle::WorkspaceParticipant,
+    mut observer: RejectionObserver<'_>,
+) -> AppResult<ActiveWorkspaceSnapshot> {
     let lock_started = std::time::Instant::now();
     {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -213,15 +255,30 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
         if ws_lock_ms >= 50 {
             tracing::warn!("with_db ws_state.lock wait={}ms", ws_lock_ms);
         }
-        let lifecycle_state = ws_state
-            .switching
-            .core()
-            .snapshot()
-            .map_err(|error| anyhow::anyhow!("workspace lifecycle state unavailable: {error}"))?
-            .state;
-        if ws_state.switching.load(std::sync::atomic::Ordering::SeqCst)
+        let core = ws_state.switching.core();
+        let (snapshot, mut evidence) = if observer.is_some() {
+            core.snapshot_with_diagnostic()
+                .map(|(view, evidence)| (view, Some(evidence)))
+        } else {
+            core.snapshot().map(|view| (view, None))
+        }
+        .map_err(|error| anyhow::anyhow!("workspace lifecycle state unavailable: {error}"))?;
+        let lifecycle_state = snapshot.state;
+        let compatibility_switching = ws_state.switching.load(std::sync::atomic::Ordering::SeqCst);
+        if let Some(evidence) = evidence.as_mut() {
+            evidence.compatibility_switching = Some(compatibility_switching);
+        }
+        if compatibility_switching
             || matches!(lifecycle_state, LifecycleState::Transition { .. })
         {
+            drop(inner);
+            if let (Some(on_rejection), Some(evidence)) = (observer.as_mut(), evidence) {
+                on_rejection(
+                    if compatibility_switching { DbLifecycleRejectionSite::AuthorityCompatibility }
+                    else { DbLifecycleRejectionSite::AuthorityProjection },
+                    evidence,
+                );
+            }
             return Err(AppError::WorkspaceSwitching);
         }
         if ws_state.safe_mode.is_active() {
@@ -246,6 +303,15 @@ pub fn active_workspace_snapshot(ws_state: &WorkspaceState) -> AppResult<ActiveW
             // Closed, RecoveryRequired, and an uninitialized NoWorkspace
             // projection must never leak an already-held authority to a
             // normal DB command.  Only the exact Ready binding may be pinned.
+            drop(inner);
+            if matches!(
+                lifecycle_state,
+                LifecycleState::Closed | LifecycleState::RecoveryRequired { .. }
+            ) {
+                if let (Some(on_rejection), Some(evidence)) = (observer.as_mut(), evidence) {
+                    on_rejection(DbLifecycleRejectionSite::AuthorityProjection, evidence);
+                }
+            }
             return Err(match lifecycle_state {
                 LifecycleState::NoWorkspace => AppError::NoWorkspace,
                 LifecycleState::Closed | LifecycleState::RecoveryRequired { .. } => {
@@ -290,19 +356,35 @@ pub fn with_db_state<T>(
     ws_state: &WorkspaceState,
     f: impl FnOnce(&Database) -> anyhow::Result<T>,
 ) -> AppResult<T> {
+    with_db_state_inner(ws_state, f, None)
+}
+
+/// Failure-only hook for the Native append boundary. It observes the same
+/// admission/projection decisions without another snapshot or changing errors.
+pub fn with_db_state_diagnosed<T>(
+    ws_state: &WorkspaceState,
+    f: impl FnOnce(&Database) -> anyhow::Result<T>,
+    mut on_rejection: impl FnMut(DbLifecycleRejectionSite, LifecycleDiagnostic),
+) -> AppResult<T> {
+    with_db_state_inner(ws_state, f, Some(&mut on_rejection))
+}
+
+fn with_db_state_inner<T>(
+    ws_state: &WorkspaceState,
+    f: impl FnOnce(&Database) -> anyhow::Result<T>,
+    mut observer: RejectionObserver<'_>,
+) -> AppResult<T> {
     // Register before resolving the active authority. A concurrent
     // transition or shutdown therefore cannot publish physical replacement or
     // Closed in the small gap between pinning the Arc and entering the DB
     // closure. The participant is independent of foreground/maintenance
     // scheduling and is released after the caller's transaction returns.
-    let _participant = ws_state
-        .lifecycle_core()
-        .begin_workspace_participant()
-        .map_err(|error| match error {
-            LifecycleError::ActiveOperations => AppError::WorkspaceSwitching,
-            other => AppError::from(other),
-        })?;
-    let authority = active_database(ws_state)?;
+    let _participant = db_participant(
+        ws_state,
+        DbLifecycleRejectionSite::DatabaseParticipant,
+        &mut observer,
+    )?;
+    let authority = active_workspace_snapshot_inner(ws_state, observer)?.authority;
     Ok(f(authority.db())?)
 }
 
@@ -311,6 +393,147 @@ mod tests {
     use super::*;
     use crate::workspace_lifecycle::LiveBinding;
     use std::path::Path;
+
+    #[test]
+    fn diagnosed_db_ready_is_silent_and_keeps_existing_participant_lifetime() {
+        let state = workspace_state_with_db();
+        let result = with_db_state_diagnosed(
+            &state,
+            |_db| {
+                assert_eq!(state.lifecycle_core().workspace_participant_count()?, 1);
+                Ok(42)
+            },
+            |_, _| panic!("Ready does not log"),
+        );
+        assert_eq!(result.expect("Ready DB"), 42);
+        assert_eq!(
+            state
+                .lifecycle_core()
+                .workspace_participant_count()
+                .expect("released"),
+            0
+        );
+    }
+
+    #[test]
+    fn diagnosed_db_compatibility_rejection_records_the_actual_predicate() {
+        let state = workspace_state_with_db();
+        let core = state.lifecycle_core();
+        state.switching.store(true, std::sync::atomic::Ordering::SeqCst);
+        let error = with_db_state_diagnosed(&state,
+            |_db| -> anyhow::Result<()> { panic!("no DB after compatibility refusal") },
+            |site, evidence| {
+                assert!(matches!(site, DbLifecycleRejectionSite::AuthorityCompatibility));
+                assert_eq!(evidence.state, crate::workspace_lifecycle::DiagnosticLifecycleState::Ready);
+                assert_eq!(evidence.projected_state, Some(crate::workspace_lifecycle::DiagnosticLifecycleState::Transition));
+                assert_eq!(evidence.compatibility_switching, Some(true));
+                assert!(state.inner.try_lock().is_ok());
+            },
+        ).expect_err("compatibility refusal");
+        assert!(matches!(error, AppError::WorkspaceSwitching));
+        assert_eq!(core.workspace_participant_count().expect("released"), 0);
+    }
+
+    #[test]
+    fn diagnosed_db_refusal_never_runs_db_body() {
+        let state = workspace_state_with_db();
+        let core = state.lifecycle_core();
+        core.begin_transition(crate::workspace_lifecycle::AdmissionKind::Open)
+            .expect("Transition");
+        let mut calls = 0;
+        let error = with_db_state_diagnosed(
+            &state,
+            |_db| -> anyhow::Result<()> { panic!("no DB after refusal") },
+            |site, evidence| {
+                assert!(matches!(
+                    site,
+                    DbLifecycleRejectionSite::DatabaseParticipant
+                ));
+                assert_eq!(
+                    evidence.state,
+                    crate::workspace_lifecycle::DiagnosticLifecycleState::Transition
+                );
+                assert!(state.inner.try_lock().is_ok());
+                assert_eq!(
+                    core.snapshot().expect("unlocked observer").revision,
+                    evidence.revision
+                );
+                calls += 1;
+            },
+        )
+        .expect_err("refusal");
+        assert!(matches!(error, AppError::WorkspaceSwitching));
+        assert_eq!(calls, 1);
+        assert_eq!(
+            core.workspace_participant_count().expect("no participant"),
+            0
+        );
+    }
+
+    #[test]
+    fn diagnosed_inner_participant_and_projection_races_keep_actual_refusal_evidence() {
+        for projection_race in [false, true] {
+            let state = workspace_state_with_db();
+            let core = state.lifecycle_core();
+            let outer = core
+                .begin_workspace_participant()
+                .expect("outer participant");
+            let inner = projection_race.then(|| {
+                core.begin_workspace_participant()
+                    .expect("inner participant")
+            });
+            if projection_race {
+                let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+                    crate::workspace_lifecycle::PermitAdmission::Admitted(permit) => permit,
+                    _ => panic!("maintenance admission"),
+                };
+                permit.start().expect("Start");
+                permit.mark_joined().expect("Join");
+                permit.transfer_to_recovery().expect("recovery after both participant admissions");
+            } else {
+                core.begin_transition(crate::workspace_lifecycle::AdmissionKind::Open)
+                    .expect("transition after outer admission");
+            }
+            let mut calls = 0;
+            let mut observer = |site, evidence: LifecycleDiagnostic| {
+                assert!(if projection_race {
+                    matches!(site, DbLifecycleRejectionSite::AuthorityProjection)
+                } else {
+                    matches!(site, DbLifecycleRejectionSite::AuthorityParticipant)
+                });
+                assert_eq!(evidence.state, if projection_race {
+                    crate::workspace_lifecycle::DiagnosticLifecycleState::RecoveryRequired
+                } else {
+                    crate::workspace_lifecycle::DiagnosticLifecycleState::Transition
+                });
+                assert!(
+                    state.inner.try_lock().is_ok(),
+                    "observer does not hold workspace lock"
+                );
+                assert_eq!(
+                    core.snapshot().expect("core unlock").revision,
+                    evidence.revision
+                );
+                calls += 1;
+            };
+            let result = if let Some(inner) = inner {
+                resolve_workspace_snapshot(&state, inner, Some(&mut observer))
+            } else {
+                active_workspace_snapshot_inner(&state, Some(&mut observer))
+            };
+            assert!(matches!(result, Err(AppError::WorkspaceSwitching)));
+            assert_eq!(calls, 1);
+            assert_eq!(
+                core.workspace_participant_count().expect("inner released"),
+                1
+            );
+            drop(outer);
+            assert_eq!(
+                core.workspace_participant_count().expect("outer released"),
+                0
+            );
+        }
+    }
 
     fn workspace_state_with_db() -> WorkspaceState {
         let path =

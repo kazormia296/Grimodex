@@ -66,6 +66,35 @@ pub const SAFE_MODE_RECOVERY_DESCRIPTOR_ID: RecoveryDescriptorId = RecoveryDescr
 
 pub type StateRevision = u64;
 
+/// Values-only failure evidence. Deliberately excludes bindings, locators,
+/// user identities, Run payloads and error text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiagnosticLifecycleState {
+    NoWorkspace,
+    Ready,
+    Transition,
+    RecoveryRequired,
+    Closed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LifecycleDiagnostic {
+    pub revision: StateRevision,
+    pub state: DiagnosticLifecycleState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projected_state: Option<DiagnosticLifecycleState>,
+    /// The authority lookup's actual compatibility predicate, read after
+    /// its locked snapshot; this is not an atomic core-state observation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility_switching: Option<bool>,
+    pub shutdown_requested: bool,
+    pub descriptor_id: Option<RecoveryDescriptorId>,
+    pub owner: Option<RecoveryDescriptorOwner>,
+    pub root_operation_id: Option<OperationId>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LiveBinding {
     /// The canonical workspace locator captured at admission time.
@@ -474,17 +503,27 @@ impl MaintenancePermit {
     /// Consume the Native permit by moving its exact execution/run
     /// responsibility to a shared recovery descriptor. This is used only
     /// after the worker has joined and cleanup cannot prove a normal release.
-    pub fn transfer_to_recovery(mut self) -> Result<RecoveryDescriptorId, LifecycleError> {
+    pub fn transfer_to_recovery(self) -> Result<RecoveryDescriptorId, LifecycleError> {
+        self.transfer_to_recovery_diagnosed(|_| {})
+    }
+
+    /// Evidence is captured at the transfer boundary, before another owner
+    /// can advance the revision; the callback runs after the core unlocks.
+    pub fn transfer_to_recovery_diagnosed(
+        mut self,
+        on_handoff: impl FnOnce(LifecycleDiagnostic),
+    ) -> Result<RecoveryDescriptorId, LifecycleError> {
         // A recovery handoff is only legal after the supervisor has observed
         // the worker Join. The permit API deliberately does not fabricate
         // that boundary for a dropped/panicking worker.
         if !self.joined {
             return Err(LifecycleError::NotJoined(self.ticket.operation_id));
         }
-        let descriptor = self
+        let (descriptor, evidence) = self
             .core
-            .transfer_execution_to_recovery(&self.ticket, self.execution_id)?;
+            .transfer_execution_to_recovery_evidence(&self.ticket, self.execution_id)?;
         self.released = true;
+        on_handoff(evidence);
         Ok(descriptor)
     }
 
@@ -1187,6 +1226,37 @@ fn is_retired_descriptor_locked(state: &CoreState, descriptor_id: RecoveryDescri
         && !state.descriptors.contains_key(&descriptor_id)
 }
 
+fn lifecycle_diagnostic_locked(state: &CoreState) -> LifecycleDiagnostic {
+    let (status, descriptor_id, operation_id) = match state.state {
+        LifecycleState::NoWorkspace => (DiagnosticLifecycleState::NoWorkspace, None, None),
+        LifecycleState::Ready(_) => (DiagnosticLifecycleState::Ready, None, None),
+        LifecycleState::Transition { operation_id, .. } => (
+            DiagnosticLifecycleState::Transition,
+            None,
+            Some(operation_id),
+        ),
+        LifecycleState::RecoveryRequired { descriptor_id } => (
+            DiagnosticLifecycleState::RecoveryRequired,
+            Some(descriptor_id),
+            None,
+        ),
+        LifecycleState::Closed => (DiagnosticLifecycleState::Closed, None, None),
+    };
+    let descriptor = descriptor_id.and_then(|id| state.descriptors.get(&id));
+    LifecycleDiagnostic {
+        revision: state.revision,
+        state: status,
+        projected_state: None,
+        compatibility_switching: None,
+        shutdown_requested: state.shutdown_requested,
+        descriptor_id,
+        owner: descriptor.map(|value| value.owner),
+        root_operation_id: descriptor
+            .map(|value| value.root_operation_id)
+            .or(operation_id),
+    }
+}
+
 impl WorkspaceLifecycleCore {
     pub fn new() -> Self {
         Self {
@@ -1226,6 +1296,23 @@ impl WorkspaceLifecycleCore {
         Ok(LifecycleSnapshot::new(projected_state, state.revision))
     }
 
+    /// The DB rejection decision and safe evidence use the same snapshot.
+    pub(crate) fn snapshot_with_diagnostic(
+        &self,
+    ) -> Result<(LifecycleSnapshot, LifecycleDiagnostic), LifecycleError> {
+        let state = self.lock_state()?;
+        let projected = self.projected_state_locked(&state);
+        let mut evidence = lifecycle_diagnostic_locked(&state);
+        evidence.projected_state = Some(match projected {
+            LifecycleState::NoWorkspace => DiagnosticLifecycleState::NoWorkspace,
+            LifecycleState::Ready(_) => DiagnosticLifecycleState::Ready,
+            LifecycleState::Transition { .. } => DiagnosticLifecycleState::Transition,
+            LifecycleState::RecoveryRequired { .. } => DiagnosticLifecycleState::RecoveryRequired,
+            LifecycleState::Closed => DiagnosticLifecycleState::Closed,
+        });
+        Ok((LifecycleSnapshot::new(projected, state.revision), evidence))
+    }
+
     pub fn state_revision(&self) -> Result<StateRevision, LifecycleError> {
         Ok(self.lock_state()?.revision)
     }
@@ -1235,8 +1322,18 @@ impl WorkspaceLifecycleCore {
     /// change foreground/maintenance scheduling, but transitions and shutdown
     /// must wait for it to release before publishing replacement or Closed.
     pub fn begin_workspace_participant(&self) -> Result<WorkspaceParticipant, LifecycleError> {
+        self.begin_workspace_participant_diagnosed(|_| {})
+    }
+
+    pub(crate) fn begin_workspace_participant_diagnosed(
+        &self,
+        on_rejection: impl FnOnce(LifecycleDiagnostic),
+    ) -> Result<WorkspaceParticipant, LifecycleError> {
         let mut state = self.lock_state()?;
         if state.shutdown_requested || matches!(state.state, LifecycleState::Closed) {
+            let evidence = lifecycle_diagnostic_locked(&state);
+            drop(state);
+            on_rejection(evidence);
             return Err(LifecycleError::Closed);
         }
         // A participant is proof that a caller has pinned the current
@@ -1249,6 +1346,9 @@ impl WorkspaceLifecycleCore {
             state.state,
             LifecycleState::Transition { .. } | LifecycleState::RecoveryRequired { .. }
         ) {
+            let evidence = lifecycle_diagnostic_locked(&state);
+            drop(state);
+            on_rejection(evidence);
             return Err(LifecycleError::ActiveOperations);
         }
         state.workspace_participants = state.workspace_participants.saturating_add(1);
@@ -2811,6 +2911,15 @@ impl WorkspaceLifecycleCore {
         ticket: &AdmissionTicket,
         execution_id: ExecutionId,
     ) -> Result<RecoveryDescriptorId, LifecycleError> {
+        self.transfer_execution_to_recovery_evidence(ticket, execution_id)
+            .map(|(descriptor, _)| descriptor)
+    }
+
+    fn transfer_execution_to_recovery_evidence(
+        &self,
+        ticket: &AdmissionTicket,
+        execution_id: ExecutionId,
+    ) -> Result<(RecoveryDescriptorId, LifecycleDiagnostic), LifecycleError> {
         let mut state = self.lock_state()?;
         self.require_ticket_locked(&state, ticket)?;
         let (mut run, mut additional_runs) = {
@@ -2883,7 +2992,7 @@ impl WorkspaceLifecycleCore {
         self.inner
             .compatibility_switching
             .store(false, Ordering::SeqCst);
-        Ok(descriptor_id)
+        Ok((descriptor_id, lifecycle_diagnostic_locked(&state)))
     }
 
     pub fn reserve_work_execution(
@@ -4230,6 +4339,134 @@ mod tests {
             "{}",
             "sha256:test",
         )
+    }
+
+    #[test]
+    fn diagnosed_snapshot_keeps_the_existing_compatibility_projection() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("Ready");
+        core.compatibility_view().store(true, Ordering::SeqCst);
+        let expected = core.snapshot().expect("existing snapshot");
+        let (actual, evidence) = core.snapshot_with_diagnostic().expect("diagnosed snapshot");
+        assert_eq!(actual, expected);
+        assert_eq!(evidence.state, DiagnosticLifecycleState::Ready);
+        assert_eq!(evidence.projected_state, Some(DiagnosticLifecycleState::Transition));
+        assert_eq!(evidence.revision, expected.revision);
+    }
+
+    #[test]
+    fn diagnosed_ready_participant_is_silent_and_releases_its_membership() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("Ready");
+        let participant = core
+            .begin_workspace_participant_diagnosed(|_| panic!("Ready must be silent"))
+            .expect("participant");
+        assert_eq!(core.workspace_participant_count().expect("count"), 1);
+        drop(participant);
+        assert_eq!(core.workspace_participant_count().expect("count"), 0);
+    }
+
+    #[test]
+    fn diagnosed_handoff_captures_exact_revision_before_callback_can_change_state() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(LiveBinding::new(
+            "/private/user/path",
+            "secret-workspace-token",
+            1,
+            0,
+        ))
+        .expect("Ready");
+        let mut permit = match core.admit_maintenance_permit().expect("admission") {
+            PermitAdmission::Admitted(permit) => permit,
+            _ => panic!("admission"),
+        };
+        permit.start().expect("Start");
+        permit.mark_joined().expect("Join");
+        let mut recorded = None;
+        let descriptor = permit
+            .transfer_to_recovery_diagnosed(|evidence| {
+                assert_eq!(
+                    core.snapshot().expect("callback has no core lock").revision,
+                    evidence.revision
+                );
+                core.request_shutdown()
+                    .expect("advance after captured handoff");
+                recorded = Some(evidence);
+            })
+            .expect("handoff");
+        let evidence = recorded.expect("recorded");
+        assert_eq!(evidence.descriptor_id, Some(descriptor));
+        assert_eq!(evidence.owner, Some(RecoveryDescriptorOwner::Maintenance));
+        assert_eq!(evidence.state, DiagnosticLifecycleState::RecoveryRequired);
+        assert!(!evidence.shutdown_requested);
+        assert!(core.snapshot().expect("later revision").revision > evidence.revision);
+        let json = serde_json::to_string(&evidence).expect("safe evidence");
+        assert!(!json.contains("private") && !json.contains("secret"));
+    }
+
+    #[test]
+    fn diagnosed_refusal_keeps_original_errors_and_locked_owner_evidence() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("Ready");
+        core.begin_transition(AdmissionKind::Open)
+            .expect("Transition");
+        let mut observed = None;
+        let error = core
+            .begin_workspace_participant_diagnosed(|evidence| {
+                assert_eq!(
+                    core.workspace_participant_count()
+                        .expect("unlocked callback"),
+                    0
+                );
+                observed = Some(evidence);
+            })
+            .err()
+            .expect("refusal");
+        assert_eq!(error, LifecycleError::ActiveOperations);
+        assert_eq!(
+            observed.expect("evidence").state,
+            DiagnosticLifecycleState::Transition
+        );
+
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("Ready");
+        let mut permit = match core.admit_maintenance_permit().expect("admission") {
+            PermitAdmission::Admitted(permit) => permit,
+            _ => panic!("admission"),
+        };
+        permit.start().expect("Start");
+        permit.mark_joined().expect("Join");
+        let descriptor = permit.transfer_to_recovery().expect("transfer");
+        let root = core
+            .descriptor(descriptor)
+            .expect("descriptor")
+            .root_operation_id;
+        let error = core
+            .begin_workspace_participant_diagnosed(|evidence| {
+                assert_eq!(evidence.descriptor_id, Some(descriptor));
+                assert_eq!(evidence.root_operation_id, Some(root));
+                assert_eq!(evidence.owner, Some(RecoveryDescriptorOwner::Maintenance));
+                assert_eq!(evidence.state, DiagnosticLifecycleState::RecoveryRequired);
+                assert!(!evidence.shutdown_requested);
+                core.request_shutdown()
+                    .expect("capture precedes callback mutation");
+            })
+            .err()
+            .expect("refusal");
+        assert_eq!(error, LifecycleError::ActiveOperations);
+        assert_eq!(
+            core.begin_workspace_participant_diagnosed(|evidence| {
+                assert!(evidence.shutdown_requested);
+            })
+            .err()
+            .expect("shutdown refusal"),
+            LifecycleError::Closed
+        );
+        assert_eq!(
+            core.workspace_participant_count()
+                .expect("no acquired memberships"),
+            0
+        );
     }
 
     #[test]
