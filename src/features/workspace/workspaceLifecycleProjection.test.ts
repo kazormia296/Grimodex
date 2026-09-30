@@ -308,6 +308,215 @@ describe("workspace lifecycle projection explicit Open ordering", () => {
     expect(resumeWorkspaceBindingAfterExplicitOpen).toHaveBeenCalledOnce();
   });
 
+  const openProof = {
+    workspacePath: "W2",
+    workspaceId: "w2",
+    workspaceName: "W2",
+    openRevision: 2,
+    lifecycleRevision: 4,
+    lifecycleBindingToken: "new-token",
+  };
+
+  it.each(["during", "before-begin", "without-exact-ready"])(
+    "keeps the original pending Open through background Ready advancement %s",
+    (order) => {
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(1, "ready", "old-token"),
+      );
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(3, "transition", "transition-token"),
+      );
+      vi.clearAllMocks();
+      if (order === "before-begin") {
+        applyWorkspaceLifecycleProjectionForTest(
+          get,
+          set,
+          lifecycle(6, "ready", "new-token"),
+        );
+        vi.clearAllMocks();
+      }
+      beginExplicitWorkspaceHydration(openProof);
+      if (order === "during")
+        applyWorkspaceLifecycleProjectionForTest(
+          get,
+          set,
+          lifecycle(4, "ready", "new-token"),
+        );
+      if (order !== "before-begin")
+        applyWorkspaceLifecycleProjectionForTest(
+          get,
+          set,
+          lifecycle(6, "ready", "new-token"),
+        );
+      expect(isExplicitWorkspaceHydrationCurrent(openProof)).toBe(true);
+      expect(invalidateWorkspaceProjectLoads).not.toHaveBeenCalled();
+      expect(state.workspaceHydrated).toBe(false);
+      expect(resumeWorkspaceBindingAfterExplicitOpen).not.toHaveBeenCalled();
+      // Mandatory hydration and publication remain the Open owner's work.
+      state = makeState({
+        activeWorkspacePath: "W2",
+        activeWorkspaceId: "w2",
+        activeWorkspaceName: "W2",
+        workspaceOpenRevision: 2,
+        workspaceLifecycleRevision: 6,
+        workspaceLifecycleBindingToken: "new-token",
+      });
+      noteExplicitWorkspaceHydration(openProof);
+      expect(resumeWorkspaceBindingAfterExplicitOpen).toHaveBeenCalledOnce();
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(7, "ready", "new-token"),
+      );
+      expect(state).toMatchObject({
+        view: "editor",
+        activeWorkspacePath: "W2",
+        workspaceOpenRevision: 2,
+        workspaceHydrated: true,
+      });
+      expect(openProof.lifecycleRevision).toBe(4);
+    },
+  );
+
+  it("ignores pre-Open lifecycle notifications overtaken by the Native proof", () => {
+    applyWorkspaceLifecycleProjectionForTest(
+      get,
+      set,
+      lifecycle(1, "ready", "old-token"),
+    );
+    state = makeState({
+      workspaceHydrated: false,
+      workspaceSwitchInProgress: true,
+    });
+    beginExplicitWorkspaceHydration(openProof);
+    vi.clearAllMocks();
+    applyWorkspaceLifecycleProjectionForTest(
+      get,
+      set,
+      lifecycle(2, "ready", "old-token"),
+    );
+    applyWorkspaceLifecycleProjectionForTest(
+      get,
+      set,
+      lifecycle(3, "transition", "transition-token"),
+    );
+    expect(isExplicitWorkspaceHydrationCurrent(openProof)).toBe(true);
+    expect(invalidateWorkspaceProjectLoads).not.toHaveBeenCalled();
+    expect(state.workspaceHydrated).toBe(false);
+  });
+
+  const invalidatingViews = [
+    ["different Ready token", lifecycle(5, "ready", "different-token")],
+    ["same-path new Open", lifecycle(5, "transition", "replacement-token")],
+    [
+      "close",
+      {
+        schemaVersion: 1,
+        revision: 5,
+        status: "closed",
+        activation: "none",
+        bindingToken: null,
+      },
+    ],
+    [
+      "recovery-only",
+      {
+        schemaVersion: 1,
+        revision: 5,
+        status: "recovery-required",
+        activation: "requires-open",
+        bindingToken: "new-token",
+      },
+    ],
+  ] as const;
+  it.each(invalidatingViews)(
+    "does not resurrect an Open after %s",
+    (_label, view) => {
+      state = makeState({
+        workspaceHydrated: false,
+        workspaceSwitchInProgress: true,
+      });
+      beginExplicitWorkspaceHydration(openProof);
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(4, "ready", "new-token"),
+      );
+      applyWorkspaceLifecycleProjectionForTest(get, set, view);
+      // Unchanged may legitimately reuse the token after a real Transition.
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(6, "ready", "new-token"),
+      );
+      expect(isExplicitWorkspaceHydrationCurrent(openProof)).toBe(false);
+      noteExplicitWorkspaceHydration(openProof);
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(7, "ready", "new-token"),
+      );
+      expect(state.workspaceHydrated).toBe(false);
+      expect(resumeWorkspaceBindingAfterExplicitOpen).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(invalidatingViews)(
+    "rejects an old Open result received after %s",
+    (_label, view) => {
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(4, "ready", "new-token"),
+      );
+      applyWorkspaceLifecycleProjectionForTest(get, set, view);
+      applyWorkspaceLifecycleProjectionForTest(
+        get,
+        set,
+        lifecycle(6, "ready", "new-token"),
+      );
+      beginExplicitWorkspaceHydration(openProof);
+      expect(isExplicitWorkspaceHydrationCurrent(openProof)).toBe(false);
+      noteExplicitWorkspaceHydration(openProof);
+      expect(resumeWorkspaceBindingAfterExplicitOpen).not.toHaveBeenCalled();
+      expect(state.workspaceHydrated).toBe(false);
+    },
+  );
+
+  it("keeps a completed Open when only a newer same-token Ready is delivered", () => {
+    applyWorkspaceLifecycleProjectionForTest(
+      get,
+      set,
+      lifecycle(3, "transition", "transition-token"),
+    );
+    state = makeState({
+      activeWorkspacePath: "W2",
+      activeWorkspaceId: "w2",
+      workspaceOpenRevision: 2,
+      workspaceLifecycleRevision: 3,
+      workspaceLifecycleStatus: "transition",
+      workspaceLifecycleActivation: "none",
+      workspaceLifecycleBindingToken: "transition-token",
+    });
+    noteExplicitWorkspaceHydration(openProof);
+    applyWorkspaceLifecycleProjectionForTest(
+      get,
+      set,
+      lifecycle(6, "ready", "new-token"),
+    );
+    expect(state).toMatchObject({
+      view: "editor",
+      activeWorkspacePath: "W2",
+      workspaceHydrated: true,
+      workspaceLifecycleRevision: 6,
+    });
+    expect(resumeWorkspaceBindingAfterExplicitOpen).toHaveBeenCalledOnce();
+  });
+
   it("records a Ready event delivered before explicit hydration", () => {
     applyWorkspaceLifecycleProjectionForTest(
       get,

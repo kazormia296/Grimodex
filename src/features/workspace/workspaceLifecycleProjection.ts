@@ -58,6 +58,10 @@ interface ReadyObservation {
 let subscription: Promise<() => void> | null = null;
 let latestRevision = -1;
 let latestWire: string | null = null;
+// A later same-token Ready can be an Unchanged result after a real
+// Transition. Keep its accepted invalidation boundary even after Ready
+// returns, so an older Open cannot regain ownership from token equality.
+let latestHydrationInvalidationRevision = -1;
 let lastReadyScope: ReadyScopeProof | null = null;
 let latestReadyObservation: ReadyObservation | null = null;
 let pendingExplicitWorkspaceHydration: ExplicitWorkspaceHydrationEvidence | null =
@@ -144,6 +148,13 @@ function applyProjection(
   } catch {
     return;
   }
+  // Native's terminal Open proof can overtake its queued notifications.
+  // None of those older observations can invalidate the pending new owner.
+  if (
+    pendingExplicitWorkspaceHydration?.phase === "pending" &&
+    view.revision < pendingExplicitWorkspaceHydration.lifecycleRevision
+  )
+    return;
   const wire = JSON.stringify(view);
   if (view.revision < latestRevision) return;
   // Re-delivery of the exact same snapshot is an idempotent observation.  In
@@ -162,6 +173,20 @@ function applyProjection(
     wire !== latestWire
   ) {
     return;
+  }
+  if (view.status !== "ready") {
+    latestHydrationInvalidationRevision = view.revision;
+  } else if (
+    latestReadyObservation &&
+    latestReadyObservation.bindingToken !== view.bindingToken
+  ) {
+    // The Open result may arrive after its first Ready observation. Its
+    // exact proof can establish this token before the observed revision,
+    // but cannot supersede a different Ready already seen after that proof.
+    latestHydrationInvalidationRevision = Math.max(
+      latestHydrationInvalidationRevision,
+      latestReadyObservation.revision,
+    );
   }
   latestRevision = view.revision;
   latestWire = wire;
@@ -182,11 +207,12 @@ function applyProjection(
     };
     const explicitOpenReady =
       pendingExplicitWorkspaceHydration !== null &&
-      view.revision === pendingExplicitWorkspaceHydration.lifecycleRevision &&
-      bindingToken === pendingExplicitWorkspaceHydration.lifecycleBindingToken;
+      readyProofForExplicitHydration(pendingExplicitWorkspaceHydration) !==
+        null;
     if (explicitOpenReady && pendingExplicitWorkspaceHydration) {
       // The Ready notification can race the Project hydration owned by this
-      // exact Open.  Keep the proof pending and preserve the load instead of
+      // Open binding, including a revision-only background recovery. Keep
+      // the original proof pending and preserve the load instead of
       // invalidating it as an unrelated replacement.  The Open owner must
       // publish editor-ready only after the load returns and promotes this
       // evidence to `complete` below.
@@ -328,6 +354,11 @@ function applyProjection(
   // irreversible invalidation below.
   if (view.status === "transition") {
     if (
+      pendingExplicitWorkspaceHydration &&
+      view.revision > pendingExplicitWorkspaceHydration.lifecycleRevision
+    )
+      pendingExplicitWorkspaceHydration = null;
+    if (
       current.workspaceLifecycleStatus === "ready" &&
       current.workspaceLifecycleBindingToken &&
       current.activeWorkspacePath &&
@@ -451,22 +482,61 @@ export function applyWorkspaceLifecycleUnchangedProof(
 }
 
 /**
+ * Derive publication evidence from the fixed Native Open proof and accepted
+ * lifecycle history. A background recovery can advance Ready while retaining
+ * the live binding; a later accepted invalidation makes that Open obsolete.
+ */
+function readyProofForExplicitHydration(
+  evidence: Omit<ExplicitWorkspaceHydrationEvidence, "phase">,
+): WorkspaceLifecycleProjection | null {
+  if (latestRevision >= evidence.lifecycleRevision) {
+    if (
+      latestHydrationInvalidationRevision > evidence.lifecycleRevision ||
+      latestReadyObservation?.revision !== latestRevision ||
+      latestReadyObservation.bindingToken !== evidence.lifecycleBindingToken
+    )
+      return null;
+  }
+  return {
+    schemaVersion: 1,
+    revision: Math.max(latestRevision, evidence.lifecycleRevision),
+    status: "ready",
+    activation: "ready",
+    bindingToken: evidence.lifecycleBindingToken,
+  };
+}
+
+/** The current Ready used at commit; this does not rewrite the Open proof. */
+export function resolveExplicitWorkspaceHydrationReadyProof(
+  evidence: Omit<ExplicitWorkspaceHydrationEvidence, "phase">,
+): WorkspaceLifecycleProjection | null {
+  if (!isExplicitWorkspaceHydrationCurrent(evidence)) return null;
+  return readyProofForExplicitHydration(evidence);
+}
+
+/**
  * Record the renderer evidence for a successful explicit Open.  Native emits
  * lifecycle state through a non-blocking callback, so the Ready observation
  * may arrive either before or after the Open Promise resolves.  Keep the
- * evidence until the exact Ready revision/token is observed, and only bind it
- * to the proof returned by this Open after it crossed Native.
+ * evidence until its continuous Ready binding is observed, and only bind it
+ * to the original proof returned by this Open after it crossed Native.
  */
 export function noteExplicitWorkspaceHydration(
   evidence: Omit<ExplicitWorkspaceHydrationEvidence, "phase">,
 ): void {
-  pendingExplicitWorkspaceHydration = { ...evidence, phase: "complete" };
+  const ready = readyProofForExplicitHydration(evidence);
+  if (!ready) return;
+  // Completing a superseded owner must not overwrite another Open's proof.
   if (
-    latestReadyObservation &&
-    latestRevision === evidence.lifecycleRevision &&
-    latestReadyObservation.revision === evidence.lifecycleRevision &&
-    latestReadyObservation.bindingToken === evidence.lifecycleBindingToken
-  ) {
+    pendingExplicitWorkspaceHydration &&
+    !matchesExplicitHydrationEvidence(
+      pendingExplicitWorkspaceHydration,
+      evidence,
+    )
+  )
+    return;
+  pendingExplicitWorkspaceHydration = { ...evidence, phase: "complete" };
+  if (latestReadyObservation?.revision === ready.revision) {
     if (!resumeWorkspaceBindingAfterExplicitOpen()) return;
     lastReadyScope = {
       bindingToken: evidence.lifecycleBindingToken,
@@ -486,6 +556,20 @@ export function beginExplicitWorkspaceHydration(
   pendingExplicitWorkspaceHydration = { ...evidence, phase: "pending" };
 }
 
+function matchesExplicitHydrationEvidence(
+  pending: ExplicitWorkspaceHydrationEvidence,
+  evidence: Omit<ExplicitWorkspaceHydrationEvidence, "phase">,
+): boolean {
+  return (
+    pending.workspacePath === evidence.workspacePath &&
+    pending.workspaceId === evidence.workspaceId &&
+    pending.workspaceName === evidence.workspaceName &&
+    pending.openRevision === evidence.openRevision &&
+    pending.lifecycleRevision === evidence.lifecycleRevision &&
+    pending.lifecycleBindingToken === evidence.lifecycleBindingToken
+  );
+}
+
 /**
  * Check that the Open-owned hydration was not invalidated by a newer lifecycle
  * binding while its Project load was awaiting I/O.  A stale load resolves
@@ -499,12 +583,8 @@ export function isExplicitWorkspaceHydrationCurrent(
   return (
     pending !== null &&
     pending.phase === "pending" &&
-    pending.workspacePath === evidence.workspacePath &&
-    pending.workspaceId === evidence.workspaceId &&
-    pending.workspaceName === evidence.workspaceName &&
-    pending.openRevision === evidence.openRevision &&
-    pending.lifecycleRevision === evidence.lifecycleRevision &&
-    pending.lifecycleBindingToken === evidence.lifecycleBindingToken
+    matchesExplicitHydrationEvidence(pending, evidence) &&
+    readyProofForExplicitHydration(evidence) !== null
   );
 }
 
@@ -518,6 +598,7 @@ export function cancelExplicitWorkspaceHydration(): void {
 export function resetWorkspaceLifecycleProjectionForTest(): void {
   latestRevision = -1;
   latestWire = null;
+  latestHydrationInvalidationRevision = -1;
   lastReadyScope = null;
   latestReadyObservation = null;
   pendingExplicitWorkspaceHydration = null;

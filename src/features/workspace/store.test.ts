@@ -59,6 +59,10 @@ vi.mock("@/lib/tauri", () => ({
 
 // Import the mocked module to configure per-test
 import { invoke } from "@/lib/tauri";
+import {
+  applyWorkspaceLifecycleProjectionForTest,
+  resetWorkspaceLifecycleProjectionForTest,
+} from "./workspaceLifecycleProjection";
 const mockInvoke = vi.mocked(invoke);
 const realLoadProjectWithinLifecycle =
   useProjectStore.getState().loadProjectWithinLifecycle;
@@ -713,6 +717,153 @@ describe("useWorkspaceStore", () => {
       expect(state.workspaceSwitchInProgress).toBe(false);
       expect(getCurrentImeWorkspaceIdentity()).toBeNull();
     });
+
+    it.each([
+      ["during-hydration", "opened"],
+      ["before-result", "opened"],
+      ["after-completion", "opened"],
+      ["transition-to-unchanged", "failed"],
+      ["same-path-new-open", "failed"],
+      ["close", "failed"],
+      ["recovery-only", "failed"],
+    ] as const)(
+      "settles the original Open after %s as %s",
+      async (order, outcome) => {
+        resetWorkspaceLifecycleProjectionForTest();
+        const replacementPath = "D:\\Novels\\Replacement";
+        const projection = (
+          revision: number,
+          status: "ready" | "transition",
+          token: string,
+        ) => ({
+          schemaVersion: 1,
+          revision,
+          status,
+          activation: status === "ready" ? "ready" : "none",
+          bindingToken: token,
+        });
+        const apply = (view: unknown) =>
+          applyWorkspaceLifecycleProjectionForTest(
+            () => useWorkspaceStore.getState(),
+            (patch) => useWorkspaceStore.setState(patch),
+            view,
+          );
+        useWorkspaceStore.setState({
+          view: "editor",
+          activeWorkspacePath: "old",
+          activeWorkspaceId: "old-id",
+          workspaceOpenRevision: 1,
+          workspaceHydrated: true,
+          workspaceLifecycleRevision: 1,
+          workspaceLifecycleStatus: "ready",
+          workspaceLifecycleActivation: "ready",
+          workspaceLifecycleBindingToken: "old-token",
+        });
+        apply(projection(1, "ready", "old-token"));
+        mockInvoke.mockImplementation(async (command: string) => {
+          if (command === "open_workspace") {
+            apply(projection(3, "transition", "transition-token"));
+            if (order === "before-result")
+              apply(projection(6, "ready", "new-token"));
+            return {
+              status: "ready",
+              workspace: {
+                name: "Replacement",
+                workspaceId: "replacement-id",
+                isExisting: true,
+              },
+              lifecycle: projection(4, "ready", "new-token"),
+            };
+          }
+          if (command === "get_global_settings")
+            return {
+              recentWorkspaces: [],
+              lastActiveWorkspace: replacementPath,
+              theme: "system",
+              uiLanguage: "ja",
+              uiScale: 1,
+              showLauncherOnStartup: false,
+              trustedWorkspaces: [replacementPath],
+            };
+          return { rows: [] };
+        });
+        let releaseHydration!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          releaseHydration = resolve;
+        });
+        const publications: string[] = [];
+        const unsubscribe = useWorkspaceStore.subscribe((state) => {
+          if (
+            state.workspaceHydrated &&
+            state.activeWorkspacePath === replacementPath
+          )
+            publications.push(state.activeWorkspacePath);
+        });
+        const previousLoadAll = useSettingsStore.getState().loadAll;
+        const loadAll = vi.fn(() => gate);
+        useSettingsStore.setState({ loadAll });
+        const opening = useWorkspaceStore
+          .getState()
+          .openWorkspace(replacementPath);
+        try {
+          await vi.waitFor(() => expect(loadAll).toHaveBeenCalledOnce());
+          if (order === "during-hydration") {
+            apply(projection(4, "ready", "new-token"));
+            apply(projection(6, "ready", "new-token"));
+          }
+          if (outcome === "failed") {
+            apply(projection(4, "ready", "new-token"));
+            if (order === "transition-to-unchanged")
+              apply(projection(5, "transition", "transition-token"));
+            else if (order === "same-path-new-open")
+              apply(projection(5, "ready", "replacement-token"));
+            else
+              apply({
+                schemaVersion: 1,
+                revision: 5,
+                status: order === "close" ? "closed" : "recovery-required",
+                activation: order === "close" ? "none" : "requires-open",
+                bindingToken: order === "close" ? null : "new-token",
+              });
+            apply(projection(6, "ready", "new-token"));
+          }
+          expect(useWorkspaceStore.getState().workspaceHydrated).toBe(false);
+          expect(getCurrentImeWorkspaceIdentity()).toBeNull();
+          releaseHydration();
+          expect(await opening).toBe(outcome);
+          if (order === "after-completion")
+            apply(projection(6, "ready", "new-token"));
+          if (outcome === "opened") {
+            expect(useWorkspaceStore.getState()).toMatchObject({
+              view: "editor",
+              activeWorkspacePath: replacementPath,
+              activeWorkspaceId: "replacement-id",
+              workspaceOpenRevision: 2,
+              workspaceHydrated: true,
+              workspaceLifecycleRevision: 6,
+              workspaceLifecycleBindingToken: "new-token",
+              error: null,
+            });
+            expect(getCurrentImeWorkspaceIdentity()).toEqual({
+              path: replacementPath,
+              openRevision: 2,
+            });
+            expect(publications.length).toBeGreaterThan(0);
+          } else {
+            expect(useWorkspaceStore.getState().workspaceHydrated).toBe(false);
+            expect(getCurrentImeWorkspaceIdentity()).toBeNull();
+            expect(publications).toEqual([]);
+          }
+          expect(isQuiescenceLeaseActive()).toBe(false);
+        } finally {
+          releaseHydration();
+          await opening;
+          unsubscribe();
+          useSettingsStore.setState({ loadAll: previousLoadAll });
+          resetWorkspaceLifecycleProjectionForTest();
+        }
+      },
+    );
 
     it("publishes the replacement identity only after mandatory hydration completes", async () => {
       const previousPath = "D:\\Novels\\Existing";
