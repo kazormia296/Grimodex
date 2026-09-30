@@ -654,11 +654,20 @@ export async function closeElectronAppWithDiagnostics(
         })}`,
       );
     }
-    const outcome = await Promise.race([
+    let outcome = await Promise.race([
       closeOutcome,
       processExit.promise,
       closeTimeout.promise,
     ]);
+    if (
+      outcome.kind === "playwright-closed" &&
+      childProcess &&
+      !processHasExited(childProcess)
+    ) {
+      // A repeated Playwright close can resolve while the captured child is
+      // still alive. Retain ownership until real exit under the same deadline.
+      outcome = await Promise.race([processExit.promise, closeTimeout.promise]);
+    }
     if (
       outcome.kind === "playwright-closed" ||
       outcome.kind === "process-exited"

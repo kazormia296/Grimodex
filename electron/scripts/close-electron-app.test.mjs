@@ -264,6 +264,66 @@ test("close timeout diagnostics include only the sanitized page projection", asy
   }
 });
 
+for (const killed of [false, true]) {
+  test(`a repeated Playwright close cannot prove a live child exited (killed=${killed})`, async () => {
+    const childProcess = new FakeElectronProcess();
+    childProcess.killed = killed;
+    let closeCalls = 0;
+    let releaseFirst;
+    const firstClose = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    const app = {
+      process: () => childProcess,
+      close: () => (++closeCalls === 1 ? firstClose : Promise.resolve()),
+    };
+    const options = { childProcess, timeoutMs: 5, processExitGraceMs: 5 };
+    try {
+      await assert.rejects(
+        closeElectronAppWithDiagnostics(app, null, "first", options),
+        /first app close timed out/,
+      );
+      assert.equal(childProcess.listenerCount("exit"), 0);
+      await assert.rejects(
+        closeElectronAppWithDiagnostics(app, null, "repeat", options),
+        /repeat app close timed out/,
+      );
+      assert.equal(closeCalls, 2);
+      assert.equal(childProcess.listenerCount("exit"), 0);
+      assert.equal(childProcess.exitCode, null);
+    } finally {
+      releaseFirst();
+    }
+  });
+}
+
+test("a resolved Playwright close waits for the captured child's actual exit", async () => {
+  const childProcess = new FakeElectronProcess();
+  let settled = false;
+  const closing = closeElectronAppWithDiagnostics(
+    {
+      process: () => childProcess,
+      close: async () => {},
+    },
+    null,
+    "delayed-exit",
+    { childProcess, timeoutMs: 1000 },
+  ).then(() => {
+    settled = true;
+  });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "live child must retain close ownership");
+    assert.equal(childProcess.listenerCount("exit"), 1);
+  } finally {
+    childProcess.exitCode = 0;
+    childProcess.emit("exit", 0, null);
+    await closing;
+  }
+  assert.equal(settled, true);
+  assert.equal(childProcess.listenerCount("exit"), 0);
+});
+
 test("close reuses the launch-captured child after Playwright disposal", async () => {
   const childProcess = new FakeElectronProcess();
   childProcess.exitCode = 86;
