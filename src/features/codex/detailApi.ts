@@ -5,6 +5,23 @@ import {
   codexEntries,
 } from "@/db/schema";
 import { eq, and, inArray } from "drizzle-orm";
+import { buildDetailDefinitionCatalog } from "./details/detailDefinitionCatalog";
+import { detailValueCodec } from "./details/detailValueCodec";
+import {
+  DetailDefinitionVersionConflictError,
+  DetailValueVersionConflictError,
+} from "./detailOcc";
+import { invoke } from "@/lib/tauri";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
+import type {
+  DetailBindingSource,
+  DetailProjectionKind,
+  DetailTemporalPolicy,
+  StateFacet,
+} from "./details/semanticBindingTypes";
 
 export interface ContextDetail {
   entryId: string;
@@ -59,6 +76,38 @@ export interface DetailValueWithDefinition {
   definition: CodexDetailDefinition;
 }
 
+function encodeStoredDetailValue(
+  definition: Pick<
+    CodexDetailDefinition,
+    | "id"
+    | "projectId"
+    | "typeSlug"
+    | "name"
+    | "fieldType"
+    | "fieldConfig"
+    | "sortOrder"
+  >,
+  value: string | null,
+): string | null {
+  if (definition.fieldType !== "text") return value;
+  const catalog = buildDetailDefinitionCatalog([
+    {
+      id: definition.id,
+      projectId: definition.projectId,
+      typeSlug: definition.typeSlug,
+      name: definition.name,
+      fieldType: definition.fieldType,
+      fieldConfig: definition.fieldConfig,
+      sortOrder: definition.sortOrder,
+    },
+  ]);
+  const record = catalog.records[0];
+  if (!record) return value;
+  const decoded = detailValueCodec.decode(record, value);
+  if (decoded === null) return null;
+  return detailValueCodec.encodeBase(record, decoded);
+}
+
 export async function listDefinitionsByType(
   projectId: string,
   typeSlug: string,
@@ -75,30 +124,60 @@ export async function listDefinitionsByType(
     .orderBy(codexDetailDefinitions.sortOrder);
 }
 
-export async function createDefinition(data: {
-  id: string;
-  projectId: string;
-  typeSlug: string;
-  name: string;
-  fieldType?: string;
-  fieldConfig?: string | null;
-  sortOrder?: number;
-  includeInContext?: number;
-}): Promise<CodexDetailDefinition> {
+export async function getDefinition(
+  id: string,
+): Promise<CodexDetailDefinition | undefined> {
   const rows = await db
-    .insert(codexDetailDefinitions)
-    .values({
-      id: data.id,
+    .select()
+    .from(codexDetailDefinitions)
+    .where(eq(codexDetailDefinitions.id, id));
+  return rows[0];
+}
+
+export async function createDefinition(
+  data: {
+    id: string;
+    projectId: string;
+    typeSlug: string;
+    name: string;
+    fieldType?: string;
+    fieldConfig?: string | null;
+    sortOrder?: number;
+    includeInContext?: number;
+    semanticBinding?: {
+      id: string;
+      facetKey: StateFacet;
+      projectionKind: DetailProjectionKind;
+      temporalPolicy: DetailTemporalPolicy;
+      source: DetailBindingSource;
+      confirmed: boolean;
+    };
+  },
+  opts?: { writeContext?: CanonicalWriteContext },
+): Promise<CodexDetailDefinition> {
+  await invoke("codex_mutate", {
+    payload: {
+      operation: "detail.definition.create",
       projectId: data.projectId,
+      ...(opts?.writeContext ?? createCanonicalWriteContext()),
+      surface: "manual",
+      definitionId: data.id,
       typeSlug: data.typeSlug,
       name: data.name,
       fieldType: data.fieldType ?? "text",
       fieldConfig: data.fieldConfig ?? null,
-      sortOrder: data.sortOrder ?? 0.0,
+      sortOrder: data.sortOrder ?? 0,
       includeInContext: data.includeInContext ?? 0,
-      createdAt: new Date().toISOString(),
-    })
-    .returning();
+      ...(data.semanticBinding
+        ? { semanticBinding: data.semanticBinding }
+        : {}),
+    },
+  });
+  const rows = await db
+    .select()
+    .from(codexDetailDefinitions)
+    .where(eq(codexDetailDefinitions.id, data.id))
+    .limit(1);
   return rows[0];
 }
 
@@ -110,19 +189,43 @@ export async function updateDefinition(
       "name" | "fieldType" | "fieldConfig" | "sortOrder" | "includeInContext"
     >
   >,
+  opts: { baseVersion: number },
 ): Promise<CodexDetailDefinition | undefined> {
-  const rows = await db
-    .update(codexDetailDefinitions)
-    .set(data)
-    .where(eq(codexDetailDefinitions.id, id))
-    .returning();
-  return rows[0];
+  const current = await getDefinition(id);
+  if (!current) return undefined;
+  try {
+    await invoke("codex_mutate", {
+      payload: {
+        operation: "detail.definition.update",
+        projectId: current.projectId,
+        ...createCanonicalWriteContext(),
+        surface: "manual",
+        definitionId: id,
+        baseVersion: opts.baseVersion,
+        ...data,
+      },
+    });
+  } catch (error) {
+    if (String(error).toLowerCase().includes("version conflict")) {
+      throw new DetailDefinitionVersionConflictError(id);
+    }
+    throw error;
+  }
+  return getDefinition(id);
 }
 
 export async function deleteDefinition(id: string): Promise<void> {
-  await db
-    .delete(codexDetailDefinitions)
-    .where(eq(codexDetailDefinitions.id, id));
+  const definition = await getDefinition(id);
+  if (!definition) return;
+  await invoke("codex_mutate", {
+    payload: {
+      operation: "detail.definition.delete",
+      projectId: definition.projectId,
+      ...createCanonicalWriteContext(),
+      surface: "manual",
+      definitionId: id,
+    },
+  });
 }
 
 export async function listRawDetailValuesByEntryIds(
@@ -176,8 +279,19 @@ export async function upsertValue(
   entryId: string,
   definitionId: string,
   value: string | null,
+  opts?: {
+    baseVersion?: number;
+    raw?: boolean;
+    writeContext?: CanonicalWriteContext;
+  },
 ): Promise<CodexDetailValue> {
-  // Check if value exists
+  const definition = await getDefinition(definitionId);
+  if (!definition) {
+    throw new Error(`Detail definition '${definitionId}' not found`);
+  }
+  const encoded = opts?.raw
+    ? value
+    : encodeStoredDetailValue(definition, value);
   const existing = await db
     .select()
     .from(codexDetailValues)
@@ -188,28 +302,76 @@ export async function upsertValue(
       ),
     );
 
-  if (existing.length > 0) {
-    const rows = await db
-      .update(codexDetailValues)
-      .set({ value })
+  if (existing.length === 0) {
+    const entry = await db
+      .select({ projectId: codexEntries.projectId })
+      .from(codexEntries)
+      .where(eq(codexEntries.id, entryId))
+      .limit(1);
+    if (!entry[0]) throw new Error(`Codex entry '${entryId}' not found`);
+    await invoke("codex_mutate", {
+      payload: {
+        operation: "detail.value.upsert",
+        projectId: entry[0].projectId,
+        ...(opts?.writeContext ?? createCanonicalWriteContext()),
+        surface: "manual",
+        valueId: crypto.randomUUID(),
+        entryId,
+        definitionId,
+        value: encoded,
+      },
+    });
+    const created = await db
+      .select()
+      .from(codexDetailValues)
       .where(
         and(
           eq(codexDetailValues.entryId, entryId),
           eq(codexDetailValues.definitionId, definitionId),
         ),
-      )
-      .returning();
-    return rows[0];
-  } else {
-    const rows = await db
-      .insert(codexDetailValues)
-      .values({
-        id: crypto.randomUUID(),
+      );
+    return created[0];
+  }
+
+  if (opts?.baseVersion === undefined) {
+    throw new DetailValueVersionConflictError(entryId, definitionId);
+  }
+
+  const entry = await db
+    .select({ projectId: codexEntries.projectId })
+    .from(codexEntries)
+    .where(eq(codexEntries.id, entryId))
+    .limit(1);
+  if (!entry[0]) throw new Error(`Codex entry '${entryId}' not found`);
+  try {
+    await invoke("codex_mutate", {
+      payload: {
+        operation: "detail.value.upsert",
+        projectId: entry[0].projectId,
+        ...(opts?.writeContext ?? createCanonicalWriteContext()),
+        surface: "manual",
         entryId,
         definitionId,
-        value,
-      })
-      .returning();
-    return rows[0];
+        value: encoded,
+        baseVersion: opts.baseVersion,
+      },
+    });
+  } catch (error) {
+    if (String(error).toLowerCase().includes("version conflict")) {
+      throw new DetailValueVersionConflictError(entryId, definitionId);
+    }
+    throw error;
   }
+  const updated = await db
+    .select()
+    .from(codexDetailValues)
+    .where(
+      and(
+        eq(codexDetailValues.entryId, entryId),
+        eq(codexDetailValues.definitionId, definitionId),
+      ),
+    );
+  if (!updated[0])
+    throw new DetailValueVersionConflictError(entryId, definitionId);
+  return updated[0];
 }

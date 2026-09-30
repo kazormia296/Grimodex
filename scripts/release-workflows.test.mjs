@@ -27,6 +27,33 @@ function collectUses(value, result = []) {
 }
 
 describe("release workflow boundary", () => {
+  it("uses the user-selected public distribution repository everywhere", async () => {
+    const publicRepository = "kazormia296/GrimodexReleases";
+    const distributionFiles = [
+      ".github/workflows/release.yml",
+      ".github/workflows/aur-publish.yml",
+      ".github/workflows/migrate-semantic-models.yml",
+      ".github/workflows/release-public-smoke.yml",
+      "src-tauri/tauri.conf.json",
+      "src-tauri/crates/grimodex-semantic/src/spec.rs",
+      "packaging/arch/PKGBUILD",
+      "README.md",
+      "docs/user-guide/ja/Install-and-update.md",
+    ];
+    for (const relativePath of distributionFiles) {
+      const content = await readFile(path.join(repoRoot, relativePath), "utf8");
+      assert.match(content, new RegExp(publicRepository.replace("/", "\\/")));
+      assert.doesNotMatch(content, /kazormia296\/Grimodex-Releases/);
+    }
+    const electronBuilder = await readFile(
+      path.join(repoRoot, "electron-builder.yml"),
+      "utf8",
+    );
+    assert.match(electronBuilder, /owner:\s*kazormia296/);
+    assert.match(electronBuilder, /repo:\s*GrimodexReleases/);
+    assert.doesNotMatch(electronBuilder, /repo:\s*Grimodex-Releases/);
+  });
+
   it("freezes the existing Tauri v1 artifacts instead of retaining a mutable rebuild workflow", async () => {
     const workflowNames = await readdir(
       path.join(repoRoot, ".github", "workflows"),
@@ -113,7 +140,7 @@ describe("release workflow boundary", () => {
     assert.ok(createOrUpdateRelease);
     assert.match(
       createOrUpdateRelease,
-      /else\s+CREATE_ARGS=\(--draft[\s\S]*?gh release create "\$TAG" "\$\{CREATE_ARGS\[@\]\}"\s+fi/,
+      /else[\s\S]*?CREATE_ARGS=\(--repo "\$PUBLICATION_REPOSITORY"[\s\S]*?gh release create "\$TAG" "\$\{CREATE_ARGS\[@\]\}"\s+fi/,
     );
     const publishDraftVerificationStep = workflow.jobs.publish.steps.at(-1);
     assert.equal(
@@ -130,15 +157,21 @@ describe("release workflow boundary", () => {
     const workflowDefinition = JSON.stringify(workflow);
     assert.doesNotMatch(workflowDefinition, /--draft=false/);
     assert.doesNotMatch(workflowDefinition, /["']?draft["']?\s*[:=]\s*false/);
-    assert.equal(workflow.jobs.publish.permissions.contents, "write");
+    assert.equal(workflow.jobs.publish.permissions.contents, "read");
     assert.equal(workflow.jobs.publish.permissions.actions, "read");
     assert.notEqual(workflow.jobs.build.permissions?.contents, "write");
     assert.deepEqual(
       Object.entries(workflow.jobs)
         .filter(([, job]) => job.permissions?.contents === "write")
         .map(([name]) => name),
-      ["publish"],
+      [],
     );
+    assert.equal(
+      workflow.env.PUBLICATION_REPOSITORY,
+      "kazormia296/GrimodexReleases",
+    );
+    assert.equal(workflow.jobs["release-state"].environment, "release");
+    assert.equal(workflow.jobs.publish.environment, "release");
     assert.equal(
       workflow.jobs["build-arch"].if,
       [
@@ -343,7 +376,7 @@ describe("release workflow boundary", () => {
       "build-arch",
     ]);
     assert.equal(publish.permissions.actions, "read");
-    assert.equal(publish.permissions.contents, "write");
+    assert.equal(publish.permissions.contents, "read");
     assert.equal(currentRunDownload?.if, "github.event_name == 'push'");
     assert.equal(
       publish.steps.find((step) => step.uses?.startsWith("actions/checkout@"))
@@ -363,6 +396,33 @@ describe("release workflow boundary", () => {
     assert.match(recoverySource.run, /EVENT.*push/s);
     assert.match(recoverySource.run, /WORKFLOW_PATH/);
     assert.doesNotMatch(recoverySource.run, /WORKFLOW_NAME/);
+    assert.match(
+      publishReleaseStateCommands,
+      /GRIMODEX_RELEASES_TOKEN|PUBLICATION_REPOSITORY/,
+    );
+    assert.match(
+      releaseMutationCommands,
+      /GRIMODEX_RELEASES_TOKEN|PUBLICATION_REPOSITORY/,
+    );
+    assert.match(releaseMutationCommands, /--target "\$PUBLICATION_TARGET"/);
+    assert.match(
+      releaseMutationCommands,
+      /publication-tag\.json[\s\S]*already exists without a matching release/,
+    );
+    assert.doesNotMatch(
+      releaseMutationCommands,
+      /gh release create[^\n]*--verify-tag/,
+    );
+    assert.match(publishDraftVerificationCommands, /LICENSE/);
+    assert.match(publishDraftVerificationCommands, /provenance\.json/);
+    assert.match(
+      publish.steps.find(
+        (step) =>
+          step.name ===
+          "Stage legal and provenance assets for the public release",
+      )?.env?.SOURCE_RUN_ID ?? "",
+      /github\.event_name == 'push' && github\.run_id \|\| needs\.release-gate\.outputs\.source_run_id/,
+    );
     assert.match(recoverySource.run, /git\/ref\/tags/);
     assert.match(recoverySource.run, /requires an annotated release tag/);
     assert.match(recoverySource.run, /SOURCE_SHA/);
@@ -416,7 +476,10 @@ describe("release workflow boundary", () => {
     assert.match(publishCommands, /gh release create/);
     assert.match(publishCommands, /--draft/);
     assert.doesNotMatch(publishCommands, /--draft=false/);
-    assert.match(publishCommands, /tag moved before Release mutation/i);
+    assert.match(
+      recoverySource.run,
+      /Source run SHA does not match immutable tag/,
+    );
     for (const commands of [
       releaseStateCommands,
       publishReleaseStateCommands,
@@ -542,7 +605,13 @@ describe("release workflow boundary", () => {
   });
 
   it("pins every third-party action to an immutable commit", async () => {
-    for (const name of ["release.yml", "ci.yml", "aur-publish.yml"]) {
+    for (const name of [
+      "release.yml",
+      "ci.yml",
+      "aur-publish.yml",
+      "migrate-semantic-models.yml",
+      "release-public-smoke.yml",
+    ]) {
       const workflow = await readWorkflow(name);
       for (const uses of collectUses(workflow)) {
         if (uses.startsWith("./")) continue;
@@ -564,6 +633,11 @@ describe("release workflow boundary", () => {
     const definition = JSON.stringify(publish);
 
     assert.equal(publish.environment, "aur");
+    assert.deepEqual(workflow.on.release, undefined);
+    assert.match(
+      JSON.stringify(workflow.env),
+      /kazormia296\/GrimodexReleases/,
+    );
     assert.match(publish.if, /github\.repository == 'kazormia296\/Grimodex'/);
     assert.equal(
       checkout?.with?.ref,
@@ -571,6 +645,8 @@ describe("release workflow boundary", () => {
     );
     assert.equal(checkout?.with?.["persist-credentials"], false);
     assert.match(commands, /gh api .*releases\/tags/);
+    assert.match(commands, /PUBLICATION_REPOSITORY/);
+    assert.match(commands, /releases\/assets/);
     assert.match(commands, /published_at/);
     assert.match(commands, /makepkg --printsrcinfo/);
     assert.match(commands, /AUR_SSH_PRIVATE_KEY is required/);
@@ -600,6 +676,84 @@ describe("release workflow boundary", () => {
     assert.match(auditStep?.run ?? "", /pnpm dlx pnpm@11\.13\.0/);
     assert.match(auditStep?.run ?? "", /--pm-on-fail=ignore/);
     assert.match(auditStep?.run ?? "", /audit --audit-level high/);
+  });
+
+  it("gives every root TypeScript build explicit Node heap headroom", async () => {
+    const ci = await readWorkflow("ci.yml");
+    const release = await readWorkflow("release.yml");
+    const expectedNodeOptions = "--max-old-space-size=4096";
+    const expectedGuardedSteps = [
+      ["ci.yml", "frontend", "型チェック"],
+      ["ci.yml", "frontend", "Web Editor-only production artifact"],
+      ["ci.yml", "electron", "Electron production build"],
+      [
+        "ci.yml",
+        "electron-runtime-performance",
+        "Build development native module and production Electron app",
+      ],
+      [
+        "ci.yml",
+        "electron-product-journeys",
+        "Build native module and production Electron app",
+      ],
+      [
+        "ci.yml",
+        "electron-windows-installer-contract",
+        "Build Electron JavaScript",
+      ],
+      ["release.yml", "build", "Build Electron main, preload, and renderer"],
+    ];
+    const workflows = new Map([
+      ["ci.yml", ci],
+      ["release.yml", release],
+    ]);
+    const rootBuildPattern =
+      /pnpm exec tsc --noEmit|pnpm build:web-editor|pnpm electron:build/;
+
+    for (const [workflowName, jobName, stepName] of expectedGuardedSteps) {
+      const workflow = workflows.get(workflowName);
+      const job = workflow?.jobs?.[jobName];
+      const step = job?.steps?.find((candidate) => candidate.name === stepName);
+      assert.ok(step, `${stepName} must remain a named workflow step`);
+      assert.equal(
+        step.env?.NODE_OPTIONS,
+        expectedNodeOptions,
+        `${stepName} must not rely on Node's approximately 2 GiB default heap`,
+      );
+      assert.match(
+        step.run ?? "",
+        rootBuildPattern,
+        `${stepName} must remain a root TypeScript build seam`,
+      );
+    }
+
+    const actualGuardedSteps = [];
+    const actualRootBuildSteps = [];
+    for (const [workflowName, workflow] of workflows) {
+      assert.equal(
+        workflow.env?.NODE_OPTIONS,
+        undefined,
+        `${workflowName} must not widen the heap for every job`,
+      );
+      for (const [jobName, job] of Object.entries(workflow.jobs)) {
+        assert.equal(
+          job.env?.NODE_OPTIONS,
+          undefined,
+          `${workflowName}:${jobName} must not widen the heap for every step`,
+        );
+        for (const step of job.steps ?? []) {
+          if (rootBuildPattern.test(step.run ?? "")) {
+            actualRootBuildSteps.push([workflowName, jobName, step.name]);
+          }
+          if (step.env?.NODE_OPTIONS !== undefined) {
+            actualGuardedSteps.push([workflowName, jobName, step.name]);
+          }
+        }
+      }
+    }
+
+    assert.deepEqual(actualRootBuildSteps, expectedGuardedSteps);
+    assert.deepEqual(actualGuardedSteps, expectedGuardedSteps);
   });
 
   it("pins brace-expansion to the patched version required by the audit gate", async () => {

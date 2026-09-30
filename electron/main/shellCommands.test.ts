@@ -157,10 +157,7 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
     const dir = mkdtempSync(path.join(os.tmpdir(), "grim-shell-logs-"));
     try {
       openPathMock.mockResolvedValueOnce("no file manager");
-      const h = buildShellCommandHandlers(
-        null,
-        path.join(dir, "logs"),
-      );
+      const h = buildShellCommandHandlers(null, path.join(dir, "logs"));
       await expect(h.open_log_dir({})).rejects.toThrow(
         "ログフォルダを開けませんでした",
       );
@@ -208,7 +205,7 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
               counterfactualInjectedCandidateHashes: ["candidate-a"],
               injectedSetChanged: false,
               injectedOrderChanged: false,
-            firstPresentedChanged: false,
+              firstPresentedChanged: false,
               ranking: [
                 {
                   candidateHash: "candidate-a",
@@ -277,9 +274,9 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
           },
         }),
       ).rejects.toThrow(/unknown field.*manuscriptText/);
-      expect(
-        existsSync(path.join(dir, "semantic-reranker-shadow.jsonl")),
-      ).toBe(false);
+      expect(existsSync(path.join(dir, "semantic-reranker-shadow.jsonl"))).toBe(
+        false,
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -291,6 +288,29 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("openExternal（scheme 再検証 = safeUrl.ts と二重防御）", () => {
+  it("profile egress gate が閉じている間は shell.openExternal へ到達しない", async () => {
+    const denied = vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: external URL opening is disabled");
+    });
+    openExternalMock.mockClear();
+    registerShellBridgeHandlers(undefined, undefined, denied);
+    try {
+      const env = await invokeBridge(
+        IPC.openExternal,
+        { sender: {} },
+        "https://example.com/",
+      );
+      expect(env).toEqual({
+        ok: false,
+        error: "D2A_EGRESS_DENIED: external URL opening is disabled",
+      });
+      expect(denied).toHaveBeenCalledOnce();
+      expect(openExternalMock).not.toHaveBeenCalled();
+    } finally {
+      registerShellBridgeHandlers();
+    }
+  });
+
   it("https は許可される", async () => {
     const env = await invokeBridge(
       IPC.openExternal,
@@ -602,5 +622,30 @@ describe("setZoomFactor / getVersion / panelWindow スタブ", () => {
       ok: false,
       error: "IPC_UNIMPLEMENTED: panelWindow.focusByLabel",
     });
+    const exists = await invokeBridge(
+      IPC.panelExists,
+      { sender: {} },
+      "panel-codex",
+    );
+    expect(exists).toEqual({
+      ok: false,
+      error: "IPC_UNIMPLEMENTED: panelWindow.existsByLabel",
+    });
+  });
+
+  it("panelWindow existence probe は focus delegate を呼ばない", async () => {
+    const open = vi.fn();
+    const focusByLabel = vi.fn(() => true);
+    const existsByLabel = vi.fn(() => true);
+    registerShellBridgeHandlers({ open, focusByLabel, existsByLabel });
+    try {
+      await expect(
+        invokeBridge(IPC.panelExists, { sender: {} }, "panel-codex"),
+      ).resolves.toEqual({ ok: true, value: true });
+      expect(existsByLabel).toHaveBeenCalledWith("panel-codex");
+      expect(focusByLabel).not.toHaveBeenCalled();
+    } finally {
+      registerShellBridgeHandlers();
+    }
   });
 });

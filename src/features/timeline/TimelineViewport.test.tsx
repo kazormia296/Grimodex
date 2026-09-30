@@ -238,6 +238,7 @@ describe("TimelineViewport – threads モード", () => {
           sortOrder: "a0",
           startNodeId: null,
           endNodeId: null,
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -250,6 +251,8 @@ describe("TimelineViewport – threads モード", () => {
           phaseType: "introduce",
           note: null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -289,6 +292,7 @@ describe("TimelineViewport – threads モード", () => {
           sortOrder: "a0",
           startNodeId: null,
           endNodeId: null,
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -336,6 +340,7 @@ describe("TimelineViewport – threads モード", () => {
           sortOrder: "a0",
           startNodeId: null,
           endNodeId: null,
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -365,6 +370,7 @@ describe("TimelineViewport – threads モード", () => {
           sortOrder: "a0",
           startNodeId: null,
           endNodeId: null,
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1182,6 +1188,7 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           sortOrder: "a0",
           startNodeId: null,
           endNodeId: null,
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1194,6 +1201,7 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           sortOrder: "a1",
           startNodeId: null,
           endNodeId: null,
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1206,6 +1214,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           phaseType: "introduce",
           note: null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1216,6 +1226,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           phaseType: "climax",
           note: null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1226,6 +1238,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           phaseType: "introduce",
           note: null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1278,6 +1292,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           toThreadId: "t2",
           atNodeId: "s2",
           kind: "branch",
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1322,6 +1338,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           toThreadId: "t2",
           atNodeId: "s2",
           kind: "branch",
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1332,6 +1350,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           toThreadId: "t1",
           atNodeId: "s3",
           kind: "merge",
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1394,6 +1414,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           toThreadId: "t1",
           atNodeId: "s3", // t1@s3 = l2 が merge の流入先
           kind: "merge",
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1462,6 +1484,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
           toThreadId: "t2",
           atNodeId: "s3",
           kind: "branch",
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1501,6 +1525,8 @@ describe("TimelineViewport – スレッド線と収束（threads オーバー�
             toThreadId: "t2",
             atNodeId: "s3",
             kind: "branch",
+            semanticKey: "",
+            version: 0,
             createdAt: "",
             updatedAt: "",
           },
@@ -1626,6 +1652,7 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     sortOrder,
     startNodeId: null,
     endNodeId: null,
+    version: 0,
     createdAt: "",
     updatedAt: "",
   });
@@ -1636,6 +1663,8 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
     phaseType: "introduce" as const,
     note: null,
     sortOrder: null,
+    semanticKey: `${threadId}|${nodeId}|introduce`,
+    version: 0,
     createdAt: "",
     updatedAt: "",
   });
@@ -1782,6 +1811,8 @@ describe("TimelineViewport – マーカー DnD（Model A: ドロップ先で判
           toThreadId: "t2",
           atNodeId: "s2",
           kind: "branch",
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -1904,6 +1935,7 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     sortOrder: so,
     startNodeId: null,
     endNodeId: null,
+    version: 0,
     createdAt: "",
     updatedAt: "",
   });
@@ -1914,6 +1946,8 @@ describe("TimelineViewport – ヘッダー縦ドラッグ並べ替え（#8, X�
     phaseType: "introduce" as const,
     note: null,
     sortOrder: null,
+    semanticKey: "",
+    version: 0,
     createdAt: "",
     updatedAt: "",
   });
@@ -2150,6 +2184,7 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     sortOrder: so,
     startNodeId: null,
     endNodeId: null,
+    version: 0,
     createdAt: "",
     updatedAt: "",
   });
@@ -2160,6 +2195,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
     phaseType: "introduce" as const,
     note: null,
     sortOrder: null,
+    semanticKey: "",
+    version: 0,
     createdAt: "",
     updatedAt: "",
   });
@@ -2177,6 +2214,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
           toThreadId: "B",
           atNodeId: "s1",
           kind: "branch" as const,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -2203,6 +2242,28 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
       markerPatch: { nodeId: "s2" },
       branchUpdates: [{ id: "br1", patch: { atNodeId: "s2" } }],
       branchDeletes: [],
+    });
+  });
+
+  it("leaves dependent branches anchored when another marker shares the origin", () => {
+    seedBranch();
+    usePlotThreadStore.setState({
+      links: [lk("lB", "B", "s1"), lk("lB2", "B", "s1")],
+    });
+    const moveMarkerBundle = vi.fn(async () => {});
+    usePlotThreadStore.setState({ moveMarkerBundle });
+    const { getByTestId } = render(
+      <TimelineViewport scenes={scenes} onSelectScene={vi.fn()} />,
+    );
+
+    const marker = getByTestId("plot-marker-lB");
+    fireEvent.mouseDown(marker, { clientX: 150, clientY: 214 });
+    fireEvent.mouseMove(document, { clientX: 246, clientY: 214 });
+    fireEvent.mouseUp(document, { clientX: 246, clientY: 214 });
+
+    expect(moveMarkerBundle).toHaveBeenCalledWith({
+      markerId: "lB",
+      markerPatch: { nodeId: "s2" },
     });
   });
 
@@ -2250,6 +2311,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
           toThreadId: "B",
           atNodeId: "s1",
           kind: "merge" as const,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -2299,6 +2362,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
           toThreadId: "B",
           atNodeId: "s1",
           kind: "branch" as const,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -2309,6 +2374,8 @@ describe("TimelineViewport – 既存エッジの追従/付け替え（#2）", (
           toThreadId: "B",
           atNodeId: "s2",
           kind: "branch" as const,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -2352,6 +2419,7 @@ describe("TimelineViewport – ヘッダー hover dim（色違い merge/branch �
     sortOrder: so,
     startNodeId: null,
     endNodeId: null,
+    version: 0,
     createdAt: "",
     updatedAt: "",
   });
@@ -2362,6 +2430,8 @@ describe("TimelineViewport – ヘッダー hover dim（色違い merge/branch �
     phaseType: "introduce" as const,
     note: null,
     sortOrder: null,
+    semanticKey: "",
+    version: 0,
     createdAt: "",
     updatedAt: "",
   });
@@ -2378,6 +2448,8 @@ describe("TimelineViewport – ヘッダー hover dim（色違い merge/branch �
           toThreadId: "t2",
           atNodeId: "s2",
           kind: "branch" as const,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -2491,6 +2563,7 @@ describe("TimelineViewport – thread gaps (1c)", () => {
           sortOrder: "a0",
           startNodeId: null,
           endNodeId: null,
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -2503,6 +2576,8 @@ describe("TimelineViewport – thread gaps (1c)", () => {
           phaseType: "introduce",
           note: null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },
@@ -2513,6 +2588,8 @@ describe("TimelineViewport – thread gaps (1c)", () => {
           phaseType: "resolve",
           note: null,
           sortOrder: null,
+          semanticKey: "",
+          version: 0,
           createdAt: "",
           updatedAt: "",
         },

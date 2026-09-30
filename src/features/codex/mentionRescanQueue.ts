@@ -5,7 +5,7 @@ import { eq, and, inArray } from "drizzle-orm";
 import { upsertSceneBodyMentions } from "@/features/editor/beat/bodyMentionApi";
 import { listCodexMatchTargets } from "./codexMatchTargets";
 import type { CodexMatchTarget } from "./codexMatcher";
-import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import {
   isBodyMentionIndexReady,
   recordBodyMentionScans,

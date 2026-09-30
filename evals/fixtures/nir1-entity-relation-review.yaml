@@ -1,0 +1,43 @@
+cases:
+  - id: eval-nir1-entity-relation-review
+    suiteId: nir1-entity-relation-review
+    requirementIds:
+      - GDX-NARR-SEMANTIC-CONTRACT-001
+      - GDX-ARTIFACT-001
+      - GDX-TRACE-001
+      - GDX-POLICY-001
+    fixture:
+      runId: nir1-entity-relation-review
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-09-16T12:00:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        conversationId: nir1-entity-relation-review-conversation
+        workspaceId: nir1-entity-relation-review-workspace
+        artifactRoot: nir1-entity-relation-review-artifacts
+      teardown: [conversation, workspace, artifacts]
+    input:
+      prompt: Restore one Entity/Relation review, approve its immutable revision, and reopen that exact target.
+      attemptedTools: []
+      executedTools: []
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: current-project
+      requiredEvidence:
+        - immutable-revision-identity
+        - explicit-decision
+        - target-bound-cold-reopen
+      outputValidators:
+        - schema
+        - revision-match
+        - target-match
+        - no-side-effect

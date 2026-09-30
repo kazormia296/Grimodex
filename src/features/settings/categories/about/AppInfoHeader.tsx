@@ -119,7 +119,7 @@ export function AppInfoHeader() {
               <span className="whitespace-nowrap">v{version}</span>
             )}
             <span className="inline-block whitespace-nowrap rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">
-              Elastic-2.0
+              Proprietary
             </span>
             <span className="inline-block whitespace-nowrap rounded bg-muted px-1.5 py-0.5 text-[10px]">
               {licensingEnabled

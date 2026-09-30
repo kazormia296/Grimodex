@@ -1,5 +1,11 @@
 import { Extension, InputRule, markInputRule } from "@tiptap/core";
 import { useSettingsStore } from "@/features/settings/settingsStore";
+import {
+  AOZORA_AUTO_RUBY_INPUT_RE,
+  AOZORA_EMPHASIS_DOTS_INPUT_RE,
+  AOZORA_PIPE_RUBY_INPUT_RE,
+  AOZORA_TCY_RANGE_INPUT_RE,
+} from "@/features/editor/aozoraNotation";
 
 /**
  * 青空文庫/カクヨム系記法の入力時自動変換 (`editor.aozoraInput`, 既定 ON)。
@@ -21,18 +27,6 @@ import { useSettingsStore } from "@/features/settings/settingsStore";
  * file-backed(外部Markdown) エディタは ruby/emphasisDots スキーマを持たない
  * ため、この拡張は `getEditorExtensions` (project DB シーン) にのみ登録する。
  */
-
-/** kakuyomuMarkup.ts の KANJI_RE と同一 (連続漢字 + 反復記号)。 */
-const KANJI_CLASS = "一-鿿々〆〤ヶ";
-
-/** `｜base《reading》` — 明示ピペルビ。base は ｜《》改行以外なら何でも可。 */
-const PIPE_RUBY = new RegExp(`｜([^｜《》\\n]+)《([^《》\\n]+)》$`);
-/** `漢字《reading》` — 自動ルビ。直前の連続漢字を base とする。 */
-const AUTO_RUBY = new RegExp(`([${KANJI_CLASS}]+)《([^《》\\n]+)》$`);
-/** `《《text》》` — 傍点(圏点)。 */
-const EMPHASIS_DOTS = /《《([^《》\n]+)》》$/;
-/** `［＃縦中横］text［＃縦中横終わり］` — 範囲指定型の縦中横。 */
-const TCY_RANGE = /［＃縦中横］([^［］\n]+)［＃縦中横終わり］$/;
 
 /**
  * `TypographySettingsExtension` の gateBySetting と同型だが、既定を **true**
@@ -57,7 +51,7 @@ function gateOn(rule: InputRule, settingKey: string): InputRule {
  */
 function tcyRule(): InputRule {
   return new InputRule({
-    find: TCY_RANGE,
+    find: AOZORA_TCY_RANGE_INPUT_RE,
     handler: ({ state, range, match }) => {
       const tcyType = state.schema.marks.tcy;
       const text = match[1];
@@ -95,18 +89,23 @@ export const AozoraInputRules = Extension.create({
     const emphasisType = this.editor.schema.marks.emphasisDots;
     const rules: InputRule[] = [
       // ｜付きを最優先 (自動ルビが ｜ を無視して先食いするのを防ぐ)
-      gateOn(rubyRule(PIPE_RUBY), "editor.aozoraInput"),
+      gateOn(rubyRule(AOZORA_PIPE_RUBY_INPUT_RE), "editor.aozoraInput"),
     ];
     // 《《…》》 を単一 《…》(自動ルビ) より先に判定する
     if (emphasisType) {
       rules.push(
         gateOn(
-          markInputRule({ find: EMPHASIS_DOTS, type: emphasisType }),
+          markInputRule({
+            find: AOZORA_EMPHASIS_DOTS_INPUT_RE,
+            type: emphasisType,
+          }),
           "editor.aozoraInput",
         ),
       );
     }
-    rules.push(gateOn(rubyRule(AUTO_RUBY), "editor.aozoraInput"));
+    rules.push(
+      gateOn(rubyRule(AOZORA_AUTO_RUBY_INPUT_RE), "editor.aozoraInput"),
+    );
     // 縦中横 (［＃縦中横］…［＃縦中横終わり］)。tcy マークが在るときだけ。
     if (this.editor.schema.marks.tcy) {
       rules.push(gateOn(tcyRule(), "editor.aozoraInput"));

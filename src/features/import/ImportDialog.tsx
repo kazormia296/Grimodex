@@ -9,6 +9,8 @@ import { KakuyomuImportFlow } from "./flows/KakuyomuImportFlow";
 import { MarkdownImportFlow } from "./flows/MarkdownImportFlow";
 import { NovelImportFlow } from "./flows/NovelImportFlow";
 import { ScanImportFlow } from "./flows/ScanImportFlow";
+import { ImportWizard } from "./wizard/ImportWizard";
+import { GenericImportWizardPreview } from "./wizard/generic/GenericImportWizardPreview";
 
 interface Props {
   open: boolean;
@@ -51,6 +53,8 @@ export function ImportDialogBody({
   const [flowKey, setFlowKey] = useState(0);
   const [flowBusy, setFlowBusy] = useState(false);
   const [flowFailed, setFlowFailed] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [genericWizardOpen, setGenericWizardOpen] = useState(false);
   const interactionLocked = flowBusy || flowFailed;
 
   const handleBusyChange = useCallback(
@@ -131,85 +135,122 @@ export function ImportDialogBody({
         {t("import.dialogTitleUnified")}
       </h2>
 
-      <div
-        className="flex shrink-0 flex-wrap gap-1"
-        role="tablist"
-        aria-label={t("import.sourceLabel")}
-      >
-        {SOURCES.map((s) => (
-          <button
-            key={s}
-            type="button"
-            role="tab"
-            aria-selected={source === s}
-            data-testid={`import-source-${s}`}
-            onClick={() => handleSourceChange(s)}
-            disabled={interactionLocked}
-            className={`rounded px-2 py-1 text-xs ${
-              source === s
-                ? "bg-primary text-primary-foreground"
-                : "bg-muted text-muted-foreground hover:bg-accent"
-            }`}
-          >
-            {sourceLabel(s)}
-          </button>
-        ))}
-      </div>
-
-      {source !== "scan" && (
-        <ImportTargetPanel
-          importTarget={importTarget}
-          onImportTargetChange={setImportTarget}
+      <div className="flex shrink-0 justify-end gap-2">
+        <button
+          type="button"
+          data-testid="import-wizard-entry"
           disabled={interactionLocked}
-        />
-      )}
-
-      <div
-        key={flowKey}
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
-      >
-        {source === "novelcrafter" && (
-          <NovelcrafterImportFlow
-            importTarget={importTarget}
-            onClose={handleClose}
-            onBusyChange={handleBusyChange}
-            onFailedChange={handleFailureChange}
-          />
-        )}
-        {source === "kakuyomu" && (
-          <KakuyomuImportFlow
-            importTarget={importTarget}
-            onClose={handleClose}
-            onBusyChange={handleBusyChange}
-            onFailedChange={handleFailureChange}
-          />
-        )}
-        {source === "markdown" && (
-          <MarkdownImportFlow
-            importTarget={importTarget}
-            markdownMode={markdownMode}
-            onMarkdownModeChange={setMarkdownMode}
-            onClose={handleClose}
-            onBusyChange={handleBusyChange}
-            onFailedChange={handleFailureChange}
-          />
-        )}
-        {source === "novel" && (
-          <NovelImportFlow
-            importTarget={importTarget}
-            onClose={handleClose}
-            onBusyChange={handleBusyChange}
-            onFailedChange={handleFailureChange}
-          />
-        )}
-        {source === "scan" && (
-          <ScanImportFlow
-            onClose={handleClose}
-            onComplete={handleImportComplete}
-            onBusyChange={handleBusyChange}
-          />
-        )}
+          onClick={() => setWizardOpen(true)}
+          className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        >
+          新インポート（プレビュー）
+        </button>
+        <button
+          type="button"
+          data-testid="import-generic-wizard-entry"
+          disabled={interactionLocked}
+          onClick={() => setGenericWizardOpen(true)}
+          className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+        >
+          Generic（プレビュー）
+        </button>
       </div>
+
+      {genericWizardOpen ? (
+        <GenericImportWizardPreview
+          onClose={() => {
+            setGenericWizardOpen(false);
+          }}
+        />
+      ) : wizardOpen ? (
+        <ImportWizard
+          onClose={() => {
+            setWizardOpen(false);
+          }}
+        />
+      ) : (
+        <>
+          <div
+            className="flex shrink-0 flex-wrap gap-1"
+            role="tablist"
+            aria-label={t("import.sourceLabel")}
+          >
+            {SOURCES.map((s) => (
+              <button
+                key={s}
+                type="button"
+                role="tab"
+                aria-selected={source === s}
+                data-testid={`import-source-${s}`}
+                onClick={() => handleSourceChange(s)}
+                disabled={interactionLocked}
+                className={`rounded px-2 py-1 text-xs ${
+                  source === s
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-muted text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                {sourceLabel(s)}
+              </button>
+            ))}
+          </div>
+
+          {source !== "scan" && (
+            <ImportTargetPanel
+              importTarget={importTarget}
+              onImportTargetChange={setImportTarget}
+              disabled={interactionLocked}
+            />
+          )}
+
+          <div
+            key={flowKey}
+            className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
+          >
+            {source === "novelcrafter" && (
+              <NovelcrafterImportFlow
+                importTarget={importTarget}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onFailedChange={handleFailureChange}
+              />
+            )}
+            {source === "kakuyomu" && (
+              <KakuyomuImportFlow
+                importTarget={importTarget}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onFailedChange={handleFailureChange}
+              />
+            )}
+            {source === "markdown" && (
+              <MarkdownImportFlow
+                importTarget={importTarget}
+                markdownMode={markdownMode}
+                onMarkdownModeChange={setMarkdownMode}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onFailedChange={handleFailureChange}
+              />
+            )}
+            {source === "novel" && (
+              <NovelImportFlow
+                importTarget={importTarget}
+                onClose={handleClose}
+                onBusyChange={handleBusyChange}
+                onFailedChange={handleFailureChange}
+              />
+            )}
+            {source === "scan" && (
+              <ScanImportFlow
+                onClose={handleClose}
+                onComplete={handleImportComplete}
+                onBusyChange={handleBusyChange}
+              />
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }

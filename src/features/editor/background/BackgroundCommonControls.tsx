@@ -10,6 +10,7 @@ import {
 } from "../zen/paperShaderCatalog";
 import { useZenShaderConfig } from "../zen/useZenShaderConfig";
 import { ZEN_BACKGROUND_DEFAULTS } from "../zen/zenBackgroundDefaults";
+import { ZEN_SHADER_RESOLUTION_MODES } from "../zen/zenShaderResolution";
 
 const percent = (value: number) => `${Math.round(value)}%`;
 const signedPercent = (value: number) => `${Math.round(value * 100)}%`;
@@ -29,6 +30,10 @@ export function BackgroundCommonControls() {
   const speedModeOptions = ["slow", "fast"].map((mode) => ({
     value: mode,
     label: t(`settings.editor.zenSpeedMode_${mode}`),
+  }));
+  const resolutionModeOptions = ZEN_SHADER_RESOLUTION_MODES.map((mode) => ({
+    value: mode,
+    label: t(`settings.editor.zenResolutionMode_${mode}`),
   }));
 
   return (
@@ -56,6 +61,16 @@ export function BackgroundCommonControls() {
           max={100}
           defaultValue={ZEN_BACKGROUND_DEFAULTS.opacity}
           format={percent}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t("settings.editor.zenResolutionMode")}
+        description={t("settings.editor.zenResolutionModeDesc")}
+      >
+        <SettingDropdown
+          settingKey="editor.zenBackground.resolutionMode"
+          options={resolutionModeOptions}
+          defaultValue={ZEN_BACKGROUND_DEFAULTS.resolutionMode}
         />
       </SettingRow>
       <SettingRow

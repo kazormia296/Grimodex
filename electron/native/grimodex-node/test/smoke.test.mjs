@@ -59,10 +59,13 @@ test("workspace 未オープンの dbExecute は 'No workspace is open' マー�
   // §5.2 エラー文字列契約: napi reason = AppError の Display がそのまま
   // JS Error.message に載る (FE は部分一致判定)。WORKSPACE_SWITCHING 側の
   // 同一写像は Rust 単体 (convert.rs) で gate 済み。
-  await assert.rejects(backend.dbExecute("SELECT 1 AS one", [], "get"), (err) => {
-    assert.match(String(err.message), /No workspace is open/);
-    return true;
-  });
+  await assert.rejects(
+    backend.dbExecute("SELECT 1 AS one", [], "get"),
+    (err) => {
+      assert.match(String(err.message), /No workspace is open/);
+      return true;
+    },
+  );
 });
 
 test("onEvent が登録前 emit の backend:ready を受信する (バッファ flush)", async () => {
@@ -76,13 +79,16 @@ test("onEvent が登録前 emit の backend:ready を受信する (バッファ 
 
 test("openWorkspace が新規 workspace を scaffold + migrate し workspace:opened を emit する", async () => {
   const result = JSON.parse(await backend.openWorkspace(wsDir));
-  assert.equal(result.isExisting, false);
-  assert.equal(result.name, basename(wsDir));
-  assert.match(result.workspaceId, /^[0-9a-f-]{36}$/);
+  assert.equal(result.status, "ready");
+  assert.equal(result.workspace.isExisting, false);
+  assert.equal(result.workspace.name, basename(wsDir));
+  assert.match(result.workspace.workspaceId, /^[0-9a-f-]{36}$/);
 
   // migrate 済み: user_version が backend:ready の schemaVersion
   // (= grimodex_core::SCHEMA_VERSION) と一致する。
-  const ready = JSON.parse(events.find((e) => e.channel === "backend:ready").payload);
+  const ready = JSON.parse(
+    events.find((e) => e.channel === "backend:ready").payload,
+  );
   const [{ user_version }] = await exec("PRAGMA user_version", [], "get");
   assert.equal(user_version, ready.schemaVersion);
 
@@ -103,13 +109,40 @@ test("openWorkspace が新規 workspace を scaffold + migrate し workspace:ope
   assert.equal(backend.validateWorkspacePath(join(root, "no-such-ws")), false);
 });
 
-test("dbExecute の INSERT/SELECT roundtrip (パラメータ変換 + null + 日本語)", async () => {
-  await exec(
-    "INSERT INTO projects (id, title, language) VALUES (?, ?, ?)",
-    ["p1", "スモーク作品", "ja"],
-    "run",
+test("projectCreate + dbExecute SELECT roundtrip (パラメータ変換 + null + 日本語)", async () => {
+  const createdAt = "2026-08-13T00:00:00.000Z";
+  const created = JSON.parse(
+    await backend.projectCreate({
+      requestId: "smoke-project-create-p1",
+      projectId: "p1",
+      sessionId: "smoke-session",
+      eventUid: "smoke-project-create-event-p1",
+      origin: "human",
+      originalTransactionId: null,
+      undoJournalId: null,
+      title: "スモーク作品",
+      genre: null,
+      pov: null,
+      tense: null,
+      language: "ja",
+      styleGuide: null,
+      aiInstructions: null,
+      outline: null,
+      targetReaders: null,
+      createdAt,
+      updatedAt: createdAt,
+    }),
   );
-  const rows = await exec("SELECT id, title, genre FROM projects WHERE id = ?", ["p1"], "all");
+  assert.equal(created.__writeReceipt.undoJournalId, null);
+  assert.equal(
+    typeof created.__writeReceipt.maintenanceTransactionId,
+    "string",
+  );
+  const rows = await exec(
+    "SELECT id, title, genre FROM projects WHERE id = ?",
+    ["p1"],
+    "all",
+  );
   assert.deepEqual(rows, [{ id: "p1", title: "スモーク作品", genre: null }]);
 });
 
@@ -241,7 +274,7 @@ test("timelapseAppendBatch が監査チェーンへ append し冪等再送をス
     ]),
   );
   assert.equal(first.insertedCount, 2);
-  assert.equal(first.tailSequence, 2);
+  assert.equal(first.tailSequence, 3);
   assert.match(first.tailHash, /^[0-9a-f]{64}$/);
 
   // 冪等再送 (コミット済み batch の再送) は 1 行も増えない。
@@ -249,7 +282,7 @@ test("timelapseAppendBatch が監査チェーンへ append し冪等再送をス
     await backend.timelapseAppendBatch("p1", "session-1", [makeEvent("uid-1")]),
   );
   assert.equal(resend.insertedCount, 0);
-  assert.equal(resend.tailSequence, 2);
+  assert.equal(resend.tailSequence, 3);
 });
 
 test("getGlobalSettings / saveGlobalSettings の roundtrip と recent-workspaces 反映", async () => {
@@ -272,27 +305,43 @@ test("getGlobalSettings / saveGlobalSettings の roundtrip と recent-workspaces
 
 test("再オープンで isExisting=true になり書き込み内容が永続している (A2 の核)", async () => {
   const reopened = JSON.parse(await backend.openWorkspace(wsDir));
-  assert.equal(reopened.isExisting, true);
+  assert.equal(reopened.status, "ready");
+  assert.equal(reopened.workspace.isExisting, true);
   const workspaceMeta = JSON.parse(
     readFileSync(join(wsDir, ".grimodex", "workspace.json"), "utf8"),
   );
-  assert.equal(reopened.workspaceId, workspaceMeta.id);
-  const [{ title }] = await exec("SELECT title FROM projects WHERE id = ?", ["p1"], "get");
+  assert.equal(reopened.workspace.workspaceId, workspaceMeta.id);
+  const [{ title }] = await exec(
+    "SELECT title FROM projects WHERE id = ?",
+    ["p1"],
+    "get",
+  );
   assert.equal(title, "スモーク作品");
 });
 
 test(
   "Tauri 側 cargo ビルドで作った既存 workspace を openWorkspace で開ける (A3 前倒し)",
-  { skip: !process.env.GRIMODEX_TAURI_WS_FIXTURE && "GRIMODEX_TAURI_WS_FIXTURE 未設定" },
+  {
+    skip:
+      !process.env.GRIMODEX_TAURI_WS_FIXTURE &&
+      "GRIMODEX_TAURI_WS_FIXTURE 未設定",
+  },
   async () => {
     const fixture = process.env.GRIMODEX_TAURI_WS_FIXTURE;
     assert.equal(backend.validateWorkspacePath(fixture), true);
     const result = JSON.parse(await backend.openWorkspace(fixture));
-    assert.equal(result.isExisting, true, "既存 workspace として認識される");
+    assert.equal(result.status, "ready");
+    assert.equal(
+      result.workspace.isExisting,
+      true,
+      "既存 workspace として認識される",
+    );
 
     // 同一スキーマ・同一 migrate 経路: user_version が一致し、Tauri 側で
     // 書いた行が読める。
-    const ready = JSON.parse(events.find((e) => e.channel === "backend:ready").payload);
+    const ready = JSON.parse(
+      events.find((e) => e.channel === "backend:ready").payload,
+    );
     const [{ user_version }] = await exec("PRAGMA user_version", [], "get");
     assert.equal(user_version, ready.schemaVersion);
     const rows = await exec("SELECT id, title FROM projects", [], "all");

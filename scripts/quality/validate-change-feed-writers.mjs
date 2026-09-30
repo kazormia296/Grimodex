@@ -1,0 +1,1331 @@
+#!/usr/bin/env node
+/**
+ * Validate the Gate C1 operation-level Narrative Change Feed inventory.
+ *
+ * This gate intentionally separates table ownership (`protected-writers.json`)
+ * from operation coverage. During the C1 restack, required routes may remain
+ * `declared`; `--require-runtime-coverage` is the later cutover switch that
+ * requires every required/delegated operation to be `verified`.
+ * `verified` requires a runtimeEvidence bundle that names the commands and
+ * regression files used to exercise the Native/browser contract. The bundle
+ * is evidence of the declared contract, not a claim that this static
+ * validator proved runtime atomicity by itself.
+ */
+
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+const MANIFEST_PATH = path.join(
+  REPO_ROOT,
+  "policies/narrative/change-feed-writers.json",
+);
+const REGISTRY_PATH = path.join(
+  REPO_ROOT,
+  "policies/narrative/protected-writers.json",
+);
+
+const FEED_POLICIES = new Set(["required", "delegated", "excluded"]);
+const COVERAGE_STATUSES = new Set(["declared", "implemented", "verified"]);
+const SCOPES = new Set([
+  "project",
+  "workspace",
+  "database",
+  "migration",
+  "test",
+]);
+const SURFACES = new Set(["electron-ipc", "napi", "mcp-tool", "internal"]);
+const CANONICAL_ORIGINS = new Set([
+  "renderer",
+  "agent",
+  "mcp",
+  "narrative",
+  "native",
+]);
+const EXCLUSION_REASONS = new Set([
+  "authority-metadata",
+  "bootstrap",
+  "control-plane",
+  "database-image-replacement",
+  "derived-state",
+  "feed-self-write",
+  "migration",
+  "non-backflow-invariant",
+  "project-deletion",
+  "snapshot-capture",
+  "staging-only",
+  "test-fixture",
+  "untrusted-generic-sql",
+  "workspace-import",
+]);
+const VISIBILITIES = new Set(["visible", "hidden"]);
+const CANONICALITIES = new Set(["canonical", "noncanonical"]);
+const CANONICAL_BIRTHS = Object.freeze([
+  { operationId: "project.create.renderer", opType: "project.create" },
+  {
+    operationId: "import.session.apply.internal",
+    opType: "import.session.apply",
+  },
+  { operationId: "scan.import.publish", opType: "scan.import.publish" },
+]);
+const SCAN_STAGING_OPERATION_ID = "scan.staging-project.create";
+const SCAN_PUBLISH_OPERATION_ID = "scan.import.publish";
+const SCAN_PUBLISH_ROUTE = "scan_staging_project_publish";
+const SHARED_RUST_WRITER_MODULE =
+  "src-tauri/crates/grimodex-db/src/domain_writes.rs";
+const SCAN_IMPORT_OPERATIONS_MODULE =
+  "src/features/import/scan/scanImportOperations.ts";
+const SCAN_STAGING_PROJECT_MODULE =
+  "src/features/import/scan/scanStagingProject.ts";
+
+// Gate C2 lets each Wave lane own one operation-fragment file instead of
+// editing the single root manifest, so parallel lanes stop colliding on the
+// same JSON document. A fragment operation only ever lands with
+// coverageStatus "verified": there is no interim "declared" state for C2
+// operations on master, because the command, its N-API/Electron pair, and
+// its BrowserMock parity are supposed to land together at Transport
+// Assembly (C2-T1/T2).
+const OPERATION_FRAGMENT_GLOB_SUFFIX = "/*.json";
+
+function expandOperationFragmentGlob(repoRoot, pattern, errors) {
+  if (!pattern.endsWith(OPERATION_FRAGMENT_GLOB_SUFFIX)) {
+    errors.push(
+      `operationFragments pattern must end with '/*.json': ${pattern}`,
+    );
+    return [];
+  }
+  const relativeDir = pattern.slice(0, -OPERATION_FRAGMENT_GLOB_SUFFIX.length);
+  const dir = safeRepoPath(
+    repoRoot,
+    relativeDir,
+    `operationFragments pattern '${pattern}'`,
+    errors,
+  );
+  if (!dir || !existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .map((name) => path.join(dir, name));
+}
+
+function loadOperationFragments(repoRoot, manifest, errors) {
+  const patterns = manifest.operationFragments;
+  if (patterns === undefined) return [];
+  if (!Array.isArray(patterns) || patterns.some((p) => !nonEmptyString(p))) {
+    errors.push(
+      "operationFragments must be an array of non-empty glob strings",
+    );
+    return [];
+  }
+  const fragmentOperations = [];
+  for (const pattern of patterns) {
+    for (const filePath of expandOperationFragmentGlob(
+      repoRoot,
+      pattern,
+      errors,
+    )) {
+      const relativePath = path.relative(repoRoot, filePath);
+      const fragment = readJson(
+        filePath,
+        `change feed operation fragment ${relativePath}`,
+        errors,
+      );
+      if (!fragment) continue;
+      if (fragment.schemaVersion !== 1) {
+        errors.push(`${relativePath} schemaVersion must be 1`);
+        continue;
+      }
+      if (!nonEmptyString(fragment.owner)) {
+        errors.push(`${relativePath} must declare a non-empty owner`);
+        continue;
+      }
+      if (!Array.isArray(fragment.operations)) {
+        errors.push(`${relativePath} operations must be an array`);
+        continue;
+      }
+      for (const operation of fragment.operations) {
+        if (
+          isObject(operation) &&
+          operation.coverageStatus !== "verified"
+        ) {
+          errors.push(
+            `${relativePath} operation ${operation.id ?? "?"} must have coverageStatus verified; fragment operations only land with full Transport Assembly evidence, never as 'declared'`,
+          );
+        }
+        fragmentOperations.push(operation);
+      }
+    }
+  }
+  return fragmentOperations;
+}
+const TRANSACTION_IDENTITIES = [
+  "projectId",
+  "requestId",
+  "sessionId",
+  "transactionId",
+];
+
+function pairedElectronRoutes(names) {
+  return names.flatMap((name) => [
+    { surface: "electron-ipc", name },
+    { surface: "napi", name },
+  ]);
+}
+
+const ELECTRON_MUTATING_ROUTES = [
+  "db_execute",
+  "db_execute_batch",
+  "restore_backup",
+  "restore_recovery_candidate",
+  "project_create",
+  "project_patch",
+  "project_delete",
+  "import_web_editor_workspace",
+  "narrative_runtime_policy_set",
+  "project_snapshot_create",
+  "seed_sample_workspace",
+  "runtime_performance_seed",
+  "authorship_replace_lane",
+  "scan_staging_project_create",
+  "scan_staging_project_publish",
+  "trash_bin_create",
+  "trash_bin_delete",
+  "trash_bin_clear_all",
+  "trash_bin_prune",
+  "repair_integrity",
+  "event_set_participants",
+  "project_calendar_upsert",
+  "entity_tags_set",
+  "codex_rename_undo",
+  "codex_rename_apply",
+  "ai_tree_plan_apply",
+  "ai_tree_plan_undo",
+  "tree_node_create",
+  "tree_node_delete",
+  "tree_node_patch",
+  "temporal_scene_patch",
+  "map_write_bundle",
+  "project_snapshot_apply_restore",
+  "revision_scene_restore",
+  "trash_bin_restore",
+  "save_scene_body_bundle",
+  "plot_thread_create",
+  "plot_thread_update",
+  "plot_thread_delete",
+  "plot_thread_link_create",
+  "plot_thread_link_update",
+  "plot_thread_link_delete",
+  "plot_thread_branch_create",
+  "plot_thread_branch_update",
+  "plot_thread_branch_delete",
+  "plot_thread_move_marker_bundle",
+  "plot_thread_restore_snapshot",
+  "plot_thread_delete_snapshot",
+  "foreshadow_create",
+  "foreshadow_update",
+  "foreshadow_delete",
+  "foreshadow_update_setup",
+  "foreshadow_link_codex",
+  "foreshadow_unlink_codex",
+  "foreshadow_set_setup_strength",
+  "foreshadow_setup_create_ai",
+  "foreshadow_resolve_orphan",
+  "foreshadow_save_anchors_for_scene",
+  "agent_codex_create",
+  "agent_codex_update",
+  "agent_codex_delete",
+  "agent_codex_mutate",
+  "codex_create",
+  "codex_update",
+  "codex_delete",
+  "codex_mutate",
+  "agent_snippet_create",
+  "snippet_create",
+  "snippet_update",
+  "snippet_delete",
+  "agent_write_bundle",
+  "agent_propose_scene_body",
+  "agent_accept_prose_stage",
+  "agent_discard_prose_stage",
+  "agent_apply_undo_journal",
+  "agent_foreshadow_create",
+  "agent_foreshadow_update",
+  "agent_event_create",
+  "agent_event_update",
+  "agent_event_delete",
+  "agent_chronicle_bulk_mutate",
+  "agent_event_set_participants",
+  "agent_scene_event_link",
+  "agent_scene_event_link_batch",
+  "agent_scene_event_unlink",
+  "agent_event_relation_add",
+  "agent_event_relation_remove",
+  "event_create",
+  "event_update",
+  "event_delete",
+  "chronicle_bulk_mutate",
+  "event_participants_set",
+  "scene_event_link",
+  "scene_event_link_batch",
+  "scene_event_unlink",
+  "event_relation_add",
+  "event_relation_remove",
+  "narrative_extraction_create_run",
+  "narrative_extraction_cancel_run",
+  "narrative_extraction_claim_task",
+  "narrative_extraction_finish_task",
+  "narrative_extraction_fail_task",
+  "narrative_extraction_save_proposal_set",
+  "narrative_extraction_append_revision",
+  "narrative_extraction_create_human_derived_revision",
+  "narrative_extraction_append_decision",
+  "narrative_extraction_append_human_decision",
+  "narrative_extraction_revise_and_decide",
+  "narrative_extraction_revise_and_decide_as_human",
+  "narrative_extraction_set_human_field_lock",
+  "narrative_extraction_prepare_commit",
+  "narrative_extraction_apply_commit",
+  "narrative_extraction_undo_commit",
+  "narrative_extraction_redo_commit",
+];
+
+const REQUIRED_RENDERER_AUTHORITY_COMMANDS = new Set([
+  "codex_create",
+  "codex_update",
+  "codex_delete",
+  "codex_mutate",
+  "event_create",
+  "event_update",
+  "event_delete",
+  "chronicle_bulk_mutate",
+  "event_participants_set",
+  "scene_event_link",
+  "scene_event_link_batch",
+  "scene_event_unlink",
+  "event_relation_add",
+  "event_relation_remove",
+]);
+
+const MCP_MUTATING_ROUTES = [
+  "create_foreshadow",
+  "update_foreshadow",
+  "create_codex_entry",
+  "update_codex_entry",
+  "create_snippet",
+  "create_event",
+  "update_event",
+  "delete_event",
+  "stamp_scene_event",
+  "unstamp_scene_event",
+  "set_event_participants",
+  "add_event_relation",
+  "remove_event_relation",
+];
+
+const MATRIX_CAUSES = new Set(["forward", "undo", "redo"]);
+const MATRIX_TEXT_IMPACTS = new Set([
+  "required",
+  "required-when-anchor",
+  "optional",
+  "none",
+]);
+const MATRIX_ADDRESSING = new Set(["independent-key", "aggregate-path"]);
+
+export const KNOWN_CHANGE_FEED_ROUTES = Object.freeze([
+  ...pairedElectronRoutes(ELECTRON_MUTATING_ROUTES),
+  ...MCP_MUTATING_ROUTES.map((name) => ({ surface: "mcp-tool", name })),
+  { surface: "internal", name: "apply_commit" },
+]);
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isCanonicalChangedPath(value) {
+  if (!nonEmptyString(value) || value.trim() !== value || !value.startsWith("/")) {
+    return false;
+  }
+  if (value === "/") return true;
+  const segments = value.slice(1).split("/");
+  return segments.every((segment) => {
+    for (let index = 0; index < segment.length; index += 1) {
+      if (segment[index] !== "~") continue;
+      if (segment[index + 1] !== "0" && segment[index + 1] !== "1") return false;
+      index += 1;
+    }
+    return true;
+  });
+}
+
+function safeRepoPath(repoRoot, relativePath, label, errors) {
+  if (!nonEmptyString(relativePath)) {
+    errors.push(`${label} must be a non-empty repository-relative path`);
+    return null;
+  }
+  if (
+    path.isAbsolute(relativePath) ||
+    relativePath.split(/[\\/]/).includes("..")
+  ) {
+    errors.push(`${label} must stay inside the repository: ${relativePath}`);
+    return null;
+  }
+  const resolved = path.resolve(repoRoot, relativePath);
+  const relative = path.relative(repoRoot, resolved);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    errors.push(`${label} escapes the repository: ${relativePath}`);
+    return null;
+  }
+  return resolved;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function sourceContainsSymbol(source, symbol) {
+  return new RegExp(`\\bfn\\s+${escapeRegExp(symbol)}\\b`).test(source);
+}
+
+function sourceContainsRoute(source, route) {
+  return new RegExp(`\\b${escapeRegExp(route)}\\b`).test(source);
+}
+
+function validateOperationClassification(operation, errors) {
+  const label = `operation ${operation.id}`;
+  if (
+    operation.visibility !== undefined &&
+    !VISIBILITIES.has(operation.visibility)
+  ) {
+    errors.push(`${label} visibility is invalid: ${operation.visibility}`);
+  }
+  if (
+    operation.canonicality !== undefined &&
+    !CANONICALITIES.has(operation.canonicality)
+  ) {
+    errors.push(`${label} canonicality is invalid: ${operation.canonicality}`);
+  }
+
+  if (operation.id === SCAN_STAGING_OPERATION_ID) {
+    if (operation.visibility !== "hidden") {
+      errors.push(`${operation.id} must be hidden`);
+    }
+    if (operation.canonicality !== "noncanonical") {
+      errors.push(`${operation.id} must be noncanonical`);
+    }
+    if (operation.feedPolicy !== "excluded") {
+      errors.push(
+        `${operation.id} must remain excluded from the canonical feed`,
+      );
+    }
+    if (operation.exclusionReason !== "staging-only") {
+      errors.push(`${operation.id} must use the staging-only exclusion reason`);
+    }
+    if (operation.canonical !== null) {
+      errors.push(`${operation.id} canonical must remain null`);
+    }
+  }
+
+  if (operation.id === SCAN_PUBLISH_OPERATION_ID) {
+    if (operation.visibility !== "visible") {
+      errors.push(`${operation.id} must be visible`);
+    }
+    if (operation.canonicality !== "canonical") {
+      errors.push(`${operation.id} must be canonical`);
+    }
+    if (operation.feedPolicy !== "required") {
+      errors.push(`${operation.id} must be required by the canonical feed`);
+    }
+    if (operation.canonical?.opType !== SCAN_PUBLISH_OPERATION_ID) {
+      errors.push(
+        `${operation.id} canonical.opType must be ${SCAN_PUBLISH_OPERATION_ID}`,
+      );
+    }
+    if (operation.implementation?.module !== SHARED_RUST_WRITER_MODULE) {
+      errors.push(
+        `${operation.id} must be owned by shared Rust module ${SHARED_RUST_WRITER_MODULE}`,
+      );
+    }
+    for (const surface of ["electron-ipc", "napi"]) {
+      if (
+        !operation.routes?.some(
+          (route) =>
+            route?.surface === surface && route.name === SCAN_PUBLISH_ROUTE,
+        )
+      ) {
+        errors.push(
+          `${operation.id} must declare ${surface}:${SCAN_PUBLISH_ROUTE}`,
+        );
+      }
+    }
+  }
+}
+
+function validateCanonicalBirthInventory(manifest, operations, errors) {
+  const hasProductionBirthOperation = operations.some((operation) =>
+    CANONICAL_BIRTHS.some((birth) => birth.operationId === operation?.id),
+  );
+  const hasScanStagingOperation = operations.some(
+    (operation) => operation?.id === SCAN_STAGING_OPERATION_ID,
+  );
+  if (!hasProductionBirthOperation && !hasScanStagingOperation) return;
+
+  if (!Array.isArray(manifest.canonicalBirths)) {
+    errors.push(
+      "change feed writer manifest canonicalBirths must enumerate project.create, import.session.apply, and scan.import.publish",
+    );
+    return;
+  }
+  if (manifest.canonicalBirths.length !== CANONICAL_BIRTHS.length) {
+    errors.push(
+      `change feed writer manifest canonicalBirths must contain exactly ${CANONICAL_BIRTHS.length} entries`,
+    );
+  }
+
+  const operationIds = new Set(operations.map((operation) => operation?.id));
+  const declaredIds = new Set();
+  for (const [index, birth] of manifest.canonicalBirths.entries()) {
+    const label = `canonicalBirths[${index}]`;
+    if (!isObject(birth) || !nonEmptyString(birth.operationId)) {
+      errors.push(`${label} must declare an operationId`);
+      continue;
+    }
+    if (!nonEmptyString(birth.opType)) {
+      errors.push(`${label}.opType must be non-empty`);
+    }
+    if (declaredIds.has(birth.operationId)) {
+      errors.push(`${label} duplicates operationId ${birth.operationId}`);
+    }
+    declaredIds.add(birth.operationId);
+    if (!operationIds.has(birth.operationId)) {
+      errors.push(
+        `${label} references missing canonical birth operation ${birth.operationId}`,
+      );
+    }
+  }
+
+  for (const expected of CANONICAL_BIRTHS) {
+    const declared = manifest.canonicalBirths.find(
+      (birth) => birth?.operationId === expected.operationId,
+    );
+    if (!declared) {
+      errors.push(
+        `canonicalBirths is missing ${expected.operationId} (${expected.opType})`,
+      );
+      continue;
+    }
+    if (declared.opType !== expected.opType) {
+      errors.push(
+        `canonicalBirths ${expected.operationId} must use opType ${expected.opType}`,
+      );
+    }
+    const operation = operations.find(
+      (candidate) => candidate?.id === expected.operationId,
+    );
+    if (!operation) continue;
+    if (operation.feedPolicy === "excluded") {
+      errors.push(
+        `canonical birth ${expected.operationId} cannot be feedPolicy excluded`,
+      );
+    }
+    if (operation.canonical?.opType !== expected.opType) {
+      errors.push(
+        `canonical birth ${expected.operationId} must declare canonical.opType ${expected.opType}`,
+      );
+    }
+  }
+}
+
+function validateRendererScanPublishContract(repoRoot, errors, sourceCache) {
+  const absolute = safeRepoPath(
+    repoRoot,
+    SCAN_IMPORT_OPERATIONS_MODULE,
+    "scan.import.publish renderer contract",
+    errors,
+  );
+  if (!absolute || !existsSync(absolute)) {
+    if (absolute) {
+      errors.push(
+        `scan.import.publish renderer contract module does not exist: ${SCAN_IMPORT_OPERATIONS_MODULE}`,
+      );
+    }
+    return;
+  }
+  let source = sourceCache.get(absolute);
+  if (source === undefined) {
+    source = readFileSync(absolute, "utf8");
+    sourceCache.set(absolute, source);
+  }
+  const start = source.indexOf("async publishStagingProject");
+  const end = source.indexOf("async discardStagingProject", start);
+  if (start < 0 || end <= start) {
+    errors.push(
+      "scan.import.publish renderer contract must expose publishStagingProject",
+    );
+    return;
+  }
+  const publishBody = source.slice(start, end);
+  if (
+    /deleteProjectSetting\(\s*projectId\s*,\s*SCAN_IMPORT_STATE_KEY\s*\)/.test(
+      publishBody,
+    )
+  ) {
+    errors.push(
+      "scan.import.publish renderer contract must not delete SCAN_IMPORT_STATE_KEY generically",
+    );
+  }
+  const delegatesToPublishHelper = /\bpublishScanStagingProject\s*\(/.test(
+    publishBody,
+  );
+  if (sourceContainsRoute(publishBody, SCAN_PUBLISH_ROUTE)) return;
+  if (!delegatesToPublishHelper) {
+    errors.push(
+      `scan.import.publish renderer contract must call ${SCAN_PUBLISH_ROUTE} or delegate to publishScanStagingProject`,
+    );
+    return;
+  }
+
+  const helperAbsolute = safeRepoPath(
+    repoRoot,
+    SCAN_STAGING_PROJECT_MODULE,
+    "scan.import.publish renderer publish helper",
+    errors,
+  );
+  if (!helperAbsolute || !existsSync(helperAbsolute)) {
+    if (helperAbsolute) {
+      errors.push(
+        `scan.import.publish renderer publish helper module does not exist: ${SCAN_STAGING_PROJECT_MODULE}`,
+      );
+    }
+    return;
+  }
+  let helperSource = sourceCache.get(helperAbsolute);
+  if (helperSource === undefined) {
+    helperSource = readFileSync(helperAbsolute, "utf8");
+    sourceCache.set(helperAbsolute, helperSource);
+  }
+  if (!sourceContainsRoute(helperSource, SCAN_PUBLISH_ROUTE)) {
+    errors.push(
+      `scan.import.publish renderer publish helper must call ${SCAN_PUBLISH_ROUTE}`,
+    );
+  }
+}
+
+function readJson(filePath, label, errors) {
+  if (!existsSync(filePath)) {
+    errors.push(`${label} does not exist: ${filePath}`);
+    return null;
+  }
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (error) {
+    errors.push(`${label} is not valid JSON: ${error.message}`);
+    return null;
+  }
+}
+
+function validateImplementation(operation, repoRoot, errors, sourceCache) {
+  const label = `operation ${operation.id}`;
+  if (!isObject(operation.implementation)) {
+    errors.push(`${label} implementation must be an object`);
+    return;
+  }
+  const { module, symbol } = operation.implementation;
+  const absolute = safeRepoPath(
+    repoRoot,
+    module,
+    `${label} implementation.module`,
+    errors,
+  );
+  if (!nonEmptyString(symbol)) {
+    errors.push(`${label} implementation.symbol must be non-empty`);
+    return;
+  }
+  if (!absolute || !existsSync(absolute)) {
+    if (absolute)
+      errors.push(`${label} implementation module does not exist: ${module}`);
+    return;
+  }
+  let source = sourceCache.get(absolute);
+  if (source === undefined) {
+    source = readFileSync(absolute, "utf8");
+    sourceCache.set(absolute, source);
+  }
+  if (!sourceContainsSymbol(source, symbol)) {
+    errors.push(
+      `${label} implementation symbol ${symbol} is missing from ${module}`,
+    );
+  }
+}
+
+function validateRoutes(operation, repoRoot, errors, routeOwners, sourceCache) {
+  const label = `operation ${operation.id}`;
+  if (!Array.isArray(operation.routes)) {
+    errors.push(`${label} routes must be an array`);
+    return [];
+  }
+  const routes = [];
+  for (const [index, route] of operation.routes.entries()) {
+    const routeLabel = `${label} routes[${index}]`;
+    if (!isObject(route)) {
+      errors.push(`${routeLabel} must be an object`);
+      continue;
+    }
+    if (!SURFACES.has(route.surface)) {
+      errors.push(`${routeLabel}.surface is invalid: ${route.surface}`);
+      continue;
+    }
+    if (!nonEmptyString(route.name)) {
+      errors.push(`${routeLabel}.name must be non-empty`);
+      continue;
+    }
+    const key = `${route.surface}:${route.name}`;
+    if (routeOwners.has(key)) {
+      errors.push(
+        `duplicate route ${key} in operations ${routeOwners.get(key)} and ${operation.id}`,
+      );
+    } else {
+      routeOwners.set(key, operation.id);
+    }
+    routes.push({ surface: route.surface, name: route.name });
+
+    const absolute = safeRepoPath(
+      repoRoot,
+      route.module,
+      `${routeLabel}.module`,
+      errors,
+    );
+    if (!absolute || !existsSync(absolute)) {
+      if (absolute)
+        errors.push(`${routeLabel} module does not exist: ${route.module}`);
+      continue;
+    }
+    let source = sourceCache.get(absolute);
+    if (source === undefined) {
+      source = readFileSync(absolute, "utf8");
+      sourceCache.set(absolute, source);
+    }
+    if (!sourceContainsRoute(source, route.name)) {
+      errors.push(
+        `${routeLabel} name ${route.name} is missing from ${route.module}`,
+      );
+    }
+  }
+
+  const ipcNames = new Set(
+    routes
+      .filter((route) => route.surface === "electron-ipc")
+      .map((route) => route.name),
+  );
+  const napiNames = new Set(
+    routes
+      .filter((route) => route.surface === "napi")
+      .map((route) => route.name),
+  );
+  for (const name of ipcNames) {
+    if (!napiNames.has(name)) {
+      errors.push(
+        `${label} Electron IPC route ${name} has no paired N-API route`,
+      );
+    }
+  }
+  for (const name of napiNames) {
+    if (!ipcNames.has(name)) {
+      errors.push(
+        `${label} N-API route ${name} has no paired Electron IPC route`,
+      );
+    }
+  }
+  return routes;
+}
+
+function validateRendererAuthorityParity(
+  manifest,
+  operation,
+  repoRoot,
+  errors,
+  sourceCache,
+) {
+  if (
+    !operation.id.endsWith(".renderer") ||
+    operation.canonical?.origin !== "renderer"
+  ) {
+    return;
+  }
+  const label = `operation ${operation.id}`;
+  const mainPath = path.join(repoRoot, "electron/main/ipc.ts");
+  if (!existsSync(mainPath)) return;
+  let mainSource = sourceCache.get(mainPath);
+  if (mainSource === undefined) {
+    mainSource = readFileSync(mainPath, "utf8");
+    sourceCache.set(mainPath, mainSource);
+  }
+  const ipcCommands = (operation.routes ?? [])
+    .filter((route) => route?.surface === "electron-ipc")
+    .map((route) => route.name)
+    .filter(nonEmptyString);
+  if (!ipcCommands.some((command) => REQUIRED_RENDERER_AUTHORITY_COMMANDS.has(command))) {
+    return;
+  }
+  if (ipcCommands.length === 0) {
+    errors.push(`${label} must declare an Electron IPC renderer command`);
+    return;
+  }
+
+  const commandSets = ["CODEX_RENDERER_COMMANDS", "RENDERER_CHRONICLE_COMMANDS"];
+  for (const command of ipcCommands) {
+    const declaredInMain = commandSets.some((setName) => {
+      const setBlock = mainSource.match(
+        new RegExp(
+          `const\\s+${setName}\\s*=\\s*new\\s+Set\\(\\[([\\s\\S]*?)\\]\\);`,
+        ),
+      );
+      return Boolean(
+        setBlock?.[1] &&
+          new RegExp(`\\"${escapeRegExp(command)}\\"`).test(setBlock[1]) &&
+          mainSource.includes(`${setName}.has(cmd)`),
+      );
+    });
+    if (!declaredInMain) {
+      errors.push(
+        `${label} renderer command ${command} is missing from Main authority route sets`,
+      );
+    }
+  }
+
+  const rendererBranch = mainSource.match(
+    /if \(\s*CODEX_RENDERER_COMMANDS\.has\(cmd\)[\s\S]*?return authorityRouteFor(?:Unambiguous)?Origin\(payload\.origin,\s*\[([\s\S]*?)\]\)/,
+  )?.[1];
+  const mainRoutes = new Set(
+    rendererBranch?.match(/"([a-z-]+)"/g)?.map((value) => value.slice(1, -1)) ?? [],
+  );
+  for (const variant of operation.authorityVariants ?? []) {
+    if (!mainRoutes.has(variant?.authorityRoute)) {
+      errors.push(
+        `${label} authority variant ${variant?.authorityRoute} is not present in Main renderer route binding`,
+      );
+    }
+  }
+
+  const evidence = isObject(operation.runtimeEvidence)
+    ? operation.runtimeEvidence
+    : manifest.runtimeEvidence;
+  const evidenceCommands = new Set(
+    Array.isArray(evidence?.commands) ? evidence.commands : [],
+  );
+  const evidenceTests = new Set(
+    Array.isArray(evidence?.testFiles) ? evidence.testFiles : [],
+  );
+  if (!evidenceCommands.has("pnpm electron:product-journeys")) {
+    errors.push(
+      `${label} runtime evidence must include the positive Electron product journey command`,
+    );
+  }
+  if (!evidenceTests.has("scripts/electron-product-journeys.test.mjs")) {
+    errors.push(
+      `${label} runtime evidence must include the product journey positive test`,
+    );
+  }
+}
+
+function validateWriterMatrix(manifest, errors) {
+  if (!Array.isArray(manifest.writerMatrix) || manifest.writerMatrix.length === 0) {
+    errors.push("change feed writer manifest writerMatrix must be a non-empty array");
+    return;
+  }
+  const writers = new Set();
+  for (const [index, row] of manifest.writerMatrix.entries()) {
+    const label = `writerMatrix[${index}]`;
+    if (!isObject(row)) {
+      errors.push(`${label} must be an object`);
+      continue;
+    }
+    for (const field of ["writer", "objectKey"]) {
+      if (!nonEmptyString(row[field])) {
+        errors.push(`${label}.${field} must be non-empty`);
+      }
+    }
+    if (!MATRIX_ADDRESSING.has(row.addressing)) {
+      errors.push(
+        `${label}.addressing must be independent-key or aggregate-path`,
+      );
+    }
+    if (nonEmptyString(row.writer)) {
+      if (writers.has(row.writer)) errors.push(`${label}.writer is duplicated`);
+      writers.add(row.writer);
+    }
+    if (!Array.isArray(row.paths) || row.paths.length === 0) {
+      errors.push(`${label}.paths must be a non-empty array`);
+    } else {
+      for (const path of row.paths) {
+        if (!isCanonicalChangedPath(path)) {
+          errors.push(`${label}.paths must contain canonical JSON Pointer paths`);
+          break;
+        }
+      }
+    }
+    if (
+      !Array.isArray(row.cause) ||
+      row.cause.length === 0 ||
+      row.cause.some((cause) => !MATRIX_CAUSES.has(cause))
+    ) {
+      errors.push(`${label}.cause must contain forward/undo/redo values`);
+    }
+    if (!MATRIX_TEXT_IMPACTS.has(row.textImpact)) {
+      errors.push(`${label}.textImpact is invalid`);
+    }
+    for (const field of ["atomic", "undoRedo", "idempotent"]) {
+      if (typeof row[field] !== "boolean") {
+        errors.push(`${label}.${field} must be boolean`);
+      }
+    }
+  }
+}
+
+function validateRuntimeEvidence(manifest, operation, repoRoot, errors) {
+  if (operation.coverageStatus !== "verified") return;
+  if (
+    operation.feedPolicy === "excluded" &&
+    operation.runtimeEvidence?.status === "excluded"
+  ) {
+    return;
+  }
+
+  const label = `operation ${operation.id}`;
+  const evidence = isObject(operation.runtimeEvidence)
+    ? operation.runtimeEvidence
+    : manifest.runtimeEvidence;
+  if (
+    !isObject(evidence) ||
+    evidence.schemaVersion !== 1 ||
+    evidence.status !== "verified" ||
+    !nonEmptyString(evidence.evidenceId)
+  ) {
+    errors.push(
+      `${label} verified coverage requires a schemaVersion 1 runtimeEvidence bundle`,
+    );
+    return;
+  }
+  for (const field of ["commands", "testFiles", "controls"]) {
+    if (
+      !Array.isArray(evidence[field]) ||
+      evidence[field].length === 0 ||
+      evidence[field].some((value) => !nonEmptyString(value))
+    ) {
+      errors.push(`${label} runtimeEvidence.${field} must be a non-empty string array`);
+    }
+  }
+  const evidenceControls = new Set(
+    Array.isArray(evidence.controls) ? evidence.controls : [],
+  );
+  const variants = Array.isArray(operation.authorityVariants)
+    ? operation.authorityVariants
+    : [{ controls: operation.controls }];
+  for (const [variantIndex, variant] of variants.entries()) {
+    for (const control of Array.isArray(variant?.controls) ? variant.controls : []) {
+      if (!evidenceControls.has(control)) {
+        errors.push(
+          `${label} runtimeEvidence.controls must include '${control}' for authority variant ${variantIndex}`,
+        );
+      }
+    }
+  }
+  for (const [index, relativePath] of (evidence.testFiles ?? []).entries()) {
+    const absolute = safeRepoPath(
+      repoRoot,
+      relativePath,
+      `${label} runtimeEvidence.testFiles[${index}]`,
+      errors,
+    );
+    if (absolute && !existsSync(absolute)) {
+      errors.push(`${label} runtime evidence test file does not exist: ${relativePath}`);
+    }
+  }
+}
+
+function validateMcpAuthorityContract(manifest, repoRoot, errors) {
+  const mcpOperations = (manifest.operations ?? []).filter((operation) =>
+    (operation.routes ?? []).some((route) => route?.surface === "mcp-tool"),
+  );
+  if (mcpOperations.length === 0) return;
+
+  const contract = manifest.mcpAuthorityContract;
+  if (
+    !isObject(contract) ||
+    contract.schemaVersion !== 1 ||
+    contract.fieldAuthority !== "native-transactional-preflight" ||
+    contract.coverageStatus !== "verified" ||
+    contract.executionSurface !== "mcp-tool-native"
+  ) {
+    errors.push(
+      "MCP mutation operations require a verified native-transactional field-authority preflight contract with mcp-tool-native execution",
+    );
+    return;
+  }
+
+  if (
+    !nonEmptyString(contract.runtimeTestCommand) ||
+    !contract.runtimeTestCommand.includes("-p grimodex-db") ||
+    !contract.runtimeTestCommand.includes("-p grimodex-mcp")
+  ) {
+    errors.push(
+      "mcpAuthorityContract.runtimeTestCommand must execute both grimodex-db and grimodex-mcp tests",
+    );
+  }
+
+  const evidenceTests = Array.isArray(contract.evidenceTests)
+    ? contract.evidenceTests
+    : [];
+  if (evidenceTests.length === 0) {
+    errors.push(
+      "mcpAuthorityContract.evidenceTests must list executable native authority test files",
+    );
+  }
+  const evidenceSymbols = new Set();
+  for (const [index, evidence] of evidenceTests.entries()) {
+    const label = `mcpAuthorityContract.evidenceTests[${index}]`;
+    if (!isObject(evidence) || !nonEmptyString(evidence.file)) {
+      errors.push(`${label} must declare a test file`);
+      continue;
+    }
+    const evidencePath = safeRepoPath(
+      repoRoot,
+      evidence.file,
+      `${label}.file`,
+      errors,
+    );
+    if (!evidencePath || !existsSync(evidencePath)) {
+      errors.push(`${label} test file does not exist: ${evidence.file}`);
+      continue;
+    }
+    const evidenceSource = readFileSync(evidencePath, "utf8");
+    if (
+      !/\#\[(?:tokio::)?test\]/.test(evidenceSource) &&
+      !/\b(?:describe|it|test)\s*\(/.test(evidenceSource)
+    ) {
+      errors.push(
+        `${label} must contain executable test declarations: ${evidence.file}`,
+      );
+    }
+    if (
+      !Array.isArray(evidence.symbols) ||
+      evidence.symbols.length === 0 ||
+      evidence.symbols.some((symbol) => !nonEmptyString(symbol))
+    ) {
+      errors.push(`${label}.symbols must list executable test symbols`);
+      continue;
+    }
+    for (const symbol of evidence.symbols) {
+      const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const executableRustTest = new RegExp(
+        `#\\[(?:tokio::)?test\\]\\s*(?:#\\[[^\\]\\n]+\\]\\s*)*(?:pub(?:\\([^\\)]*\\))?\\s+)?(?:async\\s+)?fn\\s+${escaped}\\b`,
+      ).test(evidenceSource);
+      const executableJsTest = new RegExp(
+        `\\b(?:describe|it|test)\\s*\\([\\s\\S]{0,240}\\b${escaped}\\b`,
+      ).test(evidenceSource);
+      if (!executableRustTest && !executableJsTest) {
+        errors.push(
+          `mcpAuthorityContract evidence test symbol is not an executable test in ${evidence.file}: ${symbol}`,
+        );
+      }
+      evidenceSymbols.add(symbol);
+    }
+  }
+
+  const operationEvidence = Array.isArray(contract.operationEvidence)
+    ? contract.operationEvidence
+    : [];
+  const evidenceByOperation = new Map();
+  for (const entry of operationEvidence) {
+    if (isObject(entry) && nonEmptyString(entry.operationId)) {
+      evidenceByOperation.set(entry.operationId, entry);
+    }
+  }
+  for (const operation of mcpOperations) {
+    if (
+      operation.feedPolicy !== "excluded" &&
+      (!Array.isArray(operation.controls) ||
+        !operation.controls.includes("field-authority"))
+    ) {
+      errors.push(
+        `operation ${operation.id} MCP coverage must declare field-authority alongside the native preflight contract`,
+      );
+    }
+    const evidence = evidenceByOperation.get(operation.id);
+    if (!evidence || !Array.isArray(evidence.symbols) || evidence.symbols.length === 0) {
+      errors.push(
+        `operation ${operation.id} MCP coverage must link operation-specific executable evidence`,
+      );
+      continue;
+    }
+    for (const symbol of evidence.symbols) {
+      if (!evidenceSymbols.has(symbol)) {
+        errors.push(
+          `operation ${operation.id} MCP evidence symbol is not linked to an executable evidence test: ${symbol}`,
+        );
+      }
+    }
+  }
+  const mcpOperationIds = new Set(mcpOperations.map((operation) => operation.id));
+  for (const operationId of evidenceByOperation.keys()) {
+    if (!mcpOperationIds.has(operationId)) {
+      errors.push(
+        `mcpAuthorityContract.operationEvidence references a non-MCP operation: ${operationId}`,
+      );
+    }
+  }
+}
+
+export function validateChangeFeedWriters({
+  repoRoot = REPO_ROOT,
+  manifestPath = MANIFEST_PATH,
+  registryPath = REGISTRY_PATH,
+  knownRoutes = KNOWN_CHANGE_FEED_ROUTES,
+  requireRuntimeCoverage = false,
+} = {}) {
+  const errors = [];
+  const manifest = readJson(
+    manifestPath,
+    "change feed writer manifest",
+    errors,
+  );
+  const registry = readJson(registryPath, "protected writer registry", errors);
+  const policyCounts = { required: 0, delegated: 0, excluded: 0 };
+  const coverageCounts = { declared: 0, implemented: 0, verified: 0 };
+  if (!manifest || !registry) {
+    return {
+      errors,
+      operationCount: 0,
+      policyCounts,
+      coverageCounts,
+      knownRouteCount: knownRoutes.length,
+    };
+  }
+
+  if (manifest.schemaVersion !== 1) {
+    errors.push("change feed writer manifest schemaVersion must be 1");
+  }
+  if (manifest.gateId !== "gate-c1") {
+    errors.push("change feed writer manifest gateId must be gate-c1");
+  }
+  validateWriterMatrix(manifest, errors);
+  if (!Array.isArray(manifest.operations)) {
+    errors.push("change feed writer manifest operations must be an array");
+    return {
+      errors,
+      operationCount: 0,
+      policyCounts,
+      coverageCounts,
+      knownRouteCount: knownRoutes.length,
+    };
+  }
+  manifest.operations = [
+    ...manifest.operations,
+    ...loadOperationFragments(repoRoot, manifest, errors),
+  ];
+  if (!Array.isArray(registry)) {
+    errors.push("protected writer registry must be an array");
+    return {
+      errors,
+      operationCount: manifest.operations.length,
+      policyCounts,
+      coverageCounts,
+      knownRouteCount: knownRoutes.length,
+    };
+  }
+
+  const activeWriterIds = new Set(
+    registry
+      .filter(
+        (entry) =>
+          entry?.enforcement === "active" && nonEmptyString(entry.writer),
+      )
+      .map((entry) => entry.writer),
+  );
+  const coveredWriterIds = new Set();
+  const operationIds = new Set();
+  const routeOwners = new Map();
+  const sourceCache = new Map();
+
+  for (const [index, operation] of manifest.operations.entries()) {
+    if (!isObject(operation)) {
+      errors.push(`operations[${index}] must be an object`);
+      continue;
+    }
+    if (!nonEmptyString(operation.id)) {
+      errors.push(`operations[${index}].id must be non-empty`);
+      continue;
+    }
+    if (operationIds.has(operation.id)) {
+      errors.push(`duplicate operation id ${operation.id}`);
+    }
+    operationIds.add(operation.id);
+    const label = `operation ${operation.id}`;
+
+    if (!FEED_POLICIES.has(operation.feedPolicy)) {
+      errors.push(`${label} feedPolicy is invalid: ${operation.feedPolicy}`);
+    } else {
+      policyCounts[operation.feedPolicy] += 1;
+    }
+    if (!COVERAGE_STATUSES.has(operation.coverageStatus)) {
+      errors.push(
+        `${label} coverageStatus is invalid: ${operation.coverageStatus}`,
+      );
+    } else {
+      coverageCounts[operation.coverageStatus] += 1;
+    }
+    if (!nonEmptyString(operation.reason)) {
+      errors.push(`${label} reason must be non-empty`);
+    }
+    if (!SCOPES.has(operation.scope)) {
+      errors.push(`${label} scope is invalid: ${operation.scope}`);
+    }
+
+    validateOperationClassification(operation, errors);
+
+    if (!Array.isArray(operation.writerIds)) {
+      errors.push(`${label} writerIds must be an array`);
+    } else {
+      const localWriters = new Set();
+      for (const writerId of operation.writerIds) {
+        if (!nonEmptyString(writerId)) {
+          errors.push(`${label} has an invalid writer id`);
+          continue;
+        }
+        if (localWriters.has(writerId)) {
+          errors.push(`${label} has duplicate writer id ${writerId}`);
+        }
+        localWriters.add(writerId);
+        if (!activeWriterIds.has(writerId)) {
+          errors.push(`${label} references unknown writer id ${writerId}`);
+        } else {
+          coveredWriterIds.add(writerId);
+        }
+      }
+    }
+
+    if (!Array.isArray(operation.requiredIdentities)) {
+      errors.push(`${label} requiredIdentities must be an array`);
+    } else if (operation.feedPolicy !== "excluded") {
+      for (const identity of TRANSACTION_IDENTITIES) {
+        if (!operation.requiredIdentities.includes(identity)) {
+          errors.push(`${label} requiredIdentities must include ${identity}`);
+        }
+      }
+    }
+
+    if (operation.feedPolicy === "excluded") {
+      if (!EXCLUSION_REASONS.has(operation.exclusionReason)) {
+        errors.push(`${label} exclusionReason is invalid or missing`);
+      }
+      if (operation.canonical !== null) {
+        errors.push(
+          `${label} canonical must be null when feedPolicy is excluded`,
+        );
+      }
+    } else {
+      if (Object.hasOwn(operation, "exclusionReason")) {
+        errors.push(`${label} must not define exclusionReason unless excluded`);
+      }
+      if (!isObject(operation.canonical)) {
+        errors.push(`${label} canonical must be an object`);
+      } else {
+        if (!CANONICAL_ORIGINS.has(operation.canonical.origin)) {
+          errors.push(
+            `${label} canonical.origin is invalid: ${operation.canonical.origin}`,
+          );
+        }
+        if (!nonEmptyString(operation.canonical.opType)) {
+          errors.push(`${label} canonical.opType must be non-empty`);
+        }
+      }
+      if (requireRuntimeCoverage && operation.coverageStatus !== "verified") {
+        errors.push(
+          `${label} must have coverageStatus verified for runtime coverage`,
+        );
+      }
+    }
+
+    validateRuntimeEvidence(manifest, operation, repoRoot, errors);
+    validateImplementation(operation, repoRoot, errors, sourceCache);
+    validateRoutes(operation, repoRoot, errors, routeOwners, sourceCache);
+    validateRendererAuthorityParity(
+      manifest,
+      operation,
+      repoRoot,
+      errors,
+      sourceCache,
+    );
+  }
+
+  validateCanonicalBirthInventory(manifest, manifest.operations, errors);
+  if (
+    manifest.operations.some(
+      (operation) => operation?.id === SCAN_PUBLISH_OPERATION_ID,
+    )
+  ) {
+    validateRendererScanPublishContract(repoRoot, errors, sourceCache);
+  }
+
+  validateMcpAuthorityContract(manifest, repoRoot, errors);
+
+  for (const writerId of [...activeWriterIds].sort()) {
+    if (!coveredWriterIds.has(writerId)) {
+      errors.push(
+        `active writer id ${writerId} is not covered by an operation policy`,
+      );
+    }
+  }
+  for (const route of knownRoutes) {
+    const key = `${route.surface}:${route.name}`;
+    if (!routeOwners.has(key)) {
+      errors.push(
+        `known route ${key} is not covered by the change feed writer manifest`,
+      );
+    }
+  }
+
+  return {
+    errors,
+    operationCount: manifest.operations.length,
+    policyCounts,
+    coverageCounts,
+    knownRouteCount: knownRoutes.length,
+  };
+}
+
+function parseArgs(argv) {
+  return {
+    json: argv.includes("--json"),
+    requireRuntimeCoverage: argv.includes("--require-runtime-coverage"),
+  };
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+  const result = validateChangeFeedWriters({
+    requireRuntimeCoverage: args.requireRuntimeCoverage,
+  });
+  if (args.json) {
+    console.log(JSON.stringify(result, null, 2));
+  } else if (result.errors.length === 0) {
+    console.log(
+      `validate-change-feed-writers: ok (operations=${result.operationCount}, knownRoutes=${result.knownRouteCount}, required=${result.policyCounts.required}, delegated=${result.policyCounts.delegated}, excluded=${result.policyCounts.excluded})`,
+    );
+  } else {
+    console.error("Gate C1 Change Feed writer inventory is invalid:");
+    for (const error of result.errors) console.error(`  - ${error}`);
+  }
+  if (result.errors.length > 0) process.exitCode = 1;
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main();
+}

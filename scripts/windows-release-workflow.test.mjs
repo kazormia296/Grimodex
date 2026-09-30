@@ -97,15 +97,17 @@ describe("Windows Electron release", () => {
       migrationE2e,
       /A44E40BB7C393CC6C656630C15F8729D85E15EE7FE2ACF3B218A7685367A3302/,
     );
-    assert.equal(migrationStep?.env, undefined);
+    assert.equal(migrationStep?.env?.GITHUB_TOKEN, "${{ secrets.GITHUB_TOKEN }}");
+    assert.equal(migrationStep?.env?.GITHUB_REPOSITORY, "${{ github.repository }}");
     assert.match(
       migrationE2e,
-      /https:\/\/github\.com\/\$env:GITHUB_REPOSITORY\/releases\/download\/\$legacyTag\/\$legacyAsset/,
+      /https:\/\/api\.github\.com\/repos\/\$env:GITHUB_REPOSITORY\/releases\/tags\/\$legacyTag/,
     );
-    assert.match(migrationE2e, /Invoke-WebRequest -Uri \$legacyUrl/);
-    assert.doesNotMatch(migrationE2e, /GH_TOKEN|Authorization/);
+    assert.match(migrationE2e, /Invoke-WebRequest -Uri \$assetApiUrl/);
+    assert.match(migrationE2e, /GITHUB_TOKEN/);
+    assert.match(migrationE2e, /Authorization/);
     assert.doesNotMatch(migrationE2e, /draft == true/);
-    assert.doesNotMatch(migrationE2e, /api\.github\.com|releases\/assets/);
+    assert.match(migrationE2e, /releases\/assets/);
     assert.match(migrationE2e, /electron-migration-roaming\.sentinel/);
     assert.match(migrationE2e, /electron-migration-local\.sentinel/);
     assert.match(migrationE2e, /Assert-OneElectronRegistration/);

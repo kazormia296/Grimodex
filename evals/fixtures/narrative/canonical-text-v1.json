@@ -1,0 +1,334 @@
+[
+  {
+    "id": "paragraph",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "A" }]
+        }
+      ]
+    },
+    "canonicalText": "A",
+    "canonicalDigest": "sha256:559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"
+  },
+  {
+    "id": "multiple-paragraphs",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "first" }]
+        },
+        { "type": "paragraph" },
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "last" }]
+        }
+      ]
+    },
+    "canonicalText": "first\n\nlast",
+    "canonicalDigest": "sha256:8021a10b49c27014ab18d5f673ece0bbebae0c837dcc35657caf456342b8a409"
+  },
+  {
+    "id": "hard-break",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            { "type": "text", "text": "A" },
+            { "type": "hardBreak" },
+            { "type": "text", "text": "B" }
+          ]
+        }
+      ]
+    },
+    "canonicalText": "A\nB",
+    "canonicalDigest": "sha256:23519a43c66b4c342f25b32e09797ec5f3fc0be388cd8243fb3449afbdce4013"
+  },
+  {
+    "id": "cr-and-crlf",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "A\r\nB\rC" }]
+        }
+      ]
+    },
+    "canonicalText": "A\nB\nC",
+    "canonicalDigest": "sha256:2e70d7238a20934f7a8a145e8750ee44d6e043a7a8c9b3a1a0979d640e62af8c"
+  },
+  {
+    "id": "ruby",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            { "type": "text", "text": "前" },
+            {
+              "type": "ruby",
+              "attrs": { "base": "漢字", "annotation": "かんじ" }
+            },
+            { "type": "text", "text": "後" }
+          ]
+        }
+      ]
+    },
+    "canonicalText": "前漢字後",
+    "canonicalDigest": "sha256:826b03a23e2d7f7fef43803ce9849decfff8dfdb8494d15a5877ffc266d794c6"
+  },
+  {
+    "id": "mention",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            { "type": "text", "text": "before" },
+            { "type": "mention", "attrs": { "label": "Akari", "id": "e1" } },
+            { "type": "text", "text": "after" }
+          ]
+        }
+      ]
+    },
+    "canonicalText": "before@Akariafter",
+    "canonicalDigest": "sha256:19aeee7b5383f86208390213b3eede6418eda9f7498a7de45a68a694151cd471"
+  },
+  {
+    "id": "inline-image",
+    "schema": "file-backed",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            { "type": "text", "text": "before" },
+            { "type": "image", "attrs": { "src": "asset.png" } },
+            { "type": "text", "text": "after" }
+          ]
+        }
+      ]
+    },
+    "canonicalText": "before\uFFFCafter",
+    "canonicalDigest": "sha256:eafdaef6c5d23e34c2e59baaa571599049b20880bb77875481e568f6d5c179b5"
+  },
+  {
+    "id": "empty-block-atoms",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "A" }]
+        },
+        { "type": "sceneBreak" },
+        { "type": "horizontalRule" },
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "B" }]
+        }
+      ]
+    },
+    "canonicalText": "A\n\n\nB",
+    "canonicalDigest": "sha256:8b79c77a6d657380a5c5c2cde52b9510dc14a20246772119e7112b3ff45daa43"
+  },
+  {
+    "id": "scene-beat",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "sceneBeat",
+          "content": [{ "type": "text", "text": "beat" }]
+        },
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "prose" }]
+        }
+      ]
+    },
+    "canonicalText": "beat\nprose",
+    "canonicalDigest": "sha256:7adcd22c2ad42d1c9d61edf50ad80c3ca961735d5fd470590b299f1e7622bb3d"
+  },
+  {
+    "id": "nested-lists",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "bulletList",
+          "content": [
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "one" }]
+                }
+              ]
+            },
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "two" }]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "orderedList",
+          "attrs": { "start": 3 },
+          "content": [
+            {
+              "type": "listItem",
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "three" }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "canonicalText": "one\ntwo\nthree",
+    "canonicalDigest": "sha256:058053d87c818d699cde0f00d670bca0e1c6ad857caa9758ea6a556d7c64fcee"
+  },
+  {
+    "id": "blockquote-and-code",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "blockquote",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [{ "type": "text", "text": "quote" }]
+            }
+          ]
+        },
+        {
+          "type": "codeBlock",
+          "content": [{ "type": "text", "text": "const x = 1;" }]
+        }
+      ]
+    },
+    "canonicalText": "quote\nconst x = 1;",
+    "canonicalDigest": "sha256:0a378342b8eb9ee7a1ea20187799e7a14e0c0418c5db4c84b9546fd831a2843c"
+  },
+  {
+    "id": "table",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "table",
+          "content": [
+            {
+              "type": "tableRow",
+              "content": [
+                {
+                  "type": "tableHeader",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [{ "type": "text", "text": "H" }]
+                    }
+                  ]
+                },
+                {
+                  "type": "tableCell",
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [{ "type": "text", "text": "V" }]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "canonicalText": "H\nV",
+    "canonicalDigest": "sha256:d16b5ebcda092a276b7ed501ce4221b58a816be0d5d309412168ffecac21f2f6"
+  },
+  {
+    "id": "task-list",
+    "schema": "file-backed",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "taskList",
+          "content": [
+            {
+              "type": "taskItem",
+              "attrs": { "checked": true },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "done" }]
+                }
+              ]
+            },
+            {
+              "type": "taskItem",
+              "attrs": { "checked": false },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [{ "type": "text", "text": "todo" }]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "canonicalText": "done\ntodo",
+    "canonicalDigest": "sha256:9bc7dcbda0d05a70e6bfe7264151625b59f2b1fc6246c44637b9387b20ee2fc1"
+  },
+  {
+    "id": "astral-and-japanese",
+    "schema": "database",
+    "document": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [{ "type": "text", "text": "A😀B 日本語" }]
+        }
+      ]
+    },
+    "canonicalText": "A😀B 日本語",
+    "canonicalDigest": "sha256:ee4beb02a0648e40ee8694a7feb37f63c350a97f5980dc736ab84f725cdcb19e"
+  }
+]

@@ -1,8 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "@/lib/utils";
 import { DURATIONS, EASINGS, useReducedMotion } from "@/lib/animation";
+
+const FOCUSABLE_SELECTOR = [
+  "button:not([disabled])",
+  "[href]",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
 interface AnimatedOverlayProps {
   open: boolean;
@@ -29,15 +38,82 @@ export function AnimatedOverlay({
 }: AnimatedOverlayProps) {
   const reduced = useReducedMotion();
   const mouseDownOnBackdrop = useRef(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  const savedOpenerRef = useRef<HTMLElement | null>(null);
+  const wasOpenRef = useRef(false);
+  const restoreEpochRef = useRef(0);
+  const [childrenReady, setChildrenReady] = useState(false);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  // Mount the shell first, then synchronously mount children after capturing
+  // the opener. Native autoFocus runs during child DOM commit and child layout
+  // effects run before a parent layout effect, so capturing after children
+  // mount can otherwise record an element inside the dialog as its opener.
+  // The layout update is flushed before paint, so users never see an empty
+  // dialog.
+  useLayoutEffect(() => {
+    if (open && !wasOpenRef.current) {
+      savedOpenerRef.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+      setChildrenReady(true);
+    } else if (!open && wasOpenRef.current) {
+      setChildrenReady(false);
+    }
+    wasOpenRef.current = open;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !childrenReady) return;
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      const content = contentRef.current;
+      if (content == null) return;
+
+      // Children can intentionally select their own target through native
+      // autoFocus or a layout/passive effect. Preserve that choice rather
+      // than letting the fallback focus a DOM-earlier button.
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && content.contains(active)) return;
+
+      const initialTarget =
+        content.querySelector<HTMLElement>("[autofocus]") ??
+        content.querySelector<HTMLElement>(FOCUSABLE_SELECTOR) ??
+        content;
+      initialTarget?.focus({ preventScroll: true });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, childrenReady]);
 
   useEffect(() => {
     if (!open) return;
+    // React StrictMode replays an effect setup/cleanup pair immediately after
+    // mount. Invalidate a pending cleanup restore whenever the live effect is
+    // re-established so that replay never consumes the saved opener.
+    restoreEpochRef.current += 1;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [open, onClose]);
+    return () => {
+      window.removeEventListener("keydown", handler);
+      const opener = savedOpenerRef.current;
+      const restoreEpoch = ++restoreEpochRef.current;
+      queueMicrotask(() => {
+        if (restoreEpochRef.current !== restoreEpoch) return;
+        savedOpenerRef.current = null;
+        if (opener?.isConnected) opener.focus({ preventScroll: true });
+      });
+    };
+  }, [open]);
 
   if (typeof document === "undefined") return null;
 
@@ -51,6 +127,7 @@ export function AnimatedOverlay({
       {open && (
         <motion.div
           data-testid="animated-overlay-backdrop"
+          data-animated-overlay-root="true"
           className={cn(
             "fixed inset-0 z-50 flex items-center justify-center",
             backdropClassName,
@@ -68,6 +145,8 @@ export function AnimatedOverlay({
           }}
         >
           <motion.div
+            ref={contentRef}
+            tabIndex={-1}
             className={cn(className)}
             data-testid={testId}
             data-tour-target={tourTarget}
@@ -77,7 +156,7 @@ export function AnimatedOverlay({
             transition={reduced ? { duration: 0 } : { ...EASINGS.spring }}
             onClick={(e) => e.stopPropagation()}
           >
-            {children}
+            {childrenReady ? children : null}
           </motion.div>
         </motion.div>
       )}

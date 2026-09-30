@@ -25,7 +25,15 @@ export function parseEventPayload(
   event: Pick<ChangeEvent, "payload">,
 ): ParsedPayload {
   try {
-    return JSON.parse(event.payload) as ParsedPayload;
+    const parsed: unknown = JSON.parse(event.payload);
+    if (
+      parsed === null ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
+      return {};
+    }
+    return parsed as ParsedPayload;
   } catch {
     return {};
   }

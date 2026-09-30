@@ -19,7 +19,9 @@ const makeDefinition = (
   fieldConfig: null,
   sortOrder: 0.0,
   includeInContext: 0,
+  version: 0,
   createdAt: "2024-01-01T00:00:00Z",
+  updatedAt: "2024-01-01T00:00:00Z",
   ...overrides,
 });
 
@@ -201,6 +203,7 @@ describe("ManageFieldsDialog", () => {
     expect(mockUpdate).toHaveBeenCalledWith(
       "def-1",
       expect.objectContaining({ name: "更新名" }),
+      { baseVersion: 0 },
     );
   });
 
@@ -413,6 +416,7 @@ describe("ManageFieldsDialog", () => {
         expect.objectContaining({
           fieldConfig: JSON.stringify({ options: ["主役", "敵役"] }),
         }),
+        { baseVersion: 0 },
       );
     });
 
@@ -436,6 +440,7 @@ describe("ManageFieldsDialog", () => {
       expect(mockUpdate).toHaveBeenCalledWith(
         "def-1",
         expect.objectContaining({ fieldType: "text", fieldConfig: null }),
+        { baseVersion: 0 },
       );
     });
   });

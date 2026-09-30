@@ -123,6 +123,52 @@ describe("enqueueIpc", () => {
     vi.useRealTimers();
   });
 
+  it("does not wait for an optional read while draining strict quiescence", async () => {
+    const caller = enqueueIpc(
+      "foreshadow_get_scene_context",
+      async () => {
+        throw new Error("D2A_EGRESS_DENIED: plaintext-publication");
+      },
+      null,
+      "read",
+    ).catch((error: unknown) => error);
+
+    await expect(
+      flushQuiescenceProviderStage("ipc-actual-tasks"),
+    ).resolves.toBeUndefined();
+    await expect(caller).resolves.toMatchObject({
+      message: expect.stringContaining("IPC_READ_CANCELLED"),
+    });
+  });
+
+  it("keeps a required mutation denial as a quiescence failure", async () => {
+    const caller = enqueueIpc(
+      "save_scene_body_bundle",
+      async () => {
+        throw new Error("D2A_EGRESS_DENIED: native-mutation");
+      },
+      null,
+      "mutation",
+    ).catch((error: unknown) => error);
+
+    const stageError = await flushQuiescenceProviderStage(
+      "ipc-actual-tasks",
+    ).catch((error: unknown) => error);
+    expect(stageError).toMatchObject({
+      name: "QuiescenceProviderStageError",
+      providerFailures: [
+        {
+          originalError: expect.objectContaining({
+            message: "D2A_EGRESS_DENIED: native-mutation",
+          }),
+        },
+      ],
+    });
+    await expect(caller).resolves.toMatchObject({
+      message: "D2A_EGRESS_DENIED: native-mutation",
+    });
+  });
+
   it("reserves a slot for mutations when three timed-out reads never settle", async () => {
     vi.useFakeTimers();
     const readGates = Array.from({ length: 4 }, () => {

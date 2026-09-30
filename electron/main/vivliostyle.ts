@@ -91,6 +91,8 @@ export interface VivliostyleSaveDialogOptions {
 
 export interface VivliostyleManager {
   handlers: ShellCommandHandlers;
+  /** Main-only D2a barrier: close starts and await all admitted work. */
+  quiesceForProfileEgress(): Promise<void>;
   /** will-quit向け。同期的に全process treeとtempを回収する。 */
   disposeAll(): void;
 }
@@ -516,6 +518,32 @@ export function createVivliostyleManager(
   let notifiedStopEpoch = 0;
   let previewTransition: Promise<void> = Promise.resolve();
   let disposed = false;
+  let quiescenceFlight: Promise<void> | null = null;
+  const buildOperations = new Set<Promise<void>>();
+  const handlerOperations = new Set<Promise<unknown>>();
+  const pendingPreviewProcesses = new Set<RunningCliProcess>();
+
+  const trackBuildOperation = (operation: Promise<void>): void => {
+    buildOperations.add(operation);
+    void operation.then(
+      () => buildOperations.delete(operation),
+      () => buildOperations.delete(operation),
+    );
+  };
+  const trackHandlerOperation = <T>(operation: Promise<T>): Promise<T> => {
+    handlerOperations.add(operation);
+    void operation.then(
+      () => handlerOperations.delete(operation),
+      () => handlerOperations.delete(operation),
+    );
+    return operation;
+  };
+  const trackedHandler =
+    <T>(
+      handler: (args: CommandArgs) => Promise<T>,
+    ): ((args: CommandArgs) => Promise<T>) =>
+    (args) =>
+      trackHandlerOperation(handler(args));
 
   const ensureNotDisposed = (): void => {
     if (disposed) throw new Error("Vivliostyle manager is disposed");
@@ -646,19 +674,37 @@ export function createVivliostyleManager(
   };
   const waitForProcessStopped = async (
     process: RunningCliProcess,
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     let fallback: ReturnType<typeof setTimeout> | null = null;
-    await Promise.race([
+    const stopped = await Promise.race([
       process.completion.then(
-        () => undefined,
-        () => undefined,
+        () => true,
+        () => false,
       ),
-      new Promise<void>((resolve) => {
-        fallback = setTimeout(resolve, forceKillAfterMs + 250);
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
         fallback.unref();
       }),
     ]);
     if (fallback) clearTimeout(fallback);
+    return stopped;
+  };
+  const waitForRunnerQuiescence = async (
+    operation: Promise<void>,
+  ): Promise<boolean> => {
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      operation.then(
+        () => true,
+        () => false,
+      ),
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
+        fallback.unref();
+      }),
+    ]);
+    if (fallback) clearTimeout(fallback);
+    return settled;
   };
   const waitForProcessStarted = async (
     process: RunningCliProcess,
@@ -693,6 +739,23 @@ export function createVivliostyleManager(
   const waitForStopped = async (run: BuildRun): Promise<void> => {
     if (!run.process) return;
     await waitForProcessStopped(run.process);
+  };
+  const waitForOperation = async (
+    operation: Promise<unknown>,
+  ): Promise<boolean> => {
+    let fallback: ReturnType<typeof setTimeout> | null = null;
+    const settled = await Promise.race([
+      operation.then(
+        () => true,
+        () => true,
+      ),
+      new Promise<false>((resolve) => {
+        fallback = setTimeout(() => resolve(false), forceKillAfterMs + 250);
+        fallback.unref();
+      }),
+    ]);
+    if (fallback) clearTimeout(fallback);
+    return settled;
   };
 
   const executeBuild = async (run: BuildRun): Promise<void> => {
@@ -849,7 +912,7 @@ export function createVivliostyleManager(
       }
     },
 
-    vivliostyle_build: async (args: CommandArgs) => {
+    vivliostyle_build: trackedHandler(async (args: CommandArgs) => {
       await ready();
       const format = parseFormat(args.format);
       const inputFiles = parseFiles(args.files, maxInputBytes);
@@ -872,9 +935,9 @@ export function createVivliostyleManager(
         forceKillTimer: null,
       };
       runs.set(runId, run);
-      void executeBuild(run);
+      trackBuildOperation(executeBuild(run));
       return runId;
-    },
+    }),
 
     vivliostyle_abort_build: async (args: CommandArgs) => {
       await ready();
@@ -973,7 +1036,7 @@ export function createVivliostyleManager(
       return destination;
     },
 
-    vivliostyle_preview_start: async (args: CommandArgs) => {
+    vivliostyle_preview_start: trackedHandler(async (args: CommandArgs) => {
       await ready();
       const inputFiles = parseFiles(args.files, maxInputBytes);
       const binaryPath = optionalString(args.binaryPath, "binaryPath");
@@ -1018,6 +1081,7 @@ export function createVivliostyleManager(
             args: ["preview", INPUT_FILE_NAME],
             cwd: dir,
           });
+          pendingPreviewProcesses.add(process);
           // Node spawn の ENOENT/EACCES は start() の同期throwではなく child の
           // error event になる。OSのspawn成功までboundedに待ち、Tauriと同じ
           // invoke reject契約に揃える。旧/test runnerは started を省略できる。
@@ -1032,6 +1096,8 @@ export function createVivliostyleManager(
             `vivliostyle preview の起動に失敗しました (${executable}): ${toError(cause).message}`,
             { cause },
           );
+        } finally {
+          if (process !== null) pendingPreviewProcesses.delete(process);
         }
         if (process === null) {
           await cleanupDir(dir);
@@ -1073,7 +1139,7 @@ export function createVivliostyleManager(
           });
         return null;
       });
-    },
+    }),
 
     vivliostyle_preview_stop: async () => {
       await ready();
@@ -1084,8 +1150,115 @@ export function createVivliostyleManager(
     },
   };
 
+  const quiesceForProfileEgress = (): Promise<void> => {
+    if (quiescenceFlight) return quiescenceFlight;
+    const activeBuildRuns = [...runs.values()];
+    const activeBuildOperations = [...buildOperations];
+    const activeHandlerOperations = [...handlerOperations];
+    const activeBuildProcesses = activeBuildRuns.flatMap((run) =>
+      run.process ? [run.process] : [],
+    );
+    const activePreview = preview;
+    const activePreviewProcesses = new Set<RunningCliProcess>(
+      pendingPreviewProcesses,
+    );
+    if (activePreview) activePreviewProcesses.add(activePreview.process);
+
+    quiescenceFlight = (async () => {
+      let closeError: unknown = null;
+      // Close admission before the first await. Pending resolve/authorization
+      // continuations then fail their existing ensureNotDisposed checks.
+      disposed = true;
+      previewGeneration += 1;
+      previewStopEpoch += 1;
+
+      for (const run of activeBuildRuns) {
+        run.aborted = true;
+        try {
+          stopBuildProcess(run);
+        } catch (error) {
+          closeError ??= error;
+        }
+      }
+      for (const process of activePreviewProcesses) {
+        try {
+          process.terminate("SIGKILL");
+        } catch (error) {
+          closeError ??= error;
+        }
+      }
+      try {
+        // This is only a synchronous admission/child stop request. Completion
+        // is proved below by the tracked operations and process promises.
+        runner.disposeAll?.();
+      } catch (error) {
+        closeError ??= error;
+      }
+
+      let runnerQuiescence: Promise<boolean>;
+      try {
+        const barrier = runner.quiesceForProfileEgress?.();
+        runnerQuiescence = barrier
+          ? waitForRunnerQuiescence(barrier)
+          : Promise.resolve(true);
+      } catch {
+        runnerQuiescence = Promise.resolve(false);
+      }
+      const hasRunnerQuiescence =
+        typeof runner.quiesceForProfileEgress === "function";
+
+      const [
+        handlersSettled,
+        buildsSettled,
+        buildProcessesStopped,
+        previewsStopped,
+        runnerQuiesced,
+      ] = await Promise.all([
+        Promise.all(
+          activeHandlerOperations.map((operation) =>
+            waitForOperation(operation),
+          ),
+        ),
+        Promise.all(
+          activeBuildOperations.map((operation) => waitForOperation(operation)),
+        ),
+        Promise.all(
+          hasRunnerQuiescence
+            ? []
+            : activeBuildProcesses.map((process) =>
+                waitForProcessStopped(process),
+              ),
+        ),
+        Promise.all(
+          hasRunnerQuiescence
+            ? []
+            : [...activePreviewProcesses].map((process) =>
+                waitForProcessStopped(process),
+              ),
+        ),
+        runnerQuiescence,
+      ]);
+
+      if (closeError) throw toError(closeError);
+      if (
+        handlersSettled.some((value) => !value) ||
+        buildsSettled.some((value) => !value) ||
+        buildProcessesStopped.some((value) => !value) ||
+        previewsStopped.some((value) => !value) ||
+        !runnerQuiesced
+      ) {
+        throw new Error("Vivliostyle egress transport did not quiesce");
+      }
+      if (activePreview) await cleanupDir(activePreview.dir);
+    })().finally(() => {
+      quiescenceFlight = null;
+    });
+    return quiescenceFlight;
+  };
+
   return {
     handlers,
+    quiesceForProfileEgress,
     disposeAll() {
       if (disposed) return;
       disposed = true;
@@ -1104,6 +1277,10 @@ export function createVivliostyleManager(
         cleanupDirSync(preview.dir);
         preview = null;
       }
+      for (const process of pendingPreviewProcesses) {
+        process.terminate("SIGKILL");
+      }
+      pendingPreviewProcesses.clear();
       for (const artifact of outputs.values()) cleanupDirSync(artifact.dir);
       outputs.clear();
       cleanupDirSync(tempRoot);

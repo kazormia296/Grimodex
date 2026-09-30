@@ -6,6 +6,7 @@ import {
   isAuthorityBlockingLifecycleIdle,
   isQuiescenceLeaseActive,
   subscribeQuiescenceLease,
+  waitForQuiescenceMutationAdmission,
 } from "./quiescenceLease";
 import { enqueueIpc, resetIpcQueueForTests } from "@/lib/ipcQueue";
 import {
@@ -182,6 +183,40 @@ describe("quiescence lease", () => {
     expect(readRun).toHaveBeenCalledOnce();
   });
 
+  it("gives workspace restore exclusive authority and blocks competing opens", () => {
+    const restoreLease = acquireQuiescenceLease("workspace-restore");
+
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(false);
+    expect(() => acquireQuiescenceLease("workspace-restore")).toThrow(
+      "Cannot restore a workspace while another lifecycle is active",
+    );
+    expect(() => acquireQuiescenceLease("workspace-open")).toThrow(
+      "Cannot start workspace-open while workspace restore is active",
+    );
+    expect(() => acquireQuiescenceLease("project-load")).toThrow(
+      "Cannot start project-load while workspace restore is active",
+    );
+
+    const closeLease = acquireQuiescenceLease("window-close");
+    restoreLease.release();
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(true);
+    closeLease.release();
+  });
+
+  it.each(["workspace-open", "project-load", "window-close"] as const)(
+    "rejects workspace restore while %s is active",
+    (reason) => {
+      const lifecycleLease = acquireQuiescenceLease(reason);
+      try {
+        expect(() => acquireQuiescenceLease("workspace-restore")).toThrow(
+          "Cannot restore a workspace while another lifecycle is active",
+        );
+      } finally {
+        lifecycleLease.release();
+      }
+    },
+  );
+
   it.each(["project-load", "workspace-open", "window-close"] as const)(
     "rejects data deletion while %s is active",
     (reason) => {
@@ -326,5 +361,63 @@ describe("quiescence lease", () => {
     workspaceLease.release();
     expect(listener).toHaveBeenCalledTimes(2);
     unsubscribe();
+  });
+
+  it("keeps narrative source mutation admission closed during its read phase", async () => {
+    const lease = acquireQuiescenceLease("narrative-snapshot");
+    const sourceRead = vi.fn(async () => "sealed-source");
+
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(false);
+    expect(() => acquireQuiescenceLease("project-load")).toThrow(
+      "while a narrative snapshot is active",
+    );
+
+    lease.openControlledReadPhase();
+    await expect(
+      enqueueIpc("narrative-source-read", sourceRead, 10_000, "read"),
+    ).resolves.toBe("sealed-source");
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+
+    lease.release();
+    expect(canScheduleQuiescenceMutation()).toBe(true);
+    expect(isAuthorityBlockingLifecycleIdle()).toBe(true);
+  });
+
+  it("isolates throwing observers so a lease can still be released", () => {
+    const unsubscribe = subscribeQuiescenceLease(() => {
+      throw new Error("observer failed");
+    });
+
+    const lease = acquireQuiescenceLease("narrative-snapshot");
+    expect(canScheduleQuiescenceMutation()).toBe(false);
+    lease.release();
+
+    expect(canScheduleQuiescenceMutation()).toBe(true);
+    unsubscribe();
+  });
+
+  it("queues newly observed mutations behind non-authority lifecycle leases", async () => {
+    const lease = acquireQuiescenceLease("audit-export");
+    let settled = false;
+    const admission = waitForQuiescenceMutationAdmission().then((value) => {
+      settled = true;
+      return value;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    lease.release();
+    await expect(admission).resolves.toBe(true);
+  });
+
+  it("does not reopen mutation admission after renderer teardown", async () => {
+    const lease = acquireQuiescenceLease("window-close");
+    const admission = waitForQuiescenceMutationAdmission();
+
+    lease.release({ disposition: "renderer-teardown" });
+
+    await expect(admission).resolves.toBe(false);
   });
 });

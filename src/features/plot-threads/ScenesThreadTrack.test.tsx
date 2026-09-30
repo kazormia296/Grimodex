@@ -13,6 +13,7 @@ function thread(over: Partial<PlotThreadRow> & { id: string }): PlotThreadRow {
     sortOrder: "a0",
     startNodeId: null,
     endNodeId: null,
+    version: 0,
     createdAt: "",
     updatedAt: "",
     ...over,

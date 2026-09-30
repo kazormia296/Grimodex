@@ -1,3 +1,5 @@
+import { TextEncoder } from "node:util";
+
 function deepFreeze(value) {
   if (value && typeof value === "object" && !Object.isFrozen(value)) {
     Object.freeze(value);
@@ -9,6 +11,19 @@ function deepFreeze(value) {
 export const RUNTIME_PERFORMANCE_INPUT_TEXT = "性能回帰入力".repeat(8);
 export const RUNTIME_PERFORMANCE_STEADY_INPUT_TEXT = "定常保存入力".repeat(8);
 export const RUNTIME_PERFORMANCE_AUTOSAVE_SAMPLE_COUNT = 3;
+export const RUNTIME_PERFORMANCE_SEED_LIMITS = deepFreeze({
+  treeNodes: 10_500,
+  mapNodePositions: 2_200,
+  mapEdges: 2_200,
+  plotThreads: 200,
+  plotThreadSceneLinks: 6_000,
+  events: 5_500,
+  eventRelations: 1_100,
+  chatMessages: 5_500,
+  totalRows: 25_000,
+  totalContentBytes: 20_000_000,
+  wireBytes: 32 * 1024 * 1024,
+});
 
 /**
  * Full review matrix from the performance review. These are deterministic
@@ -256,6 +271,7 @@ export function buildRuntimeReviewFixture(planOrId) {
       // Timeline markers are plot_thread_scene_links rows in production.
       // Materialize that actual surface contract instead of inventing a
       // second marker graph that no renderer consumes.
+      const phaseTypes = ["introduce", "develop", "turn", "climax", "resolve"];
       const links = Array.from(
         { length: plan.cardinality.markerLinkCount },
         (_, index) => ({
@@ -266,9 +282,10 @@ export function buildRuntimeReviewFixture(planOrId) {
           ),
           threadId: threads[index % threads.length].id,
           nodeId: scenes[index % scenes.length].id,
-          phaseType: ["introduce", "develop", "turn", "climax", "resolve"][
-            index % 5
-          ],
+          // A thread/scene pair repeats after one complete scene pass. Advance
+          // phase per pass so all formal marker-link semantic keys stay unique.
+          phaseType:
+            phaseTypes[Math.floor(index / scenes.length) % phaseTypes.length],
           note: null,
           sortOrder: String(index).padStart(
             String(plan.cardinality.markerLinkCount).length,
@@ -933,7 +950,9 @@ export function buildRuntimeFixtureStatements(
         `grimodex-runtime-perf-marker-link-${String(index).padStart(5, "0")}`,
         timelineThreadIds[index % timelineThreadIds.length],
         sceneIds[index % sceneIds.length],
-        phaseTypes[index % phaseTypes.length],
+        // The formal timeline repeats each thread/scene pair after one full
+        // scene pass. Advancing phase per pass keeps all 5,000 tuples unique.
+        phaseTypes[Math.floor(index / sceneIds.length) % phaseTypes.length],
         String(index).padStart(5, "0"),
       ],
       method: "run",
@@ -1015,6 +1034,261 @@ export function buildRuntimeFixtureStatements(
   }
 
   return statements;
+}
+
+const RUNTIME_FIXTURE_PROJECT_ID = "default-project";
+
+function insertedTableName(statement) {
+  return /^\s*INSERT\s+INTO\s+([a-z_]+)/i.exec(statement.sql)?.[1] ?? null;
+}
+
+function treeNodeFromStatement(statement) {
+  const [id] = statement.params;
+  if (statement.sql.includes("'folder'")) {
+    return {
+      id,
+      parentId: null,
+      nodeType: "folder",
+      title: "PERF LARGE FIXTURE",
+      content: "{}",
+      charCount: 0,
+      sortOrder: "a1",
+      storyTimeOrder: null,
+      chronicleStartTime: null,
+      chronicleStartGranularity: null,
+    };
+  }
+
+  const hasParent = statement.sql.includes("parent_id");
+  const hasStoryTime = statement.sql.includes("story_time_order");
+  const title = statement.params[hasParent ? 2 : 1];
+  const content = statement.params[hasParent ? 3 : 2];
+  const charCount = statement.params[hasParent ? 4 : 3];
+  const parentId = hasParent ? statement.params[1] : null;
+  const sortOrder = hasStoryTime
+    ? "a0"
+    : hasParent
+      ? statement.params[5]
+      : "a0";
+  return {
+    id,
+    parentId,
+    nodeType: "scene",
+    title,
+    content,
+    charCount,
+    sortOrder,
+    storyTimeOrder: hasStoryTime ? statement.params[5] : null,
+    chronicleStartTime: hasStoryTime ? null : 0,
+    chronicleStartGranularity: hasStoryTime ? null : "day",
+  };
+}
+
+export function validateRuntimeFixtureSeedPayload(payload) {
+  const arrays = [
+    ["treeNodes", RUNTIME_PERFORMANCE_SEED_LIMITS.treeNodes],
+    ["mapNodePositions", RUNTIME_PERFORMANCE_SEED_LIMITS.mapNodePositions],
+    ["mapEdges", RUNTIME_PERFORMANCE_SEED_LIMITS.mapEdges],
+    ["plotThreads", RUNTIME_PERFORMANCE_SEED_LIMITS.plotThreads],
+    [
+      "plotThreadSceneLinks",
+      RUNTIME_PERFORMANCE_SEED_LIMITS.plotThreadSceneLinks,
+    ],
+    ["events", RUNTIME_PERFORMANCE_SEED_LIMITS.events],
+    ["eventRelations", RUNTIME_PERFORMANCE_SEED_LIMITS.eventRelations],
+    ["chatMessages", RUNTIME_PERFORMANCE_SEED_LIMITS.chatMessages],
+  ];
+  let totalRows = 2 + Number(payload.chatSession !== null);
+  for (const [key, limit] of arrays) {
+    const rows = payload[key];
+    if (!Array.isArray(rows) || rows.length > limit) {
+      throw new Error(`runtime fixture seed ${key} exceeds its input limit`);
+    }
+    totalRows += rows.length;
+  }
+  if (payload.treeNodes.length === 0) {
+    throw new Error("runtime fixture seed requires at least one tree node");
+  }
+  const markerSemanticKeys = new Set();
+  for (const link of payload.plotThreadSceneLinks) {
+    const semanticKey = `${link.threadId}|${link.nodeId}|${link.phaseType}`;
+    if (markerSemanticKeys.has(semanticKey)) {
+      throw new Error(
+        "runtime fixture seed contains duplicate plot marker semantic keys",
+      );
+    }
+    markerSemanticKeys.add(semanticKey);
+  }
+  if (totalRows > RUNTIME_PERFORMANCE_SEED_LIMITS.totalRows) {
+    throw new Error("runtime fixture seed exceeds its total row input limit");
+  }
+  const encoder = new TextEncoder();
+  const contentBytes = payload.treeNodes.reduce(
+    (total, node) => total + encoder.encode(node.content).byteLength,
+    0,
+  );
+  if (contentBytes > RUNTIME_PERFORMANCE_SEED_LIMITS.totalContentBytes) {
+    throw new Error("runtime fixture seed exceeds its content input limit");
+  }
+  const wireBytes = encoder.encode(JSON.stringify(payload)).byteLength;
+  if (wireBytes > RUNTIME_PERFORMANCE_SEED_LIMITS.wireBytes) {
+    throw new Error("runtime fixture seed exceeds its wire input limit");
+  }
+  return payload;
+}
+
+/**
+ * Build the typed payload consumed by the dedicated Native fixture writer.
+ * SQL text never crosses IPC; Native validates references and commits every
+ * protected and support row in one side-effect-free transaction.
+ */
+export function buildRuntimeFixtureSeedPayload(
+  profile = RUNTIME_PERFORMANCE_FIXTURE,
+) {
+  const payload = {
+    fixtureId: profile.id,
+    projectId: RUNTIME_FIXTURE_PROJECT_ID,
+    treeNodes: [],
+    mapBoard: null,
+    projectSetting: null,
+    mapNodePositions: [],
+    mapEdges: [],
+    plotThreads: [],
+    plotThreadSceneLinks: [],
+    events: [],
+    eventRelations: [],
+    chatSession: null,
+    chatMessages: [],
+  };
+
+  for (const statement of buildRuntimeFixtureStatements(profile)) {
+    const table = insertedTableName(statement);
+    switch (table) {
+      case "tree_nodes":
+        payload.treeNodes.push(treeNodeFromStatement(statement));
+        break;
+      case "map_boards": {
+        const [id] = statement.params;
+        payload.mapBoard = {
+          id,
+          title: "PERF LARGE BOARD",
+          sortOrder: -1,
+          mode: "free",
+          showConfig: "{}",
+        };
+        break;
+      }
+      case "project_settings": {
+        const [value] = statement.params;
+        payload.projectSetting = { key: "editor.tabState", value };
+        break;
+      }
+      case "map_node_positions": {
+        const [id, treeNodeId, x, y, zIndex, boardId] = statement.params;
+        payload.mapNodePositions.push({
+          id,
+          boardId,
+          treeNodeId,
+          x,
+          y,
+          zIndex,
+        });
+        break;
+      }
+      case "map_edges": {
+        const [id, boardId, fromPositionId, toPositionId] = statement.params;
+        payload.mapEdges.push({
+          id,
+          boardId,
+          fromPositionId,
+          toPositionId,
+          labels: "[]",
+          style: "solid",
+          color: "#64748b",
+          direction: "none",
+        });
+        break;
+      }
+      case "plot_threads": {
+        const [id, name, color, sortOrder] = statement.params;
+        payload.plotThreads.push({
+          id,
+          name,
+          color,
+          sortOrder,
+        });
+        break;
+      }
+      case "plot_thread_scene_links": {
+        const [id, threadId, nodeId, phaseType, sortOrder] = statement.params;
+        payload.plotThreadSceneLinks.push({
+          id,
+          threadId,
+          nodeId,
+          phaseType,
+          sortOrder,
+        });
+        break;
+      }
+      case "events": {
+        const [id, title, ordinal, startTime, endTime] = statement.params;
+        payload.events.push({
+          id,
+          title,
+          ordinal,
+          startTime,
+          endTime,
+          startGranularity: "day",
+          endGranularity: "day",
+          precision: "exact",
+          kind: "generic",
+          secret: false,
+        });
+        break;
+      }
+      case "event_relations": {
+        const [causeEventId, effectEventId] = statement.params;
+        payload.eventRelations.push({
+          causeEventId,
+          effectEventId,
+        });
+        break;
+      }
+      case "chat_sessions": {
+        const [id, nodeId, title, createdAt, updatedAt] = statement.params;
+        payload.chatSession = {
+          id,
+          nodeId,
+          title,
+          model: "runtime-fixture",
+          createdAt,
+          updatedAt,
+        };
+        break;
+      }
+      case "chat_messages": {
+        const [id, sessionId, role, content, model, createdAt] =
+          statement.params;
+        payload.chatMessages.push({
+          id,
+          sessionId,
+          role,
+          content,
+          model,
+          createdAt,
+        });
+        break;
+      }
+      default:
+        throw new Error(
+          `unsupported runtime fixture seed table: ${String(table)}`,
+        );
+    }
+  }
+  if (payload.mapBoard === null || payload.projectSetting === null) {
+    throw new Error("runtime fixture seed payload is incomplete");
+  }
+  return validateRuntimeFixtureSeedPayload(payload);
 }
 
 /**

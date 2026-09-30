@@ -7,7 +7,12 @@
  */
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { IPC } from "../shared/ipcContract.js";
+import {
+  IPC,
+  type CaptureCurrentChatInputReceipt,
+  type CaptureCurrentChatInputSubmission,
+  type Envelope,
+} from "../shared/ipcContract.js";
 
 type IpcListener = (event: unknown, ...args: unknown[]) => void;
 
@@ -44,11 +49,15 @@ interface BridgeUnderTest {
   };
   listen(channel: string, cb: (payload: unknown) => void): () => void;
   emit(channel: string, payload?: unknown): Promise<void>;
+  invoke(cmd: string, args?: Record<string, unknown>): Promise<Envelope>;
   dialog: {
     openWebEditorHandoff(): Promise<{
       name: string;
       content: string;
     } | null>;
+  };
+  panelWindow: {
+    existsByLabel(label: string): Promise<boolean>;
   };
   windowControls: {
     toggleFullscreen(): Promise<boolean>;
@@ -83,6 +92,49 @@ describe("window fullscreen bridge", () => {
       IPC.windowControl,
       "isFullscreen",
     );
+  });
+});
+
+describe("current Human capture invoke bridge", () => {
+  it("uses the existing invoke envelope without renderer caller authority", async () => {
+    const bridge = await loadPreload();
+    const submission: CaptureCurrentChatInputSubmission = {
+      submissionId: "capture-submit-1",
+      messageId: "capture-message-1",
+      chatSessionId: "chat-session-1",
+      sceneId: "scene-1",
+      content: "local composer text",
+      createdAt: "2026-09-28T10:00:00.000Z",
+    };
+    const receipt: CaptureCurrentChatInputReceipt = {
+      status: "accepted",
+      projectId: "project-1",
+      chatSessionId: submission.chatSessionId,
+      sceneId: submission.sceneId,
+      messageId: submission.messageId,
+    };
+    mocks.invoke.mockResolvedValueOnce({ ok: true, value: receipt });
+
+    await expect(
+      bridge.invoke("capture_current_chat_input", { submission }),
+    ).resolves.toEqual({ ok: true, value: receipt });
+    expect(mocks.invoke).toHaveBeenCalledWith(
+      IPC.invoke,
+      "capture_current_chat_input",
+      { submission },
+    );
+  });
+});
+
+describe("panel window bridge", () => {
+  it("maps the read-only existence probe onto its dedicated channel", async () => {
+    const bridge = await loadPreload();
+    mocks.invoke.mockResolvedValueOnce({ ok: true, value: true });
+
+    await expect(
+      bridge.panelWindow.existsByLabel("panel-scenes"),
+    ).resolves.toBe(true);
+    expect(mocks.invoke).toHaveBeenCalledWith(IPC.panelExists, "panel-scenes");
   });
 });
 

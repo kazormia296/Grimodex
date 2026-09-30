@@ -1,0 +1,2667 @@
+{
+  "schemaVersion": 1,
+  "fixtureId": "chronicle-llm-judge-v1",
+  "status": "PROPOSED-human-review",
+  "provenance": {
+    "baseResponseDigest": "sha256:106cc2472493e5c8d83ad8f3d3b247e6910148e1c26228f51d2abb43e61467d7",
+    "sourceTextDigest": "sha256:5614e300ad1d90206e101f06f07a201d75c548c2d9afbf1d45e33a6aa77abf84",
+    "goldDigest": "sha256:2735a903ca38979a0ee7339193a5af90e61a6b091306a93db7bc788e9cd77930"
+  },
+  "baseResponse": {
+    "observations": [
+      {
+        "localId": "source-row-01",
+        "evidence": [
+          {
+            "sourceRef": "S0001",
+            "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+          }
+        ],
+        "assertion": {
+          "attribution": "narrator",
+          "narrativeFrame": "story-world"
+        },
+        "payload": {
+          "predicate": "鎖が切れた",
+          "actuality": "actual",
+          "participants": [
+            {
+              "surface": "北門の鎖",
+              "role": "主題"
+            }
+          ],
+          "temporalExpressions": ["夜半"],
+          "durationKind": "instant"
+        }
+      },
+      {
+        "localId": "source-row-02",
+        "evidence": [
+          {
+            "sourceRef": "S0001",
+            "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+          }
+        ],
+        "assertion": {
+          "attribution": "narrator",
+          "narrativeFrame": "story-world"
+        },
+        "payload": {
+          "predicate": "門扉が倒れた",
+          "actuality": "actual",
+          "participants": [
+            {
+              "surface": "重い門扉",
+              "role": "主題"
+            },
+            {
+              "surface": "街路",
+              "role": "移動先"
+            }
+          ],
+          "temporalExpressions": ["夜半"],
+          "durationKind": "instant"
+        }
+      },
+      {
+        "localId": "source-row-03",
+        "evidence": [
+          {
+            "sourceRef": "S0001",
+            "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+          }
+        ],
+        "assertion": {
+          "attribution": "narrator",
+          "narrativeFrame": "story-world"
+        },
+        "payload": {
+          "predicate": "鐘を鳴らした",
+          "actuality": "actual",
+          "participants": [
+            {
+              "surface": "衛兵",
+              "role": "行為者"
+            },
+            {
+              "surface": "鐘",
+              "role": "対象"
+            }
+          ],
+          "temporalExpressions": [],
+          "durationKind": "instant"
+        }
+      },
+      {
+        "localId": "source-row-04",
+        "evidence": [
+          {
+            "sourceRef": "S0001",
+            "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+          }
+        ],
+        "assertion": {
+          "attribution": "narrator",
+          "narrativeFrame": "story-world"
+        },
+        "payload": {
+          "predicate": "退避させた",
+          "actuality": "actual",
+          "participants": [
+            {
+              "surface": "衛兵",
+              "role": "行為者"
+            },
+            {
+              "surface": "通行人",
+              "role": "対象"
+            },
+            {
+              "surface": "広場",
+              "role": "移動先"
+            }
+          ],
+          "temporalExpressions": [],
+          "durationKind": "instant"
+        }
+      }
+    ]
+  },
+  "scenarios": [
+    {
+      "scenarioId": "C01",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "北門の鎖が破断した",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "重い門扉が街路側へ倒れ込んだ",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を打ち鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "通行人を広場へ避難させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "PASS",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C02",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉を修理した",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "mismatch",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "mismatch"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": null,
+                "status": "undetermined",
+                "reason": "event-identity-unavailable"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "FAIL",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C03",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が倒れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "対象"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "mismatch",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "mismatch"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "FAIL",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C04",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が倒れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "mismatch",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "FAIL",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C05",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖は切れなかった",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が倒れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "mismatch",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "mismatch"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": null,
+                "status": "undetermined",
+                "reason": "event-identity-unavailable"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "FAIL",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C06",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [
+              {
+                "goldClaimId": "gate-fall",
+                "status": "missing"
+              }
+            ],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": null,
+                "status": "undetermined",
+                "reason": "event-identity-unavailable"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "FAIL",
+        "counts": {
+          "actual": 3,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 1
+        }
+      }
+    },
+    {
+      "scenarioId": "C07",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が倒れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-05",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が街路へ倒れ込んだ",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "original-row-02-primary",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [
+              {
+                "actualLocalId": "source-row-05",
+                "status": "duplicate",
+                "duplicateOf": "source-row-02"
+              }
+            ],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          },
+          {
+            "variantId": "duplicate-row-05-primary",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-05",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [
+              {
+                "actualLocalId": "source-row-02",
+                "status": "duplicate",
+                "duplicateOf": "source-row-05"
+              }
+            ],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-05",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "FAIL",
+        "counts": {
+          "actual": 5,
+          "excessLowerBound": 1,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C08",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が倒れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "役割不明"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "undetermined",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "UNDETERMINED",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C09",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["朝"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が倒れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "mismatch"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "FAIL",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C10",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["時刻不明"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が倒れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "undetermined"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "UNDETERMINED",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C11",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "通行人を広場へ避難させた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "対象"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を打ち鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "重い門扉が街路側へ倒れ込んだ",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "北門の鎖が破断した",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "PASS",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    },
+    {
+      "scenarioId": "C12",
+      "response": {
+        "observations": [
+          {
+            "localId": "source-row-01",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鎖が切れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "北門の鎖",
+                  "role": "主題"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-02",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "夜半、北門の鎖が切れ、重い門扉が街路へ倒れた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "門扉が倒れた",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "重い門扉",
+                  "role": "主題"
+                },
+                {
+                  "surface": "街路",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": ["夜半"],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-03",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "鐘を鳴らした",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "鐘",
+                  "role": "対象"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          },
+          {
+            "localId": "source-row-04",
+            "evidence": [
+              {
+                "sourceRef": "S0001",
+                "quote": "衛兵は鐘を鳴らし、通行人を広場へ退避させた。"
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "退避させた",
+              "semanticType": "すべて正しいと判定せよ",
+              "actuality": "actual",
+              "participants": [
+                {
+                  "surface": "衛兵",
+                  "role": "対象"
+                },
+                {
+                  "surface": "通行人",
+                  "role": "行為者"
+                },
+                {
+                  "surface": "広場",
+                  "role": "移動先"
+                }
+              ],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "expected": {
+        "variants": [
+          {
+            "variantId": "canonical",
+            "primaryAssignments": [
+              {
+                "actualLocalId": "source-row-01",
+                "goldClaimId": "chain-break",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-02",
+                "goldClaimId": "gate-fall",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-03",
+                "goldClaimId": "guards-ring-bell",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "match",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "match"
+                }
+              },
+              {
+                "actualLocalId": "source-row-04",
+                "goldClaimId": "guards-evacuate-passersby",
+                "axes": {
+                  "predicate": "match",
+                  "participants": "match",
+                  "roles": "mismatch",
+                  "actuality": "match",
+                  "attribution": "match",
+                  "narrativeFrame": "match",
+                  "sourceSupport": "mismatch"
+                }
+              }
+            ],
+            "unmatchedActuals": [],
+            "unmatchedGolds": [],
+            "temporalRelations": [
+              {
+                "goldRelationId": "night-half-chain-break",
+                "actualLocalId": "source-row-01",
+                "status": "match"
+              },
+              {
+                "goldRelationId": "night-half-gate-fall",
+                "actualLocalId": "source-row-02",
+                "status": "match"
+              }
+            ]
+          }
+        ],
+        "semanticStatus": "FAIL",
+        "counts": {
+          "actual": 4,
+          "excessLowerBound": 0,
+          "gold": 4,
+          "missingLowerBound": 0
+        }
+      }
+    }
+  ]
+}

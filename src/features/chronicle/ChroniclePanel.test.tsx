@@ -250,10 +250,14 @@ vi.mock("./ChronicleInspector", () => ({
     event: EventRow;
     isScene?: boolean;
     onPatch: (patch: Partial<EventRow>) => void;
-    onPatchDraft?: (patch: Partial<EventRow>) => void | Promise<void>;
+    onPatchDraft?: (
+      patch: Partial<EventRow>,
+      options?: { preexistingDraft?: boolean },
+    ) => void | Promise<void>;
     onPatchDetail?: (
       detail: string,
       baseVersion: number,
+      options?: { preexistingDraft?: boolean },
     ) => Promise<{ version: number }>;
     onDelete: () => void;
     onLinkScene?: (sceneId: string, mode: "event" | "scene") => void;
@@ -285,6 +289,19 @@ vi.mock("./ChronicleInspector", () => ({
         }}
       >
         draft-patch
+      </button>
+      <button
+        data-testid="preexisting-draft-patch-btn"
+        onClick={() => {
+          void Promise.resolve(
+            onPatchDraft?.(
+              { title: "quiescing draft" },
+              { preexistingDraft: true },
+            ),
+          ).catch(inspectorMocks.draftRejected);
+        }}
+      >
+        preexisting draft patch
       </button>
       <button
         data-testid="parallel-patch-btn"
@@ -1054,6 +1071,57 @@ describe("ChroniclePanel project switch", () => {
 });
 
 describe("ChroniclePanel optimistic patch", () => {
+  it("real-event autosave carries the explicit preexisting-draft permit to uiUpdateEvent", async () => {
+    apiMocks.listEvents.mockResolvedValue([
+      makeEvent({ id: "ea", title: "原題", version: 3 }),
+    ]);
+
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "ea" });
+    });
+
+    fireEvent.click(screen.getByTestId("preexisting-draft-patch-btn"));
+
+    await waitFor(() => {
+      expect(eventMocks.uiUpdateEvent).toHaveBeenCalledWith(
+        {
+          eventId: "ea",
+          baseVersion: 3,
+          title: "quiescing draft",
+        },
+        {
+          suppressDocumentNotification: true,
+          preexistingDraft: true,
+        },
+      );
+    });
+  });
+
+  it("scene-event autosave carries the explicit preexisting-draft permit to treeStore", async () => {
+    apiMocks.listEvents.mockResolvedValue([]);
+    useTreeStore.setState({ nodes: [makeScene({ id: "sc1" })] });
+    useProjectStore.setState({ currentProjectId: "p1" });
+    render(<ChroniclePanel />);
+    await screen.findByTestId("viewport");
+    act(() => {
+      useChronicleStore.setState({ selectedEventId: "scene:sc1" });
+    });
+
+    fireEvent.click(screen.getByTestId("preexisting-draft-patch-btn"));
+
+    await waitFor(() => {
+      expect(useTreeStore.getState().updateNodeTitle).toHaveBeenCalledWith(
+        "sc1",
+        "quiescing draft",
+        { preexistingDraft: true },
+      );
+    });
+    expect(eventMocks.uiUpdateEvent).not.toHaveBeenCalled();
+  });
+
   it("uiUpdateEvent 失敗時に楽観更新を巻き戻し、エラーを通知する", async () => {
     apiMocks.listEvents.mockResolvedValue([
       makeEvent({ id: "ea", title: "原題" }),

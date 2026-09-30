@@ -26,6 +26,7 @@ import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import {
   LIFECYCLE_TRACE_OPT_IN_KEY,
   subscribeLifecycleTrace,
@@ -34,6 +35,9 @@ import {
 
 const cancelScheduledImeExportsMock = vi.hoisted(() => vi.fn());
 const cancelAllScheduledSemanticIndexesMock = vi.hoisted(() => vi.fn());
+const lifecycleHarness = vi.hoisted(() => ({
+  listener: null as ((payload: unknown) => void) | null,
+}));
 
 vi.mock("@/features/ime/scheduler", () => ({
   cancelScheduledImeExports: cancelScheduledImeExportsMock,
@@ -45,6 +49,12 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
 
 vi.mock("@/lib/tauri", () => ({
   invoke: vi.fn(),
+  listen: vi.fn(
+    async (_channel: string, listener: (payload: unknown) => void) => {
+      lifecycleHarness.listener = listener;
+      return () => {};
+    },
+  ),
 }));
 
 // Import the mocked module to configure per-test
@@ -63,10 +73,15 @@ function resetStore() {
     workspaceSwitchInProgress: false,
     workspaceOpenRequestInProgress: false,
     workspaceHydrated: false,
+    workspaceLifecycleRevision: 0,
+    workspaceLifecycleStatus: "closed",
+    workspaceLifecycleActivation: "none",
+    workspaceLifecycleBindingToken: null,
     activeWorkspaceName: null,
     error: null,
     pendingTrustPath: null,
     showSampleTour: false,
+    recoveryShell: null,
   });
 }
 
@@ -75,10 +90,12 @@ describe("useWorkspaceStore", () => {
     _resetQuiescenceLeasesForTests();
     resetProjectLoadGateForTests();
     resetStore();
+    publishCurrentProjectId(null);
     setCurrentImeWorkspaceIdentity(null);
     useInlineAiStore.getState().reset();
     useEditorSessionStore.getState().resetForProject();
     useProjectStore.setState({
+      currentProjectId: null,
       loadProjectWithinLifecycle: vi.fn(async () => {}),
     });
     vi.clearAllMocks();
@@ -86,8 +103,10 @@ describe("useWorkspaceStore", () => {
 
   afterEach(() => {
     useProjectStore.setState({
+      currentProjectId: null,
       loadProjectWithinLifecycle: realLoadProjectWithinLifecycle,
     });
+    publishCurrentProjectId(null);
   });
 
   describe("initialize", () => {
@@ -474,10 +493,26 @@ describe("useWorkspaceStore", () => {
       );
     });
 
-    it("sets editor view and active workspace on success", async () => {
-      mockInvoke.mockResolvedValueOnce({
-        name: "MyNovel",
-        workspaceId: "workspace-my-novel",
+    it("sets editor view and active workspace without automatically optimizing FTS", async () => {
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "open_workspace") {
+          return {
+            name: "MyNovel",
+            workspaceId: "workspace-my-novel",
+            isExisting: true,
+          };
+        }
+        if (command === "get_global_settings") {
+          return {
+            recentWorkspaces: [],
+            lastActiveWorkspace: "D:\\Novels\\MyNovel",
+            theme: "system",
+            uiLanguage: "ja",
+            uiScale: 100,
+            showLauncherOnStartup: false,
+          };
+        }
+        return { rows: [] };
       });
 
       await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\MyNovel");
@@ -489,6 +524,72 @@ describe("useWorkspaceStore", () => {
       expect(state.workspaceOpenRevision).toBe(1);
       expect(state.workspaceSwitchInProgress).toBe(false);
       expect(state.workspaceHydrated).toBe(true);
+      expect(
+        mockInvoke.mock.calls.some(([command]) => command === "fts_optimize"),
+      ).toBe(false);
+    });
+
+    it("opens the recovery shell without hydrating when native returns Safe Mode", async () => {
+      const previousLoadAll = useSettingsStore.getState().loadAll;
+      const loadAll = vi.fn(async () => {});
+      useSettingsStore.setState({ loadAll });
+      const candidate = {
+        id: "rc_auto_1",
+        kind: "automatic-backup",
+        createdAt: "2026-08-10T12:00:00Z",
+        schemaVersion: 42,
+        appVersion: "0.7.0",
+        sizeBytes: 4096,
+        checksumStatus: "verified",
+      };
+      mockInvoke.mockImplementation(async (command: string) => {
+        if (command === "open_workspace") {
+          return {
+            status: "safe-mode",
+            reason: "WORKSPACE_SAFE_MODE: live database schema is newer",
+            candidates: [candidate],
+          };
+        }
+        if (command === "get_global_settings") {
+          throw new Error("settings hydration must be skipped");
+        }
+        if (command === "db_execute") {
+          throw new Error("project hydration must be skipped");
+        }
+        return undefined;
+      });
+
+      try {
+        const outcome = await useWorkspaceStore
+          .getState()
+          .openWorkspace("D:\\Novels\\SafeMode");
+
+        expect(outcome).toBe("safe-mode");
+        expect(loadAll).not.toHaveBeenCalled();
+        expect(
+          mockInvoke.mock.calls.some(([command]) => command === "db_execute"),
+        ).toBe(false);
+        expect(
+          mockInvoke.mock.calls.some(
+            ([command]) => command === "get_global_settings",
+          ),
+        ).toBe(false);
+        expect(useWorkspaceStore.getState()).toMatchObject({
+          view: "recovery",
+          activeWorkspacePath: null,
+          workspaceOpenRevision: 0,
+          workspaceSwitchInProgress: false,
+          workspaceHydrated: false,
+          recoveryShell: {
+            mode: "safe-mode",
+            workspacePath: "D:\\Novels\\SafeMode",
+            reason: "WORKSPACE_SAFE_MODE: live database schema is newer",
+            candidates: [candidate],
+          },
+        });
+      } finally {
+        useSettingsStore.setState({ loadAll: previousLoadAll });
+      }
     });
 
     it("keeps window-close waiting until the full Workspace lifecycle completes", async () => {
@@ -555,7 +656,45 @@ describe("useWorkspaceStore", () => {
       expect(isQuiescenceLeaseActive()).toBe(false);
     });
 
-    it("restores the previous hydrated workspace when native open rejects before swap", async () => {
+    it("keeps an event-before-reject RecoveryRequired projection instead of restoring the old binding", async () => {
+      if (!lifecycleHarness.listener) {
+        await useWorkspaceStore.getState().initialize();
+      }
+      useWorkspaceStore.setState({
+        view: "editor",
+        activeWorkspacePath: "D:\\Novels\\Existing",
+        activeWorkspaceName: "Existing",
+        workspaceOpenRevision: 3,
+        workspaceHydrated: true,
+        workspaceLifecycleRevision: 9998,
+        workspaceLifecycleStatus: "ready",
+        workspaceLifecycleActivation: "ready",
+        workspaceLifecycleBindingToken: "old-token",
+      });
+      lifecycleHarness.listener?.({
+        schemaVersion: 1,
+        revision: 9999,
+        status: "recovery-required",
+        bindingToken: "old-token",
+        activation: "requires-open",
+      });
+      mockInvoke.mockRejectedValueOnce(new Error("open post-admission failed"));
+
+      await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\Broken");
+
+      expect(useWorkspaceStore.getState()).toMatchObject({
+        view: "recovery",
+        workspaceHydrated: false,
+        activeWorkspacePath: null,
+        recoveryShell: expect.objectContaining({
+          mode: "recovery-required",
+          workspacePath: "D:\\Novels\\Existing",
+        }),
+        error: "open post-admission failed",
+      });
+    });
+
+    it("fails closed when the Native open request rejects without a terminal outcome", async () => {
       useWorkspaceStore.setState({
         view: "editor",
         activeWorkspacePath: "D:\\Novels\\Existing",
@@ -567,10 +706,12 @@ describe("useWorkspaceStore", () => {
 
       await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\Broken");
       const state = useWorkspaceStore.getState();
-      expect(state.activeWorkspacePath).toBe("D:\\Novels\\Existing");
+      expect(state.view).toBe("launcher");
+      expect(state.activeWorkspacePath).toBe("D:\\Novels\\Broken");
       expect(state.workspaceOpenRevision).toBe(3);
-      expect(state.workspaceHydrated).toBe(true);
+      expect(state.workspaceHydrated).toBe(false);
       expect(state.workspaceSwitchInProgress).toBe(false);
+      expect(getCurrentImeWorkspaceIdentity()).toBeNull();
     });
 
     it("publishes the replacement identity only after mandatory hydration completes", async () => {
@@ -896,16 +1037,17 @@ describe("useWorkspaceStore", () => {
       const opening = useWorkspaceStore
         .getState()
         .openWorkspace("D:\\Novels\\Replacement");
-      await Promise.resolve();
-      expect(isQuiescenceLeaseActive()).toBe(true);
-      expect(mockInvoke).not.toHaveBeenCalledWith(
-        "open_workspace",
-        expect.anything(),
-      );
-
-      release();
-      await tracked;
-      await opening;
+      try {
+        await vi.waitFor(() => expect(isQuiescenceLeaseActive()).toBe(true));
+        expect(mockInvoke).not.toHaveBeenCalledWith(
+          "open_workspace",
+          expect.anything(),
+        );
+      } finally {
+        release();
+        await tracked;
+        await opening;
+      }
       expect(isQuiescenceLeaseActive()).toBe(false);
       expect(mockInvoke).toHaveBeenCalledWith("open_workspace", {
         path: "D:\\Novels\\Replacement",
@@ -951,29 +1093,39 @@ describe("useWorkspaceStore", () => {
       const opening = useWorkspaceStore
         .getState()
         .openWorkspace("D:\\Novels\\Replacement");
-      await Promise.resolve();
-      expect(order).toEqual(["existing-project-start"]);
-      expect(getCurrentImeWorkspaceIdentity()).toEqual({
-        path: "D:\\Novels\\Existing",
-        openRevision: 9,
-      });
-
       let lateProjectStarted = false;
       let identityAtLateProjectStart:
         | ReturnType<typeof getCurrentImeWorkspaceIdentity>
         | undefined;
-      const lateLoad = withProjectLoad(async () => {
-        lateProjectStarted = true;
-        identityAtLateProjectStart = getCurrentImeWorkspaceIdentity();
-        order.push("late-project-start");
-      });
-      await Promise.resolve();
-      expect(lateProjectStarted).toBe(false);
+      let lateLoad: Promise<void> | undefined;
+      try {
+        await vi.waitFor(() =>
+          expect(isQuiescenceLeaseActive("workspace-open")).toBe(true),
+        );
+        expect(order).toEqual(["existing-project-start"]);
+        expect(getCurrentImeWorkspaceIdentity()).toEqual({
+          path: "D:\\Novels\\Existing",
+          openRevision: 9,
+        });
 
-      releaseExisting();
-      await existingLoad;
-      await opening;
-      await lateLoad;
+        lateLoad = withProjectLoad(async () => {
+          lateProjectStarted = true;
+          identityAtLateProjectStart = getCurrentImeWorkspaceIdentity();
+          order.push("late-project-start");
+        });
+        await Promise.resolve();
+        expect(lateProjectStarted).toBe(false);
+
+        releaseExisting();
+        await existingLoad;
+        await opening;
+        await lateLoad;
+      } finally {
+        releaseExisting();
+        await existingLoad;
+        await opening;
+        await lateLoad;
+      }
 
       expect(order).toEqual([
         "existing-project-start",
@@ -989,6 +1141,9 @@ describe("useWorkspaceStore", () => {
 
     it("hydrates the Project under the Workspace lease before every ready publication", async () => {
       const samePath = "D:\\Novels\\Same";
+      const loadedProjectId = "loaded-project";
+      useProjectStore.setState({ currentProjectId: loadedProjectId });
+      publishCurrentProjectId(loadedProjectId);
       const settingsShape = {
         recentWorkspaces: [],
         lastActiveWorkspace: samePath,

@@ -9,14 +9,21 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[cfg(test)]
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use grimodex_db::Database;
-use grimodex_lint::morph::{tokenize_block, MorphToken};
+#[cfg(test)]
+use grimodex_lint::morph::MorphToken;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 
 use crate::chunker::extract_paragraph_texts;
+use crate::entity_seeds::{
+    extract_codex_entity_seeds_for_legacy, CanonicalRangeV1, EntitySeedCanonicalSourceV1,
+    ExtractCodexEntitySeedsRequestV1, ENTITY_SEED_NORMALIZER_VERSION_V1,
+    ENTITY_SEED_SCHEMA_VERSION_V1,
+};
 
 /// UI に返す未確定固有名詞候補。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -142,6 +149,7 @@ fn walk_reading_order(
 /// `plain` 内の `[byte_start, byte_end)` を含む周辺一文を返す (LLM 文脈用)。
 /// 文境界 (。！？!?改行) まで広げ、長すぎる場合は前後 `RADIUS` 文字でクランプ。
 /// char 単位で走査するのでバイト境界 panic を起こさない。範囲外オフセットは丸める。
+#[cfg(test)]
 fn context_window(plain: &str, byte_start: usize, byte_end: usize) -> String {
     const RADIUS: usize = 50;
     const TERMINATORS: [char; 6] = ['。', '！', '？', '!', '?', '\n'];
@@ -186,12 +194,14 @@ fn context_window(plain: &str, byte_start: usize, byte_end: usize) -> String {
 
 /// 形態素解析済みの 1 シーン: (scene_id, NFC 正規化済み平文, 固有名詞含む全トークン,
 /// 既知 Codex 名の出現スパン `[start, end)`)。`aggregate_candidates` の入力単位。
+#[cfg(test)]
 type SceneTokens = (String, String, Vec<MorphToken>, Vec<(usize, usize)>);
 
 /// `[byte_start, byte_end)` が既知 Codex 名の出現スパン (`spans`) のいずれかに
 /// **完全に包含される**か。包含 = その固有名詞トークンは既知名の一部 (lindera が
 /// 既知名を過分割して生じたフラグメント) なので候補から落とす。より長い別語
 /// (スパンを跨ぐ・はみ出すトークン) は包含されないので残る。
+#[cfg(test)]
 fn is_fragment_of_known_name(spans: &[(usize, usize)], byte_start: usize, byte_end: usize) -> bool {
     spans.iter().any(|&(s, e)| s <= byte_start && byte_end <= e)
 }
@@ -203,6 +213,7 @@ fn is_fragment_of_known_name(spans: &[(usize, usize)], byte_start: usize, byte_e
 /// 「山田太郎」が `山田`+`太郎` に分割された各片) は候補にしない。これにより
 /// 「Codex 項目の一部 (一文字) が未確定候補に出る」過分割リークを防ぐ。
 /// 純ロジック (DB/lindera 非依存) なのでテスト可能。
+#[cfg(test)]
 fn aggregate_candidates(
     scenes: &[SceneTokens],
     known: &HashSet<String>,
@@ -283,6 +294,7 @@ fn aggregate_candidates(
 /// 過分割フラグメントが再び候補に漏れる (本コマンドが直す当の不具合) ので、握り潰さず
 /// warn ログを残して原因を追えるようにする。実際には codex 名規模で AC 構築が失敗する
 /// ことはまず無い。
+#[cfg(test)]
 fn build_name_matcher(patterns: &[String]) -> Option<AhoCorasick> {
     if patterns.is_empty() {
         return None;
@@ -306,6 +318,7 @@ fn build_name_matcher(patterns: &[String]) -> Option<AhoCorasick> {
 
 /// 本文 `plain` 内で既知 Codex 名 (AC) が出現したバイトスパン `[start, end)` を集める。
 /// `find_overlapping_iter` で重なりも全部拾う (短い別名と長い名前が入れ子でも両方マスク)。
+#[cfg(test)]
 fn name_occurrence_spans(plain: &str, matcher: Option<&AhoCorasick>) -> Vec<(usize, usize)> {
     match matcher {
         Some(ac) if !plain.is_empty() => ac
@@ -408,40 +421,43 @@ pub fn extract_codex_candidates(
     // DFS 並べ替えも connection lock 解放後に行う。
     let scenes = reading_order_scenes(&nodes);
 
-    // 既知名の本文マスク用 AC を一度だけ構築 (DB lock 外)。パターンは正規化済み
-    // `known` (NFC) を流用。これで各シーンの本文から既知名の出現スパンを引き、
-    // 過分割フラグメント (一文字等) を候補から除外する。
-    let name_patterns: Vec<String> = known.iter().cloned().collect();
-    let name_matcher = build_name_matcher(&name_patterns);
-
-    // フェーズ 2 (DB lock 外): 各シーンを形態素解析。平文も持ち回して文脈窓に使う。
-    let mut scenes_tokens: Vec<SceneTokens> = Vec::with_capacity(scenes.len());
+    // フェーズ 2 (DB lock 外): 保存済み Scene を canonical source view へ投影し、
+    // workspace 非依存の Entity Seed core を compatibility adapter として呼ぶ。
+    let mut sources = Vec::with_capacity(scenes.len());
     for (scene_id, content_json) in scenes {
-        // 本文を NFC へ正規化してから形態素解析・マスクの双方に使う。これで既知名
-        // パターン (normalize_name=NFC) と本文の合成/分解形が一致し、トークン・
-        // スパンのバイトオフセットも同一座標系に揃う。
-        let plain: String = plaintext_of(&content_json).nfc().collect();
-        let tokens = if plain.is_empty() {
-            Vec::new()
-        } else {
-            match tokenize_block(&plain) {
-                Ok(t) => t,
-                Err(e) => {
-                    // best-effort: そのシーンは空扱いにするが、握り潰さず記録する。
-                    tracing::warn!(
-                        scene_id = %scene_id,
-                        error = %e,
-                        "[codex_candidates] morph tokenize 失敗; このシーンを空扱い"
-                    );
-                    Vec::new()
-                }
-            }
-        };
-        let name_spans = name_occurrence_spans(&plain, name_matcher.as_ref());
-        scenes_tokens.push((scene_id, plain, tokens, name_spans));
+        let text = plaintext_of(&content_json);
+        let text_utf16 = u32::try_from(text.encode_utf16().count())
+            .map_err(|_| anyhow::anyhow!("scene {scene_id} text exceeds the UTF-16 range limit"))?;
+        sources.push(EntitySeedCanonicalSourceV1 {
+            source_ref: scene_id.clone(),
+            document_ref: scene_id,
+            document_range: CanonicalRangeV1 {
+                start: 0,
+                end: text_utf16,
+            },
+            text,
+        });
     }
 
-    Ok(aggregate_candidates(&scenes_tokens, &known, min_count))
+    let request = ExtractCodexEntitySeedsRequestV1 {
+        schema_version: ENTITY_SEED_SCHEMA_VERSION_V1,
+        normalizer_version: ENTITY_SEED_NORMALIZER_VERSION_V1.to_string(),
+        language: "ja".to_string(),
+        minimum_occurrence_count: u32::try_from(min_count).unwrap_or(u32::MAX),
+        sources,
+    };
+    let response = extract_codex_entity_seeds_for_legacy(&request, &known)?;
+    Ok(response
+        .seeds
+        .into_iter()
+        .map(|seed| CodexCandidate {
+            surface: seed.legacy_surface().to_string(),
+            lemma: seed.legacy_lemma().to_string(),
+            count: seed.legacy_count(),
+            first_scene_id: seed.legacy_first_source_ref().to_string(),
+            context: seed.legacy_context().to_string(),
+        })
+        .collect())
 }
 
 #[cfg(test)]

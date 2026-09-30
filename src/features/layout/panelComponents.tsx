@@ -6,7 +6,6 @@ import type {
 } from "react";
 
 import { Sidebar } from "@/features/tree/Sidebar";
-import { SceneContextPanel } from "@/features/tree/SceneContextPanel";
 import { SceneEditor } from "@/features/tree/SceneEditor";
 
 import type { PanelId } from "./panelIds";
@@ -16,6 +15,11 @@ import type { SlotPanelProps } from "./layoutTypes";
 // ChroniclePanel は ChronicleInspector → chronicleLunar → lunar-typescript まで
 // 引き連れるため効果が大きい。描画サイト (SlotView / AnimatedSlotPanel) 側に
 // Suspense boundary がある。
+const SceneContextPanel = lazy(() =>
+  import("@/features/tree/SceneContextPanel").then((m) => ({
+    default: m.SceneContextPanel,
+  })),
+);
 const ChroniclePanel = lazy(() =>
   import("@/features/chronicle/ChroniclePanel").then((m) => ({
     default: m.ChroniclePanel,

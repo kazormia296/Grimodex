@@ -19,6 +19,7 @@ const t1: PlotThreadRow = {
   sortOrder: "a0",
   startNodeId: null,
   endNodeId: null,
+  version: 0,
   createdAt: "",
   updatedAt: "",
 };

@@ -215,11 +215,16 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
   {
     name: "update_foreshadow",
     description:
-      "Update an existing foreshadowing item (rename, refine intent/notes, set loadBearing, mark payoffConfirmed when the payoff landed, or abandoned). Requires knowledgeWrite policy. Only provided fields change.",
+      "Update an existing foreshadowing item using the version returned by list_open_foreshadows or get_foreshadow_detail. Stale versions are rejected. Requires knowledgeWrite policy. Only provided fields change.",
     inputSchema: {
       type: "object",
       properties: {
         id: { type: "string", description: "Foreshadow UUID" },
+        baseVersion: {
+          type: "integer",
+          minimum: 0,
+          description: "Version observed by the read that informed this update",
+        },
         title: { type: "string" },
         intent: { type: "string" },
         notes: { type: "string" },
@@ -237,7 +242,7 @@ export const AGENT_TOOLS: AgentToolDefinition[] = [
         },
         secret: { type: "boolean" },
       },
-      required: ["id"],
+      required: ["id", "baseVersion"],
     },
   },
 

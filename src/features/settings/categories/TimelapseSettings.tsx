@@ -11,7 +11,7 @@ import {
   setTimelapseEnabled,
   purgeTimelapseHistory,
   countTimelapseEvents,
-} from "@/features/timelapse/toggle";
+} from "@/features/timelapse/timelapseAdmin";
 
 /**
  * 執筆タイムラプスの per-project 記録トグル + 履歴パージ (§15.3 / §15.10)。

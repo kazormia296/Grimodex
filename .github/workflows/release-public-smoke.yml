@@ -1,0 +1,41 @@
+name: Public distribution smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published public distribution tag to verify
+        required: true
+        type: string
+      stable:
+        description: Also verify the anonymous latest.* endpoints
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  PUBLICATION_REPOSITORY: kazormia296/GrimodexReleases
+
+jobs:
+  verify:
+    name: Verify anonymous public assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify public release without credentials
+        env:
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          VERIFY_STABLE: ${{ inputs.stable }}
+        run: |
+          set -euo pipefail
+          args=(--repository "$PUBLICATION_REPOSITORY" --tag "$RELEASE_TAG")
+          if [ "$VERIFY_STABLE" = "true" ]; then
+            args+=(--stable)
+          fi
+          node scripts/verify-public-release.mjs "${args[@]}"

@@ -1,0 +1,45 @@
+{
+  "envelope": {
+    "schemaVersion": 1,
+    "runId": "run-golden",
+    "taskId": "task-golden",
+    "reconcilerId": "golden.reconciler",
+    "reconcilerVersion": "1.2.3",
+    "proposalSchemaId": "narrative.proposal",
+    "proposalSchemaVersion": "1",
+    "sourceBasis": [
+      {
+        "sourceKind": "snapshot-document",
+        "sourceKey": "snapshot:run-golden",
+        "revisionToken": "revision-7",
+        "revisionObservedAt": "2026-08-12T00:00:00.000Z"
+      }
+    ],
+    "evidenceSet": [
+      {
+        "evidenceRef": "evidence-1",
+        "documentRef": "snapshot:run-golden",
+        "quote": "golden quote",
+        "quoteDigest": "sha256:f9729344cc66c15ec9eebaffb12ce8c900fabc78ec4d445c5e7d92cc3c2fbd18",
+        "sourceKey": "snapshot:run-golden",
+        "revisionToken": "revision-7"
+      }
+    ],
+    "readSet": [
+      {
+        "inputRef": "snapshot:run-golden",
+        "kind": "snapshot-document",
+        "sourceKind": "snapshot-document",
+        "revisionToken": "revision-7"
+      }
+    ],
+    "readSetDigest": "sha256:aeabe5e3c22bf6df41e06de2a1d310155ce869f5fa246e7a37229591bc6dc748",
+    "changeKind": "revise",
+    "targetProjectionRef": "projection-1"
+  },
+  "expected": {
+    "canonicalJson": "{\"changeKind\":\"revise\",\"evidenceSet\":[{\"documentRef\":\"snapshot:run-golden\",\"evidenceRef\":\"evidence-1\",\"quote\":\"golden quote\",\"quoteDigest\":\"sha256:f9729344cc66c15ec9eebaffb12ce8c900fabc78ec4d445c5e7d92cc3c2fbd18\",\"revisionToken\":\"revision-7\",\"sourceKey\":\"snapshot:run-golden\"}],\"proposalSchemaId\":\"narrative.proposal\",\"proposalSchemaVersion\":\"1\",\"readSet\":[{\"inputRef\":\"snapshot:run-golden\",\"kind\":\"snapshot-document\",\"revisionToken\":\"revision-7\",\"sourceKind\":\"snapshot-document\"}],\"readSetDigest\":\"sha256:aeabe5e3c22bf6df41e06de2a1d310155ce869f5fa246e7a37229591bc6dc748\",\"reconcilerId\":\"golden.reconciler\",\"reconcilerVersion\":\"1.2.3\",\"runId\":\"run-golden\",\"schemaVersion\":1,\"sourceBasis\":[{\"revisionObservedAt\":\"2026-08-12T00:00:00.000Z\",\"revisionToken\":\"revision-7\",\"sourceKey\":\"snapshot:run-golden\",\"sourceKind\":\"snapshot-document\"}],\"targetProjectionRef\":\"projection-1\",\"taskId\":\"task-golden\"}",
+    "readSetDigest": "sha256:aeabe5e3c22bf6df41e06de2a1d310155ce869f5fa246e7a37229591bc6dc748",
+    "envelopeDigest": "sha256:5656776c55e732fa3b85ab66b3339b55775531de69f330a376eb0d7e13df73f7"
+  }
+}

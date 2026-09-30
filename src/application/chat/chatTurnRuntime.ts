@@ -3,7 +3,10 @@ import {
   type ResolvedChatTurnRoute,
 } from "@/features/chat/turn/resolveTurnRoute";
 import type { TurnCoordinator } from "@/features/chat/turn/turnCoordinator";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import {
   createPendingCompletedTurnPersistenceRegistry,
   pendingCompletedTurnPersistence as productionPendingCompletedTurnPersistence,
@@ -236,7 +239,7 @@ export function createChatTurnRuntime(options?: {
   };
   if (options?.registerQuiescence) {
     registerQuiescenceProvider({
-      id: "chat-turn-runtime",
+      id: createQuiescenceProviderId("chat-turn-runtime"),
       stage: "scoped-mutations",
       flush: async () => {
         if (!runtime.hasPendingTurns()) return;

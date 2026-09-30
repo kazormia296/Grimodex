@@ -1,0 +1,19 @@
+# NIR-0 C2B Scope authority runtime impact matrix
+
+This slice turns the already-ratified historical
+`narrative-scope-authority-basis/2` contract into a typed Native
+producer/reader foundation. It does **not** activate ScopeOverride, add a
+second Scope interpreter, or claim a live/current Order Oracle.
+
+| Boundary                       | Existing authority                                               | Runtime change                                                                                                                                                                                                                               | Required proof                                                                          |
+| ------------------------------ | ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Project snapshot read          | Persisted `tree_nodes` plus the quiescent snapshot adapter       | Carry the exact raw `story_time_order` observed with each ordered Scene; do not trim or fall back to Reading Order                                                                                                                           | Adapter mutation/ordering tests and cross-runtime basis digest parity                   |
+| Snapshot task completion       | Generic `FinishTaskPayload` and `narrative_extraction_artifacts` | Accept a closed typed historical-basis sidecar only for the exact `source.snapshot@1` task; Native independently re-derives it from the Run scope and current persisted tree rows before inserting one reserved `source.snapshot@2` artifact | Public finish-task positive, project/run/task/scene/order/story mismatch rollback tests |
+| Generic artifact path          | Caller-supplied `ArtifactInput`                                  | Reject caller-supplied `source.snapshot@2`; only the typed producer may insert it                                                                                                                                                            | Behavioral generic-bypass RED                                                           |
+| Historical reader              | No current resolver                                              | Load exactly one completed snapshot-task artifact, decode into the shared closed Rust DTO, validate all five digest domains, and re-bind project/Run/corpus/document coverage                                                                | Missing/duplicate/corrupt/cross-project reader tests                                    |
+| Live Scope/Order authority     | Not implemented                                                  | No change in this slice                                                                                                                                                                                                                      | `NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE` remains exact STOP                                |
+| Electron / renderer activation | Existing Chronicle V1 path                                       | The existing coordinator supplies the typed companion through the established finish-task payload; no new IPC command and no Human-edit activation                                                                                           | Coordinator integration test and unchanged IPC command registry                         |
+
+Static proof remains limited to the closed JSON contract and policy status.
+Wake-to-persistence behavior is proved by integration tests; no CFG, alias,
+callback, or source-reachability interpreter is added.

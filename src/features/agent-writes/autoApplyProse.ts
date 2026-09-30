@@ -6,7 +6,6 @@ import { loadSceneContent, getSceneVersion } from "@/features/tree/api";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { persistSceneBody } from "@/features/editor/persistSceneBody";
 import { agentAcceptProseStage } from "@/features/agent-writes/prose";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
   useSceneContentStore,
@@ -264,22 +263,12 @@ export async function autoApplyProseProposal(
   if (!isAuthoritative()) {
     return { applied: false, reason: "authority-changed" };
   }
-  await persistSceneBody(sceneId, nextDoc);
-
-  // Timelapse: record the append as a doc.step so the writing-replay chain stays
-  // consistent. A live editor emits this via onTransaction; a headless write
-  // must record it explicitly or an unrecorded content jump desyncs replay at
-  // the next human edit (the cursor halts on the first unapplicable step).
-  if (!isAuthoritative()) {
-    return { applied: false, reason: "authority-changed" };
-  }
-  recordChangeEvent({
-    domain: "editor",
-    opType: "doc.step",
-    sceneId,
-    entityType: "scene",
-    entityId: sceneId,
-    payload: { steps: tr.steps.map((s) => s.toJSON()) },
+  // A live editor emits replay steps from onTransaction. This headless path
+  // instead hands them to the Native body writer so body + canonical doc.step
+  // + Narrative Change Feed are one atomic SQLite transaction.
+  await persistSceneBody(sceneId, nextDoc, {
+    origin: "ai-apply",
+    timelapseSteps: tr.steps.map((step) => step.toJSON()),
   });
 
   // If any live editor shows this scene (tab pane or linear-mode block),

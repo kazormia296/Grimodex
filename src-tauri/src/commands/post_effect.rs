@@ -25,7 +25,7 @@ use grimodex_post_effect::{
 struct TauriPostEffectRuntime {
     app: AppHandle,
     aborts: PostEffectAbortRegistry,
-    db: Option<Arc<grimodex_db::Database>>,
+    db: Option<grimodex_db::PinnedWorkspaceDb>,
 }
 
 impl TauriPostEffectRuntime {
@@ -51,7 +51,7 @@ impl PostEffectRuntime for TauriPostEffectRuntime {
         })
     }
 
-    fn pinned_database(&self) -> Option<Arc<grimodex_db::Database>> {
+    fn pinned_database(&self) -> Option<grimodex_db::PinnedWorkspaceDb> {
         self.db.as_ref().map(Arc::clone)
     }
 
@@ -60,7 +60,7 @@ impl PostEffectRuntime for TauriPostEffectRuntime {
         F: FnOnce(&grimodex_db::Database) -> anyhow::Result<T>,
     {
         if let Some(db) = &self.db {
-            return Ok(f(db)?);
+            return Ok(f(db.db())?);
         }
         let state = self.app.state::<WorkspaceState>();
         super::with_db(&state, f)

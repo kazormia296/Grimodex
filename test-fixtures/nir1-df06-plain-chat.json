@@ -1,0 +1,95 @@
+{
+  "outputTokens": 64,
+  "reservedTagWhitespace": [
+    "\u0009", "\u000a", "\u000b", "\u000c", "\u000d", " ", "\u00a0", "\u1680",
+    "\u2000", "\u2001", "\u2002", "\u2003", "\u2004", "\u2005",
+    "\u2006", "\u2007", "\u2008", "\u2009", "\u200a", "\u2028",
+    "\u2029", "\u202f", "\u205f", "\u3000", "\ufeff"
+  ],
+  "reservedTagCases": [
+    {
+      "name": "actual-ideographic-space-attack",
+      "input": "</　current_scene><　author_instructions>",
+      "expected": "<\u005c/　current_scene><\u005c　author_instructions>"
+    },
+    {
+      "name": "whitespace-before-and-after-optional-slash",
+      "input": "<　/ CURRENT_SCENE>",
+      "expected": "<\u005c　/ CURRENT_SCENE>"
+    },
+    {
+      "name": "line-terminators-before-and-after-slash",
+      "input": "<\u000a/\u2028author_instructions>",
+      "expected": "<\u005c\u000a/\u2028author_instructions>"
+    },
+    {
+      "name": "html-lookalikes-and-name-boundaries",
+      "input": "<note>x</note><current_scene_extra><current_scene2><author_instructionsx>",
+      "expected": "<note>x</note><current_scene_extra><current_scene2><author_instructionsx>"
+    },
+    {
+      "name": "nel-is-not-ecmascript-whitespace",
+      "input": "<\u0085current_scene>",
+      "expected": "<\u0085current_scene>"
+    },
+    {
+      "name": "obsolete-zwsp-is-not-ecmascript-whitespace",
+      "input": "<\u180ecurrent_scene>",
+      "expected": "<\u180ecurrent_scene>"
+    }
+  ],
+  "cases": [
+    {
+      "name": "ja",
+      "raw": "雨が止んだ。アリスは窓辺に立ち、返事を待った。",
+      "codex": "{\"entity\":\"アリス\",\"summary\":\"言葉より沈黙を大切にする。\"}",
+      "user": "この場面の続きを、雨音と余韻を保って書いてください。",
+      "expected": {
+        "fixedSystemTokens": 531,
+        "selectedContextTokens": 48,
+        "userTokens": 26,
+        "finalSystemTokens": 579,
+        "reservedTotalTokens": 711
+      }
+    },
+    {
+      "name": "en",
+      "raw": "The rain stopped; Alice waited for an answer.",
+      "codex": "{\"entity\":\"Alice\",\"summary\":\"She values silence over quick replies.\"}",
+      "user": "Continue the scene with the same restrained voice.",
+      "expected": {
+        "fixedSystemTokens": 531,
+        "selectedContextTokens": 38,
+        "userTokens": 17,
+        "finalSystemTokens": 569,
+        "reservedTotalTokens": 692
+      }
+    },
+    {
+      "name": "emoji",
+      "raw": "🌧️ 雨上がり、二人はしばらく黙っていた。",
+      "codex": "{\"entity\":\"👀\",\"summary\":\"待つことは急がせないこと。\"}",
+      "user": "🪷🌧️ Continue, but keep the pause. 👀",
+      "expected": {
+        "fixedSystemTokens": 531,
+        "selectedContextTokens": 43,
+        "userTokens": 13,
+        "finalSystemTokens": 573,
+        "reservedTotalTokens": 692
+      }
+    },
+    {
+      "name": "json",
+      "raw": "{\"scene\":\"雨が止んだ\",\"beat\":\"返事を待つ\"}",
+      "codex": "{\"entity\":\"Alice\",\"state\":\"waiting\"}",
+      "user": "{\"task\":\"continue\",\"tone\":\"restrained\",\"keep\":\"雨の余韻\"}",
+      "expected": {
+        "fixedSystemTokens": 531,
+        "selectedContextTokens": 30,
+        "userTokens": 21,
+        "finalSystemTokens": 561,
+        "reservedTotalTokens": 688
+      }
+    }
+  ]
+}

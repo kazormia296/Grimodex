@@ -20,6 +20,7 @@ import {
   TATE_CHU_YOKO_RUN,
   type TateChuYokoPolicy,
 } from "@/features/editor/tateChuYokoPolicy";
+import { shouldApplyAutomaticParagraphIndent } from "@/lib/paragraphIndentPolicy";
 
 // ────────────────────────────────────────────────────────────────────
 // ProseMirror JSON 型
@@ -234,19 +235,27 @@ function rendersHtmlParagraphs(ctx: RenderCtx): boolean {
   );
 }
 
-/** Whether the paragraph already begins with author-entered whitespace. */
-function nodeStartsWithWhitespace(node: PMNode): boolean {
-  if (node.type === "text") return /^\s/u.test(node.text ?? "");
-  if (node.type === "ruby") {
-    return /^\s/u.test(String(node.attrs?.base ?? ""));
+/**
+ * Return the first user-visible text represented by a node. Unknown leaf
+ * nodes count as visible content so an inline atom before dialogue does not
+ * accidentally suppress indentation. sceneBeat is display metadata and is
+ * skipped, matching the editor decoration policy.
+ */
+function firstRenderedText(node: PMNode): string {
+  if (node.type === "text") return node.text ?? "";
+  if (node.type === "ruby") return String(node.attrs?.base ?? "");
+  if (node.type === "hardBreak") return "\n";
+  if (node.type === "sceneBeat") return "";
+
+  if (node.content) {
+    for (const child of node.content) {
+      const text = firstRenderedText(child);
+      if (text.length > 0) return text;
+    }
+    return "";
   }
-  if (node.type === "hardBreak") return true;
-  for (const child of node.content ?? []) {
-    if (child.type === "sceneBeat") continue;
-    if (child.type === "text" && (child.text ?? "").length === 0) continue;
-    return nodeStartsWithWhitespace(child);
-  }
-  return false;
+
+  return "\uFFFC";
 }
 
 function renderNode(node: PMNode, ctx: RenderCtx, topLevel = false): string {
@@ -272,16 +281,17 @@ function renderNode(node: PMNode, ctx: RenderCtx, topLevel = false): string {
       const paragraphIndent = topLevel
         ? (ctx.settings.paragraphIndent ?? "none")
         : "none";
-      const alreadyIndented =
-        paragraphIndent !== "none" && nodeStartsWithWhitespace(node);
+      const shouldIndent =
+        paragraphIndent !== "none" &&
+        shouldApplyAutomaticParagraphIndent(firstRenderedText(node));
       const renderedInner =
-        paragraphIndent === "fullwidth-space" && !alreadyIndented
+        paragraphIndent === "fullwidth-space" && shouldIndent
           ? "\u3000" + inner
           : inner;
 
       if (rendersHtmlParagraphs(ctx)) {
         const className =
-          paragraphIndent === "css" && !alreadyIndented
+          paragraphIndent === "css" && shouldIndent
             ? ' class="paragraph-indent"'
             : "";
         return "<p" + className + ">" + renderedInner + "</p>\n";

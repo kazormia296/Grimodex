@@ -49,7 +49,6 @@ function ports(nodes: TreeNodeData[]): DeleteTreeSubtreePorts & {
     loadSceneContent: vi.fn().mockResolvedValue("content"),
     deletePersisted: vi.fn().mockResolvedValue(undefined),
     restorePersisted: vi.fn().mockResolvedValue(undefined),
-    saveSceneContent: vi.fn().mockResolvedValue(undefined),
     applyNodes: (next, active) => {
       state.nodes = next;
       state.active = active;
@@ -68,7 +67,7 @@ function ports(nodes: TreeNodeData[]): DeleteTreeSubtreePorts & {
 }
 
 describe("deleteTreeSubtree", () => {
-  it("deletes leaf-first and restores parent-first", async () => {
+  it("deletes the subtree through one root writer and restores parent-first", async () => {
     const testPorts = ports([
       node("folder", null, "folder"),
       node("scene", "folder"),
@@ -76,8 +75,8 @@ describe("deleteTreeSubtree", () => {
 
     await deleteTreeSubtree("folder", testPorts);
 
-    expect(testPorts.deletePersisted).toHaveBeenNthCalledWith(1, "scene");
-    expect(testPorts.deletePersisted).toHaveBeenNthCalledWith(2, "folder");
+    expect(testPorts.deletePersisted).toHaveBeenCalledOnce();
+    expect(testPorts.deletePersisted).toHaveBeenCalledWith("folder");
     expect(testPorts.history).toHaveLength(1);
     expect(testPorts.history[0]).toMatchObject({
       kind: "scenes",
@@ -91,14 +90,16 @@ describe("deleteTreeSubtree", () => {
     expect(testPorts.restorePersisted).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ id: "folder" }),
+      undefined,
     );
     expect(testPorts.restorePersisted).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ id: "scene" }),
+      "content",
     );
   });
 
-  it("does not create history after a partial deletion failure", async () => {
+  it("does not change projection or history after an atomic deletion failure", async () => {
     const testPorts = ports([
       node("folder", null, "folder"),
       node("scene", "folder"),

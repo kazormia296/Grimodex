@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "gateId": "gate-b2",
+  "freezeId": "8a4342da-ee70-4767-9893-aa8f3c2b1378",
+  "certificationRunId": null,
+  "candidateCommitSha": "ddcb748cd1e42127f5a8843bef4eaed1a9fe2b3a",
+  "candidateTreeSha": "255aada5a87531ed575d247dae99bf58b6062a89",
+  "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
+  "attemptLedgerId": "grimodex-gate-b2-attempt-ledger-v1",
+  "attemptLedgerConfigDigest": "sha256:441c5abdf692af6631787a4d4aa31d01f0c0f23a8097df4a6bcdabc36fc8793d",
+  "attemptLedgerDigest": null,
+  "attemptLedgerInstanceId": null,
+  "attemptLedgerHeadDigest": null,
+  "attemptHistoryDigest": null,
+  "attemptLedgerRecordCount": 0,
+  "attemptLedgerMaxSequence": 0,
+  "controllerPublicKeyId": "grimodex-gate-b2-controller-ed25519-v1",
+  "controllerPublicKeyFingerprint": "sha256:13ac3183cc67fd5cbd4435c61572cc55c72e0cad8acc11adb410e846fffc3170",
+  "controllerSignature": null,
+  "controllerReceiptDigest": null,
+  "attemptLedgerAttestation": "fixed-controller-config-v1",
+  "schemaVersionProduct": 20,
+  "verdict": "INCOMPLETE",
+  "reasons": [
+    "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
+    "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
+    "Billed Heavy suites and journey evidence must be recorded against this tree SHA.",
+    "Controller ledger is not provisioned; this freeze is preflight-only and must be replaced before normative execution."
+  ],
+  "suiteSummaries": {
+    "requiredLight": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredHeavy": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredJourneys": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 7
+    }
+  },
+  "digests": {
+    "writerRegistryDigest": "sha256:fa40567d7eab3ded70970ba4140e9898fd2f9f734467623d7b673a42ada028dd",
+    "aiPathRegistryDigest": "sha256:117548ba25c5dd322e2ac6d6fd1506e5b44b39e7279c65f3e4f9da76cd46d478",
+    "qualityManifestDigest": "sha256:07dde219b44bd2369e463e88dfa653c3486cf171904d958413744379407583cd",
+    "narrativeEvalManifestDigest": "sha256:ffb66b17712dddf947b716ddfa8af7177d461feb4835068f005b4e3629bfefec",
+    "adrChecklistDigest": "sha256:d6304008d12c629e5c6646aad261cd44acfa69897b46e359636db3e241287096",
+    "classificationDigest": "sha256:f1a98cf1470eb6cf57e464b49f635f7084f7ab3aa0071deaff3b27a3bbe8dc08",
+    "reportDigest": null
+  },
+  "heavyAttempts": [],
+  "generatedAt": "2026-08-12T15:25:51.669Z",
+  "notes": "Provisional freeze decision only. Replace after --run-light/--run-heavy/--run-journeys against this candidate."
+}

@@ -142,6 +142,18 @@ impl SemanticAuditAppender for Database {
     }
 }
 
+impl SemanticAuditAppender for grimodex_db::WorkspaceAuthority {
+    fn append(
+        &self,
+        project_id: Option<&str>,
+        events: &[AppendAiAuditEvent],
+    ) -> anyhow::Result<()> {
+        self.db()
+            .append_ai_audit_events_for_scope(project_id, events)
+            .map(|_| ())
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SemanticAuditContext {
     pub project_id: Option<String>,
@@ -156,6 +168,7 @@ pub struct SemanticAuditContext {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SessionState {
+    Prepared,
     Dispatched,
     Terminal,
 }
@@ -173,6 +186,23 @@ impl SemanticAuditSession {
     pub fn start(
         appender: Arc<dyn SemanticAuditAppender>,
         context: SemanticAuditContext,
+    ) -> anyhow::Result<Self> {
+        Self::start_with_dispatch(appender, context, true)
+    }
+
+    /// Make the exact input durable while retaining a legal pre-dispatch skip
+    /// boundary for complete document token-budget validation.
+    pub fn prepare(
+        appender: Arc<dyn SemanticAuditAppender>,
+        context: SemanticAuditContext,
+    ) -> anyhow::Result<Self> {
+        Self::start_with_dispatch(appender, context, false)
+    }
+
+    fn start_with_dispatch(
+        appender: Arc<dyn SemanticAuditAppender>,
+        context: SemanticAuditContext,
+        dispatch: bool,
     ) -> anyhow::Result<Self> {
         anyhow::ensure!(
             !context.operation_id.trim().is_empty(),
@@ -224,17 +254,21 @@ impl SemanticAuditSession {
                 "onnxSessionRunObserved": null,
             }),
         );
-        append_exact_with_retry(
-            appender.as_ref(),
-            context.project_id.as_deref(),
-            &[started, prepared, dispatched],
-        )
-        .context("append semantic start/prepared/dispatched before inference")?;
+        let mut initial = vec![started, prepared];
+        if dispatch {
+            initial.push(dispatched);
+        }
+        append_exact_with_retry(appender.as_ref(), context.project_id.as_deref(), &initial)
+            .context("append semantic start/prepared/dispatched before inference")?;
         Ok(Self {
             appender,
             context,
             execution_id,
-            state: SessionState::Dispatched,
+            state: if dispatch {
+                SessionState::Dispatched
+            } else {
+                SessionState::Prepared
+            },
             effective_model_recorded: false,
             requires_effective_model_receipt,
         })
@@ -242,6 +276,65 @@ impl SemanticAuditSession {
 
     pub fn execution_id(&self) -> &str {
         &self.execution_id
+    }
+
+    /// Call only after complete input tokenization succeeds and immediately
+    /// before consuming that same Encoding through the ONNX pipeline.
+    pub fn dispatch_prepared(&mut self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.state == SessionState::Prepared,
+            "semantic audit session is not awaiting pre-dispatch validation"
+        );
+        let dispatched = event(
+            &self.context,
+            &self.execution_id,
+            "request.dispatched",
+            json!({
+                "captureState": "complete",
+                "dispatchBoundary": "immediately-before-onnx-inference",
+                "completeInputPreflightPassed": true,
+                "modelDispatched": null,
+                "onnxSessionRunObserved": null,
+            }),
+        );
+        append_exact_with_retry(
+            self.appender.as_ref(),
+            self.context.project_id.as_deref(),
+            &[dispatched],
+        )
+        .context("append semantic dispatch after complete-input preflight")?;
+        self.state = SessionState::Dispatched;
+        Ok(())
+    }
+
+    /// Complete a checked non-execution after the exact input was made durable.
+    /// The caller must use this only before entering ORT. A failed terminal
+    /// append is an error and cannot be reported as a successful typed skip.
+    pub fn skip_before_onnx(&mut self, reason: &str, details: Value) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.state == SessionState::Prepared,
+            "semantic audit session is not awaiting pre-dispatch validation"
+        );
+        let skipped = event(
+            &self.context,
+            &self.execution_id,
+            "execution.skipped",
+            json!({
+                "captureState": "complete",
+                "reason": reason,
+                "details": details,
+                "phase": "before-onnx",
+                "modelDispatched": false,
+                "onnxSessionRunObserved": false,
+            }),
+        );
+        let result = append_exact_with_retry(
+            self.appender.as_ref(),
+            self.context.project_id.as_deref(),
+            &[skipped],
+        );
+        self.state = SessionState::Terminal;
+        result.context("append semantic non-execution before returning typed skip")
     }
 
     /// Append the identity of artifacts that were actually loaded after the
@@ -296,7 +389,10 @@ impl SemanticAuditSession {
     /// initial request was durably recorded but before ONNX inference began.
     pub fn fail_preparation<T>(&mut self, error: anyhow::Error) -> anyhow::Result<T> {
         anyhow::ensure!(
-            self.state == SessionState::Dispatched,
+            matches!(
+                self.state,
+                SessionState::Prepared | SessionState::Dispatched
+            ),
             "semantic audit session is not awaiting preparation"
         );
         let raw_error = format!("{error:#}");

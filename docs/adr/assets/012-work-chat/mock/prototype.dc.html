@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Register sibling Design Components before the runtime boots so this file
+     also works when opened directly with the file: scheme. -->
+<script src="./resources.js"></script>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=M+PLUS+1:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:oklch(0.955 0.002 90);font-family:'M PLUS 1',ui-sans-serif,sans-serif}
+a{color:oklch(0.145 0 0)}a:hover{color:oklch(0.4 0 0)}
+</style>
+</helmet>
+<div style="width:1560px;display:flex;flex-direction:column">
+  <div style="display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:9px 14px;background:oklch(0.145 0 0);font-family:ui-monospace,Menlo,Consolas,monospace">
+    <span style="font-size:8.5px;letter-spacing:0.16em;color:oklch(0.6 0 0);margin-right:6px">WORK LAYER PROTOTYPE</span>
+    <sc-for list="{{ chips }}" as="c" hint-placeholder-count="8">
+      <button onClick="{{ c.go }}" style="background:{{ c.bg }};color:{{ c.fg }};border:1px solid {{ c.bd }};border-radius:2px;padding:3px 8px;font-size:8.5px;letter-spacing:0.1em;cursor:pointer;font-family:ui-monospace,Menlo,monospace">{{ c.label }}</button>
+    </sc-for>
+    <div style="flex:1"></div>
+    <span style="font-size:8.5px;letter-spacing:0.12em;color:oklch(0.6 0 0)">ESC = 一段戻る（{{ escLabel }}）</span>
+  </div>
+  <dc-import name="WorkLayerFrame" mode="{{ mode }}" on-nav="{{ onNav }}" dark="{{ darkVal }}" hint-size="1560px,975px"></dc-import>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;: {&quot;width&quot;: 1560, &quot;height&quot;: 1012}, &quot;dark&quot;: {&quot;editor&quot;: &quot;boolean&quot;, &quot;default&quot;: false, &quot;tsType&quot;: &quot;boolean&quot;, &quot;section&quot;: &quot;Theme&quot;}}">
+class Component extends DCLogic {
+  state = { mode: "ambient" };
+  escMap = {
+    tray: "ambient", tray2: "ambient", tray2focus: "ambient", trayempty: "ambient",
+    traydisposed: "ambient", activity: "ambient", blocked: "ambient", arrive: "ambient",
+    lens: "tray2", portal: "lens", inspect: "lens", resolve: "ambient", ledger: "tray2focus",
+    projection: "ambient", review: "projection", batch: "projection", ambient: "ambient",
+  };
+  componentDidMount() {
+    this._k = e => {
+      if (e.key === "Escape") { e.preventDefault(); this.setState(s => ({ mode: this.escMap[s.mode] || "ambient" })); }
+    };
+    window.addEventListener("keydown", this._k);
+  }
+  componentWillUnmount() { window.removeEventListener("keydown", this._k); }
+  renderVals() {
+    const cur = this.state.mode;
+    const set = m => () => this.setState({ mode: m });
+    const list = [
+      ["ambient", "AMBIENT"], ["arrive", "ARRIVE +1"], ["tray2focus", "TRAY·FOCUS"], ["tray2", "TRAY·ATTN"], ["ledger", "ALL WORK"],
+      ["lens", "LENS"], ["resolve", "RESOLVED"], ["portal", "PORTAL"], ["inspect", "INSPECT"],
+      ["projection", "PROJECTION"], ["review", "REVIEW"], ["batch", "BATCH"],
+      ["activity", "SYS·RUN"], ["blocked", "BLOCKED"], ["trayempty", "EMPTY"], ["traydisposed", "DISPOSED"],
+    ];
+    return {
+      mode: cur,
+      darkVal: this.props.dark ?? false,
+      onNav: m => this.setState({ mode: m }),
+      escLabel: (this.escMap[cur] || "ambient").toUpperCase(),
+      chips: list.map(([id, label]) => ({
+        label, go: set(id),
+        bg: cur === id ? "oklch(0.985 0 0)" : "transparent",
+        fg: cur === id ? "oklch(0.145 0 0)" : "oklch(0.72 0 0)",
+        bd: cur === id ? "oklch(0.985 0 0)" : "oklch(0.4 0 0)",
+      })),
+    };
+  }
+}
+</script>
+</body>
+</html>

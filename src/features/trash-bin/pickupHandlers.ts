@@ -13,15 +13,8 @@
  */
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
-import {
-  restoreScene,
-  restoreCodexEntry,
-  restoreSnippet,
-  restoreMapSticky,
-  restoreForeshadow,
-  restoreGridChapter,
-} from "./restorers";
 import type { RestoreOutcome } from "./restorers";
+import { restoreStructuralTrashItem } from "./api";
 import type { DropTarget, DropPoint } from "@/store/dropTargetRegistry";
 import { getFocusedEditor } from "@/store/focusedContentEditorStore";
 import { insertTrashItemIntoEditor } from "./editorInsert";
@@ -72,32 +65,39 @@ export async function dispatchDrop(
 ): Promise<RestoreOutcome> {
   const { kind } = target;
 
-  // パネル個別の復元 (構造 → 元パネル)
-  if (kind === "scenes-panel") {
-    if (item.subKind === "scene") {
-      return restoreScene(item, { projectId });
-    }
-    if (item.subKind === "grid-chapter") {
-      return restoreGridChapter(item, { projectId });
-    }
+  // Structural restore is one Native aggregate: domain rows, both ledgers,
+  // Trash consumption, and the retry receipt commit or roll back together.
+  const simpleStructuralRestore =
+    (kind === "scenes-panel" &&
+      (item.subKind === "scene" || item.subKind === "grid-chapter")) ||
+    (kind === "codex-panel" && item.subKind === "codex-entry") ||
+    (kind === "snippets-panel" && item.subKind === "snippet") ||
+    (kind === "foreshadow-panel" && item.subKind === "foreshadow");
+  const mapStructuralRestore =
+    kind === "map-panel" && item.subKind === "map-sticky";
+  if (
+    (simpleStructuralRestore || mapStructuralRestore) &&
+    item.projectId !== projectId
+  ) {
+    return {
+      ok: false,
+      reason: "rejected",
+      message: "project changed",
+    };
   }
-  if (kind === "codex-panel" && item.subKind === "codex-entry") {
-    return restoreCodexEntry(item, { projectId });
+  if (simpleStructuralRestore) {
+    const restored = await restoreStructuralTrashItem(item, {});
+    return { ok: true, ...restored };
   }
-  if (kind === "snippets-panel" && item.subKind === "snippet") {
-    return restoreSnippet(item, { projectId });
-  }
-  if (kind === "foreshadow-panel" && item.subKind === "foreshadow") {
-    return restoreForeshadow(item, { projectId });
-  }
-  if (kind === "map-panel" && item.subKind === "map-sticky") {
-    return restoreMapSticky(item, {
+  if (mapStructuralRestore) {
+    const restored = await restoreStructuralTrashItem(item, {
       // 開いている board に強制的に乗せる: 元 board が消えていたり、
       // 別 board を表示中でも、UI 上のドロップ先と一致させる。
       boardIdOverride: useMapStore.getState().activeBoardId ?? undefined,
       dropX: dropPoint.x,
       dropY: dropPoint.y,
     });
+    return { ok: true, ...restored };
   }
 
   // text-fragment はパネルへの構造化復元はしない。エディタへの挿入か、

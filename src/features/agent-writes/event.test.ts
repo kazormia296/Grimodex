@@ -45,6 +45,7 @@ import {
   uiLinkSceneEvent,
   uiUnlinkSceneEvent,
   agentLinkSceneEvent,
+  agentLinkSceneEventsBatch,
   agentAddEventRelation,
   agentCreateEvent,
   agentUpdateEvent,
@@ -82,15 +83,18 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     await uiLinkSceneEvent("s1", "e1");
     // skipPolicyGate:true の短絡で knowledgeWrite ゲートは参照されない。
     expect(h.blockIfPolicyOff).not.toHaveBeenCalled();
-    expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_link", {
-      payload: {
+    expect(h.invoke).toHaveBeenCalledWith("scene_event_link", {
+      payload: expect.objectContaining({
         requestId: expect.any(String),
         projectId: "p1",
         sessionId: "sess-1",
         surface: "manual",
         sceneId: "s1",
         eventId: "e1",
-      },
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+      }),
     });
     expect(h.bumpRevision).toHaveBeenCalled();
     expect(h.push).toHaveBeenCalledTimes(1);
@@ -103,18 +107,21 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     });
   });
 
-  it("unlink も surface='manual' で agent_scene_event_unlink を invoke する", async () => {
+  it("unlink も surface='manual' で scene_event_unlink を invoke する", async () => {
     await uiUnlinkSceneEvent("s1", "e1");
     expect(h.blockIfPolicyOff).not.toHaveBeenCalled();
-    expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_unlink", {
-      payload: {
+    expect(h.invoke).toHaveBeenCalledWith("scene_event_unlink", {
+      payload: expect.objectContaining({
         requestId: expect.any(String),
         projectId: "p1",
         sessionId: "sess-1",
         surface: "manual",
         sceneId: "s1",
         eventId: "e1",
-      },
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+      }),
     });
   });
 
@@ -152,6 +159,38 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
       payload: expect.objectContaining({ requestId: "relation-request-1" }),
     });
   });
+
+  it("scene link batchはraw payloadを1回のdomain writeに束ねる", async () => {
+    await agentLinkSceneEventsBatch(["s1", "s2", "s1"], "e1", {
+      requestId: "batch-request-1",
+      projectId: "p1",
+      surface: "manual",
+      skipPolicyGate: true,
+    });
+
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_link_batch", {
+      payload: expect.objectContaining({
+        requestId: "batch-request-1",
+        projectId: "p1",
+        sessionId: "sess-1",
+        surface: "manual",
+        eventId: "e1",
+        sceneIds: ["s1", "s2", "s1"],
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+      }),
+    });
+    expect(h.push).toHaveBeenCalledTimes(1);
+  });
+
+  it("scene link batchは空集合をinvoke前に拒否する", async () => {
+    await expect(agentLinkSceneEventsBatch([], "e1")).rejects.toThrow(
+      "at least one scene",
+    );
+    expect(h.invoke).not.toHaveBeenCalled();
+  });
 });
 
 // #2: 出来事 detail（リッチテキスト）の AI 帰属焼込。codex/snippet と同様、
@@ -178,7 +217,11 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     const call = [...h.invoke.mock.calls]
       .reverse()
       .find(
-        (c) => c[0] === "agent_event_create" || c[0] === "agent_event_update",
+        (c) =>
+          c[0] === "event_create" ||
+          c[0] === "event_update" ||
+          c[0] === "agent_event_create" ||
+          c[0] === "agent_event_update",
       );
     const payload = (call?.[1] as { payload: { detail: string } }).payload;
     return JSON.parse(payload.detail) as PmNode;
@@ -205,8 +248,38 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
   });
 
   it("AI 経路 agentCreateEvent は detail に authorship マークを焼き込む", async () => {
-    await agentCreateEvent({ title: "t", detail: DETAIL_DOC });
+    await agentCreateEvent({
+      requestId: "event-detail-create",
+      title: "t",
+      detail: DETAIL_DOC,
+    });
     expect(hasAuthorshipMark(lastDetailDoc())).toBe(true);
+  });
+
+  it("import 経路は取り込んだ detail を AI 帰属へ書き換えない", async () => {
+    await agentCreateEvent(
+      {
+        requestId: "event-detail-import",
+        title: "t",
+        detail: DETAIL_DOC,
+      },
+      {
+        projectId: "p1",
+        surface: "import",
+        skipPolicyGate: true,
+      },
+    );
+    expect(hasAuthorshipMark(lastDetailDoc())).toBe(false);
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_create", {
+      payload: expect.objectContaining({ surface: "import" }),
+    });
+  });
+
+  it("agentCreateEvent は requestId 欠落を invoke 前に拒否する", async () => {
+    await expect(
+      agentCreateEvent({ title: "missing request" } as never),
+    ).rejects.toThrow("requestId is required");
+    expect(h.invoke).not.toHaveBeenCalled();
   });
 
   it("caller-reusable eventId is passed through the create payload", async () => {
@@ -227,6 +300,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
 
   it("granularity 省略を native 推論へ渡し、日付を none で上書きしない", async () => {
     await agentCreateEvent({
+      requestId: "event-dated-create",
       title: "dated",
       startTime: 10,
       startMinute: 720,
@@ -341,6 +415,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     });
     expect(h.invoke).toHaveBeenCalledWith("agent_event_update", {
       payload: expect.objectContaining({
+        requestId: expect.any(String),
         eventId: "e1",
         baseVersion: 7,
         title: "new",
@@ -354,6 +429,33 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
         entityId: "e1",
       },
     );
+  });
+
+  it("update/delete/participants は指定した論理 requestId を再送できる", async () => {
+    await agentUpdateEvent(
+      { eventId: "e1", baseVersion: 0, title: "retryable" },
+      { requestId: "event-update-retry-1" },
+    );
+    await agentDeleteEvent("e1", {
+      baseVersion: 1,
+      requestId: "event-delete-retry-1",
+    });
+    await uiSetEventParticipants("e1", ["c1"], {
+      baseVersion: 2,
+      requestId: "event-participants-retry-1",
+    });
+
+    expect(h.invoke).toHaveBeenNthCalledWith(1, "agent_event_update", {
+      payload: expect.objectContaining({ requestId: "event-update-retry-1" }),
+    });
+    expect(h.invoke).toHaveBeenNthCalledWith(2, "agent_event_delete", {
+      payload: expect.objectContaining({ requestId: "event-delete-retry-1" }),
+    });
+    expect(h.invoke).toHaveBeenNthCalledWith(3, "event_participants_set", {
+      payload: expect.objectContaining({
+        requestId: "event-participants-retry-1",
+      }),
+    });
   });
 
   it("ChroniclePanel の手動 UI 更新も open Editor session へ通知する", async () => {
@@ -389,7 +491,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
 
   it("手動 delete も選択行の version を伝播する", async () => {
     await uiDeleteEvent("e1", { baseVersion: 4 });
-    expect(h.invoke).toHaveBeenCalledWith("agent_event_delete", {
+    expect(h.invoke).toHaveBeenCalledWith("event_delete", {
       payload: expect.objectContaining({
         eventId: "e1",
         baseVersion: 4,
@@ -409,23 +511,19 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     });
 
     expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
-    expect(h.invoke).toHaveBeenNthCalledWith(1, "agent_event_delete", {
+    expect(h.invoke).toHaveBeenNthCalledWith(1, "event_delete", {
       payload: expect.objectContaining({
         eventId: "e1",
         baseVersion: 4,
       }),
     });
-    expect(h.invoke).toHaveBeenNthCalledWith(
-      2,
-      "agent_event_set_participants",
-      {
-        payload: expect.objectContaining({
-          eventId: "e1",
-          codexEntryIds: ["c1"],
-          baseVersion: 4,
-        }),
-      },
-    );
+    expect(h.invoke).toHaveBeenNthCalledWith(2, "event_participants_set", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        codexEntryIds: ["c1"],
+        baseVersion: 4,
+      }),
+    });
   });
 
   it("Event row undo/redo も同一rendererのDocument Sessionへ通知する", async () => {

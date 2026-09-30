@@ -659,11 +659,21 @@ mod tests {
         assert_eq!(op_type, ce["opType"].as_str().unwrap());
         assert_eq!(entity_type, ce["entityType"].as_str().unwrap());
         let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        assert_eq!(
-            json_keys(&payload),
-            fixture_keys(&ce["payloadKeys"]),
-            "change_event payload keys drifted from the parity fixture"
-        );
+        let payload_keys = json_keys(&payload);
+        let required_payload_keys = fixture_keys(&ce["payloadKeys"]);
+        let audit_payload_keys = fixture_keys(&ce["auditPayloadKeys"]);
+        for key in &required_payload_keys {
+            assert!(
+                payload_keys.contains(key),
+                "change_event payload is missing required parity key '{key}'"
+            );
+        }
+        for key in &payload_keys {
+            assert!(
+                required_payload_keys.contains(key) || audit_payload_keys.contains(key),
+                "change_event payload key '{key}' is absent from the parity contract"
+            );
+        }
 
         // --- undoJournal contract ---
         let uj = &fixture["undoJournal"];

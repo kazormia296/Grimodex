@@ -90,6 +90,26 @@ describe("saveEditorDocument", () => {
     },
   );
 
+  it("forwards the preexisting-draft permit to scene persistence", async () => {
+    const services = makeServices();
+    const binding: LoadedEditorBinding = {
+      kind: "tree",
+      id: "scene-1",
+      nodeType: "scene",
+      storage: "database",
+      loadedVersion: 8,
+    };
+
+    await saveEditorDocument(binding, doc, services, {
+      preexistingDraft: true,
+    });
+
+    expect(services.persistSceneBody).toHaveBeenCalledWith("scene-1", doc, {
+      baseVersion: 8,
+      preexistingDraft: true,
+    });
+  });
+
   it("routes Codex base content through updateCodexText once", async () => {
     const services = makeServices();
     const binding: LoadedEditorBinding = {
@@ -109,8 +129,33 @@ describe("saveEditorDocument", () => {
       },
       { baseVersion: 3 },
     );
+    expect(services.updateCodexText.mock.calls[0]?.[2]).not.toHaveProperty(
+      "preexistingDraft",
+    );
     expect(services.updateCodexPhase).not.toHaveBeenCalled();
     expect(result.binding).toEqual({ ...binding, loadedVersion: 4 });
+  });
+
+  it("forwards the preexisting-draft permit to Codex base content", async () => {
+    const services = makeServices();
+    const binding: LoadedEditorBinding = {
+      kind: "codex",
+      id: "codex-1",
+      phaseId: null,
+      loadedVersion: 3,
+    };
+
+    await saveEditorDocument(binding, doc, services, {
+      preexistingDraft: true,
+    });
+
+    expect(services.updateCodexText).toHaveBeenCalledWith(
+      "codex-1",
+      {
+        content: '{"type":"doc","content":[]}',
+      },
+      { baseVersion: 3, preexistingDraft: true },
+    );
   });
 
   it("routes Codex phase content through updateCodexPhase once", async () => {
@@ -132,8 +177,33 @@ describe("saveEditorDocument", () => {
       },
       { baseVersion: 4 },
     );
+    expect(services.updateCodexPhase.mock.calls[0]?.[2]).not.toHaveProperty(
+      "preexistingDraft",
+    );
     expect(services.updateCodexText).not.toHaveBeenCalled();
     expect(result.binding).toEqual({ ...binding, loadedVersion: 5 });
+  });
+
+  it("forwards the preexisting-draft permit to Codex phase content", async () => {
+    const services = makeServices();
+    const binding: LoadedEditorBinding = {
+      kind: "codex",
+      id: "codex-1",
+      phaseId: "phase-1",
+      loadedVersion: 4,
+    };
+
+    await saveEditorDocument(binding, doc, services, {
+      preexistingDraft: true,
+    });
+
+    expect(services.updateCodexPhase).toHaveBeenCalledWith(
+      "phase-1",
+      {
+        contentOverride: '{"type":"doc","content":[]}',
+      },
+      { baseVersion: 4, preexistingDraft: true },
+    );
   });
 
   it("serializes and updates a snippet once", async () => {
@@ -155,7 +225,31 @@ describe("saveEditorDocument", () => {
       },
       { baseVersion: 5 },
     );
+    expect(services.updateSnippet.mock.calls[0]?.[2]).not.toHaveProperty(
+      "preexistingDraft",
+    );
     expect(result.binding).toEqual({ ...binding, loadedVersion: 6 });
+  });
+
+  it("forwards the preexisting-draft permit to snippet content", async () => {
+    const services = makeServices();
+    const binding: LoadedEditorBinding = {
+      kind: "snippet",
+      id: "snippet-1",
+      loadedVersion: 5,
+    };
+
+    await saveEditorDocument(binding, doc, services, {
+      preexistingDraft: true,
+    });
+
+    expect(services.updateSnippet).toHaveBeenCalledWith(
+      "snippet-1",
+      {
+        content: "<p>snippet</p>",
+      },
+      { baseVersion: 5, preexistingDraft: true },
+    );
   });
 
   it("converts a failed snippet update to AlreadyNotifiedSaveError", async () => {
@@ -188,7 +282,30 @@ describe("saveEditorDocument", () => {
       detail: '{"type":"doc","content":[]}',
       baseVersion: 6,
     });
+    expect(services.updateChronicleEvent.mock.calls[0]).toHaveLength(1);
     expect(result.binding).toEqual({ ...binding, loadedVersion: 7 });
+  });
+
+  it("forwards the preexisting-draft permit to a Chronicle Event", async () => {
+    const services = makeServices();
+    const binding: LoadedEditorBinding = {
+      kind: "chronicle-event",
+      id: "event-1",
+      loadedVersion: 6,
+    };
+
+    await saveEditorDocument(binding, doc, services, {
+      preexistingDraft: true,
+    });
+
+    expect(services.updateChronicleEvent).toHaveBeenCalledWith(
+      {
+        eventId: "event-1",
+        detail: '{"type":"doc","content":[]}',
+        baseVersion: 6,
+      },
+      { preexistingDraft: true },
+    );
   });
 
   it.each([

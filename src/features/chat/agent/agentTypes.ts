@@ -5,6 +5,7 @@ export interface ToolParameterSchema {
   type: string;
   /** ネストしたプロパティでは省略可。トップレベルは付けるのが望ましい。 */
   description?: string;
+  minimum?: number;
   items?: ToolParameterSchema;
   enum?: string[];
   properties?: Record<string, ToolParameterSchema>;
@@ -75,6 +76,12 @@ export interface WebSearchConfig {
 export interface AgentLLMResponse {
   blocks: ResponseBlock[];
   stopReason: "end_turn" | "tool_use" | "max_tokens";
+  /**
+   * Main-owned, turn-scoped capabilities keyed by the exact Native tool-call
+   * id. Renderer code may forward a capability, but cannot mint or retarget
+   * one to another tool call.
+   */
+  agentAuthorityCapabilities?: Record<string, AgentAuthorityCapabilityGrant>;
   /** Web 検索引用 (RAG 無効時は undefined/空)。 */
   citations?: Citation[];
   /** このリクエストの概算コスト (USD)。OpenRouter のみ実値、他は undefined。 */
@@ -89,6 +96,34 @@ export interface AgentLLMResponse {
   /** Prompt cache usage used for provider-normalized input drift telemetry. */
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+}
+
+export interface AgentAuthorityCapabilityGrant {
+  /** Opaque capability issued by Electron main. */
+  readonly capability: string;
+  /** Exact main audit execution identity for this tool call. */
+  readonly executionId: string;
+  /** Exact persisted assistant message identity for this tool call. */
+  readonly chatMessageId: string;
+  /** Main-owned provenance identity copied into the canonical write context. */
+  readonly mainOwnedProvenanceId: string;
+  /** Main-issued entity identity for create_event/create_foreshadow. */
+  readonly expectedEntityId?: string;
+}
+
+export interface AgentToolAuthorization {
+  /** Opaque capability issued by Electron main for this exact tool call. */
+  readonly capability: string;
+  /** Persisted assistant message id for provenance/audit binding. */
+  readonly chatMessageId?: string;
+  /** Exact model tool-call id; filled by the loop before dispatch. */
+  readonly toolCallId?: string;
+  /** Main audit execution identity; renderer cannot choose or replace it. */
+  readonly executionId?: string;
+  /** Main-owned provenance identity; renderer only forwards it. */
+  readonly mainOwnedProvenanceId?: string;
+  /** Main-issued entity identity for create_event/create_foreshadow. */
+  readonly expectedEntityId?: string;
 }
 
 // アシスタントメッセージ内のtool_useブロック（多ターン会話用）

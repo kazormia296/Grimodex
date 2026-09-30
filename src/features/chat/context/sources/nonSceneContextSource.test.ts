@@ -116,6 +116,10 @@ function relation(
     toCodexId,
     relationType: "custom",
     label,
+    directionality: "directed",
+    inverseLabel: null,
+    semanticKey: `project-1|${fromCodexId}|${toCodexId}|custom|${label}|directed`,
+    version: 1,
     depthHint: null,
     sourceMapEdgeId: null,
     createdAt: "2026-01-01T00:00:00.000Z",
@@ -1331,18 +1335,7 @@ describe("collectNonSceneContext", () => {
       listPhases: async () => phases,
       findMentionedEntries: async () => [related],
       listCodexRelations: async () => [
-        {
-          id: "relation-1",
-          projectId: "project-1",
-          fromCodexId: selected.id,
-          toCodexId: relationTarget.id,
-          relationType: "custom",
-          label: "knows",
-          depthHint: null,
-          sourceMapEdgeId: null,
-          createdAt: "2026-01-01T00:00:00.000Z",
-          updatedAt: "2026-01-01T00:00:00.000Z",
-        },
+        relation("relation-1", selected.id, relationTarget.id, "knows"),
       ],
     });
 

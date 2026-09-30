@@ -5,7 +5,10 @@ import {
 } from "@/features/concurrency/mutationAuthority";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { updateFrame, updateMapBoardSettings } from "../mapApi";
 import type { ColorByAxis, MapBoardRecord } from "../types";
 
@@ -272,7 +275,7 @@ function discardMapPersistenceWrites(): void {
 }
 
 registerQuiescenceProvider({
-  id: "map-project-db-writes",
+  id: createQuiescenceProviderId("map-project-db-writes"),
   stage: "scoped-mutations",
   flush: flushMapPersistenceWritesStrict,
   discard: discardMapPersistenceWrites,

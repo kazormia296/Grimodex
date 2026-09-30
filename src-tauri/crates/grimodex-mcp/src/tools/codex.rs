@@ -167,6 +167,8 @@ pub async fn find_related_entries(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CreateCodexEntryParams {
+    /// Stable logical request id. Reuse it only when retrying the same write.
+    pub request_id: String,
     /// Type slug: "character", "location", "item", "lore", or a custom slug.
     pub type_slug: String,
     /// Entry name (required, max 255 characters).
@@ -184,6 +186,7 @@ pub struct CreateCodexEntryParams {
 #[derive(Debug, Serialize)]
 struct CreateCodexResult {
     id: String,
+    version: i64,
     message: String,
 }
 
@@ -242,61 +245,76 @@ pub async fn create_codex_entry(
         r#"{"type":"doc","content":[]}"#.to_string()
     };
 
-    let tags = params.tags.unwrap_or_default();
-    let new_id = uuid::Uuid::new_v4().to_string();
+    let tags = params.tags;
     let summary_text = summary.as_deref().unwrap_or("");
     let mut spans = Vec::new();
     if !summary_text.is_empty() {
-        spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
+        spans.push(grimodex_db::agent_writes::AuthorshipSpanInput {
             from_pos: 0,
             to_pos: grimodex_core::pm_text::utf16_text_len(summary_text),
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_SUMMARY_MODEL.to_string()),
+            timestamp: None,
             chat_msg_id: None,
             trace_id: None,
-            lane: Some("summary".to_string()),
         });
     }
     let content_text_len = grimodex_core::pm_text::pm_doc_text_len(&content_pm);
     if content_text_len > 0 {
-        spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
+        spans.push(grimodex_db::agent_writes::AuthorshipSpanInput {
             from_pos: 0,
             to_pos: content_text_len,
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+            timestamp: None,
             chat_msg_id: None,
             trace_id: None,
-            lane: Some("content".to_string()),
         });
     }
 
-    let conn = server.conn.lock().map_err(internal_err)?;
-
-    grimodex_core::writes::codex::tracked_codex_create(
-        &conn,
-        grimodex_core::writes::codex::TrackedCodexCreateInput {
-            project_id: &server.project_id(),
-            session_id: &server.session_id,
-            surface: "mcp",
-            entry_id: &new_id,
-            type_slug: &type_slug,
-            name: &name,
-            summary: summary_text,
-            content: &content_pm,
-            aliases: aliases_str.as_deref(),
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let write = grimodex_db::agent_writes::agent_codex_create_with_tags_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentCodexCreatePayload {
+            request_id: Some(request_id.to_string()),
+            entry_id: None,
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            type_slug,
+            name: name.clone(),
+            summary: Some(summary_text.to_string()),
+            content: Some(content_pm),
+            aliases: aliases_str,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
             parent_id: None,
             source_chat_message_id: None,
             model: None,
             chat_message_id: None,
             trace_id: None,
-            authorship_spans: &spans,
-            tags: &tags,
+            authorship_spans: spans,
         },
+        tags.as_deref(),
     )
     .map_err(internal_err)?;
+    let new_id = write["entityId"]
+        .as_str()
+        .ok_or_else(|| internal_err("Codex writer returned no entityId"))?
+        .to_string();
 
     let result = CreateCodexResult {
         id: new_id.clone(),
+        version: write["version"]
+            .as_i64()
+            .ok_or_else(|| internal_err("Codex writer returned no version"))?,
         message: format!("Codex entry '{}' created with id {}", name, new_id),
     };
     let json = serde_json::to_string_pretty(&result).map_err(internal_err)?;
@@ -307,8 +325,12 @@ pub async fn create_codex_entry(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateCodexEntryParams {
+    /// Stable logical request id. Reuse it only when retrying the same write.
+    pub request_id: String,
     /// ID of the Codex entry to update (required).
     pub entry_id: String,
+    /// Version returned by create/list/detail/the previous update.
+    pub base_version: i64,
     /// New name (optional).
     pub name: Option<String>,
     /// New aliases list (optional; replaces existing aliases).
@@ -374,28 +396,18 @@ pub async fn update_codex_entry(
         None
     };
 
-    let conn = server.conn.lock().map_err(internal_err)?;
-
-    let base_version: i64 = conn
-        .query_row(
-            "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
-            rusqlite::params![params.entry_id, server.project_id()],
-            |row| row.get(0),
-        )
-        .map_err(|_| ErrorData::invalid_params("Codex entry not found in project", None))?;
-
     let mut spans = Vec::new();
     let mut lanes: Vec<Option<String>> = Vec::new();
     if let Some(ref s) = summary {
         if !s.is_empty() {
-            spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
+            spans.push(grimodex_db::agent_writes::AuthorshipSpanInput {
                 from_pos: 0,
                 to_pos: grimodex_core::pm_text::utf16_text_len(s),
                 source: "ai".to_string(),
                 model: Some(grimodex_core::writes::LANE_SUMMARY_MODEL.to_string()),
+                timestamp: None,
                 chat_msg_id: None,
                 trace_id: None,
-                lane: Some("summary".to_string()),
             });
             lanes.push(Some("summary".to_string()));
         }
@@ -403,14 +415,14 @@ pub async fn update_codex_entry(
     if let Some(ref c) = content_pm {
         let content_text_len = grimodex_core::pm_text::pm_doc_text_len(c);
         if content_text_len > 0 {
-            spans.push(grimodex_core::writes::codex::AuthorshipSpanInput {
+            spans.push(grimodex_db::agent_writes::AuthorshipSpanInput {
                 from_pos: 0,
                 to_pos: content_text_len,
                 source: "ai".to_string(),
                 model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                timestamp: None,
                 chat_msg_id: None,
                 trace_id: None,
-                lane: Some("content".to_string()),
             });
             lanes.push(Some("content".to_string()));
         }
@@ -421,29 +433,51 @@ pub async fn update_codex_entry(
         Some(spans.as_slice())
     };
 
-    grimodex_core::writes::codex::tracked_codex_update(
-        &conn,
-        grimodex_core::writes::codex::TrackedCodexUpdateInput {
-            project_id: &server.project_id(),
-            session_id: &server.session_id,
-            surface: "mcp",
-            entry_id: &params.entry_id,
-            expected_base_version: base_version,
-            name: name.as_deref(),
-            summary: summary.as_deref(),
-            content: content_pm.as_deref(),
-            aliases: aliases_str.as_deref(),
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let write = grimodex_db::agent_writes::agent_codex_update_with_request_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentCodexUpdatePayload {
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            entry_id: params.entry_id.clone(),
+            base_version: params.base_version,
+            type_slug: None,
+            name,
+            summary,
+            content: content_pm,
+            timelapse_doc_step_coverage: None,
+            aliases: aliases_str,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
+            parent_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
             model: None,
             chat_message_id: None,
             trace_id: None,
-            authorship_spans: span_ref,
-            tags: params.tags.as_deref(),
+            authorship_spans: span_ref.map(|items| items.to_vec()),
+            authorship_span_lanes: Some(lanes),
         },
+        Some(request_id),
+        params.tags.as_deref(),
     )
     .map_err(internal_err)?;
 
     let json = serde_json::json!({
         "id": params.entry_id,
+        "version": write["version"]
+            .as_i64()
+            .ok_or_else(|| internal_err("Codex writer returned no version"))?,
         "message": "Codex entry updated successfully"
     })
     .to_string();
@@ -465,6 +499,236 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../../src/features/agent-writes/parity/codexCreate.fixture.json"
     ));
+
+    fn make_writable_server() -> GrimodexServer {
+        let conn = make_simple_db();
+        conn.execute_batch(
+            "CREATE TABLE project_settings (
+                project_id TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT,
+                PRIMARY KEY (project_id, key)
+            );
+            CREATE TABLE state_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                domain TEXT NOT NULL,
+                entity_type TEXT,
+                entity_id TEXT,
+                anchor_sequence INTEGER NOT NULL,
+                anchor_timestamp INTEGER NOT NULL,
+                payload TEXT NOT NULL,
+                encoding TEXT NOT NULL DEFAULT 'json',
+                created_at INTEGER NOT NULL
+            );",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES ('p1', 'Novel')",
+            [],
+        )
+        .unwrap();
+        let policy = grimodex_core::policy::load_policy(&conn, "p1").unwrap();
+        GrimodexServer::new(
+            conn,
+            "p1".to_string(),
+            false,
+            false,
+            "sess-mcp".to_string(),
+            policy,
+        )
+    }
+
+    #[tokio::test]
+    async fn create_codex_entry_is_atomic_and_idempotent_on_mcp_surface() {
+        let server = make_writable_server();
+        let request_id = "mcp-codex-create-1";
+        for _ in 0..2 {
+            create_codex_entry(
+                &server,
+                CreateCodexEntryParams {
+                    request_id: request_id.to_string(),
+                    type_slug: "character".to_string(),
+                    name: "Alice".to_string(),
+                    aliases: Some(vec!["Al".to_string()]),
+                    summary: Some("Protagonist".to_string()),
+                    content: Some("Opening note".to_string()),
+                    tags: Some(vec!["lead".to_string()]),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let conflicting_tags = create_codex_entry(
+            &server,
+            CreateCodexEntryParams {
+                request_id: request_id.to_string(),
+                type_slug: "character".to_string(),
+                name: "Alice".to_string(),
+                aliases: Some(vec!["Al".to_string()]),
+                summary: Some("Protagonist".to_string()),
+                content: Some("Opening note".to_string()),
+                tags: Some(vec!["antagonist".to_string()]),
+            },
+        )
+        .await;
+        assert!(
+            conflicting_tags.is_err(),
+            "request identity must cover structured tag replacement"
+        );
+
+        let conn = server.conn.lock().unwrap();
+        let (entries, transactions, feed_events, undo_rows): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM codex_entries WHERE project_id = 'p1' AND name = 'Alice'),
+                    (SELECT COUNT(*) FROM narrative_change_transactions
+                      WHERE project_id = 'p1' AND request_id = ?1
+                        AND origin = 'ai-apply' AND source_domain = 'entry.create'),
+                    (SELECT COUNT(*) FROM narrative_change_events WHERE project_id = 'p1'),
+                    (SELECT COUNT(*) FROM undo_journal
+                      WHERE project_id = 'p1' AND surface = 'mcp')",
+                [request_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (entries, transactions, feed_events, undo_rows),
+            (1, 1, 1, 1)
+        );
+        let tag: String = conn
+            .query_row(
+                "SELECT tag.name
+                   FROM codex_entry_tags link
+                   JOIN codex_tags tag ON tag.id = link.tag_id",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag, "lead");
+    }
+
+    #[tokio::test]
+    async fn update_codex_entry_uses_client_occ_and_deduplicates_retry() {
+        let server = make_writable_server();
+        create_codex_entry(
+            &server,
+            CreateCodexEntryParams {
+                request_id: "mcp-codex-create-for-update".to_string(),
+                type_slug: "character".to_string(),
+                name: "Alice".to_string(),
+                aliases: None,
+                summary: None,
+                content: None,
+                tags: None,
+            },
+        )
+        .await
+        .unwrap();
+        let entry_id: String = server
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT id FROM codex_entries WHERE project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let request_id = "mcp-codex-update-1";
+        for _ in 0..2 {
+            update_codex_entry(
+                &server,
+                UpdateCodexEntryParams {
+                    request_id: request_id.to_string(),
+                    entry_id: entry_id.clone(),
+                    base_version: 1,
+                    name: Some("Alice Updated".to_string()),
+                    aliases: None,
+                    summary: None,
+                    content: Some("Updated body".to_string()),
+                    tags: Some(vec!["lead".to_string()]),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let conn = server.conn.lock().unwrap();
+        let (name, content, version, transactions, feed_events): (String, String, i64, i64, i64) =
+            conn.query_row(
+                "SELECT
+                    name,
+                    content,
+                    version,
+                    (SELECT COUNT(*) FROM narrative_change_transactions
+                      WHERE project_id = 'p1' AND request_id = ?2),
+                    (SELECT COUNT(*) FROM narrative_change_events event
+                      JOIN narrative_change_transactions tx
+                        ON tx.project_id = event.project_id
+                       AND tx.id = event.transaction_id
+                      WHERE tx.request_id = ?2)
+                   FROM codex_entries
+                  WHERE id = ?1",
+                rusqlite::params![entry_id, request_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(name, "Alice Updated");
+        assert_eq!(content, sanitize::markdown_to_prosemirror("Updated body"));
+        assert_eq!(version, 2);
+        assert_eq!((transactions, feed_events), (1, 1));
+
+        let (canonical_tail, snapshot_anchor, snapshot_payload, snapshots): (
+            i64,
+            i64,
+            String,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT
+                    (SELECT sequence FROM change_events
+                      WHERE project_id = 'p1'
+                      ORDER BY sequence DESC LIMIT 1),
+                    (SELECT anchor_sequence FROM state_snapshots
+                      WHERE project_id = 'p1'
+                        AND domain = 'codex'
+                        AND entity_type = 'codex_entry'
+                        AND entity_id = ?1
+                      ORDER BY anchor_sequence DESC, id DESC LIMIT 1),
+                    (SELECT payload FROM state_snapshots
+                      WHERE project_id = 'p1'
+                        AND domain = 'codex'
+                        AND entity_type = 'codex_entry'
+                        AND entity_id = ?1
+                      ORDER BY anchor_sequence DESC, id DESC LIMIT 1),
+                    (SELECT COUNT(*) FROM state_snapshots
+                      WHERE project_id = 'p1'
+                        AND domain = 'codex'
+                        AND entity_type = 'codex_entry'
+                        AND entity_id = ?1)",
+                [&entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(snapshot_anchor, canonical_tail);
+        assert_eq!(
+            snapshot_payload,
+            sanitize::markdown_to_prosemirror("Updated body")
+        );
+        assert_eq!(
+            snapshots, 1,
+            "same-request retry must not duplicate the snapshot"
+        );
+    }
 
     #[tokio::test]
     async fn create_codex_entry_respects_fixture_policy_gate() {
@@ -496,6 +760,7 @@ mod tests {
         let res = create_codex_entry(
             &server,
             CreateCodexEntryParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 type_slug: "character".to_string(),
                 name: "Alice".to_string(),
                 aliases: None,

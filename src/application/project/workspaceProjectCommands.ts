@@ -21,6 +21,7 @@ export async function initializeWorkspaceProject(): Promise<string> {
 export function hydrateWorkspaceProject(
   projectId: string,
   context: ProjectLoadContext,
+  expectedWorkspacePath: string,
   workspaceOpenRevision: number,
   lifecycleTiming?: ProjectLifecycleTimingObserver,
 ): Promise<void> {
@@ -28,6 +29,7 @@ export function hydrateWorkspaceProject(
     .getState()
     .loadProjectWithinLifecycle(projectId, context, {
       skipStrictQuiescence: true,
+      expectedWorkspacePath,
       workspaceOpenRevision,
       lifecycleTiming,
     });

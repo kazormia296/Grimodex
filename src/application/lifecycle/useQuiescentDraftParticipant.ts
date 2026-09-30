@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import {
   registerQuiescenceParticipant,
   type QuiescenceParticipantFlushOptions,
+  type QuiescenceParticipantScope,
 } from "./quiescenceParticipants";
 
 export interface QuiescentDraftParticipantOptions {
@@ -9,6 +10,8 @@ export interface QuiescentDraftParticipantOptions {
   id: string;
   /** Register only while this surface owns an uncommitted inline edit. */
   enabled: boolean;
+  /** Optional entity identity for corpus-scoped persistence barriers. */
+  scope?: QuiescenceParticipantScope;
   /** Must read refs so it remains valid after the component unmounts. */
   isDirty: () => boolean;
   /** Persist the latest ref-backed draft. Rejections veto strict lifecycle. */
@@ -60,6 +63,10 @@ export function useQuiescentDraftParticipant(
 
     const participant = {
       id,
+      get scope() {
+        return session.current.scope;
+      },
+      isDirty: () => session.current.isDirty(),
       flush: (options?: QuiescenceParticipantFlushOptions): Promise<void> => {
         if (inFlight) return inFlight;
         let flushResult: Promise<void>;

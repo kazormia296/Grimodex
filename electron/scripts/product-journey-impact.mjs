@@ -13,14 +13,30 @@ import {
   resolveSafeAll,
 } from "../../scripts/impact/core.mjs";
 import {
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_DOMAIN_RULES,
   PRODUCT_JOURNEY_CAPABILITY_ORDER,
   PRODUCT_JOURNEY_CATALOG,
+  digestProductJourneyCatalog,
   PRODUCT_JOURNEY_ROLLOUT_MODE,
 } from "./product-journey-catalog.mjs";
 import { validateCurrentProductJourneyCoverage } from "./product-journey-coverage.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(import.meta.dirname, "../..");
+
+export function resolveProductJourneyImpactCatalog(
+  name = process.env.GRIMODEX_PRODUCT_JOURNEY_SET,
+) {
+  if (name === undefined || name === "") return PRODUCT_JOURNEY_CATALOG;
+  if (name === "c2-5b") return NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG;
+  if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG;
+  if (name === "nir1-entity-relation-review") {
+    return NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG;
+  }
+  throw new Error(`unknown GRIMODEX_PRODUCT_JOURNEY_SET: ${name}`);
+}
 
 function unique(values) {
   return [...new Set(values)];
@@ -168,6 +184,7 @@ export function resolveProductJourneyExecution({ mode, catalog, selection }) {
     : catalog.filter((journey) => selection.journeyIds.includes(journey.id));
   const executionJourneyIds = executionCatalog.map((journey) => journey.id);
   return {
+    catalogDigest: digestProductJourneyCatalog(catalog),
     mode,
     shadow: mode === "shadow",
     selectedJourneyIds: [...selection.journeyIds],
@@ -302,13 +319,15 @@ function parseArgs(argv) {
 async function appendGithubOutputs(execution) {
   if (!process.env.GITHUB_OUTPUT) return;
   const values = {
+    catalog_digest: execution.catalogDigest,
     selected_journey_ids: execution.selectedJourneyIds,
     selected_capabilities: execution.selectedCapabilities,
     execution_journey_ids: execution.executionJourneyIds,
     execution_capabilities: execution.executionCapabilities,
   };
   const lines = Object.entries(values).map(
-    ([key, value]) => `${key}=${JSON.stringify(value)}`,
+    ([key, value]) =>
+      `${key}=${key === "catalog_digest" ? value : JSON.stringify(value)}`,
   );
   lines.push(`should_run=${execution.shouldRun ? "true" : "false"}`);
   lines.push(`shadow=${execution.shadow ? "true" : "false"}`);
@@ -317,6 +336,7 @@ async function appendGithubOutputs(execution) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const catalog = resolveProductJourneyImpactCatalog();
   if (args.mode === "affected" && PRODUCT_JOURNEY_ROLLOUT_MODE !== "affected") {
     throw new Error(
       "Affected product journey execution is locked until shadow coverage is complete.",
@@ -347,7 +367,7 @@ async function main() {
     });
   }
   const selection = selectProductJourneys({
-    catalog: PRODUCT_JOURNEY_CATALOG,
+    catalog,
     domainRules: PRODUCT_DOMAIN_RULES,
     changedPaths: changed.paths,
     forceAllReason: changed.complete ? undefined : changed.reason,
@@ -355,11 +375,12 @@ async function main() {
   });
   const execution = resolveProductJourneyExecution({
     mode: args.mode,
-    catalog: PRODUCT_JOURNEY_CATALOG,
+    catalog,
     selection,
   });
   const report = {
     version: 1,
+    catalogDigest: execution.catalogDigest,
     generatedAt: new Date().toISOString(),
     comparison: changed.comparison,
     environment: {
