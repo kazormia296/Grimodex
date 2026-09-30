@@ -34,6 +34,9 @@ patchedDependencies:
   '@paper-design/shaders@0.0.77':
     hash: 08cbb353dee9ae2d937bee67846a6c6e581afd22b154a05bdb2daff08d40c19e
     path: patches/@paper-design__shaders@0.0.77.patch
+  '@paper-design/shaders@0.0.80':
+    hash: 008843022d3c2a10574bd2a1e7c4281923974fde4d0e01fbbff00812359dcf6a
+    path: patches/@paper-design__shaders@0.0.80.patch
 
 importers:
 
@@ -71,7 +74,7 @@ importers:
         version: 2.1.2(gsap@3.15.0)(react@19.2.7)
       '@paper-design/shaders':
         specifier: 0.0.80
-        version: 0.0.80
+        version: 0.0.80(patch_hash=008843022d3c2a10574bd2a1e7c4281923974fde4d0e01fbbff00812359dcf6a)
       '@paper-design/shaders-react':
         specifier: 0.0.77
         version: 0.0.77(patch_hash=9e43a96d28c19d3ffdc9051c551d11b241b46788f1654d8947be1593e2d28fa8)(@types/react@19.2.17)(react@19.2.7)
@@ -7412,7 +7415,7 @@ snapshots:
 
   '@paper-design/shaders@0.0.77(patch_hash=08cbb353dee9ae2d937bee67846a6c6e581afd22b154a05bdb2daff08d40c19e)': {}
 
-  '@paper-design/shaders@0.0.80': {}
+  '@paper-design/shaders@0.0.80(patch_hash=008843022d3c2a10574bd2a1e7c4281923974fde4d0e01fbbff00812359dcf6a)': {}
 
   '@peculiar/asn1-schema@2.8.0':
     dependencies:
