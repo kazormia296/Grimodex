@@ -2,10 +2,14 @@
 
 ## Status
 
-Proposed — 2026-08-13（Gate C / Narrative IR Core）  
+Accepted — 2026-08-14（Gate C1.5 / Narrative Semantic Contract Ratification）
 [ADR 004: Narrative Reconciliation Boundary](./004-narrative-reconciliation-boundary.md)を拡張する。  
 本ADRはADR 004を置き換えない。意味評価、変更権限、Semantic retraction、
 Deterministic Coreの境界については、引き続きADR 004を正本とする。
+Mutation Authority Routeの詳細は[ADR 006](./006-narrative-mutation-authority-routes.md)で固定する。
+Scopeの正規形と比較契約は[ADR 009](./009-narrative-scope-relation-contract.md)、
+Dependencyの役割・粒度・宣言集合契約は
+[ADR 010](./010-narrative-dependency-role-granularity-contract.md)を正本とする。
 
 ## Context
 
@@ -14,13 +18,13 @@ Grimodexには、同じ原稿を異なる観点から解釈する複数の機能
 - Codex Entity／Relation／Phase／Custom Detail
 - Chronicle／Timeline／Temporal Constraint
 - Plot Thread／Foreshadow
-- Semantic Search／Relative Scenes
+- Semantic Search／Related Scenes
 - Chat Context planning
 - Consistency／Maintenance diagnostics
 - Import時の抽出とReconciliation
 
 各機能が独自の抽出Schema、要約、Embedding、Evidence形式、増分更新規則を持つと、
-同じSceneを機能ごとに再解釈することになる。Codexで承認したRelationがRelative Scenes
+同じSceneを機能ごとに再解釈することになる。Codexで承認したRelationがRelated Scenes
 から見えず、Phase抽出で認識したState TransitionをChatが別の方法で再計算し、
 Chronicle EventとSearch用のevent-like objectが異なるEvidenceを持つ、といった分裂が
 生じる。
@@ -282,14 +286,14 @@ IndexはAuthorityではなく、削除・再構築可能でなければならな
 interface NarrativeAssertionRevision<TPayload> {
   schemaVersion: 1;
 
-  assertionId: string | null;
+  assertionId?: string | null;
   revisionId: string;
   assertionKind: string;
   payloadSchemaId: string;
   payloadSchemaVersion: string;
   payload: TPayload;
 
-  scope: NarrativeScope;
+  scope: NarrativeScope; // versioned contract owned by ADR 009
   modality: AssertionModality;
   polarity: AssertionPolarity;
   supportClass: AssertionSupportClass;
@@ -313,7 +317,7 @@ immutableなRevisionへ、mutableなReview／Freshness／Projection stateを埋�
 
 ```ts
 interface NarrativeAssertionState {
-  assertionId: string | null;
+  assertionId?: string | null;
   revisionId: string;
 
   review:
@@ -331,11 +335,19 @@ interface NarrativeAssertionState {
     | "read-set-drift"
     | "unknown";
 
-  projection:
+}
+
+interface NarrativeProjectionState {
+  revisionId: string;
+  projectionRef: string;
+  projectionKind: string;
+  applicationId: string | null;
+  state:
     | "unapplied"
     | "applied"
     | "compensated"
     | "undone"
+    | "stale"
     | "not-applicable";
 }
 ```
@@ -379,7 +391,9 @@ Core Envelopeを共有しつつ、Domain semanticsはversioned typed schemaと�
 
 ### Stable assertion identity
 
-`assertionId`は、同じ概念的AssertionのRevision間identityを表す。
+`assertionId`は、同じ概念的AssertionのRevision間identityを表す。ただしFirst Retrieval
+Vertical SliceのIndex identityはimmutableな`revisionId`であり、`assertionId`はnullableの
+ままにする。
 
 初期移行ではnullableを許す。既存Proposalのすべてに信頼できるcross-run identityを
 割り当てられるとは限らないためである。
@@ -399,24 +413,14 @@ Stable identityがない場合、Deterministic Coreがheuristic matchingでident
 
 Narrative assertionは、scope付きかつ相互矛盾可能でなければならない。
 
-Scopeは概念上、次のような軸を持てる。
+Scopeの正規形、Reference／Temporal軸、`any`と`unresolved`の非同値、
+Revision付きOracle、Relation合成、Assertion Scope ProfileはADR 009を唯一の正本とする。
+本ADRの旧`scopeStatus`／optional-axis形式は互換実装の履歴であり、新しいProducerや
+Persistence Contractが複製してはならない。ScopeはAssertionが観測された場所ではなく、
+Assertionが成立する適用範囲である。観測場所はEvidenceが保持する。
 
-```ts
-interface NarrativeScope {
-  timelineRef?: string;
-  worldlineRef?: string;
-  sceneRef?: string;
-  validFromRef?: string;
-  validUntilRef?: string;
-  viewpointRef?: string;
-  knowledgeHolderRef?: string;
-  audienceRef?: "reader" | string;
-  narrativeLayer?: string;
-}
-```
-
-正確な語彙はversioned registryで管理する。ただし、すべてを単一のglobal truthへ
-潰してはならない。
+Scope Relationは作品世界のTruth Verdictではない。現在のScope、Registry、Order Basisから
+確立できた関係を表すだけであり、すべてを単一のglobal truthへ潰してはならない。
 
 次のAssertionを同時に表現できる必要がある。
 
@@ -485,6 +489,10 @@ Domain Projectionを別のInterpretationのSourceとして使う場合、Depende
 - propagation mode
 - 必要な場合はbaseline sequence
 
+役割、Selector、`dependencyKey`、Context Set、Build Action集約、sealed Declaration Set、
+V1／V2優先規則の正本はADR 010とする。上記は現行V1 Edgeの最低項目であり、
+V2のRoleまたは粒度を推測させるものではない。
+
 Application自身の書き込みで、自身が即座にstaleになることをSelf-stale guardで防ぐ。
 
 Human-authored fieldまたは明示的にlockされたfieldはField Authorityを保持する。後続の
@@ -521,7 +529,7 @@ Durableでuser-facingな構造化Domain Data。
 Source、IR、Graph、Indexを読み、runtimeで結果を生成するもの。
 
 - Semantic Search
-- Relative Scenes
+- Related Scenes
 - Consistency Query
 - Candidate Fusion
 - Chat Context planning
@@ -627,6 +635,9 @@ Semantic retractionはADR 004に従い、forwardなCompensating Proposal／Appli
 
 Semantic Build GraphはNarrative Semantic Coreのincremental build systemである。
 
+Dependency Role、Selector V2、Declaration Set、Consumer Head、Context Setの詳細は
+ADR 010を正本とする。本節はSource／Consumer／Freshness Authorityの境界だけを保持する。
+
 DurableなDependency Edgeは、SourceとConsumerを接続する。
 
 ```text
@@ -652,17 +663,17 @@ Consumer
 Change Feedが変更されたSourceを示し、reverse dependency lookupが影響Consumerを特定する。
 Deterministic EvaluatorはFreshnessとRebuild要否だけを更新する。
 
-許可される伝播：
+許可されるPropagation Signalは`needs-reconciliation`だけである。FreshnessはConsumer
+state、Build ActionはEvaluatorの作業指示として同じ列やSignalへ混ぜない。
 
 ```text
-fresh
-stale
-source-missing
-anchor-mismatch
-read-set-drift
-needs-reconciliation
-rebuild-required
-refresh-available
+Propagation Signal: needs-reconciliation
+
+Evidence Freshness: fresh | stale | source-missing | anchor-mismatch
+                    | read-set-drift | unknown
+
+Build Action: none | revalidate-exact | reanchor-candidate | resolve-only
+              | recompile-only | rebuild-required | refresh-available | manual
 ```
 
 禁止される伝播：
@@ -686,7 +697,7 @@ Narrative Semantic CoreのBuild Systemとして扱う。
 - Domain Projection
 - Narrative IR Embedding
 - Raw Text／Hybrid Retrieval Index
-- Relative Scenes Candidate
+- Related Scenes Candidate
 - Chat Context Materialization
 - Consistency Diagnostic
 - Visualization Projection
@@ -902,7 +913,7 @@ Narrative Retrieval Engine
 Scene Source
   → Evidence-bound Assertion
   → IR Embedding / Graph Index
-  → Relative Scenes / Chat Candidate Selection
+  → Related Scenes / Chat Candidate Selection
   → Evidence-backed Result
 ```
 
@@ -1009,7 +1020,7 @@ Rejected Candidate、Full Read Set、Reusable Intermediate Artifactを表せな�
 具体的Consumerが揃った段階で、別ADRまたは本ADRのAmendmentとして決定する。
 
 - mandatoryなstable `assertionId`／`claimUid` allocation
-- Reader Knowledge、Narrator Layer、Timeline、Worldlineの正確なScope vocabulary
+- Registry固有のWorldline分岐、Narrative Layer階層、集合Scope拡張
 - Proposal payloadからdedicated typed storageへ昇格する基準
 - Composite AssertionのField-level Review UI
 - Canonical Assertion Kind RegistryのOwnership／Extension Policy
@@ -1020,3 +1031,204 @@ Rejected Candidate、Full Read Set、Reusable Intermediate Artifactを表せな�
 
 これらが未決定であることを理由に、Feature-privateなAuthorityを新設したり、本ADRの
 Boundaryを迂回してはならない。
+
+## Amendment — Gate C1.5 Semantic Contract Ratification
+
+Accepted at Gate C1.5. This amendment ratifies the contract that C2 must use;
+it does not start C2 persistence or runtime work.
+
+### Canonical mutation paths
+
+Interpretation and Reconciliation are distinct from authoring surfaces:
+
+```text
+Interpretation / Reconciliation Path
+  Source
+    → Interpreter / Reconciler
+    → Evidence-bound Narrative IR Revision
+    → Proposal / Review / Decision
+    → Prepared Commit
+    → Typed Writer
+    → Domain Projection
+
+Human Direct Authoring Path
+  Human UI
+    → Runtime Policy / Actor Context
+    → OCC / Field Authority
+    → Typed Writer
+    → Domain Data
+
+Interactive Agent Command Path
+  User Turn / Standing knowledgeWrite Authority
+    → Agent Tool Policy
+    → OCC / Field Authority
+    → Typed Writer
+    → Domain Data
+```
+
+Human Direct Authoring and Interactive Agent Command may produce Domain Data
+that is later used as an Interpretation Source. That fact does not make the
+write itself an Accepted Narrative Assertion. Semantic Interpretation remains
+Proposal-bound; Interactive Agent Command is governed by ADR 006.
+
+### C1.5 implementation status and two directions
+
+| Area | State at C1.5 |
+| --- | --- |
+| Source Snapshot / Evidence | Existing |
+| Proposal Revision / Decision | Existing |
+| Prepared Commit / OCC / Field Authority | Existing |
+| Application-level Dependency | Existing but limited |
+| Narrative Change Feed | C0 |
+| Canonical Writer wiring | C1 |
+| Generic Dependency Graph | New in C2 |
+| Field Contribution | New in C2 |
+| Semantic Index Freshness connection | C2+ |
+| Feature-specific stale paths | Legacy Cutover |
+
+The contract preserves both sides of the incremental build boundary:
+
+```text
+Producer-time
+  Artifact / Proposal / Application generation
+    → Dependency Declaration in the same transaction
+
+Mutation-time
+  Source mutation
+    → Change Feed
+    → Reverse Dependency Lookup
+    → Freshness re-evaluation
+```
+
+Existing synchronous dependency registration and future Change Feed-driven
+invalidation are therefore compatible. C1.5 does not introduce a Dependency
+Edge table, Generic Freshness Store, Consumer Index, Evaluator, or Scheduler.
+
+### Orthogonal state vocabulary
+
+The following are separate axes and must not be stored in one enum or one
+database column:
+
+```text
+Review State
+  unreviewed | accepted | rejected | held | superseded
+
+Evidence Freshness
+  fresh | stale | source-missing | anchor-mismatch | read-set-drift | unknown
+
+Reconciliation Signal
+  needs-reconciliation
+
+Build Action
+  none | revalidate-exact | reanchor-candidate | resolve-only
+  | recompile-only | rebuild-required | refresh-available | manual
+
+Component Compatibility
+  compatible | quality-refresh-available | compatibility-refresh-required
+
+Projection Application State
+  unapplied | applied | compensated | undone | stale | not-applicable
+```
+
+In particular, `accepted` is not `fresh`, `fresh` is not truth,
+`applied` is not truth, `rejected` is not permanently false, and `stale` is
+not retracted. `needs-reconciliation` is the only Reconciliation propagation
+signal. Build Actions are downstream work descriptions, not Freshness or
+Review states.
+
+### Assertion and Projection state
+
+An Assertion has one state per immutable revision:
+
+```ts
+interface NarrativeAssertionState {
+  revisionId: string;
+  review: ReviewState;
+  evidenceFreshness: EvidenceFreshness;
+}
+```
+
+Projection state is many-to-many with revisions:
+
+```ts
+interface NarrativeProjectionState {
+  revisionId: string;
+  projectionRef: string;
+  projectionKind: string;
+  applicationId: string | null;
+  state: ProjectionApplicationState;
+}
+```
+
+The same revision may therefore be `applied` for a Codex Relation,
+`unapplied` for a Chronicle Event, `stale` for a Semantic Index, and
+`compensated` for a Chat Context Index at the same time. A singular
+`projection` field on Assertion state is not a valid C1.5 contract.
+
+### Evidence, support, and scope
+
+`modality` describes who or how something is stated. `supportClass` describes
+what supports it:
+
+```text
+author-declared | direct-source | reported-source | single-source-inference
+| multi-source-inference | imported-assertion | unresolved
+```
+
+An empty or omitted Scope is never an implicit global truth. ADR 009 owns the
+canonical V2 shape: every axis is present and distinguishes intentional `any`
+from constrained-but-`unresolved`. An unresolved Scope cannot be automatically
+expanded to every time, character, or worldline. AI Inference and Reconciler Proposal require a non-empty Evidence
+Set. Author Declaration may have an empty Evidence Set only with a Source
+Basis. Import Metadata may use the Source Package as Evidence. Legacy
+Migration may have an empty Evidence Set only with an explicit
+`evidenceAbsenceReason` of `legacy-unbound`.
+
+### Stable identity and Related Scenes
+
+The First Retrieval Vertical Slice uses immutable `revisionId` as its Index
+identity. Stable `assertionId` is optional until cross-run merge,
+deduplication, partial retraction, long-lived history, or identity-based graph
+traversal requires it. Deterministic Core must not invent identity with
+heuristic matching.
+
+The canonical implementation name is **Related Scenes**, not Relative Scenes.
+Narrative IR retrieval inherits ADR 002 `PhaseResolutionMode` and the same
+spoiler/secret policy. Semantic relevance never overrides disclosure.
+
+### Retrieval disclosure contract
+
+Candidate admission occurs before ranking. The context contains project,
+current scene, phase mode, temporal anchor, viewpoint, knowledge holder,
+audience, and `allowSecrets`. Candidate admission rejects future phases,
+unreached story-time, secret Foreshadow before reveal, knowledge-holder
+mismatch, Reader/Character knowledge confusion, Worldline/Timeline mismatch,
+and Narrative Layer mismatch. `auto` uses the existing ADR 002 resolver and
+does not create a second Phase authority. The policy contract and fixtures are
+in `policies/narrative/retrieval-disclosure.json`; C1.5 does not connect the
+policy to the Retrieval runtime.
+
+### Authority matrix and C2 start condition
+
+The canonical Authority Matrix is
+`policies/narrative/semantic-core-authorities.json`. C2 must not create a
+second durable Freshness authority. A Semantic Index may own only generation,
+build timestamp, source digest, dependency-set digest, and a dirty-cache flag;
+it may not assert that an Assertion is authoritative and fresh.
+
+C2 begins only after these contracts are present and validated:
+
+```text
+Mutation Route       fixed
+Source Event Contract fixed
+Object Addressing     fixed
+State Vocabulary      fixed
+Authority Matrix      fixed
+Disclosure Policy     fixed
+Evidence / Scope      fixed
+```
+
+C2 then implements only Dependency Edge, Edge State, Consumer Freshness,
+Application Contribution, Reverse Lookup, Incremental Evaluator, Cursor, and
+Backfill persistence/runtime. The workspace schema remains **22** throughout
+C1.5; no new C2 table or schema bump is part of this gate.

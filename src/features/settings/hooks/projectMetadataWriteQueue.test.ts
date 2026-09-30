@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   collectQuiescenceProviderRecovery,
   flushQuiescenceProviderStage,
+  QuiescenceProviderStageError,
 } from "@/lib/quiescenceProviders";
 import {
   _resetProjectMetadataWritesForTests,
@@ -39,6 +40,23 @@ function deferred<T>(): {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+function expectProviderFailure(
+  rejection: unknown,
+  providerId: string,
+  message: string,
+): void {
+  expect(rejection).toBeInstanceOf(QuiescenceProviderStageError);
+  const stageError = rejection as QuiescenceProviderStageError;
+  const providerFailure = stageError.providerFailures.find(
+    (failure) => failure.providerId === providerId,
+  );
+  expect(providerFailure).toBeDefined();
+  expect(providerFailure?.originalError).toMatchObject({ message });
+  expect((providerFailure?.originalError as AggregateError).errors).toEqual([
+    expect.objectContaining({ message }),
+  ]);
 }
 
 beforeEach(() => {
@@ -341,9 +359,14 @@ describe("Project metadata write quiescence", () => {
       onFailure,
     });
 
-    await expect(
-      flushQuiescenceProviderStage("scoped-mutations"),
-    ).rejects.toThrow("metadata disk full");
+    const rejection = await flushQuiescenceProviderStage(
+      "scoped-mutations",
+    ).catch((error: unknown) => error);
+    expectProviderFailure(
+      rejection,
+      "project-metadata-writes",
+      "metadata disk full",
+    );
     expect(collectQuiescenceProviderRecovery()).toContainEqual({
       kind: "project-metadata",
       projectId: "project-a",
@@ -361,9 +384,14 @@ describe("Project metadata write quiescence", () => {
     });
     h.currentProjectId = "project-b";
 
-    await expect(
-      flushQuiescenceProviderStage("scoped-mutations"),
-    ).rejects.toThrow("Project metadata write authority changed");
+    const rejection = await flushQuiescenceProviderStage(
+      "scoped-mutations",
+    ).catch((error: unknown) => error);
+    expectProviderFailure(
+      rejection,
+      "project-metadata-writes",
+      "Project metadata write authority changed",
+    );
     expect(h.updateProject).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+#[cfg(test)]
+use crate::agent_writes::{agent_codex_update_impl, AgentCodexUpdatePayload};
 use crate::agent_writes::{
     apply_codex_entry_create_in_tx, apply_codex_entry_patch_in_tx, collect_codex_entry_snapshot,
     CodexEntryCreateTxInput, CodexEntryCreateTxResult, CodexEntryPatchTxInput,
@@ -736,4 +738,49 @@ pub(crate) fn collect_codex_relation_snapshot(
         &project_id,
         relation_id,
     )
+}
+
+/// Test-only bridge for exercising the production Codex writer from a
+/// narrative extraction integration test. Keeping the call here preserves the
+/// semantic-core boundary: the test verifies the real Change Feed writer
+/// without making the typed revision module a second writer entrypoint.
+#[cfg(test)]
+pub(crate) fn test_agent_codex_update_for_change_feed(
+    db: &crate::Database,
+    project_id: &str,
+    session_id: &str,
+    entry_id: &str,
+    base_version: i64,
+    summary: &str,
+) -> anyhow::Result<()> {
+    agent_codex_update_impl(
+        db,
+        AgentCodexUpdatePayload {
+            project_id: project_id.into(),
+            session_id: session_id.into(),
+            surface: None,
+            entry_id: entry_id.into(),
+            base_version,
+            type_slug: None,
+            name: None,
+            summary: Some(summary.into()),
+            content: None,
+            timelapse_doc_step_coverage: None,
+            aliases: None,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
+            parent_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: None,
+            authorship_span_lanes: None,
+        },
+    )?;
+    Ok(())
 }

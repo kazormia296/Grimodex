@@ -17,12 +17,20 @@ import {
   runLiveSingleShot,
   type OpenRouterResponse,
 } from "@/features/chat/agent/aiLiveHarness";
+import {
+  CITATION_ID_OBSERVATION_EVIDENCE_MODE,
+  LEGACY_OBSERVATION_EVIDENCE_MODE,
+  type ObservationEvidenceMode,
+} from "@/application/narrative-extraction/aiTasks/citationIdObservation";
 import { validateNarrativeEvalCase } from "./caseSchema";
 import {
+  CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS,
+  OBSERVATION_CHRONICLE_EVAL_VERSIONS,
   prepareObservationEvalCase,
   runProductionObservationExtraction,
 } from "./observationAdapter";
 import type { NarrativeEvalCaseV1 } from "./types";
+import type { NarrativeEvalVersions } from "./replay";
 
 vi.mock("@/features/ai-policy/policyGuard", () => ({
   blockIfPolicyOff: () => false,
@@ -60,6 +68,41 @@ function reasoningEffort(): "minimal" | "low" | "medium" | "high" {
     throw new Error(`Unsupported OPENROUTER_REASONING_EFFORT: ${value}`);
   }
   return value as "minimal" | "low" | "medium" | "high";
+}
+
+/** Live runs default to the new protocol; legacy is an explicit comparison. */
+function evidenceModeFromEnv(): ObservationEvidenceMode {
+  const value =
+    process.env.NARRATIVE_EVAL_EVIDENCE_MODE ??
+    CITATION_ID_OBSERVATION_EVIDENCE_MODE;
+  if (
+    value !== CITATION_ID_OBSERVATION_EVIDENCE_MODE &&
+    value !== LEGACY_OBSERVATION_EVIDENCE_MODE
+  ) {
+    throw new Error(`Unsupported NARRATIVE_EVAL_EVIDENCE_MODE: ${value}`);
+  }
+  return value;
+}
+
+interface ObservationLiveCaseReport {
+  readonly caseId: string;
+  readonly evidenceMode: ObservationEvidenceMode;
+  readonly receiptMode: ObservationEvidenceMode;
+  readonly versions: NarrativeEvalVersions;
+  readonly parseStatus: "parsed" | "invalid";
+  readonly observationCount: number;
+  readonly evidenceQuotesExact: boolean;
+  readonly unknownSourceRefsRejected: boolean;
+  readonly passed: boolean;
+  readonly criticalViolations: unknown;
+  readonly usage: {
+    readonly inputTokens: number | undefined;
+    readonly outputTokens: number | undefined;
+    readonly costUsd: number | undefined;
+    readonly runtimeMs: number;
+    readonly resolvedModel: string | undefined;
+  } | null;
+  readonly rawTextDigestLength: number;
 }
 
 async function loadCases(): Promise<NarrativeEvalCaseV1[]> {
@@ -104,6 +147,7 @@ describeLive("Chronicle observation OpenRouter live eval", () => {
     "runs production observation extraction and asserts parse + exact evidence",
     async () => {
       const cases = await loadCases();
+      const evidenceMode = evidenceModeFromEnv();
       const model = process.env.OPENROUTER_MODEL ?? "openai/gpt-5.6-luna";
       const effort = reasoningEffort();
       const runId = `chronicle-observation-${new Date()
@@ -117,9 +161,11 @@ describeLive("Chronicle observation OpenRouter live eval", () => {
       );
       await mkdir(artifactRoot, { recursive: true });
 
-      const caseReports = [];
+      const caseReports: ObservationLiveCaseReport[] = [];
       for (const evalCase of cases) {
-        const prepared = await prepareObservationEvalCase(evalCase);
+        const prepared = await prepareObservationEvalCase(evalCase, {
+          evidenceMode,
+        });
         let capturedRaw = "";
         let rawExchange:
           | {
@@ -173,6 +219,9 @@ describeLive("Chronicle observation OpenRouter live eval", () => {
 
         caseReports.push({
           caseId: evalCase.id,
+          evidenceMode: prepared.evidenceMode,
+          receiptMode: prepared.evidenceMode,
+          versions: prepared.versions,
           parseStatus: evaluation.parseStatus,
           observationCount: observations.length,
           evidenceQuotesExact: evaluation.evidenceQuotesExact,
@@ -199,6 +248,12 @@ describeLive("Chronicle observation OpenRouter live eval", () => {
             schemaVersion: 1,
             runId,
             mode: "chronicle-observation-live",
+            evidenceMode,
+            receiptMode: evidenceMode,
+            versions:
+              evidenceMode === CITATION_ID_OBSERVATION_EVIDENCE_MODE
+                ? CITATION_ID_OBSERVATION_CHRONICLE_EVAL_VERSIONS
+                : OBSERVATION_CHRONICLE_EVAL_VERSIONS,
             certificationEligible: false,
             cases: caseReports,
           },

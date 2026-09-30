@@ -1,7 +1,5 @@
-import {
-  acquireQuiescenceLease,
-  type QuiescenceLease,
-} from "@/application/lifecycle/quiescenceLease";
+import type { QuiescenceLease } from "@/application/lifecycle/quiescenceLease";
+import { acquireQuiescenceLeaseAfterTimelapseGenesis } from "@/features/timelapse/genesisQuiescence";
 import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
 import { getLoadedProjectId } from "@/application/project/currentProjectAuthority";
 import {
@@ -77,7 +75,9 @@ type AiAuditExportLease = Pick<
 >;
 
 interface AiAuditExportBoundaryDependencies {
-  readonly acquireLease: (reason: "audit-export") => AiAuditExportLease;
+  readonly acquireLease: (
+    reason: "audit-export",
+  ) => AiAuditExportLease | Promise<AiAuditExportLease>;
   readonly awaitPendingAiAuditExecutions: () => Promise<void>;
   readonly awaitPendingIpcActualTasks: () => Promise<void>;
   readonly flushStrictQuiescence: () => Promise<void>;
@@ -89,7 +89,7 @@ export type AiAuditExportBoundaryOverrides =
   Partial<AiAuditExportBoundaryDependencies>;
 
 const DEFAULT_DEPENDENCIES: AiAuditExportBoundaryDependencies = {
-  acquireLease: acquireQuiescenceLease,
+  acquireLease: acquireQuiescenceLeaseAfterTimelapseGenesis,
   awaitPendingAiAuditExecutions,
   awaitPendingIpcActualTasks: awaitPendingIpcActualTasksForAuditExport,
   flushStrictQuiescence,
@@ -173,7 +173,7 @@ export async function runAiAuditExportBoundary<T>(
 ): Promise<T> {
   assertExpectedIdentity(identity);
   const deps = dependencies(overrides);
-  const lease = deps.acquireLease("audit-export");
+  const lease = await deps.acquireLease("audit-export");
   try {
     assertCurrentIdentity(identity, deps);
     await deps.awaitPendingAiAuditExecutions();

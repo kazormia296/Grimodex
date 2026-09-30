@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 const invokeMock = vi.fn();
 const scheduleImeExportRefreshMock = vi.fn();
@@ -66,6 +67,7 @@ const currentEntry = {
 };
 
 beforeEach(() => {
+  publishCurrentProjectId("p");
   invokeMock.mockReset();
   invokeMock.mockResolvedValue({
     entityId: "e1",
@@ -98,7 +100,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
       { baseVersion: 2 },
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         projectId: "p",
         entryId: "e1",
@@ -182,7 +184,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
 
     const result = await updateCodexEntry("p", "e1", { content: "x" });
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         projectId: "p",
         entryId: "e1",
@@ -211,7 +213,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
       },
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         entryId: "e1",
         baseVersion: 2,
@@ -284,7 +286,7 @@ describe("updateCodexEntry IME refresh trigger", () => {
 
       await updateCodexEntry("p", "e1", patch);
 
-      expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+      expect(invokeMock).toHaveBeenCalledWith("codex_update", {
         payload: expect.objectContaining({
           projectId: "p",
           entryId: "e1",

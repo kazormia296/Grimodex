@@ -82,6 +82,48 @@ fn context() -> SemanticAuditContext {
 }
 
 #[test]
+fn token_limit_skip_is_durable_and_never_claims_onnx_success() {
+    let appender = Arc::new(RecordingAppender::default());
+    let mut session = SemanticAuditSession::prepare(appender.clone(), context())
+        .expect("start exact-input audit before tokenizer");
+    session
+        .skip_before_onnx(
+            "document-token-limit",
+            json!({
+                "actualTokens": 513, "maximumTokens": 512,
+            }),
+        )
+        .expect("durable typed non-execution");
+    drop(session);
+    let events = appender.events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "execution.skipped")
+            .count(),
+        1
+    );
+    assert!(!events
+        .iter()
+        .any(|event| event.event_type == "execution.succeeded"));
+    let skipped = events.last().expect("terminal skip");
+    assert_eq!(skipped.payload["onnxSessionRunObserved"], false);
+    assert_eq!(skipped.payload["modelDispatched"], false);
+    assert_eq!(skipped.payload["reason"], "document-token-limit");
+}
+
+#[test]
+fn token_limit_terminal_audit_failure_is_not_a_successful_skip() {
+    let appender = Arc::new(RecordingAppender::default());
+    let mut session =
+        SemanticAuditSession::prepare(appender.clone(), context()).expect("start durable audit");
+    appender.failures_remaining.store(2, Ordering::Release);
+    assert!(session
+        .skip_before_onnx("document-token-limit", json!({}))
+        .is_err());
+}
+
+#[test]
 fn model_artifact_identity_tracks_exact_cold_load_bytes() {
     let path = std::env::temp_dir().join(format!(
         "grimodex-semantic-artifact-{}-{}.onnx",

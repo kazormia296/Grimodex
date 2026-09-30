@@ -1,0 +1,682 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-dependency-role-registry-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "adr",
+    "roleContractVersion",
+    "requirementIds",
+    "fixtureFile",
+    "implementationStatus",
+    "sets",
+    "promptConstruction",
+    "roles",
+    "sourceChangeClasses",
+    "effectAuthority",
+    "effectRules",
+    "actionAggregation",
+    "selectors",
+    "selectorSafety",
+    "textRangeValidation",
+    "positionMapping",
+    "dependencyKey",
+    "declarationSet",
+    "v1V2Selection",
+    "v1Compatibility",
+    "modelSelfDeclarationPolicy",
+    "narrativeIrRevisionConsumerGate",
+    "contractFixtures",
+    "nonEffects"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contract": { "const": "narrative-dependency-role-registry" },
+    "adr": {
+      "const": "docs/adr/010-narrative-dependency-role-granularity-contract.md"
+    },
+    "roleContractVersion": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*/[1-9][0-9]*$"
+    },
+    "requirementIds": {
+      "const": [
+        "GDX-NARR-SEMANTIC-CONTRACT-001",
+        "GDX-TRACE-001"
+      ]
+    },
+    "fixtureFile": {
+      "const": "policies/narrative/fixtures/dependency-role-contract.json"
+    },
+    "implementationStatus": { "$ref": "#/$defs/implementationStatus" },
+    "sets": {
+      "type": "object",
+      "required": [
+        "evidenceSet",
+        "dependencySet",
+        "contextSet",
+        "evidenceRequiresDirectEvidenceDependency",
+        "modelVisibleDynamicInputRequiresContextEntry",
+        "unclassifiedModelContextRole"
+      ],
+      "properties": {
+        "evidenceSet": { "$ref": "#/$defs/nonEmptyString" },
+        "dependencySet": { "$ref": "#/$defs/nonEmptyString" },
+        "contextSet": { "$ref": "#/$defs/nonEmptyString" },
+        "evidenceRequiresDirectEvidenceDependency": { "const": true },
+        "modelVisibleDynamicInputRequiresContextEntry": { "const": true },
+        "unclassifiedModelContextRole": {
+          "const": "opaque-model-context"
+        }
+      },
+      "additionalProperties": false
+    },
+    "promptConstruction": {
+      "type": "object",
+      "required": [
+        "dynamicSourceInputAuthority",
+        "componentInputsRole",
+        "auditDigests"
+      ],
+      "properties": {
+        "dynamicSourceInputAuthority": { "const": "context-set-only" },
+        "componentInputsRole": { "const": "component-contract" },
+        "auditDigests": {
+          "const": [
+            "contextSetDigest",
+            "componentContractDigest",
+            "finalRequestDigest"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "roles": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["id", "meaning"],
+        "properties": {
+          "id": { "$ref": "#/$defs/role" },
+          "meaning": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "sourceChangeClasses": {
+      "const": [
+        "source-content-changed",
+        "source-missing",
+        "anchor-missing",
+        "exact-content-relocated",
+        "selected-set-collapsed",
+        "component-unavailable",
+        "quality-input-changed",
+        "ranking-input-changed"
+      ]
+    },
+    "effectAuthority": {
+      "type": "object",
+      "required": [
+        "keyDimensions",
+        "producerMayOverrideResult",
+        "unknownCombinationPolicy",
+        "freshnessVocabulary",
+        "reasonVocabulary",
+        "buildActionVocabulary",
+        "unknownFreshnessPolicy"
+      ],
+      "properties": {
+        "keyDimensions": {
+          "const": ["dependency-role", "consumer-kind", "source-change-class"]
+        },
+        "producerMayOverrideResult": { "const": false },
+        "unknownCombinationPolicy": { "const": "fail-closed" },
+        "freshnessVocabulary": { "$ref": "#/$defs/nonEmptyString" },
+        "reasonVocabulary": { "$ref": "#/$defs/nonEmptyString" },
+        "buildActionVocabulary": { "$ref": "#/$defs/nonEmptyString" },
+        "unknownFreshnessPolicy": {
+          "const": "evaluation-unavailable-only"
+        }
+      },
+      "additionalProperties": false
+    },
+    "effectRules": {
+      "type": "array",
+      "minItems": 14,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/effectRule" }
+    },
+    "actionAggregation": {
+      "type": "object",
+      "required": [
+        "freshnessIndependent",
+        "requiredActions",
+        "advisoryActions",
+        "noAction",
+        "compatibilityPrimaryAction"
+      ],
+      "properties": {
+        "freshnessIndependent": { "const": true },
+        "requiredActions": {
+          "const": [
+            "revalidate-exact",
+            "reanchor-candidate",
+            "resolve-only",
+            "recompile-only",
+            "rebuild-required",
+            "manual"
+          ]
+        },
+        "advisoryActions": { "const": ["refresh-available"] },
+        "noAction": { "const": "none" },
+        "compatibilityPrimaryAction": {
+          "type": "object",
+          "required": ["purpose", "schedulerAuthority"],
+          "properties": {
+            "purpose": { "const": "v1-display-and-storage-compatibility-only" },
+            "schedulerAuthority": { "const": false }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "selectors": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/selectorContract" }
+    },
+    "selectorSafety": {
+      "type": "object",
+      "required": [
+        "exactObjectSetNewCandidateRisk",
+        "catalogFallbackUntilDeterministicSlice",
+        "falseFineGrainedDependencyPolicy"
+      ],
+      "properties": {
+        "exactObjectSetNewCandidateRisk": {
+          "const": "cannot-detect-objects-not-present-in-declared-set"
+        },
+        "catalogFallbackUntilDeterministicSlice": {
+          "const": "whole-source"
+        },
+        "falseFineGrainedDependencyPolicy": { "const": "forbid" }
+      },
+      "additionalProperties": false
+    },
+    "textRangeValidation": {
+      "type": "object",
+      "required": [
+        "producerOrSourceView",
+        "nativeDependencyWriter",
+        "evaluatorBoundaryFailure"
+      ],
+      "properties": {
+        "producerOrSourceView": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/kebabId" }
+        },
+        "nativeDependencyWriter": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/kebabId" }
+        },
+        "evaluatorBoundaryFailure": {
+          "type": "object",
+          "required": ["freshness", "reasonCode", "buildAction"],
+          "properties": {
+            "freshness": { "const": "anchor-mismatch" },
+            "reasonCode": { "const": "quote-not-found" },
+            "buildAction": { "const": "reanchor-candidate" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "positionMapping": {
+      "type": "object",
+      "required": [
+        "currentChangeFeedKinds",
+        "fineGrainedFreshnessRequires",
+        "missingMappingPolicy",
+        "guessOutOfRangeEditPolicy"
+      ],
+      "properties": {
+        "currentChangeFeedKinds": {
+          "const": ["position-map", "canonical-diff", "whole-document"]
+        },
+        "fineGrainedFreshnessRequires": {
+          "const": [
+            "producer-role-and-selector-declaration",
+            "writer-position-map"
+          ]
+        },
+        "missingMappingPolicy": { "const": "whole-document" },
+        "guessOutOfRangeEditPolicy": { "const": "forbid" }
+      },
+      "additionalProperties": false
+    },
+    "dependencyKey": {
+      "type": "object",
+      "required": [
+        "digestAlgorithm",
+        "hashComponents",
+        "excludedComponents",
+        "uniqueKeyComponents",
+        "breakingRoleMeaningPolicy"
+      ],
+      "properties": {
+        "digestAlgorithm": { "const": "sha256-canonical-json" },
+        "hashComponents": {
+          "const": ["dependency-role", "canonical-selector"]
+        },
+        "excludedComponents": {
+          "const": [
+            "role-contract-version",
+            "source-object-identity",
+            "source-revision",
+            "freshness"
+          ]
+        },
+        "uniqueKeyComponents": {
+          "const": [
+            "project-id",
+            "consumer-kind",
+            "consumer-key",
+            "source-object-identity",
+            "dependency-key"
+          ]
+        },
+        "breakingRoleMeaningPolicy": {
+          "const": "new-role-id-or-explicit-migration"
+        }
+      },
+      "additionalProperties": false
+    },
+    "declarationSet": {
+      "type": "object",
+      "required": [
+        "persistentStates",
+        "buildingState",
+        "transactionSteps",
+        "rollbackPolicy",
+        "headCas",
+        "digestComponents",
+        "digestExcludes"
+      ],
+      "properties": {
+        "persistentStates": { "const": ["sealed"] },
+        "buildingState": { "const": "transaction-or-memory-only" },
+        "transactionSteps": {
+          "const": [
+            "insert-all-edges-with-declaration-set-id",
+            "compute-dependency-set-digest",
+            "insert-sealed-declaration-set",
+            "compare-and-swap-consumer-declaration-head",
+            "commit"
+          ]
+        },
+        "rollbackPolicy": { "const": "all-or-nothing" },
+        "headCas": {
+          "type": "object",
+          "required": [
+            "expectedVersionRequired",
+            "incomingGenerationRule",
+            "sameOrOlderGenerationPolicy"
+          ],
+          "properties": {
+            "expectedVersionRequired": { "const": true },
+            "incomingGenerationRule": {
+              "const": "strictly-greater-than-current"
+            },
+            "sameOrOlderGenerationPolicy": { "const": "reject" }
+          },
+          "additionalProperties": false
+        },
+        "digestComponents": {
+          "const": [
+            "source-object-identity",
+            "dependency-key",
+            "selector-digest"
+          ]
+        },
+        "digestExcludes": {
+          "type": "array",
+          "minItems": 7,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/kebabId" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "v1V2Selection": {
+      "type": "object",
+      "required": [
+        "sealedActiveV2Head",
+        "noActiveV2Head",
+        "incompleteV2Edges",
+        "singleV2EdgeActivatesV2"
+      ],
+      "properties": {
+        "sealedActiveV2Head": {
+          "const": "evaluate-v2-only-and-use-v1-for-verify"
+        },
+        "noActiveV2Head": { "const": "evaluate-v1" },
+        "incompleteV2Edges": {
+          "const": "contract-corruption-keep-v1-canonical"
+        },
+        "singleV2EdgeActivatesV2": { "const": false }
+      },
+      "additionalProperties": false
+    },
+    "v1Compatibility": {
+      "type": "object",
+      "required": [
+        "currentEdgeIdentity",
+        "currentDependencyDigest",
+        "legacyRole",
+        "legacySelector",
+        "automaticPerformanceClaim",
+        "v2DigestSemanticCutoverRequiresMigration"
+      ],
+      "properties": {
+        "currentEdgeIdentity": { "const": "project-consumer-source" },
+        "currentDependencyDigest": { "const": "source-object-identity-set" },
+        "legacyRole": { "const": "opaque-model-context" },
+        "legacySelector": { "const": "whole-source" },
+        "automaticPerformanceClaim": { "const": "forbid" },
+        "v2DigestSemanticCutoverRequiresMigration": { "const": true }
+      },
+      "additionalProperties": false
+    },
+    "modelSelfDeclarationPolicy": {
+      "type": "object",
+      "required": ["acceptModelClaimAsDependencyProof", "narrowingAuthority"],
+      "properties": {
+        "acceptModelClaimAsDependencyProof": { "const": false },
+        "narrowingAuthority": {
+          "const": "deterministic-input-construction-only"
+        }
+      },
+      "additionalProperties": false
+    },
+    "narrativeIrRevisionConsumerGate": {
+      "type": "object",
+      "required": [
+        "currentStatus",
+        "requiredBeforeActivation",
+        "heuristicIdentityPolicy"
+      ],
+      "properties": {
+        "currentStatus": { "const": "not-yet-modelled" },
+        "requiredBeforeActivation": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/kebabId" }
+        },
+        "heuristicIdentityPolicy": { "const": "forbid" }
+      },
+      "additionalProperties": false
+    },
+    "contractFixtures": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "properties": {
+          "id": { "$ref": "#/$defs/kebabId" },
+          "ruleId": { "$ref": "#/$defs/kebabId" },
+          "expectedFreshness": { "$ref": "#/$defs/freshness" },
+          "expectedBuildAction": { "$ref": "#/$defs/buildAction" },
+          "expectedSelection": { "$ref": "#/$defs/nonEmptyString" },
+          "expectedWriterResult": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "nonEffects": {
+      "const": [
+        "semantic-truth",
+        "automatic-retraction",
+        "automatic-merge-or-split",
+        "automatic-delete",
+        "automatic-apply"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "kebabId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "role": {
+      "enum": [
+        "direct-evidence",
+        "opaque-model-context",
+        "entity-resolution",
+        "temporal-resolution",
+        "scope-resolution",
+        "projection-match",
+        "author-correction",
+        "component-contract",
+        "quality-context",
+        "ranking-only"
+      ]
+    },
+    "freshness": {
+      "enum": [
+        "fresh",
+        "stale",
+        "source-missing",
+        "anchor-mismatch",
+        "read-set-drift",
+        "unknown"
+      ]
+    },
+    "reasonCode": {
+      "type": ["string", "null"],
+      "enum": [
+        null,
+        "source-revision-changed",
+        "source-missing",
+        "evidence-overlap",
+        "context-overlap",
+        "exact-content-relocated",
+        "quote-not-found",
+        "quote-ambiguous",
+        "read-set-drift",
+        "normalizer-incompatible",
+        "component-incompatible",
+        "target-modified"
+      ]
+    },
+    "buildAction": {
+      "enum": [
+        "none",
+        "revalidate-exact",
+        "reanchor-candidate",
+        "resolve-only",
+        "recompile-only",
+        "rebuild-required",
+        "refresh-available",
+        "manual"
+      ]
+    },
+    "implementationStatus": {
+      "type": "object",
+      "required": [
+        "state",
+        "productionEntryPoints",
+        "scanRoots",
+        "productionMarkers",
+        "blockedOn"
+      ],
+      "properties": {
+        "state": { "enum": ["declared", "shadow", "wired"] },
+        "productionEntryPoints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "scanRoots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "productionMarkers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "blockedOn": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/kebabId" }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "declared" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "productionEntryPoints": { "maxItems": 0 },
+              "blockedOn": { "minItems": 1 }
+            }
+          },
+          "else": {
+            "properties": { "productionEntryPoints": { "minItems": 1 } }
+          }
+        }
+      ]
+    },
+    "effectRule": {
+      "type": "object",
+      "required": [
+        "id",
+        "role",
+        "consumerKind",
+        "changeClass",
+        "freshness",
+        "reasonCode",
+        "buildAction",
+        "actionRequirement"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/kebabId" },
+        "role": { "$ref": "#/$defs/role" },
+        "consumerKind": { "$ref": "#/$defs/kebabId" },
+        "changeClass": {
+          "enum": [
+            "source-content-changed",
+            "source-missing",
+            "anchor-missing",
+            "exact-content-relocated",
+            "selected-set-collapsed",
+            "component-unavailable",
+            "quality-input-changed",
+            "ranking-input-changed"
+          ]
+        },
+        "freshness": { "$ref": "#/$defs/freshness" },
+        "reasonCode": { "$ref": "#/$defs/reasonCode" },
+        "buildAction": { "$ref": "#/$defs/buildAction" },
+        "actionRequirement": { "enum": ["required", "advisory", "none"] }
+      },
+      "additionalProperties": false
+    },
+    "selectorContract": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "enum": [
+            "whole-source",
+            "text-range",
+            "field-path",
+            "exact-object-set",
+            "component-contract"
+          ]
+        },
+        "unit": { "const": "utf16" },
+        "rangeSemantics": { "const": "half-open" },
+        "requiredFields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "optionalFields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "whole-source" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["unit"] },
+                { "required": ["rangeSemantics"] },
+                { "required": ["requiredFields"] },
+                { "required": ["optionalFields"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "text-range" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": [
+              "unit",
+              "rangeSemantics",
+              "requiredFields",
+              "optionalFields"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "enum": ["field-path", "exact-object-set", "component-contract"]
+              }
+            },
+            "required": ["kind"]
+          },
+          "then": { "required": ["requiredFields"] }
+        }
+      ]
+    }
+  }
+}

@@ -607,6 +607,20 @@ pub fn seed_runtime_performance_fixture(
                         ])? == 1,
                         "runtime tree node insert did not affect one row"
                     );
+                    if node.node_type == "scene" {
+                        let updated_at: String = conn.query_row(
+                            "SELECT updated_at FROM tree_nodes
+                              WHERE id = ?1 AND project_id = ?2",
+                            params![node.id, payload.project_id],
+                            |row| row.get(0),
+                        )?;
+                        crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &node.id,
+                            &updated_at,
+                        )?;
+                    }
                 }
             }
             conn.execute(
@@ -807,13 +821,10 @@ pub fn seed_runtime_performance_fixture(
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn database() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open test database");
-        db.migrate().expect("migrate test database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.execute(
             "INSERT OR IGNORE INTO projects (id, title) VALUES ('default-project', 'Fixture')",
             &[],
@@ -967,7 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn seed_is_one_transaction_and_has_no_history_side_effects() {
+    fn seed_is_one_transaction_with_valid_scope_binding_per_scene() {
         let db = database();
         let expected_rows = validate_payload(&payload()).expect("valid payload");
         let result = seed_runtime_performance_fixture(&db, payload()).expect("seed fixture");
@@ -983,6 +994,44 @@ mod tests {
                 )?,
                 3
             );
+            let scene_and_binding_count = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM tree_nodes
+                      WHERE project_id = 'default-project'
+                        AND node_type = 'scene'
+                        AND id LIKE 'grimodex-runtime-perf-%'),
+                    (SELECT COUNT(*) FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'default-project'
+                        AND scene_id LIKE 'grimodex-runtime-perf-%')",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )?;
+            assert_eq!(scene_and_binding_count, (2, 2));
+            let scene_ids = conn
+                .prepare(
+                    "SELECT id FROM tree_nodes
+                      WHERE project_id = 'default-project'
+                        AND node_type = 'scene'
+                        AND id LIKE 'grimodex-runtime-perf-%'
+                      ORDER BY id",
+                )?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for scene_id in scene_ids {
+                let read = crate::narrative_extraction::read_narrative_scene_scope(
+                    conn,
+                    "default-project",
+                    &scene_id,
+                )?;
+                assert_eq!(read.binding.scene_id, scene_id);
+                assert_eq!(
+                    read.binding.source_token,
+                    grimodex_core::narrative_scene_scope::source_token(
+                        &read.registry,
+                        &read.binding,
+                    )?
+                );
+            }
             assert_eq!(
                 conn.query_row(
                     "SELECT semantic_key, version FROM plot_thread_scene_links

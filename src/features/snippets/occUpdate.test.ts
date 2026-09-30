@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { projects, snippets } from "@/db/schema";
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { createSnippet, updateSnippet } from "./api";
 import { SnippetVersionConflictError } from "./occ";
 
@@ -21,6 +22,7 @@ async function versionOf(id: string): Promise<number | undefined> {
 }
 
 beforeAll(async () => {
+  publishCurrentProjectId(PROJECT);
   const now = new Date().toISOString();
   await db
     .insert(projects)
@@ -37,6 +39,10 @@ beforeAll(async () => {
     title: "auto-occ",
     content: "{}",
   });
+});
+
+afterAll(() => {
+  publishCurrentProjectId(null);
 });
 
 describe("updateSnippet OCC (base_version)", () => {
@@ -71,12 +77,17 @@ describe("updateSnippet OCC (base_version)", () => {
   });
 
   it("行が存在しない (別プロジェクト等のスコープ miss) → undefined (従来通り)", async () => {
+    // The writer is now fenced by the current Project authority before it
+    // checks the scoped row. Bind that authority to the requested scope so
+    // this assertion still exercises the missing-row behavior.
+    publishCurrentProjectId("other-project");
     const r = await updateSnippet(
       "other-project",
       "sn-occ",
       { content: "x" },
       { baseVersion: 2 },
     );
+    publishCurrentProjectId(PROJECT);
     expect(r).toBeUndefined();
   });
 

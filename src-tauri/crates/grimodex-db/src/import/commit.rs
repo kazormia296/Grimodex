@@ -10,6 +10,7 @@ use crate::narrative_extraction::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::mint_c2zc_import_project_birth_epoch_in_tx;
 use crate::{require_generic_import_apply_allowed, Database};
 
 const STATE_SOURCE_SAVED: &str = "source-saved";
@@ -232,6 +233,17 @@ pub fn apply_commit(db: &Database, payload: ImportApplyCommitPayload) -> anyhow:
                     occurred_at: now.clone(),
                     events: feed_events,
                 },
+            )?;
+            // Import creates a Project through a distinct canonical authority
+            // event. Bootstrap its initial Epoch only after that exact event
+            // has been persisted, so marker incompatibility or lineage
+            // failure rolls the Project, session transition, Feed, and receipt
+            // back together.
+            mint_c2zc_import_project_birth_epoch_in_tx(
+                conn,
+                &target.project_id,
+                &payload.session_id,
+                &change_event_uid,
             )?;
             let receipt = json!({
                 "commitId": commit_id,

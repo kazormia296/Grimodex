@@ -9,6 +9,10 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::agent_writes::{
+    canonical_payload_with_authority_context, validate_renderer_authority_context,
+    RendererCanonicalWriteContext, RendererMutationProvenance,
+};
 use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
     canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
@@ -16,8 +20,8 @@ use crate::idempotency::{
 };
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
-    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
-    NarrativeChangeOrigin,
+    AppendCanonicalNarrativeChangeResult, AppendNarrativeChangeTransactionInput,
+    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::Database;
@@ -29,6 +33,13 @@ pub struct SnippetCreatePayload {
     pub session_id: String,
     pub event_uid: String,
     pub origin: NarrativeChangeOrigin,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
     #[serde(default)]
@@ -56,6 +67,13 @@ pub struct SnippetUpdatePayload {
     pub session_id: String,
     pub event_uid: String,
     pub origin: NarrativeChangeOrigin,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
     #[serde(default)]
@@ -67,6 +85,8 @@ pub struct SnippetUpdatePayload {
     pub title: Option<String>,
     #[serde(default)]
     pub content: Option<String>,
+    #[serde(default)]
+    pub timelapse_doc_step_coverage: Option<crate::timelapse::TimelapseDocStepCoverageProof>,
     /// An empty string is the typed wire sentinel for SQL NULL.
     #[serde(default)]
     pub tags_cache: Option<String>,
@@ -84,6 +104,13 @@ pub struct SnippetDeletePayload {
     pub session_id: String,
     pub event_uid: String,
     pub origin: NarrativeChangeOrigin,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
     #[serde(default)]
@@ -113,6 +140,7 @@ trait SnippetCanonicalIdentity {
     fn original_transaction_id(&self) -> Option<&str>;
     fn undo_journal_id(&self) -> Option<&str>;
     fn project_id(&self) -> &str;
+    fn authority_context(&self) -> RendererCanonicalWriteContext;
 }
 
 macro_rules! impl_snippet_identity {
@@ -139,6 +167,26 @@ macro_rules! impl_snippet_identity {
             fn project_id(&self) -> &str {
                 &self.project_id
             }
+            fn authority_context(&self) -> RendererCanonicalWriteContext {
+                RendererCanonicalWriteContext {
+                    request_id: self.request_id.clone(),
+                    event_uid: self.event_uid.clone(),
+                    authority_session_id: None,
+                    origin: self.origin,
+                    authority_route: self.authority_route.clone(),
+                    caller: self.caller.clone(),
+                    controls: self.controls.clone(),
+                    provenance: self.provenance.clone(),
+                    writes_authority_protected_field: self.writes_authority_protected_field,
+                    original_transaction_id: self.original_transaction_id.clone(),
+                    undo_journal_id: self.undo_journal_id.clone(),
+                    context_mode: None,
+                    icon: None,
+                    children_budget: None,
+                    notes: None,
+                    canonical_payload: None,
+                }
+            }
         }
     };
 }
@@ -156,6 +204,7 @@ fn validate_identity(payload: &impl SnippetCanonicalIdentity) -> anyhow::Result<
     ] {
         anyhow::ensure!(!value.trim().is_empty(), "{name} must not be empty");
     }
+    validate_renderer_authority_context(&payload.authority_context())?;
     anyhow::ensure!(
         !matches!(
             payload.origin(),
@@ -293,10 +342,11 @@ struct AppendSnippetChange<'a> {
     timestamp: i64,
 }
 
-fn append_change(
+fn append_change_result(
     conn: &rusqlite::Connection,
     input: AppendSnippetChange<'_>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
+    let authority_context = input.identity.authority_context();
     let canonical = AppendChangeEvent {
         event_uid: input.identity.event_uid().to_string(),
         scene_id: input.scene_id,
@@ -304,7 +354,10 @@ fn append_change(
         op_type: input.op_type.to_string(),
         entity_type: Some("snippet".to_string()),
         entity_id: Some(input.snippet_id.to_string()),
-        payload: input.canonical_payload.to_string(),
+        payload: canonical_payload_with_authority_context(
+            &input.canonical_payload.to_string(),
+            &authority_context,
+        ),
         timestamp: input.timestamp,
     };
     let has_text_impact = input.paths.iter().any(|path| path == "/content");
@@ -350,7 +403,14 @@ fn append_change(
             }],
         },
     )?;
-    Ok(append.narrative.transaction_id)
+    Ok(append)
+}
+
+fn append_change(
+    conn: &rusqlite::Connection,
+    input: AppendSnippetChange<'_>,
+) -> anyhow::Result<String> {
+    Ok(append_change_result(conn, input)?.narrative.transaction_id)
 }
 
 fn finish_transaction<T>(
@@ -497,7 +557,12 @@ pub fn update(db: &Database, payload: SnippetUpdatePayload) -> anyhow::Result<Va
         !fields.is_empty(),
         "Snippet update requires a changed field"
     );
-    let request_hash = canonical_write_payload_fingerprint("snippet_update", &payload)?;
+    // Coverage is an optimization proof, not the canonical body-write intent.
+    // Excluding it keeps retries idempotent when the renderer re-materializes
+    // or omits proof metadata, while changed body fields still conflict.
+    let mut fingerprint_payload = payload.clone();
+    fingerprint_payload.timelapse_doc_step_coverage = None;
+    let request_hash = canonical_write_payload_fingerprint("snippet_update", &fingerprint_payload)?;
     let request = IdempotencyRequest {
         domain: "snippet_update",
         request_id: Some(&payload.request_id),
@@ -570,6 +635,11 @@ pub fn update(db: &Database, payload: SnippetUpdatePayload) -> anyhow::Result<Va
             )?;
             anyhow::ensure!(updated == 1, "Snippet version conflict during update");
             let after = collect_snapshot(conn, &payload.project_id, &payload.snippet_id)?;
+            // Renderer coverage is an optimization hint only. Until Native
+            // mints and validates that proof, every content write retains the
+            // authoritative full snapshot; forged or stale proof metadata can
+            // therefore never suppress it.
+            let append_body_snapshot = payload.content.is_some();
             let before_json = before.to_string();
             let after_json = after.to_string();
             insert_undo_journal_in_tx(
@@ -589,7 +659,7 @@ pub fn update(db: &Database, payload: SnippetUpdatePayload) -> anyhow::Result<Va
                 },
             )?;
             let paths = changed_paths(&fields);
-            let maintenance_transaction_id = append_change(
+            let append = append_change_result(
                 conn,
                 AppendSnippetChange {
                     identity: &payload,
@@ -613,12 +683,23 @@ pub fn update(db: &Database, payload: SnippetUpdatePayload) -> anyhow::Result<Va
                     timestamp,
                 },
             )?;
+            if append_body_snapshot {
+                crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                    conn,
+                    &payload.project_id,
+                    append.canonical.tail_sequence,
+                    timestamp,
+                    &[crate::timelapse::TimelapseBodySnapshotTarget::snippet(
+                        payload.snippet_id.clone(),
+                    )],
+                )?;
+            }
             let response = serde_json::to_value(SnippetWriteResult {
                 entity_id: payload.snippet_id.clone(),
                 version: result_version,
                 change_event_uid: payload.event_uid.clone(),
                 undo_journal_id: payload.request_id.clone(),
-                maintenance_transaction_id,
+                maintenance_transaction_id: append.narrative.transaction_id,
             })?;
             insert_idempotent_response(conn, &request, &payload.project_id, &response)?;
             Ok(response)
@@ -730,4 +811,264 @@ pub fn delete(db: &Database, payload: SnippetDeletePayload) -> anyhow::Result<Va
         })();
         finish_transaction(conn, result)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn database() -> Database {
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title, language) VALUES ('p1', 'Project', 'ja')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed project");
+        db
+    }
+
+    fn human_controls() -> Vec<String> {
+        [
+            "runtime-policy",
+            "actor-context",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
+    fn create_payload(content: &str) -> SnippetCreatePayload {
+        SnippetCreatePayload {
+            request_id: "snippet-create-request".to_string(),
+            session_id: "snippet-session".to_string(),
+            event_uid: "snippet-create-event".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_string(),
+            caller: "human-ui".to_string(),
+            controls: human_controls(),
+            provenance: None,
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            project_id: "p1".to_string(),
+            snippet_id: "snippet-1".to_string(),
+            title: "Snippet".to_string(),
+            content: content.to_string(),
+            tags_cache: None,
+            content_source: Some("human".to_string()),
+            scene_id: None,
+            source_chat_message_id: None,
+            canonical_payload: None,
+        }
+    }
+
+    fn update_payload(
+        request_id: &str,
+        event_uid: &str,
+        base_version: i64,
+    ) -> SnippetUpdatePayload {
+        SnippetUpdatePayload {
+            request_id: request_id.to_string(),
+            session_id: "snippet-session".to_string(),
+            event_uid: event_uid.to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_string(),
+            caller: "human-ui".to_string(),
+            controls: human_controls(),
+            provenance: None,
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            project_id: "p1".to_string(),
+            snippet_id: "snippet-1".to_string(),
+            base_version,
+            title: None,
+            content: None,
+            timelapse_doc_step_coverage: None,
+            tags_cache: None,
+            scene_id: None,
+            canonical_payload: None,
+        }
+    }
+
+    #[test]
+    fn content_update_snapshots_exact_tail_but_metadata_and_retry_do_not_duplicate() {
+        let db = database();
+        let before = r#"{"type":"doc","content":[{"type":"text","text":"before"}]}"#;
+        let after = r#"{"type":"doc","content":[{"type":"text","text":"after"}]}"#;
+        create(&db, create_payload(before)).expect("create snippet");
+
+        let mut content_update =
+            update_payload("snippet-content-request", "snippet-content-event", 1);
+        content_update.content = Some(after.to_string());
+        let first = update(&db, content_update.clone()).expect("update snippet content");
+        let mut retry = content_update;
+        retry.session_id = "snippet-session-after-restart".to_string();
+        retry.event_uid = "snippet-content-event-after-restart".to_string();
+        assert_eq!(update(&db, retry).expect("retry snippet update"), first);
+
+        let mut metadata_update =
+            update_payload("snippet-metadata-request", "snippet-metadata-event", 2);
+        metadata_update.title = Some("Renamed".to_string());
+        update(&db, metadata_update).expect("update snippet metadata");
+
+        db.with_conn(|conn| {
+            let snapshots = conn
+                .prepare(
+                    "SELECT anchor_sequence, payload FROM state_snapshots
+                      WHERE project_id = 'p1' AND domain = 'snippet'
+                        AND entity_id = 'snippet-1'
+                      ORDER BY anchor_sequence",
+                )?
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                snapshots,
+                vec![(1, before.to_string()), (2, after.to_string())]
+            );
+            let tail: i64 = conn.query_row(
+                "SELECT MAX(sequence) FROM change_events WHERE project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(tail, 3);
+            Ok(())
+        })
+        .expect("inspect snippet snapshots");
+    }
+
+    #[test]
+    fn content_update_keeps_snapshot_for_nonhuman_renderer_route() {
+        let db = database();
+        let before = r#"{"type":"doc","content":[{"type":"text","text":"before"}]}"#;
+        let after = r#"{"type":"doc","content":[{"type":"text","text":"ai update"}]}"#;
+        create(&db, create_payload(before)).expect("create snippet");
+
+        let mut payload = update_payload("snippet-ai-request", "snippet-ai-event", 1);
+        payload.origin = NarrativeChangeOrigin::AiApply;
+        payload.authority_route = "interpreter-projection".to_string();
+        payload.caller = "reconciler".to_string();
+        payload.controls = [
+            "proposal-revision",
+            "decision",
+            "prepared-commit",
+            "application-id",
+            "source-basis-occ",
+            "field-authority",
+            "typed-writer",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        payload.content = Some(after.to_string());
+        update(&db, payload).expect("nonhuman renderer content update");
+
+        db.with_conn(|conn| {
+            let snapshots = conn
+                .prepare(
+                    "SELECT anchor_sequence, payload FROM state_snapshots
+                      WHERE project_id = 'p1' AND domain = 'snippet'
+                        AND entity_type = 'snippet' AND entity_id = 'snippet-1'
+                      ORDER BY anchor_sequence, id",
+                )?
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                snapshots,
+                vec![(1, before.to_string()), (2, after.to_string())]
+            );
+            Ok(())
+        })
+        .expect("inspect nonhuman route snapshot");
+    }
+
+    #[test]
+    fn content_update_honors_explicit_off() {
+        let db = database();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('p1', 'timelapse.enabled', 'false')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("disable timelapse");
+        create(&db, create_payload("before")).expect("create while off");
+        let mut payload = update_payload("snippet-off-request", "snippet-off-event", 1);
+        payload.content = Some("after".to_string());
+        update(&db, payload).expect("update while off");
+        let count = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM state_snapshots WHERE project_id = 'p1'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("snapshot count");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn snapshot_failure_rolls_back_content_journal_feed_and_receipt() {
+        let db = database();
+        create(&db, create_payload("before")).expect("create snippet");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_snippet_update_snapshot
+                   BEFORE INSERT ON state_snapshots
+                   WHEN NEW.anchor_sequence > 1
+                   BEGIN SELECT RAISE(ABORT, 'forced snippet snapshot failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install snapshot failure trigger");
+        let mut payload = update_payload("snippet-failure-request", "snippet-failure-event", 1);
+        payload.content = Some("after".to_string());
+        let error = update(&db, payload).expect_err("snapshot failure must roll back update");
+        assert!(error
+            .to_string()
+            .contains("forced snippet snapshot failure"));
+
+        db.with_conn(|conn| {
+            let state: (String, i64, i64, i64, i64, i64) = conn.query_row(
+                "SELECT
+                   (SELECT content FROM snippets WHERE id = 'snippet-1'),
+                   (SELECT version FROM snippets WHERE id = 'snippet-1'),
+                   (SELECT COUNT(*) FROM undo_journal WHERE id = 'snippet-failure-request'),
+                   (SELECT COUNT(*) FROM change_events WHERE event_uid = 'snippet-failure-event'),
+                   (SELECT COUNT(*) FROM narrative_change_transactions
+                     WHERE request_id = 'snippet-failure-request'),
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'snippet_update'
+                       AND request_id = 'snippet-failure-request')",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?;
+            assert_eq!(state, ("before".to_string(), 1, 0, 0, 0, 0));
+            Ok(())
+        })
+        .expect("verify snippet rollback");
+    }
 }

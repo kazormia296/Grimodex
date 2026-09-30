@@ -32,7 +32,7 @@ export async function createCodexTag(
   },
   options: TagWriteOptions = {},
 ): Promise<CodexTag> {
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "tag.create",
       projectId: data.projectId,
@@ -71,7 +71,7 @@ export async function updateCodexTag(
     updateData.typeFilter =
       data.typeFilter != null ? JSON.stringify(data.typeFilter) : null;
   }
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "tag.update",
       projectId: current[0].projectId,
@@ -94,7 +94,7 @@ export async function deleteCodexTag(
     .from(codexTags)
     .where(eq(codexTags.id, id));
   if (!rows[0]) return;
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "tag.delete",
       projectId: rows[0].projectId,

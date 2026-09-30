@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { _resetTimelapseGenesisBarriersForTests } from "@/features/timelapse/genesisBarrier";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   loadEntries: vi.fn(),
@@ -42,6 +46,13 @@ import { agentCreateSnippet } from "./snippet";
 
 describe("agentCreateSnippet idempotency contract", () => {
   beforeEach(() => {
+    _resetTimelapseGenesisBarriersForTests();
+    publishCurrentProjectId("project-1");
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/snippet.test.gdx",
+      openRevision: 1,
+    });
+
     h.invoke.mockReset();
     h.loadEntries.mockReset();
     h.invoke.mockResolvedValue({

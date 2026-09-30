@@ -126,7 +126,14 @@ export function resolveRerankerResourceRoot(
  * `configureAppUserData` が確定した `app.getPath("userData")` を明示注入する。
  * packaged版は既存Tauriのdata_dir、developmentはGrimodexElectronDevを使う。
  */
-export function initBackend(): NapiBackendLike | null {
+export interface InitBackendOptions {
+  /** CI product-journey launches must not fail-soft into a passing window. */
+  failFast?: boolean;
+}
+
+export function initBackend({
+  failFast = false,
+}: InitBackendOptions = {}): NapiBackendLike | null {
   const binaryPath = resolveNodeBinaryPath();
   const semanticResourceRoot = resolveSemanticResourceRoot();
   try {
@@ -150,6 +157,10 @@ export function initBackend(): NapiBackendLike | null {
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error(`[grimodex-electron] napi backend load failed: ${message}`);
+    if (failFast) {
+      instance = null;
+      throw e instanceof Error ? e : new Error(message);
+    }
     dialog.showErrorBox(
       "Grimodex バックエンドの読み込みに失敗しました",
       `${message}\n\nDB を伴う機能は動作しません（fail-soft で起動は継続します）。`,

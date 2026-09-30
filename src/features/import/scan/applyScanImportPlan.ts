@@ -1,4 +1,6 @@
 import type { ImportedNode } from "../importTypes";
+import type { CanonicalWriteReceipt } from "@/features/native-writes/writeContext";
+import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
 import type {
   ScanCodexImportPlan,
   ScanEventImportPlan,
@@ -22,6 +24,13 @@ export type ScanImportStage =
 export interface ScanImportStageResult {
   imported: number;
   errors: string[];
+}
+
+/** Durable native acknowledgement for the staging publish transaction. */
+export interface ScanImportPublishReceipt {
+  projectId: string;
+  semanticEpochId: string | null;
+  __writeReceipt: CanonicalWriteReceipt;
 }
 
 export interface ScanImportApplyOperations {
@@ -58,7 +67,11 @@ export interface ScanImportApplyOperations {
     projectId: string,
     metadata: { title: string; sourceFingerprint: string },
   ): Promise<void>;
-  publishStagingProject(projectId: string): Promise<void>;
+  publishStagingProject(projectId: string): Promise<ScanImportPublishReceipt>;
+  refreshPublishedProject(
+    projectId: string,
+    receipt: ScanImportPublishReceipt,
+  ): Promise<void>;
   discardStagingProject(projectId: string): Promise<void>;
 }
 
@@ -139,6 +152,19 @@ function assertStageResult(
   return result.imported;
 }
 
+function hasExplicitPublishFailureOutcome(cause: unknown): boolean {
+  return (
+    typeof cause === "object" &&
+    cause !== null &&
+    "outcome" in cause &&
+    cause.outcome === "failed"
+  );
+}
+
+function errorMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 export async function applyScanImportPlan(
   plan: ScanImportPlan,
   operations: ScanImportApplyOperations,
@@ -192,17 +218,41 @@ export async function applyScanImportPlan(
       sourceFingerprint: plan.sourceFingerprint,
     });
     stage = "publish";
-    await operations.publishStagingProject(projectId);
+    const receipt = await operations.publishStagingProject(projectId);
+
+    // Native publication is durable at this point. Refreshing renderer state
+    // and scheduling dependent projections are deliberately best-effort: a
+    // failure here must never route a committed Project into project_delete.
+    const warnings = [...plan.warnings];
+    try {
+      await operations.refreshPublishedProject(projectId, receipt);
+    } catch (refreshError) {
+      warnings.push(
+        `Scan import published, but UI refresh failed: ${errorMessage(refreshError)}`,
+      );
+    }
 
     return {
       projectId,
       imported: { tree, codexEntries, relations, phases, events, findings },
-      warnings: [...plan.warnings],
+      warnings,
     };
   } catch (cause) {
     if (!projectId) {
       if (cause instanceof ScanImportApplyError) throw cause;
       throw new ScanImportApplyError(stage, undefined, cause);
+    }
+    // A native publish timeout is an unknown commit outcome. The publish
+    // adapter replays the exact request once; if acknowledgement is still
+    // unavailable, retain the staging Project so cleanup cannot destroy a
+    // committed import. Only an explicit native `failed` outcome proves the
+    // transaction rolled back and permits discard during the publish stage.
+    if (
+      stage === "publish" &&
+      (!hasExplicitPublishFailureOutcome(cause) ||
+        isUnknownIpcOutcomeError(cause))
+    ) {
+      throw new ScanImportApplyError(stage, projectId, cause);
     }
     try {
       await operations.discardStagingProject(projectId);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import {
+  matchChronicleEventTitleAgainstCatalog,
   matchExistingChronicleEvent,
   type ExistingChronicleEventCatalogRecord,
 } from "./existingEventMatcher";
@@ -95,5 +96,26 @@ describe("matchExistingChronicleEvent", () => {
       candidates: ["existing-1"],
       reasons: ["title-only"],
     });
+  });
+});
+
+describe("matchChronicleEventTitleAgainstCatalog", () => {
+  it("returns every normalized title hit as an explicit probable duplicate", () => {
+    expect(
+      matchChronicleEventTitleAgainstCatalog("  教会への砲撃  ", [
+        catalog(),
+        catalog({ ref: "existing-2", title: "教会への砲撃" }),
+      ]),
+    ).toEqual({
+      status: "probable-duplicate",
+      candidates: ["existing-1", "existing-2"],
+      reasons: ["title-only"],
+    });
+  });
+
+  it("returns none when the sealed catalog has no title hit", () => {
+    expect(
+      matchChronicleEventTitleAgainstCatalog("撤退命令", [catalog()]),
+    ).toEqual({ status: "none" });
   });
 });

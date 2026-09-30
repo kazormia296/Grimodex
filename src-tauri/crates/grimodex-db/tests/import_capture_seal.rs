@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::import::{
     create_capture, get_capture, seal_capture, update_selection, CaptureEntryInput,
     CreateCaptureInput, UpdateCaptureSelectionInput,
@@ -10,8 +13,7 @@ use grimodex_db::{
 use serde_json::json;
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     let before = load_narrative_runtime_policy_from_db(&db).expect("load runtime policy");
     set_narrative_runtime_policy(
         &db,

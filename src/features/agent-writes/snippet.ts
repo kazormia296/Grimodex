@@ -12,6 +12,14 @@ import {
 import { markCodexContentAsAi } from "./codex";
 import { applyUndoJournal } from "./undoJournal";
 import type { Snippet } from "@/features/snippets/api";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteAuthorityOptions,
+} from "@/features/native-writes/writeContext";
+import {
+  runTimelapseBodyReplacement,
+  runTimelapseMutation,
+} from "@/features/timelapse/bodyWriteMode";
 
 export interface AgentSnippetCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
@@ -36,6 +44,14 @@ interface AgentWriteResult {
 export async function agentCreateSnippet(
   input: AgentSnippetCreateInput,
   chatMessageId?: string | null,
+  authority?: Pick<
+    CanonicalWriteAuthorityOptions,
+    | "agentAuthorityCapability"
+    | "chatMessageId"
+    | "toolCallId"
+    | "executionId"
+    | "mainOwnedProvenanceId"
+  >,
 ): Promise<Snippet> {
   if (blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
@@ -61,53 +77,86 @@ export async function agentCreateSnippet(
         traceId: input.traceId,
       })
     : [];
-
-  const result = await invoke<AgentWriteResult>("agent_snippet_create", {
-    payload: {
-      requestId: input.requestId,
-      snippetId,
-      projectId,
-      sessionId: getRecorderSessionId(),
-      title: input.title,
-      content: content ?? null,
-      sceneId: input.sceneId ?? null,
-      sourceChatMessageId: input.sourceChatMessageId ?? chatMessageId ?? null,
-      model: input.model ?? null,
-      chatMessageId: chatMessageId ?? null,
-      traceId: input.traceId ?? null,
-      authorshipSpans,
-    },
-  });
-
-  await useSnippetStore.getState().loadEntries();
-
-  const entry = useSnippetStore
-    .getState()
-    .entries.find((e) => e.id === result.entityId);
-  if (!entry) {
-    throw new Error(
-      `Created snippet ${result.entityId} not found after reload`,
-    );
-  }
-
-  if (!useGlobalHistoryStore.getState().isReplaying) {
-    const journalId = result.undoJournalId;
-    const entityId = result.entityId;
-    useGlobalHistoryStore.getState().push({
-      kind: "snippets",
-      label: i18next.t("snippets.store.agentHistoryCreate"),
-      operationId: journalId,
-      entityId,
-      async undo() {
-        await applyUndoJournal(journalId, "undo");
-        await useSnippetStore.getState().loadEntries();
+  const authorityContext = createCanonicalWriteContext(
+    "ai-apply",
+    undefined,
+    input.requestId,
+    {
+      authorityRoute: "interactive-agent-command",
+      provenance: {
+        requestId: input.requestId,
+        traceId: input.traceId ?? chatMessageId ?? input.requestId,
+        ...(chatMessageId ? { chatMessageId } : {}),
+        ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
       },
-      async redo() {
-        await applyUndoJournal(journalId, "redo");
-        await useSnippetStore.getState().loadEntries();
+      ...authority,
+    },
+  );
+
+  const write = async (): Promise<Snippet> => {
+    const result = await invoke<AgentWriteResult>("agent_snippet_create", {
+      payload: {
+        ...authorityContext,
+        requestId: input.requestId,
+        snippetId,
+        projectId,
+        sessionId: getRecorderSessionId(),
+        title: input.title,
+        content: content ?? null,
+        sceneId: input.sceneId ?? null,
+        sourceChatMessageId: input.sourceChatMessageId ?? chatMessageId ?? null,
+        model: input.model ?? null,
+        chatMessageId: chatMessageId ?? null,
+        traceId: input.traceId ?? null,
+        authorshipSpans,
       },
     });
-  }
 
-  return entry;
+    await useSnippetStore.getState().loadEntries();
+
+    const entry = useSnippetStore
+      .getState()
+      .entries.find((e) => e.id === result.entityId);
+    if (!entry) {
+      throw new Error(
+        `Created snippet ${result.entityId} not found after reload`,
+      );
+    }
+
+    if (!useGlobalHistoryStore.getState().isReplaying) {
+      const journalId = result.undoJournalId;
+      const entityId = result.entityId;
+      useGlobalHistoryStore.getState().push({
+        kind: "snippets",
+        label: i18next.t("snippets.store.agentHistoryCreate"),
+        operationId: journalId,
+        entityId,
+        async undo() {
+          await applyUndoJournal(journalId, "undo");
+          await useSnippetStore.getState().loadEntries();
+        },
+        async redo() {
+          await applyUndoJournal(journalId, "redo");
+          await useSnippetStore.getState().loadEntries();
+        },
+      });
+    }
+
+    return entry;
+  };
+  if (input.content !== undefined) {
+    return runTimelapseBodyReplacement(
+      {
+        projectId,
+        documentIdentity: {
+          projectId,
+          domain: "snippet",
+          entityType: "snippet",
+          entityId: snippetId,
+        },
+      },
+      { commit: write, project: async (entry) => entry },
+    );
+  }
+  return runTimelapseMutation(projectId, write);
 }

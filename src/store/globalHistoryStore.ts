@@ -2,7 +2,10 @@ import { create } from "zustand";
 import { isVersionConflictError } from "@/lib/versionConflict";
 import type { DocumentKey } from "@/features/editor/document/documentKey";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+} from "@/lib/quiescenceProviders";
 import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
 import { isChatNavigationBlocked } from "@/lib/chatNavigationGuard";
 
@@ -129,7 +132,7 @@ async function awaitPendingHistoryReplays(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "global-history-replays",
+  id: createQuiescenceProviderId("global-history-replays"),
   stage: "scoped-mutations",
   flush: awaitPendingHistoryReplays,
 });

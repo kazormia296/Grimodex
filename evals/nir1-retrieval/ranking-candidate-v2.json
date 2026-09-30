@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "nir1-ranking-candidate/2",
+  "originalContract": {
+    "manifestSha256": "fbc6ac25a0171aac48bee27a859d2b582ed748f82adc1b5ccd28057110c950f3",
+    "corpusSha256": "2da9496e682ecb7e10a4d680d265a6d93db9be761def0e34730c1d1447b69dd2"
+  },
+  "policyPath": "policies/narrative/nir1-related-scenes-ranking.json",
+  "policySha256": "61ad3247382420b45ae19eed430194ba945814220b22642c109adbb6b638a34b",
+  "approvalRef": "docs/plans/nir1-a5-candidate-2.md",
+  "approvedAt": "2026-09-08T10:53:16.286447Z",
+  "fixedRawBudgetUnchanged": true,
+  "calibrationProtocolSha256": "601a368d1ebfc7a0072735899bac42c9785cccb8c97b302defe42bc0ab33a0d1",
+  "calibrationSelectionSha256": "c7ca076bed16a16202ccfaba53a1158e5bc5665b9f25adc8cd21217e52f1796c",
+  "evidenceScope": "Approved versioned candidate; local comparison is not product or independent acceptance."
+}

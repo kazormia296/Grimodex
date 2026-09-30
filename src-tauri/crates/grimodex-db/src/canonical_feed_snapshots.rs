@@ -5,7 +5,7 @@
 //! history to freshness consumers.
 
 use rusqlite::{params, OptionalExtension};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::Database;
 
@@ -405,20 +405,17 @@ pub(crate) fn canonical_snapshot_for_object_key(
 ) -> anyhow::Result<Option<Value>> {
     let kind = object_key.get("kind").and_then(Value::as_str);
     let result = match kind {
-        Some("project") => canonical_project_snapshot(
-            conn,
-            {
-                let object_project_id = object_key
-                    .get("projectId")
-                    .and_then(Value::as_str)
-                    .unwrap_or(project_id);
-                anyhow::ensure!(
-                    object_project_id == project_id,
-                    "project snapshot escaped its project"
-                );
-                object_project_id
-            },
-        ),
+        Some("project") => canonical_project_snapshot(conn, {
+            let object_project_id = object_key
+                .get("projectId")
+                .and_then(Value::as_str)
+                .unwrap_or(project_id);
+            anyhow::ensure!(
+                object_project_id == project_id,
+                "project snapshot escaped its project"
+            );
+            object_project_id
+        }),
         Some("scene") => canonical_scene_snapshot(
             conn,
             project_id,
@@ -427,6 +424,25 @@ pub(crate) fn canonical_snapshot_for_object_key(
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("scene object key has no sceneId"))?,
         ),
+        Some("scene-scope") => crate::narrative_extraction::canonical_scene_scope_snapshot(
+            conn,
+            project_id,
+            object_key
+                .get("sceneId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("scene-scope object key has no sceneId"))?,
+        ),
+        Some("scope-registry") => {
+            let object_project_id = object_key
+                .get("projectId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("scope-registry object key has no projectId"))?;
+            anyhow::ensure!(
+                object_project_id == project_id,
+                "scope registry snapshot escaped its project"
+            );
+            crate::narrative_extraction::canonical_scope_registry_snapshot(conn, project_id)
+        }
         Some("foreshadow") => canonical_foreshadow_snapshot(
             conn,
             project_id,
@@ -631,50 +647,18 @@ pub(crate) fn object_key_identity(object_key: &Value) -> anyhow::Result<String> 
         .get("kind")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("Narrative object key has no kind"))?;
-    let normalized = match kind {
-        "project" => json!({ "kind": kind, "projectId": required(object_key, "projectId")? }),
-        "scene" => json!({ "kind": kind, "sceneId": required(object_key, "sceneId")? }),
-        "codex-entry" => json!({ "kind": kind, "entryId": required(object_key, "entryId")? }),
-        "codex-relation" => {
-            json!({ "kind": kind, "relationId": required(object_key, "relationId")? })
-        }
-        "codex-phase" => json!({ "kind": kind, "phaseId": required(object_key, "phaseId")? }),
-        "codex-detail-definition" => {
-            json!({ "kind": kind, "definitionId": required(object_key, "definitionId")? })
-        }
-        "codex-detail-value" => {
-            json!({ "kind": kind, "valueId": required(object_key, "valueId")? })
-        }
-        "chronicle-event" => json!({ "kind": kind, "eventId": required(object_key, "eventId")? }),
-        "plot-thread" => json!({ "kind": kind, "threadId": required(object_key, "threadId")? }),
-        "plot-marker" => json!({ "kind": kind, "markerId": required(object_key, "markerId")? }),
-        "plot-branch" => json!({ "kind": kind, "branchId": required(object_key, "branchId")? }),
-        "foreshadow" => {
-            json!({ "kind": kind, "foreshadowId": required(object_key, "foreshadowId")? })
-        }
-        "foreshadow-setup" => {
-            json!({ "kind": kind, "setupId": required(object_key, "setupId")? })
-        }
-        "foreshadow-payoff" => {
-            json!({ "kind": kind, "payoffId": required(object_key, "payoffId")? })
-        }
-        "temporal-node" => json!({ "kind": kind, "nodeId": required(object_key, "nodeId")? }),
-        "temporal-constraint" => {
-            json!({ "kind": kind, "constraintId": required(object_key, "constraintId")? })
-        }
-        "temporal-projection" => {
-            json!({ "kind": kind, "projectionId": required(object_key, "projectionId")? })
-        }
-        "calendar" => json!({ "kind": kind, "calendarRef": required(object_key, "calendarRef")? }),
-        "component" => json!({ "kind": kind, "componentId": required(object_key, "componentId")? }),
-        "import-source" => json!({
-            "kind": kind,
-            "sourceSetId": required(object_key, "sourceSetId")?,
-            "objectKey": required(object_key, "objectKey")?,
-        }),
-        _ => anyhow::bail!("unsupported Narrative object key kind '{kind}'"),
-    };
-    Ok(serde_json::to_string(&normalized)?)
+    // The id field per kind is `change_feed.rs`'s table, shared rather than
+    // restated -- see `object_key_identity_field`.
+    let field = crate::narrative_extraction::change_feed::object_key_identity_field(kind)?;
+    let mut normalized = serde_json::Map::new();
+    normalized.insert("kind".to_string(), Value::String(kind.to_string()));
+    normalized.insert(field.to_string(), required(object_key, field)?);
+    // `import-source` is the one kind whose identity is a pair: the set it
+    // came from, plus the key it had inside that set.
+    if kind == "import-source" {
+        normalized.insert("objectKey".to_string(), required(object_key, "objectKey")?);
+    }
+    Ok(serde_json::to_string(&Value::Object(normalized))?)
 }
 
 fn required(object_key: &Value, field: &str) -> anyhow::Result<Value> {

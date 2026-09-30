@@ -114,6 +114,7 @@ describe("ForeshadowStore.update", () => {
     mockUpdateForeshadow.mockResolvedValue(
       attachNativeMutationMetadata(makeForeshadowRow(1), {
         maintenanceTransactionId: "foreshadow-test-maintenance-1",
+        undoJournalId: "foreshadow-test-journal-1",
       }),
     );
     editorRef.current = {

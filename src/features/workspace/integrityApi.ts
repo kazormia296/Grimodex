@@ -1,6 +1,10 @@
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { isUnknownIpcOutcomeError } from "@/lib/ipcOutcome";
 import { invoke } from "@/lib/tauri";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
 
 export interface IntegrityReport {
   orphanedCodexSources: number;
@@ -16,7 +20,16 @@ export interface RepairReport {
   maintenanceTransactionId?: string;
 }
 
-interface RepairIntegrityPayload {
+type RepairIntegrityAuthority = Pick<
+  CanonicalWriteContext,
+  | "authorityRoute"
+  | "caller"
+  | "controls"
+  | "provenance"
+  | "writesAuthorityProtectedField"
+>;
+
+interface RepairIntegrityPayload extends RepairIntegrityAuthority {
   projectId: string;
   requestId: string;
   sessionId: string;
@@ -35,6 +48,12 @@ function acquireRepair(projectId: string): PendingRepair {
   const current = pendingRepairs.get(projectId);
   if (current) return current;
   const requestId = crypto.randomUUID();
+  const authorityContext = createCanonicalWriteContext(
+    "restore",
+    undefined,
+    requestId,
+    { caller: "integrity-repair" },
+  );
   const pending: PendingRepair = {
     projectId,
     payload: {
@@ -43,6 +62,12 @@ function acquireRepair(projectId: string): PendingRepair {
       sessionId: getRecorderSessionId(),
       eventUid: requestId,
       occurredAt: new Date().toISOString(),
+      authorityRoute: authorityContext.authorityRoute,
+      caller: authorityContext.caller,
+      controls: authorityContext.controls,
+      provenance: authorityContext.provenance,
+      writesAuthorityProtectedField:
+        authorityContext.writesAuthorityProtectedField,
     },
   };
   pendingRepairs.set(projectId, pending);

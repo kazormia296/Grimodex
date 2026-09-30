@@ -16,6 +16,7 @@ import type {
 } from "./types";
 import { UNDO_ABSORB_WINDOW_MS } from "./types";
 import { isCreateResultEntityPresent } from "@/lib/createResultMetadata";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
@@ -24,7 +25,11 @@ import {
   type MutationOutcome,
 } from "@/features/concurrency/mutationAuthority";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+  type QuiescenceProviderFlushOptions,
+} from "@/lib/quiescenceProviders";
 
 interface EnqueueOptions {
   /** Backspace バッファのフラッシュ起源など、識別子に使う一時 ID */
@@ -188,8 +193,10 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
         isCurrentMutationAuthority(authority)
       ) {
         set({ isLoading: false });
-        toast.error(i18next.t("trashBin.loadFailed"));
-        debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
+        if (!isD2aEgressDenied(e)) {
+          toast.error(i18next.t("trashBin.loadFailed"));
+          debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
+        }
       }
       throw e;
     }
@@ -373,7 +380,10 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
 /**
  * 保留キューから tempId を取り出し、DB に書き込む。
  */
-async function performFlushPending(tempId: string): Promise<void> {
+async function performFlushPending(
+  tempId: string,
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const store = useTrashBinStore.getState();
   const target = store.pendingQueue.find((p) => p.tempId === tempId);
   if (!target) return;
@@ -408,6 +418,7 @@ async function performFlushPending(tempId: string): Promise<void> {
     charCount,
     isInteresting,
     id: target.tempId,
+    ...(options.preexistingDraft ? { preexistingDraft: true } : {}),
   });
 
   // Remove only after the durable create resolves. A rejection remains queued
@@ -427,10 +438,13 @@ async function performFlushPending(tempId: string): Promise<void> {
   });
 }
 
-function flushPending(tempId: string): Promise<void> {
+function flushPending(
+  tempId: string,
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const existing = inFlightFlushes.get(tempId);
   if (existing) return existing;
-  const pending = performFlushPending(tempId).finally(() => {
+  const pending = performFlushPending(tempId, options).finally(() => {
     if (inFlightFlushes.get(tempId) === pending) {
       inFlightFlushes.delete(tempId);
     }
@@ -444,7 +458,9 @@ function flushPending(tempId: string): Promise<void> {
  * Project/Workspace/window boundary. A failed create stays queued and rejects
  * the boundary; it is retried only by a later strict-quiescence attempt.
  */
-export async function flushPendingTrashItemsStrict(): Promise<void> {
+export async function flushPendingTrashItemsStrict(
+  options: QuiescenceProviderFlushOptions = {},
+): Promise<void> {
   const failures: unknown[] = [];
   const failedIds = new Set<string>();
 
@@ -470,7 +486,7 @@ export async function flushPendingTrashItemsStrict(): Promise<void> {
     for (const id of ids) clearFlushTimer(id);
     const attempts = [...ids].map(async (id) => {
       try {
-        await flushPending(id);
+        await flushPending(id, options);
       } catch (error) {
         failures.push(error);
         failedIds.add(id);
@@ -483,7 +499,7 @@ export async function flushPendingTrashItemsStrict(): Promise<void> {
 }
 
 registerQuiescenceProvider({
-  id: "trash-bin-pending-captures",
+  id: createQuiescenceProviderId("trash-bin-pending-captures"),
   stage: "scoped-mutations",
   flush: flushPendingTrashItemsStrict,
   discard: discardPendingTrashCaptures,

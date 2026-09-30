@@ -24,8 +24,9 @@ use crate::idempotency::{
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, append_narrative_change_transaction_in_tx,
     event_from_undo_journal_row, narrative_snapshot_digest, require_replay_lineage_in_project,
-    transaction_id_for_undo_journal, AppendNarrativeChangeTransactionInput,
-    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+    transaction_id_for_undo_journal, AppendCanonicalNarrativeChangeResult,
+    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
+    NarrativeChangeOrigin,
 };
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::{BatchStatement, Database};
@@ -37,6 +38,8 @@ pub struct AuthorshipSpanInput {
     pub to_pos: i64,
     pub source: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub timestamp: Option<String>,
     pub chat_msg_id: Option<String>,
     pub trace_id: Option<String>,
 }
@@ -94,6 +97,8 @@ pub struct AgentCodexUpdatePayload {
     pub name: Option<String>,
     pub summary: Option<String>,
     pub content: Option<String>,
+    #[serde(default)]
+    pub timelapse_doc_step_coverage: Option<crate::timelapse::TimelapseDocStepCoverageProof>,
     pub aliases: Option<String>,
     /// set-if-present。空文字は NULL（除外語なし）に正規化する。
     #[serde(default)]
@@ -145,10 +150,37 @@ pub struct AgentCodexDeletePayload {
 /// strict renderer entry points below.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RendererMutationProvenance {
+    pub request_id: String,
+    pub trace_id: String,
+    #[serde(default)]
+    pub chat_message_id: Option<String>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub execution_id: Option<String>,
+    #[serde(default)]
+    pub main_owned_provenance_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RendererCanonicalWriteContext {
     pub request_id: String,
     pub event_uid: String,
+    /// Main-owned authority identity. This is deliberately separate from the
+    /// domain payload's session_id, which remains the renderer writer/feed
+    /// correlation identity.
+    #[serde(default)]
+    pub authority_session_id: Option<String>,
     pub origin: NarrativeChangeOrigin,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
     #[serde(default)]
@@ -184,6 +216,7 @@ const EVENT_AUTHORITY_FIELDS: &[&str] = &[
     "/detail",
     "/ordinal",
     "/primaryCodexId",
+    "/laneGroup",
     "/locationCodexId",
     "/startTime",
     "/endTime",
@@ -208,6 +241,717 @@ fn narrative_origin_for_surface(surface: Option<&str>) -> NarrativeChangeOrigin 
     }
 }
 
+const HUMAN_DIRECT_CONTROLS: &[&str] = &[
+    "runtime-policy",
+    "actor-context",
+    "typed-writer",
+    "occ",
+    "change-event",
+    "change-feed",
+];
+const INTERACTIVE_AGENT_CONTROLS: &[&str] = &[
+    "knowledge-write-policy",
+    "stable-request-id",
+    "agent-provenance",
+    "field-authority",
+    "typed-writer",
+    "occ",
+    "undo-journal",
+    "change-event",
+    "change-feed",
+];
+const INTERPRETER_PROJECTION_CONTROLS: &[&str] = &[
+    "proposal-revision",
+    "decision",
+    "prepared-commit",
+    "application-id",
+    "source-basis-occ",
+    "field-authority",
+    "typed-writer",
+];
+const IMPORT_APPLY_CONTROLS: &[&str] = &[
+    "import-policy",
+    "source-package-evidence",
+    "typed-writer",
+    "occ",
+    "change-event",
+    "change-feed",
+];
+const HISTORY_REPLAY_CONTROLS: &[&str] = &[
+    "original-transaction",
+    "journal-lineage",
+    "typed-writer",
+    "occ",
+    "change-event",
+    "change-feed",
+];
+const RESTORE_OR_MIGRATION_CONTROLS: &[&str] = &[
+    "exclusive-system-operation",
+    "semantic-epoch-event",
+    "full-rebuild-marker",
+];
+const KNOWN_MUTATION_CONTROLS: &[&str] = &[
+    "runtime-policy",
+    "actor-context",
+    "knowledge-write-policy",
+    "stable-request-id",
+    "agent-provenance",
+    "typed-writer",
+    "occ",
+    "source-basis-occ",
+    "field-authority",
+    "proposal-revision",
+    "decision",
+    "prepared-commit",
+    "application-id",
+    "undo-journal",
+    "journal-lineage",
+    "original-transaction",
+    "change-event",
+    "change-feed",
+    "import-policy",
+    "source-package-evidence",
+    "exclusive-system-operation",
+    "semantic-epoch-event",
+    "full-rebuild-marker",
+];
+
+fn allowed_callers_for_route(route: &str) -> Option<&'static [&'static str]> {
+    match route {
+        "human-direct" => Some(&["human-ui", "manual-wrapper", "typed-domain-api"]),
+        "interactive-agent-command" => Some(&[
+            "chat-tool-executor",
+            "manual-wrapper",
+            "registered-agent-surface",
+        ]),
+        "interpreter-projection" => Some(&[
+            "interpreter",
+            "reconciler",
+            "proposal-review",
+            "prepared-commit-runner",
+        ]),
+        "import-apply" => Some(&["import-session", "import-review"]),
+        "history-replay" => Some(&["history-controller", "undo-redo-command"]),
+        "restore-or-migration" => {
+            Some(&["restore-controller", "migration-runner", "integrity-repair"])
+        }
+        _ => None,
+    }
+}
+
+fn required_controls_for_route(route: &str) -> Option<&'static [&'static str]> {
+    match route {
+        "human-direct" => Some(HUMAN_DIRECT_CONTROLS),
+        "interactive-agent-command" => Some(INTERACTIVE_AGENT_CONTROLS),
+        "interpreter-projection" => Some(INTERPRETER_PROJECTION_CONTROLS),
+        "import-apply" => Some(IMPORT_APPLY_CONTROLS),
+        "history-replay" => Some(HISTORY_REPLAY_CONTROLS),
+        "restore-or-migration" => Some(RESTORE_OR_MIGRATION_CONTROLS),
+        _ => None,
+    }
+}
+
+fn origin_allowed_for_route(route: &str, origin: NarrativeChangeOrigin) -> bool {
+    match route {
+        "human-direct" => origin == NarrativeChangeOrigin::Human,
+        "interactive-agent-command" | "interpreter-projection" => {
+            origin == NarrativeChangeOrigin::AiApply
+        }
+        "import-apply" => origin == NarrativeChangeOrigin::Import,
+        "history-replay" => matches!(
+            origin,
+            NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+        ),
+        "restore-or-migration" => matches!(
+            origin,
+            NarrativeChangeOrigin::Restore | NarrativeChangeOrigin::Migration
+        ),
+        _ => false,
+    }
+}
+
+/// Validate the runtime route before any renderer-originated Native writer is
+/// allowed to append an audit event. The caller allowlist is deliberately
+/// exact; a versioned or otherwise unknown background caller must not inherit
+/// a route by merely avoiding a blacklist entry.
+pub fn validate_renderer_authority_context(
+    context: &RendererCanonicalWriteContext,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !context.request_id.trim().is_empty(),
+        "requestId must not be empty"
+    );
+    anyhow::ensure!(
+        !context.event_uid.trim().is_empty(),
+        "eventUid must not be empty"
+    );
+    let allowed_callers = allowed_callers_for_route(&context.authority_route)
+        .ok_or_else(|| anyhow::anyhow!("Unknown mutation authority route"))?;
+    anyhow::ensure!(
+        allowed_callers.contains(&context.caller.as_str()),
+        "Forbidden caller '{}' for authority route '{}'",
+        context.caller,
+        context.authority_route
+    );
+    anyhow::ensure!(
+        origin_allowed_for_route(&context.authority_route, context.origin),
+        "Origin '{}' is not valid for authority route '{}'",
+        context.origin.as_str(),
+        context.authority_route
+    );
+    let required = required_controls_for_route(&context.authority_route)
+        .ok_or_else(|| anyhow::anyhow!("Unknown mutation authority route"))?;
+    for control in &context.controls {
+        anyhow::ensure!(
+            KNOWN_MUTATION_CONTROLS.contains(&control.as_str()),
+            "Unknown mutation authority control '{}'",
+            control
+        );
+    }
+    for control in required {
+        anyhow::ensure!(
+            context.controls.iter().any(|value| value == control),
+            "Missing required control '{}' for authority route '{}'",
+            control,
+            context.authority_route
+        );
+    }
+    if context.authority_route == "interactive-agent-command" {
+        anyhow::ensure!(
+            context
+                .controls
+                .iter()
+                .any(|value| value == "field-authority"),
+            "Interactive agent mutation requires field-authority control"
+        );
+    }
+    if context.authority_route == "interactive-agent-command" {
+        let provenance = context
+            .provenance
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Interactive agent command requires provenance"))?;
+        anyhow::ensure!(
+            !provenance.request_id.trim().is_empty(),
+            "provenance requestId is required"
+        );
+        anyhow::ensure!(
+            !provenance.trace_id.trim().is_empty(),
+            "provenance traceId is required"
+        );
+        if let Some(execution_id) = provenance.execution_id.as_deref() {
+            anyhow::ensure!(
+                !execution_id.trim().is_empty(),
+                "provenance executionId must not be empty"
+            );
+        }
+        if let Some(main_owned_id) = provenance.main_owned_provenance_id.as_deref() {
+            anyhow::ensure!(
+                !main_owned_id.trim().is_empty(),
+                "provenance mainOwnedProvenanceId must not be empty"
+            );
+            anyhow::ensure!(
+                provenance.execution_id.is_some(),
+                "mainOwnedProvenanceId requires provenance executionId"
+            );
+        }
+        anyhow::ensure!(
+            provenance.request_id == context.request_id,
+            "provenance requestId must match canonical requestId"
+        );
+    }
+    let replay = matches!(
+        context.origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    );
+    let complete_lineage = context
+        .original_transaction_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && context
+            .undo_journal_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+    anyhow::ensure!(
+        context.authority_route == "history-replay" && replay == complete_lineage
+            || context.authority_route != "history-replay" && !replay && !complete_lineage,
+        "history-replay requires undo/redo origin and complete transaction/journal lineage"
+    );
+    Ok(())
+}
+
+pub fn validate_renderer_authority_context_for_routes(
+    context: &RendererCanonicalWriteContext,
+    allowed_routes: &[&str],
+) -> anyhow::Result<()> {
+    validate_renderer_authority_context(context)?;
+    anyhow::ensure!(
+        allowed_routes.contains(&context.authority_route.as_str()),
+        "Authority route '{}' is not allowed for this writer",
+        context.authority_route
+    );
+    Ok(())
+}
+
+pub(crate) fn validate_agent_chronicle_renderer_context(
+    request_id: &str,
+    context: &RendererCanonicalWriteContext,
+) -> anyhow::Result<()> {
+    validate_renderer_authority_context_for_routes(context, &["interactive-agent-command"])?;
+    anyhow::ensure!(
+        context.request_id == request_id,
+        "agent Chronicle requestId does not match canonical authority context"
+    );
+    Ok(())
+}
+
+/// Validate the shared Chronicle writer for either explicit renderer aliases
+/// or capability-bound Agent commands. The Electron command contract keeps
+/// `agent_*` commands on `interactive-agent-command`; this Native helper only
+/// accepts the canonical context selected by that entry boundary.
+pub(crate) fn validate_renderer_chronicle_context(
+    request_id: &str,
+    context: &RendererCanonicalWriteContext,
+) -> anyhow::Result<()> {
+    if context.authority_route == "interactive-agent-command" {
+        return validate_agent_chronicle_renderer_context(request_id, context);
+    }
+    validate_renderer_authority_context_for_routes(
+        context,
+        &[
+            "human-direct",
+            "interactive-agent-command",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+        ],
+    )?;
+    anyhow::ensure!(
+        context.request_id == request_id,
+        "Chronicle requestId does not match canonical authority context"
+    );
+    Ok(())
+}
+
+pub(crate) fn canonical_payload_with_authority_context(
+    payload: &str,
+    context: &RendererCanonicalWriteContext,
+) -> String {
+    canonical_payload_with_derived_authority_context(payload, context, &[])
+}
+
+pub(crate) fn canonical_payload_with_derived_authority_context(
+    payload: &str,
+    context: &RendererCanonicalWriteContext,
+    affected_authority_paths: &[String],
+) -> String {
+    let parsed =
+        serde_json::from_str::<Value>(payload).unwrap_or_else(|_| json!({ "rawPayload": payload }));
+    let mut evidence = json!({
+        "validated": true,
+        "status": "validated",
+        "authorityRoute": context.authority_route,
+        "caller": context.caller,
+        "origin": context.origin.as_str(),
+        "callerAllowlisted": true,
+        "originRouteMatched": true,
+        "requiredControlsValidated": true,
+        "fieldAuthorityValidated": context.authority_route != "interactive-agent-command"
+            || context.controls.iter().any(|control| control == "field-authority"),
+        "fieldAuthorityDecision": if affected_authority_paths.is_empty() {
+            "not-required"
+        } else {
+            "validated"
+        },
+        "affectedAuthorityPaths": affected_authority_paths,
+        "replayLineageValidated": context.authority_route == "history-replay",
+        "controls": context.controls,
+    });
+    if let Some(authority_session_id) = context.authority_session_id.as_deref() {
+        evidence["authoritySessionId"] = json!(authority_session_id);
+    }
+    if let Some(provenance) = &context.provenance {
+        evidence["provenance"] = serde_json::to_value(provenance).unwrap_or(Value::Null);
+    }
+    if let Value::Object(mut object) = parsed {
+        object.insert(
+            "authorityRoute".to_string(),
+            Value::String(context.authority_route.clone()),
+        );
+        object.insert(
+            "authorityCaller".to_string(),
+            Value::String(context.caller.clone()),
+        );
+        object.insert("authorityEvidence".to_string(), evidence);
+        Value::Object(object).to_string()
+    } else {
+        json!({
+            "authorityRoute": context.authority_route,
+            "authorityCaller": context.caller,
+            "authorityEvidence": evidence,
+            "payload": parsed,
+        })
+        .to_string()
+    }
+}
+
+fn all_authority_paths(entity_type: &str) -> &'static [&'static str] {
+    match entity_type {
+        "codex_entry" | "codex-entry" => &[
+            "/type",
+            "/name",
+            "/summary",
+            "/content",
+            "/aliases",
+            "/excludedAliases",
+            "/readings",
+            "/tagsCache",
+            "/parentId",
+            "/contextMode",
+            "/icon",
+            "/childrenBudget",
+            "/notes",
+        ],
+        "snippet" => &["/title", "/content", "/sceneId"],
+        "foreshadow" => &[
+            "/title",
+            "/intent",
+            "/notes",
+            "/loadBearing",
+            "/payoffConfirmed",
+            "/abandoned",
+            "/secret",
+        ],
+        "event" | "chronicle-event" => EVENT_AUTHORITY_FIELDS,
+        _ => &[],
+    }
+}
+
+fn authority_path_for_field<'a>(
+    entity_type: &str,
+    field: &str,
+    all_paths: &'a [&'a str],
+) -> Option<&'a str> {
+    let field = field.trim_start_matches('/');
+    let alias = match (entity_type, field) {
+        // The typed Codex writer calls the relation used to update the
+        // denormalized cache `tags`; the authority surface owns the cache.
+        ("codex_entry" | "codex-entry", "tags") => Some("/tagsCache"),
+        // Association commands encode their affected collection in the
+        // operation rather than in the `fields` array.
+        ("event" | "chronicle-event", "codexEntryIds") => Some("/participants"),
+        _ => None,
+    };
+    alias.or_else(|| {
+        all_paths
+            .iter()
+            .copied()
+            .find(|path| path.trim_start_matches('/') == field)
+    })
+}
+
+fn paths_from_field_list(
+    entity_type: &str,
+    object: &serde_json::Map<String, Value>,
+    all_paths: &[&str],
+) -> Option<Vec<String>> {
+    let fields = object.get("fields")?.as_array()?;
+    if fields.is_empty() {
+        return None;
+    }
+    let mut paths = Vec::with_capacity(fields.len());
+    for field in fields {
+        let field = field.as_str()?;
+        let Some(path) = authority_path_for_field(entity_type, field, all_paths) else {
+            // An unknown field must not silently turn Field Authority off. A
+            // caller-controlled or future field is handled conservatively by
+            // the all-path fallback in the caller.
+            return None;
+        };
+        paths.push(path.to_string());
+    }
+    paths.sort();
+    paths.dedup();
+    Some(paths)
+}
+
+fn authority_paths_for_canonical_event(event: &AppendChangeEvent) -> Vec<String> {
+    let Some(entity_type) = event.entity_type.as_deref() else {
+        return Vec::new();
+    };
+    let all_paths = all_authority_paths(entity_type);
+    if all_paths.is_empty() {
+        return Vec::new();
+    }
+
+    // Association writes do not carry a `fields` list, but their operation is
+    // itself the Native-owned statement of the affected aggregate path.
+    let operation_paths: &[&str] = match event.op_type.as_str() {
+        "event.participants" => &["/participants"],
+        "event.stamp" | "event.unstamp" => &["/sceneIds"],
+        "event.relation_add" | "event.relation_remove" => &["/relations"],
+        _ => &[],
+    };
+    if !operation_paths.is_empty() {
+        return operation_paths
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect();
+    }
+
+    let op_is_create = event.op_type.ends_with(".create")
+        || event.op_type.ends_with(".restore")
+        || event.op_type.ends_with(".delete");
+    if op_is_create {
+        return all_paths.iter().map(|path| (*path).to_string()).collect();
+    }
+
+    let parsed = serde_json::from_str::<Value>(&event.payload).ok();
+    let Some(object) = parsed.as_ref().and_then(Value::as_object) else {
+        return all_paths.iter().map(|path| (*path).to_string()).collect();
+    };
+
+    if let Some(paths) = paths_from_field_list(entity_type, object, all_paths) {
+        return paths;
+    }
+
+    let mut paths = Vec::new();
+    let mut unknown_field = false;
+    for field in object.keys() {
+        if matches!(
+            field.as_str(),
+            "requestHash" | "eventId" | "causeEventId" | "effectEventId"
+        ) {
+            continue;
+        }
+        if let Some(path) = authority_path_for_field(entity_type, field, all_paths) {
+            paths.push(path.to_string());
+        } else {
+            unknown_field = true;
+        }
+    }
+    if unknown_field || paths.is_empty() {
+        return all_paths.iter().map(|path| (*path).to_string()).collect();
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn authority_entity_kind(entity_type: &str) -> &str {
+    match entity_type {
+        "codex_entry" => "codex-entry",
+        "chronicle-event" => "event",
+        other => other,
+    }
+}
+
+pub(crate) fn validate_agent_field_authority_for_entity(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    validate_agent_field_authority_for_entity_with_legacy_check(
+        conn,
+        project_id,
+        entity_kind,
+        entity_id,
+        paths,
+        updated_at,
+        true,
+    )
+}
+
+pub(crate) fn record_agent_field_authority_for_entity(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    validate_or_record_agent_field_authority_for_entity(
+        conn,
+        project_id,
+        entity_kind,
+        entity_id,
+        paths,
+        updated_at,
+        AgentFieldAuthorityAction::Record,
+    )
+}
+
+fn validate_agent_field_authority_for_entity_with_legacy_check(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+    check_legacy_value: bool,
+) -> anyhow::Result<()> {
+    validate_or_record_agent_field_authority_for_entity(
+        conn,
+        project_id,
+        entity_kind,
+        entity_id,
+        paths,
+        updated_at,
+        AgentFieldAuthorityAction::Validate { check_legacy_value },
+    )
+}
+
+enum AgentFieldAuthorityAction {
+    Validate { check_legacy_value: bool },
+    Record,
+}
+
+fn validate_or_record_agent_field_authority_for_entity(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+    action: AgentFieldAuthorityAction,
+) -> anyhow::Result<()> {
+    let (check_legacy_value, record) = match action {
+        AgentFieldAuthorityAction::Validate { check_legacy_value } => (check_legacy_value, false),
+        AgentFieldAuthorityAction::Record => (false, true),
+    };
+    if paths.is_empty() {
+        return Ok(());
+    }
+    for path in paths {
+        anyhow::ensure!(
+            path.starts_with('/') && !path.contains('*') && !path.ends_with('/'),
+            "NEX_FIELD_AUTHORITY_PATH_INVALID: Native derived an invalid field path"
+        );
+        let owned: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT owner_kind, explicit_lock
+                   FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = ?2
+                    AND entity_id = ?3 AND field_path = ?4",
+                rusqlite::params![project_id, entity_kind, entity_id, path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let legacy_human = check_legacy_value
+            && owned.is_none()
+            && crate::narrative_extraction::legacy_value_present(
+                conn,
+                project_id,
+                entity_kind,
+                entity_id,
+                path,
+            )?;
+        let denied = owned
+            .as_ref()
+            .is_some_and(|(owner, lock)| owner == "human" || *lock != 0)
+            || legacy_human;
+        anyhow::ensure!(
+            !denied,
+            "NEX_FIELD_AUTHORITY_DENIED: '{}' on {} '{}' is human-owned or locked",
+            path,
+            entity_kind,
+            entity_id
+        );
+    }
+    if !record {
+        return Ok(());
+    }
+    for path in paths {
+        conn.execute(
+            "INSERT INTO narrative_field_authority
+                (project_id, entity_kind, entity_id, field_path, owner_kind,
+                 explicit_lock, version, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'ai', 0, 0, ?5)
+             ON CONFLICT(project_id, entity_kind, entity_id, field_path)
+             DO UPDATE SET owner_kind = CASE
+                    WHEN narrative_field_authority.owner_kind = 'human'
+                    THEN 'human' ELSE 'ai' END,
+                 version = narrative_field_authority.version + 1,
+                 updated_at = excluded.updated_at",
+            rusqlite::params![project_id, entity_kind, entity_id, path, updated_at],
+        )?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preflight_agent_field_authority(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+    surface: Option<&str>,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
+) -> anyhow::Result<()> {
+    // Renderer writes carry the full canonical context. Standalone MCP has no
+    // renderer context, but it is still an AI mutation surface and must run
+    // the same field-authority preflight inside the writer transaction.
+    let is_interactive_agent = renderer_context
+        .is_some_and(|context| context.authority_route == "interactive-agent-command");
+    let is_mcp = surface == Some("mcp");
+    if is_interactive_agent || is_mcp {
+        // An old non-empty value is treated as human until an explicit Field
+        // Authority row exists. MCP has no renderer migration context, so it
+        // must keep this fail-closed fallback as well as enforce explicit
+        // human/lock rows. Successful MCP writes record AI ownership below;
+        // a historical MCP journal is not sufficient evidence to promote an
+        // arbitrary field because it may describe a different field or an
+        // earlier human edit.
+        validate_agent_field_authority_for_entity_with_legacy_check(
+            conn,
+            project_id,
+            entity_kind,
+            entity_id,
+            paths,
+            updated_at,
+            true,
+        )?;
+    }
+    Ok(())
+}
+
+fn record_agent_field_authority(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event: &AppendChangeEvent,
+    paths: &[String],
+) -> anyhow::Result<()> {
+    let Some(entity_type) = event.entity_type.as_deref() else {
+        anyhow::ensure!(
+            paths.is_empty(),
+            "Agent field authority requires an entity type"
+        );
+        return Ok(());
+    };
+    let Some(entity_id) = event.entity_id.as_deref() else {
+        anyhow::ensure!(
+            paths.is_empty(),
+            "Agent field authority requires an entity id"
+        );
+        return Ok(());
+    };
+    let updated_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339();
+    record_agent_field_authority_for_entity(
+        conn,
+        project_id,
+        authority_entity_kind(entity_type),
+        entity_id,
+        paths,
+        &updated_at,
+    )
+}
+
 fn validate_renderer_codex_identity(
     project_id: &str,
     session_id: &str,
@@ -223,6 +967,16 @@ fn validate_renderer_codex_identity(
         !context.event_uid.trim().is_empty(),
         "eventUid must not be empty"
     );
+    validate_renderer_authority_context_for_routes(
+        context,
+        &[
+            "human-direct",
+            "interactive-agent-command",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+        ],
+    )?;
     let replay = matches!(
         context.origin,
         NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
@@ -299,7 +1053,7 @@ fn change_occurred_at(timestamp: i64) -> anyhow::Result<String> {
 // the single transaction; keeping the values explicit makes the authority
 // boundary visible at each writer call site.
 #[allow(clippy::too_many_arguments)]
-fn append_agent_forward_change_in_tx(
+fn append_agent_forward_change_result_in_tx(
     conn: &rusqlite::Connection,
     project_id: &str,
     session_id: &str,
@@ -309,7 +1063,7 @@ fn append_agent_forward_change_in_tx(
     canonical_event: &AppendChangeEvent,
     narrative_events: Option<Vec<NarrativeChangeEventInput>>,
     renderer_context: Option<&RendererCanonicalWriteContext>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
     let mut events = match narrative_events {
         Some(events) => events,
         None => {
@@ -324,11 +1078,64 @@ fn append_agent_forward_change_in_tx(
         }
     };
     normalize_foreshadow_feed_events_in_tx(conn, project_id, &mut events)?;
+    let canonical_event = if let Some(context) = renderer_context {
+        validate_renderer_authority_context(context)?;
+        let affected_authority_paths = authority_paths_for_canonical_event(canonical_event);
+        if context.authority_route == "interactive-agent-command" {
+            record_agent_field_authority(
+                conn,
+                project_id,
+                canonical_event,
+                &affected_authority_paths,
+            )?;
+        }
+        let mut annotated = canonical_event.clone();
+        annotated.payload = canonical_payload_with_derived_authority_context(
+            &canonical_event.payload,
+            context,
+            &affected_authority_paths,
+        );
+        annotated
+    } else if surface == Some("mcp") {
+        // MCP is a standalone AI surface, so it cannot provide the renderer
+        // capability context. It still participates in field ownership: the
+        // preflight above protects human/locked fields and successful MCP
+        // writes must establish AI ownership for their changed paths.
+        let affected_authority_paths = authority_paths_for_canonical_event(canonical_event);
+        record_agent_field_authority(conn, project_id, canonical_event, &affected_authority_paths)?;
+        if matches!(
+            canonical_event.op_type.as_str(),
+            "event.relation_add" | "event.relation_remove"
+        ) {
+            let relation_payload = serde_json::from_str::<Value>(&canonical_event.payload)?;
+            let effect_event_id = relation_payload
+                .get("effectEventId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "MCP relation Change Event must carry a non-empty effectEventId"
+                    )
+                })?;
+            let relation_paths = vec!["/relations".to_string()];
+            record_agent_field_authority_for_entity(
+                conn,
+                project_id,
+                "event",
+                effect_event_id,
+                &relation_paths,
+                &change_occurred_at(canonical_event.timestamp)?,
+            )?;
+        }
+        canonical_event.clone()
+    } else {
+        canonical_event.clone()
+    };
     let append = append_canonical_and_narrative_change_in_tx(
         conn,
         project_id,
         session_id,
-        canonical_event,
+        &canonical_event,
         &AppendNarrativeChangeTransactionInput {
             project_id: project_id.to_string(),
             request_id: renderer_context
@@ -360,7 +1167,34 @@ fn append_agent_forward_change_in_tx(
             events,
         },
     )?;
-    Ok(append.narrative.transaction_id)
+    Ok(append)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_agent_forward_change_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    session_id: &str,
+    surface: Option<&str>,
+    request_id: Option<&str>,
+    undo_journal_id: &str,
+    canonical_event: &AppendChangeEvent,
+    narrative_events: Option<Vec<NarrativeChangeEventInput>>,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
+) -> anyhow::Result<String> {
+    Ok(append_agent_forward_change_result_in_tx(
+        conn,
+        project_id,
+        session_id,
+        surface,
+        request_id,
+        undo_journal_id,
+        canonical_event,
+        narrative_events,
+        renderer_context,
+    )?
+    .narrative
+    .transaction_id)
 }
 
 fn normalize_foreshadow_feed_events_in_tx(
@@ -710,6 +1544,7 @@ fn codex_update_request_hash(
     let mut normalized = payload.clone();
     normalized.session_id.clear();
     normalized.surface = None;
+    normalized.timelapse_doc_step_coverage = None;
     match tags {
         Some(tags) => {
             idempotency_hash("agent_codex_update", &(normalized, normalize_tag_set(tags)))
@@ -728,6 +1563,7 @@ fn renderer_codex_request_hash<T: Serialize>(
     if let Some(object) = payload.as_object_mut() {
         object.remove("requestId");
         object.remove("sessionId");
+        object.remove("timelapseDocStepCoverage");
     }
     let mut context = serde_json::to_value(context)?;
     if let Some(object) = context.as_object_mut() {
@@ -1136,7 +1972,7 @@ fn merge_codex_authorship_spans(
                 resolved_model,
                 span.chat_msg_id.as_deref().or(chat_msg_id),
                 span.trace_id.as_deref().or(trace_id),
-                now,
+                span.timestamp.as_deref().unwrap_or(&now),
             ],
         )?;
     }
@@ -1478,6 +2314,17 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
             db_version
         );
     }
+    if let Some(next_type) = input.type_slug {
+        let current_type = before_snapshot["type"].as_str().unwrap_or_default();
+        if next_type != current_type {
+            crate::narrative_extraction::ensure_character_reference_mutation_allowed_in_tx(
+                conn,
+                input.project_id,
+                input.entry_id,
+                "change the type of",
+            )?;
+        }
+    }
     let current_parent_id = before_snapshot["parentId"].as_str();
     let effective_parent_id = match normalize_nullable_sentinel(input.parent_id) {
         Some(parent_id) => parent_id,
@@ -1724,7 +2571,7 @@ fn restore_deleted_codex_entry_from_snapshot(
     entry_id: &str,
     journal_snapshot: &Value,
     replay_version: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
     let entry = journal_snapshot
         .get("entry")
         .ok_or_else(|| anyhow::anyhow!("Codex delete journal snapshot has no entry"))?;
@@ -1900,7 +2747,17 @@ fn restore_deleted_codex_entry_from_snapshot(
             rusqlite::params![entry_id, tag.get("tagId").and_then(Value::as_str)],
         )?;
     }
-    Ok(())
+    let scope_events = if entry.get("type").and_then(Value::as_str) == Some("character") {
+        crate::narrative_extraction::invalidate_character_references_with_events_in_tx(
+            conn,
+            project_id,
+            entry_id,
+            &now,
+        )?
+    } else {
+        Vec::new()
+    };
+    Ok(scope_events)
 }
 
 fn restored_cascade_event(
@@ -1979,7 +2836,9 @@ fn codex_delete_cascade_restore_feed_events(
             detail
                 .get("definitionId")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("Codex detail restore snapshot has no definitionId"))?,
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Codex detail restore snapshot has no definitionId")
+                })?,
         )?;
         events.push(restored_cascade_event(
             json!({ "kind": "codex-detail-value", "valueId": value_id }),
@@ -2240,6 +3099,21 @@ pub(crate) fn delete_codex_entry_cascade(
     entry_id: &str,
     expected_version: Option<i64>,
 ) -> anyhow::Result<()> {
+    let entry_type: Option<String> = conn
+        .query_row(
+            "SELECT type FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![entry_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if entry_type.as_deref() == Some("character") {
+        crate::narrative_extraction::ensure_character_reference_mutation_allowed_in_tx(
+            conn,
+            project_id,
+            entry_id,
+            "delete",
+        )?;
+    }
     let deleted = match expected_version {
         Some(version) => conn.execute(
             "DELETE FROM codex_entries WHERE id = ?1 AND project_id = ?2 AND version = ?3",
@@ -2317,7 +3191,7 @@ fn restore_renderer_codex_delete_cascade_in_tx(
         .base_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("Codex delete restore version overflow"))?;
-    restore_deleted_codex_entry_from_snapshot(
+    let scope_events = restore_deleted_codex_entry_from_snapshot(
         conn,
         &payload.project_id,
         entry_id,
@@ -2332,7 +3206,7 @@ fn restore_renderer_codex_delete_cascade_in_tx(
         replay_version,
     )?;
     let root_after = collect_codex_entry_snapshot(conn, entry_id)?;
-    let narrative_events = codex_delete_cascade_restore_feed_events(
+    let mut narrative_events = codex_delete_cascade_restore_feed_events(
         conn,
         &payload.project_id,
         entry_id,
@@ -2340,6 +3214,7 @@ fn restore_renderer_codex_delete_cascade_in_tx(
         &cascade,
         &child_before,
     )?;
+    narrative_events.extend(scope_events);
     let canonical_payload = context.canonical_payload.clone().unwrap_or_else(|| {
         json!({
             "name": root_after.get("name").cloned().unwrap_or(Value::Null),
@@ -2571,11 +3446,16 @@ fn agent_codex_create_internal(
                 )?;
             }
             let mut canonical_event = created.canonical_event.clone();
-            if let Some(audit_payload) = renderer_context
+            if renderer_context
                 .as_ref()
-                .and_then(|context| context.canonical_payload.as_ref())
+                .is_none_or(|context| context.authority_route != "interactive-agent-command")
             {
-                canonical_event.payload = audit_payload.to_string();
+                if let Some(audit_payload) = renderer_context
+                    .as_ref()
+                    .and_then(|context| context.canonical_payload.as_ref())
+                {
+                    canonical_event.payload = audit_payload.to_string();
+                }
             }
             append_agent_forward_change_in_tx(
                 conn,
@@ -2718,6 +3598,29 @@ fn agent_codex_update_internal(
                 renderer_context.as_ref(),
             )?;
             let manual_fields = manual_update_fields(&payload);
+            let mut authority_paths = manual_fields
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>();
+            if tags.is_some() {
+                authority_paths.push("/tagsCache".to_string());
+            }
+            if payload.surface.as_deref() == Some("mcp")
+                && authority_paths.is_empty()
+                && tags.is_none()
+            {
+                anyhow::bail!("MCP codex update must change at least one field or tag set");
+            }
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "codex-entry",
+                &payload.entry_id,
+                &authority_paths,
+                &change_occurred_at(timestamp)?,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
             let patched = apply_codex_entry_patch_in_tx(
                 conn,
                 CodexEntryPatchTxInput {
@@ -2755,12 +3658,21 @@ fn agent_codex_update_internal(
                     aliases_and_empty_summary_only: false,
                 },
             )?;
+            // A renderer proof cannot authorize snapshot suppression. Keep the
+            // full Codex body snapshot for every content update until a sealed
+            // Native coverage path is available.
+            let append_body_snapshot = payload.content.is_some();
             let mut canonical_event = patched.canonical_event.clone();
-            if let Some(audit_payload) = renderer_context
+            if renderer_context
                 .as_ref()
-                .and_then(|context| context.canonical_payload.as_ref())
+                .is_none_or(|context| context.authority_route != "interactive-agent-command")
             {
-                canonical_event.payload = audit_payload.to_string();
+                if let Some(audit_payload) = renderer_context
+                    .as_ref()
+                    .and_then(|context| context.canonical_payload.as_ref())
+                {
+                    canonical_event.payload = audit_payload.to_string();
+                }
             }
             let cause_kind = renderer_context
                 .as_ref()
@@ -2781,7 +3693,7 @@ fn agent_codex_update_internal(
                     timestamp,
                 )?);
             }
-            append_agent_forward_change_in_tx(
+            let append = append_agent_forward_change_result_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
@@ -2792,6 +3704,17 @@ fn agent_codex_update_internal(
                 Some(narrative_events),
                 renderer_context.as_ref(),
             )?;
+            if append_body_snapshot {
+                crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                    conn,
+                    &payload.project_id,
+                    append.canonical.tail_sequence,
+                    canonical_event.timestamp,
+                    &[crate::timelapse::TimelapseBodySnapshotTarget::codex(
+                        payload.entry_id.clone(),
+                    )],
+                )?;
+            }
             if renderer_context
                 .as_ref()
                 .is_none_or(|context| context.origin == NarrativeChangeOrigin::Human)
@@ -2930,6 +3853,20 @@ fn agent_codex_delete_internal(
                 conn,
                 &payload.project_id,
                 &payload.entry_id,
+            )?;
+            let authority_paths = all_authority_paths("codex_entry")
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>();
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "codex-entry",
+                &payload.entry_id,
+                &authority_paths,
+                &change_occurred_at(timestamp)?,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
             )?;
             let before_json =
                 codex_delete_journal_snapshot(before_snapshot.clone(), cascade_snapshot.clone())
@@ -3154,9 +4091,45 @@ pub fn agent_write_bundle_impl(
     )
 }
 
+pub fn renderer_agent_snippet_create_impl(
+    db: &Database,
+    payload: AgentSnippetCreatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    let request_id = require_agent_request_id(payload.request_id.as_deref())?;
+    validate_renderer_authority_context_for_routes(&context, &["interactive-agent-command"])?;
+    anyhow::ensure!(
+        request_id == context.request_id,
+        "requestId must match canonical authority context"
+    );
+    agent_snippet_create_with_surface_and_renderer_context(
+        db,
+        payload,
+        "in-app-agent",
+        Some(&context),
+    )
+}
+
 pub fn agent_snippet_create_impl(
     db: &Database,
     payload: AgentSnippetCreatePayload,
+) -> anyhow::Result<Value> {
+    agent_snippet_create_with_surface_impl(db, payload, "in-app-agent")
+}
+
+pub fn agent_snippet_create_with_surface_impl(
+    db: &Database,
+    payload: AgentSnippetCreatePayload,
+    surface: &str,
+) -> anyhow::Result<Value> {
+    agent_snippet_create_with_surface_and_renderer_context(db, payload, surface, None)
+}
+
+fn agent_snippet_create_with_surface_and_renderer_context(
+    db: &Database,
+    payload: AgentSnippetCreatePayload,
+    surface: &str,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     require_agent_request_id(payload.request_id.as_deref())?;
     let request_hash = snippet_create_request_hash(&payload)?;
@@ -3172,7 +4145,9 @@ pub fn agent_snippet_create_impl(
     let undo_id = request_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let content = payload.content.unwrap_or_else(|| "{}".to_string());
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -3296,7 +4271,7 @@ pub fn agent_snippet_create_impl(
                 UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
+                    surface,
                     entity_kind: "snippet",
                     entity_id: &snippet_id,
                     op_kind: "create",
@@ -3322,12 +4297,12 @@ pub fn agent_snippet_create_impl(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                Some("in-app-agent"),
+                Some(surface),
                 request_id.as_deref(),
                 &undo_id,
                 &canonical_event,
                 None,
-                None,
+                renderer_context,
             )?;
 
             Ok(AgentWriteResult {
@@ -3668,6 +4643,43 @@ pub struct AgentUndoJournalPayload {
     pub journal_id: String,
     /// "undo" | "redo"
     pub direction: String,
+    pub authority_route: String,
+    pub origin: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+}
+
+fn validate_undo_journal_authority(payload: &AgentUndoJournalPayload) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        payload.authority_route == "history-replay",
+        "undo journal requires the history-replay authority route"
+    );
+    anyhow::ensure!(
+        payload.direction == "undo" || payload.direction == "redo",
+        "undo journal direction must be undo or redo"
+    );
+    anyhow::ensure!(
+        payload.origin == payload.direction,
+        "undo journal origin must match direction"
+    );
+    anyhow::ensure!(
+        payload.caller == "undo-redo-command",
+        "undo journal caller must be undo-redo-command"
+    );
+    for control in [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+    ] {
+        anyhow::ensure!(
+            payload.controls.iter().any(|value| value == control),
+            "undo journal authority is missing control '{control}'"
+        );
+    }
+    Ok(())
 }
 
 fn legacy_journal_forward_origin(surface: &str) -> NarrativeChangeOrigin {
@@ -4152,7 +5164,7 @@ fn replay_codex_delete_cascade_in_tx(
                 .base_version
                 .checked_add(1)
                 .ok_or_else(|| anyhow::anyhow!("Codex delete restore version overflow"))?;
-            restore_deleted_codex_entry_from_snapshot(
+            let scope_events = restore_deleted_codex_entry_from_snapshot(
                 conn,
                 project_id,
                 &row.entity_id,
@@ -4167,14 +5179,16 @@ fn replay_codex_delete_cascade_in_tx(
                 replay_version,
             )?;
             let root_after = collect_codex_entry_snapshot(conn, &row.entity_id)?;
-            codex_delete_cascade_restore_feed_events(
+            let mut events = codex_delete_cascade_restore_feed_events(
                 conn,
                 project_id,
                 &row.entity_id,
                 &root_after,
                 &cascade,
                 &child_before,
-            )?
+            )?;
+            events.extend(scope_events);
+            events
         }
         "redo" => {
             let root_before = collect_codex_entry_snapshot(conn, &row.entity_id)?;
@@ -4242,10 +5256,40 @@ fn replay_foreshadow_delete_in_tx(
     Ok(())
 }
 
+fn undo_journal_body_snapshot_target(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+) -> anyhow::Result<Option<crate::timelapse::TimelapseBodySnapshotTarget>> {
+    if row.op_kind != "update" {
+        return Ok(None);
+    }
+    let target = match row.entity_kind.as_str() {
+        "codex_entry" => {
+            crate::timelapse::TimelapseBodySnapshotTarget::codex(row.entity_id.clone())
+        }
+        "snippet" => crate::timelapse::TimelapseBodySnapshotTarget::snippet(row.entity_id.clone()),
+        _ => return Ok(None),
+    };
+    let before: Value = serde_json::from_str(
+        row.before_json
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("body update journal is missing before_json"))?,
+    )?;
+    let after: Value = serde_json::from_str(
+        row.after_json
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("body update journal is missing after_json"))?,
+    )?;
+    if before.get("content") == after.get("content") {
+        return Ok(None);
+    }
+    Ok(Some(target))
+}
+
 pub fn agent_undo_journal_impl(
     db: &Database,
     payload: AgentUndoJournalPayload,
 ) -> anyhow::Result<Value> {
+    validate_undo_journal_authority(&payload)?;
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
         "undo journal requestId must not be empty"
@@ -4498,6 +5542,15 @@ pub fn agent_undo_journal_impl(
                     events: narrative_events,
                 },
             )?;
+            if let Some(target) = undo_journal_body_snapshot_target(&feed_row)? {
+                crate::timelapse::append_timelapse_body_snapshots_in_tx(
+                    conn,
+                    &payload.project_id,
+                    append.canonical.tail_sequence,
+                    timestamp,
+                    &[target],
+                )?;
+            }
             let response = json!({
                 "ok": true,
                 "changeEventUid": canonical_event.event_uid,
@@ -4585,13 +5638,43 @@ pub fn agent_foreshadow_create_impl(
     db: &Database,
     payload: AgentForeshadowCreatePayload,
 ) -> anyhow::Result<Value> {
-    agent_foreshadow_create_with_surface_impl(db, payload, "in-app-agent")
+    agent_foreshadow_create_with_context_impl(db, payload, "in-app-agent", None)
+}
+
+pub fn renderer_agent_foreshadow_create_impl(
+    db: &Database,
+    payload: AgentForeshadowCreatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.project_id.trim().is_empty(),
+        "projectId is required"
+    );
+    anyhow::ensure!(
+        !payload.session_id.trim().is_empty(),
+        "sessionId is required"
+    );
+    anyhow::ensure!(
+        payload.request_id == context.request_id,
+        "agent foreshadow requestId does not match canonical authority context"
+    );
+    validate_renderer_authority_context_for_routes(&context, &["interactive-agent-command"])?;
+    agent_foreshadow_create_with_context_impl(db, payload, "in-app-agent", Some(context))
 }
 
 pub fn agent_foreshadow_create_with_surface_impl(
     db: &Database,
     payload: AgentForeshadowCreatePayload,
     surface: &str,
+) -> anyhow::Result<Value> {
+    agent_foreshadow_create_with_context_impl(db, payload, surface, None)
+}
+
+fn agent_foreshadow_create_with_context_impl(
+    db: &Database,
+    payload: AgentForeshadowCreatePayload,
+    surface: &str,
+    renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
@@ -4617,6 +5700,9 @@ pub fn agent_foreshadow_create_with_surface_impl(
                 secret: payload.secret,
                 request_id: Some(&payload.request_id),
                 request_hash: Some(&request_hash),
+                event_uid: renderer_context
+                    .as_ref()
+                    .map(|context| context.event_uid.as_str()),
             },
             |conn, event, undo_journal_id| {
                 let canonical_event = db_change_event_from_core(event);
@@ -4629,7 +5715,7 @@ pub fn agent_foreshadow_create_with_surface_impl(
                     undo_journal_id,
                     &canonical_event,
                     None,
-                    None,
+                    renderer_context.as_ref(),
                 )
                 .map(|_| ())
             },
@@ -4644,7 +5730,35 @@ pub fn agent_foreshadow_update_impl(
     payload: AgentForeshadowUpdatePayload,
 ) -> anyhow::Result<Value> {
     let request_id = payload.request_id.clone();
-    agent_foreshadow_update_with_request_impl(db, payload, &request_id, "in-app-agent")
+    agent_foreshadow_update_with_context_impl(db, payload, &request_id, "in-app-agent", None)
+}
+
+pub fn renderer_agent_foreshadow_update_impl(
+    db: &Database,
+    payload: AgentForeshadowUpdatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.project_id.trim().is_empty(),
+        "projectId is required"
+    );
+    anyhow::ensure!(
+        !payload.session_id.trim().is_empty(),
+        "sessionId is required"
+    );
+    anyhow::ensure!(
+        payload.request_id == context.request_id,
+        "agent foreshadow update requestId does not match canonical authority context"
+    );
+    validate_renderer_authority_context_for_routes(&context, &["interactive-agent-command"])?;
+    let request_id = context.request_id.clone();
+    agent_foreshadow_update_with_context_impl(
+        db,
+        payload,
+        &request_id,
+        "in-app-agent",
+        Some(context),
+    )
 }
 
 pub fn agent_foreshadow_update_with_request_impl(
@@ -4652,6 +5766,16 @@ pub fn agent_foreshadow_update_with_request_impl(
     payload: AgentForeshadowUpdatePayload,
     request_id: &str,
     surface: &str,
+) -> anyhow::Result<Value> {
+    agent_foreshadow_update_with_context_impl(db, payload, request_id, surface, None)
+}
+
+fn agent_foreshadow_update_with_context_impl(
+    db: &Database,
+    payload: AgentForeshadowUpdatePayload,
+    request_id: &str,
+    surface: &str,
+    renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(!request_id.trim().is_empty(), "requestId must not be empty");
     anyhow::ensure!(
@@ -4662,7 +5786,33 @@ pub fn agent_foreshadow_update_with_request_impl(
     normalized.request_id.clear();
     normalized.session_id.clear();
     let request_hash = idempotency_hash("agent_foreshadow_update", &normalized)?;
+    let authority_paths = [
+        payload.title.as_ref().map(|_| "/title"),
+        payload.intent.as_ref().map(|_| "/intent"),
+        payload.notes.as_ref().map(|_| "/notes"),
+        payload.load_bearing.as_ref().map(|_| "/loadBearing"),
+        payload.payoff_confirmed.map(|_| "/payoffConfirmed"),
+        payload.abandoned.map(|_| "/abandoned"),
+        payload.secret.map(|_| "/secret"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let authority_updated_at = chrono::Utc::now().to_rfc3339();
     db.with_conn(|conn| {
+        let before_change = |conn: &rusqlite::Connection| {
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "foreshadow",
+                &payload.foreshadow_id,
+                &authority_paths,
+                &authority_updated_at,
+                Some(surface),
+                renderer_context.as_ref(),
+            )
+        };
         let append = |conn: &rusqlite::Connection,
                       event: &grimodex_core::change_events::AppendChangeEvent,
                       undo_journal_id: &str| {
@@ -4676,12 +5826,12 @@ pub fn agent_foreshadow_update_with_request_impl(
                 undo_journal_id,
                 &canonical_event,
                 None,
-                None,
+                renderer_context.as_ref(),
             )
             .map(|_| ())
         };
         let result =
-            grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version_with_request_in_tx_hook(
+            grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version_with_request_in_tx_hooks(
                 conn,
                 grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
                     project_id: &payload.project_id,
@@ -4697,10 +5847,14 @@ pub fn agent_foreshadow_update_with_request_impl(
                         abandoned: payload.abandoned,
                         secret: payload.secret,
                     },
+                    event_uid: renderer_context
+                        .as_ref()
+                        .map(|context| context.event_uid.as_str()),
                 },
                 payload.base_version,
                 request_id,
                 &request_hash,
+                before_change,
                 append,
             )
             .map_err(|error| anyhow::anyhow!("agent_foreshadow_update: {error:#}"))?;
@@ -6585,10 +7739,21 @@ pub fn agent_event_create_impl(
     db: &Database,
     payload: AgentEventCreatePayload,
 ) -> anyhow::Result<Value> {
+    agent_event_create_with_authority_impl(db, payload, None)
+}
+
+pub fn agent_event_create_with_authority_impl(
+    db: &Database,
+    payload: AgentEventCreatePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
         "requestId must not be empty"
     );
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
+    }
     let request_hash = event_create_request_hash(&payload)?;
     let feed_request_id = payload.request_id.clone();
     let request_id = payload.request_id.clone();
@@ -6597,7 +7762,10 @@ pub fn agent_event_create_impl(
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let undo_id = request_id.clone();
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -6689,7 +7857,7 @@ pub fn agent_event_create_impl(
                 &created.undo_journal_id,
                 &created.canonical_event,
                 None,
-                None,
+                renderer_context.as_ref(),
             )?;
 
             record_manual_event_fields(
@@ -6734,6 +7902,33 @@ pub fn agent_event_update_with_request_impl(
     payload: AgentEventUpdatePayload,
     request_id: Option<&str>,
 ) -> anyhow::Result<Value> {
+    agent_event_update_with_request_and_authority_impl(db, payload, request_id, None)
+}
+
+pub fn agent_event_update_with_authority_impl(
+    db: &Database,
+    payload: AgentEventUpdatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    let request_id = context.request_id.clone();
+    agent_event_update_with_request_and_authority_impl(
+        db,
+        payload,
+        Some(&request_id),
+        Some(context),
+    )
+}
+
+fn agent_event_update_with_request_and_authority_impl(
+    db: &Database,
+    payload: AgentEventUpdatePayload,
+    request_id: Option<&str>,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
+    if let Some(context) = renderer_context.as_ref() {
+        let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
+        validate_renderer_chronicle_context(request_id, context)?;
+    }
     struct CurrentChronicleRange {
         version: i64,
         start_time: Option<i64>,
@@ -6758,7 +7953,10 @@ pub fn agent_event_update_with_request_impl(
     let undo_id = request_id
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -7030,6 +8228,33 @@ pub fn agent_event_update_with_request_impl(
                 fields.push("revealSceneId");
             }
 
+            if payload.surface.as_deref() == Some("mcp") && fields.is_empty() {
+                anyhow::bail!("MCP event update must change at least one field");
+            }
+
+            let authority_paths = fields
+                .iter()
+                .map(|field| {
+                    authority_path_for_field("event", field, EVENT_AUTHORITY_FIELDS)
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "event update derived an unknown authority field '{field}'"
+                            )
+                        })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
+
             let sql = format!(
                 "UPDATE events SET {} WHERE id = ?{param_idx} AND project_id = ?{} AND version = ?{}",
                 sets.join(", "),
@@ -7090,7 +8315,7 @@ pub fn agent_event_update_with_request_impl(
                 &undo_id,
                 &canonical_event,
                 None,
-                None,
+                renderer_context.as_ref(),
             )?;
 
             record_manual_event_fields(
@@ -7144,6 +8369,33 @@ pub fn agent_event_delete_with_request_impl(
     payload: AgentEventIdPayload,
     request_id: Option<&str>,
 ) -> anyhow::Result<Value> {
+    agent_event_delete_with_request_and_authority_impl(db, payload, request_id, None)
+}
+
+pub fn agent_event_delete_with_authority_impl(
+    db: &Database,
+    payload: AgentEventIdPayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    let request_id = context.request_id.clone();
+    agent_event_delete_with_request_and_authority_impl(
+        db,
+        payload,
+        Some(&request_id),
+        Some(context),
+    )
+}
+
+fn agent_event_delete_with_request_and_authority_impl(
+    db: &Database,
+    payload: AgentEventIdPayload,
+    request_id: Option<&str>,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
+    if let Some(context) = renderer_context.as_ref() {
+        let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
+        validate_renderer_chronicle_context(request_id, context)?;
+    }
     let request_hash = request_id
         .map(|_| event_delete_request_hash(&payload))
         .transpose()?;
@@ -7158,7 +8410,10 @@ pub fn agent_event_delete_with_request_impl(
     let undo_id = request_id
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -7220,6 +8475,21 @@ pub fn agent_event_delete_with_request_impl(
                 })
                 .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
             let before = before_value.to_string();
+
+            let authority_paths = EVENT_AUTHORITY_FIELDS
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>();
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
 
             let deleted = conn.execute(
                 "DELETE FROM events WHERE id = ?1 AND project_id = ?2 AND version = ?3",
@@ -7303,7 +8573,7 @@ pub fn agent_event_delete_with_request_impl(
                 &undo_id,
                 &canonical_event,
                 Some(narrative_events),
-                None,
+                renderer_context.as_ref(),
             )?;
 
             record_manual_event_fields(
@@ -7357,6 +8627,33 @@ pub fn agent_event_set_participants_with_request_impl(
     payload: AgentEventParticipantsPayload,
     request_id: Option<&str>,
 ) -> anyhow::Result<Value> {
+    agent_event_set_participants_with_request_and_authority_impl(db, payload, request_id, None)
+}
+
+pub fn agent_event_set_participants_with_authority_impl(
+    db: &Database,
+    payload: AgentEventParticipantsPayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    let request_id = context.request_id.clone();
+    agent_event_set_participants_with_request_and_authority_impl(
+        db,
+        payload,
+        Some(&request_id),
+        Some(context),
+    )
+}
+
+fn agent_event_set_participants_with_request_and_authority_impl(
+    db: &Database,
+    payload: AgentEventParticipantsPayload,
+    request_id: Option<&str>,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
+    if let Some(context) = renderer_context.as_ref() {
+        let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
+        validate_renderer_chronicle_context(request_id, context)?;
+    }
     let request_hash = request_id
         .map(|_| event_participants_request_hash(&payload))
         .transpose()?;
@@ -7371,7 +8668,10 @@ pub fn agent_event_set_participants_with_request_impl(
     let undo_id = request_id
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -7417,6 +8717,18 @@ pub fn agent_event_set_participants_with_request_impl(
                 );
             }
             let result_version = base_version + 1;
+
+            let authority_paths = vec!["/participants".to_string()];
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
 
             let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
             let before = collect_participants_json(conn, &payload.event_id)?.to_string();
@@ -7522,7 +8834,7 @@ pub fn agent_event_set_participants_with_request_impl(
                     "association",
                     vec!["/participants".to_string()],
                 )?]),
-                None,
+                renderer_context.as_ref(),
             )?;
 
             record_manual_event_fields(
@@ -7569,13 +8881,28 @@ pub fn agent_scene_event_mutate_impl(
     payload: AgentSceneEventPayload,
     link: bool,
 ) -> anyhow::Result<Value> {
+    agent_scene_event_mutate_with_authority_impl(db, payload, link, None)
+}
+
+pub fn agent_scene_event_mutate_with_authority_impl(
+    db: &Database,
+    payload: AgentSceneEventPayload,
+    link: bool,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
         "requestId must not be empty"
     );
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
+    }
     let request_hash = scene_event_request_hash(&payload, link)?;
     let undo_id = payload.request_id.clone();
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -7663,6 +8990,17 @@ pub fn agent_scene_event_mutate_impl(
                 );
             }
 
+            let authority_paths = vec!["/sceneIds".to_string()];
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
             let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
 
             let after_token = if link {
@@ -7752,7 +9090,7 @@ pub fn agent_scene_event_mutate_impl(
                     "association",
                     vec!["/sceneIds".to_string()],
                 )?]),
-                None,
+                renderer_context.as_ref(),
             )?;
 
             record_manual_event_fields(
@@ -7787,7 +9125,15 @@ pub fn agent_scene_event_mutate_impl(
 
 pub fn agent_scene_event_link_batch_impl(
     db: &Database,
+    payload: AgentSceneEventLinkBatchPayload,
+) -> anyhow::Result<Value> {
+    agent_scene_event_link_batch_with_authority_impl(db, payload, None)
+}
+
+pub fn agent_scene_event_link_batch_with_authority_impl(
+    db: &Database,
     mut payload: AgentSceneEventLinkBatchPayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     for (value, field) in [
         (&payload.request_id, "requestId"),
@@ -7798,6 +9144,9 @@ pub fn agent_scene_event_link_batch_impl(
         if value.is_empty() {
             anyhow::bail!("agent scene event link batch {field} must not be empty");
         }
+    }
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
     }
     if payload.scene_ids.is_empty() {
         anyhow::bail!("agent scene event link batch sceneIds must not be empty");
@@ -7813,7 +9162,10 @@ pub fn agent_scene_event_link_batch_impl(
 
     let request_hash = scene_event_link_batch_request_hash(&payload)?;
     let undo_id = payload.request_id.clone();
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -7898,6 +9250,17 @@ pub fn agent_scene_event_link_batch_impl(
                 .filter(|scene_id| !current_links.contains_key(*scene_id))
                 .cloned()
                 .collect();
+            let authority_paths = vec!["/sceneIds".to_string()];
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
             let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
             let scene_id_refs: Vec<&str> =
                 added_scene_ids.iter().map(String::as_str).collect();
@@ -7967,7 +9330,7 @@ pub fn agent_scene_event_link_batch_impl(
                     "association",
                     vec!["/sceneIds".to_string()],
                 )?]),
-                None,
+                renderer_context.as_ref(),
             )?;
 
             record_manual_event_fields(
@@ -8005,13 +9368,28 @@ pub fn agent_event_relation_mutate_impl(
     payload: AgentEventRelationPayload,
     add: bool,
 ) -> anyhow::Result<Value> {
+    agent_event_relation_mutate_with_authority_impl(db, payload, add, None)
+}
+
+pub fn agent_event_relation_mutate_with_authority_impl(
+    db: &Database,
+    payload: AgentEventRelationPayload,
+    add: bool,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
         "requestId must not be empty"
     );
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
+    }
     let request_hash = event_relation_request_hash(&payload, add)?;
     let undo_id = payload.request_id.clone();
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -8089,6 +9467,28 @@ pub fn agent_event_relation_mutate_impl(
                     "AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT: association state changed after original request"
                 );
             }
+
+            let authority_paths = vec!["/relations".to_string()];
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.cause_event_id,
+                &authority_paths,
+                &now,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.effect_event_id,
+                &authority_paths,
+                &now,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
 
             let mut feed_event_ids = [
                 payload.cause_event_id.clone(),
@@ -8196,7 +9596,7 @@ pub fn agent_event_relation_mutate_impl(
                 &undo_id,
                 &canonical_event,
                 Some(narrative_events),
-                None,
+                renderer_context.as_ref(),
             )?;
 
             record_manual_event_fields(
@@ -8241,7 +9641,6 @@ pub fn agent_event_relation_mutate_impl(
 mod tests {
     use super::*;
     use crate::Database;
-    use std::path::Path;
 
     /// Same contract snapshots the grimodex-core (MCP path) tests assert —
     /// this is the in-app mirror side of the parity gate.
@@ -8255,9 +9654,1257 @@ mod tests {
     ));
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current schema fixture")
+    }
+
+    fn renderer_authority_fields(route: &str, caller: &str) -> (String, String, Vec<String>) {
+        (
+            route.to_string(),
+            caller.to_string(),
+            required_controls_for_route(route)
+                .expect("test route controls")
+                .iter()
+                .map(|control| (*control).to_string())
+                .collect(),
+        )
+    }
+
+    fn renderer_agent_context(request_id: &str, event_uid: &str) -> RendererCanonicalWriteContext {
+        RendererCanonicalWriteContext {
+            request_id: request_id.to_string(),
+            event_uid: event_uid.to_string(),
+            authority_session_id: None,
+            origin: NarrativeChangeOrigin::AiApply,
+            authority_route: "interactive-agent-command".to_string(),
+            caller: "chat-tool-executor".to_string(),
+            controls: renderer_authority_fields("interactive-agent-command", "chat-tool-executor")
+                .2,
+            provenance: Some(RendererMutationProvenance {
+                request_id: request_id.to_string(),
+                trace_id: format!("{request_id}:trace"),
+                chat_message_id: Some(format!("{request_id}:message")),
+                tool_call_id: Some(format!("{request_id}:tool")),
+                execution_id: Some(format!("{request_id}:execution")),
+                main_owned_provenance_id: Some(format!("{request_id}:main")),
+            }),
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        }
+    }
+
+    #[test]
+    fn renderer_authority_rejects_versioned_background_callers() {
+        let context = RendererCanonicalWriteContext {
+            request_id: "request-1".to_string(),
+            event_uid: "event-1".to_string(),
+            authority_session_id: None,
+            origin: NarrativeChangeOrigin::AiApply,
+            authority_route: "interactive-agent-command".to_string(),
+            caller: "background-maintenance-v2".to_string(),
+            controls: renderer_authority_fields("interactive-agent-command", "chat-tool-executor")
+                .2,
+            provenance: Some(RendererMutationProvenance {
+                request_id: "request-1".to_string(),
+                trace_id: "trace-1".to_string(),
+                chat_message_id: None,
+                tool_call_id: None,
+                execution_id: None,
+                main_owned_provenance_id: None,
+            }),
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        };
+        let error = validate_renderer_authority_context(&context)
+            .expect_err("unknown background caller must fail closed");
+        assert!(error.to_string().contains("Forbidden caller"));
+    }
+
+    #[test]
+    fn renderer_authority_rejects_empty_controls() {
+        let context = RendererCanonicalWriteContext {
+            request_id: "request-1".to_string(),
+            event_uid: "event-1".to_string(),
+            authority_session_id: None,
+            origin: NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_string(),
+            caller: "human-ui".to_string(),
+            controls: Vec::new(),
+            provenance: None,
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        };
+
+        let error = validate_renderer_authority_context(&context)
+            .expect_err("an explicit empty controls list must fail closed");
+        assert!(error.to_string().contains("Missing required control"));
+    }
+
+    #[test]
+    fn agent_field_authority_denies_human_paths_and_allows_new_ai_ownership() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "authority-entry", "Human seed", 0);
+        let paths = vec!["/name".to_string()];
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'authority-entry'",
+                rusqlite::params![project_id],
+            )?;
+            record_agent_field_authority_for_entity(
+                conn,
+                &project_id,
+                "codex-entry",
+                "authority-entry",
+                &paths,
+                "2026-08-15T00:00:00Z",
+            )?;
+            let owner: String = conn.query_row(
+                "SELECT owner_kind FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'authority-entry' AND field_path = '/name'",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(owner, "ai");
+
+            conn.execute(
+                "UPDATE narrative_field_authority SET owner_kind = 'human'
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'authority-entry' AND field_path = '/name'",
+                rusqlite::params![project_id],
+            )?;
+            let error = validate_agent_field_authority_for_entity(
+                conn,
+                &project_id,
+                "codex-entry",
+                "authority-entry",
+                &paths,
+                "2026-08-15T00:00:01Z",
+            )
+            .expect_err("human-owned fields must be rejected");
+            assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+            Ok(())
+        })
+        .expect("field authority transaction");
+    }
+
+    #[test]
+    fn renderer_codex_delete_preflights_legacy_fields_before_domain_delete() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "legacy-delete-entry", "Legacy name", 0);
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'legacy-delete-entry'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy Codex version");
+
+        let error = renderer_codex_delete_impl(
+            &db,
+            AgentCodexDeletePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-delete-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: "legacy-delete-entry".to_string(),
+                base_version: version,
+            },
+            renderer_agent_context("legacy-codex-delete", "legacy-codex-delete:event"),
+        )
+        .expect_err("legacy Codex fields without authority must deny AI delete");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(table_count(&db, "codex_entries"), 1);
+    }
+
+    #[test]
+    fn renderer_event_delete_preflights_legacy_fields_before_domain_delete() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) =
+            create_event(&db, &project_id, "Legacy chronicle title", vec![], vec![]);
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM events WHERE id = ?1",
+                    rusqlite::params![event_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy event version");
+
+        let error = agent_event_delete_with_authority_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-event-delete-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: version,
+            },
+            renderer_agent_context("legacy-event-delete", "legacy-event-delete:event"),
+        )
+        .expect_err("legacy event fields without authority must deny AI delete");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(table_count(&db, "events"), 1);
+    }
+
+    #[test]
+    fn renderer_foreshadow_delete_preflights_legacy_title_before_domain_delete() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow_row(&db, &project_id);
+
+        let request_id = "legacy-foreshadow-delete";
+        let event_uid = "legacy-foreshadow-delete:event";
+        let error = crate::foreshadow::delete_with_renderer_authority(
+            &db,
+            crate::foreshadow::ForeshadowDeletePayload {
+                id: foreshadow_id,
+                project_id: project_id.clone(),
+                base_version: 0,
+                context: crate::foreshadow::RendererWriteContext {
+                    request_id: request_id.to_string(),
+                    session_id: "legacy-foreshadow-delete-session".to_string(),
+                    event_uid: event_uid.to_string(),
+                    origin: NarrativeChangeOrigin::AiApply,
+                    original_transaction_id: None,
+                    undo_journal_id: None,
+                },
+            },
+            Some(renderer_agent_context(request_id, event_uid)),
+        )
+        .expect_err("legacy Foreshadow title without authority must deny AI delete");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(table_count(&db, "foreshadows"), 1);
+    }
+
+    #[test]
+    fn renderer_codex_update_preflights_legacy_content_and_summary_before_patch() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "legacy-update-entry", "Legacy name", 0);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'legacy-update-entry'",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove generated Codex authority rows");
+
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'legacy-update-entry'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy Codex version");
+
+        let content_error = renderer_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-update-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: "legacy-update-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: None,
+                summary: None,
+                content: Some("tampered content".to_string()),
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            renderer_agent_context("legacy-codex-content-update", "legacy-codex-content:event"),
+        )
+        .expect_err("legacy Codex content must deny AI update before patch");
+        assert!(content_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        let summary_error = renderer_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-update-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: "legacy-update-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: None,
+                summary: Some(String::new()),
+                content: None,
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            renderer_agent_context("legacy-codex-summary-clear", "legacy-codex-summary:event"),
+        )
+        .expect_err("legacy Codex summary must deny AI clear before patch");
+        assert!(summary_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        db.with_conn(|conn| {
+            let state: (String, String, i64) = conn.query_row(
+                "SELECT content, summary, version FROM codex_entries
+                  WHERE id = 'legacy-update-entry'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(state.0, r#"{"name":"Legacy name"}"#);
+            assert_eq!(state.1, "Legacy name summary");
+            assert_eq!(state.2, version);
+            Ok(())
+        })
+        .expect("inspect unchanged Codex after denied updates");
+    }
+
+    #[test]
+    fn renderer_codex_update_records_field_authority_once_after_preflight() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "authority-once-entry", "Before", 0);
+        let version = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'authority-once-entry'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("read Codex version");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_field_authority
+                    (project_id, entity_kind, entity_id, field_path, owner_kind,
+                     explicit_lock, version, updated_at)
+                 VALUES (?1, 'codex-entry', 'authority-once-entry', '/name', 'ai', 0, 0, 'fixture')",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed AI ownership for the update");
+        db.with_conn(|conn| {
+            let owner: String = conn.query_row(
+                "SELECT owner_kind FROM narrative_field_authority
+                   WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                     AND entity_id = 'authority-once-entry' AND field_path = '/name'",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(owner, "ai");
+            Ok(())
+        })
+        .expect("inspect seeded AI ownership");
+
+        renderer_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "authority-once-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: "authority-once-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: Some("After".to_string()),
+                summary: None,
+                content: None,
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            renderer_agent_context("authority-once-request", "authority-once:event"),
+        )
+        .expect("Codex update should succeed");
+
+        db.with_conn(|conn| {
+            let field_version: i64 = conn.query_row(
+                "SELECT version FROM narrative_field_authority
+                   WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                     AND entity_id = 'authority-once-entry' AND field_path = '/name'",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(field_version, 1, "preflight must not increment the version");
+            Ok(())
+        })
+        .expect("inspect single field-authority revision");
+    }
+
+    #[test]
+    fn mcp_codex_update_preflights_human_field_without_renderer_context() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "mcp-authority-entry", "Human name", 0);
+        let version = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_field_authority
+                        SET owner_kind = 'human'
+                      WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                        AND entity_id = 'mcp-authority-entry' AND field_path = '/name'",
+                    rusqlite::params![project_id],
+                )?;
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'mcp-authority-entry'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("seed MCP authority fixture");
+
+        let error = agent_codex_update_with_request_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "mcp-authority-session".to_string(),
+                surface: Some("mcp".to_string()),
+                entry_id: "mcp-authority-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: Some("MCP overwrite".to_string()),
+                summary: None,
+                content: None,
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            Some("mcp-authority-request"),
+            None,
+        )
+        .expect_err("MCP must not overwrite a human-owned field");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        db.with_conn(|conn| {
+            let state: (String, i64) = conn.query_row(
+                "SELECT name, version FROM codex_entries WHERE id = 'mcp-authority-entry'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(state, ("Human name".to_string(), version));
+            Ok(())
+        })
+        .expect("inspect unchanged MCP Codex after denied update");
+    }
+
+    #[test]
+    fn mcp_codex_tag_update_preflights_tags_cache_authority() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "mcp-tags-entry", "Tagged", 0);
+        let version = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_field_authority
+                        SET owner_kind = 'human'
+                      WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                        AND entity_id = 'mcp-tags-entry' AND field_path = '/tagsCache'",
+                    rusqlite::params![project_id],
+                )?;
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'mcp-tags-entry'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("seed human tag authority");
+        let tags = vec!["new-tag".to_string()];
+
+        let error = agent_codex_update_with_request_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "mcp-tags-session".to_string(),
+                surface: Some("mcp".to_string()),
+                entry_id: "mcp-tags-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: None,
+                summary: None,
+                content: None,
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            Some("mcp-tags-request"),
+            Some(&tags),
+        )
+        .expect_err("MCP tag updates must honor tagsCache field authority");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+    }
+
+    #[test]
+    fn mcp_codex_empty_update_is_rejected_without_promoting_legacy_fields() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let entry_id = insert_codex(&db, &project_id, "Legacy MCP entry");
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = ?2",
+                rusqlite::params![project_id, entry_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove authority rows from legacy fixture");
+
+        let error = agent_codex_update_with_request_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id,
+                session_id: "mcp-empty-session".to_string(),
+                surface: Some("mcp".to_string()),
+                entry_id,
+                base_version: 1,
+                type_slug: None,
+                name: None,
+                summary: None,
+                content: None,
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            Some("mcp-empty-request"),
+            None,
+        )
+        .expect_err("MCP empty patches must not create an ownership claim");
+        assert!(error.to_string().contains("must change at least one field"));
+        assert_eq!(table_count(&db, "narrative_field_authority"), 0);
+    }
+
+    #[test]
+    fn mcp_legacy_field_without_authority_remains_fail_closed() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "legacy-mcp-entry", "Before", 0);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE undo_journal SET surface = 'mcp'
+                  WHERE project_id = ?1 AND entity_kind = 'codex_entry'
+                    AND entity_id = 'legacy-mcp-entry'",
+                rusqlite::params![project_id],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'legacy-mcp-entry'",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy MCP provenance");
+
+        let error = agent_codex_update_with_request_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-mcp-session".to_string(),
+                surface: Some("mcp".to_string()),
+                entry_id: "legacy-mcp-entry".to_string(),
+                base_version: 1,
+                type_slug: None,
+                name: Some("After".to_string()),
+                summary: None,
+                content: None,
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            Some("legacy-mcp-update"),
+            None,
+        )
+        .expect_err("historical MCP provenance must not promote a legacy field");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        db.with_conn(|conn| {
+            let authority_rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'legacy-mcp-entry'",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(authority_rows, 0);
+            let name: String = conn.query_row(
+                "SELECT name FROM codex_entries WHERE id = 'legacy-mcp-entry'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(name, "Before");
+            Ok(())
+        })
+        .expect("inspect unchanged legacy MCP field");
+    }
+
+    #[test]
+    fn renderer_codex_update_allows_first_ai_value_for_empty_legacy_summary() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        insert_codex(&db, &project_id, "Legacy");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET summary = NULL
+                  WHERE project_id = ?1 AND name = 'Legacy'",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed empty legacy summary");
+        let entry_id: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT id FROM codex_entries
+                      WHERE project_id = ?1 AND name = 'Legacy'",
+                    rusqlite::params![project_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy Codex id");
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = ?1",
+                    rusqlite::params![entry_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy Codex version");
+
+        renderer_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-empty-summary-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: entry_id.clone(),
+                base_version: version,
+                type_slug: None,
+                name: None,
+                summary: Some("AI summary".to_string()),
+                content: None,
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            renderer_agent_context("legacy-empty-summary-request", "legacy-empty-summary:event"),
+        )
+        .expect("first AI value must fill an empty legacy summary");
+
+        db.with_conn(|conn| {
+            let state: (Option<String>, String) = conn.query_row(
+                "SELECT summary, owner_kind FROM codex_entries
+                  JOIN narrative_field_authority
+                    ON narrative_field_authority.project_id = codex_entries.project_id
+                   AND narrative_field_authority.entity_kind = 'codex-entry'
+                   AND narrative_field_authority.entity_id = codex_entries.id
+                   AND narrative_field_authority.field_path = '/summary'
+                 WHERE codex_entries.project_id = ?1
+                   AND codex_entries.id = ?2",
+                rusqlite::params![project_id, entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(state, (Some("AI summary".to_string()), "ai".to_string()));
+            Ok(())
+        })
+        .expect("inspect filled legacy summary");
+    }
+
+    #[test]
+    fn renderer_event_first_participant_scene_link_and_relation_are_allowed() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let participant = insert_codex(&db, &project_id, "AI participant");
+        let scene = insert_scene(&db, &project_id);
+        let (participant_event, _) =
+            create_event(&db, &project_id, "Empty participant event", vec![], vec![]);
+        let (stamp_event, _) = create_event(&db, &project_id, "Empty stamp event", vec![], vec![]);
+        let (cause_event, _) = create_event(&db, &project_id, "Empty cause event", vec![], vec![]);
+        let (effect_event, _) =
+            create_event(&db, &project_id, "Empty effect event", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event'",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy events without authority rows");
+
+        let participant_request = "legacy-empty-participant";
+        agent_event_set_participants_with_authority_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-empty-participant-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: participant_event.clone(),
+                base_version: event_version(&db, &participant_event),
+                codex_entry_ids: vec![participant.clone()],
+                participant_roles: None,
+            },
+            renderer_agent_context(participant_request, "legacy-empty-participant:event"),
+        )
+        .expect("first AI participant must be allowed");
+        assert!(participant_has(&db, &participant_event, &participant));
+
+        let stamp_request = "legacy-empty-scene-link";
+        let mut stamp = scene_payload(&project_id, &scene, &stamp_event);
+        stamp.request_id = stamp_request.to_string();
+        agent_scene_event_mutate_with_authority_impl(
+            &db,
+            stamp,
+            true,
+            Some(renderer_agent_context(
+                stamp_request,
+                "legacy-empty-scene-link:event",
+            )),
+        )
+        .expect("first AI scene link must be allowed");
+        assert!(scene_link_has(&db, &stamp_event, &scene));
+
+        let relation_request = "legacy-empty-relation";
+        let mut relation = relation_payload(&project_id, &cause_event, &effect_event);
+        relation.request_id = relation_request.to_string();
+        agent_event_relation_mutate_with_authority_impl(
+            &db,
+            relation,
+            true,
+            Some(renderer_agent_context(
+                relation_request,
+                "legacy-empty-relation:event",
+            )),
+        )
+        .expect("first AI relation must be allowed");
+        assert_eq!(relation_count(&db, &cause_event, &effect_event), 1);
+    }
+
+    #[test]
+    fn renderer_foreshadow_update_allows_first_ai_value_for_empty_legacy_intent() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow_row(&db, &project_id);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'foreshadow' AND entity_id = ?2",
+                rusqlite::params![project_id, foreshadow_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed empty legacy Foreshadow");
+
+        let request_id = "legacy-empty-foreshadow-intent";
+        renderer_agent_foreshadow_update_impl(
+            &db,
+            AgentForeshadowUpdatePayload {
+                request_id: request_id.to_string(),
+                project_id: project_id.clone(),
+                session_id: "legacy-empty-foreshadow-session".to_string(),
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                title: None,
+                intent: Some("AI intent".to_string()),
+                notes: None,
+                load_bearing: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+            },
+            renderer_agent_context(request_id, "legacy-empty-foreshadow-intent:event"),
+        )
+        .expect("first AI value must fill an empty legacy Foreshadow intent");
+
+        db.with_conn(|conn| {
+            let state: (String, String) = conn.query_row(
+                "SELECT intent, owner_kind FROM foreshadows
+                   JOIN narrative_field_authority
+                     ON narrative_field_authority.project_id = foreshadows.project_id
+                    AND narrative_field_authority.entity_kind = 'foreshadow'
+                    AND narrative_field_authority.entity_id = foreshadows.id
+                    AND narrative_field_authority.field_path = '/intent'
+                 WHERE foreshadows.project_id = ?1 AND foreshadows.id = ?2",
+                rusqlite::params![project_id, foreshadow_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(state, ("AI intent".to_string(), "ai".to_string()));
+            Ok(())
+        })
+        .expect("inspect filled legacy Foreshadow intent");
+    }
+
+    #[test]
+    fn legacy_tree_node_presence_protects_title_move_and_empty_synopsis() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, synopsis, sort_order)
+                 VALUES ('legacy-tree-scene', ?1, 'scene', 'Legacy title', NULL, 'a0')",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy tree node");
+
+        db.with_conn(|conn| {
+            for path in ["/title", "/parentId", "/sortOrder", "/synopsis"] {
+                let paths = vec![path.to_string()];
+                let error = validate_agent_field_authority_for_entity(
+                    conn,
+                    &project_id,
+                    "tree_node",
+                    "legacy-tree-scene",
+                    &paths,
+                    "2026-08-15T00:00:00Z",
+                )
+                .expect_err("legacy tree node fields must fail closed");
+                assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+            }
+            Ok(())
+        })
+        .expect("inspect legacy tree field authority");
+    }
+
+    #[test]
+    fn renderer_event_participant_replace_preflights_legacy_association() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let participant_a = insert_codex(&db, &project_id, "Legacy participant");
+        let participant_b = insert_codex(&db, &project_id, "Unauthorized participant");
+        let (event_id, _) = create_event(
+            &db,
+            &project_id,
+            "Legacy participant event",
+            vec![participant_a.clone()],
+            vec![],
+        );
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event' AND entity_id = ?2",
+                rusqlite::params![project_id, event_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove generated participant authority row");
+        let version = event_version(&db, &event_id);
+        let request_id = "legacy-event-participant-replace";
+        let error = agent_event_set_participants_with_authority_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-event-participant-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: version,
+                codex_entry_ids: vec![participant_b.clone()],
+                participant_roles: None,
+            },
+            renderer_agent_context(request_id, "legacy-event-participant:event"),
+        )
+        .expect_err("legacy participants must deny AI replacement before delete");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert!(participant_has(&db, &event_id, &participant_a));
+        assert!(!participant_has(&db, &event_id, &participant_b));
+        assert_eq!(event_version(&db, &event_id), version);
+    }
+
+    #[test]
+    fn renderer_scene_stamp_and_unstamp_preflight_legacy_association() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_a = insert_scene(&db, &project_id);
+        let scene_b = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(
+            &db,
+            &project_id,
+            "Legacy stamped event",
+            vec![],
+            vec![scene_a.clone()],
+        );
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event' AND entity_id = ?2",
+                rusqlite::params![project_id, event_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove generated scene authority row");
+
+        let unstamp_request = "legacy-event-unstamp";
+        let mut unstamp = scene_payload(&project_id, &scene_a, &event_id);
+        unstamp.request_id = unstamp_request.to_string();
+        let unstamp_error = agent_scene_event_mutate_with_authority_impl(
+            &db,
+            unstamp,
+            false,
+            Some(renderer_agent_context(
+                unstamp_request,
+                "legacy-event-unstamp:event",
+            )),
+        )
+        .expect_err("legacy scene stamp must deny AI unstamp before delete");
+        assert!(unstamp_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert!(scene_link_has(&db, &event_id, &scene_a));
+
+        let stamp_request = "legacy-event-stamp";
+        let mut stamp = scene_payload(&project_id, &scene_b, &event_id);
+        stamp.request_id = stamp_request.to_string();
+        let stamp_error = agent_scene_event_mutate_with_authority_impl(
+            &db,
+            stamp,
+            true,
+            Some(renderer_agent_context(
+                stamp_request,
+                "legacy-event-stamp:event",
+            )),
+        )
+        .expect_err("legacy scene association must deny AI stamp before insert");
+        assert!(stamp_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert!(!scene_link_has(&db, &event_id, &scene_b));
+    }
+
+    #[test]
+    fn renderer_event_relation_add_and_remove_preflight_legacy_associations() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (cause_id, _) = create_event(&db, &project_id, "Cause", vec![], vec![]);
+        let (effect_id, _) = create_event(&db, &project_id, "Effect", vec![], vec![]);
+        let (new_effect_id, _) = create_event(&db, &project_id, "New effect", vec![], vec![]);
+        let initial_relation = relation_payload(&project_id, &cause_id, &effect_id);
+        agent_event_relation_mutate_impl(&db, initial_relation, true).expect("seed relation");
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event'
+                    AND entity_id IN (?2, ?3, ?4)",
+                rusqlite::params![project_id, cause_id, effect_id, new_effect_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove generated relation authority rows");
+
+        let remove_request = "legacy-relation-remove";
+        let mut remove = relation_payload(&project_id, &cause_id, &effect_id);
+        remove.request_id = remove_request.to_string();
+        let remove_error = agent_event_relation_mutate_with_authority_impl(
+            &db,
+            remove,
+            false,
+            Some(renderer_agent_context(
+                remove_request,
+                "legacy-relation-remove:event",
+            )),
+        )
+        .expect_err("legacy relation must deny AI remove before delete");
+        assert!(remove_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(relation_count(&db, &cause_id, &effect_id), 1);
+
+        let add_request = "legacy-relation-add";
+        let mut add = relation_payload(&project_id, &cause_id, &new_effect_id);
+        add.request_id = add_request.to_string();
+        let add_error = agent_event_relation_mutate_with_authority_impl(
+            &db,
+            add,
+            true,
+            Some(renderer_agent_context(
+                add_request,
+                "legacy-relation-add:event",
+            )),
+        )
+        .expect_err("legacy relation must deny AI add before insert");
+        assert!(add_error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(relation_count(&db, &cause_id, &new_effect_id), 0);
+    }
+
+    #[test]
+    fn mcp_relation_records_field_authority_for_both_endpoints() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (cause_id, _) = create_event(&db, &project_id, "MCP cause", vec![], vec![]);
+        let (effect_id, _) = create_event(&db, &project_id, "MCP effect", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event'
+                    AND entity_id IN (?2, ?3)",
+                rusqlite::params![project_id, cause_id, effect_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed MCP events without authority rows");
+
+        let mut add = relation_payload(&project_id, &cause_id, &effect_id);
+        add.surface = Some("mcp".to_string());
+        agent_event_relation_mutate_with_authority_impl(&db, add, true, None)
+            .expect("MCP relation add must establish both endpoint authorities");
+        assert_eq!(relation_count(&db, &cause_id, &effect_id), 1);
+
+        db.with_conn(|conn| {
+            for event_id in [&cause_id, &effect_id] {
+                let owner: String = conn.query_row(
+                    "SELECT owner_kind FROM narrative_field_authority
+                      WHERE project_id = ?1 AND entity_kind = 'event'
+                        AND entity_id = ?2 AND field_path = '/relations'",
+                    rusqlite::params![project_id, event_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(owner, "ai");
+            }
+            Ok(())
+        })
+        .expect("inspect MCP relation authorities");
+
+        let mut remove = relation_payload(&project_id, &cause_id, &effect_id);
+        remove.surface = Some("mcp".to_string());
+        agent_event_relation_mutate_with_authority_impl(&db, remove, false, None)
+            .expect("MCP relation remove must validate both endpoint authorities");
+        assert_eq!(relation_count(&db, &cause_id, &effect_id), 0);
+    }
+
+    #[test]
+    fn renderer_foreshadow_update_preflights_legacy_intent_and_notes_before_patch() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow_row(&db, &project_id);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'foreshadow' AND entity_id = ?2",
+                rusqlite::params![project_id, foreshadow_id],
+            )?;
+            conn.execute(
+                "UPDATE foreshadows SET intent = 'Human intent', notes = 'Human notes'
+                  WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![foreshadow_id, project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy Foreshadow fields");
+
+        let request_id = "legacy-foreshadow-update";
+        let error = renderer_agent_foreshadow_update_impl(
+            &db,
+            AgentForeshadowUpdatePayload {
+                request_id: request_id.to_string(),
+                project_id: project_id.clone(),
+                session_id: "legacy-foreshadow-session".to_string(),
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                title: None,
+                intent: Some(String::new()),
+                notes: Some(String::new()),
+                load_bearing: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+            },
+            renderer_agent_context(request_id, "legacy-foreshadow-update:event"),
+        )
+        .expect_err("legacy Foreshadow fields must deny AI clear before patch");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        db.with_conn(|conn| {
+            let state: (String, String, i64) = conn.query_row(
+                "SELECT intent, notes, version FROM foreshadows WHERE id = ?1",
+                rusqlite::params![foreshadow_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                state,
+                ("Human intent".to_string(), "Human notes".to_string(), 0)
+            );
+            Ok(())
+        })
+        .expect("inspect unchanged Foreshadow after denied update");
+    }
+
+    #[test]
+    fn native_field_authority_derives_update_and_association_paths() {
+        let update = AppendChangeEvent {
+            event_uid: "event-update".to_string(),
+            scene_id: None,
+            domain: "codex".to_string(),
+            op_type: "entry.update".to_string(),
+            entity_type: Some("codex_entry".to_string()),
+            entity_id: Some("entry-1".to_string()),
+            payload: json!({ "fields": ["name", "content"] }).to_string(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            authority_paths_for_canonical_event(&update),
+            vec!["/content".to_string(), "/name".to_string()]
+        );
+
+        let participants = AppendChangeEvent {
+            event_uid: "event-participants".to_string(),
+            scene_id: None,
+            domain: "event".to_string(),
+            op_type: "event.participants".to_string(),
+            entity_type: Some("event".to_string()),
+            entity_id: Some("event-1".to_string()),
+            payload: json!({ "eventId": "event-1", "codexEntryIds": ["entry-1"] }).to_string(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            authority_paths_for_canonical_event(&participants),
+            vec!["/participants".to_string()]
+        );
+
+        let relation = AppendChangeEvent {
+            event_uid: "event-relation".to_string(),
+            scene_id: None,
+            domain: "event".to_string(),
+            op_type: "event.relation_add".to_string(),
+            entity_type: Some("event".to_string()),
+            entity_id: Some("event-1".to_string()),
+            payload: json!({
+                "causeEventId": "event-1",
+                "effectEventId": "event-2"
+            })
+            .to_string(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            authority_paths_for_canonical_event(&relation),
+            vec!["/relations".to_string()]
+        );
     }
 
     fn insert_project(db: &Database) -> String {
@@ -8268,6 +10915,10 @@ mod tests {
             "run",
         )
         .expect("insert project");
+        db.with_conn(|conn| {
+            crate::narrative_extraction::ensure_scope_registry_in_tx(conn, &id, "fixture")
+        })
+        .expect("seed project scope registry");
         id
     }
 
@@ -8511,6 +11162,7 @@ mod tests {
                         .unwrap()
                         .to_string(),
                     model: None,
+                    timestamp: None,
                     chat_msg_id: None,
                     trace_id: None,
                 }],
@@ -8600,6 +11252,51 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn mcp_codex_create_records_ai_field_authority() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let result = agent_codex_create_with_tags_impl(
+            &db,
+            AgentCodexCreatePayload {
+                request_id: Some("mcp-codex-create-authority".to_string()),
+                entry_id: None,
+                project_id: project_id.clone(),
+                session_id: "mcp-session".to_string(),
+                surface: Some("mcp".to_string()),
+                type_slug: "character".to_string(),
+                name: "MCP Character".to_string(),
+                summary: Some("Created by MCP".to_string()),
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                source_chat_message_id: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: Vec::new(),
+            },
+            None,
+        )
+        .expect("MCP Codex create must succeed");
+        let entry_id = result["entityId"].as_str().expect("entity id");
+        db.with_conn(|conn| {
+            let authority_rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = ?2 AND owner_kind = 'ai'",
+                rusqlite::params![project_id, entry_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(authority_rows, CODEX_ENTRY_AUTHORITY_FIELDS.len() as i64);
+            Ok(())
+        })
+        .expect("inspect MCP Codex field authority");
     }
 
     #[test]
@@ -8733,18 +11430,12 @@ mod tests {
             trace_id: None,
             authorship_spans: vec![],
         };
-        let context = RendererCanonicalWriteContext {
-            request_id: "renderer-create-request".to_string(),
-            event_uid: "renderer-create-event".to_string(),
-            origin: NarrativeChangeOrigin::Human,
-            original_transaction_id: None,
-            undo_journal_id: None,
-            context_mode: Some("always".to_string()),
-            icon: Some("star".to_string()),
-            children_budget: Some("standard".to_string()),
-            notes: Some("private".to_string()),
-            canonical_payload: None,
-        };
+        let mut context =
+            renderer_agent_context("renderer-create-request", "renderer-create-event");
+        context.context_mode = Some("always".to_string());
+        context.icon = Some("star".to_string());
+        context.children_budget = Some("standard".to_string());
+        context.notes = Some("private".to_string());
         let first = renderer_codex_create_impl(&db, payload.clone(), context.clone())
             .expect("first renderer create");
 
@@ -8787,6 +11478,7 @@ mod tests {
         let db = test_db();
         let project_id = insert_project(&db);
         tracked_codex_create(&db, &project_id, "cascade-root", "Root", 4);
+        grant_agent_codex_authority(&db, &project_id, "cascade-root");
         let mut child = tracked_codex_create_payload(&project_id, "cascade-child", "Child", 5);
         child.parent_id = Some("cascade-root".to_string());
         agent_codex_create_impl(&db, child).expect("create cascade child");
@@ -8821,17 +11513,11 @@ mod tests {
                 entry_id: "cascade-root".to_string(),
                 base_version: 1,
             },
-            RendererCanonicalWriteContext {
-                request_id: "cascade-delete-request".to_string(),
-                event_uid: "cascade-delete-event".to_string(),
-                origin: NarrativeChangeOrigin::Human,
-                original_transaction_id: None,
-                undo_journal_id: None,
-                context_mode: None,
-                icon: None,
-                children_budget: None,
-                notes: None,
-                canonical_payload: Some(json!({ "name": "Root", "type": "character" })),
+            {
+                let mut context =
+                    renderer_agent_context("cascade-delete-request", "cascade-delete-event");
+                context.canonical_payload = Some(json!({ "name": "Root", "type": "character" }));
+                context
             },
         )
         .expect("delete Codex cascade");
@@ -8870,7 +11556,9 @@ mod tests {
                 ]
             );
             assert_eq!(
-                rows.iter().map(|(_, mutation)| mutation.as_str()).collect::<Vec<_>>(),
+                rows.iter()
+                    .map(|(_, mutation)| mutation.as_str())
+                    .collect::<Vec<_>>(),
                 vec!["delete", "delete", "delete", "delete", "update"]
             );
             let canonical_payload: String = conn.query_row(
@@ -8880,11 +11568,32 @@ mod tests {
                 |row| row.get(0),
             )?;
             let canonical_payload: Value = serde_json::from_str(&canonical_payload)?;
-            assert_eq!(canonical_payload["cascade"]["relationIds"], json!(["cascade-relation"]));
-            assert_eq!(canonical_payload["cascade"]["phaseIds"], json!(["cascade-phase"]));
-            assert_eq!(canonical_payload["cascade"]["detailValueIds"], json!(["cascade-detail"]));
-            assert_eq!(canonical_payload["cascade"]["tagIds"], json!(["cascade-tag"]));
-            assert_eq!(canonical_payload["cascade"]["childEntryIds"], json!(["cascade-child"]));
+            assert_eq!(
+                canonical_payload["authorityRoute"],
+                "interactive-agent-command"
+            );
+            assert_eq!(canonical_payload["authorityCaller"], "chat-tool-executor");
+            assert_eq!(canonical_payload["authorityEvidence"]["validated"], true);
+            assert_eq!(
+                canonical_payload["cascade"]["relationIds"],
+                json!(["cascade-relation"])
+            );
+            assert_eq!(
+                canonical_payload["cascade"]["phaseIds"],
+                json!(["cascade-phase"])
+            );
+            assert_eq!(
+                canonical_payload["cascade"]["detailValueIds"],
+                json!(["cascade-detail"])
+            );
+            assert_eq!(
+                canonical_payload["cascade"]["tagIds"],
+                json!(["cascade-tag"])
+            );
+            assert_eq!(
+                canonical_payload["cascade"]["childEntryIds"],
+                json!(["cascade-child"])
+            );
             let child_parent: Option<String> = conn.query_row(
                 "SELECT parent_id FROM codex_entries WHERE id = 'cascade-child'",
                 [],
@@ -8903,7 +11612,13 @@ mod tests {
         let restore_context = RendererCanonicalWriteContext {
             request_id: "cascade-restore-request".to_string(),
             event_uid: "cascade-restore-event".to_string(),
+            authority_session_id: None,
             origin: NarrativeChangeOrigin::Undo,
+            authority_route: "history-replay".to_string(),
+            caller: "history-controller".to_string(),
+            controls: renderer_authority_fields("history-replay", "history-controller").2,
+            provenance: None,
+            writes_authority_protected_field: false,
             original_transaction_id: Some(transaction_id.to_string()),
             undo_journal_id: Some(delete_journal_id.clone()),
             context_mode: None,
@@ -8990,7 +11705,13 @@ mod tests {
             RendererCanonicalWriteContext {
                 request_id: "cascade-redo-delete-request".to_string(),
                 event_uid: "cascade-redo-delete-event".to_string(),
+                authority_session_id: None,
                 origin: NarrativeChangeOrigin::Redo,
+                authority_route: "history-replay".to_string(),
+                caller: "history-controller".to_string(),
+                controls: renderer_authority_fields("history-replay", "history-controller").2,
+                provenance: None,
+                writes_authority_protected_field: false,
                 original_transaction_id: Some(transaction_id.to_string()),
                 undo_journal_id: Some(delete_journal_id.clone()),
                 context_mode: None,
@@ -9026,7 +11747,13 @@ mod tests {
             RendererCanonicalWriteContext {
                 request_id: "cascade-restore-fail-request".to_string(),
                 event_uid: "cascade-restore-fail-event".to_string(),
+                authority_session_id: None,
                 origin: NarrativeChangeOrigin::Undo,
+                authority_route: "history-replay".to_string(),
+                caller: "history-controller".to_string(),
+                controls: renderer_authority_fields("history-replay", "history-controller").2,
+                provenance: None,
+                writes_authority_protected_field: false,
                 original_transaction_id: Some(transaction_id.to_string()),
                 undo_journal_id: Some(delete_journal_id),
                 context_mode: None,
@@ -9109,22 +11836,13 @@ mod tests {
     }
 
     fn renderer_update_context(request_id: &str, event_uid: &str) -> RendererCanonicalWriteContext {
-        RendererCanonicalWriteContext {
-            request_id: request_id.to_string(),
-            event_uid: event_uid.to_string(),
-            origin: NarrativeChangeOrigin::Human,
-            original_transaction_id: None,
-            undo_journal_id: None,
-            context_mode: None,
-            icon: None,
-            children_budget: None,
-            notes: None,
-            canonical_payload: Some(json!({
-                "fields": ["name"],
-                "before": { "name": "Before" },
-                "after": { "name": "After" },
-            })),
-        }
+        let mut context = renderer_agent_context(request_id, event_uid);
+        context.canonical_payload = Some(json!({
+            "fields": ["name"],
+            "before": { "name": "Before" },
+            "after": { "name": "After" },
+        }));
+        context
     }
 
     #[test]
@@ -9132,6 +11850,7 @@ mod tests {
         let db = test_db();
         let project_id = insert_project(&db);
         tracked_codex_create(&db, &project_id, "linked-codex", "Before", 6);
+        grant_agent_codex_authority(&db, &project_id, "linked-codex");
         link_foreshadow_fixture(&db, &project_id, "linked-codex", "foreshadow-z");
         link_foreshadow_fixture(&db, &project_id, "linked-codex", "foreshadow-a");
         let payload = AgentCodexUpdatePayload {
@@ -9144,6 +11863,7 @@ mod tests {
             name: Some("After".to_string()),
             summary: None,
             content: None,
+            timelapse_doc_step_coverage: None,
             aliases: None,
             excluded_aliases: None,
             readings: None,
@@ -9242,6 +11962,7 @@ mod tests {
         let db = test_db();
         let project_id = insert_project(&db);
         tracked_codex_create(&db, &project_id, "rollback-codex", "Before", 6);
+        grant_agent_codex_authority(&db, &project_id, "rollback-codex");
         link_foreshadow_fixture(&db, &project_id, "rollback-codex", "rollback-foreshadow");
         let baseline_journals = table_count(&db, "undo_journal");
         let baseline_change_events = table_count(&db, "change_events");
@@ -9268,6 +11989,7 @@ mod tests {
             name: Some("After".to_string()),
             summary: None,
             content: None,
+            timelapse_doc_step_coverage: None,
             aliases: None,
             excluded_aliases: None,
             readings: None,
@@ -9382,10 +12104,34 @@ mod tests {
                 to_pos: span_to,
                 source: "ai".to_string(),
                 model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                timestamp: None,
                 chat_msg_id: None,
                 trace_id: None,
             }],
         }
+    }
+
+    #[test]
+    fn codex_authorship_span_preserves_main_owned_timestamp() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let timestamp = "2026-08-15T06:00:00.000Z";
+        let mut payload =
+            tracked_codex_create_payload(&project_id, "codex-main-timestamp", "Main timestamp", 8);
+        payload.authorship_spans[0].timestamp = Some(timestamp.to_string());
+
+        agent_codex_create_impl(&db, payload).expect("create timestamped codex");
+        db.with_conn(|conn| {
+            let stored: String = conn.query_row(
+                "SELECT timestamp FROM authorship_spans
+                  WHERE codex_entry_id = 'codex-main-timestamp'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(stored, timestamp);
+            Ok(())
+        })
+        .expect("read main-owned authorship timestamp");
     }
 
     fn tracked_codex_create(
@@ -9400,6 +12146,25 @@ mod tests {
             tracked_codex_create_payload(project_id, entry_id, name, span_to),
         )
         .expect("tracked codex create")
+    }
+
+    fn grant_agent_codex_authority(db: &Database, project_id: &str, entry_id: &str) {
+        let paths = all_authority_paths("codex_entry")
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect::<Vec<_>>();
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        db.with_conn(|conn| {
+            record_agent_field_authority_for_entity(
+                conn,
+                project_id,
+                "codex-entry",
+                entry_id,
+                &paths,
+                &updated_at,
+            )
+        })
+        .expect("grant Agent Codex field authority");
     }
 
     #[test]
@@ -9519,6 +12284,10 @@ mod tests {
                 session_id: "undo-session".to_string(),
                 journal_id,
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect_err("Feed failure must abort the Undo domain replay");
@@ -9588,6 +12357,10 @@ mod tests {
                 session_id: "history-session".to_string(),
                 journal_id: journal_id.clone(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("modernize and undo pre-Feed journal");
@@ -9651,6 +12424,7 @@ mod tests {
             name: Some(name.to_string()),
             summary: Some(format!("{name} summary")),
             content: Some(format!(r#"{{"name":"{name}"}}"#)),
+            timelapse_doc_step_coverage: None,
             aliases: Some(format!(r#"["{name}"]"#)),
             excluded_aliases: Some(format!(r#"["not-{name}"]"#)),
             readings: Some(format!(r#"["{name}-reading"]"#)),
@@ -9668,6 +12442,7 @@ mod tests {
                 to_pos: span_to,
                 source: "human".to_string(),
                 model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                timestamp: None,
                 chat_msg_id: None,
                 trace_id: None,
             }]),
@@ -9756,6 +12531,7 @@ mod tests {
                 name: Some("stale".to_string()),
                 summary: None,
                 content: None,
+                timelapse_doc_step_coverage: None,
                 aliases: None,
                 excluded_aliases: None,
                 readings: None,
@@ -10927,7 +13703,25 @@ mod tests {
             session_id: "sess".to_string(),
             journal_id: journal_id.to_string(),
             direction: direction.to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: direction.to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: history_replay_controls(),
         }
+    }
+
+    fn history_replay_controls() -> Vec<String> {
+        [
+            "original-transaction",
+            "journal-lineage",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     }
 
     fn relation_payload(project_id: &str, cause: &str, effect: &str) -> AgentEventRelationPayload {
@@ -11200,6 +13994,28 @@ mod tests {
             feed_count
         );
         assert_eq!(table_count(&db, "undo_journal"), journal_count);
+    }
+
+    #[test]
+    fn mcp_event_empty_update_is_rejected_without_promoting_legacy_fields() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "Legacy MCP event", vec![], vec![]);
+        let mut update = empty_update(&project_id, &event_id);
+        update.surface = Some("mcp".to_string());
+
+        let error =
+            agent_event_update_with_request_impl(&db, update, Some("mcp-empty-event-update"))
+                .expect_err("MCP empty event updates must not create an ownership claim");
+        assert!(error
+            .to_string()
+            .contains("MCP event update must change at least one field"));
+        assert_eq!(event_version(&db, &event_id), 1);
+        assert_eq!(
+            event_title(&db, &event_id).as_deref(),
+            Some("Legacy MCP event")
+        );
+        assert_eq!(table_count(&db, "narrative_field_authority"), 0);
     }
 
     #[test]

@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::agent_writes::{agent_undo_journal_impl, AgentUndoJournalPayload};
 use grimodex_db::snippet_writes::{
     create, delete, update, SnippetCreatePayload, SnippetDeletePayload, SnippetUpdatePayload,
@@ -6,8 +9,7 @@ use grimodex_db::Database;
 use serde_json::{json, Value};
 
 fn fixture() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');
@@ -29,6 +31,10 @@ fn create_payload(request_id: &str) -> SnippetCreatePayload {
         "sessionId": format!("session:{request_id}"),
         "eventUid": format!("event:{request_id}"),
         "origin": "human",
+        "authorityRoute": "human-direct",
+        "caller": "human-ui",
+        "controls": ["runtime-policy", "actor-context", "typed-writer", "occ", "change-event", "change-feed"],
+        "writesAuthorityProtectedField": false,
         "originalTransactionId": null,
         "undoJournalId": null,
         "projectId": "p1",
@@ -50,6 +56,10 @@ fn update_payload(request_id: &str, base_version: i64) -> SnippetUpdatePayload {
         "sessionId": format!("session:{request_id}"),
         "eventUid": format!("event:{request_id}"),
         "origin": "human",
+        "authorityRoute": "human-direct",
+        "caller": "human-ui",
+        "controls": ["runtime-policy", "actor-context", "typed-writer", "occ", "change-event", "change-feed"],
+        "writesAuthorityProtectedField": false,
         "originalTransactionId": null,
         "undoJournalId": null,
         "projectId": "p1",
@@ -67,6 +77,10 @@ fn delete_payload(request_id: &str, base_version: i64) -> SnippetDeletePayload {
         "sessionId": format!("session:{request_id}"),
         "eventUid": format!("event:{request_id}"),
         "origin": "human",
+        "authorityRoute": "human-direct",
+        "caller": "human-ui",
+        "controls": ["runtime-policy", "actor-context", "typed-writer", "occ", "change-event", "change-feed"],
+        "writesAuthorityProtectedField": false,
         "originalTransactionId": null,
         "undoJournalId": null,
         "projectId": "p1",
@@ -96,6 +110,17 @@ fn replay(db: &Database, journal_id: &str, direction: &str, request_id: &str) {
             session_id: format!("session:{request_id}"),
             journal_id: journal_id.to_string(),
             direction: direction.to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: direction.to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: vec![
+                "original-transaction".to_string(),
+                "journal-lineage".to_string(),
+                "typed-writer".to_string(),
+                "occ".to_string(),
+                "change-event".to_string(),
+                "change-feed".to_string(),
+            ],
         },
     )
     .expect("replay snippet journal");
@@ -120,6 +145,18 @@ fn manual_snippet_crud_is_atomic_idempotent_occ_guarded_and_replayable() {
     assert_eq!(count(&db, "undo_journal"), 1);
     assert_eq!(count(&db, "change_events"), 1);
     assert_eq!(count(&db, "narrative_change_transactions"), 1);
+    db.with_conn(|conn| {
+        let payload: String = conn.query_row(
+            "SELECT payload FROM change_events WHERE event_uid = 'event:snippet-create'",
+            [],
+            |row| row.get(0),
+        )?;
+        let payload: Value = serde_json::from_str(&payload)?;
+        assert_eq!(payload["authorityRoute"], "human-direct");
+        assert_eq!(payload["authorityEvidence"]["validated"], true);
+        Ok(())
+    })
+    .expect("inspect snippet authority evidence");
 
     let stale = update_payload("snippet-stale", 0);
     assert!(update(&db, stale)

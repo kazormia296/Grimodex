@@ -25,13 +25,21 @@ use anyhow::{anyhow, Context, Result};
 use ndarray::Array2;
 use ort::session::Session;
 use ort::value::TensorRef;
-use tokenizers::{Tokenizer, TruncationParams};
+use tokenizers::{Encoding, Tokenizer, TruncationParams};
 
 use crate::audit::{
     load_tokenizer_with_identity, load_verified_model_artifact_identity, ModelArtifactIdentity,
     TokenizerIdentity,
 };
 use crate::spec::{EmbeddingModelSpec, Pooling};
+
+#[path = "embedding_token_budget.rs"]
+mod token_budget;
+pub use token_budget::DocumentTokenLimit;
+
+#[cfg(test)]
+#[path = "embedding_token_budget_tests.rs"]
+mod token_budget_tests;
 
 /// ruri-v3 の検索クエリ用 prefix。検索時の入力に付与する。
 pub const QUERY_PREFIX: &str = "検索クエリ: ";
@@ -62,10 +70,17 @@ const SEMANTIC_SESSION_MEMORY_POLICY: SessionMemoryPolicy = SessionMemoryPolicy 
 /// `load()` して以後使い回す前提 (Session の再構築はコストが大きい)。
 pub struct Embedder {
     tokenizer: Tokenizer,
+    untruncated_tokenizer: Tokenizer,
     tokenizer_identity: TokenizerIdentity,
     model_artifact_identity: ModelArtifactIdentity,
     session: Session,
     spec: &'static EmbeddingModelSpec,
+}
+
+pub(crate) struct CompleteDocumentEncoding {
+    encoding: Encoding,
+    model_id: String,
+    tokenizer_sha256: String,
 }
 
 impl Embedder {
@@ -79,6 +94,10 @@ impl Embedder {
         let model_artifact_identity =
             load_verified_model_artifact_identity(model_path, spec.artifact_sha256)?;
         let (mut tokenizer, tokenizer_identity) = load_tokenizer_with_identity(tokenizer_path)?;
+        let mut untruncated_tokenizer = tokenizer.clone();
+        untruncated_tokenizer
+            .with_truncation(None)
+            .map_err(|e| anyhow!("failed to disable document tokenizer truncation: {e}"))?;
         // The Rust `tokenizers` crate does NOT honour `model_max_length` from
         // tokenizer_config.json, so by default every input is tokenized in full.
         // Plain BERT models (bge) have a fixed 512-entry position table; a longer
@@ -108,6 +127,7 @@ impl Embedder {
             .with_context(|| format!("failed to load ONNX model at {:?}", model_path))?;
         Ok(Self {
             tokenizer,
+            untruncated_tokenizer,
             tokenizer_identity,
             model_artifact_identity,
             session,
@@ -141,6 +161,48 @@ impl Embedder {
         self.embed_prefixed(&prefixed)
     }
 
+    /// Validate the complete IR document, including the model document prefix
+    /// and post-processor special tokens. Oversize documents are never indexed
+    /// from a truncated semantic payload.
+    pub fn document_token_count_untruncated(&self, text: &str) -> Result<usize> {
+        Ok(self.prepare_document_untruncated(text)?.encoding.len())
+    }
+
+    /// Feed the same complete checked Encoding directly to ORT. Existing Raw
+    /// document/query methods retain their established truncation behavior.
+    pub fn embed_document_untruncated(&mut self, text: &str) -> Result<Vec<f32>> {
+        let prepared = self.prepare_document_untruncated(text)?;
+        self.embed_prepared_document(prepared)
+    }
+
+    pub(crate) fn prepare_document_untruncated(
+        &self,
+        text: &str,
+    ) -> Result<CompleteDocumentEncoding> {
+        let encoding = token_budget::encode_document_untruncated(
+            &self.untruncated_tokenizer,
+            text,
+            self.spec,
+        )?;
+        Ok(CompleteDocumentEncoding {
+            encoding,
+            model_id: self.spec.full_model_id(),
+            tokenizer_sha256: self.tokenizer_identity.sha256.clone(),
+        })
+    }
+
+    pub(crate) fn embed_prepared_document(
+        &mut self,
+        prepared: CompleteDocumentEncoding,
+    ) -> Result<Vec<f32>> {
+        anyhow::ensure!(
+            prepared.model_id == self.spec.full_model_id()
+                && prepared.tokenizer_sha256 == self.tokenizer_identity.sha256,
+            "SEMANTIC_DOCUMENT_ENCODING_MODEL_MISMATCH"
+        );
+        self.embed_encoding(prepared.encoding)
+    }
+
     /// prefix を**呼び出し側で既に付与した文字列**を入力に取り、埋め込みベクトルを返す。
     /// テストや golden 比較から prefix の二重付与を避けたいときに使う。
     pub fn embed_prefixed(&mut self, prefixed: &str) -> Result<Vec<f32>> {
@@ -149,6 +211,10 @@ impl Embedder {
             .encode(prefixed, true) // add_special_tokens=true (CLS/SEP 自動付与)
             .map_err(|e| anyhow!("tokenization failed: {e}"))?;
 
+        self.embed_encoding(encoding)
+    }
+
+    fn embed_encoding(&mut self, encoding: Encoding) -> Result<Vec<f32>> {
         let ids = encoding.get_ids();
         let mask = encoding.get_attention_mask();
         let seq_len = ids.len();

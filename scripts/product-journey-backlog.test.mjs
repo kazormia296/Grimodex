@@ -9,6 +9,8 @@ import {
   PRODUCT_CONTRACT_REQUIREMENTS,
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_COVERAGE_BACKLOG,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
+  NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_ROLLOUT_MODE,
   PRODUCT_SCOPE_TRANSITIONS,
 } from "../electron/scripts/product-journey-catalog.mjs";
@@ -30,18 +32,26 @@ const EXPECTED_JOURNEY_IDS = [
   "lint-native-roundtrip",
   "map-native-roundtrip",
   "snapshot-native-roundtrip",
+  "chronicle-extract-review-apply-reopen",
+  "codex-entity-relation-review-apply-reopen",
+  ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
 ];
 
 const IMPLEMENTED_CONTRACT_IDS = [
   "scope-transition:chat-stream:project",
   "scope-transition:chat-stream:workspace",
   "scope-transition:editor-pending:project",
-  "external-write:mcp:clean",
-  "external-write:mcp:dirty",
+  "d2a:mcp:pre-dispatch-denial",
   "native-command-roundtrip:chronicle-bulk",
   "native-command-roundtrip:lint-term-dictionary",
   "native-command-roundtrip:map-write-bundle",
   "native-command-roundtrip:project-snapshot",
+  "codex:entity-relation-review-apply-reopen",
+  ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
+    (entry) => entry.contracts[0],
+  ),
+  ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.flatMap((entry) => entry.contracts),
 ];
 
 const EXEMPTED_CHAT_SCOPE_CONTRACT_IDS = [

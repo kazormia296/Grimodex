@@ -3,6 +3,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { invoke } from "@/lib/tauri";
@@ -41,6 +42,7 @@ import { deriveLabel } from "./deriveLabel";
 import { normalizeForeshadowRow } from "./normalizeForeshadowRow";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { instantEpochMilliseconds } from "@/lib/time";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export { normalizeForeshadowRow } from "./normalizeForeshadowRow";
 
@@ -55,7 +57,10 @@ export type ForeshadowChangeOrigin =
 export interface ForeshadowMutationLineage {
   requestId?: string;
   origin?: ForeshadowChangeOrigin;
+  /** Required when origin is ai-apply because that origin has two routes. */
+  authorityRoute?: "interactive-agent-command" | "interpreter-projection";
   originalTransactionId?: string;
+  undoJournalId?: string;
 }
 
 export function foreshadowMutationIdentity(
@@ -64,13 +69,43 @@ export function foreshadowMutationIdentity(
   stableRequestId?: string,
 ): Record<string, unknown> {
   const requestId = options.requestId ?? stableRequestId ?? crypto.randomUUID();
-  return {
+  const identity = {
     projectId,
     requestId,
     sessionId: getRecorderSessionId(),
     eventUid: requestId,
     origin: options.origin ?? "human",
     originalTransactionId: options.originalTransactionId ?? null,
+    ...(options.undoJournalId ? { undoJournalId: options.undoJournalId } : {}),
+  };
+  // Direct forward/restore writes now carry the same authority evidence as
+  // the other canonical Native writers. History cycles are replayed through
+  // agent_apply_undo_journal and retain the legacy inverse lineage shape.
+  if (options.origin === "undo" || options.origin === "redo") {
+    return identity;
+  }
+  const origin = options.origin ?? "human";
+  const authority =
+    origin === "ai-apply"
+      ? (() => {
+          const authorityRoute = options.authorityRoute;
+          if (!authorityRoute) {
+            throw new Error(
+              "ai-apply foreshadow writes require an explicit authorityRoute",
+            );
+          }
+          return createCanonicalWriteContext("ai-apply", undefined, requestId, {
+            authorityRoute,
+          });
+        })()
+      : createCanonicalWriteContext(origin, undefined, requestId);
+  return {
+    ...identity,
+    authorityRoute: authority.authorityRoute,
+    caller: authority.caller,
+    controls: authority.controls,
+    provenance: authority.provenance,
+    writesAuthorityProtectedField: authority.writesAuthorityProtectedField,
   };
 }
 
@@ -978,6 +1013,9 @@ export async function createForeshadowSetup(
         projectId,
         {
           origin: data.attribution === "ai" ? "ai-apply" : "human",
+          ...(data.attribution === "ai"
+            ? { authorityRoute: "interactive-agent-command" as const }
+            : {}),
         },
         data.id,
       ),
@@ -1360,7 +1398,7 @@ export async function proposePastSetups(
 ): Promise<ProposedSetup[]> {
   // 分析・提案系の LLM 呼び出し — kouetsu views と同じく analysis で gate する
   // (presentation から独立した correctness 層、policyGuard.ts 参照)。
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1436,7 +1474,7 @@ export interface EvaluateStrengthRequest {
 export async function evaluateSetupStrength(
   req: EvaluateStrengthRequest,
 ): Promise<AiEvaluation | null> {
-  if (blockIfPolicyOff("analysis")) return null;
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return null;
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1525,7 +1563,7 @@ export async function auditChapter(
     // New pipeline owns chapter-level discovery; legacy audit returns empty.
     return [];
   }
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   let _auditProject;
   try {
     _auditProject = await getProject(useTreeStore.getState().projectId);

@@ -91,21 +91,24 @@ describe("restoreForeshadow", () => {
 
     expect(createMock).toHaveBeenCalledTimes(2);
     expect(createMock.mock.calls[0]).toEqual(createMock.mock.calls[1]);
-    expect(createMock).toHaveBeenCalledWith({
-      id: "restored-foreshadow:trash-row-1",
-      projectId: "p1",
-      title: "伏線",
-      intent: "意図",
-      notes: "メモ",
-      payoffSceneId: "scene-1",
-      payoffFromPos: 2,
-      payoffToPos: 8,
-      payoffConfirmed: true,
-      abandoned: true,
-      secret: false,
-      loadBearing: "critical",
-      codexLinkDirtyAt: new Date(1_784_000_000_000),
-    });
+    expect(createMock).toHaveBeenCalledWith(
+      {
+        id: "restored-foreshadow:trash-row-1",
+        projectId: "p1",
+        title: "伏線",
+        intent: "意図",
+        notes: "メモ",
+        payoffSceneId: "scene-1",
+        payoffFromPos: 2,
+        payoffToPos: 8,
+        payoffConfirmed: true,
+        abandoned: true,
+        secret: false,
+        loadBearing: "critical",
+        codexLinkDirtyAt: new Date(1_784_000_000_000),
+      },
+      { origin: "restore" },
+    );
   });
 
   it("drops a cross-project payoff anchor before the atomic create", async () => {
@@ -127,6 +130,7 @@ describe("restoreForeshadow", () => {
         payoffFromPos: null,
         payoffToPos: null,
       }),
+      { origin: "restore" },
     );
   });
 
@@ -140,6 +144,7 @@ describe("restoreForeshadow", () => {
         secret: true,
         codexLinkDirtyAt: null,
       }),
+      { origin: "restore" },
     );
   });
 });

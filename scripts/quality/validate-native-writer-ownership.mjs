@@ -42,6 +42,11 @@ const ALLOWED_PATH_FRAGMENTS = [
   "workspace_schema.rs",
   // Runtime performance fixtures seed multiple protected aggregates directly.
   "runtime_performance_seed.rs",
+  // NIR-1 B's opt-in file-backed capacity fixture is a diagnostic builder,
+  // not a production writer. It seeds protected roots only to create a
+  // disposable measurement database, so keep it outside runtime ownership
+  // scanning without granting it any writer authority.
+  "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
 ];
 
 /**
@@ -64,8 +69,41 @@ const WRITER_TO_MODULES = {
   "narrative.authority": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
+    // C2A's dormant Native Human writer appends immutable proposal revisions
+    // and their source-basis rows under the same authority boundary.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/human_derivation.rs",
+    // NIR-1's typed Entity/Relation adapter persists only Native-generated,
+    // explicitly reviewable Proposal/Revision rows under this same boundary.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
+    // Gate C2 item 4: narrative_application_contributions carries
+    // maintenance_ownership, which records that a human took a field. Generic
+    // renderer/MCP SQL must not be able to hand it back, so the table is
+    // protected and only these two modules write it -- the ledger writer and
+    // the Change Feed projection that moves target_state.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/application_contributions.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/contribution_target_state.rs",
+    // C2-ZC's authority, finding, and repair rows are emitted by the Native
+    // maintenance pipeline. Keep every runtime writer explicit so this policy
+    // cannot be weakened by a generic SQL caller in a neighboring module.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zb_application_rekey.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/dependency_edges.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/finding_observation.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/publish_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repair.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/semantic_epoch.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    // Timelapse's canonical append-only event log and snapshot anchors are
+    // shared Native-owned state. The low-level append helpers are called by
+    // typed domain writers, while the timelapse module owns snapshot writes.
+    "src-tauri/crates/grimodex-db/src/change_events.rs",
+    "src-tauri/crates/grimodex-db/src/timelapse.rs",
+    "src-tauri/crates/grimodex-core/src/change_events.rs",
+    // A1 scope registry and scene bindings extend the existing project Scope
+    // authority and are written only by the typed Native scope module.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope.rs",
   ],
   "narrative.revision-envelope": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
@@ -75,14 +113,88 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
   ],
   "narrative.field-authority": [
+    "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
   ],
   "narrative.maintenance-feed": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/change_feed.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    // Gate C2 Lane I: SCHEMA_VERSION 23 reservation columns on the same
+    // narrative_change_cursors table, split into its own module for
+    // clarity — still the narrative.maintenance-feed writer authority.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/cursor_reservation.rs",
+  ],
+  // Gate C2 Lane D: narrative_maintenance_attention is durable,
+  // non-epoch-bound, backflowPolicy "forbid" user state -- a distinct
+  // writer authority from the Change Feed tables above, never appending
+  // to narrative_change_transactions/narrative_change_events.
+  "narrative.maintenance-attention": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/attention.rs",
+  ],
+  // D1 sealed dependency declarations are persisted only by their typed
+  // storage boundary. Keep this mapping exact so future runtime modules do
+  // not inherit write authority over the declaration shadow tables.
+  "narrative.dependency-declaration": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/declaration_storage.rs",
+  ],
+  // C2A execution-state task rows have a deliberately wider writer set: the
+  // scheduler, lease/runtime paths, freshness recovery, and maintenance
+  // lifecycle all transition task state. Keep this list exact so a generic
+  // Rust SQL caller cannot inherit task authority.
+  "narrative.extraction-task": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_lifecycle.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+  ],
+  // Attempt transitions are not lease-owned task mutations, so task_leases.rs
+  // is intentionally absent from this writer's allowlist.
+  "narrative.extraction-attempt": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_lifecycle.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+  ],
+  // Artifacts are emitted by the task repository and removed with the domain
+  // cleanup writer; no scheduler/maintenance module owns their rows.
+  "narrative.extraction-artifact": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+  ],
+  // SCHEMA 34 stage model bindings and terminal receipts are durable
+  // non-authoritative C2A rows. The typed stage-provenance module is their
+  // sole production writer; the ephemeral closure is never a table.
+  "narrative.stage-provenance": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
+  ],
+  // NIR-1 D2b attempts, immutable message versions and final input references
+  // are written only by the Native storage module. They are observation and
+  // lineage metadata, not a new semantic or renderer mutation authority.
+  "nir1_generation.storage": [
+    "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+  ],
+  // schema_data_migrations records which data migrations have completed, and
+  // the schema checkpoint reads it to decide whether a migration re-runs.
+  // That makes it migration authority rather than diagnostics: a forged
+  // contract_version would skip a migration that never ran, and a deleted
+  // row would force every open to discard C2 derived state. Only the
+  // migration engine writes it.
+  "schema.migration": ["src-tauri/crates/grimodex-db/src/migrate.rs"],
+  // Idempotency receipts may contain a replayable response, so their ledger
+  // rows have a dedicated protected writer. Keep the ownership map narrow to
+  // the typed receipt implementation rather than allowing generic DB callers.
+  "idempotency.receipt": [
+    "src-tauri/crates/grimodex-db/src/idempotency.rs",
   ],
   "chronicle.event": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
@@ -218,7 +330,7 @@ const WRITER_TO_MODULES = {
 };
 
 const DML_RE =
-  /\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)["`]?/gi;
+  /\b(INSERT(?:\s+OR\s+\w+)?\s+INTO|REPLACE\s+INTO|UPDATE\s+|DELETE\s+FROM)\s+["`]?([a-z_][a-z0-9_]*)["`]?/gi;
 
 function shouldSkip(filePath) {
   const normalized = filePath.replaceAll("\\", "/");
@@ -249,9 +361,28 @@ function collectRustFiles(rootDir) {
   return out;
 }
 
-function isAllowedForWriter(relativePath, writer) {
-  const allowed = WRITER_TO_MODULES[writer] ?? [];
+const NIR1_CACHE_WRITERS = {
+  narrative_semantic_index_metadata: [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/invalidate.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation_index.rs",
+  ],
+  narrative_nir1_chronicle_vectors: [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/publish.rs",
+  ],
+};
+
+export function isAllowedForWriter(relativePath, writer, table) {
   const normalized = relativePath.replaceAll("\\", "/");
+  // Semantic-index cache publishers receive only these table-specific exact
+  // paths. Adding a generic filename to writer-wide basename matching would
+  // grant more than the approved binding surface.
+  if (
+    writer === "narrative.authority" &&
+    NIR1_CACHE_WRITERS[table]?.includes(normalized)
+  )
+    return true;
+  const allowed = WRITER_TO_MODULES[writer] ?? [];
   return allowed.some(
     (modulePath) =>
       normalized === modulePath ||
@@ -295,7 +426,7 @@ export function validateNativeWriterOwnership({
       const table = match[2];
       const writer = tableToWriter.get(table);
       if (!writer) continue;
-      if (isAllowedForWriter(relative, writer)) continue;
+      if (isAllowedForWriter(relative, writer, table)) continue;
       violations.push({
         file: relative,
         table,

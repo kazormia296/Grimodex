@@ -30,6 +30,7 @@ function row(nodeId: string, orderIndex: number): ProjectNarrativeSourceRow {
     title: `Scene ${nodeId}`,
     content: prose(`Body ${nodeId}`),
     sortOrder: `a${orderIndex}`,
+    storyTimeOrder: orderIndex === 0 ? "story-10" : null,
     orderIndex,
     version: orderIndex + 1,
     updatedAt: `2026-08-09T00:0${orderIndex}:00.000Z`,
@@ -343,6 +344,19 @@ describe("buildProjectNarrativeSnapshot", () => {
       sourceUpdatedAt: "2026-08-09T00:01:00.000Z",
       sourceUri: "external-root://novel/scene-b.md",
     });
+    expect(result.scopeAuthorityDocuments).toEqual([
+      {
+        documentRef: "D000001",
+        sourceKey: "project:scene:scene-a",
+        rawStoryKey: "story-10",
+      },
+      {
+        documentRef: "D000002",
+        sourceKey: "project:scene:scene-b",
+        rawStoryKey: null,
+      },
+    ]);
+    expect(Object.isFrozen(result.scopeAuthorityDocuments)).toBe(true);
   });
 
   it("does not read or seal a snapshot when scope flush is blocked", async () => {
@@ -524,7 +538,7 @@ describe("buildProjectNarrativeSnapshot", () => {
     const firstRows = [row("scene-a", 0), row("scene-b", 1)];
     const changedRows = [
       firstRows[0],
-      { ...firstRows[1], version: 3, content: prose("Changed body") },
+      { ...firstRows[1], storyTimeOrder: "story-changed" },
     ];
     const svc = services({
       loadSourceRows: vi

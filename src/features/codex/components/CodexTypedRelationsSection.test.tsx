@@ -35,6 +35,10 @@ vi.mock("../codexRelationApi", () => ({
   findCodexRelationExact: findExactMock,
 }));
 
+vi.mock("../CodexEntityRelationReviewDialog", () => ({
+  CodexEntityRelationReviewDialog: () => null,
+}));
+
 import { toast } from "sonner";
 import { CodexTypedRelationsSection } from "./CodexTypedRelationsSection";
 
@@ -66,6 +70,36 @@ describe("CodexTypedRelationsSection", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByLabelText("codex.relation.targetLabel"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("codex-typed-relations-open-nir1-review"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("codex-typed-relation-target"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("codex-typed-relation-label"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("codex-typed-relation-add")).toBeInTheDocument();
+  });
+
+  it("keeps a stable direct-review launcher on an existing relation row", async () => {
+    listForEntryMock.mockResolvedValue([
+      {
+        id: "rel-1",
+        projectId: "p1",
+        fromCodexId: "e1",
+        toCodexId: "e2",
+        relationType: "friend",
+        label: "友人",
+      },
+    ] as CodexRelationRow[]);
+    render(<CodexTypedRelationsSection entry={self} />);
+    expect(
+      await screen.findByTestId("codex-typed-relation-row-rel-1"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("codex-typed-relation-prepare-rel-1"),
     ).toBeInTheDocument();
   });
 

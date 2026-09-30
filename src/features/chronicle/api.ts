@@ -52,6 +52,7 @@ function manualApiWriteOpts(
   return {
     surface: origin === "import" ? ("import" as const) : ("manual" as const),
     skipPolicyGate: true,
+    commandFamily: "renderer" as const,
     projectId,
     requestId: crypto.randomUUID(),
   };

@@ -36,3 +36,24 @@ suites:
       requiresProductionPrompt: true
       requiresProductionParser: true
       legacyBaselineIsCertification: false
+  - id: chronicle-motif-boundary-v1
+    version: 1
+    slice: chronicle
+    tier: micro
+    caseSchema: schemas/case-v1.schema.json
+    caseFile: cases/chronicle-motif-boundary-v1.yaml
+    caseCount: 5
+    requirementIds:
+      - GDX-NARR-EVAL-001
+      - GDX-NARR-EVIDENCE-001
+      - GDX-NARR-SEMANTIC-001
+    releaseGates:
+      criticalViolationCount: 0
+      unknownEvidenceDocumentCount: 0
+      inexactEvidenceQuoteCount: 0
+      unsupportedCompleteCoverageClaimCount: 0
+    certification:
+      diagnosticOnly: true
+      requiresProductionPrompt: true
+      requiresProductionParser: true
+      legacyBaselineIsCertification: false

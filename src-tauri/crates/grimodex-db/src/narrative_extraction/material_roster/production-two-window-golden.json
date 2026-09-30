@@ -1,0 +1,848 @@
+{
+  "provenance": {
+    "source": "unchanged production TypeScript provider, planner and persistence; read before Native two-window implementation",
+    "setup": "/home/grimodex/Documents/Grimodex-evidence/nir1/first-product-path/l5-two-window-normal-setup-3/mixed-future-material-two-window/setup.json",
+    "setupSha256": "05fd8956c409634b7a68bc09aa3a8a66a7b30714b3a8c5cd1b3588cb3790121e"
+  },
+  "snapshot": {
+    "snapshot": {
+      "schemaVersion": 1,
+      "id": "39cd2a80-7027-4cd4-8389-e49edd09aa04",
+      "snapshotId": "39cd2a80-7027-4cd4-8389-e49edd09aa04",
+      "createdAt": "2026-09-08T16:50:44.495Z",
+      "language": "ja",
+      "normalizerVersion": "gdx-canonical-text/1",
+      "origin": {
+        "kind": "grimodex-project",
+        "projectId": "default-project"
+      },
+      "documents": [
+        {
+          "ref": "D000001",
+          "sourceKey": "project:scene:en-distractor-gift",
+          "parentRef": null,
+          "title": "The jeweller",
+          "orderIndex": 0,
+          "canonical": {
+            "unit": "utf16",
+            "text": "The shopkeeper named the price of a watch. The customer paid it, and the shopkeeper accepted the money. He wrapped the purchase in red cloth and handed it across the counter.",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 174
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 174,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 174,
+                  "from": 1,
+                  "to": 175,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 174
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 175
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 174,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 174,
+                  "from": 1,
+                  "to": 175,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 174
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 175
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:127c899ba57a8f9172e9f51925b77e172d50f70ed9ec52bf3b2ec9d91f98f546",
+          "documentDigest": "sha256:30caa7ca5981757aa6340d9df113811193b2c25becd6948c7eddd05c4f01719c",
+          "artifactDigest": "sha256:f12ee4dd4456fad81f9235dc3ae87b34abd496cef56905c061d5707415d54466",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "en-distractor-gift",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-09-08T16:50:40.345265856+00:00",
+            "sourceUri": null
+          }
+        },
+        {
+          "ref": "D000002",
+          "sourceKey": "project:scene:en-distractor-rumor-fact",
+          "parentRef": null,
+          "title": "The signed deed",
+          "orderIndex": 1,
+          "canonical": {
+            "unit": "utf16",
+            "text": "The captain signed the deed selling the western fort. A notary read out the amount, counted the money, and sealed the original document. The innkeeper had not yet learned about the transaction.",
+            "blocks": [
+              {
+                "id": "B000001",
+                "nodeType": "paragraph",
+                "range": {
+                  "from": 0,
+                  "to": 193
+                },
+                "depth": 0
+              }
+            ],
+            "projection": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 193,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 193,
+                  "from": 1,
+                  "to": 194,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 193
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 194
+                  }
+                }
+              ]
+            },
+            "projectionMap": {
+              "schemaVersion": 1,
+              "unit": "utf16",
+              "canonicalLength": 193,
+              "segments": [
+                {
+                  "canonicalStart": 0,
+                  "canonicalEnd": 193,
+                  "from": 1,
+                  "to": 194,
+                  "kind": "linear",
+                  "canonical": {
+                    "from": 0,
+                    "to": 193
+                  },
+                  "source": {
+                    "kind": "prosemirror",
+                    "fromPos": 1,
+                    "toPos": 194
+                  }
+                }
+              ]
+            },
+            "diagnostics": []
+          },
+          "contentDigest": "sha256:0abefb67cbf932701c3cd773c6a5f724abaa396b68abb3c1cca20245788728a9",
+          "documentDigest": "sha256:bda219391cc8c308c6b954042762f7a16289a42af154c72847b41b069a544ff3",
+          "artifactDigest": "sha256:a670f798a8f86ab02a95668c46d172bc7d465c6aad8b2f65ed75fb0b94d2c714",
+          "origin": {
+            "kind": "project-node",
+            "projectId": "default-project",
+            "nodeId": "en-distractor-rumor-fact",
+            "sourceVersion": 0,
+            "sourceUpdatedAt": "2026-09-08T16:50:40.355555091+00:00",
+            "sourceUri": null
+          }
+        }
+      ],
+      "omissions": [],
+      "digest": "sha256:dc7a58a0d644ad86cae3a393a19df7f9fb53910c39e8fa047e92db9465e64594",
+      "artifactDigest": "sha256:22329dc5267e717610912ff9e161afad7bbedce37457dfcedbe7a59dfff7781d"
+    },
+    "sourceViews": [
+      {
+        "ref": "S0001",
+        "documentRef": "D000001",
+        "documentRange": {
+          "start": 0,
+          "end": 174
+        },
+        "text": "The shopkeeper named the price of a watch. The customer paid it, and the shopkeeper accepted the money. He wrapped the purchase in red cloth and handed it across the counter.",
+        "digest": "sha256:65d07d20c6ff6f648b393f60b20d59ab8880c0180e6152736a733a2c4276303b"
+      },
+      {
+        "ref": "S0002",
+        "documentRef": "D000002",
+        "documentRange": {
+          "start": 0,
+          "end": 193
+        },
+        "text": "The captain signed the deed selling the western fort. A notary read out the amount, counted the money, and sealed the original document. The innkeeper had not yet learned about the transaction.",
+        "digest": "sha256:d0670647e07e5c55e99e8fe2adfa8ba332f1214624c078566be86f0645238c62"
+      }
+    ],
+    "existingEventsCatalog": {
+      "kind": "chronicle.existing-events-catalog@1",
+      "events": []
+    },
+    "evidence": {
+      "kind": "chronicle.snapshot-evidence-companion@1",
+      "version": 1,
+      "mode": "citation-id-v2",
+      "catalogVersion": 1,
+      "catalogDigest": "sha256:f095a835cb214213300aba594dcb110e5a247fa3262b37ee5eb5596fc4d4ac04",
+      "snapshotDigest": "sha256:dc7a58a0d644ad86cae3a393a19df7f9fb53910c39e8fa047e92db9465e64594",
+      "snapshotArtifactDigest": "sha256:22329dc5267e717610912ff9e161afad7bbedce37457dfcedbe7a59dfff7781d",
+      "catalog": {
+        "kind": "narrative-evidence-span-catalog",
+        "version": 1,
+        "segmentationVersion": "sentence-like-v1",
+        "snapshotId": "39cd2a80-7027-4cd4-8389-e49edd09aa04",
+        "snapshotDigest": "sha256:dc7a58a0d644ad86cae3a393a19df7f9fb53910c39e8fa047e92db9465e64594",
+        "snapshotArtifactDigest": "sha256:22329dc5267e717610912ff9e161afad7bbedce37457dfcedbe7a59dfff7781d",
+        "entries": [
+          {
+            "canonicalId": "occ:29b7f4788834fa097da9bdf9d74bbd37a758d0a684ecccbfde33a29d4349d6e9",
+            "sourceRef": "E000001",
+            "documentRef": "D000001",
+            "canonicalRange": {
+              "start": 0,
+              "end": 174
+            },
+            "range": {
+              "start": 0,
+              "end": 174
+            },
+            "quote": "The shopkeeper named the price of a watch. The customer paid it, and the shopkeeper accepted the money. He wrapped the purchase in red cloth and handed it across the counter.",
+            "text": "The shopkeeper named the price of a watch. The customer paid it, and the shopkeeper accepted the money. He wrapped the purchase in red cloth and handed it across the counter.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000001",
+              "documentRef": "D000001",
+              "documentRange": {
+                "start": 0,
+                "end": 174
+              },
+              "text": "The shopkeeper named the price of a watch. The customer paid it, and the shopkeeper accepted the money. He wrapped the purchase in red cloth and handed it across the counter.",
+              "digest": "sha256:cca1d27521642cdf3ad4d03d41c371caddb1c83dcf0b573a75e34e1015a0a0f7"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:dc7a58a0d644ad86cae3a393a19df7f9fb53910c39e8fa047e92db9465e64594",
+              "snapshotArtifactDigest": "sha256:22329dc5267e717610912ff9e161afad7bbedce37457dfcedbe7a59dfff7781d",
+              "documentRef": "D000001",
+              "documentArtifactDigest": "sha256:f12ee4dd4456fad81f9235dc3ae87b34abd496cef56905c061d5707415d54466",
+              "range": {
+                "start": 0,
+                "end": 174
+              },
+              "start": 0,
+              "end": 174,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          },
+          {
+            "canonicalId": "occ:62e8f91365000e4a2474dbcbfc671b64366bc842e13b543c80c13d5e9a7cfdca",
+            "sourceRef": "E000002",
+            "documentRef": "D000002",
+            "canonicalRange": {
+              "start": 0,
+              "end": 193
+            },
+            "range": {
+              "start": 0,
+              "end": 193
+            },
+            "quote": "The captain signed the deed selling the western fort. A notary read out the amount, counted the money, and sealed the original document. The innkeeper had not yet learned about the transaction.",
+            "text": "The captain signed the deed selling the western fort. A notary read out the amount, counted the money, and sealed the original document. The innkeeper had not yet learned about the transaction.",
+            "parentBlockIds": [],
+            "sourceView": {
+              "ref": "E000002",
+              "documentRef": "D000002",
+              "documentRange": {
+                "start": 0,
+                "end": 193
+              },
+              "text": "The captain signed the deed selling the western fort. A notary read out the amount, counted the money, and sealed the original document. The innkeeper had not yet learned about the transaction.",
+              "digest": "sha256:dbf1bb838b9d0baf63b64999f259103cb3b384c2ba7c54ec983c36e2ead24ca7"
+            },
+            "identity": {
+              "snapshotDigest": "sha256:dc7a58a0d644ad86cae3a393a19df7f9fb53910c39e8fa047e92db9465e64594",
+              "snapshotArtifactDigest": "sha256:22329dc5267e717610912ff9e161afad7bbedce37457dfcedbe7a59dfff7781d",
+              "documentRef": "D000002",
+              "documentArtifactDigest": "sha256:a670f798a8f86ab02a95668c46d172bc7d465c6aad8b2f65ed75fb0b94d2c714",
+              "range": {
+                "start": 0,
+                "end": 193
+              },
+              "start": 0,
+              "end": 193,
+              "segmentationVersion": "sentence-like-v1"
+            }
+          }
+        ],
+        "digest": "sha256:f095a835cb214213300aba594dcb110e5a247fa3262b37ee5eb5596fc4d4ac04"
+      }
+    },
+    "scopeAuthorityDocuments": [
+      {
+        "documentRef": "D000001",
+        "sourceKey": "project:scene:en-distractor-gift",
+        "rawStoryKey": null
+      },
+      {
+        "documentRef": "D000002",
+        "sourceKey": "project:scene:en-distractor-rumor-fact",
+        "rawStoryKey": null
+      }
+    ]
+  },
+  "plan": {
+    "windows": [
+      {
+        "windowId": "window-001",
+        "documentRef": "D000001",
+        "sourceRef": "S0001",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 174
+          }
+        ],
+        "contextRanges": []
+      },
+      {
+        "windowId": "window-002",
+        "documentRef": "D000002",
+        "sourceRef": "S0002",
+        "ownedRanges": [
+          {
+            "start": 0,
+            "end": 193
+          }
+        ],
+        "contextRanges": []
+      }
+    ]
+  },
+  "outputs": [
+    {
+      "rootStageExecutionId": "fef925b4-56ce-46e0-b3b7-c9b735d35f90",
+      "terminalStageExecutionId": "fef925b4-56ce-46e0-b3b7-c9b735d35f90",
+      "disposition": "root-success",
+      "clusterRef": "cluster-0001",
+      "rawObservations": {
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [
+          {
+            "localId": "window-001:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000001",
+                "quote": "The shopkeeper named the price of a watch. The customer paid it, and the shopkeeper accepted the money. He wrapped the purchase in red cloth and handed it across the counter."
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "A shopkeeper sold a watch and accepted payment.",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "eventOutput": {
+        "clusterRef": "cluster-0001",
+        "resolution": "single-event",
+        "events": [
+          {
+            "observationRefs": [
+              "window-001:obs-001"
+            ],
+            "titleSuggestion": "The jeweller",
+            "summary": "A shopkeeper sold a watch and accepted payment.",
+            "actuality": "actual",
+            "significance": "major"
+          }
+        ]
+      },
+      "output": {
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 1,
+        "eventCount": 1,
+        "observationRefs": [
+          "window-001:obs-001"
+        ],
+        "rawObservationsDigest": "sha256:056aaffa8da618580393bdcc53797b296a7b16de0855b7e357c8b8bc75ae8d63",
+        "parsedOutputDigest": "sha256:d7a68a7a800b563db395b2e24f2b67890e8538791fec1b9786e6a63544849103",
+        "eventOutputDigest": "sha256:8f289aac70602d2e91f70c8420380588f992300e9a4acedafc1076840fc0bb1a"
+      }
+    },
+    {
+      "rootStageExecutionId": "fd63186a-ec5d-48c7-84db-ba34f3e283d0",
+      "terminalStageExecutionId": "fd63186a-ec5d-48c7-84db-ba34f3e283d0",
+      "disposition": "root-success",
+      "clusterRef": "cluster-0002",
+      "rawObservations": {
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [
+          {
+            "localId": "window-002:obs-001",
+            "evidence": [
+              {
+                "sourceRef": "E000002",
+                "quote": "The captain signed the deed selling the western fort. A notary read out the amount, counted the money, and sealed the original document. The innkeeper had not yet learned about the transaction."
+              }
+            ],
+            "assertion": {
+              "attribution": "narrator",
+              "narrativeFrame": "story-world"
+            },
+            "payload": {
+              "predicate": "The captain sold the western fort through a signed deed.",
+              "actuality": "actual",
+              "participants": [],
+              "temporalExpressions": [],
+              "durationKind": "instant"
+            }
+          }
+        ]
+      },
+      "eventOutput": {
+        "clusterRef": "cluster-0002",
+        "resolution": "single-event",
+        "events": [
+          {
+            "observationRefs": [
+              "window-002:obs-001"
+            ],
+            "titleSuggestion": "The signed deed",
+            "summary": "The captain sold the western fort through a signed deed.",
+            "actuality": "actual",
+            "significance": "major"
+          }
+        ]
+      },
+      "output": {
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 1,
+        "eventCount": 1,
+        "observationRefs": [
+          "window-002:obs-001"
+        ],
+        "rawObservationsDigest": "sha256:a3e9b238a94f794dc3afe168885afd6e4b68bc2ec6cf8817740138650a4fe4fa",
+        "parsedOutputDigest": "sha256:17c6a37e121f6d9158706abde63598b2d8d8bf7cd0ade2cf2d3d5f8212078874",
+        "eventOutputDigest": "sha256:f4821f0bfe99b42d6f7d86f4c8301096154c8f6ae5699f66181e3a66b1740141"
+      }
+    }
+  ],
+  "receipts": [
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "4a2327c6-8d14-4234-aae9-72ce858186a0",
+        "taskId": "45d56384-11a5-4d5b-a1b2-50144f0dfe2f",
+        "attemptId": "8b987f54-88d2-45d0-a40a-f3043bdb2158",
+        "stageId": "narrative_observation_extract",
+        "stageExecutionId": "006ff71b-1a4b-4fa2-83b0-e1df0c3e361a"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:cfc0455b49f4f1aa9604f8e136ad02e0415dd7210759449fbc5985f04054e317",
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "finalRequestDigest": "sha256:8af73a4d7ce18a60c924f1754c5755fef4fb913e0f69471bb2f813e4ead6bb75",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:1c608cea6651b75efba5d01d60414c3c4185ae2193fc452a0ce5455515df93b5",
+      "rawObservationsDigest": null,
+      "parsedOutputDigest": null,
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:6cb92ee6279afaf6c16293ffbf18acf9584584dde816281d3f690b2d556b77b4"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "4a2327c6-8d14-4234-aae9-72ce858186a0",
+        "taskId": "45d56384-11a5-4d5b-a1b2-50144f0dfe2f",
+        "attemptId": "8b987f54-88d2-45d0-a40a-f3043bdb2158",
+        "stageId": "narrative_observation_extract",
+        "stageExecutionId": "9d6c1e38-2d2f-4e55-bc12-3da047a259e0"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:8941f5996c82342dc954a6ee13b881341a8fd929a3837399a8754e58d241e65e",
+      "componentContractDigest": "sha256:c41c79347c0e96851e06e14de2c05d1519d1ad0e2a4f2e5ae886e94eb28e1c22",
+      "finalRequestDigest": "sha256:b3dedb7286e4ff5478b57ed6e735255ca9f953a177683b1b4c167e8a2be33504",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:337323c475a71c9987d6e48caf6b03c503746dc271e49d57cf3b08ca9e66bb34",
+      "rawObservationsDigest": null,
+      "parsedOutputDigest": null,
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:1a66e69736d15021412fcd5ebd8a469989f896e43c506f58912625d5d6a44749"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "4a2327c6-8d14-4234-aae9-72ce858186a0",
+        "taskId": "5d567e11-0017-4c77-8c06-264c6acfa6b5",
+        "attemptId": "c8eccb67-848e-4f2a-a4ba-bd432e29bade",
+        "stageId": "narrative_event_synthesize",
+        "stageExecutionId": "fd63186a-ec5d-48c7-84db-ba34f3e283d0"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:5b79455e0557237e3cdfaa299d049b5ad40f60dc83fa889ad4996289ec110847",
+      "componentContractDigest": "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff",
+      "finalRequestDigest": "sha256:94a50dd7950e67a64e551741caa502767a10902f6b6a3986ca3097f5ada67119",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:77f44778fb4aa506fb21f16736135eaef9200ab43417bd654cc433dd237352e7",
+      "rawObservationsDigest": "sha256:a3e9b238a94f794dc3afe168885afd6e4b68bc2ec6cf8817740138650a4fe4fa",
+      "parsedOutputDigest": "sha256:17c6a37e121f6d9158706abde63598b2d8d8bf7cd0ade2cf2d3d5f8212078874",
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:38627afd0abfda582a04c2849ec3a5ef9b4d99e34176ac3637f1d0fc939c1b08"
+    },
+    {
+      "kind": "chronicle-stage-terminal-receipt",
+      "version": 1,
+      "stageExecution": {
+        "projectId": "default-project",
+        "runId": "4a2327c6-8d14-4234-aae9-72ce858186a0",
+        "taskId": "5d567e11-0017-4c77-8c06-264c6acfa6b5",
+        "attemptId": "c8eccb67-848e-4f2a-a4ba-bd432e29bade",
+        "stageId": "narrative_event_synthesize",
+        "stageExecutionId": "fef925b4-56ce-46e0-b3b7-c9b735d35f90"
+      },
+      "contextSetVersion": "chronicle.context-set/1",
+      "contextSetDigest": "sha256:e1cc1fb8fa5ea41f576dbb303fea75f989d55dee3305dccc31791ec2e4eac861",
+      "componentContractDigest": "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff",
+      "finalRequestDigest": "sha256:72ccd90cf26cfce3580629c5a714f06e921149c3bf9f2a6b992984d22af610e8",
+      "modelExecutionBinding": {
+        "kind": "chronicle-stage-model-binding",
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "product-journey-model",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+      },
+      "modelBindingDigest": "sha256:859ff44cca39acecd426a4f1807e2856e32f033e90e6717ec09dae0c54ea6972",
+      "responseDigest": "sha256:8d04ecbba2c2d3400b41ad19bcf73bb043d4f9be818123234ec9750225b44c14",
+      "rawObservationsDigest": "sha256:056aaffa8da618580393bdcc53797b296a7b16de0855b7e357c8b8bc75ae8d63",
+      "parsedOutputDigest": "sha256:d7a68a7a800b563db395b2e24f2b67890e8538791fec1b9786e6a63544849103",
+      "parseStatus": "parsed",
+      "terminalStatus": "succeeded",
+      "stageExecutionReceiptDigest": "sha256:280f852c534a092225e226c96af033954782516d41b6168c35e0c3ee0cd01c6f"
+    }
+  ],
+  "rootEnvelope": {
+    "assertion": {
+      "assertionId": null,
+      "assertionKind": "scene-event@1",
+      "modality": "modality-inference",
+      "payload": {
+        "actuality": "actual",
+        "attribution": "narrator",
+        "eventId": "e18fc54d-d6f9-4fd1-a056-4b1c7aa8ece1",
+        "mergedObservationRefs": [
+          "window-002:obs-001"
+        ],
+        "narrativeFrame": "story-world",
+        "observationRefs": [
+          "window-002:obs-001"
+        ],
+        "observationSummaries": [
+          {
+            "durationKind": "instant",
+            "observationRef": "window-002:obs-001",
+            "participants": [],
+            "predicate": "The captain sold the western fort through a signed deed.",
+            "temporalExpressions": []
+          }
+        ],
+        "originalObservationRefs": [
+          "window-002:obs-001"
+        ],
+        "significance": "major",
+        "summary": "The captain sold the western fort through a signed deed."
+      },
+      "payloadSchemaRef": {
+        "id": "narrative.chronicle.scene-event",
+        "version": "1"
+      },
+      "polarity": "affirmative",
+      "producer": {
+        "id": "grimodex.chronicle-extraction",
+        "kind": "reconciler-proposal",
+        "version": "1"
+      },
+      "scope": {
+        "audience": {
+          "constraintId": "audience:e18fc54d-d6f9-4fd1-a056-4b1c7aa8ece1",
+          "kind": "unresolved",
+          "reason": "not-provided"
+        },
+        "knowledgeHolder": {
+          "kind": "any"
+        },
+        "narrativeLayer": {
+          "kind": "any"
+        },
+        "readingOrder": {
+          "constraintId": "reading-order:e18fc54d-d6f9-4fd1-a056-4b1c7aa8ece1",
+          "kind": "unresolved",
+          "reason": "not-provided"
+        },
+        "registryVersion": "narrative-scope/2",
+        "scene": {
+          "kind": "exact",
+          "ref": "scene:en-distractor-rumor-fact"
+        },
+        "schemaVersion": 2,
+        "storyTime": {
+          "kind": "any"
+        },
+        "timeline": {
+          "kind": "any"
+        },
+        "viewpoint": {
+          "kind": "any"
+        },
+        "worldline": {
+          "kind": "any"
+        }
+      },
+      "supportClass": "direct-source"
+    },
+    "assertionDigests": {
+      "assertionCoreDigest": "sha256:1b041a05ca6612591366ef3e0d550c09e569ddc02823b8548d1d4bc8ae239466",
+      "assertionDigest": "sha256:0af94a008af5192179c257da2489b560d1d0bc63fc52488aa26ffd5bc4fc80f5",
+      "scopeDigest": "sha256:f5c318a7daa7c6d0cbf0b6e1a9e36957c37d718b75a822cacab9a287b9c56de0"
+    },
+    "changeIntent": {
+      "changeKind": "add"
+    },
+    "effectiveMaterialBasis": {
+      "dependencySet": [
+        {
+          "contextIds": [
+            "event-cluster:cluster-0002",
+            "event-observation:window-002:obs-001"
+          ],
+          "dependencyId": "dependency:evidence:anchor-0002",
+          "inputRef": "project:scene:en-distractor-rumor-fact",
+          "role": "direct-evidence",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0002",
+            "event-observation:window-002:obs-001"
+          ],
+          "dependencyId": "dependency:source-basis:snapshot:4a2327c6-8d14-4234-aae9-72ce858186a0",
+          "inputRef": "snapshot:4a2327c6-8d14-4234-aae9-72ce858186a0",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0002",
+            "event-observation:window-002:obs-001"
+          ],
+          "dependencyId": "dependency:source-basis:project:scene:en-distractor-gift",
+          "inputRef": "project:scene:en-distractor-gift",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-cluster:cluster-0002"
+          ],
+          "dependencyId": "dependency:context:event-cluster:cluster-0002",
+          "inputRef": "cluster:cluster-0002",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [
+            "event-observation:window-002:obs-001"
+          ],
+          "dependencyId": "dependency:context:event-observation:window-002:obs-001",
+          "inputRef": "observation:window-002:obs-001",
+          "role": "opaque-model-context",
+          "selector": {
+            "kind": "whole-source"
+          }
+        },
+        {
+          "contextIds": [],
+          "dependencyId": "dependency:component-contract",
+          "inputRef": "component:chronicle.event-synthesis.prompt",
+          "role": "component-contract",
+          "selector": {
+            "contractDigest": "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff",
+            "contractId": "chronicle.event-synthesis.prompt",
+            "kind": "component-contract"
+          }
+        }
+      ],
+      "dependencySetDigest": "sha256:a65037607f90ff27a099287f1deb151dd609b67687c92a94eefacfaf7de1134f",
+      "evidenceSet": [
+        {
+          "documentRef": "D000002",
+          "evidenceRef": "anchor-0002",
+          "quote": "The captain signed the deed selling the western fort. A notary read out the amount, counted the money, and sealed the original document. The innkeeper had not yet learned about the transaction.",
+          "quoteDigest": "sha256:ab460bfaaf667287bfe57299958eca708119e31e84479651cb6f8540791c5692",
+          "revisionToken": "v0@2026-09-08T16:50:40.355555091+00:00",
+          "sourceKey": "project:scene:en-distractor-rumor-fact"
+        }
+      ],
+      "materialBasisDigest": "sha256:a964bc5b6f2f7962f4a4573d8dddb5ad53130e8fb05df991df066987611416e5",
+      "sourceBasis": [
+        {
+          "revisionToken": "sha256:dc7a58a0d644ad86cae3a393a19df7f9fb53910c39e8fa047e92db9465e64594",
+          "sourceKey": "snapshot:4a2327c6-8d14-4234-aae9-72ce858186a0",
+          "sourceKind": "snapshot-document"
+        },
+        {
+          "revisionToken": "v0@2026-09-08T16:50:40.345265856+00:00",
+          "sourceKey": "project:scene:en-distractor-gift",
+          "sourceKind": "scene-body"
+        },
+        {
+          "revisionToken": "v0@2026-09-08T16:50:40.355555091+00:00",
+          "sourceKey": "project:scene:en-distractor-rumor-fact",
+          "sourceKind": "scene-body"
+        }
+      ]
+    },
+    "projectionBinding": {
+      "adapterContractId": "chronicle.scene-event",
+      "adapterContractVersion": "1",
+      "proposalKind": "chronicle.create-event@1",
+      "proposalPayloadDigest": "sha256:a7b0fe7c93ce0a467b756715f504eec1d2924bdca255e836bdd452c3fb803504",
+      "proposalSchemaRef": {
+        "id": "narrative.chronicle-event.create",
+        "version": "1"
+      }
+    },
+    "revisionBasis": {
+      "componentContractDigest": "sha256:5e63b1a1c4c3a3aba76689732e3876deae5ea230f15d961d74932e16b3b876ff",
+      "contextSet": [
+        {
+          "contextId": "event-cluster:cluster-0002",
+          "exposure": "model-visible",
+          "inputRef": "cluster:cluster-0002",
+          "selector": {
+            "kind": "whole-source"
+          },
+          "stageId": "narrative_event_synthesize"
+        },
+        {
+          "contextId": "event-observation:window-002:obs-001",
+          "exposure": "model-visible",
+          "inputRef": "observation:window-002:obs-001",
+          "selector": {
+            "kind": "whole-source"
+          },
+          "stageId": "narrative_event_synthesize"
+        }
+      ],
+      "contextSetDigest": "sha256:5b79455e0557237e3cdfaa299d049b5ad40f60dc83fa889ad4996289ec110847",
+      "finalRequestDigest": "sha256:94a50dd7950e67a64e551741caa502767a10902f6b6a3986ca3097f5ada67119",
+      "kind": "interpretation",
+      "producer": {
+        "id": "grimodex.chronicle-extraction",
+        "kind": "reconciler-proposal",
+        "version": "1"
+      },
+      "runId": "4a2327c6-8d14-4234-aae9-72ce858186a0",
+      "taskId": "5d567e11-0017-4c77-8c06-264c6acfa6b5"
+    },
+    "schemaVersion": 2
+  }
+}

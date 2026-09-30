@@ -22,7 +22,7 @@ Grimodexは、AIチャットとナレッジ抽出を組み込んだデスクト�
 
 ## Installation / インストール
 
-Download the installer for your platform from the [latest release](https://github.com/kazormia296/Grimodex/releases/latest).
+Download the installer for your platform from the [latest public release](https://github.com/kazormia296/GrimodexReleases/releases/latest).
 
 | Platform | File                           |
 | -------- | ------------------------------ |
@@ -114,6 +114,18 @@ cargo check --manifest-path electron/native/grimodex-node/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 ```
 
+### Working with coding agents / コーディングエージェントとの開発
+
+[AGENTS.md](AGENTS.md) is the shared project entrypoint; [CLAUDE.md](CLAUDE.md) loads it for Claude Code.
+Task-specific procedures live in [.agents/skills](.agents/skills). Read the references relevant to the
+change. Validation scope and PR/release evidence requirements are maintained in the
+[quality policy](policies/quality/iron-laws.md#agent-validation) and [local CI runbook](docs/local-ci-runner.md).
+
+共通の入口は [AGENTS.md](AGENTS.md)、個別作業の手順は [.agents/skills](.agents/skills) です。
+依頼する際は、期待する結果、変更してよい範囲、完了条件を伝えてください。
+調査・文書修正・実装・commit・PR・release は、それぞれ必要な検証と操作範囲が異なります。
+この案内は開発手順の参照であり、下記のコントリビューション条件を変更するものではありません。
+
 ### First-build setup / 初回ビルドの準備
 
 - **N-API, ONNX Runtime & UniDic** — Run `pnpm napi:build` before the first Electron launch and after native Rust changes. The first Rust build downloads the ONNX Runtime binaries (`ort`) and the UniDic dictionary (`lindera`, embedded for the Japanese prose linter). Network access is required, so the first build is slow.
@@ -132,14 +144,36 @@ cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex -
 
 ## Contributing / コントリビューション
 
-This is a personal project and I'm not familiar with OSS workflows. I may not be able to review or merge pull requests in a timely manner — or at all. If you want to add features or make changes, forking is probably the way to go.
+Bug reports and non-code feedback via Issues are welcome, though response time
+isn't guaranteed. Grimodex is not accepting external code contributions or pull
+requests at this time. Do not submit patches unless the maintainer has requested
+them and separate written contribution terms are in place.
 
-Bug reports and feedback via issues are welcome, though response time isn't guaranteed.
+Public source availability and GitHub's in-service fork permission do not grant
+permission to reuse, modify, distribute, or commercialize Grimodex. See
+[LICENSING.md](./LICENSING.md) for the boundary and contribution policy.
 
-個人プロジェクトとして公開しているだけなので、PRのレビューやマージは基本的にできないと思ってください。機能を追加したい場合はフォークして自由に使ってもらえると助かります。バグ報告や感想などはイシューで気軽にどうぞ（返信が遅れる場合があります）。
+Issue による不具合報告やコードを含まないフィードバックは歓迎します（返信が
+遅れる場合があります）。現在、外部からのコードコントリビューションおよび Pull
+Request は受け付けていません。メンテナから依頼があり、個別の書面による条件が
+整備されている場合を除き、パッチを送付しないでください。
+
+ソースが公開され、GitHub 上で fork できることは、Grimodex を再利用、改変、配布、
+または商用化する権利を付与するものではありません。境界とコントリビューション
+方針は [LICENSING.md](./LICENSING.md) を参照してください。
 
 ---
 
 ## License / ライセンス
 
-[Elastic License 2.0](./LICENSE).
+**Proprietary — All Rights Reserved / プロプライエタリ — 全権利留保。**
+
+The source is publicly viewable for reference, security review, and Issue
+reporting only. Official binaries may be used under the applicable Grimodex
+Terms of Use. See [LICENSE](./LICENSE) and [LICENSING.md](./LICENSING.md).
+Third-party components remain under their respective licenses.
+
+ソースは参照、セキュリティ監査および Issue 報告のために公開されています。
+公式バイナリは適用される Grimodex 利用規約に基づいて利用できます。詳細は
+[LICENSE](./LICENSE) と [LICENSING.md](./LICENSING.md) を参照してください。
+第三者コンポーネントには、それぞれのライセンスが引き続き適用されます。

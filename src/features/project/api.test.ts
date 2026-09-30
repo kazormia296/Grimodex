@@ -324,7 +324,16 @@ describe("deleteProject", () => {
       "default-project",
     );
     expect(invokeMock).toHaveBeenCalledWith("project_delete", {
-      payload: { projectId: "default-project" },
+      payload: expect.objectContaining({
+        projectId: "default-project",
+        origin: "human",
+        authorityRoute: "human-direct",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        originalTransactionId: null,
+        undoJournalId: null,
+      }),
     });
     expect(removeImeProjectExportWithRetryMock).toHaveBeenCalledWith(
       "default-project",

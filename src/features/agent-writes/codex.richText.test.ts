@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { _resetTimelapseGenesisBarriersForTests } from "@/features/timelapse/genesisBarrier";
+import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+
 const {
   mockInvoke,
   mockLoadEntries,
@@ -153,6 +157,13 @@ describe("markCodexContentAsAi", () => {
 
 describe("agentUpdateCodexEntry document notification", () => {
   beforeEach(() => {
+    _resetTimelapseGenesisBarriersForTests();
+    publishCurrentProjectId("project-1");
+    setCurrentWorkspaceIdentity({
+      path: "/workspace/codex-rich-text.test.gdx",
+      openRevision: 1,
+    });
+
     mockInvoke.mockReset();
     mockLoadEntries.mockReset();
     mockGetCodexEntryVersion.mockReset();

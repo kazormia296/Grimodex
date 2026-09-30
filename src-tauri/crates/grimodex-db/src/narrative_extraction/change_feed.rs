@@ -7,9 +7,12 @@
 //! the maintenance feed commit or roll back together.
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Deserializer, Value};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
+use std::fmt;
 use uuid::Uuid;
 
 /// The coordinate system used by the renderer's canonical text projection.
@@ -272,6 +275,7 @@ fn canonicalize_json(value: &mut Value) {
     }
 }
 
+/// Key-order-independent SHA-256 of a JSON value, `sha256:`-prefixed.
 fn digest_value(value: &Value) -> anyhow::Result<String> {
     let mut canonical = value.clone();
     canonicalize_json(&mut canonical);
@@ -281,7 +285,9 @@ fn digest_value(value: &Value) -> anyhow::Result<String> {
     ))
 }
 
-fn payload_digest(input: &AppendNarrativeChangeTransactionInput) -> anyhow::Result<String> {
+pub(crate) fn payload_digest(
+    input: &AppendNarrativeChangeTransactionInput,
+) -> anyhow::Result<String> {
     let mut normalized = input.clone();
     normalized.application_ids.sort();
     digest_value(&serde_json::to_value(normalized)?)
@@ -297,7 +303,12 @@ pub(crate) fn previous_event_after_state(
            FROM narrative_change_object_heads
           WHERE project_id = ?1 AND object_identity = ?2",
         params![project_id, identity],
-        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<String>>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        },
     )
     .optional()
     .map_err(Into::into)
@@ -347,25 +358,69 @@ fn upsert_object_head(
     Ok(())
 }
 
-fn normalize_canonical_fragment(value: &str) -> String {
-    value.replace("\r\n", "\n").replace('\r', "\n")
+const CANONICAL_TEXT_CHECK_BYTES: usize = 1024;
+// Graph source reads use a streaming visitor rather than constructing a
+// serde_json::Value tree. This is a refusal boundary, not a supported Scene
+// size promise: a bounded input is still rejected when the caller's live
+// output/parse budget cannot admit its transient allocations.
+const CANONICAL_PARSE_INPUT_LIMIT: usize = 32 * 1024;
+const CANONICAL_STREAM_MAX_DEPTH: usize = 32;
+
+fn normalize_canonical_fragment<E>(
+    value: &str,
+    emit: &mut dyn FnMut(&str) -> Result<(), E>,
+    check: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    let mut start = 0;
+    while start < value.len() {
+        check()?;
+        let mut end = start
+            .saturating_add(CANONICAL_TEXT_CHECK_BYTES)
+            .min(value.len());
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        // Keep CRLF together even when it crosses a bounded piece boundary.
+        if value.as_bytes().get(end.wrapping_sub(1)) == Some(&b'\r')
+            && value.as_bytes().get(end) == Some(&b'\n')
+        {
+            end += 1;
+        }
+        let mut piece = &value[start..end];
+        while let Some(cr) = piece.find('\r') {
+            emit(&piece[..cr])?;
+            emit("\n")?;
+            piece = &piece[cr + 1..];
+            if let Some(rest) = piece.strip_prefix('\n') {
+                piece = rest;
+            }
+        }
+        emit(piece)?;
+        start = end;
+    }
+    Ok(())
 }
 
-fn append_canonical_inline_text(node: &Value, output: &mut String) {
+fn append_canonical_inline_text<E>(
+    node: &Value,
+    emit: &mut dyn FnMut(&str) -> Result<(), E>,
+    check: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    check()?;
     match node.get("type").and_then(Value::as_str) {
         Some("text") => {
             if let Some(text) = node.get("text").and_then(Value::as_str) {
-                output.push_str(&normalize_canonical_fragment(text));
+                normalize_canonical_fragment(text, emit, check)?;
             }
         }
-        Some("hardBreak") => output.push('\n'),
+        Some("hardBreak") => emit("\n")?,
         Some("ruby") => {
             if let Some(base) = node
                 .get("attrs")
                 .and_then(|attrs| attrs.get("base"))
                 .and_then(Value::as_str)
             {
-                output.push_str(&normalize_canonical_fragment(base));
+                normalize_canonical_fragment(base, emit, check)?;
             }
         }
         Some("mention") => {
@@ -379,65 +434,942 @@ fn append_canonical_inline_text(node: &Value, output: &mut String) {
                         .and_then(Value::as_str)
                 })
                 .unwrap_or_default();
-            output.push('@');
-            output.push_str(&normalize_canonical_fragment(label));
+            emit("@")?;
+            normalize_canonical_fragment(label, emit, check)?;
         }
-        Some("image") => output.push('\u{fffc}'),
+        Some("image") => emit("\u{fffc}")?,
         _ => {
             if let Some(children) = node.get("content").and_then(Value::as_array) {
                 for child in children {
-                    append_canonical_inline_text(child, output);
+                    append_canonical_inline_text(child, emit, check)?;
                 }
             }
         }
     }
+    Ok(())
 }
 
-fn collect_canonical_blocks(node: &Value, blocks: &mut Vec<String>) {
+fn begin_canonical_block<E>(
+    blocks: &mut usize,
+    emit: &mut dyn FnMut(&str) -> Result<(), E>,
+) -> Result<(), E> {
+    if *blocks > 0 {
+        emit("\n")?;
+    }
+    *blocks += 1;
+    Ok(())
+}
+
+fn collect_canonical_blocks<E>(
+    node: &Value,
+    blocks: &mut usize,
+    emit: &mut dyn FnMut(&str) -> Result<(), E>,
+    check: &mut dyn FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    check()?;
     let node_type = node.get("type").and_then(Value::as_str);
     match node_type {
         Some("doc") => {
             if let Some(children) = node.get("content").and_then(Value::as_array) {
                 for child in children {
-                    collect_canonical_blocks(child, blocks);
+                    collect_canonical_blocks(child, blocks, emit, check)?;
                 }
             }
         }
         Some("paragraph") | Some("heading") | Some("codeBlock") | Some("sceneBeat") => {
-            let mut block = String::new();
+            begin_canonical_block(blocks, emit)?;
             if let Some(children) = node.get("content").and_then(Value::as_array) {
                 for child in children {
-                    append_canonical_inline_text(child, &mut block);
+                    append_canonical_inline_text(child, emit, check)?;
                 }
             }
-            blocks.push(block);
         }
-        Some("horizontalRule") | Some("sceneBreak") => blocks.push(String::new()),
-        Some("image") => blocks.push("\u{fffc}".to_string()),
+        Some("horizontalRule") | Some("sceneBreak") => begin_canonical_block(blocks, emit)?,
+        Some("image") => {
+            begin_canonical_block(blocks, emit)?;
+            emit("\u{fffc}")?;
+        }
         _ => {
-            let before = blocks.len();
+            let before = *blocks;
             if let Some(children) = node.get("content").and_then(Value::as_array) {
                 for child in children {
-                    collect_canonical_blocks(child, blocks);
+                    collect_canonical_blocks(child, blocks, emit, check)?;
                 }
             }
             // This mirrors collectBlocks in the TypeScript serializer: a
             // valid empty block container is represented by an empty block so
             // synthetic boundaries remain deterministic.
-            if blocks.len() == before {
-                blocks.push(String::new());
+            if *blocks == before {
+                begin_canonical_block(blocks, emit)?;
             }
+        }
+    }
+    Ok(())
+}
+
+/// A request-local projection produced while the JSON visitor walks one node.
+/// The parser keeps only the two projections needed to resolve arbitrary
+/// ProseMirror field order: a node's block form and its inline form. It never
+/// retains unknown JSON fields or a serde_json::Value tree.
+struct StreamingSceneNode {
+    block: StreamingSceneBlocks,
+    inline: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StreamingSceneNodeKind {
+    Text,
+    HardBreak,
+    Ruby,
+    Mention,
+    Image,
+    Doc,
+    Paragraph,
+    Heading,
+    CodeBlock,
+    SceneBeat,
+    HorizontalRule,
+    SceneBreak,
+    Other,
+}
+
+impl StreamingSceneNodeKind {
+    fn from_type(node_type: Option<&str>) -> Self {
+        match node_type {
+            Some("text") => Self::Text,
+            Some("hardBreak") => Self::HardBreak,
+            Some("ruby") => Self::Ruby,
+            Some("mention") => Self::Mention,
+            Some("image") => Self::Image,
+            Some("doc") => Self::Doc,
+            Some("paragraph") => Self::Paragraph,
+            Some("heading") => Self::Heading,
+            Some("codeBlock") => Self::CodeBlock,
+            Some("sceneBeat") => Self::SceneBeat,
+            Some("horizontalRule") => Self::HorizontalRule,
+            Some("sceneBreak") => Self::SceneBreak,
+            _ => Self::Other,
         }
     }
 }
 
-fn scene_canonical_text(storage: &str) -> String {
+struct StreamingSceneBlocks {
+    text: String,
+    count: usize,
+}
+
+struct StreamingSceneState<'de> {
+    node_type: Option<Cow<'de, str>>,
+    text: Option<Cow<'de, str>>,
+    attrs: StreamingSceneAttrs<'de>,
+    block_children: String,
+    block_count: usize,
+    inline_children: String,
+}
+
+impl<'de> StreamingSceneState<'de> {
+    fn new() -> Self {
+        Self {
+            node_type: None,
+            text: None,
+            attrs: StreamingSceneAttrs::default(),
+            block_children: String::new(),
+            block_count: 0,
+            inline_children: String::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StreamingSceneAttrs<'de> {
+    base: Option<Cow<'de, str>>,
+    label: Option<Cow<'de, str>>,
+    id: Option<Cow<'de, str>>,
+}
+
+struct StreamingSceneParser<'a> {
+    max_output_bytes: usize,
+    json_string_reservation: usize,
+    check: &'a mut dyn FnMut() -> anyhow::Result<()>,
+    admit_parse: &'a mut dyn FnMut(usize) -> anyhow::Result<()>,
+    admit_output: &'a mut dyn FnMut(usize) -> anyhow::Result<()>,
+}
+
+impl StreamingSceneParser<'_> {
+    fn check(&mut self) -> anyhow::Result<()> {
+        (self.check)()
+    }
+
+    fn admit_parse(&mut self, bytes: usize) -> anyhow::Result<()> {
+        (self.admit_parse)(bytes)
+    }
+
+    fn admit_output(&mut self, bytes: usize) -> anyhow::Result<()> {
+        (self.admit_output)(bytes)
+    }
+
+    fn begin_node(&mut self, depth: usize) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            depth <= CANONICAL_STREAM_MAX_DEPTH,
+            "NEX_CANONICAL_TEXT_DEPTH_LIMIT"
+        );
+        self.check()?;
+        // No JSON node is retained after its two projections are returned.
+        // This accounts for the visitor's request-local node state and call
+        // stack separately from any String capacity admitted below.
+        self.admit_parse(128)?;
+        Ok(())
+    }
+
+    fn begin_skipped_value(&mut self, depth: usize) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            depth <= CANONICAL_STREAM_MAX_DEPTH,
+            "NEX_CANONICAL_TEXT_DEPTH_LIMIT"
+        );
+        self.check()?;
+        // serde_json may use its scratch buffer when an ignored string has
+        // escapes. Reserve a bounded worst case before entering the value;
+        // nested skipped values charge independently.
+        self.admit_parse(self.json_string_reservation)?;
+        Ok(())
+    }
+
+    fn reserve_json_string(&mut self) -> anyhow::Result<()> {
+        self.check()?;
+        // A borrowed string costs no heap, while an escaped string can occupy
+        // both serde_json's scratch buffer and an owned Cow. The hard input
+        // cap bounds this conservative pre-admission; it is deliberately
+        // charged before deserialize_str can allocate either representation.
+        self.admit_parse(self.json_string_reservation)
+    }
+
+    fn append_piece(&mut self, output: &mut String, piece: &str) -> anyhow::Result<()> {
+        self.check()?;
+        if piece.is_empty() {
+            return Ok(());
+        }
+        let new_len = output
+            .len()
+            .checked_add(piece.len())
+            .ok_or_else(|| anyhow::anyhow!("NEX_CANONICAL_TEXT_OUTPUT_LIMIT"))?;
+        anyhow::ensure!(
+            new_len <= self.max_output_bytes,
+            "NEX_CANONICAL_TEXT_OUTPUT_LIMIT"
+        );
+        self.admit_output(piece.len())?;
+        output.try_reserve_exact(piece.len())?;
+        output.push_str(piece);
+        Ok(())
+    }
+
+    fn append_normalized(&mut self, output: &mut String, value: &str) -> anyhow::Result<()> {
+        let mut start = 0;
+        while start < value.len() {
+            self.check()?;
+            let mut end = start
+                .saturating_add(CANONICAL_TEXT_CHECK_BYTES)
+                .min(value.len());
+            while !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            if value.as_bytes().get(end.wrapping_sub(1)) == Some(&b'\r')
+                && value.as_bytes().get(end) == Some(&b'\n')
+            {
+                end += 1;
+            }
+            let mut piece = &value[start..end];
+            while let Some(cr) = piece.find('\r') {
+                self.append_piece(output, &piece[..cr])?;
+                self.append_piece(output, "\n")?;
+                piece = &piece[cr + 1..];
+                if let Some(rest) = piece.strip_prefix('\n') {
+                    piece = rest;
+                }
+            }
+            self.append_piece(output, piece)?;
+            start = end;
+        }
+        Ok(())
+    }
+
+    fn append_block_child(
+        &mut self,
+        target: &mut String,
+        count: &mut usize,
+        child: &StreamingSceneNode,
+    ) -> anyhow::Result<()> {
+        if child.block.count == 0 {
+            return Ok(());
+        }
+        if *count > 0 {
+            self.append_piece(target, "\n")?;
+        }
+        self.append_piece(target, &child.block.text)?;
+        *count = (*count)
+            .checked_add(child.block.count)
+            .ok_or_else(|| anyhow::anyhow!("NEX_CANONICAL_TEXT_NODE_LIMIT"))?;
+        Ok(())
+    }
+
+    fn finish_node<'de>(
+        &mut self,
+        state: StreamingSceneState<'de>,
+    ) -> anyhow::Result<StreamingSceneNode> {
+        self.check()?;
+        let node_kind = StreamingSceneNodeKind::from_type(state.node_type.as_deref());
+        let inline = match node_kind {
+            StreamingSceneNodeKind::Text => {
+                let mut output = String::new();
+                if let Some(text) = state.text.as_deref() {
+                    self.append_normalized(&mut output, text)?;
+                }
+                output
+            }
+            StreamingSceneNodeKind::HardBreak => {
+                let mut output = String::new();
+                self.append_piece(&mut output, "\n")?;
+                output
+            }
+            StreamingSceneNodeKind::Ruby => {
+                let mut output = String::new();
+                if let Some(base) = state.attrs.base.as_deref() {
+                    self.append_normalized(&mut output, base)?;
+                }
+                output
+            }
+            StreamingSceneNodeKind::Mention => {
+                let mut output = String::new();
+                self.append_piece(&mut output, "@")?;
+                let label = state
+                    .attrs
+                    .label
+                    .as_deref()
+                    .or(state.attrs.id.as_deref())
+                    .unwrap_or_default();
+                self.append_normalized(&mut output, label)?;
+                output
+            }
+            StreamingSceneNodeKind::Image => {
+                let mut output = String::new();
+                self.append_piece(&mut output, "\u{fffc}")?;
+                output
+            }
+            _ => state.inline_children,
+        };
+
+        let block = match node_kind {
+            StreamingSceneNodeKind::Doc => StreamingSceneBlocks {
+                text: state.block_children,
+                count: state.block_count,
+            },
+            StreamingSceneNodeKind::Paragraph
+            | StreamingSceneNodeKind::Heading
+            | StreamingSceneNodeKind::CodeBlock
+            | StreamingSceneNodeKind::SceneBeat => {
+                let mut text = String::new();
+                self.append_piece(&mut text, &inline)?;
+                StreamingSceneBlocks { text, count: 1 }
+            }
+            StreamingSceneNodeKind::HorizontalRule | StreamingSceneNodeKind::SceneBreak => {
+                StreamingSceneBlocks {
+                    text: String::new(),
+                    count: 1,
+                }
+            }
+            StreamingSceneNodeKind::Image => {
+                let mut text = String::new();
+                self.append_piece(&mut text, "\u{fffc}")?;
+                StreamingSceneBlocks { text, count: 1 }
+            }
+            _ if state.block_count > 0 => StreamingSceneBlocks {
+                text: state.block_children,
+                count: state.block_count,
+            },
+            _ => StreamingSceneBlocks {
+                text: String::new(),
+                count: 1,
+            },
+        };
+        self.check()?;
+        Ok(StreamingSceneNode { block, inline })
+    }
+}
+
+struct StreamingSceneStringVisitor;
+
+impl<'de> Visitor<'de> for StreamingSceneStringVisitor {
+    type Value = Cow<'de, str>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a JSON string")
+    }
+
+    fn visit_borrowed_str<E>(self, value: &'de str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Borrowed(value))
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Owned(value.to_owned()))
+    }
+
+    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(Cow::Owned(value))
+    }
+}
+
+struct StreamingSceneStringSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneStringSeed<'p, 'a> {
+    type Value = Cow<'de, str>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        self.parser
+            .reserve_json_string()
+            .map_err(de::Error::custom)?;
+        deserializer.deserialize_str(StreamingSceneStringVisitor)
+    }
+}
+
+struct StreamingSceneOptionalStringSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+}
+
+struct StreamingSceneOptionalStringVisitor<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+}
+
+impl<'de, 'p, 'a> Visitor<'de> for StreamingSceneOptionalStringVisitor<'p, 'a> {
+    type Value = Option<Cow<'de, str>>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("an optional JSON string")
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(None)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        Ok(None)
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        StreamingSceneStringSeed {
+            parser: self.parser,
+        }
+        .deserialize(deserializer)
+        .map(Some)
+    }
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneOptionalStringSeed<'p, 'a> {
+    type Value = Option<Cow<'de, str>>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_option(StreamingSceneOptionalStringVisitor {
+            parser: self.parser,
+        })
+    }
+}
+
+struct StreamingSceneSkipSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+struct StreamingSceneSkipVisitor<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+impl<'p, 'a> StreamingSceneSkipVisitor<'p, 'a> {
+    fn check<E>(self) -> Result<Self, E>
+    where
+        E: de::Error,
+    {
+        self.parser.check().map_err(E::custom)?;
+        Ok(self)
+    }
+}
+
+impl<'de, 'p, 'a> Visitor<'de> for StreamingSceneSkipVisitor<'p, 'a> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("any JSON value")
+    }
+
+    fn visit_bool<E>(self, _value: bool) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_i64<E>(self, _value: i64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_u64<E>(self, _value: u64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_f64<E>(self, _value: f64) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_i128<E>(self, _value: i128) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_u128<E>(self, _value: u128) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_str<E>(self, _value: &str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_borrowed_str<E>(self, _value: &'de str) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_string<E>(self, _value: String) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_none<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_unit<E>(self) -> Result<Self::Value, E>
+    where
+        E: de::Error,
+    {
+        self.check::<E>().map(|_| ())
+    }
+
+    fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        StreamingSceneSkipSeed {
+            parser: self.parser,
+            depth: self.depth + 1,
+        }
+        .deserialize(deserializer)
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let parser = self.parser;
+        while let Some(()) = sequence.next_element_seed(StreamingSceneSkipSeed {
+            parser: &mut *parser,
+            depth: self.depth + 1,
+        })? {}
+        Ok(())
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let parser = self.parser;
+        while let Some(_key) = map.next_key_seed(StreamingSceneStringSeed {
+            parser: &mut *parser,
+        })? {
+            map.next_value_seed(StreamingSceneSkipSeed {
+                parser: &mut *parser,
+                depth: self.depth + 1,
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneSkipSeed<'p, 'a> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        self.parser
+            .begin_skipped_value(self.depth)
+            .map_err(de::Error::custom)?;
+        deserializer.deserialize_any(StreamingSceneSkipVisitor {
+            parser: self.parser,
+            depth: self.depth,
+        })
+    }
+}
+
+struct StreamingSceneAttrsSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+struct StreamingSceneAttrsVisitor<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+impl<'de, 'p, 'a> Visitor<'de> for StreamingSceneAttrsVisitor<'p, 'a> {
+    type Value = StreamingSceneAttrs<'de>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a Scene attrs object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let parser = self.parser;
+        let mut attrs = StreamingSceneAttrs::default();
+        while let Some(key) = map.next_key_seed(StreamingSceneStringSeed {
+            parser: &mut *parser,
+        })? {
+            parser.check().map_err(de::Error::custom)?;
+            match key.as_ref() {
+                "base" => {
+                    attrs.base = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                "label" => {
+                    attrs.label = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                "id" => {
+                    attrs.id = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                _ => {
+                    map.next_value_seed(StreamingSceneSkipSeed {
+                        parser: &mut *parser,
+                        depth: self.depth + 1,
+                    })?;
+                }
+            }
+        }
+        Ok(attrs)
+    }
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneAttrsSeed<'p, 'a> {
+    type Value = StreamingSceneAttrs<'de>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_map(StreamingSceneAttrsVisitor {
+            parser: self.parser,
+            depth: self.depth,
+        })
+    }
+}
+
+struct StreamingSceneChildrenSeed<'p, 'a, 'out> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+    block_children: &'out mut String,
+    block_count: &'out mut usize,
+    inline_children: &'out mut String,
+}
+
+struct StreamingSceneChildrenVisitor<'p, 'a, 'out> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+    block_children: &'out mut String,
+    block_count: &'out mut usize,
+    inline_children: &'out mut String,
+}
+
+impl<'de, 'p, 'a, 'out> Visitor<'de> for StreamingSceneChildrenVisitor<'p, 'a, 'out> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a Scene content array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let parser = self.parser;
+        while let Some(child) = sequence.next_element_seed(StreamingSceneNodeSeed {
+            parser: &mut *parser,
+            depth: self.depth,
+        })? {
+            parser
+                .append_block_child(self.block_children, self.block_count, &child)
+                .map_err(de::Error::custom)?;
+            parser
+                .append_piece(self.inline_children, &child.inline)
+                .map_err(de::Error::custom)?;
+        }
+        Ok(())
+    }
+}
+
+impl<'de, 'p, 'a, 'out> DeserializeSeed<'de> for StreamingSceneChildrenSeed<'p, 'a, 'out> {
+    type Value = ();
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(StreamingSceneChildrenVisitor {
+            parser: self.parser,
+            depth: self.depth,
+            block_children: self.block_children,
+            block_count: self.block_count,
+            inline_children: self.inline_children,
+        })
+    }
+}
+
+struct StreamingSceneNodeSeed<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+struct StreamingSceneNodeVisitor<'p, 'a> {
+    parser: &'p mut StreamingSceneParser<'a>,
+    depth: usize,
+}
+
+impl<'de, 'p, 'a> Visitor<'de> for StreamingSceneNodeVisitor<'p, 'a> {
+    type Value = StreamingSceneNode;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a ProseMirror Scene node object")
+    }
+
+    fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let parser = self.parser;
+        let mut state = StreamingSceneState::new();
+        while let Some(key) = map.next_key_seed(StreamingSceneStringSeed {
+            parser: &mut *parser,
+        })? {
+            parser.check().map_err(de::Error::custom)?;
+            match key.as_ref() {
+                "type" => {
+                    state.node_type = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                "text" => {
+                    state.text = map.next_value_seed(StreamingSceneOptionalStringSeed {
+                        parser: &mut *parser,
+                    })?;
+                }
+                "attrs" => {
+                    state.attrs = map.next_value_seed(StreamingSceneAttrsSeed {
+                        parser: &mut *parser,
+                        depth: self.depth + 1,
+                    })?;
+                }
+                "content" => {
+                    state.block_children.clear();
+                    state.block_count = 0;
+                    state.inline_children.clear();
+                    map.next_value_seed(StreamingSceneChildrenSeed {
+                        parser: &mut *parser,
+                        depth: self.depth + 1,
+                        block_children: &mut state.block_children,
+                        block_count: &mut state.block_count,
+                        inline_children: &mut state.inline_children,
+                    })?;
+                }
+                _ => {
+                    map.next_value_seed(StreamingSceneSkipSeed {
+                        parser: &mut *parser,
+                        depth: self.depth + 1,
+                    })?;
+                }
+            }
+        }
+        parser.finish_node(state).map_err(de::Error::custom)
+    }
+}
+
+impl<'de, 'p, 'a> DeserializeSeed<'de> for StreamingSceneNodeSeed<'p, 'a> {
+    type Value = StreamingSceneNode;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        self.parser
+            .begin_node(self.depth)
+            .map_err(de::Error::custom)?;
+        deserializer.deserialize_map(StreamingSceneNodeVisitor {
+            parser: self.parser,
+            depth: self.depth,
+        })
+    }
+}
+
+/// Parse and project one persisted Scene body under the same admission and
+/// cancellation boundary used by the Graph reader.
+///
+/// The caller must perform the SQLite scalar byte-length check before loading
+/// the stored value.  `max_input_bytes` is repeated here as a defence against
+/// callers that already own a materialized string, while `max_output_bytes`
+/// bounds the canonical projection before its result is allocated.  Invalid
+/// JSON is unavailable to this path; the legacy unbounded helper below keeps
+/// its existing storage fallback for change-feed digests.
+#[cfg(test)]
+pub(crate) fn canonical_scene_storage_with_check(
+    storage: &str,
+    max_input_bytes: usize,
+    max_output_bytes: usize,
+    check: &mut dyn FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    canonical_scene_storage_with_admission(
+        storage,
+        max_input_bytes,
+        max_output_bytes,
+        check,
+        &mut |_| Ok(()),
+        &mut |_| Ok(()),
+    )
+}
+
+/// Parse/project a stored Scene with a bounded streaming visitor. The visitor
+/// charges parser scratch and every projected String before allocation, checks
+/// cancellation at each node/field/chunk, and never constructs a Value tree.
+/// The callbacks are intentionally separate from check so cancellation and
+/// resource accounting cannot be reset by a candidate.
+pub(crate) fn canonical_scene_storage_with_admission(
+    storage: &str,
+    max_input_bytes: usize,
+    max_output_bytes: usize,
+    check: &mut dyn FnMut() -> anyhow::Result<()>,
+    admit_parse: &mut dyn FnMut(usize) -> anyhow::Result<()>,
+    admit_output: &mut dyn FnMut(usize) -> anyhow::Result<()>,
+) -> anyhow::Result<String> {
+    check()?;
+    anyhow::ensure!(
+        storage.len() <= max_input_bytes,
+        "NEX_CANONICAL_TEXT_INPUT_LIMIT"
+    );
+    anyhow::ensure!(
+        storage.len() <= CANONICAL_PARSE_INPUT_LIMIT,
+        "NEX_CANONICAL_TEXT_PARSE_LIMIT"
+    );
+    let json_string_reservation = storage
+        .len()
+        .checked_mul(2)
+        .ok_or_else(|| anyhow::anyhow!("NEX_CANONICAL_TEXT_PARSE_LIMIT"))?;
+    let mut parser = StreamingSceneParser {
+        max_output_bytes,
+        json_string_reservation,
+        check,
+        admit_parse,
+        admit_output,
+    };
+    let mut deserializer = Deserializer::from_str(storage);
+    let root = StreamingSceneNodeSeed {
+        parser: &mut parser,
+        depth: 0,
+    }
+    .deserialize(&mut deserializer)
+    .map_err(|error| anyhow::anyhow!("NEX_CANONICAL_TEXT_INVALID_JSON: {error}"))?;
+    deserializer
+        .end()
+        .map_err(|error| anyhow::anyhow!("NEX_CANONICAL_TEXT_INVALID_JSON: {error}"))?;
+    parser.check()?;
+    Ok(root.block.text)
+}
+
+/// Extracts the canonical plain-text projection of a Scene's ProseMirror
+/// `content` storage (block text joined by `\n`, matching the shared
+/// TypeScript serializer's golden fixtures). Shared with
+/// `source_revision::load_canonical_text_for_revalidation` so Gate C2's
+/// lazy-load re-anchoring path stays byte-for-byte consistent with the text
+/// impact digests computed here.
+pub(crate) fn scene_canonical_text(storage: &str) -> String {
     let Ok(document) = serde_json::from_str::<Value>(storage) else {
         return storage.to_string();
     };
-    let mut blocks = Vec::new();
-    collect_canonical_blocks(&document, &mut blocks);
-    blocks.join("\n")
+    let mut output = String::new();
+    let result: Result<(), std::convert::Infallible> = collect_canonical_blocks(
+        &document,
+        &mut 0,
+        &mut |piece| {
+            output.push_str(piece);
+            Ok(())
+        },
+        &mut || Ok(()),
+    );
+    match result {
+        Ok(()) => output,
+        Err(never) => match never {},
+    }
 }
 
 fn sha256_digest(value: &[u8]) -> String {
@@ -485,6 +1417,7 @@ fn ensure_event_history_continuity(
 ) -> anyhow::Result<()> {
     let mut heads =
         std::collections::HashMap::<String, Option<(Option<i64>, Option<String>)>>::new();
+    let mut mutation_kinds = std::collections::HashMap::<String, String>::new();
     for event in events {
         let identity = crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
         let prior_after = match heads.get(&identity) {
@@ -499,18 +1432,8 @@ fn ensure_event_history_continuity(
         // explicit trigger for C2's full rebuild and intentionally does not
         // need to chain from the immediately preceding project marker: a
         // normal domain write may have occurred between two restores.
-        let is_epoch_reset = event
-            .object_key
-            .get("kind")
-            .and_then(Value::as_str)
-            == Some("project")
-            && event
-                .structural_impact
-                .as_ref()
-                .and_then(Value::as_object)
-                .and_then(|impact| impact.get("event"))
-                .and_then(Value::as_str)
-                == Some("project-restored");
+        let is_epoch_reset =
+            is_epoch_reset_marker_event(&event.object_key, event.structural_impact.as_ref());
         if !is_epoch_reset {
             if let Some(prior_after) = prior_after {
                 let current_before = (event.before_version, event.before_digest.clone());
@@ -522,12 +1445,65 @@ fn ensure_event_history_continuity(
                 );
             }
         }
-        heads.insert(
-            identity,
-            Some((event.after_version, event.after_digest.clone())),
-        );
+        // One transaction gets one `canonical_sequence`, and its events are
+        // told apart only by `event_ordinal`. The Contribution projection
+        // watermarks each row by sequence alone, so of two events at one
+        // sequence bearing on the same field, the second is refused -- and
+        // the cursor then acknowledges the sequence, making it unreplayable.
+        //
+        // Today that costs nothing: every writer that repeats an identity
+        // inside a transaction emits `update` for all of them, and the
+        // projection derives only `missing` (delete) or `modified`
+        // (everything else) with a transaction-wide timestamp, so the refused
+        // write would have been byte-identical. The one shape that would
+        // genuinely lose information is a delete and a non-delete for the
+        // same object in the same transaction, and nothing constructs it.
+        //
+        // That is an invariant the projection depends on, so it is checked
+        // here rather than left as a property of the current writers, and the
+        // projection keeps its one-dimensional watermark instead of growing a
+        // second ordering key that neither the cursor nor `baseline_sequence`
+        // would share.
+        if let Some(previous_kind) =
+            mutation_kinds.insert(identity.clone(), event.mutation_kind.clone())
+        {
+            anyhow::ensure!(
+                (previous_kind == "delete") == (event.mutation_kind == "delete"),
+                "NARRATIVE_CHANGE_FEED_MIXED_MUTATION: object {identity} has both '{}' and '{}' \
+                 in one transaction; a delete and a non-delete for one object share a canonical \
+                 sequence and the Contribution projection can only keep one of them",
+                previous_kind,
+                event.mutation_kind
+            );
+        }
+        // An Epoch marker's `after` state is synthetic (a reset sentinel,
+        // not the Project row), so it must not become the head the next real
+        // Project mutation has to chain from: advancing the head here would
+        // force that mutation to either report a discontinuity or borrow the
+        // synthetic state as its before-evidence.
+        if !is_epoch_reset {
+            heads.insert(
+                identity,
+                Some((event.after_version, event.after_digest.clone())),
+            );
+        }
     }
     Ok(())
+}
+
+/// True for the synthetic Project-scoped Epoch markers
+/// (`project-restored` / `semantic-epoch-reset`) that are exempt from head
+/// continuity and must not advance the durable Project object head.
+pub(crate) fn is_epoch_reset_marker_event(
+    object_key: &Value,
+    structural_impact: Option<&Value>,
+) -> bool {
+    object_key.get("kind").and_then(Value::as_str) == Some("project")
+        && structural_impact
+            .and_then(Value::as_object)
+            .and_then(|impact| impact.get("event"))
+            .and_then(Value::as_str)
+            .is_some_and(|event| matches!(event, "project-restored" | "semantic-epoch-reset"))
 }
 
 fn validate_digest(value: Option<&str>, name: &str) -> anyhow::Result<()> {
@@ -578,10 +1554,7 @@ fn normalize_structural_impact(value: &mut Value) -> anyhow::Result<()> {
             "structuralImpact.event is unsupported"
         );
         anyhow::ensure!(
-            object
-                .get("requiresFullRebuild")
-                .and_then(Value::as_bool)
-                == Some(true),
+            object.get("requiresFullRebuild").and_then(Value::as_bool) == Some(true),
             "structuralImpact epoch markers require requiresFullRebuild=true"
         );
     }
@@ -723,7 +1696,7 @@ fn validate_text_impact(impact: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
+pub(crate) fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
     let key = event
         .object_key
         .as_object()
@@ -732,29 +1705,7 @@ fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
         .get("kind")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("objectKey.kind is required"))?;
-    let required_identity = match kind {
-        "project" => "projectId",
-        "scene" => "sceneId",
-        "chronicle-event" => "eventId",
-        "codex-entry" => "entryId",
-        "codex-relation" => "relationId",
-        "codex-phase" => "phaseId",
-        "codex-detail-definition" => "definitionId",
-        "codex-detail-value" => "valueId",
-        "plot-thread" => "threadId",
-        "plot-marker" => "markerId",
-        "plot-branch" => "branchId",
-        "foreshadow" => "foreshadowId",
-        "foreshadow-setup" => "setupId",
-        "foreshadow-payoff" => "payoffId",
-        "temporal-node" => "nodeId",
-        "temporal-constraint" => "constraintId",
-        "temporal-projection" => "projectionId",
-        "calendar" => "calendarRef",
-        "import-source" => "sourceSetId",
-        "component" => "componentId",
-        other => anyhow::bail!("unsupported objectKey.kind '{other}'"),
-    };
+    let required_identity = object_key_identity_field(kind)?;
     require_non_empty(
         key.get(required_identity)
             .and_then(Value::as_str)
@@ -873,6 +1824,18 @@ fn ensure_feed_object_project_scope(
             "SELECT project_id FROM tree_nodes WHERE id = ?1",
             identity("sceneId")?,
         )),
+        "scene-scope" => Some((
+            "SELECT project_id FROM tree_nodes
+              WHERE id = ?1 AND node_type = 'scene'",
+            identity("sceneId")?,
+        )),
+        "scope-registry" => {
+            anyhow::ensure!(
+                identity("projectId")? == project_id,
+                "Narrative Change Feed scope registry belongs to another project"
+            );
+            None
+        }
         "chronicle-event" => Some((
             "SELECT project_id FROM events WHERE id = ?1",
             identity("eventId")?,
@@ -1440,6 +2403,7 @@ pub fn append_canonical_and_narrative_change_in_tx(
     canonical_event: &AppendChangeEvent,
     narrative_input: &AppendNarrativeChangeTransactionInput,
 ) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
+    let canonical_event = crate::change_events::annotate_authority_event(canonical_event);
     anyhow::ensure!(
         !conn.is_autocommit(),
         "canonical Change Event + Narrative Change Feed append requires a caller-owned transaction"
@@ -1474,12 +2438,12 @@ pub fn append_canonical_and_narrative_change_in_tx(
         }
     }
 
-    validate_existing_canonical_event(conn, project_id, session_id, canonical_event)?;
+    validate_existing_canonical_event(conn, project_id, session_id, &canonical_event)?;
     let canonical = append_change_events_in_tx(
         conn,
         project_id,
         session_id,
-        std::slice::from_ref(canonical_event),
+        std::slice::from_ref(&canonical_event),
     )?;
     let narrative = append_narrative_change_transaction_in_tx(conn, narrative_input)?;
     Ok(AppendCanonicalNarrativeChangeResult {
@@ -1853,22 +2817,28 @@ pub fn append_narrative_change_transaction_in_tx(
                 input.occurred_at,
             ],
         )?;
-        upsert_object_head(
-            conn,
-            NarrativeChangeObjectHead {
-                project_id: &input.project_id,
-                identity: &identity,
-                after_version: event.after_version,
-                after_digest: event.after_digest.as_deref(),
-                event_id: &event_id,
-                canonical_sequence,
-                event_ordinal: i64::try_from(ordinal)?,
-                occurred_at: &input.occurred_at,
-            },
-        )?;
+        // Epoch markers keep their own identity in the Feed but never
+        // advance the durable Project object head: their after state is a
+        // synthetic reset sentinel, not the canonical Project row.
+        if !is_epoch_reset_marker_event(&event.object_key, event.structural_impact.as_ref()) {
+            upsert_object_head(
+                conn,
+                NarrativeChangeObjectHead {
+                    project_id: &input.project_id,
+                    identity: &identity,
+                    after_version: event.after_version,
+                    after_digest: event.after_digest.as_deref(),
+                    event_id: &event_id,
+                    canonical_sequence,
+                    event_ordinal: i64::try_from(ordinal)?,
+                    occurred_at: &input.occurred_at,
+                },
+            )?;
+        }
         event_ids.push(event_id);
     }
 
+    super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, &input.project_id)?;
     Ok(AppendNarrativeChangeTransactionResult {
         transaction_id,
         canonical_sequence,
@@ -2183,6 +3153,8 @@ pub fn narrative_object_key(entity_kind: &str, entity_id: &str) -> Value {
         "scene" | "temporal_scene_chronicle" | "temporal_scene_story_order" => {
             json!({ "kind": "scene", "sceneId": entity_id })
         }
+        "scene_scope" => json!({ "kind": "scene-scope", "sceneId": entity_id }),
+        "scope_registry" => json!({ "kind": "scope-registry", "projectId": entity_id }),
         "event" | "temporal_event_chronicle" => {
             json!({ "kind": "chronicle-event", "eventId": entity_id })
         }
@@ -2243,6 +3215,111 @@ fn mutation_kind(op_kind: &str, direction: NarrativeChangeCauseKind) -> &'static
     }
 }
 
+/// The field on an Object Addressing key that carries the object's id, for
+/// each ratified `kind`.
+///
+/// One table, three readers. `validate_event` uses it to reject a key that
+/// omits its own id, `object_key_identity` to normalize a key into the string
+/// the Change Feed's object heads are keyed by, and
+/// `contribution_target_identity_from_object_key` to turn a Feed event back
+/// into the `kind:id` form the Contribution ledger stores. Written out once at
+/// each of those sites, the three would disagree the first time a kind is
+/// added -- and each would fail differently: a key accepted but unaddressable,
+/// a head keyed under a shape nothing else produces, a Feed event that matches
+/// no Contribution.
+///
+/// `import-source` needs a second field (`objectKey`) for its full normalized
+/// form; that stays with `object_key_identity`, since the id is what every
+/// caller here is asking for.
+pub(crate) fn object_key_identity_field(kind: &str) -> anyhow::Result<&'static str> {
+    Ok(match kind {
+        "project" => "projectId",
+        "scene" => "sceneId",
+        "scene-scope" => "sceneId",
+        "scope-registry" => "projectId",
+        "chronicle-event" => "eventId",
+        "codex-entry" => "entryId",
+        "codex-relation" => "relationId",
+        "codex-phase" => "phaseId",
+        "codex-detail-definition" => "definitionId",
+        "codex-detail-value" => "valueId",
+        "plot-thread" => "threadId",
+        "plot-marker" => "markerId",
+        "plot-branch" => "branchId",
+        "foreshadow" => "foreshadowId",
+        "foreshadow-setup" => "setupId",
+        "foreshadow-payoff" => "payoffId",
+        "temporal-node" => "nodeId",
+        "temporal-constraint" => "constraintId",
+        "temporal-projection" => "projectionId",
+        "calendar" => "calendarRef",
+        "import-source" => "sourceSetId",
+        "component" => "componentId",
+        other => anyhow::bail!("unsupported objectKey.kind '{other}'"),
+    })
+}
+
+/// The `kind:id` a Feed event's object key addresses, in the spelling the
+/// Contribution ledger stores.
+///
+/// The two representations exist for different jobs -- the Feed carries a
+/// structured key it validates field by field, the ledger a short string it
+/// indexes and greps -- so the boundary between them gets one named function
+/// rather than a join condition spelled out at each call site. This is the
+/// direction Step 7 needs: a Feed event arrives and has to find the
+/// Contributions it bears on.
+///
+/// `codex-detail-value` is projected onto its owning Codex Entry, which is
+/// the one place the two sides do not simply translate a kind name. The
+/// ledger stores a detail write as `codex-entry:<entryId>` with
+/// `/details/<definitionId>` -- `contribution_target_identity_for_application`
+/// makes that projection on the Apply side, because `affected_fields` reports
+/// the write at entry grain. Without the same projection here, a hand edit of
+/// a detail arrives as `codex-detail-value:<valueId>`, matches no
+/// Contribution, and the field stays `unchanged` after a person overwrote it.
+/// The field paths already agree; only the object identity did not.
+pub(crate) fn contribution_target_identity_from_object_key(
+    conn: &Connection,
+    object_key: &Value,
+) -> anyhow::Result<String> {
+    let kind = object_key
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Narrative object key has no kind"))?;
+    let field = object_key_identity_field(kind)?;
+    let id = object_key
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Narrative object key has no {field}"))?;
+    if kind == "codex-detail-value" {
+        return super::application_contributions::contribution_target_identity_for_application(
+            conn,
+            "codex_detail_value",
+            id,
+        );
+    }
+    Ok(format!("{kind}:{id}"))
+}
+
+/// Whether a commit-journal `opKind` describes an operation that wrote
+/// nothing.
+///
+/// `temporal.node.ensure` is a true no-op when the semantic node already
+/// exists: `apply_node_ensure_in_tx` returns `created: false` and the row is
+/// left byte-for-byte alone. The journal still records the entity, because
+/// Undo/Redo needs it for OCC, but nothing downstream may treat it as a
+/// mutation.
+///
+/// Shared rather than restated at each site: `events_from_journal_entities`
+/// must not invent a freshness mutation for one, `undo.rs` must not try to
+/// roll one back, and `commit.rs` must not record a Contribution claiming a
+/// field currently holds what this Application wrote. Three independent
+/// copies of one string literal is how those three quietly disagree.
+pub(crate) fn journal_op_kind_wrote_nothing(op_kind: &str) -> bool {
+    op_kind == "ensure-existing"
+}
+
 /// Convert the existing immutable commit-journal entity snapshots into typed
 /// freshness events. This does not mutate persistence and never applies a fix.
 pub fn events_from_journal_entities(
@@ -2263,11 +3340,7 @@ pub fn events_from_journal_entities(
             .get("opKind")
             .and_then(Value::as_str)
             .unwrap_or("create");
-        // `temporal.node.ensure` can be a true no-op when the semantic
-        // node already exists. Keep that row in the immutable commit
-        // journal for Undo/Redo OCC, but do not invent a freshness
-        // mutation for it.
-        if op_kind == "ensure-existing" {
+        if journal_op_kind_wrote_nothing(op_kind) {
             continue;
         }
         let before_snapshot = entity.get("beforeSnapshot");
@@ -2540,10 +3613,7 @@ mod tests {
             CANONICAL_TEXT_NORMALIZER_VERSION
         );
         assert_eq!(forward["mapping"]["kind"], "whole-document");
-        assert_ne!(
-            forward["oldCanonicalDigest"],
-            forward["newCanonicalDigest"]
-        );
+        assert_ne!(forward["oldCanonicalDigest"], forward["newCanonicalDigest"]);
 
         let undo = scene_text_impact(Some(&after), Some(&before))
             .expect("build undo impact")
@@ -2594,5 +3664,225 @@ mod tests {
                 fixture.id
             );
         }
+    }
+
+    #[test]
+    fn bounded_scene_storage_matches_the_shared_typescript_golden_fixtures() {
+        #[derive(Debug, Deserialize)]
+        struct GoldenFixture {
+            id: String,
+            document: Value,
+            #[serde(rename = "canonicalText")]
+            canonical_text: String,
+        }
+
+        let fixtures: Vec<GoldenFixture> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../evals/fixtures/narrative/canonical-text-v1.json"
+        )))
+        .expect("parse canonical text golden fixtures");
+
+        for fixture in fixtures {
+            let storage =
+                serde_json::to_string(&fixture.document).expect("serialize canonical text fixture");
+            let actual = canonical_scene_storage_with_check(
+                &storage,
+                storage.len(),
+                fixture.canonical_text.len(),
+                &mut || Ok(()),
+            )
+            .unwrap_or_else(|error| panic!("fixture {}: {error}", fixture.id));
+            assert_eq!(actual, fixture.canonical_text, "fixture {}", fixture.id);
+        }
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_oversized_input_before_json_parse() {
+        let mut checks = 0;
+        let error = canonical_scene_storage_with_check(&"[".repeat(32), 8, 128, &mut || {
+            checks += 1;
+            Ok(())
+        })
+        .expect_err("oversized storage must be unavailable");
+        assert!(error.to_string().contains("NEX_CANONICAL_TEXT_INPUT_LIMIT"));
+        assert_eq!(checks, 1, "admission must happen before parsing");
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_oversized_canonical_output_before_allocation() {
+        let storage = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "abcdef" }]
+            }]
+        })
+        .to_string();
+        let error = canonical_scene_storage_with_check(&storage, storage.len(), 5, &mut || Ok(()))
+            .expect_err("canonical output must consume the caller's byte budget");
+        assert!(error
+            .to_string()
+            .contains("NEX_CANONICAL_TEXT_OUTPUT_LIMIT"));
+    }
+
+    #[test]
+    fn bounded_scene_storage_admits_canonical_output_before_second_pass() {
+        let storage = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": "abcdef" }]
+            }]
+        })
+        .to_string();
+        let mut parse_admitted = Vec::new();
+        let mut output_admitted = Vec::new();
+        let actual = canonical_scene_storage_with_admission(
+            &storage,
+            storage.len(),
+            6,
+            &mut || Ok(()),
+            &mut |bytes| {
+                parse_admitted.push(bytes);
+                Ok(())
+            },
+            &mut |bytes| {
+                output_admitted.push(bytes);
+                Ok(())
+            },
+        )
+        .expect("bounded projection");
+        assert_eq!(actual, "abcdef");
+        assert!(!parse_admitted.is_empty());
+        assert!(parse_admitted.iter().all(|bytes| *bytes > 0));
+        assert!(output_admitted.contains(&6));
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_large_json_parse_before_deserialize() {
+        let storage = "[".repeat(CANONICAL_PARSE_INPUT_LIMIT + 1);
+        let mut checks = 0;
+        let mut parse_admissions = 0;
+        let error = canonical_scene_storage_with_admission(
+            &storage,
+            storage.len(),
+            4096,
+            &mut || {
+                checks += 1;
+                Ok(())
+            },
+            &mut |_| {
+                parse_admissions += 1;
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )
+        .expect_err("large JSON must be conservatively unavailable");
+        assert!(error.to_string().contains("NEX_CANONICAL_TEXT_PARSE_LIMIT"));
+        assert_eq!(checks, 1, "parse cap must run before deserialization");
+        assert_eq!(
+            parse_admissions, 0,
+            "rejected input must not enter the streaming parser"
+        );
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_a_huge_text_token_before_deserialize() {
+        let storage = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": "x".repeat(CANONICAL_PARSE_INPUT_LIMIT)
+                }]
+            }]
+        })
+        .to_string();
+        assert!(storage.len() > CANONICAL_PARSE_INPUT_LIMIT);
+        let mut parse_admissions = 0;
+        let error = canonical_scene_storage_with_admission(
+            &storage,
+            storage.len(),
+            4096,
+            &mut || Ok(()),
+            &mut |_| {
+                parse_admissions += 1;
+                Ok(())
+            },
+            &mut |_| Ok(()),
+        )
+        .expect_err("huge text token must be unavailable");
+        assert!(error.to_string().contains("NEX_CANONICAL_TEXT_PARSE_LIMIT"));
+        assert_eq!(parse_admissions, 0);
+    }
+
+    #[test]
+    fn bounded_scene_storage_rejects_deep_nested_content_before_stack_growth() {
+        let mut document = json!({ "type": "text", "text": "leaf" });
+        for _ in 0..40 {
+            document = json!({
+                "type": "wrapper",
+                "content": [document]
+            });
+        }
+        let storage = document.to_string();
+        let error =
+            canonical_scene_storage_with_check(&storage, storage.len(), 4096, &mut || Ok(()))
+                .expect_err("deep content must be unavailable");
+        assert!(error.to_string().contains("NEX_CANONICAL_TEXT_DEPTH_LIMIT"));
+    }
+
+    #[test]
+    fn bounded_scene_storage_observes_cancellation_during_json_projection() {
+        let storage = json!({
+            "type": "doc",
+            "content": (0..64)
+                .map(|index| json!({
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": format!("line-{index}")
+                    }]
+                }))
+                .collect::<Vec<_>>()
+        })
+        .to_string();
+        let mut checks = 0;
+        let error = canonical_scene_storage_with_check(&storage, storage.len(), 4096, &mut || {
+            checks += 1;
+            anyhow::ensure!(checks < 8, "test cancellation");
+            Ok(())
+        })
+        .expect_err("projection must stop when the owner is cancelled");
+        assert!(error.to_string().contains("test cancellation"));
+        assert!(
+            checks >= 2,
+            "the parser and visitor need cancellation checks"
+        );
+    }
+
+    #[test]
+    fn bounded_scene_storage_keeps_crlf_together_at_a_piece_boundary() {
+        let text = format!("{}\r\nnext", "x".repeat(CANONICAL_TEXT_CHECK_BYTES - 1));
+        let storage = json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": text }]
+            }]
+        })
+        .to_string();
+        let actual = canonical_scene_storage_with_check(
+            &storage,
+            storage.len(),
+            CANONICAL_TEXT_CHECK_BYTES + 16,
+            &mut || Ok(()),
+        )
+        .expect("bounded projection");
+        assert_eq!(
+            actual,
+            format!("{}\nnext", "x".repeat(CANONICAL_TEXT_CHECK_BYTES - 1))
+        );
     }
 }

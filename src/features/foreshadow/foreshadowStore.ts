@@ -25,7 +25,7 @@ import {
 } from "@/lib/createResultMetadata";
 import { loadSceneContents, saveSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import { rebaselineScenesAtTail } from "@/features/timelapse/rebaseline";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -52,7 +52,7 @@ import {
 } from "@/features/trash-bin/captureHooks";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { createPendingCreateRequestRegistry } from "@/lib/pendingCreateRequestRegistry";
-import { IpcInvokeError } from "@/lib/tauri";
+import { IpcInvokeError, isD2aEgressDenied } from "@/lib/tauri";
 import { getNativeMutationMetadata } from "@/lib/nativeMutationMetadata";
 import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type {
@@ -238,13 +238,15 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       } catch (e) {
         if (generation === foreshadowLoadGeneration) {
           set({ isLoading: false });
-          toast.error(
-            i18next.t(
-              "foreshadow.store.loadFailed",
-              "伏線の読み込みに失敗しました",
-            ),
-          );
-          debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+          if (!isD2aEgressDenied(e)) {
+            toast.error(
+              i18next.t(
+                "foreshadow.store.loadFailed",
+                "伏線の読み込みに失敗しました",
+              ),
+            );
+            debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+          }
         }
         throw e;
       }
@@ -407,12 +409,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }
 
     if (useGlobalHistoryStore.getState().isReplaying) return;
-    const originalTransactionId =
-      getNativeMutationMetadata(updated)?.maintenanceTransactionId;
-    if (!originalTransactionId) {
-      throw new Error(
-        "foreshadow update did not return maintenance transaction lineage",
-      );
+    const mutationMetadata = getNativeMutationMetadata(updated);
+    const originalTransactionId = mutationMetadata?.maintenanceTransactionId;
+    const undoJournalId = mutationMetadata?.undoJournalId;
+    if (!originalTransactionId || !undoJournalId) {
+      throw new Error("foreshadow update did not return complete undo lineage");
     }
 
     // payoffSceneId を null にした更新の場合、本文の payoff mark を物理削除
@@ -444,7 +445,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           undoPatch,
           getForeshadowHistoryVersion(projectId, id, undoBaseVersion),
           projectId,
-          { origin: "undo", originalTransactionId },
+          { origin: "undo", originalTransactionId, undoJournalId },
         );
         redoBaseVersion = restored.version;
         setForeshadowHistoryVersion(restored);
@@ -484,7 +485,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           patch,
           getForeshadowHistoryVersion(projectId, id, redoBaseVersion),
           projectId,
-          { origin: "redo", originalTransactionId },
+          { origin: "redo", originalTransactionId, undoJournalId },
         );
         undoBaseVersion = reapplied.version;
         setForeshadowHistoryVersion(reapplied);

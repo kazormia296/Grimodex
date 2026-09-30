@@ -1,13 +1,15 @@
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import {
+  assertMutationAuthorityContext,
+  authorityRouteForUnambiguousOrigin,
+  requiredControlsForRoute,
+  type MutationAuthorityRoute,
+  type MutationControl,
+  type MutationOrigin,
+  type MutationProvenance,
+} from "@/features/narrative-semantic-core/contracts/mutationAuthority";
 
-export type CanonicalWriteOrigin =
-  | "human"
-  | "ai-apply"
-  | "import"
-  | "undo"
-  | "redo"
-  | "restore"
-  | "migration";
+export type CanonicalWriteOrigin = MutationOrigin;
 
 export interface CanonicalWriteLineage {
   originalTransactionId: string;
@@ -17,11 +19,49 @@ export interface CanonicalWriteLineage {
 export interface CanonicalWriteContext {
   requestId: string;
   sessionId: string;
+  /** Renderer recorder identity used to correlate self-writes in Change Feed. */
+  writerSessionId?: string;
+  /** Main-owned authority identity; never substitute it for sessionId. */
+  authoritySessionId?: string;
   eventUid: string;
   origin: CanonicalWriteOrigin;
+  authorityRoute: MutationAuthorityRoute;
+  caller: string;
+  controls: readonly MutationControl[];
+  provenance: MutationProvenance | null;
+  /** Main-issued capability for an interactive agent tool call. */
+  agentAuthorityCapability?: string;
+  /** Duplicated top-level for main-bound request validation. */
+  chatMessageId?: string;
+  toolCallId?: string;
+  /** Main-owned execution identity bound to the issued capability. */
+  executionId?: string;
+  /** Main-owned provenance identity bound to the issued capability. */
+  mainOwnedProvenanceId?: string;
+  writesAuthorityProtectedField: boolean;
   originalTransactionId: string | null;
   undoJournalId: string | null;
 }
+
+export interface CanonicalWriteAuthorityOptions {
+  authorityRoute?: MutationAuthorityRoute;
+  caller?: string;
+  controls?: readonly MutationControl[];
+  provenance?: MutationProvenance;
+  agentAuthorityCapability?: string;
+  chatMessageId?: string;
+  toolCallId?: string;
+  executionId?: string;
+  mainOwnedProvenanceId?: string;
+  writesAuthorityProtectedField?: boolean;
+}
+
+export type CanonicalAiApplyAuthorityOptions = Omit<
+  CanonicalWriteAuthorityOptions,
+  "authorityRoute"
+> & {
+  authorityRoute: "interactive-agent-command" | "interpreter-projection";
+};
 
 export interface CanonicalWriteReceipt {
   changeEventUid: string;
@@ -35,28 +75,117 @@ export interface CanonicalHistoryWriteLease {
 }
 
 export function createCanonicalWriteContext(
+  origin: "ai-apply",
+  lineage: CanonicalWriteLineage | undefined,
+  stableRequestId: string | undefined,
+  authorityOptions: CanonicalAiApplyAuthorityOptions,
+): CanonicalWriteContext;
+export function createCanonicalWriteContext(
+  origin?: Exclude<CanonicalWriteOrigin, "ai-apply">,
+  lineage?: CanonicalWriteLineage,
+  stableRequestId?: string,
+  authorityOptions?: CanonicalWriteAuthorityOptions,
+): CanonicalWriteContext;
+export function createCanonicalWriteContext(
   origin: CanonicalWriteOrigin = "human",
   lineage?: CanonicalWriteLineage,
   stableRequestId?: string,
+  authorityOptions?: CanonicalWriteAuthorityOptions,
 ): CanonicalWriteContext {
-  const requestId = stableRequestId ?? crypto.randomUUID();
   if ((origin === "undo" || origin === "redo") && !lineage) {
     throw new Error(`${origin} write requires canonical transaction lineage`);
   }
   if (origin !== "undo" && origin !== "redo" && lineage) {
     throw new Error(`${origin} write cannot carry undo/redo lineage`);
   }
-  return {
+  const requestId = stableRequestId ?? crypto.randomUUID();
+  const authorityRoute =
+    authorityOptions?.authorityRoute ??
+    (origin === "ai-apply"
+      ? (() => {
+          throw new Error(
+            "ai-apply writes require an explicit authorityRoute (interactive-agent-command or interpreter-projection)",
+          );
+        })()
+      : authorityRouteForUnambiguousOrigin(origin));
+  const writesAuthorityProtectedField =
+    authorityOptions?.writesAuthorityProtectedField === true;
+  const controls = new Set(
+    authorityOptions?.controls ?? requiredControlsForRoute(authorityRoute),
+  );
+  const baseProvenance =
+    authorityOptions?.provenance ??
+    (origin === "ai-apply" ? { requestId, traceId: requestId } : null);
+  const writerSessionId = getRecorderSessionId();
+  const provenance = baseProvenance
+    ? {
+        ...baseProvenance,
+        ...(authorityOptions?.executionId
+          ? { executionId: authorityOptions.executionId }
+          : {}),
+        ...(authorityOptions?.mainOwnedProvenanceId
+          ? { mainOwnedProvenanceId: authorityOptions.mainOwnedProvenanceId }
+          : {}),
+      }
+    : null;
+  const context = {
     requestId,
-    sessionId: getRecorderSessionId(),
+    sessionId: writerSessionId,
+    writerSessionId,
     // Agent operations already expose a stable logical request ID. Reusing it
     // as the canonical event identity makes a native retry an exact replay;
     // ad-hoc human writes retain independent request/event UUIDs.
     eventUid: stableRequestId ?? crypto.randomUUID(),
     origin,
+    authorityRoute,
+    caller:
+      authorityOptions?.caller ?? defaultCallerForRoute(authorityRoute, origin),
+    controls: [...controls],
+    provenance,
+    ...(authorityOptions?.agentAuthorityCapability
+      ? { agentAuthorityCapability: authorityOptions.agentAuthorityCapability }
+      : {}),
+    ...(authorityOptions?.chatMessageId
+      ? { chatMessageId: authorityOptions.chatMessageId }
+      : {}),
+    ...(authorityOptions?.toolCallId
+      ? { toolCallId: authorityOptions.toolCallId }
+      : {}),
+    ...(authorityOptions?.executionId
+      ? { executionId: authorityOptions.executionId }
+      : {}),
+    ...(authorityOptions?.mainOwnedProvenanceId
+      ? { mainOwnedProvenanceId: authorityOptions.mainOwnedProvenanceId }
+      : {}),
+    writesAuthorityProtectedField,
     originalTransactionId: lineage?.originalTransactionId ?? null,
     undoJournalId: lineage?.undoJournalId ?? null,
   };
+  assertMutationAuthorityContext({
+    ...context,
+    provenance: context.provenance ?? undefined,
+  });
+  return context;
+}
+
+function defaultCallerForRoute(
+  route: MutationAuthorityRoute,
+  origin: CanonicalWriteOrigin,
+): string {
+  switch (route) {
+    case "human-direct":
+      return "human-ui";
+    case "interactive-agent-command":
+      return "chat-tool-executor";
+    case "interpreter-projection":
+      return "interpreter";
+    case "import-apply":
+      return "import-session";
+    case "history-replay":
+      return "history-controller";
+    case "restore-or-migration":
+      return origin === "migration" ? "migration-runner" : "restore-controller";
+  }
 }
 
 /**

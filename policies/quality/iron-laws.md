@@ -54,10 +54,68 @@ by an external CLI/runtime that Grimodex cannot observe. Every registered full-o
 point to an executable audit contract test. A partial-observable path must additionally declare the
 omitted value and representation retained. Owner labels without evidence do not satisfy this law.
 
+<a id="GDX-PRECHECK-001"></a>
+
 ## GDX-PRECHECK-001 — Stop on failed prechecks
 
 Load required references and verify inputs, permissions, tool availability, freshness, and output
 shape before mutation. Missing prerequisites are classified as `[precheck]`; they are not guessed.
+
+Security-sensitive threat models remain `draft` until explicit user confirmation of trusted/untrusted
+actors, in-scope and out-of-scope attacks, mandatory defenses, and acceptance implications. Material
+changes require reconfirmation. Subagents and reviewers may propose a change, but may not silently
+freeze or change the threat model. Missing confirmation is a blocking precheck and must stop as
+`[precheck]` before mutation.
+
+Long or high-risk work uses one integrator, implementer(s), and candidate-untouched independent
+acceptance reviewer(s). Keep separate implementation and acceptance reviewers; these roles do not
+overlap, and acceptance reviewer(s) must not edit the candidate. A single candidate ledger records
+the requested base, head, tree, clean state, receipt directory, and user-confirmed threat-model
+version/ref. Large cross-boundary changes are split into reviewable lanes, while the critical
+candidate stays minimal. Focused gates must pass before the candidate freezes. After freeze, no edits
+are allowed: a finding reopens the candidate and invalidates its receipts.
+
+Changes involving external egress, subprocesses, background work, or async lifecycle require a
+finite owner/lifecycle matrix before mutation. It covers every entry/start/retry/reentrant path,
+admission closure, pending-start work, active handle ownership, cancellation, bounded wait, actual
+termination evidence (close/exit/terminal receipt), error/timeout/onClosed ownership, and persisted
+restart state. A kill request, error event, or rejected promise alone is not termination proof.
+High-effort review and candidate-untouched independent acceptance must resolve P2+ findings before
+freeze and the expensive Full; after Full, acceptance confirms the unchanged candidate and does not
+reopen semantics without a candidate change.
+
+Before an expensive Full, require generic resource isolation: no competing heavy run, enough writable
+capacity on the actual workspace, build-cache, and temp filesystems, and separate checks for root/home
+pressure and temp quota. Do not use any fixed capacity/quota threshold (including GB, percentage, inode,
+or other numeric thresholds), a host-specific cache deletion list, or deletion automation. Derive any
+thresholds from risk, workload, and filesystem state rather than hardcoding them. This preflight is read-only and must not auto-delete artifacts, kill other jobs, or
+rewrite temp paths. A competing job is a coordination stop, not kill authority. Also use a focused
+preflight for risk-derived applicable late stages only.
+Resolve the immutable candidate base and head once as expanded shell-local values before Full, and pass
+those exact same values to Full and every verify of that receipt. A merge precheck fetches before comparing
+or classifying the base; it records exactly one `approved_merge_base` commit, either the verified candidate
+base on the normal path or the current fetched base only after the narrow exception is approved.
+For a squash merge only, after merge compare the squash merge commit's first parent (`<merge-sha>^1`)
+once with that approved merge-base and verify inclusion in `origin/master`; a mismatch is not verified
+success and requires classifying the new upstream delta and the necessary revalidation. An explicitly
+requested non-squash method must, before merge, have a method-specific actual-base/post-merge verification
+procedure defined and approved; if absent, stop before merge. Do not reuse the squash first-parent rule or
+add general non-squash verification logic.
+Runtime performance/fresh Xvfb, migration/recovery, and real product journeys are examples, not
+blanket requirements. Do not require or block on an inapplicable host capability. These checks are
+diagnostic only and never replace a clean Full-from-stage-1 + verify. An unexplained runtime failure remains
+an unattributed runtime blocker until causal evidence exists. Do not infer environment or product
+status from touched paths; correlate rAF and event-loop behavior, wake/discovery counts,
+memory-sampler duration, process CPU/I/O, and device/PSI, while preserving the exact failed receipt.
+Diagnostic/P3 debt stays separate from the critical candidate unless the user explicitly authorizes
+including it.
+
+For an external Claude review, fix its data categories, permission, model, effort, and Fast service
+tier in a start-of-work precheck before execution. Confirm data categories and permission before
+sending. The current default when the user requests that review is requested model `claude-fable-5-1`
+with effort `high`, unless the user overrides it. Record requested and effective model, effort, and
+Fast service tier; never silently substitute. This confirmation is scoped to the approved data and
+is not blanket permission to send all repositories or logs.
 
 ## GDX-AI-CONSENT-001 — Disclose AI data use and obtain route-scoped consent
 
@@ -117,6 +175,33 @@ gate are scored as independent semantic dimensions. Plans, rumors, dreams, hypot
 blocked attempts, negations, recollections, and disputed claims are not promoted to narrator-
 asserted story-world facts. A missing output dimension is `unobservable`, never an implicit pass.
 
+## GDX-NARR-SEMANTIC-CONTRACT-001 — Keep narrative authority and state axes explicit
+
+Mutation `origin` and `authorityRoute` are separate audit and authorization
+attributes. Human Direct, Interactive Agent Command, Interpreter Projection,
+Import, History, and Restore/Migration routes are classified explicitly, and
+unknown routes fail closed. Review, Evidence Freshness, Reconciliation Signal,
+Build Action, Component Compatibility, and Projection Application State are
+orthogonal vocabularies; no one axis may be used as another. Evidence, Scope,
+Disclosure, and the canonical Freshness authority are machine-readable and
+validated before C2 adds durable dependency graph state.
+
+Scope comparison records the strongest relation established by the current
+structural Scope and revision-bound Registry／Order Basis; it is never a truth
+verdict. `any` is intentional lack of constraint, `unresolved` is an unknown
+constraint, matching unresolved reasons do not establish identity, and an
+Oracle-derived `equal` requires the same Basis discipline as every other
+Oracle-derived relation.
+
+Narrative producers keep Evidence, invalidation Dependency, and model-visible
+Context as separate declared sets. Dynamic Source input reaches a model only
+through the recorded Context Set; unclassified model input remains an opaque
+Dependency. Dependency Role × Consumer Kind × Source Change Class maps only to
+the existing Freshness, Finding Reason, and Build Action vocabularies. Required
+and advisory Build Actions aggregate independently of Freshness, and only a
+sealed, complete Declaration Set may replace the active V1 Dependency set.
+Dependency invalidation never authorizes semantic retraction or Domain mutation.
+
 ## GDX-NARR-COVERAGE-001 — Do not overclaim from partial narrative coverage
 
 Narrative evaluations and extraction artifacts declare included and omitted documents. Partial
@@ -161,12 +246,67 @@ Each case owns a unique run, conversation, workspace, and artifact namespace, de
 timezone, time, and available tool schemas, and tears down all derived state. Cases never depend on
 another case's history or files.
 
+<a id="GDX-TRACE-001"></a>
+
 ## GDX-TRACE-001 — Preserve traceability and failure state
 
 Requirement ID, canonical source, implementation, evaluation case, selected suite, command result,
 and failure class remain linked. Failures use `[routing]`, `[precheck]`, `[tool]`, `[policy]`,
 `[quality]`, or `[artifact]`. Runnable Heavy evaluations are `deferred` until executed; missing
 runners or prerequisites are `blocked`. Neither state is ever reported as `passed`.
+
+Normal PR and branch pushes do not start hosted GitHub Actions runners. The absence of hosted PR
+checks is not evidence of a passing gate. Windows NSIS final compilation remains a separate
+manual Full CI / tag-release obligation; an unavailable release-only check is never passed.
+
+When hosted PR checks are absent, focused validation finishes first. If a completion commit is in scope,
+the candidate commit is created before any PR/release evidence; the candidate must be clean. Only when PR/release evidence is requested
+and CI is allowed does the clean candidate run local Quick; the Quick is immediately verified with the same fixed base/head
+values. Commit-only or CI-excluded work keeps the candidate commit without starting Quick and does not claim
+merge/release readiness. A change without a requested commit or PR does not create a commit or start PR-bound CI
+solely for Quick; any explicitly requested dirty working-tree Quick is diagnostic-only.
+After a candidate change, older receipts are invalid and are not reused. The initial merge Full first confirms the fetched current `origin/master` is an ancestor of the
+candidate HEAD, then resolves immutable `candidate_base` and `candidate_head` values once and passes the
+same expanded strings to Full and every verify of that receipt. A merge precheck fetches `origin/master`
+before base comparison or classification and records exactly one `approved_merge_base`: the verified
+candidate base on the normal path, or the current base only after the narrow editorial docs/ADR-only
+exception is approved. A release tag requires a new complete Full run on the merged release commit itself.
+Receipts bind the requested and resolved base and head, current HEAD and tree, worktree state, and
+completeness. Dirty Quick receipts additionally bind the tracked diff and untracked file-content fingerprint.
+Partial `--from` runs, dry runs, stale receipts, missing prerequisites, and release-only coverage are never
+converted into merge or release passes.
+
+Before an expensive Full, record generic resource isolation: no competing heavy run, enough writable
+capacity on the actual workspace, build-cache, and temp filesystems, and separate checks for root/home
+pressure and temp quota. Do not use any fixed capacity/quota threshold (including GB, percentage, inode,
+or other numeric thresholds), a host-specific cache deletion list, or deletion automation. Derive any
+thresholds from risk, workload, and filesystem state rather than hardcoding them. This preflight is read-only and must not auto-delete artifacts, kill other jobs, or
+rewrite temp paths. A competing job is a coordination stop, not kill authority.
+
+At candidate freeze, bind the exact candidate once in the receipt/ledger, including base, head, tree,
+clean state, receipt directory, and completeness. Use an expected-head check at push and merge state
+transitions. For a squash merge only, after merge and fetch, compare the actual squash merge commit's first
+parent (`<merge-sha>^1`) once with the recorded `approved_merge_base`, and verify that the merge commit is
+included in `origin/master`.
+An explicitly requested non-squash method must, before merge, have a method-specific actual-base/post-merge
+verification procedure defined and approved; if absent, stop before merge. Do not reuse the squash
+first-parent rule or add general non-squash verification logic.
+Do not require repeated tree equality checks or user-facing SHA recitation except on mismatch or request. An
+upstream-base change is exempt from a Full rerun only when candidate HEAD and PR diff are unchanged and the
+upstream delta is editorial docs/ADR-only: it must change no executable, build, dependency, CI, policy,
+schema, manifest, or generated-contract content and no ratified decision or acceptance meaning. Record the
+exception and proportionate static/focused checks; the old receipt remains bound to its old base, not the new
+one, and is reverified with the same original candidate values. Any ambiguity or candidate HEAD change
+invalidates the receipt and requires a clean Full-from-stage-1 + verify. If the first-parent comparison
+mismatches, do not report verified success: classify the newly added base delta and perform the necessary
+exception/revalidation path; the merge may have occurred, but acceptance evidence is not valid until resolved.
+
+Decisive acceptance evidence is either directly candidate-bound, or transitively bound through a
+verified parent receipt that is itself candidate-bound. When metrics or artifacts are quoted or adopted
+independently of that parent receipt, bind them directly to candidate identity, commit/tree/run, and
+artifact digest; without that direct binding, the standalone evidence is diagnostic-only. Missing direct
+binding is tracked hardening debt and does not by itself retroactively invalidate a complete parent
+receipt.
 
 ## Evaluation evidence boundaries
 
@@ -191,3 +331,34 @@ quality is recorded by a separate maintainer-local qualification with its own sc
 `QUALIFIED` / `HOLD` / `FAILED` / `INCOMPLETE` vocabulary. Qualification evidence cannot be reused
 as a formal certification report or decision, and its absence or failure cannot silently change a
 certification or merge verdict that explicitly excludes live model quality.
+
+<a id="agent-validation"></a>
+
+## Agent validation scope
+
+Choose validation from the requested work and the affected contracts before starting commands.
+
+- Investigation, inventory, explanation, or review only: Read-only findings; no Quick/Full solely for inspection
+- Ordinary prose, comments, or formatting: Relevant diff, formatting, and link checks
+- Implementation or bug fix: Focused checks for changed behavior and affected boundaries
+- AI instructions, skills, policy, or evaluation contracts: Related contract tests and the canonical `grimodex-impact-gate` Light evaluation
+- Commit only: Focused validation and the requested candidate commit; no Quick or merge-readiness claim
+- PR/release evidence with CI allowed: Clean candidate Quick plus immediate verify under GDX-TRACE-001
+- Merge or release tag with CI allowed: Full and verify under GDX-TRACE-001, including applicable preflight
+
+Instruction and policy changes are behavior changes, even when stored in Markdown. Reuse a successful
+command result only for the same candidate, environment, and command; rerun when those inputs change,
+a failure needs resolution, or an unresolved concern warrants it. Do not add whole-suite testing just
+because a targeted check passed. This classification does not change the impact selector's all-suite
+fallback for empty, unavailable, or unclassified diffs, nor replace a required acceptance receipt.
+
+<a id="immutable-identity"></a>
+
+## Immutable identity and bounded lookup
+
+For changes involving immutable child/revision records, bind restoration, Decision writes, rereads,
+display, and receipts to the same child/revision ID. Never reselect by parent `runId` alone, and verify
+that non-target Decision records remain unchanged. A bounded lookup must not filter an already limited
+global list and infer absence; use authority-scoped lookup or exhaust pagination. Mocks reproduce
+limit, order, cursor, and N/N+1 boundaries. Product journeys wait for the newly created durable ID and
+its corresponding UI projection before editing; selector visibility alone is not a ready signal.

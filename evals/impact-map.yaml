@@ -7,12 +7,21 @@ allSuites:
   - retrieval-grounding
   - narrative-runtime
   - narrative-extraction
+  - narrative-semantic-contract
+  - nir1-entity-relation-review
+  - nir1-capacity-diagnostics
 rules:
   - id: quality-foundation
-    reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
+    reason: Quality policy, instruction entrypoints, skills, selectors, and evaluation metadata affect every gate.
     paths:
       - AGENTS.md
+      - CLAUDE.md
+      - GLOBAL_CLAUDE.md
+      - src-CLAUDE.md
+      - src-tauri-CLAUDE.md
+      - README.md
       - .agents/skills/**
+      - .claude/skills/**
       - docs/communication-style-guide.md
       - policies/quality/**
       - evals/**
@@ -36,6 +45,16 @@ rules:
       - package.json
       - pnpm-lock.yaml
       - .github/workflows/**
+      - docs/DEVELOPMENT_SETUP.md
+      - scripts/local-ci.mjs
+      - scripts/local-ci-registry.json
+      - scripts/local-ci.test.mjs
+      - scripts/local-ci-runner.mjs
+      - scripts/local-ci-runner.test.mjs
+      - scripts/local-ci-process-supervisor.mjs
+      - scripts/local-ci-process-supervisor.test.mjs
+      - docs/local-ci-runner.md
+      - scripts/ci-pause.test.mjs
     requirements:
       - GDX-TRACE-001
     suites:
@@ -47,8 +66,13 @@ rules:
       - docs/AI経路検証.md
       - src/features/chat/modelRouting.ts
       - src/features/chat/modelRouting.test.ts
+      - src/application/chat/chatTurnStoreActions.ts
       - src/features/chat/turn/**
+      - electron/preload/index.test.ts
       - src/features/chat/types.ts
+      - src/features/ai-audit/transportContext.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
     requirements:
       - GDX-ROUTE-001
       - GDX-AI-AUDIT-001
@@ -61,6 +85,8 @@ rules:
     reason: AI audit event ownership, pre-dispatch durability, and terminal capture must remain complete across every transport.
     paths:
       - src/features/ai-audit/**
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/features/chat/singleShotTransport.ts
       - src/features/chat/chatApi.ts
       - src/features/chat/chatStreamTransport.ts
@@ -118,6 +144,9 @@ rules:
     reason: Localized prompts and shared output contracts require prompt validation.
     paths:
       - src/prompts/**
+      - test-fixtures/nir1-df06-plain-chat.json
+      - src/features/chat/contextBuilder.ts
+      - src/features/chat/contextBuilder.test.ts
     requirements:
       - GDX-ROUTE-001
       - GDX-GROUND-001
@@ -134,6 +163,20 @@ rules:
       - GDX-TRACE-001
     suites:
       - prompt-contract
+  - id: nir1-standard-build
+    reason: Standard-build evidence must bind clean source and observed command/artifact outcomes without admitting ambiguous cleanup or fixture receipts.
+    paths:
+      - scripts/quality/run-nir1-retrieval.mjs
+      - scripts/quality/nir1-retrieval/standard-build.mjs
+      - scripts/quality/nir1-retrieval/standard-build.test.mjs
+      - docs/plans/nir1-standard-build-producer.md
+    requirements:
+      - GDX-PRECHECK-001
+      - GDX-ARTIFACT-001
+      - GDX-TRACE-001
+    suites:
+      - quality-workflow
+      - retrieval-grounding
   - id: retrieval-grounding
     reason: Recall, reranker admission authority, context planning, citation, and related-scene changes affect grounding.
     paths:
@@ -156,6 +199,11 @@ rules:
       - src/features/chat/context/**
       - src/features/chat/contextBuilder.chatRecall.test.ts
       - src/features/related-scenes/**
+      - evals/nir1-retrieval/**
+      - policies/narrative/nir1-related-scenes-ranking.json
+      - scripts/quality/nir1-retrieval/**
+      - scripts/quality/run-nir1-retrieval.mjs
+      - scripts/quality/validate-nir1-retrieval.mjs
       - src/features/settings/types.ts
       - src/features/settings/categories/AiProjectSettings.tsx
       - src/features/settings/categories/AiProjectSettings.test.tsx
@@ -165,10 +213,253 @@ rules:
       - GDX-ISOLATION-001
     suites:
       - retrieval-grounding
+  - id: narrative-semantic-contract
+    reason: Narrative authority routes, state vocabulary, disclosure policy, and C2 authority boundaries share the C1.5 contract gate.
+    paths:
+      - docs/adr/002-phase-resolution-modes.md
+      - docs/adr/004-narrative-reconciliation-boundary.md
+      - docs/adr/005-narrative-semantic-core-boundary.md
+      - docs/adr/006-narrative-mutation-authority-routes.md
+      - docs/adr/009-narrative-scope-relation-contract.md
+      - docs/adr/010-narrative-dependency-role-granularity-contract.md
+      - docs/adr/011-narrative-ir-revision-semantics-contract.md
+      - docs/certification/nir0/NIR0-CERT.md
+      - docs/plans/narrative-c2zc-canonical-cutover-impact-matrix.md
+      - docs/plans/narrative-ir-nir0-implementation-plan.md
+      - docs/plans/narrative-ir-nir1-implementation-plan.md
+      - docs/plans/narrative-semantic-core-roadmap.md
+      - docs/plans/nir1-l6-l9-execution-plan.md
+      - docs/plans/nir0-d2-impact-matrix.md
+      - policies/narrative/**
+      - policies/narrative/fixtures/canonical-json-number-parity.json
+      - src/features/narrative-semantic-core/**
+      - src/features/narrative-extraction/source/digest.ts
+      - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
+      - src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts
+      - src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts
+      - src/features/narrative-extraction/source/types.ts
+      - src/features/tree/api.ts
+      - src/features/tree/api.listProjection.test.ts
+      - src/application/narrative-extraction/nativeApi.ts
+      - src/application/narrative-extraction/projectSnapshotAdapter.ts
+      - src/application/narrative-extraction/projectSnapshotAdapter.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.test.ts
+      - src/db/generated/schema-contract.json
+      - src/db/schema.contract.test.ts
+      - electron/shared/ipcContract.ts
+      - electron/shared/ipcContract.test.ts
+      - scripts/quality/validate-change-feed-writers.mjs
+      - scripts/quality/validate-change-feed-writers.test.mjs
+      - src-tauri/crates/grimodex-core/src/canonical_json.rs
+      - src-tauri/crates/grimodex-core/tests/canonical_json.rs
+      - src-tauri/crates/grimodex-core/src/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/src/narrative_scope_authority_basis.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_scope_authority_basis.rs
+      - src/features/narrative-extraction/reconciler/stageExecution.ts
+      - src/features/narrative-extraction/reconciler/stageExecution.test.ts
+      - src/features/narrative-extraction/reconciler/types.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
+      - src/features/ai-audit/transportContext.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src-tauri/crates/grimodex-db/src/backup_restore.rs
+      - src-tauri/crates/grimodex-db/src/state.rs
+      - src-tauri/crates/grimodex-core/src/workspace_schema.rs
+      - electron/main/index.ts
+      - electron/main/narrativeMaintenance*.ts
+      - electron/main/foregroundBarrier*.ts
+      - electron/main/narrativeMaintenance.ts
+      - electron/main/narrativeMaintenance.test.ts
+      - electron/main/narrativeMaintenance.phase1.test.ts
+      - electron/main/narrativeMaintenance.followup.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
+      - electron/main/narrativeMaintenance.wiring.test.ts
+      - electron/main/narrativeMaintenanceTriggers.ts
+      - electron/main/narrativeMaintenanceTriggers.test.ts
+      - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs
+      - scripts/quality/validate-semantic-core-boundary.mjs
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - electron/main/ipc.ts
+      - electron/main/ipc.test.ts
+      - src/lib/tauri.ts
+      - src/lib/tauri.electron.test.ts
+    requirements:
+      - GDX-NARR-SEMANTIC-CONTRACT-001
+      - GDX-ARTIFACT-001
+    suites:
+      - narrative-semantic-contract
+  - id: nir1-entity-relation-review
+    reason: NIR-1 typed Entity/Relation review and internal Graph, Packing, prepared-request, and generation receipt contracts keep their core/DB checks together with typed IPC and the review journey; Native activation denial remains separately validated.
+    paths:
+      - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
+      - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
+      - src/features/codex/CodexEntityRelationReviewDialog.tsx
+      - src/features/codex/CodexEntityRelationReviewDialogContent.tsx
+      - src/features/codex/CodexEntityRelationReviewDialogFooter.tsx
+      - src/features/codex/CodexEntityRelationReviewSelectors.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewDecisionControls.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewPanel.test.tsx
+      - src/features/codex/CodexEntityRelationRevisionReviewPanel.tsx
+      - src/features/codex/codexEntityRelationReviewApi.test.ts
+      - src/features/codex/codexEntityRelationReviewApi.ts
+      - src/features/codex/components/CodexTypedRelationsSection.test.tsx
+      - src/features/codex/components/CodexTypedRelationsSection.tsx
+      - src/features/codex/context/nir1PhaseParity.test.ts
+      - src/features/codex/context/nir1RevealParity.test.ts
+      - src/features/codex/useCodexEntityRelationReview.test.tsx
+      - src/features/codex/useCodexEntityRelationReview.ts
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.test.ts
+      - src/features/narrative-semantic-core/nir1EntityRelationRevisionApi.ts
+      - src/features/narrative-semantic-core/nir1PackingApi.test.ts
+      - src/features/narrative-semantic-core/nir1PackingApi.ts
+      - src/features/ai-context/nir1Packing.ts
+      - src/features/ai-context/nir1Packing.test.ts
+      - src/features/ai-context/finalizeTurnPayload.test.ts
+      - test-fixtures/nir1-df06-plain-chat.json
+      - src/prompts/ja/chatSystem.ts
+      - src/prompts/ja/chatSystemBase.txt
+      - src/prompts/ja/chatSystemDataBoundaryReminder.txt
+      - evals/nir1-packing/**
+      - evals/nir1-g01/**
+      - docs/plans/nir1-c-scene-connection-candidate.md
+      - docs/plans/nir1-d1-snapshot-candidate.md
+      - docs/plans/nir1-d2b-dispatch-candidate.md
+      - docs/plans/nir1-d2b-history-gap-candidate.md
+      - docs/plans/nir1-d2b-storage-candidate.md
+      - docs/plans/nir1-post-b-candidate.md
+      - docs/plans/nir1-c-memory-capacity-delta-draft.md
+      - docs/plans/nir1-c-scene-body-disclosure-delta-draft.md
+      - docs/plans/nir1-c-target-scene-body-authority-proposal-draft.md
+      - docs/plans/nir1-d2b-history-authority-proposal-draft.md
+      - scripts/quality/nir1-packing/**
+      - src/features/related-scenes/nir1G01Feasibility.test.ts
+      - src/features/related-scenes/nir1RelatedScenesFusion.ts
+      - src/features/related-scenes/nir1RelatedScenesFusion.test.ts
+      - src/lib/tauri.electron.test.ts
+      - src/lib/tauri.ts
+      - electron/main/ipc.test.ts
+      - electron/main/ipc.ts
+      - electron/main/profileEgress.test.ts
+      - electron/main/profileEgress.ts
+      - electron/native/grimodex-node/index.d.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - electron/native/grimodex-node/src/nir1_generation.rs
+      - electron/native/grimodex-node/src/nir1_prepared_request.rs
+      - electron/native/grimodex-node/src/nir1_graph_activation_tests.rs
+      - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/product-journey-catalog.mjs
+      - electron/scripts/product-journey-shards.mjs
+      - electron/scripts/product-journeys.mjs
+      - electron/scripts/product-journey-shards.test.mjs
+      - scripts/electron-product-journeys.test.mjs
+      - electron/scripts/product-journey-impact.mjs
+      - electron/shared/ipcContract.test.ts
+      - electron/shared/ipcContract.ts
+      - electron/shared/nir1GraphIpcContract.test.ts
+      - electron/shared/nir1EntityRelationIpcContract.test.ts
+      - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/product-journey-backlog.test.mjs
+      - scripts/product-journey-impact.test.mjs
+      - src-tauri/crates/grimodex-core/src/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_nir1.rs
+      - src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-db/Cargo.toml
+      - src-tauri/crates/grimodex-db/src/lib.rs
+      - src-tauri/crates/grimodex-db/src/state.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/**
+      - src-tauri/crates/grimodex-db/src/profile_egress_policy.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/codex_operations.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/human_derivation.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_contracts.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/material_membership_root.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_chronicle_index/**
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/**
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/phase-cases.json
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/reveal-cases.json
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission/types.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_nir1_retrieval_admission.rs
+      - src-tauri/crates/grimodex-db/tests/release_schema_migration.rs
+      - src-tauri/crates/grimodex-db/tests/workspace_migration_supervisor.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs
+      - src/db/narrativeChangeFeedSchema.test.ts
+    requirements:
+      - GDX-NARR-SEMANTIC-CONTRACT-001
+      - GDX-ARTIFACT-001
+      - GDX-GROUND-001
+      - GDX-ISOLATION-001
+      - GDX-TRACE-001
+      - GDX-POLICY-001
+    suites:
+      - nir1-entity-relation-review
+  - id: nir1-capacity-diagnostics
+    reason: NIR-1 B capacity diagnostics require isolated fresh-copy/process paths, a machine-readable manifest, and feature-gated Native fixture coverage without activating Graph capacity claims.
+    paths:
+      - evals/nir1-capacity/**
+      - scripts/nir1-material-capacity-probe.mjs
+      - scripts/nir1-material-capacity-probe.test.mjs
+      - scripts/nir1-material-capacity-probe.review-fixes.test.mjs
+      - src-tauri/crates/grimodex-db/src/bin/nir1-material-capacity.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_diagnostics.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_disk.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_boundary_tests.rs
+      - src-tauri/crates/grimodex-db/tests/nir1_capacity_boundaries.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs
+      - src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs
+    requirements:
+      - GDX-ISOLATION-001
+      - GDX-TRACE-001
+    suites:
+      - nir1-capacity-diagnostics
   - id: narrative-extraction
     reason: Narrative source, Evidence, semantic scoring, Detail and Temporal projection contracts, Gold corpus, and Chronicle extraction changes share one release gate.
     paths:
+      - docs/plans/narrative-evidence-id-v1.md
+      - docs/plans/chronicle-evaluation-contract-v2.md
       - src/features/narrative-extraction/**
+      - src/features/chronicle/extraction/**
+      - src/application/narrative-extraction/aiTasks/**
+      - src/application/narrative-extraction/extractionCoordinator.ts
       - src/application/narrative-extraction/temporal/**
       - src/features/chronicle/extractEventsApi.ts
       - src/features/chronicle/extractEventsApi.test.ts
@@ -216,6 +507,467 @@ rules:
       - GDX-NARR-TEMPORAL-001
     suites:
       - narrative-extraction
+  - id: narrative-maintenance-product-journeys
+    reason: C2-5B durable maintenance journeys and the C2-ZC single canonical lifecycle bind restore, epoch, Verify/Rebuild/Freshness ordering, workspace authority, feed liveness, and one-way Generic authority evidence to candidate-bound runtime and semantic contract gates.
+    paths:
+      - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/c2zc-canonical-product-journey.mjs
+      - electron/scripts/c2zc-renderer-mcp-dml-denial-product-journey.mjs
+      - electron/scripts/product-journey-catalog.mjs
+      - electron/scripts/product-journeys.mjs
+      - electron/scripts/product-journey-shards.mjs
+      - electron/scripts/product-journey-shards.test.mjs
+      - scripts/electron-product-journeys.test.mjs
+      - electron/main/narrativeFreshness.ts
+      - electron/main/narrativeFreshness.test.ts
+      - electron/main/events.ts
+      - electron/main/index.ts
+      - electron/main/narrativeMaintenanceDelivery.ts
+      - electron/main/narrativeMaintenanceDelivery.test.ts
+      - electron/main/narrativeMaintenanceShutdown.ts
+      - electron/main/narrativeMaintenanceShutdown.test.ts
+      - electron/main/profileEgress.ts
+      - electron/main/profileEgress.test.ts
+      - electron/main/workspaceLifecycleView.ts
+      - electron/main/workspaceLifecycleView.test.ts
+      - electron/shared/ipcContract.ts
+      - electron/native/grimodex-node/**
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/**
+      - src-tauri/crates/grimodex-db/src/workspace_lifecycle.rs
+      - src-tauri/crates/grimodex-db/src/state.rs
+      - src-tauri/crates/grimodex-db/src/domain_writes.rs
+      - src-tauri/crates/grimodex-db/src/narrative_maintenance_connection.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_*.rs
+      - src/features/narrative-extraction/maintenance/**
+      - src/features/timelapse/recorder.ts
+      - src/features/workspace/store.ts
+      - src/features/workspace/workspaceState.ts
+      - src/features/workspace/workspaceLifecycleProjection.ts
+      - scripts/quality/validate-lifecycle-contract.mjs
+      - policies/narrative/narrative-run-kind-policy.json
+      - policies/narrative/narrative-failure-policy.json
+      - scripts/c2-5b-product-journeys.test.mjs
+      - scripts/c2zc-product-journeys.test.mjs
+      - scripts/c2zc-renderer-mcp-dml-denial.test.mjs
+      - scripts/c2zc-acceptance-consumer.test.mjs
+      - scripts/c2zc-rust-acceptance-receipt.mjs
+      - scripts/c2zc-rust-acceptance-receipt.test.mjs
+      - scripts/local-ci-registry.json
+      - scripts/local-ci.mjs
+      - scripts/local-ci.test.mjs
+      - scripts/quality/impact-map.mjs
+      - scripts/quality/impact-map.test.mjs
+      - scripts/product-journey-phase1.test.mjs
+      - scripts/product-journey-backlog.test.mjs
+      - scripts/product-journey-impact.test.mjs
+      - electron/scripts/product-journey-impact.mjs
+    acceptanceGates:
+      - id: c2-zc-canonical-no-legacy-fallback
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - narrative_c2zc_canonical_cutover
+            - canonical_read_has_no_legacy_fallback_after_generic_cutover
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs
+          test: canonical_read_has_no_legacy_fallback_after_generic_cutover
+          fullTestName: canonical_read_has_no_legacy_fallback_after_generic_cutover
+          readFunction: canonical_application_freshness
+          noLegacyFallback: true
+        source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs
+        test: canonical_read_has_no_legacy_fallback_after_generic_cutover
+        fullTestName: canonical_read_has_no_legacy_fallback_after_generic_cutover
+        requiresReceipt: true
+      - id: c2-zc-dml-native-owned-table-denial
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/execute.rs
+          test: c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+          fullTestName: execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+          origin: SqlOrigin::McpGeneric
+        source: src-tauri/crates/grimodex-db/src/execute.rs
+        test: c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+        fullTestName: execute::tests::c2zc_native_owned_tables_reject_all_untrusted_dml_but_allow_reads_and_trusted_writes
+        requiresReceipt: true
+      - id: c2-zc-readiness-corruption-fail-closed
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs
+          test: rebuild_outcome_tamper_and_missing_evidence_fail_closed
+          fullTestName: narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed
+          proof: direct persisted Rebuild evidence corruption blocks readiness
+        source: src-tauri/crates/grimodex-db/src/narrative_extraction/c2z_preparation.rs
+        test: rebuild_outcome_tamper_and_missing_evidence_fail_closed
+        fullTestName: narrative_extraction::c2z_preparation::tests::rebuild_outcome_tamper_and_missing_evidence_fail_closed
+        requiresReceipt: true
+      - id: c2-zc-liveness-restore-lock-binding
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - narrative_c2zc_liveness_binding
+            - same_project_receipt_cannot_cross_database_authority
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_liveness_binding.rs
+          test: same_project_receipt_cannot_cross_database_authority
+          fullTestName: same_project_receipt_cannot_cross_database_authority
+          proof: restore-lock liveness receipt remains bound to the project Database authority
+        source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_liveness_binding.rs
+        test: same_project_receipt_cannot_cross_database_authority
+        fullTestName: same_project_receipt_cannot_cross_database_authority
+        requiresReceipt: true
+      - id: c2-zc-native-restore-lock-release
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - electron/native/grimodex-node/Cargo.toml
+            - --lib
+            - narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: electron/native/grimodex-node/src/lib.rs
+          test: completed_freshness_cycle_releases_authority_before_restore_quiescence
+          fullTestName: narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence
+          proof: completed Freshness cycle releases authority before restore quiescence
+          heavy: true
+          fullCiPreflight: true
+          designImpact: Runs before Full's later stages; a skipped native test is never passed in the receipt
+        source: electron/native/grimodex-node/src/lib.rs
+        test: completed_freshness_cycle_releases_authority_before_restore_quiescence
+        fullTestName: narrative_freshness_restore_lock_tests::completed_freshness_cycle_releases_authority_before_restore_quiescence
+        requiresReceipt: true
+      - id: c2-zc-production-verify-coverage
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run
+            - --
+            - --exact
+            - --nocapture
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+          test: a_verify_run_records_its_report_under_a_completed_run
+          fullTestName: narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run
+          proof: production Verify persists and validates exact 13/13 check coverage
+        source: src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
+        test: a_verify_run_records_its_report_under_a_completed_run
+        fullTestName: narrative_extraction::restore_rebuild::tests::a_verify_run_records_its_report_under_a_completed_run
+        requiresReceipt: true
+      - id: c2-zc-project-create-event-bound-e0
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - domain_writes::tests::project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/domain_writes.rs
+          test: project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker
+          fullTestName: domain_writes::tests::project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker
+          proof: post-marker project_create mints one event-bound initial epoch
+        source: src-tauri/crates/grimodex-db/src/domain_writes.rs
+        test: project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker
+        fullTestName: domain_writes::tests::project_create_mints_one_event_bound_initial_epoch_after_c2zc_marker
+        requiresReceipt: true
+      - id: c2-zc-import-apply-event-bound-e0
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - import_session_commit
+            - post_marker_import_binds_one_initial_epoch_to_the_import_apply_event
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/import_session_commit.rs
+          test: post_marker_import_binds_one_initial_epoch_to_the_import_apply_event
+          fullTestName: post_marker_import_binds_one_initial_epoch_to_the_import_apply_event
+          proof: post-marker import apply binds one initial epoch to its event
+        source: src-tauri/crates/grimodex-db/tests/import_session_commit.rs
+        test: post_marker_import_binds_one_initial_epoch_to_the_import_apply_event
+        fullTestName: post_marker_import_binds_one_initial_epoch_to_the_import_apply_event
+        requiresReceipt: true
+      - id: c2-zc-scan-staging-publish-atomic-replay
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - domain_writes::tests::scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/domain_writes.rs
+          test: scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch
+          fullTestName: domain_writes::tests::scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch
+          proof: Scan staging publish is atomic and replays the same receipt and epoch
+        source: src-tauri/crates/grimodex-db/src/domain_writes.rs
+        test: scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch
+        fullTestName: domain_writes::tests::scan_staging_project_publish_is_atomic_and_replays_the_same_receipt_and_epoch
+        requiresReceipt: true
+      - id: c2-zc-hidden-staging-cutover-scope
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - narrative_c2zc_canonical_cutover
+            - hidden_scan_staging_project_is_outside_cutover_scope_until_publish
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs
+          test: hidden_scan_staging_project_is_outside_cutover_scope_until_publish
+          fullTestName: hidden_scan_staging_project_is_outside_cutover_scope_until_publish
+          proof: hidden Scan staging stays outside cutover scope until publish and re-enters after publish
+        source: src-tauri/crates/grimodex-db/tests/narrative_c2zc_canonical_cutover.rs
+        test: hidden_scan_staging_project_is_outside_cutover_scope_until_publish
+        fullTestName: hidden_scan_staging_project_is_outside_cutover_scope_until_publish
+        requiresReceipt: true
+      - id: c2-zc-hidden-staging-discovery-exclusion
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - narrative_extraction::maintenance_runtime::tests::hidden_scan_staging_project_is_not_discovered_until_marker_is_removed
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs
+          test: hidden_scan_staging_project_is_not_discovered_until_marker_is_removed
+          fullTestName: narrative_extraction::maintenance_runtime::tests::hidden_scan_staging_project_is_not_discovered_until_marker_is_removed
+          proof: hidden Scan staging projects stay out of discovery until publish
+        source: src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs
+        test: hidden_scan_staging_project_is_not_discovered_until_marker_is_removed
+        fullTestName: narrative_extraction::maintenance_runtime::tests::hidden_scan_staging_project_is_not_discovered_until_marker_is_removed
+        requiresReceipt: true
+      - id: c2-zc-pre-marker-before-cutover-liveness
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --lib
+            - narrative_extraction::maintenance_runtime::tests::pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs
+          test: pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen
+          fullTestName: narrative_extraction::maintenance_runtime::tests::pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen
+          proof: pre-marker BeforeCutover discovery enters Backfill without reopen
+        source: src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs
+        test: pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen
+        fullTestName: narrative_extraction::maintenance_runtime::tests::pre_marker_visible_project_enters_backfill_on_before_cutover_without_reopen
+        requiresReceipt: true
+      - id: c2-zc-native-discovery-hidden-staging-exclusion
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - electron/native/grimodex-node/Cargo.toml
+            - --lib
+            - narrative_maintenance::tests::native_discovery_excludes_hidden_scan_staging_projects
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: electron/native/grimodex-node/src/narrative_maintenance.rs
+          test: native_discovery_excludes_hidden_scan_staging_projects
+          fullTestName: narrative_maintenance::tests::native_discovery_excludes_hidden_scan_staging_projects
+          proof: native maintenance discovery excludes hidden Scan staging projects
+        source: electron/native/grimodex-node/src/narrative_maintenance.rs
+        test: native_discovery_excludes_hidden_scan_staging_projects
+        fullTestName: narrative_maintenance::tests::native_discovery_excludes_hidden_scan_staging_projects
+        requiresReceipt: true
+      - id: c2-zc-web-cutover-marker-rejection
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - web_editor_handoff
+            - rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs
+          test: rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing
+          fullTestName: rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing
+          proof: Web handoff rejects current, future, and foreign C2-ZC markers
+        source: src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs
+        test: rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing
+        fullTestName: rejects_current_future_and_foreign_c2zc_cutover_markers_before_publishing
+        requiresReceipt: true
+      - id: c2-zc-web-nonempty-semantic-epoch-rejection
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - web_editor_handoff
+            - rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs
+          test: rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate
+          fullTestName: rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate
+          proof: Web handoff rejects a non-empty semantic epoch and cleans the candidate
+        source: src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs
+        test: rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate
+        fullTestName: rejects_non_empty_semantic_epoch_before_publishing_and_cleans_candidate
+        requiresReceipt: true
+      - id: c2-zc-web-poisoned-schema-data-migrations-rejection
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - web_editor_handoff
+            - rejects_empty_poisoned_schema_data_migrations_before_publishing
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs
+          test: rejects_empty_poisoned_schema_data_migrations_before_publishing
+          fullTestName: rejects_empty_poisoned_schema_data_migrations_before_publishing
+          proof: Web handoff rejects an empty poisoned schema_data_migrations schema
+        source: src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs
+        test: rejects_empty_poisoned_schema_data_migrations_before_publishing
+        fullTestName: rejects_empty_poisoned_schema_data_migrations_before_publishing
+        requiresReceipt: true
+      - id: c2-zc-web-poisoned-semantic-epoch-schema-rejection
+        argv:
+          command: cargo
+          args:
+            - test
+            - --manifest-path
+            - src-tauri/Cargo.toml
+            - -p
+            - grimodex-db
+            - --test
+            - web_editor_handoff
+            - rejects_empty_poisoned_semantic_epoch_schema_before_publishing
+            - --
+            - --exact
+          cwd: .
+        contract:
+          source: src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs
+          test: rejects_empty_poisoned_semantic_epoch_schema_before_publishing
+          fullTestName: rejects_empty_poisoned_semantic_epoch_schema_before_publishing
+          proof: Web handoff rejects an empty poisoned semantic epoch schema
+        source: src-tauri/crates/grimodex-db/tests/web_editor_handoff.rs
+        test: rejects_empty_poisoned_semantic_epoch_schema_before_publishing
+        fullTestName: rejects_empty_poisoned_semantic_epoch_schema_before_publishing
+        requiresReceipt: true
+    requirements:
+      - GDX-POLICY-001
+      - GDX-TRACE-001
+    suites:
+      - narrative-runtime
+      - narrative-semantic-contract
   - id: semantic-retrieval-experiments
     reason: Offline retrieval fixtures, private-label contracts, and shadow evidence must preserve grounding, isolation, artifact validation, and traceability.
     paths:
@@ -289,11 +1041,47 @@ rules:
     reason: Narrative runtime policy, protected writers, and Native SQL origin gates must stay fail-closed.
     paths:
       - policies/narrative/**
+      - scripts/quality/validate-run-kind-policy.mjs
+      - scripts/quality/validate-run-kind-policy.test.mjs
+      - scripts/quality/validate-execution-state-authority.mjs
+      - scripts/quality/validate-execution-state-authority.test.mjs
       - src/features/narrative-extraction/**
+      - electron/main/index.ts
+      - electron/main/narrativeMaintenance*.ts
+      - electron/main/foregroundBarrier*.ts
+      - electron/main/narrativeMaintenance.ts
+      - electron/main/narrativeMaintenance.test.ts
+      - electron/main/narrativeMaintenance.phase1.test.ts
+      - electron/main/narrativeMaintenance.followup.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
+      - electron/main/narrativeMaintenance.wiring.test.ts
+      - electron/main/narrativeMaintenanceTriggers.ts
+      - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/narrativeFreshness.ts
+      - electron/main/narrativeFreshness.test.ts
+      - electron/main/ipc.ts
+      - electron/main/ipc.test.ts
+      - electron/main/profileEgress.ts
+      - electron/main/profileEgress.test.ts
+      - electron/shared/ipcContract.ts
+      - electron/shared/ipcContract.test.ts
+      - electron/native/grimodex-node/Cargo.toml
+      - electron/native/grimodex-node/index.d.ts
+      - electron/native/grimodex-node/src/lib.rs
       - src-tauri/crates/grimodex-db/src/narrative_runtime_policy.rs
       - src-tauri/crates/grimodex-db/src/protected_writers.rs
+      - src-tauri/crates/grimodex-db/src/profile_egress_policy.rs
+      - src-tauri/crates/grimodex-db/src/state.rs
       - src-tauri/crates/grimodex-db/src/execute.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/**
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src-tauri/crates/grimodex-db/src/backup_restore.rs
+      - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - src-tauri/crates/grimodex-db/tests/narrative_runtime_authority.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_semantic_build_graph_adversarial.rs
       - scripts/quality/validate-narrative-writers.mjs
       - scripts/quality/validate-narrative-writers.test.mjs
     requirements:
@@ -302,4 +1090,13 @@ rules:
     suites:
       - narrative-runtime
       - tool-policy
+  - id: narrative-change-feed-policy-quality
+    reason: Change Feed writer policy-only edits must run the canonical quality workflow and its validator in addition to the runtime policy gates.
+    paths:
+      - policies/narrative/change-feed-writers.json
+    requirements:
+      - GDX-POLICY-001
+      - GDX-TRACE-001
+    suites:
+      - quality-workflow
 default: all

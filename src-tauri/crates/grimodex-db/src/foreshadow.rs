@@ -21,6 +21,10 @@ use super::{
     },
     Database,
 };
+use crate::agent_writes::{
+    canonical_payload_with_authority_context, validate_agent_field_authority_for_entity,
+    validate_renderer_authority_context_for_routes, RendererCanonicalWriteContext,
+};
 use crate::change_events::AppendChangeEvent;
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
@@ -41,6 +45,8 @@ pub struct RendererWriteContext {
     pub origin: NarrativeChangeOrigin,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,6 +57,7 @@ struct ResolvedWriteContext {
     cause_kind: NarrativeChangeCauseKind,
     origin: NarrativeChangeOrigin,
     original_transaction_id: Option<String>,
+    undo_journal_id: Option<String>,
 }
 
 fn resolve_write_context(
@@ -92,7 +99,49 @@ fn resolve_write_context(
         cause_kind,
         origin: context.origin,
         original_transaction_id: context.original_transaction_id.clone(),
+        undo_journal_id: context.undo_journal_id.clone(),
     })
+}
+
+fn validate_foreshadow_renderer_context(
+    operation: &str,
+    payload_context: &RendererWriteContext,
+    renderer_context: &RendererCanonicalWriteContext,
+    allowed_routes: &[&str],
+) -> anyhow::Result<()> {
+    validate_renderer_authority_context_for_routes(renderer_context, allowed_routes)?;
+    anyhow::ensure!(
+        renderer_context.request_id == payload_context.request_id,
+        "{operation} requestId does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        renderer_context.event_uid == payload_context.event_uid,
+        "{operation} eventUid does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        renderer_context.origin == payload_context.origin,
+        "{operation} origin does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        renderer_context.original_transaction_id == payload_context.original_transaction_id,
+        "{operation} originalTransactionId does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        renderer_context.undo_journal_id == payload_context.undo_journal_id,
+        "{operation} undoJournalId does not match canonical authority context"
+    );
+    Ok(())
+}
+
+fn surface_for_origin(origin: NarrativeChangeOrigin) -> &'static str {
+    match origin {
+        NarrativeChangeOrigin::Human => "manual",
+        NarrativeChangeOrigin::AiApply => "ai-apply",
+        NarrativeChangeOrigin::Import => "import",
+        NarrativeChangeOrigin::Restore => "restore",
+        NarrativeChangeOrigin::Migration => "migration",
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo => "history",
+    }
 }
 
 #[cfg(test)]
@@ -107,6 +156,7 @@ impl Default for RendererWriteContext {
             event_uid: format!("foreshadow-internal-event-{id}"),
             origin: NarrativeChangeOrigin::Human,
             original_transaction_id: None,
+            undo_journal_id: None,
         }
     }
 }
@@ -253,9 +303,10 @@ fn normalize_foreshadow_feed_events_in_tx(
     Ok(())
 }
 
-fn append_foreshadow_feed(
+fn append_foreshadow_feed_with_authority(
     conn: &Connection,
     input: ForeshadowFeedAppend<'_>,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
 ) -> anyhow::Result<String> {
     if let Some(original_transaction_id) = input.context.original_transaction_id.as_deref() {
         require_typed_inverse_lineage_in_project(
@@ -274,6 +325,13 @@ fn append_foreshadow_feed(
         .to_rfc3339();
     let mut events = input.events;
     normalize_foreshadow_feed_events_in_tx(conn, input.project_id, &mut events)?;
+    let base_payload = serde_json::to_string(&json!({
+        "requestId": input.context.request_id,
+        "origin": input.context.origin,
+    }))?;
+    let canonical_payload = renderer_context.map_or(base_payload.clone(), |context| {
+        canonical_payload_with_authority_context(&base_payload, context)
+    });
     let canonical = AppendChangeEvent {
         event_uid: input.context.event_uid.clone(),
         scene_id: None,
@@ -281,10 +339,7 @@ fn append_foreshadow_feed(
         op_type: input.operation.to_string(),
         entity_type: Some("foreshadow".to_string()),
         entity_id: Some(input.entity_id.to_string()),
-        payload: serde_json::to_string(&json!({
-            "requestId": input.context.request_id,
-            "origin": input.context.origin,
-        }))?,
+        payload: canonical_payload,
         timestamp,
     };
     let result = append_canonical_and_narrative_change_in_tx(
@@ -799,7 +854,37 @@ fn fetch_setup_label_rows(db: &Database, foreshadow_ids: &[String]) -> anyhow::R
 // ─────────────────────────── foreshadow CRUD ───────────────────────────
 
 pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result<Value> {
+    create_with_renderer_authority(db, payload, None)
+}
+
+pub fn create_with_renderer_authority(
+    db: &Database,
+    payload: ForeshadowCreatePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     let write_context = resolve_write_context("foreshadow.create", &payload.context)?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context_for_routes(
+            context,
+            &["human-direct", "history-replay", "restore-or-migration"],
+        )?;
+        anyhow::ensure!(
+            context.request_id == payload.context.request_id,
+            "foreshadow create requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == payload.context.event_uid,
+            "foreshadow create eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == payload.context.origin,
+            "foreshadow create origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == payload.context.original_transaction_id,
+            "foreshadow create originalTransactionId does not match canonical authority context"
+        );
+    }
     // The request id selects the ledger entry and is therefore not semantic
     // payload. Excluding it lets undo/redo deliberately restore the same entity
     // under a fresh request without weakening same-request conflict detection.
@@ -975,7 +1060,7 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
                 FORESHADOW_AUTHORITY_FIELDS,
                 now,
             )?;
-            let transaction_id = append_foreshadow_feed(
+            let transaction_id = append_foreshadow_feed_with_authority(
                 conn,
                 ForeshadowFeedAppend {
                     project_id: &project_id,
@@ -992,6 +1077,7 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
                         vec!["/".to_string()],
                     )?],
                 },
+                renderer_context.as_ref(),
             )?;
             Ok((
                 project_id.clone(),
@@ -1004,11 +1090,42 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
 }
 
 pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Result<Value> {
+    update_with_renderer_authority(db, id, patch, None)
+}
+
+pub fn update_with_renderer_authority(
+    db: &Database,
+    id: String,
+    patch: ForeshadowPatch,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     anyhow::ensure!(
         patch.base_version >= 0,
         "foreshadow baseVersion must be non-negative"
     );
     let write_context = resolve_write_context("foreshadow.update", &patch.context)?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context_for_routes(
+            context,
+            &["human-direct", "history-replay", "restore-or-migration"],
+        )?;
+        anyhow::ensure!(
+            context.request_id == patch.context.request_id,
+            "foreshadow update requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == patch.context.event_uid,
+            "foreshadow update eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == patch.context.origin,
+            "foreshadow update origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == patch.context.original_transaction_id,
+            "foreshadow update originalTransactionId does not match canonical authority context"
+        );
+    }
     let requested_project_id = patch.project_id.clone();
     let fingerprint_payload = json!({
         "id": id,
@@ -1055,6 +1172,11 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
     let payoff_from_patch = patch.payoff_from_pos;
     let payoff_to_patch = patch.payoff_to_pos;
     let now = chrono::Utc::now().timestamp_millis();
+    let writes_forward_journal = write_context.cause_kind == NarrativeChangeCauseKind::Forward;
+    let undo_journal_id = write_context
+        .undo_journal_id
+        .clone()
+        .or_else(|| writes_forward_journal.then(|| write_context.request_id.clone()));
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
 
@@ -1233,14 +1355,40 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
                 .map(Value::Object)
                 .unwrap_or(Value::Null);
             let after_feed = load_canonical_foreshadow_snapshot_in_tx(conn, &project_id, &id)?;
-            let transaction_id = append_foreshadow_feed(
+            if writes_forward_journal {
+                let before_json = before_feed.to_string();
+                let after_json = after_feed.to_string();
+                let result_version = after_feed
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| anyhow::anyhow!("foreshadow update snapshot has no version"))?;
+                insert_undo_journal_in_tx(
+                    conn,
+                    UndoJournalInsert {
+                        id: undo_journal_id.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!("forward foreshadow update has no undo journal id")
+                        })?,
+                        project_id: &project_id,
+                        surface: surface_for_origin(write_context.origin),
+                        entity_kind: "foreshadow",
+                        entity_id: &id,
+                        op_kind: "update",
+                        before_json: Some(&before_json),
+                        after_json: Some(&after_json),
+                        base_version,
+                        result_version,
+                        change_event_uid: Some(&write_context.event_uid),
+                    },
+                )?;
+            }
+            let transaction_id = append_foreshadow_feed_with_authority(
                 conn,
                 ForeshadowFeedAppend {
                     project_id: &project_id,
                     operation: "foreshadow.update",
                     entity_id: &id,
                     context: &write_context,
-                    undo_journal_id: None,
+                    undo_journal_id: undo_journal_id.clone(),
                     events: vec![foreshadow_root_feed_event(
                         &id,
                         "metadata",
@@ -1250,18 +1398,58 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
                         changed_paths.clone(),
                     )?],
                 },
+                renderer_context.as_ref(),
             )?;
-            Ok(attach_maintenance_transaction_id(after, transaction_id))
+            let mut response = attach_maintenance_transaction_id(after, transaction_id);
+            if let (Value::Object(row), Some(undo_journal_id)) = (&mut response, undo_journal_id) {
+                row.insert("undoJournalId".to_string(), Value::String(undo_journal_id));
+            }
+            Ok(response)
         },
     )
 }
 
 pub fn delete(db: &Database, payload: ForeshadowDeletePayload) -> anyhow::Result<Value> {
+    delete_with_renderer_authority(db, payload, None)
+}
+
+pub fn delete_with_renderer_authority(
+    db: &Database,
+    payload: ForeshadowDeletePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     anyhow::ensure!(
         payload.base_version >= 0,
         "foreshadow baseVersion must be non-negative"
     );
     let write_context = resolve_write_context("foreshadow.delete", &payload.context)?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context_for_routes(
+            context,
+            &[
+                "human-direct",
+                "history-replay",
+                "restore-or-migration",
+                "interactive-agent-command",
+            ],
+        )?;
+        anyhow::ensure!(
+            context.request_id == payload.context.request_id,
+            "foreshadow delete requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == payload.context.event_uid,
+            "foreshadow delete eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == payload.context.origin,
+            "foreshadow delete origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == payload.context.original_transaction_id,
+            "foreshadow delete originalTransactionId does not match canonical authority context"
+        );
+    }
     let fingerprint_payload = json!({
         "id": payload.id,
         "projectId": payload.project_id,
@@ -1273,7 +1461,11 @@ pub fn delete(db: &Database, payload: ForeshadowDeletePayload) -> anyhow::Result
     let id = payload.id;
     let project_id = payload.project_id;
     let base_version = payload.base_version;
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    let undo_id = payload
+        .context
+        .undo_journal_id
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = write_context.event_uid.clone();
 
     run_atomic_foreshadow_mutation(
@@ -1312,6 +1504,24 @@ pub fn delete(db: &Database, payload: ForeshadowDeletePayload) -> anyhow::Result
                 base_version,
             )?;
 
+            if renderer_context
+                .as_ref()
+                .is_some_and(|context| context.authority_route == "interactive-agent-command")
+            {
+                let authority_paths = FORESHADOW_AUTHORITY_FIELDS
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect::<Vec<_>>();
+                validate_agent_field_authority_for_entity(
+                    conn,
+                    &project_id,
+                    "foreshadow",
+                    &id,
+                    &authority_paths,
+                    &chrono::Utc::now().to_rfc3339(),
+                )?;
+            }
+
             let deleted = conn.execute(
                 "DELETE FROM foreshadows
               WHERE id = ?1 AND project_id = ?2 AND version = ?3",
@@ -1339,7 +1549,7 @@ pub fn delete(db: &Database, payload: ForeshadowDeletePayload) -> anyhow::Result
                     change_event_uid: Some(&event_uid),
                 },
             )?;
-            let transaction_id = append_foreshadow_feed(
+            let transaction_id = append_foreshadow_feed_with_authority(
                 conn,
                 ForeshadowFeedAppend {
                     project_id: &project_id,
@@ -1356,6 +1566,7 @@ pub fn delete(db: &Database, payload: ForeshadowDeletePayload) -> anyhow::Result
                         vec!["/".to_string()],
                     )?],
                 },
+                renderer_context.as_ref(),
             )?;
             record_manual_foreshadow_fields(
                 conn,
@@ -1672,7 +1883,28 @@ pub fn update_setup(
     id: String,
     patch: ForeshadowSetupPatch,
 ) -> anyhow::Result<Value> {
-    update_setup_with_operation(db, id, patch, "foreshadow.setup.update")
+    update_setup_with_operation(db, id, patch, "foreshadow.setup.update", None)
+}
+
+pub fn update_setup_with_renderer_authority(
+    db: &Database,
+    id: String,
+    patch: ForeshadowSetupPatch,
+    renderer_context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_foreshadow_renderer_context(
+        "foreshadow setup update",
+        &patch.context,
+        &renderer_context,
+        &["human-direct", "history-replay", "restore-or-migration"],
+    )?;
+    update_setup_with_operation(
+        db,
+        id,
+        patch,
+        "foreshadow.setup.update",
+        Some(&renderer_context),
+    )
 }
 
 fn update_setup_with_operation(
@@ -1680,6 +1912,7 @@ fn update_setup_with_operation(
     id: String,
     patch: ForeshadowSetupPatch,
     operation: &'static str,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     let now = chrono::Utc::now().timestamp_millis();
     let write_context = resolve_write_context(operation, &patch.context)?;
@@ -1808,7 +2041,7 @@ fn update_setup_with_operation(
             )?;
             record_manual_foreshadow_fields(conn, &project_id, &foreshadow_id, &["/setups"], now)?;
             if changed {
-                let transaction_id = append_foreshadow_feed(
+                let transaction_id = append_foreshadow_feed_with_authority(
                     conn,
                     ForeshadowFeedAppend {
                         project_id: &project_id,
@@ -1825,6 +2058,7 @@ fn update_setup_with_operation(
                             vec![format!("/setups/{}", json_pointer_segment(&id))],
                         )?],
                     },
+                    renderer_context,
                 )?;
                 return Ok(attach_maintenance_transaction_id(result, transaction_id));
             }
@@ -1861,6 +2095,28 @@ pub fn get(db: &Database, id: String) -> anyhow::Result<Value> {
 }
 
 pub fn link_codex(db: &Database, payload: ForeshadowCodexLinkPayload) -> anyhow::Result<Value> {
+    link_codex_with_context(db, payload, None)
+}
+
+pub fn link_codex_with_renderer_authority(
+    db: &Database,
+    payload: ForeshadowCodexLinkPayload,
+    renderer_context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_foreshadow_renderer_context(
+        "foreshadow Codex link create",
+        &payload.context,
+        &renderer_context,
+        &["human-direct"],
+    )?;
+    link_codex_with_context(db, payload, Some(renderer_context))
+}
+
+fn link_codex_with_context(
+    db: &Database,
+    payload: ForeshadowCodexLinkPayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     let now = chrono::Utc::now().timestamp_millis();
     let write_context = resolve_write_context("foreshadow.codex-link.create", &payload.context)?;
     let fingerprint_payload = json!({
@@ -1924,7 +2180,7 @@ pub fn link_codex(db: &Database, payload: ForeshadowCodexLinkPayload) -> anyhow:
                 now,
             )?;
             if changed {
-                let transaction_id = append_foreshadow_feed(
+                let transaction_id = append_foreshadow_feed_with_authority(
                     conn,
                     ForeshadowFeedAppend {
                         project_id: &project_id,
@@ -1944,6 +2200,7 @@ pub fn link_codex(db: &Database, payload: ForeshadowCodexLinkPayload) -> anyhow:
                             )],
                         )?],
                     },
+                    renderer_context.as_ref(),
                 )?;
                 return Ok(attach_maintenance_transaction_id(result, transaction_id));
             }
@@ -1953,6 +2210,28 @@ pub fn link_codex(db: &Database, payload: ForeshadowCodexLinkPayload) -> anyhow:
 }
 
 pub fn unlink_codex(db: &Database, payload: ForeshadowCodexLinkPayload) -> anyhow::Result<Value> {
+    unlink_codex_with_context(db, payload, None)
+}
+
+pub fn unlink_codex_with_renderer_authority(
+    db: &Database,
+    payload: ForeshadowCodexLinkPayload,
+    renderer_context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_foreshadow_renderer_context(
+        "foreshadow Codex link delete",
+        &payload.context,
+        &renderer_context,
+        &["human-direct"],
+    )?;
+    unlink_codex_with_context(db, payload, Some(renderer_context))
+}
+
+fn unlink_codex_with_context(
+    db: &Database,
+    payload: ForeshadowCodexLinkPayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     // The IPC contract carries globally unique entity ids but no project id.
     // Scope deletion to the exact composite association; intentionally do not
     // require same-project ownership here so legacy invalid links remain
@@ -2008,7 +2287,7 @@ pub fn unlink_codex(db: &Database, payload: ForeshadowCodexLinkPayload) -> anyho
                 now,
             )?;
             if changed {
-                let transaction_id = append_foreshadow_feed(
+                let transaction_id = append_foreshadow_feed_with_authority(
                     conn,
                     ForeshadowFeedAppend {
                         project_id: &project_id,
@@ -2028,6 +2307,7 @@ pub fn unlink_codex(db: &Database, payload: ForeshadowCodexLinkPayload) -> anyho
                             )],
                         )?],
                     },
+                    renderer_context.as_ref(),
                 )?;
                 return Ok(attach_maintenance_transaction_id(result, transaction_id));
             }
@@ -2094,6 +2374,28 @@ pub fn set_setup_strength(
     db: &Database,
     payload: ForeshadowSetupStrengthPayload,
 ) -> anyhow::Result<Value> {
+    set_setup_strength_with_context(db, payload, None)
+}
+
+pub fn set_setup_strength_with_renderer_authority(
+    db: &Database,
+    payload: ForeshadowSetupStrengthPayload,
+    renderer_context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_foreshadow_renderer_context(
+        "foreshadow setup strength",
+        &payload.context,
+        &renderer_context,
+        &["human-direct"],
+    )?;
+    set_setup_strength_with_context(db, payload, Some(renderer_context))
+}
+
+fn set_setup_strength_with_context(
+    db: &Database,
+    payload: ForeshadowSetupStrengthPayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     update_setup_with_operation(
         db,
         payload.setup_id,
@@ -2108,10 +2410,33 @@ pub fn set_setup_strength(
             last_evaluated_at: None,
         },
         "foreshadow.setup.strength",
+        renderer_context.as_ref(),
     )
 }
 
 pub fn setup_create_ai(db: &Database, input: SetupCreateAiInput) -> anyhow::Result<Value> {
+    setup_create_ai_with_context(db, input, None)
+}
+
+pub fn setup_create_ai_with_renderer_authority(
+    db: &Database,
+    input: SetupCreateAiInput,
+    renderer_context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_foreshadow_renderer_context(
+        "foreshadow setup create",
+        &input.context,
+        &renderer_context,
+        &["human-direct", "interactive-agent-command"],
+    )?;
+    setup_create_ai_with_context(db, input, Some(renderer_context))
+}
+
+fn setup_create_ai_with_context(
+    db: &Database,
+    input: SetupCreateAiInput,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     let now = chrono::Utc::now().timestamp_millis();
     let write_context = resolve_write_context("foreshadow.setup.create", &input.context)?;
     let fingerprint_payload = json!({
@@ -2240,7 +2565,7 @@ pub fn setup_create_ai(db: &Database, input: SetupCreateAiInput) -> anyhow::Resu
                     params![input.foreshadow_id],
                     |row| row.get(0),
                 )?;
-                let transaction_id = append_foreshadow_feed(
+                let transaction_id = append_foreshadow_feed_with_authority(
                     conn,
                     ForeshadowFeedAppend {
                         project_id: &project_id,
@@ -2257,6 +2582,7 @@ pub fn setup_create_ai(db: &Database, input: SetupCreateAiInput) -> anyhow::Resu
                             vec![format!("/setups/{}", json_pointer_segment(&input.id))],
                         )?],
                     },
+                    renderer_context.as_ref(),
                 )?;
                 return Ok(attach_maintenance_transaction_id(result, transaction_id));
             }
@@ -2266,6 +2592,28 @@ pub fn setup_create_ai(db: &Database, input: SetupCreateAiInput) -> anyhow::Resu
 }
 
 pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::Result<Value> {
+    resolve_orphan_with_context(db, payload, None)
+}
+
+pub fn resolve_orphan_with_renderer_authority(
+    db: &Database,
+    payload: OrphanResolvePayload,
+    renderer_context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_foreshadow_renderer_context(
+        "foreshadow orphan resolve",
+        &payload.context,
+        &renderer_context,
+        &["human-direct"],
+    )?;
+    resolve_orphan_with_context(db, payload, Some(renderer_context))
+}
+
+fn resolve_orphan_with_context(
+    db: &Database,
+    payload: OrphanResolvePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     let now = chrono::Utc::now().timestamp_millis();
     let write_context = resolve_write_context("foreshadow.orphan.resolve", &payload.context)?;
     let payload_hash = payload_fingerprint(
@@ -2391,7 +2739,7 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                             &["/setups"],
                             now,
                         )?;
-                        let transaction_id = append_foreshadow_feed(
+                        let transaction_id = append_foreshadow_feed_with_authority(
                             conn,
                             ForeshadowFeedAppend {
                                 project_id: &project_id,
@@ -2411,6 +2759,7 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                                     )],
                                 )?],
                             },
+                            renderer_context.as_ref(),
                         )?;
                         foreshadow = attach_maintenance_transaction_id(foreshadow, transaction_id);
                     }
@@ -2468,7 +2817,7 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                         &["/setups"],
                         now,
                     )?;
-                    let transaction_id = append_foreshadow_feed(
+                    let transaction_id = append_foreshadow_feed_with_authority(
                         conn,
                         ForeshadowFeedAppend {
                             project_id: &project_id,
@@ -2488,6 +2837,7 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                                 )],
                             )?],
                         },
+                        renderer_context.as_ref(),
                     )?;
                     foreshadow = attach_maintenance_transaction_id(foreshadow, transaction_id);
                 }
@@ -2626,7 +2976,7 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                     &["/setups"],
                     now,
                 )?;
-                let transaction_id = append_foreshadow_feed(
+                let transaction_id = append_foreshadow_feed_with_authority(
                     conn,
                     ForeshadowFeedAppend {
                         project_id: &project_id,
@@ -2646,6 +2996,7 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
                             ],
                         )?],
                     },
+                    renderer_context.as_ref(),
                 )?;
                 foreshadow = attach_maintenance_transaction_id(foreshadow, transaction_id);
                 Ok(serde_json::json!({ "setupId": new_id, "foreshadow": foreshadow }))
@@ -2658,6 +3009,28 @@ pub fn resolve_orphan(db: &Database, payload: OrphanResolvePayload) -> anyhow::R
 pub fn save_anchors_for_scene(
     db: &Database,
     payload: ForeshadowAnchorSavePayload,
+) -> anyhow::Result<Vec<Value>> {
+    save_anchors_for_scene_with_context(db, payload, None)
+}
+
+pub fn save_anchors_for_scene_with_renderer_authority(
+    db: &Database,
+    payload: ForeshadowAnchorSavePayload,
+    renderer_context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Vec<Value>> {
+    validate_foreshadow_renderer_context(
+        "foreshadow anchor save",
+        &payload.context,
+        &renderer_context,
+        &["human-direct"],
+    )?;
+    save_anchors_for_scene_with_context(db, payload, Some(renderer_context))
+}
+
+fn save_anchors_for_scene_with_context(
+    db: &Database,
+    payload: ForeshadowAnchorSavePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Vec<Value>> {
     let write_context = resolve_write_context("foreshadow.anchors.save", &payload.context)?;
     let scene_id = payload.scene_id;
@@ -3029,7 +3402,7 @@ pub fn save_anchors_for_scene(
                     .and_then(Value::as_str)
                     .ok_or_else(|| anyhow::anyhow!("foreshadow anchor Feed root is missing"))?
                     .to_string();
-                let transaction_id = append_foreshadow_feed(
+                let transaction_id = append_foreshadow_feed_with_authority(
                     conn,
                     ForeshadowFeedAppend {
                         project_id,
@@ -3039,6 +3412,7 @@ pub fn save_anchors_for_scene(
                         undo_journal_id: None,
                         events: feed_events,
                     },
+                    renderer_context.as_ref(),
                 )?;
                 authoritative = authoritative
                     .into_iter()
@@ -3136,12 +3510,9 @@ pub fn load_anchors_for_scene(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use std::path::Path;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
-        db.migrate().expect("migrate");
-        db
+        crate::test_support::current_schema_memory().expect("current schema fixture")
     }
 
     fn insert_project(db: &Database) -> String {
@@ -3215,6 +3586,7 @@ mod tests {
             event_uid: event_uid.to_string(),
             origin: NarrativeChangeOrigin::Human,
             original_transaction_id: None,
+            undo_journal_id: None,
         }
     }
 
@@ -3814,7 +4186,7 @@ mod tests {
                 "get",
             )
             .expect("load journal count");
-        assert_eq!(journal[0]["count"], 0);
+        assert_eq!(journal[0]["count"], 1);
     }
 
     #[test]
@@ -5757,12 +6129,26 @@ mod tests {
         let fid = insert_foreshadow(&db, &proj);
         let scene = insert_scene(&db, &proj);
         insert_setup(&db, &fid, &scene, 10, 20, false);
+        db.execute(
+            "UPDATE foreshadows SET title = ?, notes = ? WHERE id = ?",
+            &[
+                Value::String("PRIVATE_FORESHADOW_TITLE".to_string()),
+                Value::String("PRIVATE_FORESHADOW_NOTES".to_string()),
+                Value::String(fid),
+            ],
+            "run",
+        )
+        .unwrap();
 
         let result = load_anchors_for_scene(&db, scene.clone()).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].from, 10);
         assert_eq!(result[0].to, 20);
         assert_eq!(result[0].mark_name, "foreshadowSetup");
+        let wire = serde_json::to_string(&result).unwrap();
+        assert!(!wire.contains("PRIVATE_FORESHADOW_TITLE"));
+        assert!(!wire.contains("PRIVATE_FORESHADOW_NOTES"));
+        assert!(wire.contains("baseVersion"));
     }
 
     #[test]

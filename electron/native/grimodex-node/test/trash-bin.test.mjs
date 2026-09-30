@@ -137,13 +137,14 @@ test("trashBinClearAll で project の屑が全て消える", async () => {
 });
 
 test("trashBinPrune は期日切れ + 件数超過を刈り取り残件数を返す", async () => {
+  const nowMs = Date.now();
+  const daysAgo = (days) =>
+    new Date(nowMs - days * 24 * 60 * 60 * 1_000).toISOString();
   // 期日切れ 1 件 (retention 60 日を大きく超える古さ) + 新しい 3 件
-  await backend.trashBinCreate(
-    makePayload("期日切れ", "2020-01-01T00:00:00.000Z"),
-  );
-  await backend.trashBinCreate(makePayload("i1", "2026-07-01T00:00:00.000Z"));
-  await backend.trashBinCreate(makePayload("i2", "2026-07-02T00:00:00.000Z"));
-  await backend.trashBinCreate(makePayload("i3", "2026-07-03T00:00:00.000Z"));
+  await backend.trashBinCreate(makePayload("期日切れ", daysAgo(365)));
+  await backend.trashBinCreate(makePayload("i1", daysAgo(3)));
+  await backend.trashBinCreate(makePayload("i2", daysAgo(2)));
+  await backend.trashBinCreate(makePayload("i3", daysAgo(1)));
 
   // retention で 1 件消え、max_count=2 で古い方からさらに 1 件消える。
   const remaining = JSON.parse(await backend.trashBinPrune(PROJECT, 60, 2));

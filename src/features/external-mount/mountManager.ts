@@ -17,7 +17,7 @@ import {
   updateNode,
 } from "@/features/tree/api";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import { rebaselineScenesAtTail } from "@/features/timelapse/rebaseline";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { scheduleSceneIndex } from "@/features/semantic-search/scheduler";
@@ -1113,6 +1113,15 @@ async function reconcileRoot(
     }
   }
 
+  // Boot reconciliation compares the canonical PM documents in one body read
+  // batch. Metadata-only mtime/title drift must not emit a body mutation (or a
+  // new timelapse segment) when disk and DB already describe the same doc.
+  const existingFileIds = scan.files
+    .map((file) => dbByUri.get(buildSourceUri(root.id, file.relPath))?.id)
+    .filter((id): id is string => id !== undefined);
+  const existingFileContents = await loadSceneContents(existingFileIds);
+  assertMountAuthorityCurrent(isCurrent);
+
   for (const file of scan.files) {
     assertMountAuthorityCurrent(isCurrent);
     const uri = buildSourceUri(root.id, file.relPath);
@@ -1139,7 +1148,13 @@ async function reconcileRoot(
         });
         assertMountAuthorityCurrent(isCurrent);
       }
-      await syncFileCache(existing.id, file, isCurrent);
+      await syncFileCache(
+        existing.id,
+        file,
+        projectId,
+        isCurrent,
+        existingFileContents.get(existing.id),
+      );
     } else {
       await upsertSceneFromFile(
         root,
@@ -1294,27 +1309,36 @@ async function upsertSceneFromFile(
       });
       assertMountAuthorityCurrent(isCurrent);
     }
-    await syncFileCache(existing.id, file, isCurrent);
+    await syncFileCache(existing.id, file, projectId, isCurrent);
     return;
   }
 
   const parentId = externalFileParentId(file.relPath, mountFolderId, folderIds);
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
-  const charCount = countSceneBodyCharsFromJson(pmJson);
+  const nodeId = crypto.randomUUID();
   assertMountAuthorityCurrent(isCurrent);
-  const node = await createNode({
-    id: crypto.randomUUID(),
-    projectId,
-    nodeType: "scene",
-    title: titleFromFilename(basename(file.relPath)),
-    sortOrder: sortOrderForFilename(file.relPath),
-    parentId,
-    sourceUri: uri,
-    sourceMtime: file.mtime,
-    content: pmJson,
-  });
-  assertMountAuthorityCurrent(isCurrent);
-  await saveSceneContent(node.id, { content: pmJson, charCount });
+  const node = await createNode(
+    {
+      id: nodeId,
+      projectId,
+      nodeType: "scene",
+      title: titleFromFilename(basename(file.relPath)),
+      sortOrder: sortOrderForFilename(file.relPath),
+      parentId,
+      sourceUri: uri,
+      sourceMtime: file.mtime,
+      content: pmJson,
+    },
+    {
+      timelapseDocumentIdentity: {
+        projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId: nodeId,
+        storage: "file",
+      },
+    },
+  );
   assertMountAuthorityCurrent(isCurrent);
   scheduleSceneIndex(node.id);
 }
@@ -1322,19 +1346,66 @@ async function upsertSceneFromFile(
 async function syncFileCache(
   nodeId: string,
   file: ScannedFile,
+  projectId: string,
   isCurrent: MountAuthorityGuard = () => true,
+  knownPersistedContent?: string,
 ): Promise<void> {
   const pmJson = JSON.stringify(markdownToPmJson(file.content));
   const charCount = countSceneBodyCharsFromJson(pmJson);
   assertMountAuthorityCurrent(isCurrent);
-  await saveSceneContent(nodeId, { content: pmJson, charCount });
+  const persistedContent =
+    knownPersistedContent ?? (await loadSceneContent(nodeId));
   assertMountAuthorityCurrent(isCurrent);
+  const bodyChanged =
+    normalizePmJsonForComparison(persistedContent) !==
+    normalizePmJsonForComparison(pmJson);
+  if (bodyChanged) {
+    await saveSceneContent(nodeId, {
+      content: pmJson,
+      charCount,
+      projectId,
+      timelapseDocumentIdentity: {
+        projectId,
+        domain: "editor",
+        entityType: "scene",
+        entityId: nodeId,
+        storage: "file",
+      },
+    });
+    assertMountAuthorityCurrent(isCurrent);
+  }
   await updateNode(nodeId, {
     sourceMtime: file.mtime,
     title: titleFromFilename(basename(file.relPath)),
   });
   assertMountAuthorityCurrent(isCurrent);
+  if (bodyChanged) {
+    // The body and metadata writes are canonical Native mutations. Query the
+    // durable chain tail after both complete; renderer memory can lag a Native
+    // append and is not an acceptable replay anchor.
+    await rebaselineScenesAtTail(projectId, [nodeId]);
+    assertMountAuthorityCurrent(isCurrent);
+  }
   scheduleSceneIndex(nodeId);
+}
+
+function normalizePmJsonForComparison(content: string): string | null {
+  try {
+    const normalize = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(normalize);
+      if (value !== null && typeof value === "object") {
+        return Object.fromEntries(
+          Object.entries(value as Record<string, unknown>)
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([key, nested]) => [key, normalize(nested)]),
+        );
+      }
+      return value;
+    };
+    return JSON.stringify(normalize(JSON.parse(content)));
+  } catch {
+    return null;
+  }
 }
 
 function sortOrderForFilename(relPath: string): string {
@@ -1696,6 +1767,14 @@ async function applyExternalContent(
   const { contentVersion, contentUpdatedAt } = await saveSceneContent(nodeId, {
     content: pmJson,
     charCount,
+    projectId,
+    timelapseDocumentIdentity: {
+      projectId,
+      domain: "editor",
+      entityType: "scene",
+      entityId: nodeId,
+      storage: "file",
+    },
   });
   // Publish the authoritative DB replacement before any fallible metadata,
   // timelapse, tree, mention, or chat side effect. Mounted editors subscribe

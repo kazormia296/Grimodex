@@ -1,4 +1,5 @@
-use std::path::Path;
+#[path = "../test-support/adapter.rs"]
+mod test_support;
 
 use grimodex_db::{
     agent_writes::{
@@ -27,13 +28,13 @@ fn delete_payload(
             event_uid: format!("{request_id}-event"),
             origin: NarrativeChangeOrigin::Human,
             original_transaction_id: None,
+            undo_journal_id: None,
         },
     }
 }
 
 fn test_db() -> Database {
-    let db = Database::new(Path::new(":memory:")).expect("open test database");
-    db.migrate().expect("migrate test database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES ('p1', 'Project');
@@ -89,6 +90,17 @@ fn apply_journal(db: &Database, journal_id: &str, direction: &str) -> anyhow::Re
             session_id: "history-session".to_string(),
             journal_id: journal_id.to_string(),
             direction: direction.to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: direction.to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: vec![
+                "original-transaction".to_string(),
+                "journal-lineage".to_string(),
+                "typed-writer".to_string(),
+                "occ".to_string(),
+                "change-event".to_string(),
+                "change-feed".to_string(),
+            ],
         },
     )
 }

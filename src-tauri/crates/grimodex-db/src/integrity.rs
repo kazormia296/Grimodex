@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::Database;
+use crate::agent_writes::{
+    canonical_payload_with_authority_context, validate_renderer_authority_context,
+    RendererCanonicalWriteContext, RendererMutationProvenance,
+};
+use crate::canonical_feed_snapshots::{canonical_codex_entry_snapshot, canonical_snippet_snapshot};
 use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
     canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
@@ -15,6 +20,7 @@ use crate::narrative_extraction::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 
 const REPAIR_IDEMPOTENCY_DOMAIN: &str = "repair_integrity";
 const REPAIR_SOURCE_DOMAIN: &str = "integrity.repair";
@@ -27,6 +33,13 @@ pub struct RepairIntegrityPayload {
     pub session_id: String,
     pub event_uid: String,
     pub occurred_at: String,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -45,17 +58,14 @@ pub struct RepairIntegrityReport {
 struct CodexRepairTarget {
     id: String,
     version: i64,
-    source_chat_message_id: String,
-    updated_at: String,
+    before_snapshot: Value,
 }
 
 #[derive(Clone, Debug)]
 struct SnippetRepairTarget {
     id: String,
     version: i64,
-    source_chat_message_id: Option<String>,
-    scene_id: Option<String>,
-    updated_at: String,
+    before_snapshot: Value,
     repair_source: bool,
     repair_scene: bool,
 }
@@ -74,12 +84,37 @@ fn occurred_at_millis(value: &str) -> anyhow::Result<i64> {
         .timestamp_millis())
 }
 
+fn integrity_authority_context(
+    payload: &RepairIntegrityPayload,
+) -> anyhow::Result<RendererCanonicalWriteContext> {
+    let context = RendererCanonicalWriteContext {
+        request_id: payload.request_id.clone(),
+        event_uid: payload.event_uid.clone(),
+        authority_session_id: None,
+        origin: NarrativeChangeOrigin::Restore,
+        authority_route: payload.authority_route.clone(),
+        caller: payload.caller.clone(),
+        controls: payload.controls.clone(),
+        provenance: payload.provenance.clone(),
+        writes_authority_protected_field: payload.writes_authority_protected_field,
+        original_transaction_id: None,
+        undo_journal_id: None,
+        context_mode: None,
+        icon: None,
+        children_budget: None,
+        notes: None,
+        canonical_payload: None,
+    };
+    validate_renderer_authority_context(&context)?;
+    Ok(context)
+}
+
 fn codex_targets(
     conn: &rusqlite::Connection,
     project_id: &str,
 ) -> anyhow::Result<Vec<CodexRepairTarget>> {
     let mut statement = conn.prepare(
-        "SELECT entry.id, entry.version, entry.source_chat_message_id, entry.updated_at
+        "SELECT entry.id, entry.version
            FROM codex_entries entry
           WHERE entry.project_id = ?1
             AND entry.source_chat_message_id IS NOT NULL
@@ -92,16 +127,20 @@ fn codex_targets(
             )
           ORDER BY entry.id",
     )?;
-    let rows = statement.query_map([project_id], |row| {
-        Ok(CodexRepairTarget {
-            id: row.get(0)?,
-            version: row.get(1)?,
-            source_chat_message_id: row.get(2)?,
-            updated_at: row.get(3)?,
+    let rows = statement
+        .query_map([project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(id, version)| {
+            Ok(CodexRepairTarget {
+                before_snapshot: canonical_codex_entry_snapshot(conn, project_id, &id)?,
+                id,
+                version,
+            })
         })
-    })?;
-    let targets = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(targets)
+        .collect()
 }
 
 fn snippet_targets(
@@ -111,9 +150,6 @@ fn snippet_targets(
     let mut statement = conn.prepare(
         "SELECT snippet.id,
                 snippet.version,
-                snippet.source_chat_message_id,
-                snippet.scene_id,
-                snippet.updated_at,
                 CASE WHEN snippet.source_chat_message_id IS NOT NULL
                        AND NOT EXISTS (
                            SELECT 1
@@ -151,19 +187,27 @@ fn snippet_targets(
             )
           ORDER BY snippet.id",
     )?;
-    let rows = statement.query_map([project_id], |row| {
-        Ok(SnippetRepairTarget {
-            id: row.get(0)?,
-            version: row.get(1)?,
-            source_chat_message_id: row.get(2)?,
-            scene_id: row.get(3)?,
-            updated_at: row.get(4)?,
-            repair_source: row.get::<_, i64>(5)? != 0,
-            repair_scene: row.get::<_, i64>(6)? != 0,
+    let rows = statement
+        .query_map([project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)? != 0,
+                row.get::<_, i64>(3)? != 0,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    rows.into_iter()
+        .map(|(id, version, repair_source, repair_scene)| {
+            Ok(SnippetRepairTarget {
+                before_snapshot: canonical_snippet_snapshot(conn, project_id, &id)?,
+                id,
+                version,
+                repair_source,
+                repair_scene,
+            })
         })
-    })?;
-    let targets = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(targets)
+        .collect()
 }
 
 impl Database {
@@ -247,6 +291,7 @@ impl Database {
         require_non_empty(&payload.session_id, "sessionId")?;
         require_non_empty(&payload.event_uid, "eventUid")?;
         require_non_empty(&payload.occurred_at, "occurredAt")?;
+        let authority_context = integrity_authority_context(&payload)?;
         let timestamp = occurred_at_millis(&payload.occurred_at)?;
         // `occurredAt` is domain data and deliberately remains in the hash.
         // The renderer retains the exact materialized payload after an unknown
@@ -343,19 +388,40 @@ impl Database {
                 let changed = !codex.is_empty() || !snippets.is_empty();
                 let (change_event_uid, maintenance_transaction_id) = if changed {
                     let mut events = Vec::with_capacity(codex.len() + snippets.len());
+                    let epoch_before = json!({
+                        "projectId": payload.project_id.clone(),
+                        "semanticEpoch": "prior",
+                    });
+                    let epoch_after = json!({
+                        "projectId": payload.project_id.clone(),
+                        "semanticEpoch": "reset",
+                        "requestId": payload.request_id.clone(),
+                    });
+                    events.push(NarrativeChangeEventInput {
+                        object_key: json!({
+                            "kind": "project",
+                            "projectId": payload.project_id.clone(),
+                        }),
+                        change_kind: "schema".to_string(),
+                        mutation_kind: "update".to_string(),
+                        before_version: Some(0),
+                        before_digest: Some(narrative_snapshot_digest(&epoch_before)?),
+                        after_version: Some(1),
+                        after_digest: Some(narrative_snapshot_digest(&epoch_after)?),
+                        changed_paths: vec!["/integrity".to_string()],
+                        text_impact: None,
+                        structural_impact: Some(json!({
+                            "event": "semantic-epoch-reset",
+                            "requiresFullRebuild": true,
+                            "changedPaths": ["/integrity"],
+                        })),
+                    });
                     for target in &codex {
-                        let before = json!({
-                            "id": target.id.clone(),
-                            "sourceChatMessageId": target.source_chat_message_id.clone(),
-                            "updatedAt": target.updated_at.clone(),
-                            "version": target.version,
-                        });
-                        let after = json!({
-                            "id": target.id.clone(),
-                            "sourceChatMessageId": Value::Null,
-                            "updatedAt": payload.occurred_at.clone(),
-                            "version": target.version + 1,
-                        });
+                        let after = canonical_codex_entry_snapshot(
+                            conn,
+                            &payload.project_id,
+                            &target.id,
+                        )?;
                         events.push(NarrativeChangeEventInput {
                             object_key: json!({
                                 "kind": "codex-entry",
@@ -364,7 +430,7 @@ impl Database {
                             change_kind: "association".to_string(),
                             mutation_kind: "update".to_string(),
                             before_version: Some(target.version),
-                            before_digest: Some(narrative_snapshot_digest(&before)?),
+                            before_digest: Some(narrative_snapshot_digest(&target.before_snapshot)?),
                             after_version: Some(target.version + 1),
                             after_digest: Some(narrative_snapshot_digest(&after)?),
                             changed_paths: vec!["/sourceChatMessageId".to_string()],
@@ -382,32 +448,11 @@ impl Database {
                         if target.repair_source {
                             changed_paths.push("/sourceChatMessageId".to_string());
                         }
-                        let before = json!({
-                            "id": target.id.clone(),
-                            "sceneId": target.scene_id.clone(),
-                            "sourceChatMessageId": target.source_chat_message_id.clone(),
-                            "updatedAt": target.updated_at.clone(),
-                            "version": target.version,
-                        });
-                        let after = json!({
-                            "id": target.id.clone(),
-                            "sceneId": if target.repair_scene {
-                                Value::Null
-                            } else {
-                                target.scene_id.clone().map(Value::String).unwrap_or(Value::Null)
-                            },
-                            "sourceChatMessageId": if target.repair_source {
-                                Value::Null
-                            } else {
-                                target
-                                    .source_chat_message_id
-                                    .clone()
-                                    .map(Value::String)
-                                    .unwrap_or(Value::Null)
-                            },
-                            "updatedAt": payload.occurred_at.clone(),
-                            "version": target.version + 1,
-                        });
+                        let after = canonical_snippet_snapshot(
+                            conn,
+                            &payload.project_id,
+                            &target.id,
+                        )?;
                         events.push(NarrativeChangeEventInput {
                             object_key: json!({
                                 "kind": "component",
@@ -416,7 +461,7 @@ impl Database {
                             change_kind: "association".to_string(),
                             mutation_kind: "update".to_string(),
                             before_version: Some(target.version),
-                            before_digest: Some(narrative_snapshot_digest(&before)?),
+                            before_digest: Some(narrative_snapshot_digest(&target.before_snapshot)?),
                             after_version: Some(target.version + 1),
                             after_digest: Some(narrative_snapshot_digest(&after)?),
                             changed_paths: changed_paths.clone(),
@@ -426,6 +471,18 @@ impl Database {
                             })),
                         });
                     }
+                    let canonical_payload = canonical_payload_with_authority_context(
+                        &json!({
+                            "codexSourcesFixed": codex_sources_fixed,
+                            "projectId": payload.project_id,
+                            "snippetScenesFixed": snippet_scenes_fixed,
+                            "snippetSourcesFixed": snippet_sources_fixed,
+                            "semanticEpochReset": true,
+                            "requiresFullRebuild": true,
+                        })
+                        .to_string(),
+                        &authority_context,
+                    );
                     let append = append_canonical_and_narrative_change_in_tx(
                         conn,
                         &payload.project_id,
@@ -437,13 +494,7 @@ impl Database {
                             op_type: REPAIR_SOURCE_DOMAIN.to_string(),
                             entity_type: Some("project".to_string()),
                             entity_id: Some(payload.project_id.clone()),
-                            payload: json!({
-                                "codexSourcesFixed": codex_sources_fixed,
-                                "projectId": payload.project_id,
-                                "snippetScenesFixed": snippet_scenes_fixed,
-                                "snippetSourcesFixed": snippet_sources_fixed,
-                            })
-                            .to_string(),
+                            payload: canonical_payload,
                             timestamp,
                         },
                         &AppendNarrativeChangeTransactionInput {
@@ -452,7 +503,7 @@ impl Database {
                             source_domain: REPAIR_SOURCE_DOMAIN.to_string(),
                             source_change_event_uid: payload.event_uid.clone(),
                             cause_kind: NarrativeChangeCauseKind::Forward,
-                            origin: NarrativeChangeOrigin::Human,
+                            origin: NarrativeChangeOrigin::Restore,
                             original_transaction_id: None,
                             commit_id: None,
                             journal_id: None,
@@ -461,6 +512,20 @@ impl Database {
                             occurred_at: payload.occurred_at.clone(),
                             events,
                         },
+                    )?;
+                    // Gate C2 Lane A/N (`semantic_epoch.rs`/
+                    // `restore_rebuild.rs`, wired in C2-T1): this branch
+                    // only runs when `changed` is true, which is exactly
+                    // when the `events` vector above starts with the
+                    // `"semantic-epoch-reset"` structural impact marker.
+                    // Mint a new Semantic Epoch in the same transaction so a
+                    // rebuild after Integrity Repair sees the Dependency
+                    // Edge graph as reset from this exact point.
+                    rotate_epoch_for_restore_in_tx(
+                        conn,
+                        &payload.project_id,
+                        "semantic-epoch-reset",
+                        Some(&payload.event_uid),
                     )?;
                     (
                         Some(payload.event_uid.clone()),

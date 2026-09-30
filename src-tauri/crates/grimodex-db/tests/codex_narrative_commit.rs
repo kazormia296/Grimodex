@@ -1,3 +1,6 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, CommitApplicationRef,
     CommitOperation, CreateRunPayload, CreateTaskSeed, EntityBindingSeed, GetCommitStatusPayload,
@@ -11,8 +14,7 @@ use grimodex_db::{
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.execute(
         "INSERT INTO projects (id, title) VALUES (?, 'Project')",
         &[Value::String("project-1".to_string())],
@@ -1298,6 +1300,7 @@ fn partial_apply_review_bundle_and_resumable_runs() {
         RunRefPayload {
             run_id: "run-partial".to_string(),
             project_id: "project-1".to_string(),
+            chronicle_blocked_discard: None,
         },
     )
     .expect("review bundle");
@@ -1706,5 +1709,132 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
             .to_string()
             .contains("NEX_PROPOSAL_ALREADY_APPLIED"),
         "proposal must be marked applied: {revision_err}"
+    );
+}
+
+/// Gate C2 Lane H (`application_contributions.rs`, wired in C2-T1):
+/// applying a Commit must record one `narrative_application_contributions`
+/// row per field `field_authority::affected_fields` reports for the
+/// operation, all under the real `narrative_proposal_applications.id` --
+/// not a fabricated identifier -- and all `target_state = 'unchanged'`
+/// (this write just landed, so it matches exactly what was applied).
+#[test]
+fn apply_commit_records_application_contributions_per_affected_field() {
+    let db = migrated_db();
+    let items = [(
+        "codex.entry.create",
+        entry_create("entry-contrib", "Contrib Hero", "ent:contrib"),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-contrib", "set-contrib", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-contrib",
+            "digest-contrib",
+            "set-contrib",
+            "run-contrib",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+
+    let proposal_id = pairs[0].0.clone();
+    let revision_id = pairs[0].1.clone();
+    let application_id: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM narrative_proposal_applications
+                  WHERE proposal_id = ?1 AND revision_id = ?2",
+                [&proposal_id, &revision_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("find application id");
+
+    let mut rows: Vec<(String, String, String)> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT target_object_identity, field_path, target_state
+                   FROM narrative_application_contributions
+                  WHERE project_id = 'project-1' AND application_id = ?1
+                  ORDER BY field_path ASC",
+            )?;
+            let rows = statement
+                .query_map([&application_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .expect("read application contributions");
+    rows.sort();
+
+    let expected_fields = [
+        "/aliases",
+        "/content",
+        "/name",
+        "/parentId",
+        "/summary",
+        "/type",
+    ];
+    assert_eq!(
+        rows.len(),
+        expected_fields.len(),
+        "one contribution row per codex.entry.create affected field: {rows:?}"
+    );
+    for (identity, field_path, target_state) in &rows {
+        assert_eq!(identity, "codex-entry:entry-contrib");
+        assert!(
+            expected_fields.contains(&field_path.as_str()),
+            "unexpected field path: {field_path}"
+        );
+        assert_eq!(target_state, "unchanged");
+    }
+
+    // SCHEMA 29 provenance. `baseline_sequence` is the canonical
+    // `change_events.sequence` this commit's own write landed on -- the
+    // self-stale guard's lower bound, without which a later evaluation would
+    // read the Apply's own event as proof the Source moved and mark the
+    // Application stale the moment it was applied. It only exists once the
+    // canonical append has returned, which is why the Contribution loop runs
+    // after it; this pins that ordering.
+    let (commit_ids, baselines): (Vec<String>, Vec<Option<i64>>) = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT commit_id, baseline_sequence
+                   FROM narrative_application_contributions
+                  WHERE project_id = 'project-1' AND application_id = ?1",
+            )?;
+            let rows = statement
+                .query_map([&application_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows.into_iter().unzip())
+        })
+        .expect("read contribution provenance");
+
+    let canonical_sequence: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT sequence FROM change_events
+                  WHERE project_id = 'project-1' AND op_type = 'narrative.commit.apply'
+                  ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read the canonical apply event sequence");
+
+    assert!(
+        commit_ids.iter().all(|id| !id.is_empty()),
+        "every Contribution must name the Commit that produced it"
+    );
+    assert!(
+        baselines
+            .iter()
+            .all(|baseline| *baseline == Some(canonical_sequence)),
+        "every Contribution must carry this commit's own canonical sequence          ({canonical_sequence}), got {baselines:?}"
     );
 }

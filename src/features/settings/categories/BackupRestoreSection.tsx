@@ -4,14 +4,12 @@ import { useTranslation } from "react-i18next";
 import { RotateCcw } from "lucide-react";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { debugLog, errorDetail } from "@/lib/debugLog";
-import { flushAllAutoSaves } from "@/hooks/useAutoSave";
-import { awaitAllPendingSceneWrites } from "@/features/tree/pendingSceneWrites";
-import { flushNow as flushTimelapseRecorder } from "@/features/timelapse/recorder";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
-import { listBackups, restoreBackup, type BackupInfo } from "../backupApi";
-
-/** Rust の restore_backup が「復元は適用したがセッション再オープンに失敗」を伝える安定マーカー。 */
-const RESTORE_SESSION_LOST = "RESTORE_SESSION_LOST";
+import { listBackups, type BackupInfo } from "../backupApi";
+import {
+  isTerminalRestoreError,
+  restoreBackupWithWorkspaceAuthority,
+} from "../backupRestoreAuthority";
 
 /** 復元に対応する形式（無圧縮 .db / gzip .db.gz）。 */
 function isSupportedFormat(format: string): boolean {
@@ -25,6 +23,11 @@ function formatBytes(bytes: number): string {
   const mb = kb / 1024;
   if (mb < 1024) return `${mb.toFixed(1)} MB`;
   return `${(mb / 1024).toFixed(2)} GB`;
+}
+
+/** Stable row identity for product journeys and accessible automation. */
+export function backupRestoreTestId(fileName: string): string {
+  return `backup-restore-${encodeURIComponent(fileName)}`;
 }
 
 /**
@@ -86,22 +89,8 @@ export function BackupRestoreSection() {
       return;
     }
     setRestoringFile(b.fileName);
-    // 復元前に保留中の保存を flush → 直前の状態が安全退避（Rust 側 backup_to）に
-    // 確実に含まれるようにする（openWorkspace と同じ静止化）。flush 失敗は復元を
-    // ブロックしない（安全退避が数秒古くなるだけ）。
     try {
-      await flushAllAutoSaves();
-      await awaitAllPendingSceneWrites();
-      await flushTimelapseRecorder();
-    } catch (e) {
-      debugLog.warn(
-        "backup-restore",
-        "quiesce before restore failed",
-        errorDetail(e),
-      );
-    }
-    try {
-      await restoreBackup(b.fileName);
+      await restoreBackupWithWorkspaceAuthority(b.fileName);
       toast.success(t("settings.data.restoreSuccess"));
       // DB を丸ごと差し替えたので全フロント状態を捨てて作り直す。
       window.location.reload();
@@ -110,10 +99,10 @@ export function BackupRestoreSection() {
       toast.error(t("settings.data.restoreFail"));
       setRestoringFile(null);
       setConfirmFile(null);
-      // Rust が「復元は適用したが再オープンに失敗（=セッション喪失）」を通知した場合は
-      // reload して bootstrap open_workspace に開き直させる（inner=None のまま固まらせ
-      // ない）。それ以外の失敗はセッション継続なので reload しない。
-      if (String(err).includes(RESTORE_SESSION_LOST)) {
+      // Native authorityの公開後またはforensic recoveryへの移行後は、旧renderer
+      // identityを再開せずbootstrap open_workspaceへ戻す。それ以外の事前失敗だけが
+      // 旧セッションを継続できる。
+      if (isTerminalRestoreError(err)) {
         window.location.reload();
       }
     }
@@ -176,6 +165,7 @@ export function BackupRestoreSection() {
                   type="button"
                   onClick={() => void handleRestore(b)}
                   disabled={disabled || !supported}
+                  data-testid={backupRestoreTestId(b.fileName)}
                   title={
                     supported
                       ? undefined

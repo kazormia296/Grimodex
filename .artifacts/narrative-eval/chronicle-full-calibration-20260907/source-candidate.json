@@ -1,0 +1,34 @@
+{
+  "state": "full-calibration-runtime-and-committed-source-bound",
+  "createdAt": "2026-09-06T16:29:32.573800+00:00",
+  "sourceRoot": "/home/grimodex/Grimodex",
+  "runtimeRoot": "/home/grimodex/Grimodex/.artifacts/chronicle-source-support-v2-worktree",
+  "head": "96473b56c3db879043ce879fc1e686d7f7061c9d",
+  "tree": "a13a7f74f392f8cbc11fec5bf6023cba6658a4bb",
+  "clean": false,
+  "trackedDiffSha256": "91cc5873c1244cb2434dc9b1e060aaff705817247cb5fd9e4746ba0554c2072c",
+  "fileHashes": {
+    "docs/plans/chronicle-evaluation-contract-v2.md": "46c70fd2e86e84e5aa8dd462b03e40868e2de68aa8b471fbf56e76b6337ae6e4",
+    "evals/narrative/README.md": "16dc4f5ac99f2278806ebf5cb646b35332e963b0f25089a24f739a625cf81acf",
+    "evals/narrative/calibration/chronicle-llm-judge-v1.json": "a763b2c589a939b27f8679a379ba7f223c062b52d19c1a8eff3f469aec577510",
+    "evals/narrative/calibration/chronicle-llm-judge-v1.review.md": "c00c8b6283a7e6bf8cc4d37102016eb60a93c751e0fa62275eb2474526c8f91c",
+    "evals/quality-manifest.yaml": "1fa16da4f0dad00f46729896bac9af1bd22dcdd1588a2a6ccf0249e784dd7774",
+    "src/features/narrative-extraction/eval/chronicleLlmJudgeCalibration.test.ts": "506806e8fffe6ec33e7627810abd8a2edc15215136e866000b16652cd72a1a63",
+    "src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.test.ts": "0502b78be5ec77e0f1d293edb924d71fbda24bba236d381997b8d6e740d43e54",
+    "src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts": "e058b613f6ed6c8107f4a61c2f00322e0f137779bf456a0ff7d1be3d62721986",
+    "src/features/narrative-extraction/eval/chronicleLlmJudgeStorage.node.test.ts": "ed9b7fa378d6924abf844933e2d93eea15df75bec713456744aae84a82ecbc08",
+    "src/features/narrative-extraction/eval/chronicleLlmJudgeStorage.node.ts": "9acb0c2e984a893729cf27322f2fc9043beade6f8dd1268b413e9765cb3478b7",
+    "src/features/narrative-extraction/eval/chronicleV2Evaluator.ts": "d11c7112edaf318ab35397266c292e38b1e6f99600601123ef53a7a0fe96b0a7"
+  },
+  "changedFromCommittedHead": [
+    "docs/plans/chronicle-evaluation-contract-v2.md",
+    "src/features/narrative-extraction/eval/chronicleLlmJudgeCalibration.test.ts",
+    "src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.test.ts",
+    "src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts"
+  ],
+  "sourceCheckout": {
+    "head": "0c1bd2ea9913dfecd600985530f7a56c04f03943",
+    "tree": "136a7fe1bf54c10d74325283dcf9ad455f85590d",
+    "trackedDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+}

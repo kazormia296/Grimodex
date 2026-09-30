@@ -1,7 +1,7 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -77,7 +77,7 @@ async function parseRelationSynthesisFromText(
 export async function runRelationSynthesisTask(
   input: RunRelationSynthesisTaskInput,
 ): Promise<readonly CodexRelationHypothesis[]> {
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockNarrativeAiTask()) return [];
   if (input.candidate.observationIds.length === 0) return [];
 
   const prompt = buildRelationSynthesisPrompt(input);

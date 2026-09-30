@@ -8,6 +8,12 @@ export const DURATIONS = {
   dialog: 0.25,
 } as const;
 
+/** Work Layer の一度きりの状態通知。本文ではなくheader chromeだけに使う。 */
+export const WORK_LAYER_DURATIONS = {
+  arrival: 1.2,
+  resolution: 1.5,
+} as const;
+
 /** Zen の背景だけに使う、知覚しにくい長周期モーション。 */
 export const ZEN_AMBIENT_DURATIONS = {
   enter: 0.8,

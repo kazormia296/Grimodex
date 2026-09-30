@@ -22,6 +22,7 @@ use crate::narrative_extraction::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 
 pub type RawRow = Map<String, Value>;
 
@@ -1811,6 +1812,43 @@ fn build_canonical_restore_plan(
     Ok(inserts)
 }
 
+const JS_SAFE_INTEGER_MAX: f64 = 9_007_199_254_740_991.0;
+
+/// Keep JSON values equivalent across SQLite -> N-API -> JavaScript roundtrips.
+///
+/// SQLite REAL `0.0` can arrive at the Native boundary as a JavaScript integer
+/// `0`. Only integral binary64 values in JavaScript's safe-integer range are
+/// canonicalized; fractional values and larger values retain their original
+/// representation so unsafe numeric coercion cannot make distinct rows equal.
+fn normalize_restore_plan_value(value: &mut Value) {
+    match value {
+        Value::Number(number) if number.is_f64() => {
+            if let Some(float) = number.as_f64() {
+                if float.is_finite() && float.fract() == 0.0 && float.abs() <= JS_SAFE_INTEGER_MAX {
+                    *number = serde_json::Number::from(float as i64);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                normalize_restore_plan_value(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                normalize_restore_plan_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_restore_plan_row(row: &mut RawRow) {
+    for value in row.values_mut() {
+        normalize_restore_plan_value(value);
+    }
+}
+
 fn ensure_restore_plan_is_snapshot_derived(
     conn: &Connection,
     project_id: &str,
@@ -1830,7 +1868,6 @@ fn ensure_restore_plan_is_snapshot_derived(
             insert.table.as_str()
         );
         let primary_keys = table_primary_key_columns(conn, insert.table.as_str())?;
-        let key = row_primary_key(&insert.row, &primary_keys, insert.table.as_str())?;
         let mut row = insert.row.clone();
         match insert.table {
             SnapshotRestoreTable::SceneEvents => {
@@ -1851,6 +1888,8 @@ fn ensure_restore_plan_is_snapshot_derived(
             }
             _ => {}
         }
+        normalize_restore_plan_row(&mut row);
+        let key = row_primary_key(&row, &primary_keys, insert.table.as_str())?;
         Ok((
             (insert.table, key),
             json!({ "mode": insert.mode, "row": row }),
@@ -2654,6 +2693,30 @@ pub fn apply_project_snapshot_restore(
             transaction.commit()?;
             return Ok(result);
         }
+        if scopes.contains(&RestoreScope::Codex) {
+            let target_entry_types = canonical_inserts
+                .iter()
+                .filter(|insert| insert.table == SnapshotRestoreTable::CodexEntries)
+                .map(|insert| {
+                    let entry_id = insert
+                        .row
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("restored Codex row has no id"))?;
+                    let entry_type = insert
+                        .row
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("restored Codex row has no type"))?;
+                    Ok((entry_id.to_owned(), entry_type.to_owned()))
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            crate::narrative_extraction::ensure_character_snapshot_restore_allowed_in_tx(
+                &transaction,
+                &payload.project_id,
+                &target_entry_types,
+            )?;
+        }
         // Capture trusted live state before any parking, deletion, or insert.
         // The resulting Feed diff is therefore about the project-owned domain
         // objects that actually changed, rather than the restore scopes that
@@ -2831,6 +2894,7 @@ pub fn apply_project_snapshot_restore(
         }
 
         let mut applied_inserts = Vec::with_capacity(canonical_inserts.len());
+        let mut scene_scope_refresh_events = Vec::new();
         for insert in &canonical_inserts {
             let mut row = insert.row.clone();
             if insert.table == SnapshotRestoreTable::ProjectCalendar {
@@ -2866,6 +2930,37 @@ pub fn apply_project_snapshot_restore(
         }
         for insert in &applied_inserts {
             ensure_inserted_row_is_project_scoped(&transaction, &payload.project_id, insert)?;
+            if insert.table == SnapshotRestoreTable::TreeNodes
+                && insert.row.get("node_type").and_then(Value::as_str) == Some("scene")
+            {
+                let scene_id = insert
+                    .row
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("restored scene row has no id"))?;
+                let updated_at = insert
+                    .row
+                    .get("updated_at")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("restored scene row has no updated_at"))?;
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    &transaction,
+                    &payload.project_id,
+                    scene_id,
+                    updated_at,
+                )?;
+                // A snapshot may replace an existing scene row. Preserve its
+                // Native incarnation, but bind the restored source timestamp
+                // so the prior eligibility token cannot survive the restore.
+                scene_scope_refresh_events.push(
+                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                        &transaction,
+                        &payload.project_id,
+                        scene_id,
+                        updated_at,
+                    )?,
+                );
+            }
         }
 
         if park_editor_stickies_needed {
@@ -2900,8 +2995,9 @@ pub fn apply_project_snapshot_restore(
 
         let mut ordered_scopes = scopes.iter().copied().collect::<Vec<_>>();
         ordered_scopes.sort_by_key(|scope| scope.as_str());
-        let feed_events =
+        let mut feed_events =
             build_snapshot_restore_feed_events(&payload.project_id, &feed_before, &feed_after)?;
+        feed_events.extend(scene_scope_refresh_events);
         if feed_events.is_empty() {
             // A net no-op must not manufacture a project restore marker merely
             // to satisfy the non-empty Feed transaction contract.
@@ -2966,6 +3062,64 @@ pub fn apply_project_snapshot_restore(
                 events: feed_events,
             },
         )?;
+        let mut restored_body_targets = Vec::new();
+        for insert in &applied_inserts {
+            let target = match insert.table {
+                SnapshotRestoreTable::TreeNodes
+                    if insert.row.get("node_type").and_then(Value::as_str) == Some("scene") =>
+                {
+                    Some(crate::timelapse::TimelapseBodySnapshotTarget::scene(
+                        insert
+                            .row
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| anyhow::anyhow!("restored scene row has no id"))?,
+                    ))
+                }
+                SnapshotRestoreTable::CodexEntries => {
+                    Some(crate::timelapse::TimelapseBodySnapshotTarget::codex(
+                        insert
+                            .row
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| anyhow::anyhow!("restored Codex row has no id"))?,
+                    ))
+                }
+                SnapshotRestoreTable::Snippets => {
+                    Some(crate::timelapse::TimelapseBodySnapshotTarget::snippet(
+                        insert
+                            .row
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| anyhow::anyhow!("restored Snippet row has no id"))?,
+                    ))
+                }
+                _ => None,
+            };
+            restored_body_targets.extend(target);
+        }
+        crate::timelapse::append_timelapse_body_snapshots_in_tx(
+            &transaction,
+            &payload.project_id,
+            append.canonical.tail_sequence,
+            timestamp,
+            &restored_body_targets,
+        )?;
+        // Gate C2 Lane A/N (`semantic_epoch.rs`/`restore_rebuild.rs`, wired
+        // in C2-T1): a Restore is always the `"project-restored"` structural
+        // impact `build_snapshot_restore_feed_events` above unconditionally
+        // sets whenever `feed_events` is non-empty (the only way this line
+        // is reached; a net no-op already returned earlier). Mint a new
+        // Semantic Epoch in the same transaction as the Change Feed append,
+        // so a rebuild after Restore sees the Dependency Edge graph as
+        // reset from this exact point, not from whatever the prior Epoch
+        // was tracking.
+        rotate_epoch_for_restore_in_tx(
+            &transaction,
+            &payload.project_id,
+            "project-restored",
+            Some(&change_event_uid),
+        )?;
         let result = ApplyProjectSnapshotRestoreResult {
             canonical_sequence: append.canonical.tail_sequence,
             change_event_uid: Some(change_event_uid),
@@ -2985,15 +3139,13 @@ pub fn apply_project_snapshot_restore(
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
     use serde_json::json;
 
     use super::*;
 
     fn fixture() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two')",
@@ -3005,6 +3157,14 @@ mod tests {
                         ('t2', 'p2', 'scene', 'Two', 'a')",
                 [],
             )?;
+            for (project_id, scene_id) in [("p1", "t1"), ("p2", "t2")] {
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    conn,
+                    project_id,
+                    scene_id,
+                    "2026-07-30T00:00:00.000Z",
+                )?;
+            }
             conn.execute(
                 "INSERT INTO labels (id, project_id, name, color)
                  VALUES ('l1', 'p1', 'One', '#111111'),
@@ -3019,6 +3179,34 @@ mod tests {
 
     fn raw(value: Value) -> RawRow {
         value.as_object().expect("raw row").clone()
+    }
+
+    #[test]
+    fn restore_plan_comparison_accepts_js_safe_integral_real_spelling() {
+        let mut expected = json!({"sort_order": 0.0});
+        let mut incoming = json!({"sort_order": 0});
+        normalize_restore_plan_value(&mut expected);
+        normalize_restore_plan_value(&mut incoming);
+        assert_eq!(expected, incoming);
+    }
+
+    #[test]
+    fn restore_plan_comparison_rejects_fractional_real_against_integer() {
+        let mut expected = json!({"sort_order": 0.5});
+        let mut incoming = json!({"sort_order": 0});
+        normalize_restore_plan_value(&mut expected);
+        normalize_restore_plan_value(&mut incoming);
+        assert_ne!(expected, incoming);
+    }
+
+    #[test]
+    fn restore_plan_comparison_rejects_unsafe_integral_real_against_integer() {
+        let mut expected = json!({"sort_order": 9_007_199_254_740_994.0_f64});
+        let mut incoming = json!({"sort_order": 9_007_199_254_740_994_i64});
+        normalize_restore_plan_value(&mut expected);
+        normalize_restore_plan_value(&mut incoming);
+        assert_ne!(expected, incoming);
+        assert!(expected["sort_order"].is_f64());
     }
 
     fn empty_snapshot(snapshot_id: &str) -> CreateProjectSnapshotPayload {
@@ -3079,6 +3267,358 @@ mod tests {
             scopes,
             inserts,
         }
+    }
+
+    fn seed_referenced_character(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name)
+                 VALUES ('c1', 'p1', 'character', 'Character')",
+                [],
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                "p1",
+                "t1",
+                "2026-07-30T00:00:00.000Z",
+            )?;
+            conn.execute(
+                "UPDATE narrative_scene_scope_bindings
+                    SET compatibility_marker = 'explicit',
+                        knowledge_holder_json = ?1
+                  WHERE project_id = 'p1' AND scene_id = 't1'",
+                [r#"{"kind":"character","ref":"c1"}"#],
+            )?;
+            Ok(())
+        })
+        .expect("seed referenced character scope");
+    }
+
+    #[test]
+    fn codex_only_snapshot_restore_rejects_referenced_character_delete_or_type_change() {
+        let db = fixture();
+        seed_referenced_character(&db);
+
+        let delete_snapshot = empty_snapshot("s-codex-delete");
+        create_project_snapshot(&db, delete_snapshot).expect("create delete-shaped snapshot");
+        let delete_error = apply_project_snapshot_restore(
+            &db,
+            canonical_restore_payload(
+                &db,
+                "restore-codex-delete",
+                "s-codex-delete",
+                vec![RestoreScope::Codex],
+            ),
+        )
+        .expect_err("referenced character deletion must be rejected");
+        assert!(delete_error
+            .to_string()
+            .contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"));
+
+        let mut type_snapshot = empty_snapshot("s-codex-type-change");
+        type_snapshot.codex_rows = vec![raw(json!({
+            "snapshot_id": "s-codex-type-change",
+            "entry_id": "c1",
+            "type": "location",
+            "name": "Former Character",
+            "parent_id": null,
+            "aliases": null,
+            "excluded_aliases": null,
+            "summary": null,
+            "icon": null,
+            "context_mode": "mentioned",
+            "children_budget": "compact",
+            "notes": null,
+            "body_version_id": null,
+            "created_at": "2026-07-30T00:00:00.000Z",
+            "updated_at": "2026-07-30T00:00:00.000Z"
+        }))];
+        create_project_snapshot(&db, type_snapshot).expect("create type-change snapshot");
+        let type_error = apply_project_snapshot_restore(
+            &db,
+            canonical_restore_payload(
+                &db,
+                "restore-codex-type-change",
+                "s-codex-type-change",
+                vec![RestoreScope::Codex],
+            ),
+        )
+        .expect_err("referenced character type change must be rejected");
+        assert!(type_error
+            .to_string()
+            .contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"));
+
+        db.with_conn(|conn| {
+            let entry_type: String = conn.query_row(
+                "SELECT type FROM codex_entries WHERE id = 'c1' AND project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(entry_type, "character");
+            let knowledge_holder: String = conn.query_row(
+                "SELECT knowledge_holder_json
+                   FROM narrative_scene_scope_bindings
+                  WHERE project_id = 'p1' AND scene_id = 't1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(knowledge_holder, r#"{"kind":"character","ref":"c1"}"#);
+            Ok(())
+        })
+        .expect("verify rejected Codex-only restores are atomic");
+    }
+
+    fn character_snapshot(snapshot_id: &str) -> CreateProjectSnapshotPayload {
+        let mut snapshot = empty_snapshot(snapshot_id);
+        snapshot.codex_rows = vec![raw(json!({
+            "snapshot_id": snapshot_id,
+            "entry_id": "c1",
+            "type": "character",
+            "name": "Character",
+            "parent_id": null,
+            "aliases": null,
+            "excluded_aliases": null,
+            "summary": null,
+            "icon": null,
+            "context_mode": "mentioned",
+            "children_budget": "compact",
+            "notes": null,
+            "body_version_id": null,
+            "created_at": "2026-07-30T00:00:00.000Z",
+            "updated_at": "2026-07-30T00:00:00.000Z"
+        }))];
+        snapshot
+    }
+
+    #[test]
+    fn codex_snapshot_restore_rejects_missing_or_type_changed_current_principal_atomically() {
+        let missing_db = fixture();
+        seed_referenced_character(&missing_db);
+        let missing_snapshot = character_snapshot("s-codex-missing-current");
+        create_project_snapshot(&missing_db, missing_snapshot)
+            .expect("create missing-current snapshot");
+        missing_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_scene_scope_bindings
+                        SET knowledge_holder_json = ?1
+                      WHERE project_id = 'p1' AND scene_id = 't1'",
+                    [r#"{"kind":"character","ref":"missing-c1"}"#],
+                )?;
+                Ok(())
+            })
+            .expect("corrupt missing principal reference");
+        let missing_before = missing_db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT knowledge_holder_json, version, source_token
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'p1' AND scene_id = 't1'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                )?)
+            })
+            .expect("read missing-current corruption");
+        let missing_error = apply_project_snapshot_restore(
+            &missing_db,
+            canonical_restore_payload(
+                &missing_db,
+                "restore-codex-missing-current",
+                "s-codex-missing-current",
+                vec![RestoreScope::Codex],
+            ),
+        )
+        .expect_err("missing current principal must be rejected");
+        assert!(missing_error
+            .to_string()
+            .contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"));
+        missing_db
+            .with_conn(|conn| {
+                let entry_type: String = conn.query_row(
+                    "SELECT type FROM codex_entries WHERE id = 'c1' AND project_id = 'p1'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let binding: (String, i64, String) = conn.query_row(
+                    "SELECT knowledge_holder_json, version, source_token
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'p1' AND scene_id = 't1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(entry_type, "character");
+                assert_eq!(binding, missing_before);
+                Ok(())
+            })
+            .expect("missing-current restore stays atomic");
+
+        let type_db = fixture();
+        seed_referenced_character(&type_db);
+        let type_snapshot = character_snapshot("s-codex-type-current");
+        create_project_snapshot(&type_db, type_snapshot)
+            .expect("create type-current snapshot");
+        type_db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE codex_entries SET type = 'location'
+                      WHERE id = 'c1' AND project_id = 'p1'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("corrupt current principal type");
+        let type_before = type_db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT knowledge_holder_json, version, source_token
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'p1' AND scene_id = 't1'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                )?)
+            })
+            .expect("read type-current corruption");
+        let type_error = apply_project_snapshot_restore(
+            &type_db,
+            canonical_restore_payload(
+                &type_db,
+                "restore-codex-type-current",
+                "s-codex-type-current",
+                vec![RestoreScope::Codex],
+            ),
+        )
+        .expect_err("type-changed current principal must be rejected");
+        assert!(type_error
+            .to_string()
+            .contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"));
+        type_db
+            .with_conn(|conn| {
+                let entry_type: String = conn.query_row(
+                    "SELECT type FROM codex_entries WHERE id = 'c1' AND project_id = 'p1'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let binding: (String, i64, String) = conn.query_row(
+                    "SELECT knowledge_holder_json, version, source_token
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'p1' AND scene_id = 't1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(entry_type, "location");
+                assert_eq!(binding, type_before);
+                Ok(())
+            })
+            .expect("type-current restore stays atomic");
+    }
+
+    const SNAPSHOT_SCENE_BODY: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"captured scene body"}]}]}"#;
+    const SNAPSHOT_CODEX_BODY: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"captured codex body"}]}]}"#;
+    const SNAPSHOT_SNIPPET_BODY: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"captured snippet body"}]}]}"#;
+    const LIVE_SCENE_BODY: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"live scene body"}]}]}"#;
+    const LIVE_CODEX_BODY: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"live codex body"}]}]}"#;
+    const LIVE_SNIPPET_BODY: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"live snippet body"}]}]}"#;
+
+    fn all_body_kinds_snapshot(snapshot_id: &str) -> CreateProjectSnapshotPayload {
+        let mut snapshot = empty_snapshot(snapshot_id);
+        snapshot.tree_rows[0].insert(
+            "body_version_id".to_string(),
+            Value::String("scene-snapshot-v1".to_string()),
+        );
+        snapshot.codex_rows = vec![raw(json!({
+            "snapshot_id": snapshot_id,
+            "entry_id": "c1",
+            "type": "character",
+            "name": "Captured Codex",
+            "parent_id": null,
+            "aliases": null,
+            "excluded_aliases": null,
+            "summary": null,
+            "icon": null,
+            "context_mode": "mentioned",
+            "children_budget": "compact",
+            "notes": null,
+            "body_version_id": "codex-snapshot-v1",
+            "created_at": "2026-07-30T00:00:00.000Z",
+            "updated_at": "2026-07-30T00:00:00.000Z"
+        }))];
+        snapshot.snippet_rows = vec![raw(json!({
+            "snapshot_id": snapshot_id,
+            "snippet_id": "s1",
+            "title": "Captured Snippet",
+            "scene_id": "t1",
+            "source_chat_message_id": null,
+            "body_version_id": "snippet-snapshot-v1",
+            "created_at": "2026-07-30T00:00:00.000Z",
+            "updated_at": "2026-07-30T00:00:00.000Z"
+        }))];
+        snapshot.version_ids = vec![
+            "scene-snapshot-v1".to_string(),
+            "codex-snapshot-v1".to_string(),
+            "snippet-snapshot-v1".to_string(),
+        ];
+        snapshot
+    }
+
+    fn seed_all_body_kinds_snapshot(db: &Database, snapshot_id: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name, content)
+                 VALUES ('c1', 'p1', 'character', 'Captured Codex', ?1)",
+                [SNAPSHOT_CODEX_BODY],
+            )?;
+            conn.execute(
+                "INSERT INTO snippets (id, project_id, title, content, scene_id)
+                 VALUES ('s1', 'p1', 'Captured Snippet', ?1, 't1')",
+                [SNAPSHOT_SNIPPET_BODY],
+            )?;
+            conn.execute(
+                "INSERT INTO content_versions
+                    (id, entity_type, entity_id, content, version_number,
+                     snapshot_type, created_at)
+                 VALUES ('scene-snapshot-v1', 'scene', 't1', ?1, 1, 'manual',
+                         '2026-07-30T00:00:00.000Z')",
+                [SNAPSHOT_SCENE_BODY],
+            )?;
+            conn.execute(
+                "INSERT INTO content_versions
+                    (id, entity_type, entity_id, content, version_number,
+                     snapshot_type, created_at)
+                 VALUES ('codex-snapshot-v1', 'codex_entry', 'c1', ?1, 1, 'manual',
+                         '2026-07-30T00:00:00.000Z')",
+                [SNAPSHOT_CODEX_BODY],
+            )?;
+            conn.execute(
+                "INSERT INTO content_versions
+                    (id, entity_type, entity_id, content, version_number,
+                     snapshot_type, created_at)
+                 VALUES ('snippet-snapshot-v1', 'snippet', 's1', ?1, 1, 'manual',
+                         '2026-07-30T00:00:00.000Z')",
+                [SNAPSHOT_SNIPPET_BODY],
+            )?;
+            Ok(())
+        })
+        .expect("seed snapshot body entities and versions");
+
+        create_project_snapshot(db, all_body_kinds_snapshot(snapshot_id))
+            .expect("create all-body-kinds structural snapshot");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET content = ?1 WHERE id = 't1'",
+                [LIVE_SCENE_BODY],
+            )?;
+            conn.execute(
+                "UPDATE codex_entries SET content = ?1 WHERE id = 'c1'",
+                [LIVE_CODEX_BODY],
+            )?;
+            conn.execute(
+                "UPDATE snippets SET content = ?1 WHERE id = 's1'",
+                [LIVE_SNIPPET_BODY],
+            )?;
+            Ok(())
+        })
+        .expect("mutate live body entities after snapshot");
     }
 
     #[test]
@@ -3231,24 +3771,25 @@ mod tests {
             assert_eq!(days_per_year, 400);
             assert_eq!(version, 9);
             assert_ne!(updated_at, "2000-01-01T00:00:00.000Z");
-            let recorded: (String, String, Option<i64>, Option<i64>, String, String) = conn.query_row(
-                "SELECT object_key_json, mutation_kind, before_version,
+            let recorded: (String, String, Option<i64>, Option<i64>, String, String) = conn
+                .query_row(
+                    "SELECT object_key_json, mutation_kind, before_version,
                         after_version, before_digest, after_digest
                    FROM narrative_change_events
                   WHERE project_id = 'p1'
                     AND object_key_json LIKE '%\"kind\":\"project\"%'",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )?;
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )?;
             assert_eq!(
                 serde_json::from_str::<Value>(&recorded.0)?,
                 json!({ "kind": "project", "projectId": "p1" })
@@ -3678,7 +4219,7 @@ mod tests {
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            assert_eq!(events.len(), 1);
+            assert_eq!(events.len(), 2);
             let object_key = serde_json::from_str::<Value>(&events[0].0).expect("object key");
             assert_eq!(
                 object_key,
@@ -3711,6 +4252,35 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(foreign_events, 0);
+
+            // Gate C2 Lane A/N: a real Restore mints exactly one Semantic
+            // Epoch, even though `apply_project_snapshot_restore` above was
+            // called twice -- the second call is the idempotent replay,
+            // which short-circuits on the stored response before ever
+            // reaching the epoch-rotation call.
+            let epochs: Vec<(i64, String, Option<String>)> = {
+                let mut statement = conn.prepare(
+                    "SELECT epoch_number, reason, triggered_by_change_event_uid
+                       FROM narrative_semantic_epochs
+                      WHERE project_id = 'p1'
+                      ORDER BY epoch_number ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
+            };
+            assert_eq!(
+                epochs.len(),
+                1,
+                "the idempotent replay must not mint a second Epoch: {epochs:?}"
+            );
+            assert_eq!(epochs[0].0, 0);
+            assert_eq!(epochs[0].1, "restore");
+            assert!(
+                epochs[0].2.is_some(),
+                "the Epoch must record the triggering change event uid"
+            );
             Ok(())
         })
         .expect("inspect restore Feed");
@@ -3738,6 +4308,7 @@ mod tests {
                 "change_events",
                 "narrative_change_transactions",
                 "narrative_change_events",
+                "narrative_semantic_epochs",
             ] {
                 assert_eq!(
                     conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
@@ -3968,5 +4539,227 @@ mod tests {
             Ok(())
         })
         .expect("verify rollback");
+    }
+
+    #[test]
+    fn restore_entrypoint_appends_body_snapshots_for_all_kinds_at_one_canonical_tail() {
+        let db = fixture();
+        seed_all_body_kinds_snapshot(&db, "s-body-kinds");
+        let payload = canonical_restore_payload(
+            &db,
+            "restore-body-kinds",
+            "s-body-kinds",
+            vec![
+                RestoreScope::Body,
+                RestoreScope::Codex,
+                RestoreScope::Snippet,
+            ],
+        );
+
+        let result = apply_project_snapshot_restore(&db, payload.clone())
+            .expect("restore all body kinds through the public entrypoint");
+        assert!(!result.no_op);
+        let event_uid = result
+            .change_event_uid
+            .clone()
+            .expect("restore must append a canonical change event");
+
+        db.with_conn(|conn| {
+            let tail: (i64, i64) = conn.query_row(
+                "SELECT sequence, timestamp
+                   FROM change_events
+                  WHERE project_id = 'p1' AND event_uid = ?1",
+                params![event_uid],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(result.canonical_sequence, tail.0);
+
+            let bodies: (String, String, String) = conn.query_row(
+                "SELECT
+                    (SELECT content FROM tree_nodes WHERE id = 't1'),
+                    (SELECT content FROM codex_entries WHERE id = 'c1'),
+                    (SELECT content FROM snippets WHERE id = 's1')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                bodies,
+                (
+                    SNAPSHOT_SCENE_BODY.to_string(),
+                    SNAPSHOT_CODEX_BODY.to_string(),
+                    SNAPSHOT_SNIPPET_BODY.to_string(),
+                )
+            );
+
+            let snapshots: Vec<(String, String, String, i64, i64, String)> = conn
+                .prepare(
+                    "SELECT domain, entity_type, entity_id,
+                            anchor_sequence, anchor_timestamp, payload
+                       FROM state_snapshots
+                      WHERE project_id = 'p1'
+                      ORDER BY domain, entity_type, entity_id",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(snapshots.len(), 3);
+            assert_eq!(
+                snapshots
+                    .iter()
+                    .map(|row| (row.0.as_str(), row.1.as_str(), row.2.as_str()))
+                    .collect::<Vec<_>>(),
+                vec![
+                    ("codex", "codex_entry", "c1"),
+                    ("editor", "scene", "t1"),
+                    ("snippet", "snippet", "s1"),
+                ]
+            );
+            for (_, _, _, anchor_sequence, anchor_timestamp, _) in &snapshots {
+                assert_eq!(*anchor_sequence, tail.0);
+                assert_eq!(*anchor_timestamp, tail.1);
+            }
+            assert_eq!(snapshots[0].5, SNAPSHOT_CODEX_BODY);
+            assert_eq!(snapshots[1].5, SNAPSHOT_SCENE_BODY);
+            assert_eq!(snapshots[2].5, SNAPSHOT_SNIPPET_BODY);
+            Ok(())
+        })
+        .expect("inspect restored body snapshots");
+
+        let mut retry = payload;
+        retry.session_id = "restore-body-kinds-after-restart".to_string();
+        let retry_result = apply_project_snapshot_restore(&db, retry).expect("idempotent retry");
+        assert_eq!(retry_result, result);
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM state_snapshots WHERE project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 3, "retry must not duplicate body snapshots");
+            Ok(())
+        })
+        .expect("verify idempotent body snapshot retry");
+    }
+
+    #[test]
+    fn restore_entrypoint_skips_body_snapshots_when_timelapse_is_off() {
+        let db = fixture();
+        seed_all_body_kinds_snapshot(&db, "s-body-kinds-off");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO project_settings (project_id, key, value)
+                 VALUES ('p1', 'timelapse.enabled', 'false')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("disable timelapse for the project");
+
+        let result = apply_project_snapshot_restore(
+            &db,
+            canonical_restore_payload(
+                &db,
+                "restore-body-kinds-off",
+                "s-body-kinds-off",
+                vec![
+                    RestoreScope::Body,
+                    RestoreScope::Codex,
+                    RestoreScope::Snippet,
+                ],
+            ),
+        )
+        .expect("restore succeeds with timelapse disabled");
+        assert!(!result.no_op);
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM state_snapshots WHERE project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 0, "timelapse OFF must suppress all body snapshots");
+            Ok(())
+        })
+        .expect("verify timelapse OFF body snapshot suppression");
+    }
+
+    #[test]
+    fn restore_entrypoint_rolls_back_when_body_snapshot_insert_is_denied() {
+        let db = fixture();
+        seed_all_body_kinds_snapshot(&db, "s-body-kinds-failure");
+        let payload = canonical_restore_payload(
+            &db,
+            "restore-body-kinds-failure",
+            "s-body-kinds-failure",
+            vec![
+                RestoreScope::Body,
+                RestoreScope::Codex,
+                RestoreScope::Snippet,
+            ],
+        );
+        db.with_conn(|conn| {
+            conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+                AuthAction::Insert {
+                    table_name: "state_snapshots",
+                    ..
+                } => Authorization::Deny,
+                _ => Authorization::Allow,
+            }))?;
+            Ok(())
+        })
+        .expect("install state snapshot insert authorizer");
+        let error = apply_project_snapshot_restore(&db, payload)
+            .expect_err("state snapshot insert denial must abort the restore");
+        db.with_conn(|conn| {
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            Ok(())
+        })
+        .expect("remove state snapshot insert authorizer");
+        assert!(
+            error.to_string().to_lowercase().contains("not authorized"),
+            "unexpected authorizer error: {error:#}"
+        );
+
+        db.with_conn(|conn| {
+            let bodies: (String, String, String) = conn.query_row(
+                "SELECT
+                    (SELECT content FROM tree_nodes WHERE id = 't1'),
+                    (SELECT content FROM codex_entries WHERE id = 'c1'),
+                    (SELECT content FROM snippets WHERE id = 's1')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                bodies,
+                (
+                    LIVE_SCENE_BODY.to_string(),
+                    LIVE_CODEX_BODY.to_string(),
+                    LIVE_SNIPPET_BODY.to_string(),
+                )
+            );
+            for table in [
+                "state_snapshots",
+                "change_events",
+                "narrative_change_transactions",
+                "narrative_change_events",
+                "narrative_semantic_epochs",
+                "idempotency_requests",
+            ] {
+                let count: i64 =
+                    conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })?;
+                assert_eq!(count, 0, "failed restore left rows in {table}");
+            }
+            Ok(())
+        })
+        .expect("verify complete restore rollback");
     }
 }

@@ -139,6 +139,7 @@ describe("BrowserMock canonical Undo/Redo Change Feed", () => {
     expect(updateRetry).toEqual(updated);
     expect(updated.maintenanceTransactionId).not.toBe("");
     expect(updated.changeEventUid).toBe("renderer-update-event:first");
+    expect(updated.undoJournalId).toBe(updateSemantic.requestId);
 
     await expect(
       mock.invoke("foreshadow_update", {
@@ -159,11 +160,15 @@ describe("BrowserMock canonical Undo/Redo Change Feed", () => {
            (SELECT COUNT(*) FROM change_events WHERE entity_id = ?) AS canonical_events,
            (SELECT COUNT(*) FROM narrative_change_transactions
              WHERE project_id = 'default-project') AS feed_transactions,
+           (SELECT COUNT(*) FROM undo_journal
+             WHERE project_id = 'default-project'
+               AND id = ?) AS update_journals,
            (SELECT COUNT(*) FROM idempotency_requests
              WHERE request_id IN (?, ?)) AS receipts`,
         [
           createSemantic.id,
           createSemantic.id,
+          updateSemantic.requestId,
           createSemantic.requestId,
           updateSemantic.requestId,
         ],
@@ -173,6 +178,7 @@ describe("BrowserMock canonical Undo/Redo Change Feed", () => {
         domain_rows: 1,
         canonical_events: 2,
         feed_transactions: 2,
+        update_journals: 1,
         receipts: 2,
       },
     ]);

@@ -11,6 +11,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -67,7 +68,7 @@ export async function judgeCandidates(
 ): Promise<Map<string, CandidateJudgment>> {
   const result = new Map<string, CandidateJudgment>();
   // 分析系 LLM は analysis policy で gate (伏線/校閲と同じ)。
-  if (blockIfPolicyOff("analysis")) return result;
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return result;
   if (candidates.length === 0) return result;
 
   let lang = "ja";

@@ -3,6 +3,10 @@ import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferen
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
 import type { ChronicleExistingMatch } from "./existingEventMatcher";
+import {
+  checkHypothesisActuality,
+  type RejectedHypothesisActuality,
+} from "./hypothesisActualityGate";
 
 export interface PlannedProposal {
   readonly proposal: CreateChronicleEventProposalPayloadV1;
@@ -21,7 +25,10 @@ export interface ProposalPlannerInput {
 function collectAnchorsForHypothesis(
   hypothesis: EventHypothesis,
   observations: readonly RawChronicleEventObservation[],
-  anchorsByQuoteAndSource: Map<string, ResolvedEvidenceAnchor>,
+  anchorsByQuoteAndSource: Map<
+    string,
+    Map<string, ResolvedEvidenceAnchor | null>
+  >,
 ): ResolvedEvidenceAnchor[] {
   const observationById = new Map(
     observations.map((observation) => [observation.localId, observation]),
@@ -32,8 +39,9 @@ function collectAnchorsForHypothesis(
     const observation = observationById.get(observationRef);
     if (!observation) continue;
     for (const evidence of observation.evidence) {
-      const key = `${evidence.sourceRef}\0${evidence.quote}`;
-      const anchor = anchorsByQuoteAndSource.get(key);
+      const anchor = anchorsByQuoteAndSource
+        .get(evidence.sourceRef)
+        ?.get(evidence.quote);
       if (!anchor || seen.has(anchor.id)) continue;
       seen.add(anchor.id);
       found.push(anchor);
@@ -50,15 +58,49 @@ function collectAnchorsForHypothesis(
 export function planChronicleEventProposals(
   input: ProposalPlannerInput,
 ): readonly PlannedProposal[] {
+  return planChronicleEventProposalsWithDiagnostics(input).planned;
+}
+
+export function planChronicleEventProposalsWithDiagnostics(
+  input: ProposalPlannerInput,
+): {
+  readonly planned: readonly PlannedProposal[];
+  readonly rejectedHypotheses: readonly RejectedHypothesisActuality[];
+} {
   const createId = input.createId ?? (() => crypto.randomUUID());
-  const anchorsByQuoteAndSource = new Map(
-    input.anchors.map(
-      (anchor) => [`${anchor.sourceRef}\0${anchor.quote}`, anchor] as const,
-    ),
-  );
+  const anchorsByQuoteAndSource = new Map<
+    string,
+    Map<string, ResolvedEvidenceAnchor | null>
+  >();
+  for (const anchor of input.anchors) {
+    const anchorsByQuote =
+      anchorsByQuoteAndSource.get(anchor.sourceRef) ?? new Map();
+    const existing = anchorsByQuote.get(anchor.quote);
+    if (!anchorsByQuote.has(anchor.quote)) {
+      anchorsByQuote.set(anchor.quote, anchor);
+    } else if (
+      existing === null ||
+      existing?.documentRef !== anchor.documentRef
+    ) {
+      anchorsByQuote.set(anchor.quote, null);
+    }
+    anchorsByQuoteAndSource.set(anchor.sourceRef, anchorsByQuote);
+  }
 
   const planned: PlannedProposal[] = [];
+  const rejectedHypotheses: RejectedHypothesisActuality[] = [];
   for (const hypothesis of input.hypotheses) {
+    const actualityCheck = checkHypothesisActuality(
+      hypothesis,
+      input.observations,
+    );
+    if (!actualityCheck.ok) {
+      rejectedHypotheses.push({
+        hypothesisId: hypothesis.hypothesisId,
+        reason: actualityCheck.reason,
+      });
+      continue;
+    }
     if (
       hypothesis.actuality !== "actual" &&
       hypothesis.actuality !== "attempted" &&
@@ -149,5 +191,5 @@ export function planChronicleEventProposals(
     });
   }
 
-  return planned;
+  return { planned, rejectedHypotheses };
 }

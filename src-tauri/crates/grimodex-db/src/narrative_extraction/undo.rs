@@ -31,6 +31,7 @@ use super::plot_thread_undo::{
     reapply_plot_thread_create_snapshot, restore_plot_thread_patch, undo_created_plot_branch,
     undo_created_plot_marker, undo_created_plot_thread,
 };
+use super::repository::validate_current_chronicle_live_catalog;
 use super::semantic_bindings::collect_semantic_binding_snapshot;
 use super::task_leases::with_immediate_transaction;
 use super::temporal_undo::{
@@ -178,8 +179,15 @@ fn mutate_commit(
                     )?;
 
                     // Reverse order: relations first, then entry delete/patch restore, then events.
+                    let mut scene_scope_refresh_events = Vec::new();
                     for entity in entities.iter().rev() {
-                        undo_one_entity(conn, &payload.project_id, entity, &now)?;
+                        undo_one_entity(
+                            conn,
+                            &payload.project_id,
+                            entity,
+                            &now,
+                            &mut scene_scope_refresh_events,
+                        )?;
                     }
 
                     // Refresh journal after_json so the next Redo→Undo cycle has
@@ -264,10 +272,11 @@ fn mutate_commit(
                         canonical_append.inserted_count == 1,
                         "NEX_CHANGE_EVENT_CORRELATION_FAILED: canonical undo event was not appended"
                     );
-                    let maintenance_events = events_from_journal_entities(
+                    let mut maintenance_events = events_from_journal_entities(
                         &after_entities,
                         NarrativeChangeCauseKind::Undo,
                     )?;
+                    maintenance_events.extend(scene_scope_refresh_events);
                     let maintenance_transaction = if maintenance_events.is_empty() {
                         None
                     } else {
@@ -323,6 +332,21 @@ fn mutate_commit(
                         commit.status
                     );
 
+                    // Undo removes Event creates made by the original
+                    // Chronicle Apply, so an unchanged workspace is once
+                    // again byte-identical to the Run's sealed match catalog.
+                    // Recheck that catalog under this Redo transaction before
+                    // restoring any journal entity. This blocks a different-id
+                    // duplicate added after Undo while preserving a legitimate
+                    // Redo of the original Event.
+                    if let Some(run_id) = commit.run_id.as_deref() {
+                        validate_current_chronicle_live_catalog(
+                            conn,
+                            &payload.project_id,
+                            run_id,
+                        )?;
+                    }
+
                     // Preflight: current state must still match the post-Undo expectation
                     // before we re-apply after-snapshots (especially patch summary/aliases).
                     for entity in &entities {
@@ -330,6 +354,7 @@ fn mutate_commit(
                     }
 
                     let mut restored = Vec::new();
+                    let mut scene_scope_refresh_events = Vec::new();
                     let mut after_entities = Vec::new();
                     for entity in &entities {
                         let entity_kind = entity_kind(entity)?;
@@ -685,13 +710,15 @@ fn mutate_commit(
                                     params![entity_id],
                                     |row| row.get(0),
                                 )?;
-                                let replay_version = restore_scene_chronicle_patch(
-                                    conn,
-                                    entity_id,
-                                    &snapshot,
-                                    live_version,
-                                    &now,
-                                )?;
+                                let (replay_version, scope_refresh_event) =
+                                    restore_scene_chronicle_patch(
+                                        conn,
+                                        entity_id,
+                                        &snapshot,
+                                        live_version,
+                                        &now,
+                                    )?;
+                                scene_scope_refresh_events.push(scope_refresh_event);
                                 (replay_version, snapshot.clone())
                             }
                             "temporal_event_chronicle" => {
@@ -715,13 +742,15 @@ fn mutate_commit(
                                     params![entity_id],
                                     |row| row.get(0),
                                 )?;
-                                let replay_version = restore_scene_story_order_patch(
-                                    conn,
-                                    entity_id,
-                                    &snapshot,
-                                    live_version,
-                                    &now,
-                                )?;
+                                let (replay_version, scope_refresh_event) =
+                                    restore_scene_story_order_patch(
+                                        conn,
+                                        entity_id,
+                                        &snapshot,
+                                        live_version,
+                                        &now,
+                                    )?;
+                                scene_scope_refresh_events.push(scope_refresh_event);
                                 (replay_version, snapshot.clone())
                             }
                             "temporal_projection" => {
@@ -880,7 +909,7 @@ fn mutate_commit(
                         &payload.project_id,
                         &commit,
                         &journal_id,
-                        &entities,
+                        &after_entities,
                         &application_ids,
                         parsed_receipt.as_ref(),
                     )?;
@@ -911,10 +940,11 @@ fn mutate_commit(
                         canonical_append.inserted_count == 1,
                         "NEX_CHANGE_EVENT_CORRELATION_FAILED: canonical redo event was not appended"
                     );
-                    let maintenance_events = events_from_journal_entities(
+                    let mut maintenance_events = events_from_journal_entities(
                         &after_entities,
                         NarrativeChangeCauseKind::Redo,
                     )?;
+                    maintenance_events.extend(scene_scope_refresh_events);
                     let maintenance_transaction = if maintenance_events.is_empty() {
                         None
                     } else {
@@ -1344,6 +1374,7 @@ fn undo_one_entity(
     project_id: &str,
     entity: &Value,
     now: &str,
+    scene_scope_refresh_events: &mut Vec<super::change_feed::NarrativeChangeEventInput>,
 ) -> anyhow::Result<()> {
     let entity_kind = entity_kind(entity)?;
     let entity_id = entity_id(entity)?;
@@ -1470,7 +1501,14 @@ fn undo_one_entity(
                 anyhow::anyhow!("scene chronicle patch journal missing beforeSnapshot")
             })?;
             let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
-            restore_scene_chronicle_patch(conn, entity_id, &before, expected_after_version, now)?;
+            let (_, scope_refresh_event) = restore_scene_chronicle_patch(
+                conn,
+                entity_id,
+                &before,
+                expected_after_version,
+                now,
+            )?;
+            scene_scope_refresh_events.push(scope_refresh_event);
         }
         "temporal_event_chronicle" => {
             let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
@@ -1484,7 +1522,14 @@ fn undo_one_entity(
                 anyhow::anyhow!("scene story-order patch journal missing beforeSnapshot")
             })?;
             let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
-            restore_scene_story_order_patch(conn, entity_id, &before, expected_after_version, now)?;
+            let (_, scope_refresh_event) = restore_scene_story_order_patch(
+                conn,
+                entity_id,
+                &before,
+                expected_after_version,
+                now,
+            )?;
+            scene_scope_refresh_events.push(scope_refresh_event);
         }
         "temporal_projection" => {
             let op_kind = entity

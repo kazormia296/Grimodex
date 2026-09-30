@@ -42,7 +42,11 @@ describe("narrative maintenance Change Feed schema (SCHEMA 22)", () => {
   });
 
   it("is emitted by the SCHEMA 22 Native migration contract", () => {
-    expect(contractJson.schemaVersion).toBe(22);
+    // SCHEMA 23 added reservation columns to narrative_change_cursors. SCHEMA 41
+    // removes stale project epoch-marker heads without changing the
+    // narrative_change_* table/index definitions. Keep this exact guard so
+    // each schema bump revisits the contract assertions below.
+    expect(contractJson.schemaVersion).toBe(41);
     expect(
       contractJson.tables.narrative_change_transactions.columns
         .source_change_event_uid,

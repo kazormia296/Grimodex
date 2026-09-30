@@ -33,6 +33,7 @@ import {
   blockIfUnlicensed,
   LICENSE_WRITE_RESTRICTED_ERROR,
 } from "@/features/license/gate";
+import type { TimelapseDocumentRef } from "@/features/timelapse/documentCoverage";
 import {
   parseReadings,
   resolveUnsetReadingTargetForSurface,
@@ -204,7 +205,10 @@ interface CodexState {
   update: (
     id: string,
     data: StructuralPatch,
-    options?: { baseVersion?: number },
+    options?: {
+      baseVersion?: number;
+      timelapseDocument?: TimelapseDocumentRef;
+    },
   ) => Promise<VersionedSaveOutcome>;
   /**
    * Type + summary detail form save. Persists both fields in one OCC-protected
@@ -230,7 +234,11 @@ interface CodexState {
   updateText: (
     id: string,
     data: TextPatch,
-    options?: { baseVersion?: number },
+    options?: {
+      baseVersion?: number;
+      timelapseDocument?: TimelapseDocumentRef;
+      preexistingDraft?: boolean;
+    },
   ) => Promise<VersionedSaveOutcome>;
   remove: (id: string) => Promise<void>;
   setFilterType: (type: CodexEntryType | null) => Promise<void>;
@@ -915,6 +923,10 @@ export const useCodexStore = create<CodexState>()((set, get) => ({
       // 先に書いていれば衝突として弾かれ、本文を黙って上書きしない。
       updated = await updateCodexEntry(getCurrentProjectId(), id, data, {
         baseVersion: options?.baseVersion ?? before?.version ?? 0,
+        ...(options?.timelapseDocument
+          ? { timelapseDocument: options.timelapseDocument }
+          : {}),
+        ...(options?.preexistingDraft ? { preexistingDraft: true } : {}),
       });
       if (!updated) {
         toast.error(i18next.t("codex.store.updateFailed"));

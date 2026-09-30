@@ -30,3 +30,7 @@ pub mod reranker;
 
 #[cfg(test)]
 mod audit_tests;
+
+#[cfg(test)]
+#[path = "../../grimodex-db/test-support/adapter.rs"]
+mod test_support;

@@ -1,7 +1,7 @@
 cases:
   - id: eval-narrative-replay-provenance
-    suiteId: narrative-extraction
-    requirementIds: [GDX-NARR-EVAL-001]
+    suiteId: narrative-semantic-contract
+    requirementIds: [GDX-NARR-EVAL-001, GDX-NARR-SEMANTIC-CONTRACT-001]
     fixture:
       runId: narrative-replay-provenance
       locale: ja-JP

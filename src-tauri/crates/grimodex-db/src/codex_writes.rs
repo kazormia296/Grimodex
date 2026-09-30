@@ -8,6 +8,10 @@ use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, O
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::agent_writes::{
+    canonical_payload_with_authority_context, validate_renderer_authority_context_for_routes,
+    RendererCanonicalWriteContext,
+};
 use crate::change_events::AppendChangeEvent;
 use crate::codex_relation_keys::{build_codex_relation_semantic_key, normalize_relation_label};
 use crate::idempotency::{
@@ -685,6 +689,7 @@ fn run_mutation<F>(
     payload: AgentCodexMutationPayload,
     operation: &'static str,
     mutate: F,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value>
 where
     F: FnOnce(&Connection, &AgentCodexMutationPayload, &str) -> anyhow::Result<(String, i64)>,
@@ -772,6 +777,16 @@ where
             if payload.origin == NarrativeChangeOrigin::Human {
                 record_manual_mutation_fields(conn, &payload, operation, &entity_id, &now)?;
             }
+            let canonical_payload = json!({
+                "surface": payload.surface.as_deref().unwrap_or("manual"),
+                "operation": operation,
+            })
+            .to_string();
+            let canonical_payload = if let Some(context) = renderer_context {
+                canonical_payload_with_authority_context(&canonical_payload, context)
+            } else {
+                canonical_payload
+            };
             let append = append_canonical_and_narrative_change_in_tx(
                 conn,
                 &payload.project_id,
@@ -783,11 +798,7 @@ where
                     op_type: operation.to_string(),
                     entity_type: Some(operation.split('.').next().unwrap_or("codex").to_string()),
                     entity_id: Some(entity_id.clone()),
-                    payload: json!({
-                        "surface": payload.surface.as_deref().unwrap_or("manual"),
-                        "operation": operation,
-                    })
-                    .to_string(),
+                    payload: canonical_payload,
                     timestamp,
                 },
                 &AppendNarrativeChangeTransactionInput {
@@ -1499,44 +1510,165 @@ pub fn agent_codex_mutate_impl(
     db: &Database,
     payload: AgentCodexMutationPayload,
 ) -> anyhow::Result<Value> {
+    agent_codex_mutate_internal(db, payload, None)
+}
+
+pub fn renderer_agent_codex_mutate_impl(
+    db: &Database,
+    payload: AgentCodexMutationPayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.project_id.trim().is_empty(),
+        "projectId is required"
+    );
+    anyhow::ensure!(
+        !payload.session_id.trim().is_empty(),
+        "sessionId is required"
+    );
+    anyhow::ensure!(
+        payload.request_id == context.request_id,
+        "agent Codex mutation requestId does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.event_uid == context.event_uid,
+        "agent Codex mutation eventUid does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.origin == context.origin,
+        "agent Codex mutation origin does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.original_transaction_id == context.original_transaction_id,
+        "agent Codex mutation originalTransactionId does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.undo_journal_id == context.undo_journal_id,
+        "agent Codex mutation undoJournalId does not match canonical authority context"
+    );
+    validate_renderer_authority_context_for_routes(&context, &["interactive-agent-command"])?;
+    agent_codex_mutate_internal(db, payload, Some(context))
+}
+
+/// Human/import/history/restore renderer entry point for the same typed
+/// aggregate writer. Keeping this symbol separate from the Agent entry point
+/// makes the command-family split explicit while preserving one Native core.
+pub fn renderer_codex_mutate_impl(
+    db: &Database,
+    payload: AgentCodexMutationPayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.project_id.trim().is_empty(),
+        "projectId is required"
+    );
+    anyhow::ensure!(
+        !payload.session_id.trim().is_empty(),
+        "sessionId is required"
+    );
+    anyhow::ensure!(
+        payload.request_id == context.request_id,
+        "Codex mutation requestId does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.event_uid == context.event_uid,
+        "Codex mutation eventUid does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.origin == context.origin,
+        "Codex mutation origin does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.original_transaction_id == context.original_transaction_id,
+        "Codex mutation originalTransactionId does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.undo_journal_id == context.undo_journal_id,
+        "Codex mutation undoJournalId does not match canonical authority context"
+    );
+    validate_renderer_authority_context_for_routes(
+        &context,
+        &[
+            "human-direct",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+        ],
+    )?;
+    agent_codex_mutate_internal(db, payload, Some(context))
+}
+
+fn agent_codex_mutate_internal(
+    db: &Database,
+    payload: AgentCodexMutationPayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     let operation = payload.operation.clone();
+    let renderer_context = renderer_context.as_ref();
     match operation.as_str() {
-        "relation.create" => run_mutation(db, payload, "relation.create", relation_create),
-        "relation.delete" => run_mutation(db, payload, "relation.delete", relation_delete),
-        "phase.create" => run_mutation(db, payload, "phase.create", phase_create),
+        "relation.create" => run_mutation(
+            db,
+            payload,
+            "relation.create",
+            relation_create,
+            renderer_context,
+        ),
+        "relation.delete" => run_mutation(
+            db,
+            payload,
+            "relation.delete",
+            relation_delete,
+            renderer_context,
+        ),
+        "phase.create" => run_mutation(db, payload, "phase.create", phase_create, renderer_context),
         "phase.update" | "phase.aggregate" => {
-            run_mutation(db, payload, "phase.update", phase_patch)
+            run_mutation(db, payload, "phase.update", phase_patch, renderer_context)
         }
-        "phase.delete" => run_mutation(db, payload, "phase.delete", phase_delete),
-        "detail.definition.create" => {
-            run_mutation(db, payload, "detail.definition.create", definition_create)
-        }
-        "detail.definition.update" => {
-            run_mutation(db, payload, "detail.definition.update", definition_update)
-        }
-        "detail.definition.delete" => {
-            run_mutation(db, payload, "detail.definition.delete", definition_delete)
-        }
-        "detail.value.upsert" => run_mutation(db, payload, "detail.value.upsert", value_upsert),
-        "tag.create" => run_mutation(db, payload, "tag.create", tag_create),
-        "tag.update" => run_mutation(db, payload, "tag.update", tag_update),
-        "tag.delete" => run_mutation(db, payload, "tag.delete", tag_delete),
-        "type.create" => run_mutation(db, payload, "type.create", type_create),
-        "type.update" => run_mutation(db, payload, "type.update", type_update),
-        "type.delete" => run_mutation(db, payload, "type.delete", type_delete),
+        "phase.delete" => run_mutation(db, payload, "phase.delete", phase_delete, renderer_context),
+        "detail.definition.create" => run_mutation(
+            db,
+            payload,
+            "detail.definition.create",
+            definition_create,
+            renderer_context,
+        ),
+        "detail.definition.update" => run_mutation(
+            db,
+            payload,
+            "detail.definition.update",
+            definition_update,
+            renderer_context,
+        ),
+        "detail.definition.delete" => run_mutation(
+            db,
+            payload,
+            "detail.definition.delete",
+            definition_delete,
+            renderer_context,
+        ),
+        "detail.value.upsert" => run_mutation(
+            db,
+            payload,
+            "detail.value.upsert",
+            value_upsert,
+            renderer_context,
+        ),
+        "tag.create" => run_mutation(db, payload, "tag.create", tag_create, renderer_context),
+        "tag.update" => run_mutation(db, payload, "tag.update", tag_update, renderer_context),
+        "tag.delete" => run_mutation(db, payload, "tag.delete", tag_delete, renderer_context),
+        "type.create" => run_mutation(db, payload, "type.create", type_create, renderer_context),
+        "type.update" => run_mutation(db, payload, "type.update", type_update, renderer_context),
+        "type.delete" => run_mutation(db, payload, "type.delete", type_delete, renderer_context),
         other => anyhow::bail!("unsupported Codex mutation '{other}'"),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-
     use super::*;
 
     fn test_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).expect("open database");
-        db.migrate().expect("migrate database");
+        let db = crate::test_support::current_schema_memory().expect("current schema fixture");
         db.with_conn(|conn| {
             conn.execute_batch(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'One'), ('p2', 'Two');

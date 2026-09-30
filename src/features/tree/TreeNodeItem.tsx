@@ -646,5 +646,5 @@ function TreeNodeItemImpl({
 
 // 親 (ScenesPanel) はフィルタ/選択/ドラッグ状態など多くの store slice を
 // 購読して頻繁に再レンダーされる。memo で「props が実際に変わった行」だけに
-// 再レンダーを絞る (gate: TreeRenderer.perf.test.tsx)。
+// 再レンダーを絞る (gate: VirtualTree.perf.test.tsx)。
 export const TreeNodeItem = memo(TreeNodeItemImpl);

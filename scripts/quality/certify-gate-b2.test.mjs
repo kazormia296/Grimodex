@@ -124,6 +124,17 @@ test("dedicated workflow binds a metadata-only freeze envelope to candidate and 
   assert.doesNotMatch(workflowText, /\$\{\{\s*secrets\./);
   assert.doesNotMatch(workflowText, /OPENROUTER_API_KEY/);
   assert.doesNotMatch(workflowText, /private.?key|ed25519|signature/i);
+  const setupNode = steps.find((step) =>
+    String(step.uses ?? "").startsWith("actions/setup-node@"),
+  );
+  assert.ok(setupNode);
+  assert.equal(Object.hasOwn(setupNode.with ?? {}, "cache"), false);
+  assert.equal(
+    steps.some((step) =>
+      String(step.uses ?? "").startsWith("actions/cache@"),
+    ),
+    false,
+  );
 });
 
 test("freeze envelope workflow guard accepts only the three metadata files", async () => {

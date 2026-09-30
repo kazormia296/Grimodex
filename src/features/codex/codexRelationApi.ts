@@ -87,7 +87,7 @@ export async function createCodexRelation(
     inverseLabel,
   });
   const id = data.id ?? crypto.randomUUID();
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "relation.create",
       projectId: data.projectId,
@@ -123,7 +123,7 @@ export async function deleteCodexRelation(id: string): Promise<void> {
     .limit(1);
   const projectId = existing[0]?.projectId;
   if (!projectId) return;
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "relation.delete",
       projectId,

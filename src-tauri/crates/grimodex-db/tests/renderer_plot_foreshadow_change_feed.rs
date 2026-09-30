@@ -1,9 +1,11 @@
+#[path = "../test-support/adapter.rs"]
+mod test_support;
+
 use grimodex_db::{foreshadow, plot_threads, Database};
 use serde_json::{json, Value};
 
 fn migrated_db() -> Database {
-    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
-    db.migrate().expect("migrate database");
+    let db = test_support::current_schema_memory().expect("current-schema fixture");
     db.with_conn(|conn| {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES
@@ -436,6 +438,17 @@ fn foreshadow_typed_inverse_allows_a_new_journal_for_the_same_root_only() {
             session_id: "renderer-session".to_string(),
             journal_id: inverse_journal.clone(),
             direction: "undo".to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: "undo".to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: vec![
+                "original-transaction".to_string(),
+                "journal-lineage".to_string(),
+                "typed-writer".to_string(),
+                "occ".to_string(),
+                "change-event".to_string(),
+                "change-feed".to_string(),
+            ],
         },
     )
     .expect("typed inverse journal resolves its root forward lineage");

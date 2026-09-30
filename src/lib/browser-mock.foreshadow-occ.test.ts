@@ -66,7 +66,11 @@ describe("Browser Foreshadow aggregate OCC", () => {
         patch: { baseVersion: 0, title: "Fresh title" },
       },
     );
-    expect(fresh).toMatchObject({ title: "Fresh title", version: 1 });
+    expect(fresh).toMatchObject({
+      title: "Fresh title",
+      version: 1,
+      undoJournalId: expect.any(String),
+    });
 
     await expect(
       mock.invoke("foreshadow_update", {
@@ -101,7 +105,7 @@ describe("Browser Foreshadow aggregate OCC", () => {
         `SELECT COUNT(*) AS count FROM undo_journal
           WHERE entity_kind = 'foreshadow' AND entity_id = 'stale-root'`,
       ),
-    ).toEqual([{ count: 0 }]);
+    ).toEqual([{ count: 1 }]);
     expect(onDatabaseDirty).toHaveBeenCalledTimes(1);
   });
 

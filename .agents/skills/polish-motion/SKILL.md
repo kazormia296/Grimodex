@@ -1,11 +1,8 @@
 ---
 name: polish-motion
 description: >
-  Grimodex のUIにアニメーション・トランジションを追加／修正する。
-  Framer Motion と GSAP の使い分け、Reduced Motion ガード、
-  共有定数（DURATIONS/EASINGS/VARIANTS）の利用を強制する。
-  Use when: 「アニメ追加」「動き付けて」「トランジション」「UIを磨いて」
-  「もっと滑らかに」「ホバーで動かして」などと言われたとき。
+  Grimodex の UI アニメーションやトランジションを追加・修正し、Reduced Motion、
+  共有モーション定数、ライフサイクルの規約に揃える。静的なレイアウト変更だけには使わない。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash
 ---
 

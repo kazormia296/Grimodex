@@ -38,12 +38,46 @@ const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project"; // migrate seed（'character' codex_type も seed 済み）
 
 function canonical(requestId, origin = "human") {
+  const isInteractiveAgent = origin === "ai-apply";
   return {
     requestId,
     projectId: PROJECT,
     sessionId: `${requestId}:session`,
     eventUid: `${requestId}:event`,
     origin,
+    authorityRoute: isInteractiveAgent
+      ? "interactive-agent-command"
+      : "human-direct",
+    caller: isInteractiveAgent ? "chat-tool-executor" : "manual-wrapper",
+    controls: isInteractiveAgent
+      ? [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "field-authority",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ]
+      : [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+    provenance: isInteractiveAgent
+      ? {
+          requestId,
+          traceId: `${requestId}:trace`,
+          executionId: `${requestId}:execution`,
+          mainOwnedProvenanceId: `${requestId}:main-provenance`,
+        }
+      : null,
+    writesAuthorityProtectedField: false,
     originalTransactionId: null,
     undoJournalId: null,
   };
@@ -51,6 +85,17 @@ function canonical(requestId, origin = "human") {
 
 async function rows(sql, params = []) {
   return JSON.parse(await backend.dbExecute(sql, params, "all")).rows;
+}
+
+async function writeCounts() {
+  const result = await rows(`
+    SELECT
+      (SELECT COUNT(*) FROM codex_entries) AS codex_entries,
+      (SELECT COUNT(*) FROM undo_journal) AS undo_journal,
+      (SELECT COUNT(*) FROM change_events) AS change_events,
+      (SELECT COUNT(*) FROM narrative_change_transactions) AS feed_transactions
+  `);
+  return result[0];
 }
 
 test("workspace 未オープンの agentCodexCreate は 'No workspace is open' で reject", async () => {
@@ -143,10 +188,85 @@ test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span
   );
 });
 
+test("agentCodexCreate: N-API authority rejection leaves write tables unchanged", async () => {
+  const invalidCaller = {
+    ...canonical("napi-invalid-authority-caller", "ai-apply"),
+    caller: "background-maintenance-v2",
+    entryId: "napi-invalid-authority-caller-entry",
+    typeSlug: "character",
+    name: "invalid caller",
+    content: "{}",
+    authorshipSpans: [],
+  };
+  const beforeInvalidCaller = await writeCounts();
+  await assert.rejects(
+    backend.agentCodexCreate(invalidCaller),
+    /Forbidden caller/,
+  );
+  assert.deepEqual(await writeCounts(), beforeInvalidCaller);
+
+  const missingControl = {
+    ...canonical("napi-missing-authority-control", "ai-apply"),
+    controls: [],
+    entryId: "napi-missing-authority-control-entry",
+    typeSlug: "character",
+    name: "missing control",
+    content: "{}",
+    authorshipSpans: [],
+  };
+  const beforeMissingControl = await writeCounts();
+  await assert.rejects(
+    backend.agentCodexCreate(missingControl),
+    /Missing required control/,
+  );
+  assert.deepEqual(await writeCounts(), beforeMissingControl);
+});
+
+test("agentCodexMutate: N-API authority is enforced and recorded in the canonical event", async () => {
+  const invalidCaller = {
+    ...canonical("napi-codex-mutate-invalid", "ai-apply"),
+    caller: "background-maintenance-v2",
+    operation: "detail.definition.create",
+    definitionId: "napi-codex-mutate-invalid-definition",
+    typeSlug: "character",
+    name: "invalid caller",
+    fieldType: "text",
+    sortOrder: 1,
+    includeInContext: 1,
+  };
+  const beforeInvalidCaller = await writeCounts();
+  await assert.rejects(
+    backend.agentCodexMutate(invalidCaller),
+    /Forbidden caller/,
+  );
+  assert.deepEqual(await writeCounts(), beforeInvalidCaller);
+
+  const payload = {
+    ...canonical("napi-codex-mutate-authority", "ai-apply"),
+    operation: "detail.definition.create",
+    definitionId: "napi-codex-mutate-authority-definition",
+    typeSlug: "character",
+    name: "authority evidence",
+    fieldType: "text",
+    sortOrder: 2,
+    includeInContext: 1,
+  };
+  const result = JSON.parse(await backend.agentCodexMutate(payload));
+  assert.equal(result.entityId, payload.definitionId);
+  const event = await rows(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [payload.eventUid],
+  );
+  const eventPayload = JSON.parse(event[0].payload);
+  assert.equal(eventPayload.authorityRoute, "interactive-agent-command");
+  assert.equal(eventPayload.authorityCaller, "chat-tool-executor");
+  assert.equal(eventPayload.authorityEvidence.validated, true);
+});
+
 test("agentCodexMutate creates a Detail Definition and semantic binding atomically", async () => {
   const created = JSON.parse(
     await backend.agentCodexMutate({
-      ...canonical("preset-semantic-create", "human"),
+      ...canonical("preset-semantic-create", "ai-apply"),
       operation: "detail.definition.create",
       projectId: PROJECT,
       sessionId: "preset-semantic-session",
@@ -191,7 +311,7 @@ test("agentCodexMutate creates a Detail Definition and semantic binding atomical
 
   await assert.rejects(
     backend.agentCodexMutate({
-      ...canonical("preset-semantic-conflict", "human"),
+      ...canonical("preset-semantic-conflict", "ai-apply"),
       operation: "detail.definition.create",
       projectId: PROJECT,
       sessionId: "preset-semantic-session",
@@ -222,6 +342,7 @@ test("agentCodexMutate creates a Detail Definition and semantic binding atomical
 
 test("snippet / agent foreshadow / event request IDs are idempotent through napi", async () => {
   const snippet = {
+    ...canonical("agent-tool:snippet-napi-request-1", "ai-apply"),
     requestId: "agent-tool:snippet-napi-request-1",
     snippetId: "snippet-napi-entity-attempt-1",
     projectId: PROJECT,
@@ -232,6 +353,15 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   };
   const snippetFirst = JSON.parse(await backend.agentSnippetCreate(snippet));
   assert.equal(snippetFirst.undoJournalId, snippet.requestId);
+  assert.equal(snippetFirst.changeEventUid, snippet.eventUid);
+  const snippetEvent = (
+    await rows("SELECT payload FROM change_events WHERE event_uid = ?", [
+      snippet.eventUid,
+    ])
+  )[0];
+  const snippetEventPayload = JSON.parse(snippetEvent.payload);
+  assert.equal(snippetEventPayload.authorityRoute, "interactive-agent-command");
+  assert.equal(snippetEventPayload.authorityEvidence.validated, true);
   assert.notEqual(snippetFirst.entityId, snippet.requestId);
   assert.deepEqual(
     JSON.parse(
@@ -248,6 +378,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   );
 
   const foreshadow = {
+    ...canonical("agent-tool:foreshadow-napi-request-1", "ai-apply"),
     requestId: "agent-tool:foreshadow-napi-request-1",
     foreshadowId: "foreshadow-napi-entity-attempt-1",
     projectId: PROJECT,
@@ -258,11 +389,85 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
     loadBearing: "critical",
     secret: true,
   };
+  const invalidForeshadowCaller = {
+    ...foreshadow,
+    ...canonical("agent-tool:foreshadow-napi-invalid", "ai-apply"),
+    requestId: "agent-tool:foreshadow-napi-invalid",
+    foreshadowId: "foreshadow-napi-invalid-caller",
+    caller: "background-maintenance-v2",
+  };
+  const beforeInvalidForeshadow = await writeCounts();
+  await assert.rejects(
+    backend.agentForeshadowCreate(invalidForeshadowCaller),
+    /Forbidden caller/,
+  );
+  assert.deepEqual(await writeCounts(), beforeInvalidForeshadow);
+
   const foreshadowFirst = JSON.parse(
     await backend.agentForeshadowCreate(foreshadow),
   );
   assert.equal(foreshadowFirst.undoJournalId, foreshadow.requestId);
+  assert.equal(foreshadowFirst.changeEventUid, foreshadow.eventUid);
   assert.notEqual(foreshadowFirst.entityId, foreshadow.requestId);
+  const foreshadowEvent = await rows(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [foreshadowFirst.changeEventUid],
+  );
+  const foreshadowEventPayload = JSON.parse(foreshadowEvent[0].payload);
+  assert.equal(
+    foreshadowEventPayload.authorityRoute,
+    "interactive-agent-command",
+  );
+  assert.equal(foreshadowEventPayload.authorityCaller, "chat-tool-executor");
+  assert.equal(foreshadowEventPayload.authorityEvidence.validated, true);
+
+  const foreshadowUpdate = {
+    ...canonical("agent-tool:foreshadow-update-napi-request-1", "ai-apply"),
+    projectId: PROJECT,
+    sessionId: "sess-update-1",
+    foreshadowId: foreshadowFirst.entityId,
+    baseVersion: 0,
+    title: "刻印（更新）",
+    intent: null,
+    notes: null,
+    loadBearing: "critical",
+    payoffConfirmed: null,
+    abandoned: null,
+    secret: true,
+  };
+  const foreshadowUpdateResult = JSON.parse(
+    await backend.agentForeshadowUpdate(foreshadowUpdate),
+  );
+  assert.equal(
+    foreshadowUpdateResult.changeEventUid,
+    foreshadowUpdate.eventUid,
+  );
+  const foreshadowUpdateEvent = await rows(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [foreshadowUpdate.eventUid],
+  );
+  const foreshadowUpdateEventPayload = JSON.parse(
+    foreshadowUpdateEvent[0].payload,
+  );
+  assert.equal(
+    foreshadowUpdateEventPayload.authorityRoute,
+    "interactive-agent-command",
+  );
+  assert.equal(foreshadowUpdateEventPayload.authorityEvidence.validated, true);
+  await assert.rejects(
+    backend.agentForeshadowUpdate({
+      ...foreshadowUpdate,
+      ...canonical("agent-tool:foreshadow-update-napi-invalid", "ai-apply"),
+      projectId: PROJECT,
+      sessionId: "sess-update-invalid",
+      foreshadowId: foreshadowFirst.entityId,
+      baseVersion: 1,
+      requestId: "agent-tool:foreshadow-update-napi-invalid",
+      eventUid: "agent-tool:foreshadow-update-napi-invalid:event",
+      caller: "background-maintenance-v2",
+    }),
+    /Forbidden caller/,
+  );
   assert.deepEqual(
     JSON.parse(
       await backend.agentForeshadowCreate({
@@ -278,10 +483,8 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   );
 
   const event = {
-    requestId: "agent-tool:event-napi-request-1",
+    ...canonical("agent-tool:event-napi-request-1", "ai-apply"),
     eventId: "event-napi-entity-attempt-1",
-    projectId: PROJECT,
-    sessionId: "sess-1",
     title: "到着",
   };
   const eventFirst = JSON.parse(await backend.agentEventCreate(event));
@@ -329,15 +532,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
 });
 
 test("manual Snippet CRUD crosses napi through one canonical transaction per write", async () => {
-  const identity = (requestId) => ({
-    requestId,
-    projectId: PROJECT,
-    sessionId: `${requestId}:session`,
-    eventUid: `${requestId}:event`,
-    origin: "human",
-    originalTransactionId: null,
-    undoJournalId: null,
-  });
+  const identity = (requestId) => canonical(requestId, "human");
   const createPayload = {
     ...identity("manual-snippet-create-napi"),
     snippetId: "manual-snippet-napi",
@@ -405,12 +600,51 @@ test("manual Snippet CRUD crosses napi through one canonical transaction per wri
   );
 });
 
+test("agentEventSetParticipants preserves canonical authority evidence through napi", async () => {
+  const codex = JSON.parse(
+    await backend.agentCodexCreate({
+      ...canonical("agent-tool:participant-codex", "ai-apply"),
+      entryId: "participant-codex-napi",
+      typeSlug: "character",
+      name: "参加者",
+      summary: null,
+      content: "{}",
+      authorshipSpans: [],
+    }),
+  );
+  const event = JSON.parse(
+    await backend.agentEventCreate({
+      ...canonical("agent-tool:participant-event", "ai-apply"),
+      eventId: "participant-event-napi",
+      title: "参加者証跡",
+    }),
+  );
+  const updated = JSON.parse(
+    await backend.agentEventSetParticipants({
+      ...canonical("agent-tool:participant-set", "ai-apply"),
+      eventId: event.entityId,
+      baseVersion: event.version,
+      codexEntryIds: [codex.entityId],
+      participantRoles: ["lead"],
+    }),
+  );
+  assert.equal(updated.entityId, event.entityId);
+  assert.equal(updated.version, event.version + 1);
+
+  const eventRow = await rows(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["agent-tool:participant-set:event"],
+  );
+  const eventPayload = JSON.parse(eventRow[0].payload);
+  assert.equal(eventPayload.authorityRoute, "interactive-agent-command");
+  assert.equal(eventPayload.authorityCaller, "chat-tool-executor");
+  assert.equal(eventPayload.authorityEvidence.validated, true);
+});
+
 test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越しに保持する", async () => {
   const created = JSON.parse(
     await backend.agentEventCreate({
-      requestId: "agent-tool:event-napi-chronicle-boundaries-1",
-      projectId: PROJECT,
-      sessionId: "sess-chronicle-boundaries",
+      ...canonical("agent-tool:event-napi-chronicle-boundaries-1", "ai-apply"),
       title: "境界日時",
       startTime: 10,
       startMinute: 0,
@@ -436,9 +670,7 @@ test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越�
 
   const updated = JSON.parse(
     await backend.agentEventUpdate({
-      requestId: "agent-tool:event-napi-chronicle-update-1",
-      projectId: PROJECT,
-      sessionId: "sess-chronicle-boundaries",
+      ...canonical("agent-tool:event-napi-chronicle-update-1", "ai-apply"),
       eventId: created.entityId,
       baseVersion: created.version,
       endTime: 10,
@@ -484,10 +716,8 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
   const sceneId = "chronicle-bulk-napi-scene-1";
   const datedSceneId = "chronicle-bulk-napi-scene-2";
   await backend.agentEventCreate({
-    requestId: `fixture:${eventId}`,
+    ...canonical(`fixture:${eventId}`, "ai-apply"),
     eventId,
-    projectId: PROJECT,
-    sessionId: "sess-bulk-fixture",
     surface: "manual",
     title: "Bulk event",
     ordinal: "z-bulk",
@@ -499,10 +729,8 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
     kind: "generic",
   });
   await backend.agentEventCreate({
-    requestId: `fixture:${datedEventId}`,
+    ...canonical(`fixture:${datedEventId}`, "ai-apply"),
     eventId: datedEventId,
-    projectId: PROJECT,
-    sessionId: "sess-bulk-fixture",
     surface: "manual",
     title: "Dated bulk event",
     ordinal: "z-bulk-2",
@@ -567,9 +795,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
 
   const result = JSON.parse(
     await backend.agentChronicleBulkMutate({
-      requestId: "chronicle-bulk-napi-forward-1",
-      projectId: PROJECT,
-      sessionId: "sess-bulk",
+      ...canonical("chronicle-bulk-napi-forward-1", "ai-apply"),
       surface: "manual",
       operations: [
         { kind: "eventDelete", eventId, baseVersion: 1 },
@@ -670,6 +896,17 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
     sessionId: "sess-bulk",
     journalId: result.undoJournalId,
     direction: "undo",
+    authorityRoute: "history-replay",
+    origin: "undo",
+    caller: "undo-redo-command",
+    controls: [
+      "original-transaction",
+      "journal-lineage",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
   });
   const eventUndo = await rows("SELECT version FROM events WHERE id = ?", [
     eventId,
