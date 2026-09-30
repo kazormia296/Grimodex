@@ -373,6 +373,90 @@ mod tests {
     }
 
     #[test]
+    fn current_chat_capture_is_native_owned_and_blocks_all_untrusted_mutations() {
+        let registry = bundled_protected_writer_registry();
+        let entry = registry
+            .get("nir1_chat_input_captures")
+            .expect("current chat capture writer");
+        assert_eq!(entry.aggregate, "nir1-generation");
+        assert_eq!(entry.writer, "nir1_generation.storage");
+        assert_eq!(entry.enforcement, WriterEnforcement::Active);
+        assert_eq!(entry.protection, WriterProtection::Table);
+        for rejection in [
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_captures",
+                None,
+                true,
+                false,
+                Some(&["capture_id".into()]),
+            ),
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_captures",
+                Some("state"),
+                false,
+                false,
+                None,
+            ),
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_captures",
+                None,
+                false,
+                true,
+                None,
+            ),
+        ] {
+            assert!(rejection
+                .as_deref()
+                .is_some_and(|reason| reason.contains("nir1_generation.storage")));
+        }
+    }
+
+    #[test]
+    fn current_chat_submission_keys_are_native_owned_and_block_all_untrusted_mutations() {
+        let registry = bundled_protected_writer_registry();
+        let entry = registry
+            .get("nir1_chat_input_submission_keys")
+            .expect("durable chat submission-key writer");
+        assert_eq!(entry.aggregate, "nir1-generation");
+        assert_eq!(entry.writer, "nir1_generation.storage");
+        assert_eq!(entry.enforcement, WriterEnforcement::Active);
+        assert_eq!(entry.protection, WriterProtection::Table);
+        for rejection in [
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_submission_keys",
+                None,
+                true,
+                false,
+                Some(&["submission_id".into()]),
+            ),
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_submission_keys",
+                Some("submission_digest"),
+                false,
+                false,
+                None,
+            ),
+            untrusted_mutation_rejection(
+                registry,
+                "nir1_chat_input_submission_keys",
+                None,
+                false,
+                true,
+                None,
+            ),
+        ] {
+            assert!(rejection
+                .as_deref()
+                .is_some_and(|reason| reason.contains("nir1_generation.storage")));
+        }
+    }
+
+    #[test]
     fn shared_column_updates_are_rejected_and_other_columns_pass() {
         let registry = bundled_protected_writer_registry();
         let denied = untrusted_mutation_rejection(

@@ -203,14 +203,52 @@ fn renderer_function_denied(name: &str) -> bool {
 }
 
 fn protected_writer_rejection(ctx: &AuthContext<'_>) -> Option<String> {
-    // Only the canonical message mutation triggers may irreversibly revoke a
-    // Native version. Renderer DDL is denied, so it cannot forge an accessor.
-    // This exception grants no direct table writes or version qualification.
+    // Only canonical Native lifecycle triggers may remove a capture as its
+    // parent row is deleted. Renderer DDL cannot forge these accessors.
+    if matches!(ctx.action, AuthAction::Delete { table_name }
+        if table_name == "nir1_chat_input_captures")
+        && matches!(
+            ctx.accessor,
+            Some(
+                "nir1_chat_input_capture_project_delete"
+                    | "nir1_chat_input_capture_session_delete"
+                    | "nir1_chat_input_capture_message_delete"
+            )
+        )
+    {
+        return None;
+    }
+    // Parent deletion keeps the pre-existing source-nullification semantics
+    // for Codex and Snippet rows through one canonical Native trigger. Their
+    // direct source/provenance updates remain protected.
+    if matches!(ctx.action, AuthAction::Update { table_name, column_name }
+        if matches!(table_name, "codex_entries" | "snippets")
+            && column_name == "source_chat_message_id")
+        && ctx.accessor == Some("chat_message_source_provenance_delete")
+    {
+        return None;
+    }
+    // Canonical message mutation triggers can only revoke Native versions and
+    // current Human captures. Renderer DDL is denied, so it cannot forge an accessor.
+    // These exceptions grant no direct table writes or positive qualification.
     if matches!(ctx.action, AuthAction::Update { table_name, column_name }
         if table_name == "nir1_generation_message_versions" && column_name == "invalidated")
-        && matches!(ctx.accessor, Some("nir1_generation_invalidate_message_update"
-            | "nir1_generation_invalidate_message_delete"
-            | "nir1_generation_invalidate_message_insert"))
+        && matches!(
+            ctx.accessor,
+            Some(
+                "nir1_generation_invalidate_message_update"
+                    | "nir1_generation_invalidate_message_delete"
+                    | "nir1_generation_invalidate_message_insert"
+            )
+        )
+    {
+        return None;
+    }
+    // The canonical v40 trigger may only revoke an old capture after a new
+    // Human row is inserted; it cannot grant or change any capture identity.
+    if matches!(ctx.action, AuthAction::Update { table_name, column_name }
+        if table_name == "nir1_chat_input_captures" && column_name == "state")
+        && ctx.accessor == Some("nir1_chat_input_capture_new_human_invalidate")
     {
         return None;
     }
@@ -817,9 +855,10 @@ impl Database {
         let result = if origin.is_untrusted() {
             match reject_stale_untrusted_transaction(&conn) {
                 Ok(()) => {
-                    let reserved_project_setting_guard_requested = statements.iter().any(|statement| {
-                        untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
-                    });
+                    let reserved_project_setting_guard_requested =
+                        statements.iter().any(|statement| {
+                            untrusted_sql_needs_reserved_project_setting_guard(&statement.sql)
+                        });
                     let result = with_untrusted_sql_policy(
                         &conn,
                         reserved_project_setting_guard_requested,
@@ -877,9 +916,7 @@ impl Database {
         &self,
         statements: &[BatchStatement],
     ) -> anyhow::Result<Vec<serde_json::Map<String, Value>>> {
-        Ok(self
-            .execute_batch_tx_renderer_with_result(statements)?
-            .rows)
+        Ok(self.execute_batch_tx_renderer_with_result(statements)?.rows)
     }
 
     pub fn execute_batch_tx_renderer_with_result(
@@ -949,9 +986,7 @@ impl Database {
             && statement_may_mutate
             && stmt.column_count() > 0
         {
-            anyhow::bail!(
-                "{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published"
-            );
+            anyhow::bail!("{RENDERER_PROFILE_EGRESS_ERROR}: DML result plaintext is not published");
         }
         let native_params: Vec<Box<dyn rusqlite::types::ToSql>> = params
             .iter()
@@ -1171,6 +1206,99 @@ mod tests {
         ))
     }
 
+    fn seed_renderer_chat_message(db: &Database, suffix: &str) -> (String, String) {
+        let session_id = format!("renderer-cascade-session-{suffix}");
+        let message_id = format!("renderer-cascade-message-{suffix}");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id) VALUES (?1,'default-project')",
+                [&session_id],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES (?1,?2,'user','captured body','2026-09-29T08:00:00.000Z')",
+                rusqlite::params![message_id, session_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed renderer-delete chat row");
+        (session_id, message_id)
+    }
+
+    fn seed_renderer_current_capture(db: &Database, suffix: &str) -> (String, String, String) {
+        let (session_id, message_id) = seed_renderer_chat_message(db, suffix);
+        let capture_id = format!("renderer-cascade-capture-{suffix}");
+        let submission_id = format!("renderer-cascade-submission-{suffix}");
+        let version = crate::nir1_generation::bind_human_message(
+            db,
+            "default-project",
+            &session_id,
+            &message_id,
+            1_790_000_000_000,
+        )
+        .expect("bind captured Human version");
+        let digest = format!("sha256:{}", "a".repeat(64));
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO nir1_chat_input_captures
+                    (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                     submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                 VALUES (?1,'default-project',?2,'renderer-cascade-scene',?3,?4,?5,?6,'{}','current',?7)",
+                rusqlite::params![
+                    capture_id,
+                    session_id,
+                    submission_id,
+                    digest,
+                    message_id,
+                    version.id,
+                    version.created_at_ms,
+                ],
+            )?;
+            conn.execute(
+                "INSERT INTO nir1_chat_input_submission_keys
+                    (submission_id,capture_id,submission_digest,created_at_ms)
+                 VALUES (?1,?2,?3,?4)",
+                rusqlite::params![submission_id, capture_id, digest, version.created_at_ms],
+            )?;
+            Ok(())
+        })
+        .expect("seed current Human capture and durable tombstone");
+        (session_id, message_id, capture_id)
+    }
+
+    fn observe_capture_delete_accessors(
+        db: &Database,
+        sql: &str,
+        key: &str,
+    ) -> Vec<Option<String>> {
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed_for_authorizer = std::sync::Arc::clone(&observed);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+                if matches!(&ctx.action, AuthAction::Delete { table_name }
+                    if *table_name == "nir1_chat_input_captures")
+                {
+                    observed_for_authorizer
+                        .lock()
+                        .expect("capture DELETE observation lock")
+                        .push(ctx.accessor.map(str::to_owned));
+                }
+                Authorization::Allow
+            }))?;
+            let deletion = conn.execute(sql, [key]);
+            let reset = conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+            deletion?;
+            reset?;
+            Ok(())
+        })
+        .expect("observe SQLite foreign-key/delete authorizer actions");
+        let accessors = observed
+            .lock()
+            .expect("capture DELETE observation lock")
+            .clone();
+        accessors
+    }
+
     #[test]
     fn renderer_sql_allows_normal_crud_but_not_schema_changes() {
         let db = test_db();
@@ -1219,6 +1347,467 @@ mod tests {
         );
         db.execute("CREATE TABLE trusted (id INTEGER)", &[], "run")
             .expect("trusted backend schema operation remains available");
+    }
+
+    #[test]
+    fn renderer_parent_deletes_cleanup_captures_through_native_triggers() -> anyhow::Result<()> {
+        let db = test_db();
+        db.migrate().expect("migrate real SQLite schema to v41");
+        let schema_version: i32 = db
+            .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
+            .expect("read migrated version");
+        assert_eq!(schema_version, 41);
+
+        let (_, empty_message) = seed_renderer_chat_message(&db, "empty");
+        let codex_id = "renderer-cascade-codex-empty";
+        let snippet_id = "renderer-cascade-snippet-empty";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_entries(id,project_id,type,name,source_chat_message_id)
+                 VALUES (?1,'default-project','character','Source fixture',?2)",
+                rusqlite::params![codex_id, empty_message],
+            )?;
+            conn.execute(
+                "INSERT INTO snippets(id,project_id,title,content,source_chat_message_id)
+                 VALUES (?1,'default-project','Source fixture','{}',?2)",
+                rusqlite::params![snippet_id, empty_message],
+            )?;
+            Ok(())
+        })?;
+        for (sql, id) in [
+            (
+                "UPDATE codex_entries SET source_chat_message_id=NULL WHERE id=?1",
+                codex_id,
+            ),
+            (
+                "UPDATE snippets SET source_chat_message_id=NULL WHERE id=?1",
+                snippet_id,
+            ),
+        ] {
+            let error = db
+                .execute_renderer(sql, &[Value::from(id)], "run")
+                .expect_err("direct protected provenance update remains denied");
+            assert!(error.to_string().contains(PROTECTED_WRITER_SQL_ERROR));
+        }
+        db.execute_renderer(
+            "DELETE FROM chat_messages WHERE id=?1",
+            &[Value::from(empty_message.as_str())],
+            "run",
+        )
+        .expect("ordinary message DELETE without a capture remains allowed");
+        let empty_message_count: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM chat_messages WHERE id=?1",
+                    [&empty_message],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read deleted message");
+        assert_eq!(empty_message_count, 0);
+        let nulled_sources: (Option<String>, Option<String>) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT source_chat_message_id FROM codex_entries WHERE id=?1",
+                        [codex_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT source_chat_message_id FROM snippets WHERE id=?1",
+                        [snippet_id],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("read nulled provenance references");
+        assert_eq!(nulled_sources, (None, None));
+
+        let (_, message_id, message_capture) = seed_renderer_current_capture(&db, "message");
+        let direct_capture_error = db
+            .execute_renderer(
+                "DELETE FROM nir1_chat_input_captures WHERE capture_id=?1",
+                &[Value::from(message_capture.as_str())],
+                "run",
+            )
+            .expect_err("direct protected capture DELETE remains denied with a live row");
+        assert!(direct_capture_error
+            .to_string()
+            .contains(PROTECTED_WRITER_SQL_ERROR));
+        let message_version: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT message_version_id FROM nir1_chat_input_captures WHERE capture_id=?1",
+                    [&message_capture],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read version before parent delete");
+        db.execute_renderer(
+            "DELETE FROM chat_messages WHERE id=?1",
+            &[Value::from(message_id.as_str())],
+            "run",
+        )
+        .expect("renderer message DELETE cleans its capture");
+        let message_cleanup: (i64, i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_messages WHERE id=?1",
+                        [&message_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?1",
+                        [&message_capture],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM nir1_chat_input_submission_keys WHERE capture_id=?1",
+                        [&message_capture],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT invalidated FROM nir1_generation_message_versions WHERE id=?1",
+                        [&message_version],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("verify message/capture cleanup and tombstone");
+        assert_eq!(message_cleanup, (0, 0, 1, 1));
+
+        let (session_id, session_message, session_capture) =
+            seed_renderer_current_capture(&db, "session");
+        db.execute_renderer(
+            "DELETE FROM chat_sessions WHERE id=?1",
+            &[Value::from(session_id.as_str())],
+            "run",
+        )
+        .expect("renderer session DELETE cleans captures before message cascade");
+        let session_cleanup: (i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_sessions WHERE id=?1",
+                        [&session_id],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_messages WHERE id=?1",
+                        [&session_message],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?1",
+                        [&session_capture],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("verify session cleanup");
+        assert_eq!(session_cleanup, (0, 0, 0));
+
+        let (history_session, history_message, history_capture) =
+            seed_renderer_current_capture(&db, "history-clear");
+        db.execute_renderer(
+            "DELETE FROM chat_messages WHERE session_id=?1",
+            &[Value::from(history_session.as_str())],
+            "run",
+        )
+        .expect("renderer history-clear DELETE cleans captures");
+        let history_cleanup: (i64, i64, i64) = db
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_sessions WHERE id=?1",
+                        [&history_session],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM chat_messages WHERE id=?1",
+                        [&history_message],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?1",
+                        [&history_capture],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("verify history clear cleanup");
+        assert_eq!(history_cleanup, (1, 0, 0));
+
+        let (_, project_session, project_message, project_capture, project_submission) = {
+            let project = "renderer-native-project-delete";
+            let session = "renderer-native-project-session";
+            let message = "renderer-native-project-message";
+            db.with_conn(|conn| {
+                conn.execute("INSERT INTO projects(id,title) VALUES (?1,'Project')", [project])?;
+                conn.execute("INSERT INTO chat_sessions(id,project_id) VALUES (?1,?2)", [session, project])?;
+                conn.execute(
+                    "INSERT INTO chat_messages(id,session_id,role,content,created_at) VALUES (?1,?2,'user','body','2026-09-29T08:00:00.000Z')",
+                    [message, session],
+                )?;
+                Ok(())
+            })?;
+            let version = crate::nir1_generation::bind_human_message(
+                &db,
+                project,
+                session,
+                message,
+                1_790_000_000_001,
+            )?;
+            let capture = "renderer-native-project-capture";
+            let submission = "renderer-native-project-submission";
+            let digest = format!("sha256:{}", "b".repeat(64));
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO nir1_chat_input_captures
+                     (capture_id,project_id,chat_session_id,scene_id,submission_id,submission_digest,
+                      message_id,message_version_id,owner_json,state,created_at_ms)
+                     VALUES (?1,?2,?3,'project-scene',?4,?5,?6,?7,'{}','current',?8)",
+                    rusqlite::params![capture, project, session, submission, digest, message, version.id, version.created_at_ms],
+                )?;
+                conn.execute(
+                    "INSERT INTO nir1_chat_input_submission_keys
+                     (submission_id,capture_id,submission_digest,created_at_ms) VALUES (?1,?2,?3,?4)",
+                    rusqlite::params![submission, capture, digest, version.created_at_ms],
+                )?;
+                Ok(())
+            })?;
+            (
+                project,
+                session.to_owned(),
+                message.to_owned(),
+                capture.to_owned(),
+                submission.to_owned(),
+            )
+        };
+        db.execute(
+            "DELETE FROM projects WHERE id=?1",
+            &[Value::from("renderer-native-project-delete")],
+            "run",
+        )
+        .expect("trusted project lifecycle deletion cleans captures");
+        let project_cleanup: (i64, i64, i64, i64) = db.with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT count(*) FROM chat_sessions WHERE id=?1", [&project_session], |row| row.get(0))?,
+                conn.query_row("SELECT count(*) FROM chat_messages WHERE id=?1", [&project_message], |row| row.get(0))?,
+                conn.query_row("SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?1", [&project_capture], |row| row.get(0))?,
+                conn.query_row("SELECT count(*) FROM nir1_chat_input_submission_keys WHERE submission_id=?1", [&project_submission], |row| row.get(0))?,
+            ))
+        }).expect("verify trusted project cascade");
+        assert_eq!(project_cleanup, (0, 0, 0, 1));
+        let fk_violations: i64 = db
+            .with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })?,
+                )
+            })
+            .expect("run foreign_key_check after parent cleanup");
+        assert_eq!(fk_violations, 0);
+
+        let observer_db = test_db();
+        observer_db
+            .migrate()
+            .expect("migrate observer SQLite schema");
+        let (_, observed_message, _) =
+            seed_renderer_current_capture(&observer_db, "observer-trigger");
+        let (_, _, direct_capture) = seed_renderer_current_capture(&observer_db, "observer-direct");
+        let accessors = observe_capture_delete_accessors(
+            &observer_db,
+            "DELETE FROM chat_messages WHERE id=?1",
+            &observed_message,
+        );
+        let direct_accessors = observe_capture_delete_accessors(
+            &observer_db,
+            "DELETE FROM nir1_chat_input_captures WHERE capture_id=?1",
+            &direct_capture,
+        );
+        assert_eq!(
+            accessors,
+            vec![Some("nir1_chat_input_capture_message_delete".to_owned())]
+        );
+        assert_eq!(direct_accessors, vec![None]);
+        Ok(())
+    }
+
+    #[test]
+    fn renderer_v40_chat_insert_allows_only_canonical_capture_state_retirement() {
+        let db = test_db();
+        db.migrate().expect("migrate schema v41");
+        let schema_version: i32 = db
+            .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
+            .expect("schema version");
+        assert_eq!(schema_version, grimodex_core::SCHEMA_VERSION);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects(id,title) VALUES ('renderer-v40-project','Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id) VALUES ('renderer-v40-session','renderer-v40-project')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed chat scope");
+
+        // Pin SQLite's actual nested trigger callback instead of assuming the
+        // accessor name from the SQL declaration.
+        let capture_updates = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture_updates_for_auth = std::sync::Arc::clone(&capture_updates);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+                if matches!(&ctx.action, AuthAction::Update { table_name, column_name }
+                    if *table_name == "nir1_chat_input_captures" && *column_name == "state")
+                {
+                    capture_updates_for_auth
+                        .lock()
+                        .expect("authorizer observation lock")
+                        .push(ctx.accessor.map(str::to_owned));
+                }
+                Authorization::Allow
+            }))?;
+            let insert = conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('renderer-v40-context-probe','renderer-v40-session','user','probe','2026-09-29T08:00:00.000Z')",
+                [],
+            );
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            insert?;
+            Ok(())
+        })
+        .expect("observe the v40 trigger authorizer action");
+        assert_eq!(
+            *capture_updates.lock().expect("authorizer observation lock"),
+            vec![Some(
+                "nir1_chat_input_capture_new_human_invalidate".to_owned()
+            )]
+        );
+
+        let ordinary_insert = "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+            VALUES (?1,?2,'user',?3,?4)";
+        db.execute_renderer(
+            ordinary_insert,
+            &[
+                Value::from("renderer-v40-legacy-human"),
+                Value::from("renderer-v40-session"),
+                Value::from("ordinary unrestricted chat"),
+                Value::from("2026-09-29T08:01:00.000Z"),
+            ],
+            "run",
+        )
+        .expect("ordinary renderer chat insert without a capture");
+        let persisted: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM chat_messages WHERE id='renderer-v40-legacy-human'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("verify ordinary chat persistence");
+        assert_eq!(persisted, 1);
+
+        let restricted_error = db
+            .execute_renderer_profile_egress(
+                ordinary_insert,
+                &[
+                    Value::from("renderer-v40-restricted-human"),
+                    Value::from("renderer-v40-session"),
+                    Value::from("still protected from generic SQL"),
+                    Value::from("2026-09-29T08:02:00.000Z"),
+                ],
+                "run",
+            )
+            .expect_err("profile-egress keeps generic chat DML protected");
+        assert!(restricted_error
+            .to_string()
+            .contains(RENDERER_PROFILE_EGRESS_ERROR));
+        let restricted_delete = db
+            .execute_renderer_profile_egress(
+                "DELETE FROM chat_messages WHERE id=?1",
+                &[Value::from("renderer-v40-legacy-human")],
+                "run",
+            )
+            .expect_err("profile-egress keeps generic chat deletes protected");
+        assert!(restricted_delete
+            .to_string()
+            .contains(RENDERER_PROFILE_EGRESS_ERROR));
+
+        let (_, _, _) = seed_renderer_current_capture(&db, "delete-spoof");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TABLE renderer_capture_trigger_probe(id TEXT PRIMARY KEY);
+                 CREATE TABLE renderer_capture_delete_probe(id TEXT PRIMARY KEY);
+                 CREATE TRIGGER nir1_chat_input_capture_new_human_invalidate_spoof
+                 AFTER INSERT ON renderer_capture_trigger_probe BEGIN
+                   UPDATE nir1_chat_input_captures SET state='superseded'
+                    WHERE capture_id='missing';
+                 END;
+                 CREATE TRIGGER renderer_capture_delete_spoof
+                 AFTER INSERT ON renderer_capture_delete_probe BEGIN
+                   DELETE FROM nir1_chat_input_captures
+                    WHERE capture_id='renderer-cascade-capture-delete-spoof';
+                 END;
+                 CREATE VIEW renderer_capture_state AS
+                   SELECT capture_id,state FROM nir1_chat_input_captures;
+                 CREATE TRIGGER renderer_capture_state_update
+                 INSTEAD OF UPDATE ON renderer_capture_state BEGIN
+                   UPDATE nir1_chat_input_captures SET state=NEW.state
+                    WHERE capture_id=OLD.capture_id;
+                 END",
+            )?;
+            Ok(())
+        })
+        .expect("trusted negative-path trigger fixtures");
+
+        for sql in [
+            "UPDATE nir1_chat_input_captures SET state='superseded'",
+            "UPDATE nir1_chat_input_captures SET owner_json='{}'",
+            "UPDATE nir1_chat_input_captures AS c SET state='superseded' WHERE c.capture_id='missing'",
+            "WITH chosen AS (SELECT 'missing' AS capture_id) UPDATE nir1_chat_input_captures SET state='superseded' WHERE capture_id=(SELECT capture_id FROM chosen)",
+            "INSERT INTO nir1_chat_input_captures(capture_id) VALUES ('renderer-forged')",
+            "DELETE FROM nir1_chat_input_captures",
+            "INSERT INTO nir1_chat_input_submission_keys(submission_id) VALUES ('renderer-forged')",
+            "UPDATE nir1_chat_input_submission_keys SET submission_digest='renderer-forged'",
+            "DELETE FROM nir1_chat_input_submission_keys",
+            "UPDATE renderer_capture_state SET state='superseded' WHERE capture_id='missing'",
+            "INSERT INTO renderer_capture_trigger_probe(id) VALUES ('spoof')",
+            "INSERT INTO renderer_capture_delete_probe(id) VALUES ('spoof')",
+        ] {
+            let error = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("noncanonical capture writer must remain denied");
+            assert!(
+                error.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "unexpected error for {sql}: {error}"
+            );
+        }
+        let forged_ddl = db
+            .execute_renderer(
+                "CREATE TRIGGER renderer_forged_capture_trigger AFTER INSERT ON renderer_capture_trigger_probe BEGIN SELECT 1; END",
+                &[],
+                "run",
+            )
+            .expect_err("renderer DDL cannot create an authorized accessor");
+        assert!(forged_ddl.to_string().contains("schema operation"));
+
+        let restricted_row: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM chat_messages WHERE id='renderer-v40-restricted-human'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("verify restricted insert did not persist");
+        assert_eq!(restricted_row, 0);
     }
 
     #[test]
@@ -1350,9 +1939,12 @@ mod tests {
             "baseVersion": 0
         }))
         .expect("typed no-op update payload");
-        let response = foreshadow::update(&db, foreshadow_id.to_string(), patch)
-            .expect("typed update");
-        assert_eq!(response["notes"], Value::String("SECRET_FORESHADOW_NOTES".to_string()));
+        let response =
+            foreshadow::update(&db, foreshadow_id.to_string(), patch).expect("typed update");
+        assert_eq!(
+            response["notes"],
+            Value::String("SECRET_FORESHADOW_NOTES".to_string())
+        );
 
         let ledger = db
             .execute(
@@ -1627,15 +2219,13 @@ mod tests {
         assert!(result.rows.is_empty());
 
         let batch = db
-            .execute_batch_tx_renderer_profile_egress_with_result(&[
-                BatchStatement {
-                    sql: "WITH source AS (SELECT value FROM renderer_statement_kind)
+            .execute_batch_tx_renderer_profile_egress_with_result(&[BatchStatement {
+                sql: "WITH source AS (SELECT value FROM renderer_statement_kind)
                            SELECT value FROM source"
-                        .into(),
-                    params: vec![],
-                    method: "all".into(),
-                },
-            ])
+                    .into(),
+                params: vec![],
+                method: "all".into(),
+            }])
             .expect("read-only CTE batch should execute");
         assert!(!batch.statement_may_mutate);
         assert_eq!(batch.rows.len(), 1);

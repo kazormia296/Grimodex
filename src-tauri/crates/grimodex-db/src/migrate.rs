@@ -11,6 +11,8 @@ enum ConvergedPreviousFinalize {
     NeedsFullMigration,
 }
 
+type ForeignKeyViolation = (String, Option<i64>, String, i64);
+
 impl Database {
     /// First workspace schema that owns the `schema_data_migrations` table.
     /// Restore compatibility may treat a missing table as provably
@@ -78,6 +80,330 @@ impl Database {
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
         )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    fn migrate_chat_input_capture_lifecycle_v41(conn: &Connection) -> anyhow::Result<()> {
+        if grimodex_core::workspace_schema::has_v41_chat_input_capture_lifecycle(conn)? {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "v41 chat-message lifecycle migration requires an autocommit connection"
+        );
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        let foreign_key_violations_before = Self::foreign_key_violations(conn)?;
+        if foreign_keys_enabled {
+            conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+        }
+        if let Err(error) = conn.execute_batch("SAVEPOINT chat_message_lifecycle_v41") {
+            if foreign_keys_enabled {
+                let _ = conn.execute_batch("PRAGMA foreign_keys=ON;");
+            }
+            return Err(error.into());
+        }
+
+        let repair = (|| -> anyhow::Result<()> {
+            Self::rebuild_chat_message_source_fks_v41(conn)?;
+
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS nir1_chat_input_capture_transition_guard;
+                 DROP TRIGGER IF EXISTS nir1_chat_input_capture_new_human_invalidate;
+                 DROP TRIGGER IF EXISTS nir1_chat_input_capture_project_delete;
+                 DROP TRIGGER IF EXISTS nir1_chat_input_capture_session_delete;
+                 DROP TRIGGER IF EXISTS nir1_chat_input_capture_message_delete;
+                 DROP TRIGGER IF EXISTS chat_message_source_provenance_delete;",
+            )?;
+
+            let restricted_parent_keys: i64 = conn.query_row(
+                "SELECT count(*) FROM pragma_foreign_key_list('nir1_chat_input_captures')
+                  WHERE on_delete='RESTRICT'
+                    AND ((\"from\"='project_id' AND \"table\"='projects' AND \"to\"='id')
+                      OR (\"from\"='chat_session_id' AND \"table\"='chat_sessions' AND \"to\"='id')
+                      OR (\"from\"='message_id' AND \"table\"='chat_messages' AND \"to\"='id')
+                      OR (\"from\"='message_version_id' AND \"table\"='nir1_generation_message_versions' AND \"to\"='id'))",
+                [],
+                |row| row.get(0),
+            )?;
+            if restricted_parent_keys != 4 {
+                conn.execute_batch(
+                    "DROP INDEX IF EXISTS idx_nir1_chat_input_captures_current;
+                     CREATE TABLE nir1_chat_input_captures_v41 (
+                        capture_id         TEXT PRIMARY KEY,
+                        project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+                        chat_session_id    TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE RESTRICT,
+                        scene_id           TEXT NOT NULL,
+                        submission_id      TEXT NOT NULL,
+                        submission_digest  TEXT NOT NULL
+                            CHECK(length(submission_digest) = 71
+                              AND submission_digest GLOB 'sha256:*'
+                              AND substr(submission_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                        message_id         TEXT NOT NULL UNIQUE
+                            REFERENCES chat_messages(id) ON DELETE RESTRICT,
+                        message_version_id TEXT NOT NULL UNIQUE
+                            REFERENCES nir1_generation_message_versions(id) ON DELETE RESTRICT,
+                        owner_json         TEXT NOT NULL
+                            CHECK(octet_length(owner_json) <= 65536
+                              AND json_valid(owner_json) AND json_type(owner_json) = 'object'),
+                        state              TEXT NOT NULL
+                            CHECK(state IN ('current','superseded','cancelled','closed')),
+                        created_at_ms      INTEGER NOT NULL,
+                        UNIQUE(chat_session_id, submission_id)
+                     );
+                     INSERT INTO nir1_chat_input_captures_v41
+                        (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                         submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                     SELECT capture_id,project_id,chat_session_id,scene_id,submission_id,
+                            submission_digest,message_id,message_version_id,owner_json,state,created_at_ms
+                       FROM nir1_chat_input_captures;
+                     DROP TABLE nir1_chat_input_captures;
+                     ALTER TABLE nir1_chat_input_captures_v41 RENAME TO nir1_chat_input_captures;",
+                )?;
+            }
+
+            conn.execute_batch(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_nir1_chat_input_captures_current
+                    ON nir1_chat_input_captures(project_id, chat_session_id)
+                    WHERE state='current';",
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_TRANSITION_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_NEW_HUMAN_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_PROJECT_DELETE_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_SESSION_DELETE_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_MESSAGE_DELETE_TRIGGER_SQL,
+            )?;
+            conn.execute_batch(
+                grimodex_core::workspace_schema::CHAT_MESSAGE_SOURCE_PROVENANCE_DELETE_TRIGGER_SQL,
+            )?;
+            anyhow::ensure!(
+                grimodex_core::workspace_schema::has_v41_chat_input_capture_lifecycle(conn)?,
+                "workspace chat-message lifecycle failed v41 checkpoint"
+            );
+            let foreign_key_violations_after = Self::foreign_key_violations(conn)?;
+            anyhow::ensure!(
+                foreign_key_violations_before == foreign_key_violations_after,
+                "v41 chat-message lifecycle rebuild changed foreign-key violations"
+            );
+            Ok(())
+        })();
+        let migration_result = match repair {
+            Ok(()) => match conn.execute_batch("RELEASE chat_message_lifecycle_v41") {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO chat_message_lifecycle_v41;
+                         RELEASE chat_message_lifecycle_v41;",
+                    ) {
+                        tracing::error!(
+                            target: "narrative.migrate",
+                            %unwind,
+                            "failed to unwind v41 chat-message lifecycle after RELEASE failed"
+                        );
+                    }
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO chat_message_lifecycle_v41;
+                     RELEASE chat_message_lifecycle_v41;",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind v41 chat-message lifecycle migration"
+                    );
+                }
+                Err(error)
+            }
+        };
+        let restore_foreign_keys = if foreign_keys_enabled {
+            conn.execute_batch("PRAGMA foreign_keys=ON;")
+                .map_err(anyhow::Error::from)
+        } else {
+            Ok(())
+        };
+        match (migration_result, restore_foreign_keys) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
+    fn rebuild_chat_message_source_fks_v41(conn: &Connection) -> anyhow::Result<()> {
+        let mut needs_rebuild = false;
+        for table in ["codex_entries", "snippets"] {
+            let action: Option<String> = conn
+                .query_row(
+                    "SELECT on_delete FROM pragma_foreign_key_list(?1)
+                      WHERE \"from\"='source_chat_message_id'
+                        AND \"table\"='chat_messages' AND \"to\"='id'",
+                    [table],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match action.as_deref() {
+                Some("RESTRICT") => {}
+                Some("SET NULL") => needs_rebuild = true,
+                other => anyhow::bail!(
+                    "v41 expected {table}.source_chat_message_id -> chat_messages ON DELETE SET NULL or RESTRICT, got {other:?}"
+                ),
+            }
+        }
+        if !needs_rebuild {
+            return Ok(());
+        }
+
+        let triggers = Self::stored_trigger_definitions(conn)?;
+        for (name, _) in &triggers {
+            let quoted_name = name.replace('"', "\"\"");
+            conn.execute_batch(&format!("DROP TRIGGER \"{quoted_name}\";"))?;
+        }
+        Self::rebuild_chat_message_source_fk_v41(conn, "codex_entries")?;
+        Self::rebuild_chat_message_source_fk_v41(conn, "snippets")?;
+        for (_, sql) in triggers {
+            conn.execute_batch(&sql)?;
+        }
+        Ok(())
+    }
+
+    fn stored_trigger_definitions(conn: &Connection) -> anyhow::Result<Vec<(String, String)>> {
+        let mut statement = conn.prepare(
+            "SELECT name,sql FROM sqlite_master
+              WHERE type='trigger' AND sql IS NOT NULL ORDER BY name",
+        )?;
+        let triggers = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(triggers)
+    }
+
+    fn rename_create_table_sql(
+        create_sql: &str,
+        table: &str,
+        replacement_table: &str,
+    ) -> anyhow::Result<String> {
+        let prefix = [
+            format!("CREATE TABLE IF NOT EXISTS {table}"),
+            format!("CREATE TABLE IF NOT EXISTS \"{table}\""),
+            format!("CREATE TABLE {table}"),
+            format!("CREATE TABLE \"{table}\""),
+        ]
+        .into_iter()
+        .find(|prefix| create_sql.starts_with(prefix))
+        .with_context(|| format!("v41 cannot rebuild unexpected {table} DDL"))?;
+        Ok(create_sql.replacen(&prefix, &format!("CREATE TABLE {replacement_table}"), 1))
+    }
+
+    fn rebuild_chat_message_source_fk_v41(conn: &Connection, table: &str) -> anyhow::Result<()> {
+        let action: Option<String> = conn
+            .query_row(
+                "SELECT on_delete FROM pragma_foreign_key_list(?1)
+                  WHERE \"from\"='source_chat_message_id'
+                    AND \"table\"='chat_messages' AND \"to\"='id'",
+                [table],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match action.as_deref() {
+            Some("RESTRICT") => return Ok(()),
+            Some("SET NULL") => {}
+            other => anyhow::bail!(
+                "v41 expected {table}.source_chat_message_id -> chat_messages ON DELETE SET NULL or RESTRICT, got {other:?}"
+            ),
+        }
+
+        let temporary_table = format!("{table}_v41");
+        let temporary_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
+            [&temporary_table],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !temporary_exists,
+            "v41 temporary table name collision: {temporary_table}"
+        );
+        let original_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get(0),
+        )?;
+        let foreign_key_clause = "REFERENCES chat_messages(id) ON DELETE SET NULL";
+        anyhow::ensure!(
+            original_sql.matches(foreign_key_clause).count() == 1,
+            "v41 expected one canonical source-message FK in {table} DDL"
+        );
+        let new_sql = Self::rename_create_table_sql(&original_sql, table, &temporary_table)?
+            .replacen(
+                foreign_key_clause,
+                "REFERENCES chat_messages(id) ON DELETE RESTRICT",
+                1,
+            );
+
+        let table_objects = {
+            let mut statement = conn.prepare(
+                "SELECT sql FROM sqlite_master
+                  WHERE tbl_name=?1 AND type IN ('index','trigger') AND sql IS NOT NULL
+                  ORDER BY type, name",
+            )?;
+            let objects = statement
+                .query_map([table], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            objects
+        };
+        let columns = {
+            let mut statement = conn.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            columns
+        };
+        anyhow::ensure!(
+            !columns.is_empty(),
+            "v41 cannot rebuild empty table {table}"
+        );
+        let column_list = columns
+            .iter()
+            .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        conn.execute_batch(&new_sql)?;
+        conn.execute_batch(&format!(
+            "INSERT INTO \"{temporary_table}\" (rowid, {column_list})
+             SELECT rowid, {column_list} FROM \"{table}\";
+             DROP TABLE \"{table}\";
+             ALTER TABLE \"{temporary_table}\" RENAME TO \"{table}\";"
+        ))?;
+        for object_sql in table_objects {
+            conn.execute_batch(&object_sql)?;
+        }
+        Ok(())
+    }
+
+    fn foreign_key_violations(conn: &Connection) -> anyhow::Result<Vec<ForeignKeyViolation>> {
+        let mut statement = conn.prepare("PRAGMA foreign_key_check")?;
+        let mut violations = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        violations.sort_unstable();
+        Ok(violations)
     }
 
     pub(crate) fn record_c2zc_cutover_marker(
@@ -273,7 +599,7 @@ impl Database {
                                           CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')),
                 children_budget         TEXT NOT NULL DEFAULT 'compact'
                                           CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')),
-                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE RESTRICT,
                 notes                   TEXT,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
@@ -417,7 +743,7 @@ impl Database {
                 tags_cache              TEXT,
                 content_source          TEXT CHECK(content_source IS NULL OR content_source IN ('human','ai')),
                 scene_id                TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL,
-                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+                source_chat_message_id  TEXT REFERENCES chat_messages(id) ON DELETE RESTRICT,
                 usage_count             INTEGER NOT NULL DEFAULT 0,
                 created_at              TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at              TEXT NOT NULL DEFAULT (datetime('now'))
@@ -3841,6 +4167,109 @@ impl Database {
         conn.execute_batch(
             grimodex_core::workspace_schema::NIR1_GENERATION_MESSAGE_INSERT_TRIGGER_SQL,
         )?;
+
+        // SCHEMA_VERSION 38 / NIR-1 current Human capture authority. This is
+        // additive storage only: no legacy chat row is promoted or backfilled.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS nir1_chat_input_captures (
+                capture_id         TEXT PRIMARY KEY,
+                project_id         TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                chat_session_id    TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                scene_id           TEXT NOT NULL,
+                submission_id      TEXT NOT NULL,
+                submission_digest  TEXT NOT NULL
+                    CHECK(length(submission_digest) = 71
+                      AND submission_digest GLOB 'sha256:*'
+                      AND substr(submission_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                message_id         TEXT NOT NULL UNIQUE
+                    REFERENCES chat_messages(id) ON DELETE CASCADE,
+                message_version_id TEXT NOT NULL UNIQUE
+                    REFERENCES nir1_generation_message_versions(id) ON DELETE RESTRICT,
+                owner_json         TEXT NOT NULL
+                    CHECK(octet_length(owner_json) <= 65536
+                      AND json_valid(owner_json) AND json_type(owner_json) = 'object'),
+                state              TEXT NOT NULL
+                    CHECK(state IN ('current','superseded','cancelled','closed')),
+                created_at_ms      INTEGER NOT NULL,
+                UNIQUE(chat_session_id, submission_id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_nir1_chat_input_captures_current
+                ON nir1_chat_input_captures(project_id, chat_session_id)
+                WHERE state='current';",
+        )?;
+        conn.execute_batch("DROP TRIGGER IF EXISTS nir1_chat_input_capture_transition_guard;")?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_TRANSITION_TRIGGER_SQL,
+        )?;
+
+        // SCHEMA_VERSION 39 keeps submission identity after the captured chat
+        // row (and its cascading capture) is deleted. No FK may erase a key.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS nir1_chat_input_submission_keys (
+                submission_id      TEXT PRIMARY KEY,
+                capture_id         TEXT NOT NULL UNIQUE,
+                submission_digest  TEXT NOT NULL
+                    CHECK(length(submission_digest) = 71
+                      AND submission_digest GLOB 'sha256:*'
+                      AND substr(submission_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                created_at_ms      INTEGER NOT NULL
+            );
+            DROP TRIGGER IF EXISTS nir1_chat_input_submission_key_no_update;
+            DROP TRIGGER IF EXISTS nir1_chat_input_submission_key_no_delete;",
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_CHAT_INPUT_SUBMISSION_KEY_UPDATE_TRIGGER_SQL,
+        )?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_CHAT_INPUT_SUBMISSION_KEY_DELETE_TRIGGER_SQL,
+        )?;
+        // SCHEMA_VERSION 40: revoke a session's old current Human capture as
+        // part of every distinct later Human row insert, including Drizzle/WAL.
+        // SCHEMA_VERSION 41 replaces parent cascades with authenticated Native
+        // cleanup triggers and RESTRICT FKs after preserving existing rows.
+        conn.execute_batch("DROP TRIGGER IF EXISTS nir1_chat_input_capture_new_human_invalidate;")?;
+        conn.execute_batch(
+            grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_NEW_HUMAN_TRIGGER_SQL,
+        )?;
+        let duplicate_submission_ids: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM nir1_chat_input_captures
+                 GROUP BY submission_id HAVING count(*) > 1
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !duplicate_submission_ids,
+            "NIR1_CHAT_SUBMISSION_KEY_MIGRATION_CONFLICT"
+        );
+        let conflicting_submission_keys: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1
+                  FROM nir1_chat_input_captures c
+                  JOIN nir1_chat_input_submission_keys k USING (submission_id)
+                 WHERE c.capture_id <> k.capture_id
+                    OR c.submission_digest <> k.submission_digest
+                    OR c.created_at_ms <> k.created_at_ms
+            )",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            !conflicting_submission_keys,
+            "NIR1_CHAT_SUBMISSION_KEY_MIGRATION_CONFLICT"
+        );
+        conn.execute(
+            "INSERT INTO nir1_chat_input_submission_keys
+                (submission_id,capture_id,submission_digest,created_at_ms)
+             SELECT c.submission_id,c.capture_id,c.submission_digest,c.created_at_ms
+               FROM nir1_chat_input_captures c
+              WHERE NOT EXISTS (
+                    SELECT 1 FROM nir1_chat_input_submission_keys k
+                     WHERE k.submission_id = c.submission_id
+              )",
+            [],
+        )?;
         Self::repair_narrative_v2_monotonicity_trigger(&conn)?;
         Self::repair_timelapse_creation_baseline_triggers(&conn)?;
 
@@ -4067,6 +4496,13 @@ impl Database {
         // derive identities from the durable Edge subject and never from a
         // transient Run or Semantic Epoch.
         Self::migrate_narrative_finding_identity_v31(&conn)?;
+
+        // SCHEMA 41 is an independent transactional physical repair because
+        // rebuilding protected source-reference tables requires foreign-key
+        // enforcement to be disabled before its savepoint begins. The helper
+        // preserves and checks all FK relationships, then restores the
+        // connection setting before the C2-ZB data migration starts.
+        Self::migrate_chat_input_capture_lifecycle_v41(&conn)?;
 
         // SCHEMA 32 / C2-ZB: move legacy Backfill Run Edges onto their
         // durable Application identities. The savepoint is schema-owned and
@@ -9783,10 +10219,16 @@ impl Database {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+    use crate::narrative_extraction::change_feed::{
+        append_narrative_change_transaction_in_tx, AppendNarrativeChangeTransactionInput,
+        NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+    };
     use rusqlite::{
         hooks::{AuthAction, AuthContext, Authorization},
         params, Connection,
     };
+    use serde_json::json;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -9798,6 +10240,244 @@ mod tests {
             std::env::temp_dir().join(format!("grimodex-migrate-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create migration test directory");
         dir.join("grimodex.db")
+    }
+
+    fn set_chat_message_source_fk_set_null_for_test(
+        conn: &Connection,
+        table: &str,
+    ) -> anyhow::Result<()> {
+        let original_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
+            [table],
+            |row| row.get(0),
+        )?;
+        let clause = "REFERENCES chat_messages(id) ON DELETE RESTRICT";
+        anyhow::ensure!(original_sql.matches(clause).count() == 1);
+        let legacy_table = format!("{table}_v40_test");
+        let legacy_sql = Database::rename_create_table_sql(&original_sql, table, &legacy_table)?
+            .replacen(clause, "REFERENCES chat_messages(id) ON DELETE SET NULL", 1);
+        let objects = {
+            let mut statement = conn.prepare(
+                "SELECT sql FROM sqlite_master
+                  WHERE tbl_name=?1 AND type IN ('index','trigger') AND sql IS NOT NULL
+                  ORDER BY type,name",
+            )?;
+            let objects = statement
+                .query_map([table], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            objects
+        };
+        let columns = {
+            let mut statement = conn.prepare(&format!("PRAGMA table_info(\"{table}\")"))?;
+            let columns = statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()?;
+            columns
+        };
+        let column_list = columns
+            .iter()
+            .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        conn.execute_batch(&legacy_sql)?;
+        conn.execute_batch(&format!(
+            "INSERT INTO \"{legacy_table}\" (rowid, {column_list})
+             SELECT rowid, {column_list} FROM \"{table}\";
+             DROP TABLE \"{table}\";
+             ALTER TABLE \"{legacy_table}\" RENAME TO \"{table}\";"
+        ))?;
+        for object in objects {
+            conn.execute_batch(&object)?;
+        }
+        Ok(())
+    }
+
+    fn table_objects(conn: &Connection, table: &str) -> anyhow::Result<Vec<(String, String)>> {
+        let mut statement = conn.prepare(
+            "SELECT type,name FROM sqlite_master
+              WHERE tbl_name=?1 AND type IN ('index','trigger')
+              ORDER BY type,name",
+        )?;
+        let objects = statement
+            .query_map([table], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(objects)
+    }
+
+    fn append_migration_change_event(
+        db: &Database,
+        project_id: &str,
+        event_uid: &str,
+        object_key: serde_json::Value,
+        structural_event: Option<&str>,
+    ) -> anyhow::Result<String> {
+        db.with_conn(|conn| {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            append_change_events_in_tx(
+                conn,
+                project_id,
+                "migration-test-session",
+                &[AppendChangeEvent {
+                    event_uid: event_uid.to_string(),
+                    scene_id: None,
+                    domain: "narrative.commit".to_string(),
+                    op_type: "narrative.commit.apply".to_string(),
+                    entity_type: None,
+                    entity_id: None,
+                    payload: "{}".to_string(),
+                    timestamp: 1_790_000_000_000,
+                }],
+            )?;
+            let input = AppendNarrativeChangeTransactionInput {
+                project_id: project_id.to_string(),
+                request_id: format!("migration-{event_uid}"),
+                source_domain: "narrative.commit.apply".to_string(),
+                source_change_event_uid: event_uid.to_string(),
+                cause_kind: NarrativeChangeCauseKind::Forward,
+                origin: match structural_event {
+                    Some("project-restored") => NarrativeChangeOrigin::Restore,
+                    Some("semantic-epoch-reset") => NarrativeChangeOrigin::Migration,
+                    _ => NarrativeChangeOrigin::Human,
+                },
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: None,
+                application_ids: Vec::new(),
+                occurred_at: "2026-09-29T00:00:00.000Z".to_string(),
+                events: vec![NarrativeChangeEventInput {
+                    object_key,
+                    change_kind: if structural_event.is_some() {
+                        "schema"
+                    } else {
+                        "metadata"
+                    }
+                    .to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: None,
+                    before_digest: Some("sha256:before".to_string()),
+                    after_version: None,
+                    after_digest: Some("sha256:after".to_string()),
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: structural_event
+                        .map(|event| json!({ "event": event, "requiresFullRebuild": true })),
+                }],
+            };
+            let result = append_narrative_change_transaction_in_tx(conn, &input)?;
+            let event_id =
+                result.event_ids.into_iter().next().ok_or_else(|| {
+                    anyhow::anyhow!("migration fixture did not append a feed event")
+                })?;
+            conn.execute_batch("COMMIT")?;
+            Ok(event_id)
+        })
+    }
+
+    #[test]
+    fn schema_41_removes_epoch_marker_heads_and_preserves_live_heads() -> anyhow::Result<()> {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('migration-marker-project', 'Marker')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('migration-live-project', 'Live')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name)
+                 VALUES ('migration-live-entry', 'default-project', 'character', 'Live')",
+                [],
+            )?;
+            Ok(())
+        })?;
+
+        let restored_marker = append_migration_change_event(
+            &db,
+            "default-project",
+            "migration-project-restored",
+            json!({ "kind": "project", "projectId": "default-project" }),
+            Some("project-restored"),
+        )?;
+        let epoch_marker = append_migration_change_event(
+            &db,
+            "migration-marker-project",
+            "migration-semantic-epoch-reset",
+            json!({ "kind": "project", "projectId": "migration-marker-project" }),
+            Some("semantic-epoch-reset"),
+        )?;
+        let live_project = append_migration_change_event(
+            &db,
+            "migration-live-project",
+            "migration-live-project-change",
+            json!({ "kind": "project", "projectId": "migration-live-project" }),
+            None,
+        )?;
+        let live_object = append_migration_change_event(
+            &db,
+            "default-project",
+            "migration-live-object-change",
+            json!({ "kind": "codex-entry", "entryId": "migration-live-entry" }),
+            None,
+        )?;
+
+        db.with_conn(|conn| {
+            // Pre-v41 writers materialized reset markers as heads; the current writer skips them.
+            for event_id in [&restored_marker, &epoch_marker] {
+                let (identity, sequence, ordinal): (String, i64, i64) = conn.query_row(
+                    "SELECT object_key_json, canonical_sequence, event_ordinal
+                       FROM narrative_change_events WHERE id = ?1",
+                    [event_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_change_object_heads (
+                        project_id, object_identity, after_version, after_digest, event_id,
+                        canonical_sequence, event_ordinal, updated_at
+                     ) VALUES (
+                        (SELECT project_id FROM narrative_change_events WHERE id = ?1),
+                        ?2, NULL, 'sha256:synthetic', ?1, ?3, ?4, '2026-09-29T00:00:00.000Z'
+                     )",
+                    rusqlite::params![event_id, identity, sequence, ordinal],
+                )?;
+            }
+            let before: i64 = conn.query_row(
+                "SELECT count(*) FROM narrative_change_object_heads",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(before, 4);
+            conn.pragma_update(None, "user_version", 40)?;
+            Ok(())
+        })?;
+
+        db.migrate_for_restore_preflight()
+            .expect("run the full migration path from the v40 checkpoint");
+        db.with_conn(|conn| {
+            for removed in [&restored_marker, &epoch_marker] {
+                let count: i64 = conn.query_row(
+                    "SELECT count(*) FROM narrative_change_object_heads WHERE event_id = ?1",
+                    [removed],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "stale epoch-marker head must be removed");
+            }
+            for preserved in [&live_project, &live_object] {
+                let count: i64 = conn.query_row(
+                    "SELECT count(*) FROM narrative_change_object_heads WHERE event_id = ?1",
+                    [preserved],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1, "live object head must be preserved");
+            }
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, 41);
+            Ok(())
+        })?;
+        Ok(())
     }
 
     #[test]
@@ -9827,6 +10507,607 @@ mod tests {
             Ok(())
         })
         .expect("read custom-only project inventory");
+    }
+
+    #[test]
+    fn schema_39_backfills_submission_keys_and_preserves_tombstones_after_message_delete() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id,title)
+                 VALUES ('migration-capture-session','default-project','migration fixture')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('migration-capture-message','migration-capture-session','user',
+                         'captured body','2026-09-26T10:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed v38 captured message");
+        let version = crate::nir1_generation::bind_human_message(
+            &db,
+            "default-project",
+            "migration-capture-session",
+            "migration-capture-message",
+            1_790_000_000_000,
+        )
+        .expect("bind existing Human version");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO nir1_chat_input_captures
+                    (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                     submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                 VALUES ('migration-capture-id','default-project','migration-capture-session',
+                         'migration-scene','migration-submission',?1,
+                         'migration-capture-message',?2,'{}','current',?3)",
+                params![
+                    format!("sha256:{}", "a".repeat(64)),
+                    version.id,
+                    version.created_at_ms,
+                ],
+            )?;
+            conn.execute_batch(
+                "DROP TABLE nir1_chat_input_submission_keys;
+                 PRAGMA user_version=38;",
+            )?;
+            Ok(())
+        })
+        .expect("shape schema 38 with a current capture");
+
+        db.migrate().expect("migrate v38 key ledger");
+        db.with_conn(|conn| {
+            let binding: (String, String, i64) = conn.query_row(
+                "SELECT capture_id,submission_digest,created_at_ms
+                   FROM nir1_chat_input_submission_keys
+                  WHERE submission_id='migration-submission'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(binding.0, "migration-capture-id");
+            assert_eq!(binding.1, format!("sha256:{}", "a".repeat(64)));
+            assert_eq!(binding.2, version.created_at_ms);
+            conn.execute(
+                "DELETE FROM chat_messages WHERE id='migration-capture-message'",
+                [],
+            )?;
+            let capture_count: i64 = conn.query_row(
+                "SELECT count(*) FROM nir1_chat_input_captures
+                  WHERE capture_id='migration-capture-id'",
+                [],
+                |row| row.get(0),
+            )?;
+            let key_count: i64 = conn.query_row(
+                "SELECT count(*) FROM nir1_chat_input_submission_keys
+                  WHERE submission_id='migration-submission'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(capture_count, 0, "message deletion removes its capture");
+            assert_eq!(key_count, 1, "durable key remains after message deletion");
+            Ok(())
+        })
+        .expect("verify migrated key tombstone");
+    }
+
+    #[test]
+    fn schema_40_adds_session_scoped_human_capture_retirement_without_backfill() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id,title)
+                 VALUES ('migration-v40-session','default-project','v40 fixture')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('migration-v40-a','migration-v40-session','user','A',
+                         '2026-09-26T10:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed existing Human capture");
+        let version = crate::nir1_generation::bind_human_message(
+            &db,
+            "default-project",
+            "migration-v40-session",
+            "migration-v40-a",
+            1_790_000_000_000,
+        )
+        .expect("bind existing Human version");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO nir1_chat_input_captures
+                    (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                     submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                 VALUES ('migration-v40-capture','default-project','migration-v40-session',
+                         'migration-v40-scene','migration-v40-submission',?1,
+                         'migration-v40-a',?2,'{}','current',?3)",
+                params![
+                    format!("sha256:{}", "a".repeat(64)),
+                    version.id,
+                    version.created_at_ms,
+                ],
+            )?;
+            conn.execute_batch(
+                "DROP TRIGGER nir1_chat_input_capture_new_human_invalidate;
+                 PRAGMA user_version=39;",
+            )?;
+            Ok(())
+        })
+        .expect("shape a v39 database with an existing current capture");
+
+        db.migrate()
+            .expect("upgrade v39 capture workspace to current schema");
+        db.with_conn(|conn| {
+            let before_insert: String = conn.query_row(
+                "SELECT state FROM nir1_chat_input_captures
+                  WHERE capture_id='migration-v40-capture'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                before_insert, "current",
+                "migration must not backfill or revoke"
+            );
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('migration-v40-b','migration-v40-session','user','B',
+                         '2026-09-26T10:01:00.000Z')",
+                [],
+            )?;
+            let after_insert: String = conn.query_row(
+                "SELECT state FROM nir1_chat_input_captures
+                  WHERE capture_id='migration-v40-capture'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(after_insert, "superseded");
+            let schema_version: i32 =
+                conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            assert_eq!(schema_version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("verify v40 trigger behavior");
+    }
+
+    #[test]
+    fn schema_41_migrates_v39_and_v40_capture_rows_without_losing_tombstones() -> anyhow::Result<()>
+    {
+        for legacy_version in [39, 40] {
+            let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+            db.migrate().expect("create current schema");
+            let session_id = format!("migration-v{legacy_version}-session");
+            let message_id = format!("migration-v{legacy_version}-message");
+            let capture_id = format!("migration-v{legacy_version}-capture");
+            let submission_id = format!("migration-v{legacy_version}-submission");
+            let codex_id = format!("migration-v{legacy_version}-codex");
+            let snippet_id = format!("migration-v{legacy_version}-snippet");
+            let empty_session_id = format!("migration-v{legacy_version}-empty-session");
+            let empty_message_id = format!("migration-v{legacy_version}-empty-message");
+            let delete_session_id = format!("migration-v{legacy_version}-delete-session");
+            let delete_message_id = format!("migration-v{legacy_version}-delete-message");
+            let delete_capture_id = format!("migration-v{legacy_version}-delete-capture");
+            let delete_submission_id = format!("migration-v{legacy_version}-delete-submission");
+            let history_session_id = format!("migration-v{legacy_version}-history-session");
+            let history_message_id = format!("migration-v{legacy_version}-history-message");
+            let history_capture_id = format!("migration-v{legacy_version}-history-capture");
+            let history_submission_id = format!("migration-v{legacy_version}-history-submission");
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO chat_sessions(id,project_id,title) VALUES (?1,'default-project','fixture')",
+                    [&session_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                     VALUES (?1,?2,'user','captured body','2026-09-26T10:00:00.000Z')",
+                    params![message_id, session_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_entries(id,project_id,type,name,source_chat_message_id)
+                     VALUES (?1,'default-project','character','Migration fixture',?2)",
+                    params![codex_id, message_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO snippets(id,project_id,title,content,source_chat_message_id)
+                     VALUES (?1,'default-project','Migration fixture','{}',?2)",
+                    params![snippet_id, message_id],
+                )?;
+                for (session_id, message_id) in [
+                    (empty_session_id.as_str(), empty_message_id.as_str()),
+                    (delete_session_id.as_str(), delete_message_id.as_str()),
+                    (history_session_id.as_str(), history_message_id.as_str()),
+                ] {
+                    conn.execute(
+                        "INSERT INTO chat_sessions(id,project_id,title) VALUES (?1,'default-project','fixture')",
+                        [session_id],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                         VALUES (?1,?2,'user','captured body','2026-09-26T10:00:00.000Z')",
+                        params![message_id, session_id],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("seed legacy parent rows");
+            let version = crate::nir1_generation::bind_human_message(
+                &db,
+                "default-project",
+                &session_id,
+                &message_id,
+                1_790_000_000_000,
+            )
+            .expect("bind legacy Human version");
+            let delete_version = crate::nir1_generation::bind_human_message(
+                &db,
+                "default-project",
+                &delete_session_id,
+                &delete_message_id,
+                1_790_000_000_001,
+            )
+            .expect("bind legacy session-delete Human version");
+            let history_version = crate::nir1_generation::bind_human_message(
+                &db,
+                "default-project",
+                &history_session_id,
+                &history_message_id,
+                1_790_000_000_002,
+            )
+            .expect("bind legacy history-clear Human version");
+            let digest = format!("sha256:{}", "a".repeat(64));
+            let source_shapes = db.with_conn(|conn| {
+                let codex_rowid: i64 = conn.query_row(
+                    "SELECT rowid FROM codex_entries WHERE id=?1",
+                    [&codex_id],
+                    |row| row.get(0),
+                )?;
+                let snippet_rowid: i64 = conn.query_row(
+                    "SELECT rowid FROM snippets WHERE id=?1",
+                    [&snippet_id],
+                    |row| row.get(0),
+                )?;
+                let codex_objects = table_objects(conn, "codex_entries")?;
+                let snippet_objects = table_objects(conn, "snippets")?;
+                let triggers = Database::stored_trigger_definitions(conn)?;
+                conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+                for (name, _) in &triggers {
+                    let quoted_name = name.replace('"', "\"\"");
+                    conn.execute_batch(&format!("DROP TRIGGER \"{quoted_name}\";"))?;
+                }
+                set_chat_message_source_fk_set_null_for_test(conn, "codex_entries")?;
+                set_chat_message_source_fk_set_null_for_test(conn, "snippets")?;
+                for (name, sql) in triggers {
+                    if name != "chat_message_source_provenance_delete" {
+                        conn.execute_batch(&sql)?;
+                    }
+                }
+                conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+                Ok((codex_rowid, snippet_rowid, codex_objects, snippet_objects))
+            })?;
+            db.with_conn(|conn| {
+                for (capture_id, session_id, submission_id, message_id, version) in [
+                    (
+                        capture_id.as_str(),
+                        session_id.as_str(),
+                        submission_id.as_str(),
+                        message_id.as_str(),
+                        &version,
+                    ),
+                    (
+                        delete_capture_id.as_str(),
+                        delete_session_id.as_str(),
+                        delete_submission_id.as_str(),
+                        delete_message_id.as_str(),
+                        &delete_version,
+                    ),
+                    (
+                        history_capture_id.as_str(),
+                        history_session_id.as_str(),
+                        history_submission_id.as_str(),
+                        history_message_id.as_str(),
+                        &history_version,
+                    ),
+                ] {
+                    conn.execute(
+                        "INSERT INTO nir1_chat_input_captures
+                            (capture_id,project_id,chat_session_id,scene_id,submission_id,
+                             submission_digest,message_id,message_version_id,owner_json,state,created_at_ms)
+                         VALUES (?1,'default-project',?2,'legacy-scene',?3,?4,?5,?6,'{}','current',?7)",
+                        params![capture_id, session_id, submission_id, digest, message_id, version.id, version.created_at_ms],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO nir1_chat_input_submission_keys
+                            (submission_id,capture_id,submission_digest,created_at_ms)
+                         VALUES (?1,?2,?3,?4)",
+                        params![submission_id, capture_id, digest, version.created_at_ms],
+                    )?;
+                }
+                conn.execute_batch(
+                    "DROP TRIGGER nir1_chat_input_capture_transition_guard;
+                     DROP TRIGGER nir1_chat_input_capture_new_human_invalidate;
+                     DROP TRIGGER nir1_chat_input_capture_project_delete;
+                     DROP TRIGGER nir1_chat_input_capture_session_delete;
+                     DROP TRIGGER nir1_chat_input_capture_message_delete;
+                     DROP INDEX idx_nir1_chat_input_captures_current;
+                     ALTER TABLE nir1_chat_input_captures RENAME TO nir1_chat_input_captures_v41;
+                     CREATE TABLE nir1_chat_input_captures (
+                        capture_id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        chat_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                        scene_id TEXT NOT NULL,
+                        submission_id TEXT NOT NULL,
+                        submission_digest TEXT NOT NULL
+                            CHECK(length(submission_digest)=71 AND submission_digest GLOB 'sha256:*'
+                              AND substr(submission_digest,8) NOT GLOB '*[^0-9a-f]*'),
+                        message_id TEXT NOT NULL UNIQUE REFERENCES chat_messages(id) ON DELETE CASCADE,
+                        message_version_id TEXT NOT NULL UNIQUE REFERENCES nir1_generation_message_versions(id) ON DELETE RESTRICT,
+                        owner_json TEXT NOT NULL CHECK(octet_length(owner_json)<=65536
+                          AND json_valid(owner_json) AND json_type(owner_json)='object'),
+                        state TEXT NOT NULL CHECK(state IN ('current','superseded','cancelled','closed')),
+                        created_at_ms INTEGER NOT NULL,
+                        UNIQUE(chat_session_id,submission_id)
+                     );
+                     INSERT INTO nir1_chat_input_captures SELECT * FROM nir1_chat_input_captures_v41;
+                     DROP TABLE nir1_chat_input_captures_v41;
+                     CREATE UNIQUE INDEX idx_nir1_chat_input_captures_current
+                       ON nir1_chat_input_captures(project_id,chat_session_id) WHERE state='current';",
+                )?;
+                conn.execute_batch(
+                    grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_TRANSITION_TRIGGER_SQL,
+                )?;
+                if legacy_version == 40 {
+                    conn.execute_batch(
+                        grimodex_core::workspace_schema::NIR1_CHAT_INPUT_CAPTURE_NEW_HUMAN_TRIGGER_SQL,
+                    )?;
+                }
+                conn.pragma_update(None, "user_version", legacy_version)?;
+                Ok(())
+            })
+            .expect("shape legacy v39/v40 capture schema");
+            db.with_conn(|conn| {
+                let user_version: i32 =
+                    conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                let capture_cascades: i64 = conn.query_row(
+                    "SELECT count(*) FROM pragma_foreign_key_list('nir1_chat_input_captures')
+                      WHERE on_delete='CASCADE'
+                        AND ((\"from\"='project_id' AND \"table\"='projects')
+                          OR (\"from\"='chat_session_id' AND \"table\"='chat_sessions')
+                          OR (\"from\"='message_id' AND \"table\"='chat_messages'))",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let source_set_nulls: i64 = conn.query_row(
+                    "SELECT
+                       (SELECT count(*) FROM pragma_foreign_key_list('codex_entries')
+                         WHERE \"from\"='source_chat_message_id' AND on_delete='SET NULL')
+                       +
+                       (SELECT count(*) FROM pragma_foreign_key_list('snippets')
+                         WHERE \"from\"='source_chat_message_id' AND on_delete='SET NULL')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let provenance_trigger: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='chat_message_source_provenance_delete'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let parent_delete_triggers: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN (
+                       'nir1_chat_input_capture_project_delete',
+                       'nir1_chat_input_capture_session_delete',
+                       'nir1_chat_input_capture_message_delete')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let human_invalidation_trigger: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='nir1_chat_input_capture_new_human_invalidate'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                let transition_guard: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='nir1_chat_input_capture_transition_guard'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(user_version, legacy_version);
+                assert_eq!(capture_cascades, 3);
+                assert_eq!(source_set_nulls, 2);
+                assert_eq!(provenance_trigger, 0);
+                assert_eq!(parent_delete_triggers, 0);
+                assert_eq!(transition_guard, 1);
+                assert_eq!(
+                    human_invalidation_trigger,
+                    if legacy_version == 40 { 1 } else { 0 }
+                );
+                Ok(())
+            })
+            .expect("verify genuine v39/v40 lifecycle fixture before upgrade");
+
+            db.migrate().expect("upgrade legacy capture schema to v41");
+            db.migrate().expect("v41 migration is idempotent");
+            db.with_conn(|conn| {
+                let schema_version: i32 =
+                    conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+                assert_eq!(schema_version, 41);
+                let capture: (String, String, String, String) = conn.query_row(
+                    "SELECT capture_id,submission_id,message_id,message_version_id
+                       FROM nir1_chat_input_captures WHERE capture_id=?1",
+                    [&capture_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                assert_eq!(
+                    capture,
+                    (
+                        capture_id.clone(),
+                        submission_id.clone(),
+                        message_id.clone(),
+                        version.id.clone()
+                    )
+                );
+                let tombstone: (String, String, String, i64) = conn.query_row(
+                    "SELECT submission_id,capture_id,submission_digest,created_at_ms
+                       FROM nir1_chat_input_submission_keys WHERE submission_id=?1",
+                    [&submission_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                assert_eq!(
+                    tombstone,
+                    (
+                        submission_id.clone(),
+                        capture_id.clone(),
+                        digest.clone(),
+                        version.created_at_ms,
+                    )
+                );
+                let source_refs: (Option<String>, Option<String>) = conn.query_row(
+                    "SELECT
+                        (SELECT source_chat_message_id FROM codex_entries WHERE id=?1),
+                        (SELECT source_chat_message_id FROM snippets WHERE id=?2)",
+                    params![codex_id, snippet_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(
+                    source_refs,
+                    (Some(message_id.clone()), Some(message_id.clone()))
+                );
+                let source_rowids: (i64, i64) = conn.query_row(
+                    "SELECT
+                        (SELECT rowid FROM codex_entries WHERE id=?1),
+                        (SELECT rowid FROM snippets WHERE id=?2)",
+                    params![codex_id, snippet_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(source_rowids, (source_shapes.0, source_shapes.1));
+                assert_eq!(table_objects(conn, "codex_entries")?, source_shapes.2);
+                assert_eq!(table_objects(conn, "snippets")?, source_shapes.3);
+                let violations: i64 =
+                    conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })?;
+                assert_eq!(violations, 0);
+                let new_human_trigger: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='nir1_chat_input_capture_new_human_invalidate'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(new_human_trigger, 1);
+                let provenance_trigger: i64 = conn.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE type='trigger'
+                      AND name='chat_message_source_provenance_delete'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(provenance_trigger, 1);
+                Ok(())
+            })
+            .expect("verify migrated data, v40 invalidation and FK integrity");
+            db.execute_renderer(
+                "DELETE FROM chat_messages WHERE id=?1",
+                &[serde_json::Value::String(message_id.clone())],
+                "run",
+            )
+            .expect("migrated renderer delete cleans capture and source references");
+            db.with_conn(|conn| {
+                let cleanup: (i64, i64, i64, Option<String>, Option<String>, i64) = conn.query_row(
+                    "SELECT
+                        (SELECT count(*) FROM chat_messages WHERE id=?1),
+                        (SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?2),
+                        (SELECT count(*) FROM nir1_chat_input_submission_keys WHERE submission_id=?3),
+                        (SELECT source_chat_message_id FROM codex_entries WHERE id=?4),
+                        (SELECT source_chat_message_id FROM snippets WHERE id=?5),
+                        (SELECT invalidated FROM nir1_generation_message_versions WHERE id=?6)",
+                    params![message_id, capture_id, submission_id, codex_id, snippet_id, version.id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )?;
+                assert_eq!(cleanup, (0, 0, 1, None, None, 1));
+                Ok(())
+            })
+            .expect("verify v41 native cleanup and durable tombstone");
+
+            db.execute_renderer(
+                "DELETE FROM chat_messages WHERE id=?1",
+                &[serde_json::Value::String(empty_message_id.clone())],
+                "run",
+            )
+            .expect("upgraded renderer deletion of a message without a capture");
+            let empty_message_cleanup: (i64, i64, i64) = db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT
+                        (SELECT count(*) FROM chat_sessions WHERE id=?1),
+                        (SELECT count(*) FROM chat_messages WHERE id=?2),
+                        (SELECT count(*) FROM nir1_chat_input_captures WHERE message_id=?2)",
+                    params![empty_session_id, empty_message_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })?;
+            assert_eq!(empty_message_cleanup, (1, 0, 0));
+
+            db.execute_renderer(
+                "DELETE FROM chat_sessions WHERE id=?1",
+                &[serde_json::Value::String(delete_session_id.clone())],
+                "run",
+            )
+            .expect("upgraded renderer session deletion cleans a migrated capture");
+            let session_cleanup: (i64, i64, i64, i64) = db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT
+                        (SELECT count(*) FROM chat_sessions WHERE id=?1),
+                        (SELECT count(*) FROM chat_messages WHERE id=?2),
+                        (SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?3),
+                        (SELECT count(*) FROM nir1_chat_input_submission_keys WHERE submission_id=?4)",
+                    params![delete_session_id, delete_message_id, delete_capture_id, delete_submission_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?)
+            })?;
+            assert_eq!(session_cleanup, (0, 0, 0, 1));
+
+            db.execute_renderer(
+                "DELETE FROM chat_messages WHERE session_id=?1",
+                &[serde_json::Value::String(history_session_id.clone())],
+                "run",
+            )
+            .expect("upgraded renderer history clear cleans a migrated capture");
+            let history_cleanup: (i64, i64, i64, i64) = db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT
+                        (SELECT count(*) FROM chat_sessions WHERE id=?1),
+                        (SELECT count(*) FROM chat_messages WHERE id=?2),
+                        (SELECT count(*) FROM nir1_chat_input_captures WHERE capture_id=?3),
+                        (SELECT count(*) FROM nir1_chat_input_submission_keys WHERE submission_id=?4)",
+                    params![history_session_id, history_message_id, history_capture_id, history_submission_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?)
+            })?;
+            assert_eq!(history_cleanup, (1, 0, 0, 1));
+            let final_fk_violations: i64 = db.with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                        row.get(0)
+                    })?,
+                )
+            })?;
+            assert_eq!(final_fk_violations, 0);
+        }
+        Ok(())
     }
 
     #[test]

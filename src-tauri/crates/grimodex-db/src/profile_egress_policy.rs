@@ -44,6 +44,8 @@ pub const PROFILE_EGRESS_PROTECTED_TABLES: &[&str] = &[
     "nir1_generation_message_versions",
     "nir1_generation_input_refs",
     "nir1_generation_qualification_refs",
+    "nir1_chat_input_captures",
+    "nir1_chat_input_submission_keys",
     "narrative_extraction_tasks",
     "narrative_proposal_decisions",
     "narrative_proposal_revisions",
@@ -182,6 +184,12 @@ mod tests {
             "chat_sessions",
             "chat_runtime_threads",
             "chat_messages",
+            "nir1_chat_input_captures",
+            "nir1_chat_input_submission_keys",
+            "nir1_generation_attempts",
+            "nir1_generation_message_versions",
+            "nir1_generation_input_refs",
+            "nir1_generation_qualification_refs",
             "chat_message_prompts",
             "chat_summaries",
             "chat_message_chunks",
@@ -209,6 +217,13 @@ mod tests {
         ] {
             assert!(is_protected_table(table), "missing policy table {table}");
         }
+
+        assert!(protected_tables_for_status()
+            .iter()
+            .any(|table| table == "nir1_chat_input_captures"));
+        assert!(protected_tables_for_status()
+            .iter()
+            .any(|table| table == "nir1_chat_input_submission_keys"));
 
         let columns = PROFILE_EGRESS_PROTECTED_COLUMNS
             .iter()

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 37,
+  "schemaVersion": 41,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -2133,7 +2133,7 @@
           "from": "source_chat_message_id",
           "to": "id",
           "onUpdate": "NO ACTION",
-          "onDelete": "SET NULL",
+          "onDelete": "RESTRICT",
           "match": "NONE"
         },
         {
@@ -2158,7 +2158,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE codex_entries ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, parent_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL, type TEXT NOT NULL DEFAULT 'character', name TEXT NOT NULL DEFAULT 'Untitled', aliases TEXT, excluded_aliases TEXT, summary TEXT, content TEXT NOT NULL DEFAULT '{}', icon TEXT, tags_cache TEXT, context_mode TEXT NOT NULL DEFAULT 'mentioned' CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')), children_budget TEXT NOT NULL DEFAULT 'compact' CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')), source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, notes TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), version INTEGER NOT NULL DEFAULT 0, readings TEXT, -- Composite FK: (project_id, type) must reference a row in codex_types. -- RESTRICT prevents type deletion while entries exist; CASCADE propagates slug renames. FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
+      "createSql": "CREATE TABLE codex_entries ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, parent_id TEXT REFERENCES codex_entries(id) ON DELETE SET NULL, type TEXT NOT NULL DEFAULT 'character', name TEXT NOT NULL DEFAULT 'Untitled', aliases TEXT, excluded_aliases TEXT, summary TEXT, content TEXT NOT NULL DEFAULT '{}', icon TEXT, tags_cache TEXT, context_mode TEXT NOT NULL DEFAULT 'mentioned' CHECK(context_mode IN ('always', 'mentioned', 'suppress', 'hidden')), children_budget TEXT NOT NULL DEFAULT 'compact' CHECK(children_budget IN ('none', 'compact', 'standard', 'generous')), source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE RESTRICT, notes TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), version INTEGER NOT NULL DEFAULT 0, readings TEXT, -- Composite FK: (project_id, type) must reference a row in codex_types. -- RESTRICT prevents type deletion while entries exist; CASCADE propagates slug renames. FOREIGN KEY (project_id, type) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
     },
     "codex_entry_phases": {
       "kind": "table",
@@ -10385,6 +10385,191 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_temporal_projections ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, target_kind TEXT NOT NULL CHECK(target_kind IN ('scene-time','event-time','scene-story-order')), target_id TEXT NOT NULL, constraint_set_digest TEXT NOT NULL, solver_version TEXT NOT NULL, calendar_digest TEXT, projected_value_digest TEXT NOT NULL, target_result_version INTEGER NOT NULL, application_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'current' CHECK(status IN ('current','invalidated','undone')), version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL )"
     },
+    "nir1_chat_input_captures": {
+      "kind": "table",
+      "columns": {
+        "capture_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "chat_session_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at_ms": {
+          "ordinal": 10,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "message_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "message_version_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "owner_json": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "scene_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "state": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "submission_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "submission_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "nir1_generation_message_versions",
+          "from": "message_version_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "RESTRICT",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "chat_messages",
+          "from": "message_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "RESTRICT",
+          "match": "NONE"
+        },
+        {
+          "id": 2,
+          "sequence": 0,
+          "table": "chat_sessions",
+          "from": "chat_session_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "RESTRICT",
+          "match": "NONE"
+        },
+        {
+          "id": 3,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "RESTRICT",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "chat_session_id",
+            "submission_id"
+          ]
+        },
+        {
+          "columns": [
+            "message_version_id"
+          ]
+        },
+        {
+          "columns": [
+            "message_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE \"nir1_chat_input_captures\" ( capture_id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE RESTRICT, chat_session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE RESTRICT, scene_id TEXT NOT NULL, submission_id TEXT NOT NULL, submission_digest TEXT NOT NULL CHECK(length(submission_digest) = 71 AND submission_digest GLOB 'sha256:*' AND substr(submission_digest, 8) NOT GLOB '*[^0-9a-f]*'), message_id TEXT NOT NULL UNIQUE REFERENCES chat_messages(id) ON DELETE RESTRICT, message_version_id TEXT NOT NULL UNIQUE REFERENCES nir1_generation_message_versions(id) ON DELETE RESTRICT, owner_json TEXT NOT NULL CHECK(octet_length(owner_json) <= 65536 AND json_valid(owner_json) AND json_type(owner_json) = 'object'), state TEXT NOT NULL CHECK(state IN ('current','superseded','cancelled','closed')), created_at_ms INTEGER NOT NULL, UNIQUE(chat_session_id, submission_id) )"
+    },
+    "nir1_chat_input_submission_keys": {
+      "kind": "table",
+      "columns": {
+        "capture_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at_ms": {
+          "ordinal": 3,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "submission_digest": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "submission_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "capture_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE nir1_chat_input_submission_keys ( submission_id TEXT PRIMARY KEY, capture_id TEXT NOT NULL UNIQUE, submission_digest TEXT NOT NULL CHECK(length(submission_digest) = 71 AND submission_digest GLOB 'sha256:*' AND substr(submission_digest, 8) NOT GLOB '*[^0-9a-f]*'), created_at_ms INTEGER NOT NULL )"
+    },
     "nir1_generation_attempts": {
       "kind": "table",
       "columns": {
@@ -13063,7 +13248,7 @@
           "from": "source_chat_message_id",
           "to": "id",
           "onUpdate": "NO ACTION",
-          "onDelete": "SET NULL",
+          "onDelete": "RESTRICT",
           "match": "NONE"
         },
         {
@@ -13088,7 +13273,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE snippets ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL DEFAULT 'Untitled', content TEXT NOT NULL DEFAULT '{}', tags_cache TEXT, content_source TEXT CHECK(content_source IS NULL OR content_source IN ('human','ai')), scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, usage_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) , version INTEGER NOT NULL DEFAULT 0)"
+      "createSql": "CREATE TABLE snippets ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title TEXT NOT NULL DEFAULT 'Untitled', content TEXT NOT NULL DEFAULT '{}', tags_cache TEXT, content_source TEXT CHECK(content_source IS NULL OR content_source IN ('human','ai')), scene_id TEXT REFERENCES tree_nodes(id) ON DELETE SET NULL, source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE RESTRICT, usage_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) , version INTEGER NOT NULL DEFAULT 0)"
     },
     "snippets_fts": {
       "kind": "virtual",
@@ -16099,6 +16284,22 @@
       ],
       "createSql": "CREATE INDEX idx_narrative_wake_outbox_pending ON narrative_maintenance_wake_outbox(project_id) WHERE acked_at IS NULL"
     },
+    "idx_nir1_chat_input_captures_current": {
+      "table": "nir1_chat_input_captures",
+      "unique": true,
+      "partial": true,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "chat_session_id"
+        }
+      ],
+      "createSql": "CREATE UNIQUE INDEX idx_nir1_chat_input_captures_current ON nir1_chat_input_captures(project_id, chat_session_id) WHERE state='current'"
+    },
     "idx_nir1_generation_attempts_pending": {
       "table": "nir1_generation_attempts",
       "unique": false,
@@ -17261,6 +17462,7 @@
     }
   },
   "triggers": {
+    "chat_message_source_provenance_delete": "CREATE TRIGGER chat_message_source_provenance_delete BEFORE DELETE ON chat_messages BEGIN UPDATE codex_entries SET source_chat_message_id = NULL WHERE source_chat_message_id = OLD.id; UPDATE snippets SET source_chat_message_id = NULL WHERE source_chat_message_id = OLD.id; END",
     "chat_messages_fts_ad": "CREATE TRIGGER chat_messages_fts_ad AFTER DELETE ON chat_messages BEGIN INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content) VALUES ('delete', old.rowid, old.content); END",
     "chat_messages_fts_ai": "CREATE TRIGGER chat_messages_fts_ai AFTER INSERT ON chat_messages BEGIN INSERT INTO chat_messages_fts(rowid, content) VALUES (new.rowid, new.content); END",
     "chat_messages_fts_au": "CREATE TRIGGER chat_messages_fts_au AFTER UPDATE ON chat_messages WHEN old.content IS NOT new.content BEGIN INSERT INTO chat_messages_fts(chat_messages_fts, rowid, content) VALUES ('delete', old.rowid, old.content); INSERT INTO chat_messages_fts(rowid, content) VALUES (new.rowid, new.content); END",
@@ -17290,6 +17492,13 @@
     "narrative_revision_immutable_after_apply_update": "CREATE TRIGGER narrative_revision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
     "narrative_source_basis_immutable_delete": "CREATE TRIGGER narrative_source_basis_immutable_delete BEFORE DELETE ON narrative_revision_source_basis WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END",
     "narrative_source_basis_immutable_update": "CREATE TRIGGER narrative_source_basis_immutable_update BEFORE UPDATE ON narrative_revision_source_basis BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_SOURCE_BASIS_IMMUTABLE'); END",
+    "nir1_chat_input_capture_message_delete": "CREATE TRIGGER nir1_chat_input_capture_message_delete BEFORE DELETE ON chat_messages BEGIN DELETE FROM nir1_chat_input_captures WHERE message_id = OLD.id; END",
+    "nir1_chat_input_capture_new_human_invalidate": "CREATE TRIGGER nir1_chat_input_capture_new_human_invalidate AFTER INSERT ON chat_messages WHEN NEW.role = 'user' BEGIN UPDATE nir1_chat_input_captures SET state = 'superseded' WHERE chat_session_id = NEW.session_id AND message_id <> NEW.id AND state = 'current'; END",
+    "nir1_chat_input_capture_project_delete": "CREATE TRIGGER nir1_chat_input_capture_project_delete BEFORE DELETE ON projects BEGIN DELETE FROM nir1_chat_input_captures WHERE project_id = OLD.id; END",
+    "nir1_chat_input_capture_session_delete": "CREATE TRIGGER nir1_chat_input_capture_session_delete BEFORE DELETE ON chat_sessions BEGIN DELETE FROM nir1_chat_input_captures WHERE chat_session_id = OLD.id; END",
+    "nir1_chat_input_capture_transition_guard": "CREATE TRIGGER nir1_chat_input_capture_transition_guard BEFORE UPDATE ON nir1_chat_input_captures WHEN OLD.state <> 'current' OR NEW.state NOT IN ('superseded','cancelled','closed') OR NEW.capture_id IS NOT OLD.capture_id OR NEW.project_id IS NOT OLD.project_id OR NEW.chat_session_id IS NOT OLD.chat_session_id OR NEW.scene_id IS NOT OLD.scene_id OR NEW.submission_id IS NOT OLD.submission_id OR NEW.submission_digest IS NOT OLD.submission_digest OR NEW.message_id IS NOT OLD.message_id OR NEW.message_version_id IS NOT OLD.message_version_id OR NEW.owner_json IS NOT OLD.owner_json OR NEW.created_at_ms IS NOT OLD.created_at_ms BEGIN SELECT RAISE(ABORT, 'NIR1_CHAT_CAPTURE_TRANSITION_INVALID'); END",
+    "nir1_chat_input_submission_key_no_delete": "CREATE TRIGGER nir1_chat_input_submission_key_no_delete BEFORE DELETE ON nir1_chat_input_submission_keys BEGIN SELECT RAISE(ABORT, 'NIR1_CHAT_SUBMISSION_KEY_IMMUTABLE'); END",
+    "nir1_chat_input_submission_key_no_update": "CREATE TRIGGER nir1_chat_input_submission_key_no_update BEFORE UPDATE ON nir1_chat_input_submission_keys BEGIN SELECT RAISE(ABORT, 'NIR1_CHAT_SUBMISSION_KEY_IMMUTABLE'); END",
     "nir1_generation_invalidate_message_delete": "CREATE TRIGGER nir1_generation_invalidate_message_delete AFTER DELETE ON chat_messages BEGIN UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id = OLD.id; END",
     "nir1_generation_invalidate_message_insert": "CREATE TRIGGER nir1_generation_invalidate_message_insert AFTER INSERT ON chat_messages BEGIN UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id = NEW.id; END",
     "nir1_generation_invalidate_message_update": "CREATE TRIGGER nir1_generation_invalidate_message_update AFTER UPDATE OF id, session_id, role, content, metadata, created_at ON chat_messages WHEN OLD.id IS NOT NEW.id OR OLD.session_id IS NOT NEW.session_id OR OLD.role IS NOT NEW.role OR OLD.content IS NOT NEW.content OR OLD.created_at IS NOT NEW.created_at OR (CASE WHEN json_valid(OLD.metadata) THEN json_extract(OLD.metadata, '$.thinking_blocks') ELSE NULL END) IS NOT (CASE WHEN json_valid(NEW.metadata) THEN json_extract(NEW.metadata, '$.thinking_blocks') ELSE NULL END) BEGIN UPDATE nir1_generation_message_versions SET invalidated = 1 WHERE message_id IN (OLD.id, NEW.id); END",

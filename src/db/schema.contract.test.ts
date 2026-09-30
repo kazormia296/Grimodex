@@ -61,11 +61,13 @@ const RUST_ONLY_TABLES = new Set([
   "tree_nodes_fts_en",
   "post_effect_annotations_fts",
   "post_effect_annotations_fts_en",
+  "nir1_chat_input_captures",
+  "nir1_chat_input_submission_keys",
 ]);
 
-// FTS tables remain native-only physical storage. BrowserMock creates every
-// canonical table read by the audit exporter, even when browser writers do not
-// currently populate it, so a complete empty export remains queryable.
+// FTS and Native-owned authority tables remain Rust-only physical storage.
+// BrowserMock creates every canonical table read by the audit exporter, even
+// when browser writers do not currently populate it, so an empty export remains queryable.
 const BROWSER_UNAVAILABLE_TABLES = new Set([...RUST_ONLY_TABLES]);
 
 const RUST_ONLY_COLUMNS: Record<string, Set<string>> = {
@@ -314,6 +316,61 @@ describe("schema contract comparison helpers", () => {
 });
 
 describe("schema contract", () => {
+  it("uses Native parent-delete triggers and RESTRICT capture references", () => {
+    const schemaContract: SchemaContract = contract;
+    const captures = schemaContract.tables.nir1_chat_input_captures;
+    expect(captures.foreignKeys).toHaveLength(4);
+    for (const [from, table] of [
+      ["project_id", "projects"],
+      ["chat_session_id", "chat_sessions"],
+      ["message_id", "chat_messages"],
+      ["message_version_id", "nir1_generation_message_versions"],
+    ]) {
+      expect(
+        captures.foreignKeys.find((foreignKey) => foreignKey.from === from),
+      ).toMatchObject({ from, table, to: "id", onDelete: "RESTRICT" });
+    }
+
+    const compactSql = (sql: string) => sql.replace(/\s+/g, "").toLowerCase();
+    for (const [name, parent, key] of [
+      ["nir1_chat_input_capture_project_delete", "projects", "project_id"],
+      [
+        "nir1_chat_input_capture_session_delete",
+        "chat_sessions",
+        "chat_session_id",
+      ],
+      ["nir1_chat_input_capture_message_delete", "chat_messages", "message_id"],
+    ]) {
+      expect(compactSql(schemaContract.triggers[name]!)).toBe(
+        compactSql(
+          `CREATE TRIGGER ${name} BEFORE DELETE ON ${parent} BEGIN DELETE FROM nir1_chat_input_captures WHERE ${key} = OLD.id; END`,
+        ),
+      );
+    }
+
+    for (const table of ["codex_entries", "snippets"]) {
+      expect(
+        schemaContract.tables[table]!.foreignKeys.find(
+          (foreignKey) => foreignKey.from === "source_chat_message_id",
+        ),
+      ).toMatchObject({
+        from: "source_chat_message_id",
+        table: "chat_messages",
+        to: "id",
+        onDelete: "RESTRICT",
+      });
+    }
+    expect(
+      compactSql(
+        schemaContract.triggers.chat_message_source_provenance_delete!,
+      ),
+    ).toBe(
+      compactSql(
+        "CREATE TRIGGER chat_message_source_provenance_delete BEFORE DELETE ON chat_messages BEGIN UPDATE codex_entries SET source_chat_message_id = NULL WHERE source_chat_message_id = OLD.id; UPDATE snippets SET source_chat_message_id = NULL WHERE source_chat_message_id = OLD.id; END",
+      ),
+    );
+  });
+
   it("keeps every Drizzle table and renderer column inside the Rust physical schema", () => {
     const schemaContract: SchemaContract = contract;
     const drizzleTables = collectDrizzleTables();

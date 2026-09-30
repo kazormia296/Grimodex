@@ -1043,6 +1043,22 @@ export declare class Backend {
    */
   abortPostEffectRun(runId: string, projectId: string): Promise<void>
   /**
+   * Local-only fresh Human capture. The caller identity is injected by
+   * Electron main; no renderer-provided caller, old version, route, or
+   * prepared payload is accepted or returned.
+   */
+  captureCurrentChatInput(submission: any, callerIdentity: string): Promise<string>
+  /**
+   * Revoke current preparation authority for one persisted session only.
+   * This cannot capture a Human row, return a version, or dispatch a provider.
+   */
+  retireCurrentChatInput(request: any, callerIdentity: string): Promise<string>
+  /**
+   * Cancellation-only owner-bound terminalization for an exact submission.
+   * It cannot create or return a capture capability.
+   */
+  cancelCurrentChatInput(submission: any, callerIdentity: string): Promise<string>
+  /**
    * AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
    * 返り値: `AiSettings` の JSON 文字列 (camelCase)。
    */

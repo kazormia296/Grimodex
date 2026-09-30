@@ -799,6 +799,89 @@ describe("caller timeout policy（electron 分岐）", () => {
   });
 });
 
+describe("local chat capture wrappers", () => {
+  it("dispatches exact capture and cancellation commands with typed receipts", async () => {
+    const submission = {
+      submissionId: "submission-1",
+      messageId: "message-1",
+      chatSessionId: "session-1",
+      sceneId: "scene-1",
+      content: "exact local user input",
+      createdAt: "2026-09-28T10:00:00.000Z",
+    };
+    const cancelSubmission = {
+      submissionId: submission.submissionId,
+      messageId: submission.messageId,
+      chatSessionId: submission.chatSessionId,
+      sceneId: submission.sceneId,
+    };
+    const bridge = installBridge({
+      invoke: vi.fn(async (command: string) => ({
+        ok: true,
+        value:
+          command === "capture_current_chat_input"
+            ? {
+                status: "accepted",
+                projectId: "project-1",
+                chatSessionId: submission.chatSessionId,
+                sceneId: submission.sceneId,
+                messageId: submission.messageId,
+              }
+            : command === "cancel_current_chat_input"
+              ? {
+                  status: "cancelled",
+                  submissionId: submission.submissionId,
+                  messageId: submission.messageId,
+                }
+              : { status: "retired", chatSessionId: submission.chatSessionId },
+      })),
+    });
+    const {
+      captureCurrentChatInput,
+      cancelCurrentChatInput,
+      retireCurrentChatInput,
+    } = await import("./tauri");
+
+    await expect(captureCurrentChatInput(submission)).resolves.toEqual({
+      status: "accepted",
+      projectId: "project-1",
+      chatSessionId: submission.chatSessionId,
+      sceneId: submission.sceneId,
+      messageId: submission.messageId,
+    });
+    await expect(cancelCurrentChatInput(cancelSubmission)).resolves.toEqual({
+      status: "cancelled",
+      submissionId: submission.submissionId,
+      messageId: submission.messageId,
+    });
+    await expect(
+      retireCurrentChatInput(submission.chatSessionId),
+    ).resolves.toEqual({
+      status: "retired",
+      chatSessionId: submission.chatSessionId,
+    });
+    expect(bridge.invoke).toHaveBeenNthCalledWith(
+      1,
+      "capture_current_chat_input",
+      {
+        submission,
+      },
+    );
+    expect(bridge.invoke).toHaveBeenNthCalledWith(
+      2,
+      "cancel_current_chat_input",
+      {
+        submission: cancelSubmission,
+      },
+    );
+    expect(bridge.invoke).toHaveBeenNthCalledWith(
+      3,
+      "retire_current_chat_input",
+      { chatSessionId: submission.chatSessionId },
+    );
+  });
+});
+
 describe("listen / emit の electron 分岐", () => {
   it("listen は bridge.listen へ写像し、payload をそのまま handler に渡す", async () => {
     const unlistenSpy = vi.fn();

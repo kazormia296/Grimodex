@@ -1046,6 +1046,27 @@ describe("D2a profile egress gate", () => {
     }
   });
 
+  it("allows capture-only locally while continuing to deny the legacy AI send", async () => {
+    const gate = await createProfileEgressGate(backend());
+    const callerIdentity = gate.issueCallerIdentity(11);
+
+    expect(() =>
+      gate.assertInvoke("capture_current_chat_input", { callerIdentity }),
+    ).not.toThrow();
+    expect(() =>
+      gate.assertInvoke("cancel_current_chat_input", { callerIdentity }),
+    ).not.toThrow();
+    expect(() =>
+      gate.assertInvoke("retire_current_chat_input", { callerIdentity }),
+    ).not.toThrow();
+    expect(() =>
+      gate.assertInvoke("send_chat_message", { callerIdentity }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} old-external-ai`));
+    expect(() =>
+      gate.assertInvoke("unknown_capture_variant", { callerIdentity }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
+  });
+
   it("keeps native-only saves and stop controls available", async () => {
     const gate = await createProfileEgressGate(backend());
     const callerIdentity = gate.issueCallerIdentity(11);

@@ -25,6 +25,8 @@ requirements:
       - src/features/ai-verification/aiPathRegistry.ts
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
+      - src/application/chat/chatTurnStoreActions.ts
+      - src/features/chat/turn/turnCoordinator.ts
       - src/features/chat/chatStore.ts
       - src/features/chat/semanticRerankerApply.ts
       - src/features/chat/semanticRerankerMode.ts
@@ -37,6 +39,7 @@ requirements:
       - src/features/chat/turn/resolveTurnRoute.test.ts
       - src/features/chat/chatApi.test.ts
       - src/features/chat/chatStore.test.ts
+      - electron/preload/index.test.ts
       - src/features/chat/semanticRerankerApply.test.ts
       - src/features/chat/semanticRerankerMode.test.ts
       - src/lib/browser-ai.test.ts
@@ -144,6 +147,8 @@ requirements:
       - .agents/skills/create-branch/SKILL.md
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
       - src/features/chat/turn/resolveTurnRoute.ts
+      - src/application/chat/chatTurnStoreActions.ts
+      - src/features/chat/turn/turnCoordinator.ts
       - src/features/chat/context/chatContextPlanner.ts
       - src/features/chat/semanticRerankerApply.ts
       - src/features/chat/semanticRerankerMode.ts
@@ -154,6 +159,7 @@ requirements:
       - scripts/local-ci-process-supervisor.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/features/chat/turn/resolveTurnRoute.test.ts
+      - src/features/chat/chatStore.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
       - src/features/chat/semanticRerankerApply.test.ts
       - src/features/chat/semanticRerankerMode.test.ts
@@ -307,7 +313,9 @@ requirements:
       - src/lib/tauri.ts
       - electron/native/grimodex-node/index.d.ts
       - electron/native/grimodex-node/src/lib.rs
+      - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
+      - src-tauri/crates/grimodex-db/src/execute.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
@@ -319,6 +327,9 @@ requirements:
       - src/features/ai-policy/policyGuard.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
       - src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_change_feed.rs
+      - src-tauri/crates/grimodex-db/src/execute.rs
+      - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - scripts/product-journey-phase1.test.mjs
       - scripts/c2-5b-product-journeys.test.mjs
       - scripts/c2zc-product-journeys.test.mjs
@@ -360,6 +371,10 @@ requirements:
     implementedBy:
       - evals/nir1-g01/fixture.v1.json
       - src/features/related-scenes/nir1G01Feasibility.test.ts
+      - test-fixtures/nir1-df06-plain-chat.json
+      - src/prompts/ja/chatSystem.ts
+      - src/prompts/ja/chatSystemBase.txt
+      - src/prompts/ja/chatSystemDataBoundaryReminder.txt
       - evals/nir1-retrieval/manifest.json
       - policies/narrative/nir1-related-scenes-ranking.json
       - evals/nir1-retrieval/ranking-candidate-v2.json
@@ -388,6 +403,7 @@ requirements:
       - scripts/quality/nir1-packing/runner.mjs
       - scripts/quality/nir1-packing/scorer.mjs
       - src/features/ai-context/nir1Packing.ts
+      - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
@@ -414,6 +430,7 @@ requirements:
       - src/features/chat/citationVerify.test.ts
       - src/features/chat/chatRecall.test.ts
       - src/features/chat/context/chatContextPlanner.test.ts
+      - src/features/chat/contextBuilder.test.ts
       - src/features/chat/semanticRecall.test.ts
       - src/features/chat/semanticRerankerApply.test.ts
       - src/features/chat/semanticRerankerShadow.test.ts
@@ -422,6 +439,9 @@ requirements:
       - scripts/quality/nir1-packing/runner.test.mjs
       - scripts/quality/nir1-packing/scorer.test.mjs
       - src/features/ai-context/nir1Packing.test.ts
+      - src/features/ai-context/finalizeTurnPayload.test.ts
+      - electron/native/grimodex-node/src/nir1_prepared_request.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
       - src-tauri/crates/grimodex-core/tests/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/tests/narrative_nir1_retrieval_admission.rs
       - experiments/lfm25-encoder-phase0/tests/test_reranker_gate2.py
@@ -448,6 +468,12 @@ requirements:
       - scripts/quality/run-nir1-retrieval.mjs
       - scripts/quality/nir1-retrieval/standard-build.mjs
       - src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs
+      - src/db/generated/schema-contract.json
+      - test-fixtures/nir1-df06-plain-chat.json
+      - src/prompts/ja/chatSystem.ts
+      - src/prompts/ja/chatSystemBase.txt
+      - src/prompts/ja/chatSystemDataBoundaryReminder.txt
+      - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
@@ -500,6 +526,7 @@ requirements:
       - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
+      - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs
@@ -510,6 +537,8 @@ requirements:
       - src/features/chat/agent/chronicleWriteTools.test.ts
       - src/features/post-effect/api.test.ts
       - src/features/post-effect/canonicalize.test.ts
+      - src/features/chat/contextBuilder.test.ts
+      - src/db/schema.contract.test.ts
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
@@ -532,6 +561,7 @@ requirements:
       - scripts/quality/nir1-packing/runner.test.mjs
       - scripts/quality/nir1-packing/scorer.test.mjs
       - src/features/ai-context/nir1Packing.test.ts
+      - src/features/ai-context/finalizeTurnPayload.test.ts
     heavyTests:
       - src-tauri/src/commands/post_effect.rs
       - src/features/codex/candidateJudgment.live.test.ts
@@ -748,6 +778,7 @@ requirements:
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-CONTRACT-001
     implementedBy:
       - src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs
+      - src-tauri/crates/grimodex-core/src/lib.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
@@ -851,6 +882,7 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
       - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src/db/generated/schema-contract.json
       - src-tauri/crates/grimodex-db/src/backup_restore.rs
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - electron/main/index.ts
@@ -946,6 +978,10 @@ requirements:
       - src/features/tree/api.listProjection.test.ts
       - src/application/narrative-extraction/projectSnapshotAdapter.test.ts
       - src/application/narrative-extraction/extractionCoordinator.test.ts
+      - src/db/schema.contract.test.ts
+      - src-tauri/crates/grimodex-db/src/migrate.rs
+      - src-tauri/crates/grimodex-db/tests/release_schema_migration.rs
+      - src-tauri/crates/grimodex-db/tests/workspace_migration_supervisor.rs
       - electron/shared/ipcContract.test.ts
       - scripts/quality/validate-execution-state-authority.test.mjs
       - src-tauri/crates/grimodex-db/tests/narrative_maintenance_contracts.rs
