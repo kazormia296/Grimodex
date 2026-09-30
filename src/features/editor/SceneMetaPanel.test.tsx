@@ -22,12 +22,6 @@ vi.mock("@/features/editor/BeatsHeader", () => ({
   ),
 }));
 
-vi.mock("@/features/post-effect/PostEffectAnnotationPanel", () => ({
-  PostEffectAnnotationPanel: ({ sceneId }: { sceneId: string }) => (
-    <div data-testid="annotation-panel" data-scene-id={sceneId} />
-  ),
-}));
-
 const mockEditor = null as unknown as Editor;
 
 describe("SceneMetaPanel (B-10)", () => {

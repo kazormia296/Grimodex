@@ -202,6 +202,10 @@ vi.mock("../mapApi", () => ({
   updateFrame: vi.fn(),
   deleteFrame: vi.fn(),
   updateSticky: vi.fn(),
+  deleteAiBranch: vi.fn(),
+  getAiBranchSnapshot: vi.fn(),
+  restoreAiBranchSnapshot: vi.fn(),
+  createMapHistoryWriteLease: vi.fn(),
   extractPreviewText: vi.fn().mockReturnValue(""),
 }));
 

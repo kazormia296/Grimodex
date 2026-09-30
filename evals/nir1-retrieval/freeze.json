@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "nir1-retrieval-freeze/1",
+  "status": "frozen-after-independent-expectation-review",
+  "manifestSha256": "fbc6ac25a0171aac48bee27a859d2b582ed748f82adc1b5ccd28057110c950f3",
+  "corpusSha256": "2da9496e682ecb7e10a4d680d265a6d93db9be761def0e34730c1d1447b69dd2",
+  "frozenAt": "2026-09-08T05:22:35.311182+00:00",
+  "reviewedBy": "/root/roadmap_requirements",
+  "reviewReceipt": "/home/grimodex/Documents/Grimodex-evidence/nir1/first-product-path/l0-independent-expectation-review.md",
+  "reviewReceiptSha256": "82b14410c48aae6dfbef51d729b53bb27b2e3b9e61154ce9eb38b215d20f3ecf",
+  "baselineHead": "9bb942de7f58d869e9d5de52fb49d9adc49e965b",
+  "rankingsObservedBeforeFreeze": false,
+  "runtimeImplementationStartedBeforeFreeze": false,
+  "scope": "L0-L5 first Related Scenes path expectations; no result or product acceptance claim",
+  "authorValue": "not-measured"
+}

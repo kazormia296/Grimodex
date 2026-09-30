@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   collectQuiescenceProviderRecovery,
   flushQuiescenceProviderStage,
+  QuiescenceProviderStageError,
 } from "@/lib/quiescenceProviders";
 import {
   _resetPendingSynopsisSavesForTests,
@@ -19,6 +20,23 @@ function deferred<T>(): {
     resolve = res;
   });
   return { promise, resolve };
+}
+
+function expectProviderFailure(
+  rejection: unknown,
+  providerId: string,
+  message: string,
+): void {
+  expect(rejection).toBeInstanceOf(QuiescenceProviderStageError);
+  const stageError = rejection as QuiescenceProviderStageError;
+  const providerFailure = stageError.providerFailures.find(
+    (failure) => failure.providerId === providerId,
+  );
+  expect(providerFailure).toBeDefined();
+  expect(providerFailure?.originalError).toMatchObject({ message });
+  expect((providerFailure?.originalError as AggregateError).errors).toEqual([
+    expect.objectContaining({ message }),
+  ]);
 }
 
 beforeEach(() => {
@@ -145,9 +163,14 @@ describe("pending synopsis saves", () => {
       persist,
     });
 
-    await expect(
-      flushQuiescenceProviderStage("scoped-mutations"),
-    ).rejects.toThrow("synopsis disk full");
+    const rejection = await flushQuiescenceProviderStage(
+      "scoped-mutations",
+    ).catch((error: unknown) => error);
+    expectProviderFailure(
+      rejection,
+      "inline-synopsis-saves",
+      "synopsis disk full",
+    );
 
     expect(collectQuiescenceProviderRecovery()).toContainEqual({
       kind: "inline-synopsis",

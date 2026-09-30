@@ -36,6 +36,7 @@ import {
   _resetWriteBackTimers,
   cancelWriteBack,
   flushAllWriteBacksStrict,
+  flushWriteBacksForScenes,
   hasPendingWriteBack,
   scheduleWriteBack,
 } from "./writeBack";
@@ -246,5 +247,35 @@ describe("writeBack mute", () => {
       "scene-order",
       oldPmJson,
     );
+  });
+
+  it("flushes only selected Scene write-backs", async () => {
+    const pmJson = JSON.stringify({
+      type: "doc",
+      content: [{ type: "paragraph", content: [] }],
+    });
+    scheduleWriteBack(
+      "scene-target",
+      "external-root://root-1/chapter/target.md",
+      pmJson,
+    );
+    scheduleWriteBack(
+      "scene-outside",
+      "external-root://root-1/chapter/outside.md",
+      pmJson,
+    );
+
+    await expect(
+      flushWriteBacksForScenes(["scene-target"]),
+    ).resolves.toBeUndefined();
+
+    expect(mockWriteExternalFile).toHaveBeenCalledOnce();
+    expect(mockWriteExternalFile).toHaveBeenCalledWith(
+      "root-1",
+      "chapter/target.md",
+      "",
+    );
+    expect(hasPendingWriteBack("scene-target")).toBe(false);
+    expect(hasPendingWriteBack("scene-outside")).toBe(true);
   });
 });

@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "gateId": "gate-b2",
+  "candidateCommitSha": "b34684f8ed2c18080701bc49cd932d3ec2d9eaf1",
+  "candidateTreeSha": "962eb40b6ec7dc3a10d0e86ac33c3b0942e1918c",
+  "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
+  "schemaVersionProduct": 16,
+  "verdict": "INCOMPLETE",
+  "reasons": [
+    "Candidate frozen; required Light/Heavy/Journey evidence not yet attached to this freeze.",
+    "ADR checklist still contains FAIL items that block Engineering PASS until remediated.",
+    "Billed Heavy suites and journey evidence must be recorded against this tree SHA."
+  ],
+  "suiteSummaries": {
+    "requiredLight": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredHeavy": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    },
+    "requiredJourneys": {
+      "passed": 0,
+      "failed": 0,
+      "blocked": 0,
+      "hold": 0,
+      "notRun": 6
+    }
+  },
+  "digests": {
+    "writerRegistryDigest": "sha256:871fd854776e67c86e78d056c06f198166afc263a5d0ae63fb98a22c0071c4b5",
+    "aiPathRegistryDigest": "sha256:117548ba25c5dd322e2ac6d6fd1506e5b44b39e7279c65f3e4f9da76cd46d478",
+    "qualityManifestDigest": "sha256:2437f930a6fedd9db3dc4e625408bdb351954b9319eeaef93ae960a18798ffa2",
+    "narrativeEvalManifestDigest": "sha256:ffb66b17712dddf947b716ddfa8af7177d461feb4835068f005b4e3629bfefec",
+    "adrChecklistDigest": "sha256:bfa099c3db346408b057b62fa1faa8440e6a7ee23f50a62b11ac378af2828740",
+    "classificationDigest": "sha256:448efce03469ca66c8ee57500298b7cde742871ed5eed1c55d9410ca212f4188",
+    "reportDigest": null
+  },
+  "heavyAttempts": [],
+  "generatedAt": "2026-08-12T12:07:20.683Z",
+  "notes": "Provisional freeze decision only. Replace after --run-light/--run-heavy/--run-journeys against this candidate."
+}

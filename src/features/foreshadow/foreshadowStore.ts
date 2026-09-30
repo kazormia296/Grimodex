@@ -25,12 +25,12 @@ import {
 } from "@/lib/createResultMetadata";
 import { loadSceneContents, saveSceneContent } from "@/features/tree/api";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
-import { rebaselineScenesAtTail } from "@/features/timelapse/toggle";
+import { rebaselineScenesAtTail } from "@/features/timelapse/rebaseline";
 import { saveScene } from "@/features/editor/editorSaveRegistry";
 import { cmpKeys } from "@/features/tree/fractionalIndex";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import {
+  refreshForeshadowPayoffMarkVersions,
   saveForeshadowAnchors,
   unsetForeshadowPayoffMarksByForeshadowIds,
 } from "./saveAnchors";
@@ -51,35 +51,32 @@ import {
   captureForeshadowDeletion,
 } from "@/features/trash-bin/captureHooks";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
-import {
-  createPendingCreateRequestRegistry,
-  type PendingCreateRequestRegistry,
-} from "@/lib/pendingCreateRequestRegistry";
-import { IpcInvokeError } from "@/lib/tauri";
+import { createPendingCreateRequestRegistry } from "@/lib/pendingCreateRequestRegistry";
+import { IpcInvokeError, isD2aEgressDenied } from "@/lib/tauri";
+import { getNativeMutationMetadata } from "@/lib/nativeMutationMetadata";
+import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type {
   ForeshadowRow,
   ForeshadowSetupRow,
   ForeshadowWithLabel,
 } from "./types";
+import {
+  publishAuthoritativeForeshadowRows,
+  setAuthoritativeForeshadowRowsSink,
+} from "./authoritativeRows";
+
+export { publishAuthoritativeForeshadowRows } from "./authoritativeRows";
 
 /**
  * Foreshadow undo/redo re-bakes payoff marks by writing scene content directly
  * (`saveSceneContent`) and, when the editor is live, `setContent(..., {
  * emitUpdate: false })` — both bypass the editor's doc.step recording. This is
- * an out-of-band body write, so record it and re-anchor the scene's editor
- * baseline at the chain tail (same treatment as a snapshot restore) to keep
- * timelapse replay coherent. no-op when recording is off / no scene.
+ * an out-of-band body write. The canonical native scene writer owns the one
+ * Change Event; this helper only re-anchors the editor baseline at that chain
+ * tail (same treatment as a snapshot restore).
  */
 async function recordForeshadowMarkBake(sceneId: string | null): Promise<void> {
   if (!sceneId) return;
-  recordChangeEvent({
-    domain: "foreshadow",
-    opType: "mark.update",
-    entityType: "scene",
-    entityId: sceneId,
-    sceneId,
-    payload: { sceneId },
-  });
   await rebaselineScenesAtTail(getCurrentProjectId(), [sceneId]);
 }
 
@@ -142,55 +139,45 @@ interface ForeshadowState {
 
 const foreshadowLoadTracker = createInFlightTracker();
 let foreshadowLoadGeneration = 0;
+const foreshadowHistoryVersions = new Map<string, number>();
+
+function foreshadowHistoryKey(projectId: string, id: string): string {
+  return `${projectId}\0${id}`;
+}
+
+function loadedForeshadowVersion(id: string): number {
+  const row = useForeshadowStore
+    .getState()
+    .items.find((item) => item.id === id);
+  if (!row)
+    throw new Error(`Foreshadow ${id} must be reloaded before editing setups`);
+  return row.version;
+}
+
+function setForeshadowHistoryVersion(
+  row: Pick<ForeshadowRow, "id" | "projectId" | "version">,
+): void {
+  foreshadowHistoryVersions.set(
+    foreshadowHistoryKey(row.projectId, row.id),
+    row.version,
+  );
+}
+
+function getForeshadowHistoryVersion(
+  projectId: string,
+  id: string,
+  fallback: number,
+): number {
+  return (
+    foreshadowHistoryVersions.get(foreshadowHistoryKey(projectId, id)) ??
+    fallback
+  );
+}
 const pendingForeshadowCreates =
   createPendingCreateRequestRegistry<Parameters<typeof createForeshadow>[0]>();
 
 function shouldRetainPendingForeshadowCreate(error: unknown): boolean {
   return error instanceof IpcInvokeError && error.outcome === "unknown";
-}
-
-type ForeshadowCreatePayload = Parameters<typeof createForeshadow>[0];
-
-function foreshadowRestorePayload(row: ForeshadowRow): ForeshadowCreatePayload {
-  return {
-    id: row.id,
-    projectId: row.projectId,
-    title: row.title,
-    intent: row.intent ?? null,
-    notes: row.notes ?? null,
-    payoffSceneId: row.payoffSceneId ?? null,
-    payoffFromPos: row.payoffFromPos ?? null,
-    payoffToPos: row.payoffToPos ?? null,
-    payoffConfirmed: row.payoffConfirmed,
-    abandoned: row.abandoned,
-    secret: row.secret,
-    loadBearing: row.loadBearing ?? null,
-    codexLinkDirtyAt: row.codexLinkDirtyAt ?? null,
-  };
-}
-
-async function restoreForeshadowWithRetainedRequest(
-  requests: PendingCreateRequestRegistry<ForeshadowCreatePayload>,
-  row: ForeshadowRow,
-): Promise<ForeshadowRow> {
-  const payload = foreshadowRestorePayload(row);
-  const pending = requests.acquire(
-    row.id,
-    JSON.stringify(payload),
-    () => payload,
-  );
-  try {
-    const restored = await createForeshadow(pending.payload, {
-      requestId: pending.requestId,
-    });
-    requests.release(pending);
-    return restored;
-  } catch (error) {
-    if (!shouldRetainPendingForeshadowCreate(error)) {
-      requests.release(pending);
-    }
-    throw error;
-  }
 }
 
 function swallowForeshadowLoadFailure(promise: Promise<void>): Promise<void> {
@@ -213,6 +200,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     foreshadowLoadGeneration++;
     foreshadowLoadTracker.clear();
     pendingForeshadowCreates.clear();
+    foreshadowHistoryVersions.clear();
     set({
       items: [],
       isLoading: false,
@@ -250,13 +238,15 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       } catch (e) {
         if (generation === foreshadowLoadGeneration) {
           set({ isLoading: false });
-          toast.error(
-            i18next.t(
-              "foreshadow.store.loadFailed",
-              "伏線の読み込みに失敗しました",
-            ),
-          );
-          debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+          if (!isD2aEgressDenied(e)) {
+            toast.error(
+              i18next.t(
+                "foreshadow.store.loadFailed",
+                "伏線の読み込みに失敗しました",
+              ),
+            );
+            debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
+          }
         }
         throw e;
       }
@@ -302,6 +292,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       if (!isCreateResultEntityPresent(row)) {
         return item;
       }
+      setForeshadowHistoryVersion(row);
       if (getCreateResultMetadata(row)?.replayed) {
         // Lost-response retry: publish and record once only when the original
         // response never reached this store. An already-published entity is a
@@ -310,40 +301,52 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           return item;
         }
         set((s) => ({ items: [item, ...s.items] }));
-        recordChangeEvent({
-          domain: "foreshadow",
-          opType: "create",
-          entityType: "foreshadow",
-          entityId: item.id,
-          payload: { foreshadowId: item.id, title: item.title },
-        });
       } else {
         set((s) => ({ items: [item, ...s.items] }));
       }
 
       if (!useGlobalHistoryStore.getState().isReplaying) {
+        const originalTransactionId =
+          getNativeMutationMetadata(row)?.maintenanceTransactionId;
+        if (!originalTransactionId) {
+          throw new Error(
+            "foreshadow create did not return maintenance transaction lineage",
+          );
+        }
         const cap = { ...row };
-        const redoRequests =
-          createPendingCreateRequestRegistry<ForeshadowCreatePayload>();
+        let deleteJournalId: string | undefined;
         useGlobalHistoryStore.getState().push({
           kind: "foreshadow",
           label: i18next.t("foreshadow.store.historyCreate"),
           async undo() {
-            await deleteForeshadow(cap.id);
+            if (deleteJournalId) {
+              await applyUndoJournal(deleteJournalId, "redo");
+            } else {
+              const receipt = await deleteForeshadow(
+                cap.id,
+                getForeshadowHistoryVersion(cap.projectId, cap.id, cap.version),
+                cap.projectId,
+                { origin: "undo", originalTransactionId },
+              );
+              deleteJournalId = receipt.undoJournalId;
+              foreshadowHistoryVersions.set(
+                foreshadowHistoryKey(cap.projectId, cap.id),
+                receipt.version,
+              );
+            }
             set((s) => ({ items: s.items.filter((i) => i.id !== cap.id) }));
           },
           async redo() {
-            const restored = await restoreForeshadowWithRetainedRequest(
-              redoRequests,
-              cap,
-            );
-            if (!isCreateResultEntityPresent(restored)) return;
-            set((s) => ({
-              items: [
-                { ...restored, setupCount: 0, label: "planned" as const },
-                ...s.items.filter((i) => i.id !== restored.id),
-              ],
-            }));
+            if (!deleteJournalId) {
+              throw new Error("foreshadow create redo has no delete journal");
+            }
+            await applyUndoJournal(deleteJournalId, "undo");
+            await get().load(cap.projectId, { propagateError: true });
+            const restored = get().items.find((item) => item.id === cap.id);
+            if (!restored) {
+              throw new Error("foreshadow create redo restore is missing");
+            }
+            setForeshadowHistoryVersion(restored);
           },
         });
       }
@@ -363,17 +366,21 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
   update: async (id, patch, projectId) => {
     const before = get().items.find((i) => i.id === id);
+    if (!before) {
+      debugLog.error("ForeshadowStore", `update target not loaded: ${id}`);
+      return;
+    }
     const undoPatch: typeof patch = {};
-    if (before) {
-      for (const key of Object.keys(patch) as (keyof typeof patch)[]) {
-        const v = (before as unknown as Record<string, unknown>)[key];
-        // @ts-expect-error narrow union not assignable here
-        undoPatch[key] = v ?? null;
-      }
+    for (const key of Object.keys(patch) as (keyof typeof patch)[]) {
+      const v = (before as unknown as Record<string, unknown>)[key];
+      // @ts-expect-error narrow union not assignable here
+      undoPatch[key] = v ?? null;
     }
 
+    let updated: ForeshadowRow;
     try {
-      await updateForeshadow(id, patch);
+      updated = await updateForeshadow(id, patch, before.version, projectId);
+      setForeshadowHistoryVersion(updated);
 
       if (patch.payoffSceneId === null) {
         const editor = getActiveEditor();
@@ -401,8 +408,13 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       return;
     }
 
-    if (!before) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
+    const mutationMetadata = getNativeMutationMetadata(updated);
+    const originalTransactionId = mutationMetadata?.maintenanceTransactionId;
+    const undoJournalId = mutationMetadata?.undoJournalId;
+    if (!originalTransactionId || !undoJournalId) {
+      throw new Error("foreshadow update did not return complete undo lineage");
+    }
 
     // payoffSceneId を null にした更新の場合、本文の payoff mark を物理削除
     // しているため、Undo 側で「対象シーンが現在開かれていれば mark を再付与
@@ -422,11 +434,21 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         }
       : null;
 
+    let undoBaseVersion = updated.version;
+    let redoBaseVersion: number | undefined;
     useGlobalHistoryStore.getState().push({
       kind: "foreshadow",
       label: i18next.t("foreshadow.store.historyUpdate"),
       async undo() {
-        await updateForeshadow(id, undoPatch);
+        const restored = await updateForeshadow(
+          id,
+          undoPatch,
+          getForeshadowHistoryVersion(projectId, id, undoBaseVersion),
+          projectId,
+          { origin: "undo", originalTransactionId, undoJournalId },
+        );
+        redoBaseVersion = restored.version;
+        setForeshadowHistoryVersion(restored);
         if (releasedPayoffSnapshot) {
           const editor = getActiveEditor();
           const activeSceneId = getActiveTreeSceneId();
@@ -441,7 +463,10 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
               tr.addMark(
                 releasedPayoffSnapshot.fromPos,
                 releasedPayoffSnapshot.toPos,
-                payoffType.create({ foreshadowId: id }),
+                payoffType.create({
+                  foreshadowId: id,
+                  baseVersion: restored.version,
+                }),
               );
               editor.view.dispatch(tr);
               const contentJson = JSON.stringify(editor.getJSON());
@@ -452,7 +477,18 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         await get().load(projectId);
       },
       async redo() {
-        await updateForeshadow(id, patch);
+        if (redoBaseVersion === undefined) {
+          throw new Error("foreshadow redo has no authoritative baseVersion");
+        }
+        const reapplied = await updateForeshadow(
+          id,
+          patch,
+          getForeshadowHistoryVersion(projectId, id, redoBaseVersion),
+          projectId,
+          { origin: "redo", originalTransactionId, undoJournalId },
+        );
+        undoBaseVersion = reapplied.version;
+        setForeshadowHistoryVersion(reapplied);
         if (releasedPayoffSnapshot) {
           const editor = getActiveEditor();
           const activeSceneId = getActiveTreeSceneId();
@@ -480,8 +516,21 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
   remove: async (id) => {
     const before = get().items.find((i) => i.id === id);
+    if (!before) {
+      debugLog.error("ForeshadowStore", `delete target not loaded: ${id}`);
+      return;
+    }
+    let deleteReceipt: Awaited<ReturnType<typeof deleteForeshadow>>;
     try {
-      await deleteForeshadow(id);
+      deleteReceipt = await deleteForeshadow(
+        id,
+        before.version,
+        before.projectId,
+      );
+      foreshadowHistoryVersions.set(
+        foreshadowHistoryKey(before.projectId, before.id),
+        deleteReceipt.version,
+      );
       set((s) => ({ items: s.items.filter((i) => i.id !== id) }));
     } catch (e) {
       toast.error(
@@ -491,7 +540,6 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       return;
     }
 
-    if (!before) return;
     if (useGlobalHistoryStore.getState().isReplaying) return;
 
     // Trash 連携: foreshadow の削除をゴミ箱にキャプチャ。
@@ -503,32 +551,25 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       tempId: trashTempId,
     });
 
-    // Note: cascade FK は foreshadowSetups を消す。本 entry では foreshadow row
-    // のみを restore し、setup 行とそれに対応する mark は復元できない。
-    // 別 PR の adopt 系アトミック化で扱う想定。
+    // The protected delete journal owns the complete aggregate snapshot, so
+    // every replay restores setups, payoffs, support edges, and Codex links.
     const cap = { ...before };
-    const undoRequests =
-      createPendingCreateRequestRegistry<ForeshadowCreatePayload>();
     useGlobalHistoryStore.getState().push({
       kind: "foreshadow",
       label: i18next.t("foreshadow.store.historyDelete"),
       async undo() {
         // 1500ms 以内 Ctrl+Z 吸収: trash 保留を cancel
         cancelPendingTrash(trashTempId);
-        const restored = await restoreForeshadowWithRetainedRequest(
-          undoRequests,
-          cap,
-        );
-        if (!isCreateResultEntityPresent(restored)) return;
-        set((s) => ({
-          items: [
-            { ...restored, setupCount: cap.setupCount, label: cap.label },
-            ...s.items.filter((item) => item.id !== restored.id),
-          ],
-        }));
+        await applyUndoJournal(deleteReceipt.undoJournalId, "undo");
+        await get().load(cap.projectId, { propagateError: true });
+        const restored = get().items.find((item) => item.id === cap.id);
+        if (!restored) {
+          throw new Error("foreshadow delete undo restore is missing");
+        }
+        setForeshadowHistoryVersion(restored);
       },
       async redo() {
-        await deleteForeshadow(cap.id);
+        await applyUndoJournal(deleteReceipt.undoJournalId, "redo");
         set((s) => ({ items: s.items.filter((i) => i.id !== cap.id) }));
       },
     });
@@ -550,7 +591,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
 
   removeSetup: async (setupId, foreshadowId) => {
     try {
-      await deleteSetup(setupId);
+      const row = await deleteSetup(
+        setupId,
+        loadedForeshadowVersion(foreshadowId),
+      );
+      if (row) publishAuthoritativeForeshadowRows([row]);
       set((s) => {
         const current = s.setupsByForeshadowId[foreshadowId] ?? [];
         return {
@@ -595,11 +640,16 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }
 
     try {
-      await reanchorOrphanSetup(setupId, {
-        sceneId: activeSceneId,
-        fromPos: from,
-        toPos: to,
-      });
+      const row = await reanchorOrphanSetup(
+        setupId,
+        {
+          sceneId: activeSceneId,
+          fromPos: from,
+          toPos: to,
+        },
+        loadedForeshadowVersion(foreshadowId),
+      );
+      if (row) publishAuthoritativeForeshadowRows([row]);
 
       const setups = get().setupsByForeshadowId[foreshadowId] ?? [];
       const nextSetups = setups.map((s) =>
@@ -623,6 +673,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           .setMark("foreshadowSetup", {
             setupId: resolved.id,
             foreshadowId: resolved.foreshadowId,
+            baseVersion: row?.version ?? loadedForeshadowVersion(foreshadowId),
           })
           .run();
       }
@@ -686,24 +737,32 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }
 
     try {
-      const inserted = await reinsertOrphanSetup(setupId, {
-        sceneId: activeSceneId,
-        fromPos: from,
-        toPos: to,
-      });
+      const inserted = await reinsertOrphanSetup(
+        setupId,
+        {
+          sceneId: activeSceneId,
+          fromPos: from,
+          toPos: to,
+        },
+        loadedForeshadowVersion(foreshadowId),
+      );
+      publishAuthoritativeForeshadowRows([inserted.foreshadow]);
       editor
         .chain()
         .setTextSelection({ from, to })
         .setMark("foreshadowSetup", {
-          setupId: inserted.id,
-          foreshadowId: inserted.foreshadowId,
+          setupId: inserted.setup.id,
+          foreshadowId: inserted.setup.foreshadowId,
+          baseVersion: inserted.foreshadow.version,
         })
         .run();
 
       const setups = get().setupsByForeshadowId[foreshadowId] ?? [];
       const nextSetups = setups
         .filter((s) => s.id !== setupId)
-        .concat([{ ...inserted, fromPos: from, toPos: to, isOrphan: false }]);
+        .concat([
+          { ...inserted.setup, fromPos: from, toPos: to, isOrphan: false },
+        ]);
 
       set((s) => {
         const activeSetups = nextSetups.filter((x) => !x.isOrphan);
@@ -765,11 +824,16 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         return;
       }
 
-      await updateSetup(setupId, {
-        aiStrength: evaluation.careful.strength,
-        aiReasoning: JSON.stringify(evaluation),
-        lastEvaluatedAt: new Date(),
-      });
+      const row = await updateSetup(
+        setupId,
+        {
+          aiStrength: evaluation.careful.strength,
+          aiReasoning: JSON.stringify(evaluation),
+          lastEvaluatedAt: new Date(),
+        },
+        loadedForeshadowVersion(foreshadowId),
+      );
+      publishAuthoritativeForeshadowRows([row]);
 
       set((s) => {
         const current = s.setupsByForeshadowId[foreshadowId] ?? [];
@@ -942,7 +1006,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     };
 
     try {
-      await createForeshadowSetup(setupPayload);
+      const created = await createForeshadowSetup(
+        setupPayload,
+        loadedForeshadowVersion(foreshadowId),
+      );
+      publishAuthoritativeForeshadowRows([created.foreshadow]);
 
       await get().loadSetups(foreshadowId);
 
@@ -974,7 +1042,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       kind: "foreshadow",
       label: i18next.t("foreshadow.store.historyAdoptSetup"),
       async undo() {
-        await deleteSetup(setupPayload.id);
+        const row = await deleteSetup(
+          setupPayload.id,
+          loadedForeshadowVersion(foreshadowId),
+        );
+        if (row) publishAuthoritativeForeshadowRows([row]);
         await get().loadSetups(foreshadowId);
         // Restore candidate to proposeResults at original index
         set((s) => {
@@ -986,7 +1058,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         });
       },
       async redo() {
-        await createForeshadowSetup(setupPayload);
+        const created = await createForeshadowSetup(
+          setupPayload,
+          loadedForeshadowVersion(foreshadowId),
+        );
+        publishAuthoritativeForeshadowRows([created.foreshadow]);
         await get().loadSetups(foreshadowId);
         set((s) => ({
           proposeResults: {
@@ -1056,7 +1132,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     try {
       // Pre-create DB record with AI metadata before inserting text.
       // The saveForeshadowAnchors UPSERT will only update fromPos/toPos — metadata is preserved.
-      await createForeshadowSetup(setupPayload);
+      const created = await createForeshadowSetup(
+        setupPayload,
+        loadedForeshadowVersion(foreshadowId),
+      );
+      publishAuthoritativeForeshadowRows([created.foreshadow]);
 
       // Insert text and apply foreshadowSetup + authorship marks in the editor.
       // The suggestedText is AI-generated (setupPayload.attribution === "ai"),
@@ -1071,7 +1151,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         })
         .insertContentAt(from, suggestedText)
         .setTextSelection({ from, to: from + suggestedText.length })
-        .setMark("foreshadowSetup", { setupId, foreshadowId })
+        .setMark("foreshadowSetup", {
+          setupId,
+          foreshadowId,
+          baseVersion: created.foreshadow.version,
+        })
         .setMark("authorship", aiAuthorshipAttrs())
         .run();
 
@@ -1124,7 +1208,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       kind: "foreshadow",
       label: i18next.t("foreshadow.store.historyAdoptSetupInsert"),
       async undo() {
-        await deleteSetup(setupPayload.id);
+        const row = await deleteSetup(
+          setupPayload.id,
+          loadedForeshadowVersion(foreshadowId),
+        );
+        if (row) publishAuthoritativeForeshadowRows([row]);
         await saveSceneContent(capSceneId, capBefore);
         await recordForeshadowMarkBake(capSceneId);
         // If the editor is currently displaying this scene, also reset its content
@@ -1150,7 +1238,11 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         });
       },
       async redo() {
-        await createForeshadowSetup(setupPayload);
+        const created = await createForeshadowSetup(
+          setupPayload,
+          loadedForeshadowVersion(foreshadowId),
+        );
+        publishAuthoritativeForeshadowRows([created.foreshadow]);
         await saveSceneContent(capSceneId, capAfter);
         await recordForeshadowMarkBake(capSceneId);
         const ed = getActiveEditor();
@@ -1158,6 +1250,14 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
         if (ed && curScene === capSceneId) {
           try {
             ed.commands.setContent(JSON.parse(capAfter), { emitUpdate: false });
+            refreshForeshadowPayoffMarkVersions(
+              (apply) => {
+                const tr = ed.state.tr;
+                apply(tr);
+                if (tr.steps.length > 0) ed.view.dispatch(tr);
+              },
+              [created.foreshadow],
+            );
           } catch {
             // ignore
           }
@@ -1236,3 +1336,20 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }
   },
 }));
+
+setAuthoritativeForeshadowRowsSink((rows) => {
+  for (const row of rows) setForeshadowHistoryVersion(row);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  useForeshadowStore.setState((state) => ({
+    items: state.items.map((item) => {
+      const authoritative = byId.get(item.id);
+      return authoritative
+        ? {
+            ...authoritative,
+            setupCount: item.setupCount,
+            label: item.label,
+          }
+        : item;
+    }),
+  }));
+});

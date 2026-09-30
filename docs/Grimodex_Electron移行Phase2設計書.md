@@ -371,7 +371,7 @@ Rust emit 55 箇所の**実配線はしない**（発火元サブシステムが
 - 内容: §3.4 の表どおり。`isElectron()` 追加、dialog.ts のローカル isTauri を統一。
 - 変更: `src/lib/tauri.ts`、`src/lib/{dialog,importFile,fs,windowControls,webviewWindows,uiScale,appInfo,opener,updater}.ts`、`src/main.tsx`（`data-shell` 属性）
 - 新規テスト: `src/lib/tauri.electron.test.ts` ほか（`window.grimodex` を happy-dom にモックし、①3 分岐のディスパッチ順 ②envelope 解封が**生文字列 reject** になること ③SLOW_COMMANDS のタイムアウト値選択が electron 分岐でも効くこと）
-- **fail-soft 監査（A6 の実体）**: `pnpm electron:dev` で起動〜WS open〜編集の全フローを踏み、`IPC_UNIMPLEMENTED` reject を debugLog で収集。起動を壊す呼び出し（現時点の想定: `lint_text`→lintStore catch 済 / `codex_rebuild_matcher`→フォールバック / `list_system_fonts`→設定パネルのみ / `fts_optimize`→catch 済 / `foreshadow_load_anchors_for_scene`→Tauri ゲートで未到達）を一つずつ確認し、壊れるものがあればスタブ追加 or ガード修正。結果を本書 §11 の表に追記する。
+- **fail-soft 監査（A6 の実体）**: `pnpm electron:dev` で起動〜WS open〜編集の全フローを踏み、`IPC_UNIMPLEMENTED` reject を debugLog で収集。起動を壊す呼び出し（現時点の想定: `lint_text`→lintStore catch 済 / `codex_rebuild_matcher`→フォールバック / `list_system_fonts`→設定パネルのみ / `foreshadow_load_anchors_for_scene`→Tauri ゲートで未到達）を一つずつ確認し、壊れるものがあればスタブ追加 or ガード修正。`fts_optimize` は明示的なメンテナンス API として保持し、WS open からは自動実行しない。結果を本書 §11 の表に追記する。
 - 検証: `pnpm test --run`（既存 79 ファイルの `@/lib/tauri` mock テストが**無変更で**通ること = ラッパー署名不変の証明）、A2 の手動版。
 
 ### S6: ウィンドウクローム

@@ -17,6 +17,39 @@ export { isElectron } from "./shell";
 
 const IPC_TIMEOUT_MS = 10_000;
 
+const D2A_EGRESS_DENIED_MARKER = "D2A_EGRESS_DENIED:";
+
+/**
+ * D2a denials may be wrapped by Drizzle's query error before reaching a
+ * feature store. Walk the standard `cause` chain so expected restricted
+ * optional reads can degrade without being reported as runtime failures.
+ */
+export function isD2aEgressDenied(error: unknown): boolean {
+  const seen = new Set<object>();
+  let current: unknown = error;
+  while (current !== null && current !== undefined) {
+    if (typeof current === "string") {
+      return current.includes(D2A_EGRESS_DENIED_MARKER);
+    }
+    if (typeof current !== "object") return false;
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if (
+      "message" in current &&
+      String(
+        (current as { readonly message?: unknown }).message ?? "",
+      ).includes(D2A_EGRESS_DENIED_MARKER)
+    ) {
+      return true;
+    }
+    current =
+      "cause" in current
+        ? (current as { readonly cause?: unknown }).cause
+        : undefined;
+  }
+  return false;
+}
+
 /** AI inference can take several minutes on local hardware (Ollama etc.) */
 const AI_IPC_TIMEOUT_MS = 300_000; // 5 minutes
 
@@ -180,11 +213,18 @@ function normalizeIpcFailure(command: string, error: unknown): unknown {
  */
 const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["get_global_settings", IPC_TIMEOUT_MS],
+  ["narrative_extraction_capture_workspace_binding", IPC_TIMEOUT_MS],
   ["validate_workspace_path", IPC_TIMEOUT_MS],
   ["list_backups", IPC_TIMEOUT_MS],
   ["list_system_fonts", IPC_TIMEOUT_MS],
   ["foreshadow_load_anchors_for_scene", IPC_TIMEOUT_MS],
   ["list_annotations_for_scene", IPC_TIMEOUT_MS],
+  ["fts_search", IPC_TIMEOUT_MS],
+  ["nir1_evidence_qualify", IPC_TIMEOUT_MS],
+  ["nir1_pack_context", IPC_TIMEOUT_MS],
+  ["nir1_entity_relation_revision_read", IPC_TIMEOUT_MS],
+  ["nir1_entity_relation_revision_read_current", IPC_TIMEOUT_MS],
+  ["nir1_entity_relation_revision_restore", IPC_TIMEOUT_MS],
   // These reads can legitimately include process/network startup or a model
   // cold-load, so retain the existing five-minute caller budget.
   ["detect_cli_binary", AI_IPC_TIMEOUT_MS],
@@ -197,6 +237,7 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["events_semantic_search", AI_IPC_TIMEOUT_MS],
   ["chat_message_search", AI_IPC_TIMEOUT_MS],
   ["segment_bunsetsu", AI_IPC_TIMEOUT_MS],
+  ["extract_codex_entity_seeds", AI_IPC_TIMEOUT_MS],
   ["vivliostyle_detect", AI_IPC_TIMEOUT_MS],
 ]);
 
@@ -216,6 +257,8 @@ const DERIVED_INDEX_COMMANDS = new Set([
   "events_reindex_all",
   "chat_index_message",
   "chat_reindex_all",
+  "related_scenes_begin",
+  "related_scenes_continue",
 ]);
 
 const AUDIT_EXPORT_READ_COMMANDS = new Set([
@@ -317,6 +360,62 @@ function ipcCategoryForCommand(
   return callerTimeoutForCommand(command, args) === null ? "mutation" : "read";
 }
 
+function relatedScenesPendingTicket(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const ir = (value as { readonly ir?: unknown }).ir;
+  if (ir === null || typeof ir !== "object" || Array.isArray(ir)) return null;
+  const pending = ir as {
+    readonly status?: unknown;
+    readonly operationTicket?: unknown;
+  };
+  return pending.status === "pending" &&
+    typeof pending.operationTicket === "string" &&
+    pending.operationTicket.trim().length > 0
+    ? pending.operationTicket
+    : null;
+}
+
+/**
+ * A lifecycle can detach the renderer caller while Native finishes a begin
+ * against its pinned scope. If that late result allocated a ticket, release it
+ * through the normal mutation path because no feature session can bind it.
+ */
+function createRelatedScenesBeginLateResultCleanup() {
+  const unset = Symbol("related-scenes-begin-result-unset");
+  let result: unknown | typeof unset = unset;
+  let lifecycleCancelled = false;
+  let releaseStarted = false;
+
+  const releaseIfOrphaned = () => {
+    if (!lifecycleCancelled || result === unset || releaseStarted) return;
+    const operationTicket = relatedScenesPendingTicket(result);
+    if (operationTicket === null) return;
+    releaseStarted = true;
+    void invoke("related_scenes_release", { operationTicket }).catch(
+      (error: unknown) => {
+        console.warn(
+          "[tauri] Late Related Scenes ticket release failed",
+          error,
+        );
+      },
+    );
+  };
+
+  return {
+    observeResult(value: unknown): void {
+      result = value;
+      releaseIfOrphaned();
+    },
+    observeCallerFailure(error: unknown): void {
+      if (!isIpcLifecycleCancellation(error)) return;
+      lifecycleCancelled = true;
+      releaseIfOrphaned();
+    },
+  };
+}
+
 let browserMock: BrowserMock | null = null;
 let browserMockReady: Promise<BrowserMock> | null = null;
 
@@ -329,7 +428,15 @@ function getBrowserMock(): Promise<BrowserMock> {
   if (browserMock) return Promise.resolve(browserMock);
   if (!browserMockReady) {
     browserMockReady = import("./browser-mock").then(async (m) => {
-      browserMock = await m.createBrowserMock();
+      // Node-side integration tests seed protected domain rows through the
+      // Drizzle fixture surface. Keep that fixture-only escape hatch scoped to
+      // Vitest's lazy BrowserMock; production BrowserRuntime instances still
+      // create their mock with the default fail-closed Writer Authority.
+      const allowProtectedWriterTestFixtures =
+        typeof process !== "undefined" && process.env?.NODE_ENV === "test";
+      browserMock = await m.createBrowserMock({
+        allowProtectedWriterTestFixtures,
+      });
       return browserMock;
     });
   }
@@ -411,6 +518,10 @@ export async function invoke<T = unknown>(
     console.debug(`[tauri] invoke: ${cmd} (electron)`);
     const bridge = electronBridge();
     const ms = callerTimeoutForCommand(cmd, args);
+    const lateBeginCleanup =
+      cmd === "related_scenes_begin"
+        ? createRelatedScenesBeginLateResultCleanup()
+        : null;
     try {
       return await enqueueIpc(
         cmd,
@@ -436,13 +547,16 @@ export async function invoke<T = unknown>(
               : classifyLegacyIpcError(envelope.error);
             throw new IpcInvokeError(cmd, info);
           }
+          lateBeginCleanup?.observeResult(envelope.value);
           return envelope.value;
         },
         ms,
         ipcCategoryForCommand(cmd, args),
       );
     } catch (error) {
-      throw normalizeIpcFailure(cmd, error);
+      const normalized = normalizeIpcFailure(cmd, error);
+      lateBeginCleanup?.observeCallerFailure(normalized);
+      throw normalized;
     }
   }
   const ms = callerTimeoutForCommand(cmd, args);
@@ -459,4 +573,54 @@ export async function invoke<T = unknown>(
   } catch (error) {
     throw normalizeIpcFailure(cmd, error);
   }
+}
+
+export interface CaptureCurrentChatInputSubmission {
+  submissionId: string;
+  messageId: string;
+  chatSessionId: string;
+  sceneId: string;
+  content: string;
+  createdAt: string;
+}
+
+export interface CaptureCurrentChatInputReceipt {
+  status: "accepted";
+  projectId: string;
+  chatSessionId: string;
+  sceneId: string;
+  messageId: string;
+}
+
+export interface LegacyOnlyChatInputResult {
+  status: "legacy-only";
+}
+
+export interface CancelCurrentChatInputReceipt {
+  status: "cancelled" | "not-current" | "not-found";
+  submissionId: string;
+  messageId: string;
+}
+
+export interface RetireCurrentChatInputReceipt {
+  status: "retired" | "not-current";
+  chatSessionId: string;
+}
+
+export function retireCurrentChatInput(
+  chatSessionId: string,
+): Promise<RetireCurrentChatInputReceipt | LegacyOnlyChatInputResult> {
+  return invoke("retire_current_chat_input", { chatSessionId });
+}
+
+export function captureCurrentChatInput(
+  submission: CaptureCurrentChatInputSubmission,
+): Promise<CaptureCurrentChatInputReceipt | LegacyOnlyChatInputResult> {
+  return invoke("capture_current_chat_input", { submission });
+}
+
+export function cancelCurrentChatInput(
+  submission: Omit<CaptureCurrentChatInputSubmission, "content" | "createdAt">,
+): Promise<CancelCurrentChatInputReceipt> {
+  return invoke("cancel_current_chat_input", { submission });
 }

@@ -53,27 +53,53 @@ const DRIFT_ALLOWLIST: &[(&str, &str)] = &[];
 const TRIGGER_ALLOWLIST: &[&str] = &["codex_fts_ai", "codex_fts_ad", "codex_fts_au"];
 
 /// ゲート4(iii) の列定義比較（from-scratch vs migrate-on-seeded）の
-/// 意図的差分 allowlist（(table, column)）。
+/// DEFAULT だけの意図的差分 allowlist（(table, column)）。型と NOT NULL は
+/// この一覧に含まれていても常に比較する。
 /// foreshadows.secret: migrate.rs の base CREATE TABLE は DEFAULT 1（新規 DB の
 /// 新規伏線は秘匿が既定 = schema.ts の default(true) と一致）だが、rescue の
 /// add_column_if_missing は意図的に DEFAULT 0（列導入前から存在する既存レコード
 /// を「表示」に倒す後方互換。migrate.rs の当該行コメント参照）。ALTER で付いた
 /// 列 DEFAULT は恒久残存するため、旧 DB 由来（= seed 経由も同じ経路）の DB は
 /// from-scratch と DEFAULT が一致しない。これは設計どおりの非対称。
+/// codex detail timestamps: SQLite の ALTER TABLE は datetime('now') のような
+/// 非定数 default を追加できないため、rescue は DEFAULT '' で列を追加して既存行を
+/// 即時 backfill する。ALTER で付いた default 自体は残るので fresh schema とは
+/// 意図的に異なるが、保存済みデータと以後の typed writer の timestamp は同値になる。
+const RESCUE_DEFAULT_DRIFT_ALLOWLIST: &[(&str, &str)] = &[
+    ("foreshadows", "secret"),
+    ("codex_detail_definitions", "updated_at"),
+    ("codex_detail_values", "created_at"),
+    ("codex_detail_values", "updated_at"),
+];
+
 /// lint_term_dictionary.project_id: base CREATE は NOT NULL FK だが、rescue は
 /// 「ALTER では FK/NOT NULL を付けられないため列は nullable で追加し backfill
-/// 後に孤児行を掃除する」設計（migrate.rs の当該行コメント参照）。同じく
-/// 設計どおりの非対称。
-const RESCUE_DRIFT_ALLOWLIST: &[(&str, &str)] = &[
-    ("foreshadows", "secret"),
-    ("lint_term_dictionary", "project_id"),
-];
+/// 後に孤児行を掃除する」設計（migrate.rs の当該行コメント参照）。型と DEFAULT
+/// は比較したまま、既知の NOT NULL 差だけを正規化する。
+const RESCUE_NOT_NULL_DRIFT_ALLOWLIST: &[(&str, &str)] = &[("lint_term_dictionary", "project_id")];
 
 #[derive(Debug, PartialEq)]
 struct ColumnInfo {
     decl_type: String,
     notnull: bool,
     dflt_value: Option<String>,
+}
+
+fn normalized_rescue_column_info(table: &str, column: &str, info: &ColumnInfo) -> ColumnInfo {
+    let key = (table, column);
+    ColumnInfo {
+        decl_type: info.decl_type.clone(),
+        notnull: if RESCUE_NOT_NULL_DRIFT_ALLOWLIST.contains(&key) {
+            false
+        } else {
+            info.notnull
+        },
+        dflt_value: if RESCUE_DEFAULT_DRIFT_ALLOWLIST.contains(&key) {
+            None
+        } else {
+            info.dflt_value.clone()
+        },
+    }
 }
 
 /// main スキーマの構造スナップショット。FTS5 の shadow テーブル
@@ -253,15 +279,13 @@ fn assert_migrate_completes_on_seeded_db(schema: &str, label: &str) {
              column without an add_column_if_missing rescue)"
         );
         for (col, exp_info) in exp_cols {
-            if RESCUE_DRIFT_ALLOWLIST.contains(&(table.as_str(), col.as_str())) {
-                continue;
-            }
             assert_eq!(
-                &act_cols[col], exp_info,
+                normalized_rescue_column_info(table, col, &act_cols[col]),
+                normalized_rescue_column_info(table, col, exp_info),
                 "[{label}] column '{table}.{col}' after migrate on seeded db differs from \
                  from-scratch migrate (the rescue path produced a different definition; \
-                 if the divergence is intentional backwards-compat, add it to \
-                 RESCUE_DRIFT_ALLOWLIST with a reason)"
+                 if the divergence is intentional backwards-compat, allowlist only the \
+                 differing attribute with a reason)"
             );
         }
     }
@@ -359,4 +383,41 @@ fn ja_seed_columns_match_migrate_defaults() {
 #[test]
 fn en_seed_columns_match_migrate_defaults() {
     assert_no_column_drift(SEED_SCHEMA_EN, "en");
+}
+
+#[test]
+fn rescue_default_allowlist_still_compares_type_and_not_null() {
+    let expected = ColumnInfo {
+        decl_type: "TEXT".to_string(),
+        notnull: true,
+        dflt_value: Some("datetime('now')".to_string()),
+    };
+    let default_only_drift = ColumnInfo {
+        decl_type: "TEXT".to_string(),
+        notnull: true,
+        dflt_value: Some("''".to_string()),
+    };
+    assert_eq!(
+        normalized_rescue_column_info("codex_detail_values", "created_at", &default_only_drift,),
+        normalized_rescue_column_info("codex_detail_values", "created_at", &expected),
+    );
+
+    let type_drift = ColumnInfo {
+        decl_type: "INTEGER".to_string(),
+        ..default_only_drift
+    };
+    assert_ne!(
+        normalized_rescue_column_info("codex_detail_values", "created_at", &type_drift),
+        normalized_rescue_column_info("codex_detail_values", "created_at", &expected),
+    );
+
+    let not_null_drift = ColumnInfo {
+        decl_type: "TEXT".to_string(),
+        notnull: false,
+        dflt_value: Some("''".to_string()),
+    };
+    assert_ne!(
+        normalized_rescue_column_info("codex_detail_values", "created_at", &not_null_drift,),
+        normalized_rescue_column_info("codex_detail_values", "created_at", &expected),
+    );
 }

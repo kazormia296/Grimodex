@@ -20,6 +20,7 @@ function sceneSource(
   return {
     kind: "scene-body",
     refId: "s1",
+    baseVersion: 0,
     refLabel: "シーン1",
     text,
     isRubyByOffset,
@@ -132,6 +133,7 @@ describe("detectRenameOccurrences", () => {
       {
         kind: "codex-summary",
         refId: "e2",
+        baseVersion: 0,
         refLabel: "別キャラ",
         text: "アキラの弟。",
       },

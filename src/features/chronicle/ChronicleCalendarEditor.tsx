@@ -17,6 +17,7 @@ import {
   type TimeZoneDef,
 } from "./chronicleTime";
 import { REFORM_PRESETS } from "./chronicleReform";
+import { ProjectCalendarVersionConflictError } from "./calendarOcc";
 
 const GREGORIAN_MONTH_NAMES: Record<"ja" | "en", string[]> = {
   ja: [
@@ -130,8 +131,9 @@ function formStateFromCalendar(
 
 export interface ChronicleCalendarEditorProps {
   initial: ChronicleCalendar | null;
-  onSave: (cal: ChronicleCalendar) => void;
+  onSave: (cal: ChronicleCalendar) => void | Promise<void>;
   onClose: () => void;
+  onSavingChange?: (saving: boolean) => void;
 }
 
 /**
@@ -142,6 +144,7 @@ export function ChronicleCalendarEditor({
   initial,
   onSave,
   onClose,
+  onSavingChange,
 }: ChronicleCalendarEditorProps) {
   const { t, i18n } = useTranslation();
   const lang: "ja" | "en" = i18n.language?.startsWith("en") ? "en" : "ja";
@@ -167,6 +170,8 @@ export function ChronicleCalendarEditor({
     init.timezone,
   );
   const [lunarTzMinutes, setLunarTzMinutes] = useState(init.lunarTzMinutes);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<Error | null>(null);
 
   // 全フィールドをグレゴリオ暦の既定値へ戻す（リセット）。
   const resetToDefault = () => {
@@ -229,7 +234,7 @@ export function ChronicleCalendarEditor({
   const removeMonth = (i: number) =>
     setMonths((m) => m.filter((_, idx) => idx !== i));
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const cleaned = seasons
       .filter((b) => b.name.trim() !== "")
       .map((b) => ({
@@ -283,8 +288,18 @@ export function ChronicleCalendarEditor({
       timezone: timezone && timezone.label.trim() !== "" ? timezone : undefined,
       lunarTzMinutes,
     };
-    onSave({ ...cal, daysPerYear: calendarDaysPerYear(cal) });
-    onClose();
+    setSaving(true);
+    onSavingChange?.(true);
+    setSaveError(null);
+    try {
+      await onSave({ ...cal, daysPerYear: calendarDaysPerYear(cal) });
+      onSavingChange?.(false);
+      onClose();
+    } catch (error) {
+      setSaveError(error instanceof Error ? error : new Error(String(error)));
+      setSaving(false);
+      onSavingChange?.(false);
+    }
   };
 
   return (
@@ -311,7 +326,8 @@ export function ChronicleCalendarEditor({
         <button
           type="button"
           onClick={onClose}
-          className="rounded p-1 hover:bg-accent"
+          disabled={saving}
+          className="rounded p-1 hover:bg-accent disabled:opacity-50"
           aria-label={t("chronicle.close", "閉じる")}
         >
           <X className="size-3.5" />
@@ -722,18 +738,38 @@ export function ChronicleCalendarEditor({
         {t("chronicle.lunarJapan", "節気を日本(UTC+9)で判定")}
       </label>
 
+      {saveError && (
+        <div
+          role="alert"
+          data-testid="calendar-save-error"
+          className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs text-amber-700 dark:text-amber-300"
+        >
+          {saveError instanceof ProjectCalendarVersionConflictError
+            ? t(
+                "chronicle.calendarVersionConflict",
+                "別の変更が先に保存されました。入力内容は保持しています。内容を確認して、もう一度保存してください。",
+              )
+            : t(
+                "chronicle.calendarSaveFailed",
+                "暦を保存できませんでした。入力内容は保持しています。もう一度お試しください。",
+              )}
+        </div>
+      )}
+
       <div className="flex justify-end gap-2">
         <button
           type="button"
           onClick={onClose}
-          className="rounded px-2 py-1 text-xs hover:bg-accent"
+          disabled={saving}
+          className="rounded px-2 py-1 text-xs hover:bg-accent disabled:opacity-50"
         >
           {t("chronicle.cancel", "キャンセル")}
         </button>
         <button
           type="button"
-          onClick={handleSave}
-          className="rounded bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-90"
+          onClick={() => void handleSave()}
+          disabled={saving}
+          className="rounded bg-primary px-2 py-1 text-xs text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
           {t("chronicle.save", "保存")}
         </button>

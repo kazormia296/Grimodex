@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": 3,
+  "gateId": "gate-b2",
+  "frozenAt": "2026-08-12T06:18:07.441Z",
+  "candidate": {
+    "commitSha": "ebcd2afe87caefd8d94aace9ebaa105d991a43f1",
+    "treeSha": "59d0cec34a5eba995d75439c765e0fc32532f510",
+    "baseMasterSha": "f2c6293ba499ffa10322ad0bef4fe170b3ea280c",
+    "schemaVersion": 16,
+    "writerRegistryDigest": "sha256:871fd854776e67c86e78d056c06f198166afc263a5d0ae63fb98a22c0071c4b5",
+    "aiPathRegistryDigest": "sha256:117548ba25c5dd322e2ac6d6fd1506e5b44b39e7279c65f3e4f9da76cd46d478",
+    "qualityManifestDigest": "sha256:2437f930a6fedd9db3dc4e625408bdb351954b9319eeaef93ae960a18798ffa2",
+    "narrativeEvalManifestDigest": "sha256:ffb66b17712dddf947b716ddfa8af7177d461feb4835068f005b4e3629bfefec",
+    "adrChecklistDigest": "sha256:bfa099c3db346408b057b62fa1faa8440e6a7ee23f50a62b11ac378af2828740",
+    "classificationDigest": "sha256:448efce03469ca66c8ee57500298b7cde742871ed5eed1c55d9410ca212f4188",
+    "certificationManifestDigest": "sha256:692bafb9e0e1973a76c8e0838ebb6873fd36aef577103fe8140b5e3f8d88256f",
+    "certifyRunnerDigest": "sha256:6d12cd83ddbec00ea217748d84f8c83528535ff24c880c24f213a643a5ce700e",
+    "certifyBindingsDigest": "sha256:c99c22d3a92a9d4f24c5edae1238938e359cc026f24c278295b22f1c183ce199",
+    "adrValidatorDigest": "sha256:9e1ce0779c349499f9f4b85ff69f8831a815fca70f2db81a633efe73f535da4a",
+    "reportSchemaDigest": "sha256:b0191981360486214b79001ca592ad121657deb99d5a9b16d5fb676a6ad49c69",
+    "decisionSchemaDigest": "sha256:e9168bfbd12359394aca46e4062b5df729bdeb356f99938e5e9e9ba17fe96d38",
+    "journeySchemaDigest": "sha256:bdfdbc5ea76ee0c4cdb5b8c19c8ab501884536c0cba7b91b133e1f4ed8294407",
+    "chronicleAdapterDigest": "sha256:f302e6c648bb3499b20bdab30b5df0be10f394432689401def67ccf09b76b80a",
+    "chronicleScorerDigest": "sha256:92a1823142725050ec3d5a998618a0cd620f6eaf4299ab8df2b354d522f97bbd",
+    "webConsentJourneyDigest": "sha256:a3deea3f2b8db3233196b4e1929f6ff1bfcf9ed69b140750600cd5e79e09e5b1"
+  },
+  "freezeRules": {
+    "invalidateOn": [
+      "production code",
+      "prompt",
+      "response schema",
+      "parser",
+      "Human Gold",
+      "writer registry",
+      "runtime policy",
+      "migration",
+      "browser mock",
+      "test harness semantics"
+    ],
+    "docsTypoOnlyRerunHeavy": false,
+    "evaluationCodeChangeRequiresHeavyRerun": true
+  },
+  "status": "superseded",
+  "supersededBy": "9e2dc139c62c9fb666b24ec68bdd9e0acffeed6a",
+  "supersededAt": "2026-08-12T06:40:20.891Z"
+}

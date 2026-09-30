@@ -12,14 +12,27 @@ import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteAuthorityOptions,
+} from "@/features/native-writes/writeContext";
 import { applyUndoJournal } from "./undoJournal";
 import type { ForeshadowRow } from "@/features/foreshadow/types";
 
 export type AgentForeshadowLoadBearing = "critical" | "supporting" | "optional";
 
+export type AgentAuthorityWriteOptions = Pick<
+  CanonicalWriteAuthorityOptions,
+  | "agentAuthorityCapability"
+  | "chatMessageId"
+  | "toolCallId"
+  | "executionId"
+  | "mainOwnedProvenanceId"
+>;
+
 export interface AgentForeshadowCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
-  requestId?: string;
+  requestId: string;
   /** Reuse this domain ID when retrying the same logical create. */
   foreshadowId?: string;
   title: string;
@@ -31,7 +44,11 @@ export interface AgentForeshadowCreateInput {
 }
 
 export interface AgentForeshadowUpdateInput {
+  /** Stable identity of the logical update; retries must reuse this value. */
+  requestId: string;
   foreshadowId: string;
+  /** Version returned by the read that informed this update. */
+  baseVersion: number;
   title?: string;
   intent?: string;
   notes?: string;
@@ -97,17 +114,39 @@ function pushUndo(label: string, projectId: string, result: AgentWriteResult) {
 
 export async function agentCreateForeshadow(
   input: AgentForeshadowCreateInput,
+  authority?: AgentAuthorityWriteOptions,
 ): Promise<ForeshadowRow> {
   if (blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
   }
   assertLoadBearing(input.loadBearing);
+  if (input.requestId.trim().length === 0) {
+    throw new Error("requestId must be a non-empty string");
+  }
 
   const projectId = getCurrentProjectId();
   const foreshadowId = input.foreshadowId ?? crypto.randomUUID();
+  const writeContext = createCanonicalWriteContext(
+    "ai-apply",
+    undefined,
+    input.requestId,
+    {
+      authorityRoute: "interactive-agent-command",
+      ...authority,
+      provenance: {
+        requestId: input.requestId,
+        traceId: authority?.chatMessageId ?? input.requestId,
+        ...(authority?.chatMessageId
+          ? { chatMessageId: authority.chatMessageId }
+          : {}),
+        ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
+      },
+    },
+  );
   const result = await invoke<AgentWriteResult>("agent_foreshadow_create", {
     payload: {
-      requestId: input.requestId ?? null,
+      ...writeContext,
+      requestId: input.requestId,
       foreshadowId,
       projectId,
       sessionId: getRecorderSessionId(),
@@ -126,11 +165,18 @@ export async function agentCreateForeshadow(
 
 export async function agentUpdateForeshadow(
   input: AgentForeshadowUpdateInput,
+  authority?: AgentAuthorityWriteOptions,
 ): Promise<ForeshadowRow> {
   if (blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
   }
   assertLoadBearing(input.loadBearing);
+  if (!Number.isSafeInteger(input.baseVersion) || input.baseVersion < 0) {
+    throw new Error("baseVersion must be a non-negative integer");
+  }
+  if (input.requestId.trim().length === 0) {
+    throw new Error("requestId must be a non-empty string");
+  }
   const hasPatch =
     input.title !== undefined ||
     input.intent !== undefined ||
@@ -144,11 +190,31 @@ export async function agentUpdateForeshadow(
   }
 
   const projectId = getCurrentProjectId();
+  const writeContext = createCanonicalWriteContext(
+    "ai-apply",
+    undefined,
+    input.requestId,
+    {
+      authorityRoute: "interactive-agent-command",
+      ...authority,
+      provenance: {
+        requestId: input.requestId,
+        traceId: authority?.chatMessageId ?? input.requestId,
+        ...(authority?.chatMessageId
+          ? { chatMessageId: authority.chatMessageId }
+          : {}),
+        ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
+      },
+    },
+  );
   const result = await invoke<AgentWriteResult>("agent_foreshadow_update", {
     payload: {
+      ...writeContext,
+      requestId: input.requestId,
       projectId,
       sessionId: getRecorderSessionId(),
       foreshadowId: input.foreshadowId,
+      baseVersion: input.baseVersion,
       title: input.title ?? null,
       intent: input.intent ?? null,
       notes: input.notes ?? null,

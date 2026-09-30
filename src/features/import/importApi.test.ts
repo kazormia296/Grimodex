@@ -75,6 +75,7 @@ import {
   importChapters,
   importChatSessionsBatch,
   importMemoNote,
+  fieldValueToProseMirror,
 } from "./importApi";
 import type {
   ParsedCodexEntry,
@@ -166,6 +167,16 @@ describe("importCodexEntries", () => {
     expect(result.errors).toHaveLength(0);
     expect(mockCreateCodexEntry).toHaveBeenCalledTimes(2);
     expect(mockUpdateCodexEntry).toHaveBeenCalledTimes(2);
+    expect(mockEnsureBuiltinTypes).toHaveBeenCalledWith(
+      "default-project",
+      expect.anything(),
+      { origin: "import" },
+    );
+    expect(mockCreateCodexEntry.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
+    );
   });
 
   it("サムネイルがある場合は resizeAndConvertToWebP を呼ぶ", async () => {
@@ -179,6 +190,9 @@ describe("importCodexEntries", () => {
       "default-project",
       entry.id,
       expect.objectContaining({ icon: "data:image/webp;base64,abc" }),
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
     );
   });
 
@@ -195,6 +209,9 @@ describe("importCodexEntries", () => {
       "default-project",
       entry.id,
       expect.objectContaining({ icon: null }),
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
     );
   });
 
@@ -227,6 +244,9 @@ describe("importCodexEntries", () => {
     expect(mockDeleteCodexEntry).toHaveBeenCalledWith(
       "default-project",
       "rollback-id",
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
     );
   });
 
@@ -314,9 +334,15 @@ describe("importCodexEntries", () => {
         name: "Main Character",
         projectId: "default-project",
       }),
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
     );
     // setEntryTags でエントリに紐付け
-    expect(mockSetEntryTags).toHaveBeenCalledWith(entry.id, ["tag-abc"]);
+    expect(mockSetEntryTags).toHaveBeenCalledWith(entry.id, ["tag-abc"], {
+      projectId: "default-project",
+      writeContext: expect.objectContaining({ origin: "import" }),
+    });
   });
 
   it("既存タグは createCodexTag せず setEntryTags だけ呼ぶ", async () => {
@@ -337,9 +363,14 @@ describe("importCodexEntries", () => {
     await importCodexEntries([entry]);
 
     expect(mockCreateCodexTag).not.toHaveBeenCalled();
-    expect(mockSetEntryTags).toHaveBeenCalledWith(entry.id, [
-      "existing-tag-id",
-    ]);
+    expect(mockSetEntryTags).toHaveBeenCalledWith(
+      entry.id,
+      ["existing-tag-id"],
+      {
+        projectId: "default-project",
+        writeContext: expect.objectContaining({ origin: "import" }),
+      },
+    );
   });
 
   it("fields があれば詳細定義を作成して値を upsert する", async () => {
@@ -365,11 +396,17 @@ describe("importCodexEntries", () => {
         fieldType: "text",
         includeInContext: 1,
       }),
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
     );
     expect(mockUpsertValue).toHaveBeenCalledWith(
       entry.id,
       "def-height",
       expect.stringContaining("170cm"),
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
     );
   });
 
@@ -396,6 +433,9 @@ describe("importCodexEntries", () => {
       entry.id,
       "existing-def-id",
       expect.stringContaining("170cm"),
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
     );
   });
 });
@@ -436,13 +476,18 @@ describe("importSnippets", () => {
     const snippet = makeSnippet();
     await importSnippets([snippet]);
 
-    expect(mockCreateSnippet).toHaveBeenCalledWith({
-      id: snippet.id,
-      projectId: "default-project",
-      title: snippet.title,
-      content: snippet.content,
-      contentSource: "human",
-    });
+    expect(mockCreateSnippet).toHaveBeenCalledWith(
+      {
+        id: snippet.id,
+        projectId: "default-project",
+        title: snippet.title,
+        content: snippet.content,
+        contentSource: "human",
+      },
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
+    );
   });
 
   it("進捗コールバックを正しい順序で呼ぶ", async () => {
@@ -494,24 +539,46 @@ describe("importChapters", () => {
     };
   }
 
-  it("章とシーンの両方を作成し、本文がある場合は saveSceneContent を呼ぶ", async () => {
+  it("章とシーンを作成し、本文を createNode の同一 Native mutation に渡す", async () => {
     const result = await importChapters([makeChapter()]);
 
     expect(result.imported).toBe(2); // chapter + scene
     expect(result.errors).toHaveLength(0);
     expect(mockCreateNode).toHaveBeenCalledTimes(2);
-    expect(mockSaveSceneContent).toHaveBeenCalledTimes(1);
-    expect(mockSaveSceneContent).toHaveBeenCalledWith(
-      "scene-1",
-      expect.objectContaining({ charCount: "朝が来た。".length }),
+    for (const call of mockCreateNode.mock.calls) {
+      expect(call[1]).toEqual(
+        expect.objectContaining({
+          writeContext: expect.objectContaining({ origin: "import" }),
+        }),
+      );
+    }
+    const sceneCall = mockCreateNode.mock.calls.find(
+      ([data]) => data.nodeType === "scene",
     );
+    expect(sceneCall?.[0]).toMatchObject({
+      id: "scene-1",
+      content: fieldValueToProseMirror("朝が来た。"),
+    });
+    expect(sceneCall?.[1]).toEqual(
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
+    );
+    expect(mockSaveSceneContent).not.toHaveBeenCalled();
   });
 
-  it("本文が空のシーンでは saveSceneContent を呼ばない", async () => {
+  it("本文が空のシーンも空 body を createNode に同梱する", async () => {
     const chapter = makeChapter({
       scenes: [{ id: "scene-1", title: "メモ", body: "" }],
     });
     await importChapters([chapter]);
+    const sceneCall = mockCreateNode.mock.calls.find(
+      ([data]) => data.nodeType === "scene",
+    );
+    expect(sceneCall?.[0]).toMatchObject({
+      id: "scene-1",
+      content: "{}",
+    });
     expect(mockSaveSceneContent).not.toHaveBeenCalled();
   });
 
@@ -563,9 +630,13 @@ describe("importMemoNote", () => {
     expect(doc.content[1]!.content?.[0]?.text).toBe("脚注本文");
 
     // AI 文脈への自動注入を防ぐ contract — 退避メモの存在意義そのもの
-    expect(mockUpdateNode).toHaveBeenCalledWith("memo-1", {
-      contextMode: "suppress",
-    });
+    expect(mockUpdateNode).toHaveBeenCalledWith(
+      "memo-1",
+      { contextMode: "suppress" },
+      expect.objectContaining({
+        writeContext: expect.objectContaining({ origin: "import" }),
+      }),
+    );
   });
 
   it("既存ルートノードの末尾より後ろの sortOrder で追加する", async () => {

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "gateId": "gate-b2",
+  "description": "Browser と Electron が共有する Writer trace の期待キー契約。値は型ラベルであり実行証跡ではない。",
+  "runtimes": {
+    "browser": {
+      "expectedTrace": {
+        "proposalDraft": {
+          "draftId": "string",
+          "proposalKey": "string",
+          "kind": "string",
+          "sourceBasis": "object",
+          "readSetDigest": "object",
+          "evidenceSet": "array",
+          "readSet": "array",
+          "propagation": "needs-reconciliation",
+          "payload": "object"
+        },
+        "writerInvocation": {
+          "runtime": "browser",
+          "preparedPlanId": "string",
+          "decisionId": "string",
+          "actorContext": "object",
+          "sourceBasisPrecondition": "object-or-null"
+        },
+        "applicationResult": {
+          "applicationId": "string",
+          "commitId": "string",
+          "status": "string",
+          "aggregateVersion": "number"
+        }
+      }
+    },
+    "electron": {
+      "expectedTrace": {
+        "proposalDraft": {
+          "draftId": "string",
+          "proposalKey": "string",
+          "kind": "string",
+          "sourceBasis": "object",
+          "readSetDigest": "object",
+          "evidenceSet": "array",
+          "readSet": "array",
+          "propagation": "needs-reconciliation",
+          "payload": "object"
+        },
+        "writerInvocation": {
+          "runtime": "electron",
+          "preparedPlanId": "string",
+          "decisionId": "string",
+          "actorContext": "object",
+          "sourceBasisPrecondition": "object-or-null"
+        },
+        "applicationResult": {
+          "applicationId": "string",
+          "commitId": "string",
+          "status": "string",
+          "aggregateVersion": "number"
+        }
+      }
+    }
+  }
+}

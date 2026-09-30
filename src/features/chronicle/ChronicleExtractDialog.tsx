@@ -1,3 +1,4 @@
+import { isChronicleReanalysisRequired } from "./extraction/savedPlanActualityGate";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -26,11 +27,21 @@ import { loadSceneContents } from "@/features/tree/api";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { extractPlainText } from "@/features/codex/prosemirrorTextExtractor";
 import { listEvents } from "./api";
+import { buildLiveChronicleExistingEventCatalog } from "./extraction/existingEventCatalog";
 import {
-  proposeEvents,
-  importExtractedEvents,
-  type EventProposal,
+  discardChronicleTaskResumeCandidate,
+  discoverChronicleTaskResumeCandidates,
+  startChronicleExtraction,
+  resumeChronicleExtraction,
+  applyChronicleExtractionReview,
+  abandonChroniclePartialReview,
+  restoreChronicleExtractionReview,
 } from "./extractEventsApi";
+import type { ChronicleTaskResumeCandidate } from "@/application/narrative-extraction/nativeApi";
+import { ChronicleExtractionProgress } from "./ChronicleExtractionProgress";
+import { ChronicleProposalReview } from "./ChronicleProposalReview";
+import { useChronicleExtractionStore } from "./chronicleExtractionStore";
+import { getChronicleApplyReadiness } from "./chronicleExtractionStore";
 import {
   chronicleScopeKey,
   type ChronicleScope,
@@ -43,11 +54,6 @@ export interface ChronicleExtractionSession {
   projectId: string;
   generation: number;
   authority: MutationAuthority;
-}
-
-interface ChronicleExtractionResult {
-  session: ChronicleExtractionSession;
-  candidates: EventProposal[];
 }
 
 export async function loadChronicleExtractionScenes(
@@ -66,7 +72,8 @@ export async function loadChronicleExtractionScenes(
 
 /**
  * 本文（章/フォルダ）から LLM で作中の出来事候補を抽出し、確認のうえ一括取り込みする
- * ウィザード。ライブ出力の品質検証は実機 QA（キー必須）に委ねる。
+ * ウィザード。Run-based Narrative Extraction が唯一の製品経路
+ *（`extractEventsApi.USE_NARRATIVE_EXTRACTION_RUN === true`）。
  */
 export function ChronicleExtractDialog({
   open,
@@ -83,21 +90,37 @@ export function ChronicleExtractDialog({
 }) {
   const { t } = useTranslation();
   const nodes = useTreeStore((s) => s.nodes);
+  const runProjection = useChronicleExtractionStore((s) => s.projection);
+  const recovery = useChronicleExtractionStore((s) => s.recovery);
+  const reviewMutationInFlight = useChronicleExtractionStore(
+    (s) => s.reviewMutationCount > 0,
+  );
+  const applyMutationInFlight = useChronicleExtractionStore(
+    (s) => s.applyMutationInFlight,
+  );
+  const tryBeginApplyMutation = useChronicleExtractionStore(
+    (s) => s.tryBeginApplyMutation,
+  );
+  const endApplyMutation = useChronicleExtractionStore(
+    (s) => s.endApplyMutation,
+  );
+  const clearProjection = useChronicleExtractionStore((s) => s.clearProjection);
+  const clearIfScopeMismatch = useChronicleExtractionStore(
+    (s) => s.clearIfScopeMismatch,
+  );
 
   const folders = useMemo(
     () => nodes.filter((n) => n.nodeType === "folder"),
-    [nodes],
-  );
-  const titleById = useMemo(
-    () => new Map(nodes.map((n) => [n.id, n.title] as const)),
     [nodes],
   );
 
   const [folderId, setFolderId] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [extractionResult, setExtractionResult] =
-    useState<ChronicleExtractionResult | null>(null);
+  const [discardingRunId, setDiscardingRunId] = useState<string | null>(null);
+  const [abandoningPartialRunId, setAbandoningPartialRunId] = useState<
+    string | null
+  >(null);
   const currentScopeKey = scope ? chronicleScopeKey(scope) : null;
   const generationRef = useRef(0);
   const dialogScopeKeyRef = useRef<ChronicleScopeKey | null>(null);
@@ -108,11 +131,14 @@ export function ChronicleExtractDialog({
   isActiveRef.current = isActive;
   currentScopeKeyRef.current = currentScopeKey;
 
-  const candidates =
+  const scopedRunProjection =
     isActive &&
-    currentScopeKey &&
-    extractionResult?.session.scopeKey === currentScopeKey
-      ? extractionResult.candidates
+    scope &&
+    runProjection &&
+    runProjection.projectId === scope.projectId &&
+    runProjection.workspacePath === scope.workspacePath &&
+    runProjection.openRevision === scope.openRevision
+      ? runProjection
       : null;
 
   const isSessionCurrent = (session: ChronicleExtractionSession): boolean => {
@@ -131,58 +157,142 @@ export function ChronicleExtractDialog({
     );
   };
 
-  // ダイアログは親側で常時マウントされるため、開く（再オープン含む）たびに
-  // 選択フォルダと抽出候補を初期化する。これをしないと前回の候補が残り、
-  // 再度「取り込む」を押すと同じ出来事が UUID 違いで二重生成されてしまう。
+  // ダイアログは親側で常時マウントされる。閉じても同 scope の Run 投影は保持し、
+  // 再オープン時に Review を復元する。scope 不一致時のみ破棄する。
   useEffect(() => {
     if (!open) {
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
       setFolderId("");
-      setExtractionResult(null);
       setAnalyzing(false);
       setImporting(false);
+      setDiscardingRunId(null);
+      setAbandoningPartialRunId(null);
       return;
     }
 
-    if (!isActive || !currentScopeKey) {
+    if (!isActive || !currentScopeKey || !scope) {
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
-      setExtractionResult(null);
+      clearProjection();
       setAnalyzing(false);
       setImporting(false);
+      setDiscardingRunId(null);
+      setAbandoningPartialRunId(null);
       onOpenChange(false);
       return;
     }
+
+    clearIfScopeMismatch({
+      projectId: scope.projectId,
+      workspacePath: scope.workspacePath,
+      openRevision: scope.openRevision,
+    });
 
     if (dialogScopeKeyRef.current === null) {
       dialogScopeKeyRef.current = currentScopeKey;
       generationRef.current += 1;
       setFolderId("");
-      setExtractionResult(null);
       setAnalyzing(false);
       setImporting(false);
+      setDiscardingRunId(null);
+      setAbandoningPartialRunId(null);
+      const current = useChronicleExtractionStore.getState().projection;
+      const matched =
+        current &&
+        current.projectId === scope.projectId &&
+        current.workspacePath === scope.workspacePath &&
+        current.openRevision === scope.openRevision;
+      if (!matched) {
+        const restoreGeneration = generationRef.current;
+        void restoreChronicleExtractionReview({
+          projectId: scope.projectId,
+          workspacePath: scope.workspacePath,
+          openRevision: scope.openRevision,
+        }).catch((error: unknown) => {
+          if (
+            isChronicleReanalysisRequired(error) &&
+            generationRef.current === restoreGeneration &&
+            openRef.current &&
+            isActiveRef.current &&
+            currentScopeKeyRef.current === currentScopeKey
+          ) {
+            toast.error(
+              t(
+                "chronicle.extract.reanalysisRequired",
+                "保存済みの抽出候補を復元できません。本文から再解析してください。",
+              ),
+            );
+          }
+          // Other restore failures keep the existing empty-review behavior.
+        });
+      }
+      void discoverChronicleTaskResumeCandidates({
+        projectId: scope.projectId,
+        workspacePath: scope.workspacePath,
+        openRevision: scope.openRevision,
+      }).catch(() => {
+        // The API retains an explicit blocked recovery state. Never reinterpret
+        // a failed durable-ledger read as permission to create a fresh Run.
+      });
       return;
     }
 
     if (dialogScopeKeyRef.current !== currentScopeKey) {
       dialogScopeKeyRef.current = null;
       generationRef.current += 1;
-      setExtractionResult(null);
+      clearProjection();
       setAnalyzing(false);
       setImporting(false);
+      setDiscardingRunId(null);
+      setAbandoningPartialRunId(null);
       onOpenChange(false);
     }
-  }, [currentScopeKey, isActive, onOpenChange, open]);
+  }, [
+    clearIfScopeMismatch,
+    clearProjection,
+    currentScopeKey,
+    isActive,
+    onOpenChange,
+    open,
+    scope,
+    t,
+  ]);
 
   const handleSelectFolder = (id: string) => {
-    if (analyzing || importing) return;
+    if (
+      analyzing ||
+      importing ||
+      applyMutationInFlight ||
+      reviewMutationInFlight ||
+      abandoningPartialRunId !== null ||
+      discardingRunId !== null ||
+      recovery.status === "resuming"
+    ) {
+      return;
+    }
     setFolderId(id);
-    setExtractionResult(null);
+    clearProjection();
   };
 
   const handleAnalyze = async () => {
-    if (!folderId || analyzing || importing || !scope || !currentScopeKey) {
+    const unresolvedRecovery =
+      recovery.status === "discovering" ||
+      recovery.status === "resuming" ||
+      recovery.status === "blocked" ||
+      recovery.candidates.length > 0 ||
+      discardingRunId !== null;
+    if (
+      !folderId ||
+      analyzing ||
+      importing ||
+      applyMutationInFlight ||
+      reviewMutationInFlight ||
+      abandoningPartialRunId !== null ||
+      unresolvedRecovery ||
+      !scope ||
+      !currentScopeKey
+    ) {
       return;
     }
     const generation = generationRef.current + 1;
@@ -197,7 +307,7 @@ export function ChronicleExtractDialog({
     if (!isSessionCurrent(session)) return;
 
     setAnalyzing(true);
-    setExtractionResult(null);
+    clearProjection();
     try {
       const activeId = useTreeStore.getState().activeSceneId;
       if (activeId) await saveScene(activeId);
@@ -214,12 +324,20 @@ export function ChronicleExtractDialog({
       if (!isSessionCurrent(session)) return;
       const existing = await listEvents(session.projectId);
       if (!isSessionCurrent(session)) return;
-      const result = await proposeEvents({
-        scenes,
-        existingTitles: existing.map((e) => e.title).filter(Boolean),
+
+      await startChronicleExtraction({
+        projectId: session.projectId,
+        folderId,
+        sceneIds: scenes.map((scene) => scene.sceneId),
+        authority: session.authority,
+        workspacePath: session.scope.workspacePath,
+        openRevision: session.scope.openRevision,
+        existingEvents: buildLiveChronicleExistingEventCatalog(existing),
       });
-      if (!isSessionCurrent(session)) return;
-      setExtractionResult({ session, candidates: result });
+      if (!isSessionCurrent(session)) {
+        clearProjection();
+        return;
+      }
     } catch {
       if (isSessionCurrent(session)) {
         toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
@@ -231,29 +349,154 @@ export function ChronicleExtractDialog({
     }
   };
 
-  const handleImport = async () => {
+  const handleResume = async (candidate: ChronicleTaskResumeCandidate) => {
     if (
-      !extractionResult ||
-      !candidates ||
-      candidates.length === 0 ||
-      importing
+      analyzing ||
+      importing ||
+      recovery.status !== "ready" ||
+      candidate.availability !== "ready" ||
+      discardingRunId !== null ||
+      !scope ||
+      !currentScopeKey
     ) {
       return;
     }
-    const { session } = extractionResult;
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    const session: ChronicleExtractionSession = {
+      scope,
+      scopeKey: currentScopeKey,
+      projectId: scope.projectId,
+      generation,
+      authority: captureMutationAuthority(scope.projectId, getCurrentProjectId),
+    };
+    if (!isSessionCurrent(session)) return;
+
+    clearProjection();
+    try {
+      await resumeChronicleExtraction({
+        candidate,
+        authority: session.authority,
+        workspacePath: session.scope.workspacePath,
+        openRevision: session.scope.openRevision,
+      });
+      if (!isSessionCurrent(session)) {
+        clearProjection();
+      }
+    } catch {
+      if (isSessionCurrent(session)) {
+        toast.error(
+          t(
+            "chronicle.extract.resumeFailed",
+            "中断した抽出を再開できませんでした",
+          ),
+        );
+      }
+    }
+  };
+
+  const handleDiscard = async (candidate: ChronicleTaskResumeCandidate) => {
+    if (
+      analyzing ||
+      importing ||
+      discardingRunId !== null ||
+      (recovery.status !== "ready" && recovery.status !== "blocked") ||
+      candidate.availability !== "blocked" ||
+      !scope ||
+      !currentScopeKey
+    ) {
+      return;
+    }
+    const generation = generationRef.current + 1;
+    generationRef.current = generation;
+    const session: ChronicleExtractionSession = {
+      scope,
+      scopeKey: currentScopeKey,
+      projectId: scope.projectId,
+      generation,
+      authority: captureMutationAuthority(scope.projectId, getCurrentProjectId),
+    };
+    if (!isSessionCurrent(session)) return;
+
+    setDiscardingRunId(candidate.runId);
+    try {
+      await discardChronicleTaskResumeCandidate({
+        candidate,
+        authority: session.authority,
+        workspacePath: session.scope.workspacePath,
+        openRevision: session.scope.openRevision,
+      });
+      if (!isSessionCurrent(session)) {
+        clearProjection();
+        onOpenChange(false);
+        return;
+      }
+      setFolderId(candidate.scopeJson.folderId);
+      toast.success(
+        t(
+          "chronicle.extract.discardedInterruptedRun",
+          "中断した抽出を破棄しました。新しい解析を開始できます。",
+        ),
+      );
+    } catch {
+      if (isSessionCurrent(session)) {
+        toast.error(
+          t(
+            "chronicle.extract.discardFailed",
+            "中断した抽出を破棄できませんでした",
+          ),
+        );
+      }
+    } finally {
+      if (generationRef.current === session.generation) {
+        setDiscardingRunId(null);
+      }
+    }
+  };
+
+  const handleImport = async () => {
+    if (
+      importing ||
+      reviewMutationInFlight ||
+      useChronicleExtractionStore.getState().reviewMutationCount > 0 ||
+      !scopedRunProjection ||
+      !scope
+    ) {
+      return;
+    }
+
+    const readiness = getChronicleApplyReadiness(scopedRunProjection.proposals);
+    if (!readiness.ready) return;
+
+    const generation = generationRef.current;
+    const authority = captureMutationAuthority(
+      scope.projectId,
+      getCurrentProjectId,
+    );
+    const session: ChronicleExtractionSession = {
+      scope,
+      scopeKey: currentScopeKey ?? chronicleScopeKey(scope),
+      projectId: scope.projectId,
+      generation,
+      authority,
+    };
     if (!isSessionCurrent(session)) {
-      setExtractionResult(null);
+      clearProjection();
       onOpenChange(false);
       return;
     }
+    if (!tryBeginApplyMutation()) return;
 
     setImporting(true);
     try {
       const outcome = await runAuthoritativeMutation(session.authority, () =>
-        importExtractedEvents(session.projectId, candidates),
+        applyChronicleExtractionReview({
+          projectId: session.projectId,
+          proposals: scopedRunProjection.proposals,
+        }),
       );
       if (outcome.status === "stale" || !isSessionCurrent(session)) {
-        setExtractionResult(null);
+        clearProjection();
         onOpenChange(false);
         return;
       }
@@ -262,35 +505,133 @@ export function ChronicleExtractDialog({
         t(
           "chronicle.extract.imported",
           "{{count}}件のイベントを取り込みました",
-          {
-            count: n,
-          },
+          { count: n },
         ),
       );
-      // 取り込み成功後は候補を即クリアして、再オープン時の二重取り込みを防ぐ。
-      setExtractionResult(null);
+      clearProjection();
       onImported?.();
       onOpenChange(false);
     } catch {
-      // 失敗時はダイアログを閉じず候補も保持し、再試行できる状態を保つ。
       if (isSessionCurrent(session)) {
         toast.error(t("chronicle.extract.failed", "抽出に失敗しました"));
       }
     } finally {
+      endApplyMutation();
       if (generationRef.current === session.generation) {
         setImporting(false);
       }
     }
   };
 
+  const handleAbandonPartialReview = async () => {
+    const projection = scopedRunProjection;
+    if (
+      !projection ||
+      !scope ||
+      importing ||
+      analyzing ||
+      applyMutationInFlight ||
+      reviewMutationInFlight ||
+      abandoningPartialRunId !== null ||
+      discardingRunId !== null
+    ) {
+      return;
+    }
+    const readiness = getChronicleApplyReadiness(projection.proposals);
+    if (
+      readiness.errorCode !== "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH" ||
+      !projection.proposals.some((proposal) => proposal.application !== null)
+    ) {
+      return;
+    }
+
+    const generation = generationRef.current;
+    const authority = captureMutationAuthority(
+      scope.projectId,
+      getCurrentProjectId,
+    );
+    const session: ChronicleExtractionSession = {
+      scope,
+      scopeKey: currentScopeKey ?? chronicleScopeKey(scope),
+      projectId: scope.projectId,
+      generation,
+      authority,
+    };
+    if (!isSessionCurrent(session)) return;
+
+    setAbandoningPartialRunId(projection.runId);
+    try {
+      const outcome = await runAuthoritativeMutation(session.authority, () =>
+        abandonChroniclePartialReview({
+          runId: projection.runId,
+          projectId: projection.projectId,
+        }),
+      );
+      if (outcome.status === "stale" || !isSessionCurrent(session)) {
+        onOpenChange(false);
+        return;
+      }
+      setFolderId("");
+      toast.success(
+        t(
+          "chronicle.extract.partialReviewAbandoned",
+          "未適用の提案を破棄しました。新しく解析できます。",
+        ),
+      );
+    } catch {
+      if (isSessionCurrent(session)) {
+        toast.error(
+          t(
+            "chronicle.extract.partialReviewAbandonFailed",
+            "未適用の提案を破棄できませんでした。状態を確認して再試行してください。",
+          ),
+        );
+      }
+    } finally {
+      if (generationRef.current === session.generation) {
+        setAbandoningPartialRunId(null);
+      }
+    }
+  };
+
   const handleDialogOpenChange = (nextOpen: boolean) => {
-    if (!nextOpen && importing) return;
+    if (
+      !nextOpen &&
+      (importing ||
+        applyMutationInFlight ||
+        abandoningPartialRunId !== null ||
+        discardingRunId !== null)
+    ) {
+      return;
+    }
     onOpenChange(nextOpen);
   };
 
+  const applyReadiness = scopedRunProjection
+    ? getChronicleApplyReadiness(scopedRunProjection.proposals)
+    : null;
+  const approvedReady = applyReadiness?.ready ?? false;
+  const hasPriorApplication =
+    scopedRunProjection?.proposals.some(
+      (proposal) => proposal.application !== null,
+    ) ?? false;
+  const recoveryUnresolved =
+    recovery.status === "discovering" ||
+    recovery.status === "resuming" ||
+    recovery.status === "blocked" ||
+    recovery.candidates.length > 0 ||
+    discardingRunId !== null;
+  const resuming = recovery.status === "resuming";
+
   return (
     <Dialog open={open} onOpenChange={handleDialogOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent
+        className={
+          scopedRunProjection
+            ? "flex max-h-[85vh] max-w-3xl flex-col"
+            : "max-w-lg"
+        }
+      >
         <DialogHeader>
           <DialogTitle>
             {t("chronicle.extract.title", "本文からイベントを抽出")}
@@ -305,11 +646,127 @@ export function ChronicleExtractDialog({
             )}
           </p>
 
+          {(recovery.status === "discovering" ||
+            recovery.status === "blocked" ||
+            recovery.candidates.length > 0) && (
+            <div
+              className="flex flex-col gap-2 rounded border border-border bg-muted/30 p-2"
+              data-testid="chronicle-extraction-recovery"
+            >
+              <p className="text-xs font-medium">
+                {recovery.status === "discovering"
+                  ? t(
+                      "chronicle.extract.recoveryDiscovering",
+                      "中断した抽出を確認しています…",
+                    )
+                  : recovery.status === "blocked" &&
+                      recovery.candidates.length === 0
+                    ? t(
+                        "chronicle.extract.recoveryBlocked",
+                        "中断した抽出の状態を確認できません。新しい解析は開始されません。",
+                      )
+                    : t(
+                        "chronicle.extract.recoveryFound",
+                        "前回中断した抽出があります",
+                      )}
+              </p>
+              {recovery.candidates.map((candidate) => (
+                <div
+                  key={candidate.runId}
+                  className="flex items-center justify-between gap-2 rounded bg-background px-2 py-1.5"
+                >
+                  <span
+                    className="min-w-0 text-xs text-muted-foreground"
+                    title={`${candidate.runId} · ${candidate.createdAt}`}
+                  >
+                    <span className="block truncate">
+                      {candidate.scopeJson.folderId} ·{" "}
+                      {candidate.nextTask.taskKind}
+                    </span>
+                    <span className="block truncate font-mono text-[10px]">
+                      {candidate.runId} · {candidate.createdAt}
+                    </span>
+                  </span>
+                  {candidate.availability === "blocked" ? (
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <span className="text-[10px] text-destructive">
+                        {t("chronicle.extract.resumeBlocked", "再開不可")}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleDiscard(candidate)}
+                        aria-label={`${t(
+                          "chronicle.extract.discardInterruptedRun",
+                          "中断Runを破棄",
+                        )} ${candidate.runId}`}
+                        disabled={
+                          (recovery.status !== "ready" &&
+                            recovery.status !== "blocked") ||
+                          discardingRunId !== null ||
+                          analyzing ||
+                          importing
+                        }
+                        className="inline-flex items-center gap-1 rounded border border-destructive/50 px-2 py-1 text-xs font-medium text-destructive hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {discardingRunId === candidate.runId && (
+                          <Loader2
+                            className="h-3 w-3 animate-spin"
+                            aria-hidden
+                          />
+                        )}
+                        {discardingRunId === candidate.runId
+                          ? t("chronicle.extract.discarding", "破棄中")
+                          : t(
+                              "chronicle.extract.discardInterruptedRun",
+                              "中断Runを破棄",
+                            )}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleResume(candidate)}
+                      aria-label={`${
+                        candidate.availability === "ready"
+                          ? t("chronicle.extract.resume", "再開")
+                          : t("chronicle.extract.resumeLeaseHeld", "処理中")
+                      } ${candidate.runId}`}
+                      disabled={
+                        recovery.status !== "ready" ||
+                        candidate.availability !== "ready" ||
+                        discardingRunId !== null ||
+                        analyzing ||
+                        importing
+                      }
+                      className="shrink-0 rounded bg-primary px-2 py-1 text-xs font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {candidate.availability === "ready"
+                        ? t("chronicle.extract.resume", "再開")
+                        : t("chronicle.extract.resumeLeaseHeld", "処理中")}
+                    </button>
+                  )}
+                </div>
+              ))}
+              {recovery.status === "blocked" && recovery.errorCode && (
+                <code className="break-all text-[10px] text-destructive">
+                  {recovery.errorCode}
+                </code>
+              )}
+            </div>
+          )}
+
           <div className="flex items-center gap-2">
             <select
               value={folderId}
               onChange={(e) => handleSelectFolder(e.target.value)}
-              disabled={analyzing || importing}
+              disabled={
+                analyzing ||
+                importing ||
+                applyMutationInFlight ||
+                reviewMutationInFlight ||
+                abandoningPartialRunId !== null ||
+                recoveryUnresolved
+              }
               className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-sm focus:outline-none"
             >
               <option value="">
@@ -324,7 +781,16 @@ export function ChronicleExtractDialog({
             <button
               type="button"
               onClick={handleAnalyze}
-              disabled={!folderId || analyzing || importing || !scope}
+              disabled={
+                !folderId ||
+                analyzing ||
+                importing ||
+                applyMutationInFlight ||
+                reviewMutationInFlight ||
+                abandoningPartialRunId !== null ||
+                recoveryUnresolved ||
+                !scope
+              }
               className="inline-flex shrink-0 items-center gap-1 rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {analyzing ? (
@@ -336,51 +802,69 @@ export function ChronicleExtractDialog({
             </button>
           </div>
 
-          {candidates !== null && (
-            <div className="max-h-72 overflow-y-auto rounded border border-border">
-              {candidates.length === 0 ? (
-                <div className="px-3 py-3 text-xs text-muted-foreground">
-                  {t(
-                    "chronicle.extract.none",
-                    "抽出できるイベントが見つかりませんでした。",
-                  )}
-                </div>
-              ) : (
-                <ul className="divide-y divide-border">
-                  {candidates.map((c, ci) => (
-                    <li key={ci} className="flex flex-col gap-1 px-3 py-2">
-                      <span className="font-medium text-foreground">
-                        {c.title}
-                      </span>
-                      {c.note && (
-                        <span className="text-xs text-muted-foreground">
-                          {c.note}
-                        </span>
-                      )}
-                      <div className="flex flex-wrap gap-1">
-                        {c.evidenceSceneIds.map((sid) => (
-                          <span
-                            key={sid}
-                            className="inline-flex max-w-[140px] items-center truncate rounded bg-accent/60 px-1.5 py-0.5 text-[10px] text-foreground"
-                            title={titleById.get(sid) ?? sid}
-                          >
-                            {titleById.get(sid) ?? sid}
-                          </span>
-                        ))}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+          {(analyzing || resuming || scopedRunProjection) && (
+            <ChronicleExtractionProgress
+              analyzing={analyzing || resuming}
+              coverage={scopedRunProjection?.coverage ?? null}
+              taskCounts={scopedRunProjection?.taskCounts ?? null}
+              proposalCount={
+                scopedRunProjection?.proposals.filter(
+                  (proposal) => proposal.applicability === "applicable",
+                ).length ?? 0
+              }
+            />
           )}
+
+          {scopedRunProjection && <ChronicleProposalReview boundToStore />}
+          {hasPriorApplication &&
+            applyReadiness?.errorCode ===
+              "NEX_CHRONICLE_APPLY_COVERAGE_MISMATCH" && (
+              <div
+                className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-xs text-amber-800 dark:text-amber-300"
+                data-testid="chronicle-partial-apply-blocked"
+              >
+                <p>
+                  {t(
+                    "chronicle.extract.partialApplyBlocked",
+                    "このレビューは一部取り込み済みです。取り込み済みEventは保持し、未適用の提案を破棄してから再解析してください。",
+                  )}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleAbandonPartialReview()}
+                  disabled={
+                    abandoningPartialRunId !== null ||
+                    importing ||
+                    applyMutationInFlight ||
+                    reviewMutationInFlight ||
+                    discardingRunId !== null
+                  }
+                  className="mt-1 inline-flex items-center gap-1 rounded border border-amber-600/50 px-2 py-1 text-[11px] font-medium hover:bg-amber-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {abandoningPartialRunId !== null && (
+                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden />
+                  )}
+                  {abandoningPartialRunId !== null
+                    ? t("chronicle.extract.abandoningPartialReview", "破棄中")
+                    : t(
+                        "chronicle.extract.abandonPartialReview",
+                        "未適用の提案を破棄",
+                      )}
+                </button>
+              </div>
+            )}
         </div>
 
         <DialogFooter>
           <button
             type="button"
-            onClick={() => onOpenChange(false)}
-            disabled={importing}
+            onClick={() => handleDialogOpenChange(false)}
+            disabled={
+              importing ||
+              applyMutationInFlight ||
+              abandoningPartialRunId !== null ||
+              discardingRunId !== null
+            }
             className="rounded px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent"
           >
             {t("common.cancel", "キャンセル")}
@@ -388,13 +872,22 @@ export function ChronicleExtractDialog({
           <button
             type="button"
             onClick={handleImport}
-            disabled={!candidates || candidates.length === 0 || importing}
+            disabled={
+              importing ||
+              applyMutationInFlight ||
+              reviewMutationInFlight ||
+              abandoningPartialRunId !== null ||
+              discardingRunId !== null ||
+              !approvedReady
+            }
             className="inline-flex items-center gap-1 rounded bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {importing && (
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
             )}
-            {t("chronicle.extract.import", "取り込む")}
+            {applyReadiness?.ready && applyReadiness.approvedCount === 0
+              ? t("chronicle.extract.completeReview", "完了")
+              : t("chronicle.extract.import", "取り込む")}
           </button>
         </DialogFooter>
       </DialogContent>

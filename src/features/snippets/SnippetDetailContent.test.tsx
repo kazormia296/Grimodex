@@ -11,6 +11,13 @@ import {
 import { announcePersistedBinding } from "@/features/editor/editorSaveRegistry";
 import { createEditorInstanceId } from "@/features/editor/document/documentKey";
 import { toast } from "sonner";
+import type { Transaction } from "@tiptap/pm/state";
+
+interface EditorConfigMock {
+  onCreate?: () => void;
+  onDestroy?: () => void;
+  onTransaction?: (args: { transaction: Transaction }) => void;
+}
 
 // ----- TipTap mocks -----
 let editorHtml = "";
@@ -18,6 +25,15 @@ const setContentMock = vi.fn();
 const onMock = vi.fn();
 const offMock = vi.fn();
 const destroyMock = vi.fn();
+const snippetEditorCaptureMocks = vi.hoisted(() => ({
+  latestEditorConfig: {
+    current: undefined as EditorConfigMock | undefined,
+  },
+  liveApply: {
+    current: undefined as ((content: object) => void) | undefined,
+  },
+  recordChangeEvent: vi.fn(),
+}));
 const snippetStoreStateMock = vi.hoisted(() => ({
   entries: [] as Snippet[],
   incrementUsageCount: vi.fn(),
@@ -38,8 +54,18 @@ const stableEditor = {
 };
 
 vi.mock("@tiptap/react", () => ({
-  useEditor: () => stableEditor,
+  useEditor: (config: EditorConfigMock) => {
+    snippetEditorCaptureMocks.latestEditorConfig.current = config;
+    return stableEditor;
+  },
   EditorContent: () => <div data-testid="tiptap-editor" />,
+}));
+
+vi.mock("@/features/timelapse/recorder", () => ({
+  recordChangeEvent: snippetEditorCaptureMocks.recordChangeEvent,
+  breakTimelapseDocumentCapture: vi.fn(),
+  isTimelapseReplacementFenceActiveForDocument: vi.fn(() => false),
+  subscribeTimelapseReplacementFence: vi.fn(() => () => {}),
 }));
 
 vi.mock("@tiptap/starter-kit", () => ({
@@ -73,7 +99,16 @@ vi.mock("@/features/editor/sceneContentStore", () => ({
       setLiveContent: vi.fn(),
     }),
   },
-  subscribeLiveContentRafCoalesced: vi.fn(() => () => {}),
+  subscribeLiveContentRafCoalesced: vi.fn(
+    (
+      _documentKey: unknown,
+      _source: number,
+      apply: (content: object) => void,
+    ) => {
+      snippetEditorCaptureMocks.liveApply.current = apply;
+      return () => {};
+    },
+  ),
 }));
 
 vi.mock("@/features/editor/editorStore", () => ({
@@ -172,6 +207,112 @@ const fakeSnippet = (overrides: Partial<Snippet> = {}): Snippet => ({
   ...overrides,
 });
 
+const changedTransaction = (label: string): Transaction =>
+  ({
+    docChanged: true,
+    steps: [{ toJSON: () => ({ stepType: "replace", label }) }],
+  }) as unknown as Transaction;
+
+describe("SnippetDetailContent — timelapse body capture", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    editorHtml = "";
+    snippetEditorCaptureMocks.latestEditorConfig.current = undefined;
+    snippetEditorCaptureMocks.liveApply.current = undefined;
+  });
+
+  it("ignores hydration then records one user transaction with snippet Project authority", () => {
+    render(
+      <SnippetDetailContent
+        snippet={fakeSnippet({ projectId: "project-loaded" })}
+        onSave={vi.fn().mockResolvedValue({ persisted: true, version: 1 })}
+        onDelete={vi.fn()}
+      />,
+    );
+    const config = snippetEditorCaptureMocks.latestEditorConfig.current;
+
+    config?.onTransaction?.({ transaction: changedTransaction("hydrate") });
+    expect(snippetEditorCaptureMocks.recordChangeEvent).not.toHaveBeenCalled();
+
+    config?.onCreate?.();
+    config?.onTransaction?.({ transaction: changedTransaction("user") });
+
+    expect(snippetEditorCaptureMocks.recordChangeEvent).toHaveBeenCalledOnce();
+    expect(snippetEditorCaptureMocks.recordChangeEvent).toHaveBeenCalledWith({
+      domain: "snippet",
+      opType: "doc.step",
+      projectId: "project-loaded",
+      sceneId: null,
+      entityType: "snippet",
+      entityId: "snippet-1",
+      payload: {
+        steps: [{ stepType: "replace", label: "user" }],
+      },
+    });
+  });
+
+  it("does not record a live peer setContent transaction", () => {
+    render(
+      <SnippetDetailContent
+        snippet={fakeSnippet({ projectId: "project-1" })}
+        onSave={vi.fn().mockResolvedValue({ persisted: true, version: 1 })}
+        onDelete={vi.fn()}
+      />,
+    );
+    const config = snippetEditorCaptureMocks.latestEditorConfig.current;
+    config?.onCreate?.();
+    setContentMock.mockImplementationOnce(() => {
+      config?.onTransaction?.({
+        transaction: changedTransaction("peer-set-content"),
+      });
+    });
+
+    act(() => {
+      snippetEditorCaptureMocks.liveApply.current?.({
+        type: "doc",
+        content: [{ type: "paragraph" }],
+      });
+    });
+
+    expect(snippetEditorCaptureMocks.recordChangeEvent).not.toHaveBeenCalled();
+  });
+
+  it("rebinds same-id editor capture to snippet.projectId", () => {
+    const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 1 });
+    const { rerender } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet({ projectId: "project-old" })}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+    const oldConfig = snippetEditorCaptureMocks.latestEditorConfig.current;
+    oldConfig?.onCreate?.();
+
+    rerender(
+      <SnippetDetailContent
+        snippet={fakeSnippet({ projectId: "project-new" })}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+    oldConfig?.onDestroy?.();
+    const newConfig = snippetEditorCaptureMocks.latestEditorConfig.current;
+    newConfig?.onCreate?.();
+    newConfig?.onTransaction?.({
+      transaction: changedTransaction("new-project"),
+    });
+
+    expect(snippetEditorCaptureMocks.recordChangeEvent).toHaveBeenCalledOnce();
+    expect(snippetEditorCaptureMocks.recordChangeEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "project-new",
+        entityId: "snippet-1",
+      }),
+    );
+  });
+});
+
 describe("SnippetDetailContent — autosave flush on unmount", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -216,6 +357,31 @@ describe("SnippetDetailContent — autosave flush on unmount", () => {
       {
         baseVersion: 0,
       },
+    );
+  });
+
+  it("passes the lifecycle preexisting-draft permit through to onSave", async () => {
+    const onSave = vi.fn().mockResolvedValue({ persisted: true, version: 1 });
+    const { getByTestId } = render(
+      <SnippetDetailContent
+        snippet={fakeSnippet()}
+        onSave={onSave}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(getByTestId("snippet-detail-title"), {
+      target: { value: "ライフサイクル中のタイトル" },
+    });
+
+    await act(async () => {
+      await flushAllAutoSaves({ preexistingDraft: true });
+    });
+
+    expect(onSave).toHaveBeenCalledWith(
+      "snippet-1",
+      { title: "ライフサイクル中のタイトル" },
+      { baseVersion: 0, preexistingDraft: true },
     );
   });
 

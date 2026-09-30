@@ -393,15 +393,12 @@ pub fn run_chat_search(
 mod tests {
     use super::*;
     use crate::chat_index::{read_chat_message_for_index, upsert_chat_chunk};
-    use std::path::Path;
 
     const MODEL_ID: &str = "test/model";
     const VER: &str = "test-chunker-v1";
 
     fn mem_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).unwrap();
-        db.migrate().unwrap();
-        db
+        crate::test_support::current_schema_memory().expect("current-schema fixture")
     }
 
     fn seed_message(

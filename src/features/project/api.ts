@@ -1,12 +1,11 @@
 import { db } from "@/db/client";
-import { projects, lintTermDictionary, projectSettings } from "@/db/schema";
+import { projects, projectSettings } from "@/db/schema";
 import { and, eq, notExists } from "drizzle-orm";
 import {
   SCAN_IMPORT_STATE_KEY,
   SCAN_IMPORT_STAGING,
 } from "@/features/import/scan/scanImportState";
 import { invoke } from "@/lib/tauri";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
   cancelScheduledImeExports,
   scheduleImeExportRefresh,
@@ -14,6 +13,10 @@ import {
 import { removeImeProjectExportWithRetry } from "@/features/ime/api";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteReceipt,
+} from "@/features/native-writes/writeContext";
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -56,11 +59,27 @@ export async function createProject(
     >,
 ): Promise<Project> {
   const now = new Date().toISOString();
-  const rows = await db
-    .insert(projects)
-    .values({ ...data, createdAt: now, updatedAt: now })
-    .returning();
-  return rows[0];
+  const result = await invoke<
+    Project & { __writeReceipt: CanonicalWriteReceipt }
+  >("project_create", {
+    payload: {
+      ...createCanonicalWriteContext("human"),
+      projectId: data.id,
+      title: data.title,
+      genre: data.genre ?? null,
+      pov: data.pov ?? null,
+      tense: data.tense ?? null,
+      language: data.language ?? null,
+      styleGuide: data.styleGuide ?? null,
+      aiInstructions: data.aiInstructions ?? null,
+      outline: data.outline ?? null,
+      targetReaders: data.targetReaders ?? null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+  const { __writeReceipt: _receipt, ...project } = result;
+  return project as Project;
 }
 
 export async function updateProject(
@@ -78,15 +97,26 @@ export async function updateProject(
       | "outline"
       | "targetReaders"
       | "aiPolicy"
+      | "phaseResolutionMode"
     >
   >,
   options?: { suppressImeExport?: boolean },
 ): Promise<Project | undefined> {
-  const rows = await db
-    .update(projects)
-    .set({ ...data, updatedAt: new Date().toISOString() })
-    .where(eq(projects.id, id))
-    .returning();
+  const current = await getProject(id);
+  if (!current) return undefined;
+  const updatedAt = new Date().toISOString();
+  const result = await invoke<
+    Project & { __writeReceipt: CanonicalWriteReceipt }
+  >("project_patch", {
+    payload: {
+      ...createCanonicalWriteContext("human"),
+      projectId: id,
+      baseUpdatedAt: current.updatedAt,
+      updatedAt,
+      patch: data,
+    },
+  });
+  const { __writeReceipt: _receipt, ...project } = result;
   // A language switch re-routes which FTS tables a project's content lives in;
   // rebuild the English (_en) index so search stays consistent. Best-effort.
   if (data.language !== undefined) {
@@ -99,24 +129,15 @@ export async function updateProject(
       );
     });
   }
-  // Records under the currently-bound project (meta edits target the active
-  // project). recordChangeEvent no-ops when that isn't the recording project.
-  recordChangeEvent({
-    domain: "project",
-    opType: "meta.update",
-    projectId: id,
-    entityType: "project",
-    entityId: id,
-    payload: { projectId: id, fields: Object.keys(data) },
-  });
+  // Project metadata is already recorded by the Native writer in the same
+  // transaction; only schedule the dependent IME export after that commit.
   if (
-    rows[0] &&
     !options?.suppressImeExport &&
     Object.keys(data).some((field) => IME_PROJECT_FIELDS.has(field))
   ) {
     scheduleImeExportRefresh(id);
   }
-  return rows[0];
+  return project as Project;
 }
 
 export async function deleteProject(id: string): Promise<void> {
@@ -130,13 +151,12 @@ export async function deleteProject(id: string): Promise<void> {
   // refresh can become latest, fail on the deleted DB row, and leave the old
   // plaintext snapshot behind.
   cancelScheduledImeExports(id);
-  // lint_term_dictionary.project_id is FK-cascaded only on fresh DBs; on DBs
-  // upgraded via ALTER the column has no FK, so delete its rows explicitly to
-  // avoid orphans (harmless on fresh DBs — the rows are already gone).
-  await db
-    .delete(lintTermDictionary)
-    .where(eq(lintTermDictionary.projectId, id));
-  await db.delete(projects).where(eq(projects.id, id));
+  await invoke("project_delete", {
+    payload: {
+      ...createCanonicalWriteContext("human"),
+      projectId: id,
+    },
+  });
   // The DB delete is authoritative; cleanup has a bounded background retry so
   // a transient filesystem failure cannot leave plaintext indefinitely.
   // Cancel again after the awaited DB work: another window/local mutation may

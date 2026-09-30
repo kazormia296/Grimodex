@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 use super::Database;
 
 const WIRE_METADATA_KEY: &str = "__idempotency";
+const MAINTENANCE_TRANSACTION_ID_KEY: &str = "maintenanceTransactionId";
 
 pub(crate) struct IdempotencyRequest<'a> {
     pub domain: &'a str,
@@ -115,6 +116,27 @@ pub(crate) fn payload_fingerprint<T: Serialize>(
     Ok(hex::encode(Sha256::digest(canonical)))
 }
 
+/// Hash domain intent without transport identities that can change when the
+/// same durable request is replayed after a renderer/recorder restart.
+pub(crate) fn canonical_write_payload_fingerprint<T: Serialize>(
+    domain: &str,
+    payload: &T,
+) -> anyhow::Result<String> {
+    let mut normalized = serde_json::to_value(payload)?;
+    if let Some(object) = normalized.as_object_mut() {
+        object.remove("requestId");
+        object.remove("sessionId");
+        object.remove("eventUid");
+        object.remove("timelapseDocStepCoverage");
+        if let Some(change_event) = object.get_mut("changeEvent").and_then(Value::as_object_mut) {
+            change_event.remove("requestId");
+            change_event.remove("sessionId");
+            change_event.remove("eventUid");
+        }
+    }
+    payload_fingerprint(domain, &normalized)
+}
+
 fn canonicalize_json(value: &mut Value) {
     match value {
         Value::Array(values) => {
@@ -190,9 +212,24 @@ where
                     }
                     let current = load_entity(conn)?;
                     let entity_present = current.is_some();
+                    let tombstone: Value = serde_json::from_str(&tombstone_json)?;
                     let response = match current {
-                        Some(row) => row,
-                        None => serde_json::from_str(&tombstone_json)?,
+                        Some(mut row) => {
+                            if let (Value::Object(row), Value::Object(tombstone)) =
+                                (&mut row, &tombstone)
+                            {
+                                if let Some(transaction_id) =
+                                    tombstone.get(MAINTENANCE_TRANSACTION_ID_KEY)
+                                {
+                                    row.insert(
+                                        MAINTENANCE_TRANSACTION_ID_KEY.to_string(),
+                                        transaction_id.clone(),
+                                    );
+                                }
+                            }
+                            row
+                        }
+                        None => tombstone,
                     };
                     return Ok(IdempotentCreateOutcome {
                         response,
@@ -207,6 +244,15 @@ where
                 let entity_id = response.get("id").and_then(Value::as_str).ok_or_else(|| {
                     anyhow::anyhow!("idempotent create response has no entity id")
                 })?;
+                let mut tombstone = json!({ "id": entity_id });
+                if let (Value::Object(tombstone), Some(transaction_id)) =
+                    (&mut tombstone, response.get(MAINTENANCE_TRANSACTION_ID_KEY))
+                {
+                    tombstone.insert(
+                        MAINTENANCE_TRANSACTION_ID_KEY.to_string(),
+                        transaction_id.clone(),
+                    );
+                }
                 conn.execute(
                     "INSERT INTO idempotency_requests
                          (domain, request_id, project_id, payload_hash, tombstone_json)
@@ -216,7 +262,7 @@ where
                         request_id,
                         project_id,
                         request.payload_hash,
-                        serde_json::to_string(&json!({ "id": entity_id }))?,
+                        serde_json::to_string(&tombstone)?,
                     ],
                 )?;
             }

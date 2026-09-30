@@ -1,0 +1,112 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+
+function readScopePolicy() {
+  return JSON.parse(
+    readFileSync(
+      path.join(
+        REPO_ROOT,
+        "policies/narrative/narrative-scope-relation-contract.json",
+      ),
+      "utf8",
+    ),
+  );
+}
+
+function readArtifactPolicy() {
+  return JSON.parse(
+    readFileSync(
+      path.join(
+        REPO_ROOT,
+        "policies/narrative/narrative-artifact-authority.json",
+      ),
+      "utf8",
+    ),
+  );
+}
+
+test("declares historical scope authority as shadow-only and stopped", () => {
+  const historical = readScopePolicy().historicalAuthorityBasis;
+  assert.deepEqual(historical, {
+    contractId: "narrative-scope-authority-basis/2",
+    schema:
+      "policies/narrative/schemas/narrative-scope-authority-basis-v2.schema.json",
+    futureCarrierArtifactKind: "source.snapshot@2",
+    basisKind: "historical-run-snapshot",
+    sourceKind: "snapshot-document",
+    sourceKeyPattern: "snapshot:<runId>",
+    currentOracle: false,
+    runtimeStopCode: "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+    v1Compatibility: {
+      implicitUpgrade: "forbidden",
+      rebuildRequired: true,
+    },
+    implementationStatus: {
+      state: "shadow",
+      productionEntryPoints: [
+        "runChronicleExtractionCoordinator",
+        "persist_historical_scope_authority_basis_in_tx",
+        "load_historical_scope_authority_basis",
+      ],
+      blockedOn: ["c2b-scope-override-wiring"],
+    },
+  });
+});
+
+test("declares the live project authority as wired C2B state", () => {
+  const live = readScopePolicy().liveProjectAuthority;
+  assert.deepEqual(live, {
+    contractId: "narrative-project-scope-authority-revision/1",
+    basisKind: "computed-live-project-tree",
+    sourceKind: "project-scope-authority",
+    sourceKeyPattern: "project:scope-authority:<projectId>",
+    persistence: "computed-no-table-or-head",
+    scopeOverrideActive: true,
+    runtimeStopCode: "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+    implementationStatus: {
+      state: "wired",
+      productionEntryPoints: [
+        "build_narrative_project_scope_authority_v1",
+        "load_live_project_scope_authority",
+        "create_human_derived_revision_with_c2b_projection_materialization_auto",
+        "run_incremental_freshness_cycle",
+        "rebuild_narrative_derived_state_for_project",
+      ],
+      blockedOn: [],
+    },
+  });
+});
+
+test("does not promote the historical carrier through generic artifact authority", () => {
+  const artifacts = readArtifactPolicy().artifacts;
+  const extractionArtifact = artifacts.find(
+    (artifact) => artifact.id === "extraction-artifact",
+  );
+  assert.deepEqual(
+    {
+      authority: extractionArtifact?.authority,
+      authoritative: extractionArtifact?.authoritative,
+    },
+    { authority: "none", authoritative: false },
+  );
+  assert.equal(
+    artifacts.some((artifact) => artifact.id === "scope-authority-basis"),
+    false,
+  );
+  assert.equal(
+    artifacts.filter(
+      (artifact) =>
+        artifact.storage === "narrative_extraction_artifacts" &&
+        artifact.authoritative === true,
+    ).length,
+    0,
+  );
+});

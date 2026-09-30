@@ -426,14 +426,12 @@ mod tests {
     use super::*;
     use crate::index::{compute_content_hash, upsert_scene_chunks, ChunkPayload};
     use rusqlite::params;
-    use std::path::Path;
 
     const MODEL_ID: &str = "test/model";
     const CHUNKER_VERSION: &str = "test-chunker-v1";
 
     fn mem_db() -> Database {
-        let db = Database::new(Path::new(":memory:")).unwrap();
-        db.migrate().unwrap();
+        let db = crate::test_support::current_schema_memory().expect("current-schema fixture");
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO projects (id, title) VALUES ('p1', 'test project')",

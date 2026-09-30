@@ -1,5 +1,6 @@
 import { invoke } from "@/lib/tauri";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { runTimelapseMutation } from "@/features/timelapse/bodyWriteMode";
 
 export interface BatchStatement {
   sql: string;
@@ -47,14 +48,16 @@ export interface AgentWriteResult {
 export async function agentWriteBundle(
   input: AgentWriteBundleInput,
 ): Promise<AgentWriteResult> {
-  return invoke<AgentWriteResult>("agent_write_bundle", {
-    payload: {
-      projectId: input.projectId,
-      sessionId: getRecorderSessionId(),
-      surface: input.surface ?? "in-app-agent",
-      statements: input.statements,
-      undoJournal: input.undoJournal,
-      changeEvent: input.changeEvent,
-    },
-  });
+  return runTimelapseMutation(input.projectId, () =>
+    invoke<AgentWriteResult>("agent_write_bundle", {
+      payload: {
+        projectId: input.projectId,
+        sessionId: getRecorderSessionId(),
+        surface: input.surface ?? "in-app-agent",
+        statements: input.statements,
+        undoJournal: input.undoJournal,
+        changeEvent: input.changeEvent,
+      },
+    }),
+  );
 }

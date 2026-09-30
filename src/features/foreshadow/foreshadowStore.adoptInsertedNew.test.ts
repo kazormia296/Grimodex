@@ -28,8 +28,8 @@ const {
   mockEditor.chain.mockReturnValue(chainResult);
 
   return {
-    mockCreateForeshadowSetup: vi.fn().mockResolvedValue({ id: "setup-ai-1" }),
-    mockSaveForeshadowAnchors: vi.fn().mockResolvedValue(undefined),
+    mockCreateForeshadowSetup: vi.fn(),
+    mockSaveForeshadowAnchors: vi.fn().mockResolvedValue([]),
     mockSaveSceneContent: vi.fn().mockResolvedValue(undefined),
     mockCreateRevision: vi.fn().mockResolvedValue(null),
     mockLoadSetups: vi.fn().mockResolvedValue(undefined),
@@ -93,6 +93,28 @@ vi.mock("drizzle-orm", () => ({
 
 import { useForeshadowStore } from "./foreshadowStore";
 
+function makeForeshadowItem(version = 0) {
+  return {
+    id: "f-1",
+    projectId: "p-1",
+    title: "test foreshadow",
+    intent: null,
+    notes: null,
+    payoffSceneId: null,
+    payoffFromPos: null,
+    payoffToPos: null,
+    payoffConfirmed: false,
+    abandoned: false,
+    secret: false,
+    loadBearing: null,
+    version,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    label: "planned" as const,
+    setupCount: 0,
+  };
+}
+
 const INSERTED_NEW_CANDIDATE = {
   sceneId: "scene-ai",
   kind: "inserted_new" as const,
@@ -112,9 +134,13 @@ describe("adoptInsertedNewSetup", () => {
     mockSaveSceneContent.mockClear();
     mockCreateRevision.mockClear();
     mockLoadSetups.mockClear();
+    mockCreateForeshadowSetup.mockResolvedValue({
+      setup: { id: "setup-ai-1" },
+      foreshadow: makeForeshadowItem(1),
+    });
 
     useForeshadowStore.setState({
-      items: [],
+      items: [makeForeshadowItem()],
       proposeResults: {
         "f-1": [INSERTED_NEW_CANDIDATE],
       },
@@ -134,6 +160,7 @@ describe("adoptInsertedNewSetup", () => {
         aiRationale: "後の展開への伏線",
         strength: "subtle",
       }),
+      0,
     );
   });
 
@@ -179,7 +206,7 @@ describe("adoptInsertedNewSetup", () => {
     // foreshadowSetup と authorship(source='ai') の両方が適用される
     expect(chainResult.setMark).toHaveBeenCalledWith(
       "foreshadowSetup",
-      expect.objectContaining({ foreshadowId: "f-1" }),
+      expect.objectContaining({ foreshadowId: "f-1", baseVersion: 1 }),
     );
     expect(chainResult.setMark).toHaveBeenCalledWith(
       "authorship",

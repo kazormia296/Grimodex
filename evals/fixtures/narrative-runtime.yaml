@@ -1,0 +1,36 @@
+cases:
+  - id: eval-narrative-runtime-authority-fail-closed
+    suiteId: narrative-runtime
+    requirementIds: [GDX-POLICY-001, GDX-TRACE-001]
+    fixture:
+      runId: narrative-runtime-authority
+      locale: ja-JP
+      timeZone: Asia/Tokyo
+      currentTime: "2026-08-10T12:00:00+09:00"
+      channel: native
+      grantedPolicies: []
+      availableTools: []
+      state:
+        {
+          conversationId: narrative-runtime-authority-conversation,
+          workspaceId: narrative-runtime-authority-workspace,
+          artifactRoot: narrative-runtime-authority-artifacts,
+        }
+      teardown: [conversation, workspace, artifacts]
+    input:
+      {
+        prompt: "Narrative runtime authority stays Native-owned and fail-closed",
+        attemptedTools: [],
+        executedTools: [],
+      }
+    expected:
+      outcome: allowed
+      blockedBy: null
+      requiredTools: []
+      forbiddenTools: []
+      requiredPolicies: []
+      authorization: not-required
+      failureClass: null
+      freshness: stable
+      requiredEvidence: [policy-state]
+      outputValidators: [no-side-effect]

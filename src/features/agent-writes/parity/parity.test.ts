@@ -46,7 +46,11 @@ describe("parity fixtures (TS executor side)", () => {
 
   it("codex create is gated by the fixture's policy key", async () => {
     await expect(
-      agentCreateCodexEntry({ type: "character", name: "Alice" }),
+      agentCreateCodexEntry({
+        requestId: "agent-tool:parity-codex-create",
+        type: "character",
+        name: "Alice",
+      }),
     ).rejects.toThrow();
     expect(h.blockIfPolicyOff).toHaveBeenCalledWith(codexFixture.policyGate);
     expect(h.invoke).not.toHaveBeenCalled();

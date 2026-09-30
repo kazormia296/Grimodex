@@ -133,7 +133,7 @@ vi.mock("electron", () => ({
   },
 }));
 
-const { createMainWindow, focusPanelWindow, openPanelWindow } =
+const { createMainWindow, focusPanelWindow, hasPanelWindow, openPanelWindow } =
   await import("./windows.js");
 
 const savedRendererUrl = process.env.ELECTRON_RENDERER_URL;
@@ -229,6 +229,16 @@ describe("openPanelWindow / focusPanelWindow（§6.5）", () => {
     expect(win.focus).toHaveBeenCalledTimes(1);
     expect(focusPanelWindow("panel-missing")).toBe(false);
     expect(focusPanelWindow("not-a-panel")).toBe(false);
+  });
+
+  it("hasPanelWindow: focus せずに存在だけを返す", () => {
+    const win = FakeBrowserWindow.instances[0];
+    win.focus.mockClear();
+
+    expect(hasPanelWindow("panel-codex")).toBe(true);
+    expect(hasPanelWindow("panel-missing")).toBe(false);
+    expect(hasPanelWindow("not-a-panel")).toBe(false);
+    expect(win.focus).not.toHaveBeenCalled();
   });
 
   it("native fullscreen の出入りも renderer へ状態再取得通知を送る", () => {

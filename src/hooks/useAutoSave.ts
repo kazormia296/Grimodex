@@ -5,7 +5,11 @@ import { announce } from "@/lib/a11y/announcer";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { isWorkspaceSwitchingError } from "@/features/concurrency/workspaceSwitching";
 import { AlreadyNotifiedSaveError } from "@/features/editor/document/saveErrors";
-import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
+import {
+  createQuiescenceProviderId,
+  registerQuiescenceProvider,
+  type QuiescenceProviderFlushOptions,
+} from "@/lib/quiescenceProviders";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import {
   documentIdFromKey,
@@ -32,7 +36,7 @@ export interface AutoSave {
    */
   pause: () => void;
   resume: () => void;
-  flush: () => Promise<void>;
+  flush: (options?: QuiescenceProviderFlushOptions) => Promise<void>;
   setDelay: (delayMs: number) => void;
 }
 
@@ -97,6 +101,7 @@ export function registerAutoSaveForQuiesce(instance: AutoSave): () => void {
  */
 async function flushMatchingAutoSaves(
   matches: (documentKey: DocumentKey | null) => boolean,
+  options?: QuiescenceProviderFlushOptions,
 ): Promise<void> {
   const failures: unknown[] = [];
   const failedInstances = new Set<AutoSave>();
@@ -122,7 +127,7 @@ async function flushMatchingAutoSaves(
     });
     const results = await Promise.allSettled(
       candidates.map(async (autoSave) => {
-        await autoSave.flush();
+        await autoSave.flush(options);
         finalizeRetiringAutoSave(autoSave);
       }),
     );
@@ -150,8 +155,10 @@ async function flushMatchingAutoSaves(
   throw new Error("AutoSave registry did not reach quiescence");
 }
 
-export async function flushAllAutoSaves(): Promise<void> {
-  await flushMatchingAutoSaves(() => true);
+export async function flushAllAutoSaves(
+  options?: QuiescenceProviderFlushOptions,
+): Promise<void> {
+  await flushMatchingAutoSaves(() => true, options);
 }
 
 /** Drain active and retiring AutoSaves for every variant of one entity. */
@@ -206,6 +213,11 @@ export function hasPendingOrFailedAutoSaveForDocument(
   );
 }
 
+/** Monotonic topology revision used by cross-registry scoped drains. */
+export function getAutoSaveRegistryRevision(): number {
+  return autoSaveRegistryRevision;
+}
+
 /** Explicit destructive lifecycle path used only after user confirmation. */
 export function discardAllAutoSaves(): void {
   const instances = new Set([
@@ -240,7 +252,7 @@ export function discardAutoSavesForDocument(documentKey: DocumentKey): void {
 }
 
 registerQuiescenceProvider({
-  id: "mounted-auto-saves",
+  id: createQuiescenceProviderId("mounted-auto-saves"),
   stage: "autosave",
   flush: flushAllAutoSaves,
   discard: discardAllAutoSaves,
@@ -254,7 +266,7 @@ function normalizeDelay(delayMs: number): number {
 }
 
 export function createAutoSave(
-  saveFn: () => Promise<void>,
+  saveFn: (options?: QuiescenceProviderFlushOptions) => Promise<void>,
   initialDelayMs: number,
 ): AutoSave {
   const schedulerKey = `autosave:${nextAutoSaveSchedulerId++}`;
@@ -263,6 +275,7 @@ export function createAutoSave(
   let pending = false;
   let lastFailed = false;
   let paused = false;
+  let preexistingDraftPermit = false;
   /**
    * AutoSave instance ごとの単一 drain。saveFn 自体はこの loop からしか呼ばず、
    * 実行中の schedule は pending=true へ畳み込む。これにより古い save が新しい
@@ -275,7 +288,11 @@ export function createAutoSave(
   // toast が読み上げるので announce しない: 二重読み上げ防止)。
   async function runSave(label: "save" | "flush") {
     try {
-      await saveFn();
+      if (preexistingDraftPermit) {
+        await saveFn({ preexistingDraft: true });
+      } else {
+        await saveFn();
+      }
       if (lastFailed) {
         lastFailed = false;
         announce(i18next.t("autoSave.recovered"));
@@ -377,6 +394,7 @@ export function createAutoSave(
     clearTimer();
     pending = false;
     lastFailed = false;
+    preexistingDraftPermit = false;
   }
 
   function pause() {
@@ -407,27 +425,48 @@ export function createAutoSave(
     if (timerArmed && pending && !inFlight) armTimer();
   }
 
-  async function flush() {
-    clearTimer();
-    for (;;) {
-      const running = inFlight;
-      if (running) {
-        // background drain の失敗もここで reject し、quiesce callerへ伝える。
-        await running;
-        clearTimer();
-        continue;
-      }
-      if (paused && (pending || lastFailed)) {
-        throw new AlreadyNotifiedSaveError(
-          "AutoSave is paused by an unresolved external edit conflict",
-        );
-      }
-      if (!pending && !lastFailed) return;
-      // 直前の background save が失敗して未保存のままなら、明示 flush で
-      // 1 回再試行する。再失敗は runSave からそのまま伝播する。
-      if (!pending && lastFailed) pending = true;
+  async function flush(options?: QuiescenceProviderFlushOptions) {
+    if (options?.preexistingDraft === true) {
+      // A provider flush may arrive after a background drain has started. Keep
+      // the permit on the coalesced drain so any draft that was already queued
+      // before the lease remains admitted through its final save attempt.
+      preexistingDraftPermit = true;
+    }
+    try {
       clearTimer();
-      await startDrain("flush");
+      for (;;) {
+        const running = inFlight;
+        if (running) {
+          // background drain の失敗もここで reject し、quiesce callerへ伝える。
+          try {
+            await running;
+          } catch (error) {
+            // A permitted flush may have arrived after this drain selected the
+            // ordinary save callback. Treat that first failure like the normal
+            // explicit-flush retry path so the next drain receives the permit.
+            // A non-permitted flush still propagates the in-flight failure.
+            if (options?.preexistingDraft !== true || !lastFailed) {
+              throw error;
+            }
+          }
+          clearTimer();
+          continue;
+        }
+        if (paused && (pending || lastFailed)) {
+          throw new AlreadyNotifiedSaveError(
+            "AutoSave is paused by an unresolved external edit conflict",
+          );
+        }
+        if (!pending && !lastFailed) return;
+        // 直前の background save が失敗して未保存のままなら、明示 flush で
+        // 1 回再試行する。再失敗は runSave からそのまま伝播する。
+        if (!pending && lastFailed) pending = true;
+        clearTimer();
+        await startDrain("flush");
+      }
+    } finally {
+      // Do not let a lifecycle-only permit authorize a later ordinary save.
+      if (!inFlight) preexistingDraftPermit = false;
     }
   }
 
@@ -440,7 +479,7 @@ export function createAutoSave(
 }
 
 export function useAutoSave(
-  saveFn: () => Promise<void>,
+  saveFn: (options?: QuiescenceProviderFlushOptions) => Promise<void>,
   delayMs = 2000,
   lifecycle?: AutoSaveLifecycle,
 ): AutoSave {
@@ -452,7 +491,7 @@ export function useAutoSave(
 
   if (autoSaveRef.current === null) {
     autoSaveRef.current = createAutoSave(
-      () => latestSaveFnRef.current(),
+      (options) => latestSaveFnRef.current(options),
       delayMs,
     );
   }
@@ -477,9 +516,12 @@ export function useAutoSave(
     autoSaveRef.current?.resume();
   }, []);
 
-  const flush = useCallback(async () => {
-    await autoSaveRef.current?.flush();
-  }, []);
+  const flush = useCallback(
+    async (options?: QuiescenceProviderFlushOptions) => {
+      await autoSaveRef.current?.flush(options);
+    },
+    [],
+  );
 
   const setDelay = useCallback((nextDelayMs: number) => {
     autoSaveRef.current?.setDelay(nextDelayMs);

@@ -18,13 +18,7 @@ const DEFAULT_FILTER: SeverityFilter = {
 };
 
 /**
- * Shared local state used by both LinterPanel views (Current scene and
- * Project mode). Each view picks its own GroupMode literal because the
- * available group axes differ ("severity"|"rule"|"none" vs.
- * "scene"|"rule"|"severity"), but every other piece of state is identical.
- *
- * Keeping the state inside one hook ensures both views default the same
- * way and stay in sync if any setter contract changes.
+ * Local diagnostic filter state with a caller-selected grouping axis.
  */
 export function useDiagnosticFilter<G extends string>(defaultGroupMode: G) {
   const [severityFilter, setSeverityFilter] =
@@ -69,7 +63,7 @@ export function filterDiagnostics(
   return diagnostics.filter((d) => matchesDiagnosticFilter(d, filter, query));
 }
 
-/** A render-ready bucket for the LinterPanel list. */
+/** A render-ready bucket of diagnostics. */
 export interface DiagnosticGroup<T> {
   key: string;
   label: string | null;

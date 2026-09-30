@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/certifications/schemas/gate-b2-decision-v1.schema.json",
+  "title": "Gate B2 Decision Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "contractVersion",
+    "gateId",
+    "assuranceScope",
+    "candidateCommitSha",
+    "candidateTreeSha",
+    "baseMasterSha",
+    "freezeId",
+    "certificationRunId",
+    "attemptAuthority",
+    "verdict",
+    "reasons",
+    "suiteSummaries",
+    "digests",
+    "suiteAttempts",
+    "generatedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contractVersion": { "type": "integer", "const": 8 },
+    "gateId": { "const": "gate-b2" },
+    "assuranceScope": { "$ref": "#/$defs/assuranceScope" },
+    "candidateCommitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "candidateTreeSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "baseMasterSha": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "schemaVersionProduct": { "type": "integer", "const": 20 },
+    "freezeId": { "type": ["string", "null"], "minLength": 1 },
+    "certificationRunId": { "type": ["string", "null"], "minLength": 1 },
+    "attemptAuthority": { "$ref": "#/$defs/attemptAuthority" },
+    "verdict": {
+      "type": "string",
+      "enum": ["PASS", "HOLD", "BLOCK", "INCOMPLETE"]
+    },
+    "reasons": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "suiteSummaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requiredLight", "requiredHeavy", "requiredJourneys"],
+      "properties": {
+        "requiredLight": { "$ref": "#/$defs/counts" },
+        "requiredHeavy": { "$ref": "#/$defs/counts" },
+        "requiredJourneys": { "$ref": "#/$defs/counts" }
+      }
+    },
+    "digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "writerRegistryDigest",
+        "aiPathRegistryDigest",
+        "qualityManifestDigest",
+        "narrativeEvalManifestDigest",
+        "reportDigest"
+      ],
+      "properties": {
+        "writerRegistryDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "aiPathRegistryDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "qualityManifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "narrativeEvalManifestDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "adrChecklistDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "classificationDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reportDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "suiteAttempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["suiteId", "bucket", "attempt", "result"],
+        "properties": {
+          "suiteId": { "type": "string", "minLength": 1 },
+          "bucket": {
+            "type": "string",
+            "enum": [
+              "requiredLight",
+              "requiredHeavy",
+              "requiredJourneys",
+              "informational",
+              "releaseAdjacent"
+            ]
+          },
+          "attempt": { "const": 1 },
+          "result": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "blocked",
+              "hold",
+              "not-run",
+              "deferred",
+              "informational"
+            ]
+          },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "generatedAt": { "type": "string" },
+    "notes": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "verdict": { "const": "PASS" } },
+        "required": ["verdict"]
+      },
+      "then": {
+        "properties": {
+          "freezeId": { "type": "string", "minLength": 1 },
+          "certificationRunId": { "type": "string", "minLength": 1 },
+          "attemptAuthority": {
+            "properties": {
+              "runId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+              "runAttempt": { "const": 1 }
+            }
+          },
+          "digests": {
+            "properties": {
+              "reportDigest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "assuranceScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "engineeringSafety",
+        "liveProviderExecution",
+        "modelQuality",
+        "externalCredentialsUsed"
+      ],
+      "properties": {
+        "engineeringSafety": { "const": "certified" },
+        "liveProviderExecution": { "const": "excluded" },
+        "modelQuality": { "const": "excluded" },
+        "externalCredentialsUsed": { "const": false }
+      }
+    },
+    "attemptAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "configDigest",
+        "repository",
+        "workflowPath",
+        "event",
+        "runId",
+        "runAttempt"
+      ],
+      "properties": {
+        "provider": { "const": "github-actions" },
+        "configDigest": {
+          "const": "sha256:39b3a55cbcff45c94872f485c0f1bd7d965dc4e9ed8d21a2068c43b3524bb1d4"
+        },
+        "repository": { "const": "kazormia296/Grimodex" },
+        "workflowPath": {
+          "const": ".github/workflows/gate-b2-certification.yml"
+        },
+        "event": { "const": "workflow_dispatch" },
+        "runId": {
+          "type": ["string", "null"],
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "runAttempt": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 1
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "blocked", "hold", "notRun"],
+      "properties": {
+        "passed": { "type": "integer", "minimum": 0 },
+        "failed": { "type": "integer", "minimum": 0 },
+        "blocked": { "type": "integer", "minimum": 0 },
+        "hold": { "type": "integer", "minimum": 0 },
+        "notRun": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

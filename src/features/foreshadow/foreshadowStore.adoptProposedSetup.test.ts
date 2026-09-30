@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const { mockCreateForeshadowSetup, mockLoadSetups, mockToastError } =
   vi.hoisted(() => ({
-    mockCreateForeshadowSetup: vi.fn().mockResolvedValue({ id: "setup-1" }),
+    mockCreateForeshadowSetup: vi.fn(),
     mockLoadSetups: vi.fn().mockResolvedValue(undefined),
     mockToastError: vi.fn(),
   }));
@@ -49,6 +49,28 @@ vi.mock("@/lib/debugLog", () => ({
 
 import { useForeshadowStore } from "./foreshadowStore";
 
+function makeForeshadowItem(version = 0) {
+  return {
+    id: "f-1",
+    projectId: "p-1",
+    title: "test foreshadow",
+    intent: null,
+    notes: null,
+    payoffSceneId: null,
+    payoffFromPos: null,
+    payoffToPos: null,
+    payoffConfirmed: false,
+    abandoned: false,
+    secret: false,
+    loadBearing: null,
+    version,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+    label: "planned" as const,
+    setupCount: 0,
+  };
+}
+
 const BASE_CANDIDATE = {
   sceneId: "scene-1",
   kind: "designated_existing" as const,
@@ -66,9 +88,13 @@ describe("adoptProposedSetup", () => {
     mockCreateForeshadowSetup.mockClear();
     mockLoadSetups.mockClear();
     mockToastError.mockClear();
+    mockCreateForeshadowSetup.mockResolvedValue({
+      setup: { id: "setup-1" },
+      foreshadow: makeForeshadowItem(1),
+    });
 
     useForeshadowStore.setState({
-      items: [],
+      items: [makeForeshadowItem()],
       proposeResults: { "f-1": [BASE_CANDIDATE] },
       setupsByForeshadowId: {},
     });
@@ -114,6 +140,7 @@ describe("adoptProposedSetup", () => {
         kind: "designated_existing",
         attribution: "ai",
       }),
+      0,
     );
   });
 

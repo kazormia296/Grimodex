@@ -881,7 +881,9 @@ describe("codexDetailDefinitions schema", () => {
     expect(columns).toContain("fieldConfig");
     expect(columns).toContain("sortOrder");
     expect(columns).toContain("includeInContext");
+    expect(columns).toContain("version");
     expect(columns).toContain("createdAt");
+    expect(columns).toContain("updatedAt");
   });
 
   it("generates valid insert query", async () => {
@@ -922,6 +924,9 @@ describe("codexDetailValues schema", () => {
     expect(columns).toContain("entryId");
     expect(columns).toContain("definitionId");
     expect(columns).toContain("value");
+    expect(columns).toContain("version");
+    expect(columns).toContain("createdAt");
+    expect(columns).toContain("updatedAt");
   });
 
   it("generates valid insert query", async () => {
