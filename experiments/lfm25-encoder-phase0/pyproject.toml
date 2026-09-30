@@ -10,7 +10,7 @@ dependencies = [
   "pydantic==2.12.5",
   "pyyaml==6.0.3",
   "tokenizers==0.22.2",
-  "transformers==5.5.0",
+  "transformers==5.10.1",
 ]
 
 [project.optional-dependencies]
