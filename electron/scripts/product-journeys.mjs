@@ -2573,6 +2573,12 @@ async function runCrossFeatureAuthoringJourney(harness) {
     await authoring.page
       .getByTestId(`insert-to-editor-${assistantMessageId}`)
       .click();
+    // The insert button's hover preview is a ProseMirror decoration. Clear it
+    // before reading editor.textContent(), which includes decoration text.
+    await scene.editor.hover();
+    await scene.editor
+      .locator(".ghost-preview-text")
+      .waitFor({ state: "detached", timeout: 10_000 });
     await harness.waitUntil(
       async () =>
         (await scene.editor.textContent())?.includes(AUTHORING_OUTPUT),
@@ -2580,15 +2586,36 @@ async function runCrossFeatureAuthoringJourney(harness) {
       10_000,
     );
 
+    const assertScenePersisted = async (label) => {
+      const rows = await queryRows(
+        harness,
+        authoring.page,
+        "SELECT id FROM tree_nodes WHERE id = ?",
+        [scene.sceneId],
+      );
+      if (rows.length !== 1 || String(rows[0]?.id) !== scene.sceneId) {
+        throw new Error(`${label}: authoring scene was removed`);
+      }
+    };
+    await assertScenePersisted("before editor undo");
     await scene.editor.click();
-    await authoring.page.keyboard.press("Control+z");
+    const editorFocused = await scene.editor.evaluate(
+      (element) =>
+        element === element.ownerDocument.activeElement ||
+        element.contains(element.ownerDocument.activeElement),
+    );
+    if (!editorFocused) {
+      throw new Error("editor did not hold focus before undo");
+    }
+    await scene.editor.press("Control+z");
+    await assertScenePersisted("after editor undo");
     await harness.waitUntil(
       async () =>
         !(await scene.editor.textContent())?.includes(AUTHORING_OUTPUT),
       "editor undo after chat insertion",
       10_000,
     );
-    await authoring.page.keyboard.press("Control+Shift+z");
+    await scene.editor.press("Control+Shift+z");
     await harness.waitUntil(
       async () =>
         (await scene.editor.textContent())?.includes(AUTHORING_OUTPUT),
