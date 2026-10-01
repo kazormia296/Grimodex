@@ -532,7 +532,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   });
 
   assert.equal(result.status, "passed");
-  assert.equal(executed.length, 6);
+  assert.equal(executed.length, 10);
   const rustCommand = executed.find(
     (command) =>
       command.command === "node" &&
@@ -558,6 +558,10 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
       "journeys.shard-1",
       "journeys.shard-2",
       "journeys.shard-3",
+      "journeys.shard-4",
+      "journeys.shard-5",
+      "journeys.shard-6",
+      "journeys.shard-7",
       "journeys.run",
     ],
   );
@@ -2116,7 +2120,11 @@ test("external staging verifier receives the parallel cap and rejects its omissi
     signal: new AbortController().signal,
     invocationStarted: performance.now(),
   });
-  assert.equal(finalized.success, true, JSON.stringify(finalized.result.receiptError));
+  assert.equal(
+    finalized.success,
+    true,
+    JSON.stringify(finalized.result.receiptError),
+  );
   assert.equal(finalized.result.finalization.externalVerify.status, "passed");
   await assert.rejects(
     promisify(execFile)(
@@ -4002,11 +4010,15 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "journeys.shard-1",
       "journeys.shard-2",
       "journeys.shard-3",
+      "journeys.shard-4",
+      "journeys.shard-5",
+      "journeys.shard-6",
+      "journeys.shard-7",
       "journeys.run",
     ],
   );
-  assert.equal(plan.tasks.length, 62);
-  assert.equal(tasksById.size, 62);
+  assert.equal(plan.tasks.length, 67);
+  assert.equal(tasksById.size, 67);
   assert.equal(obligations.length, 52);
   assert.equal(new Set(obligations).size, 52);
   assert.equal(
@@ -4047,16 +4059,28 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "webgl.tests",
   ];
   const mcpBuildTask = tasksById.get("journeys.mcp-build");
+  const electronBinaryTask = tasksById.get("bootstrap.electron-binary");
+  assert.equal(electronBinaryTask.command.command, "node");
+  assert.deepEqual(electronBinaryTask.command.args, [
+    "scripts/ensure-electron-binary.mjs",
+  ]);
+  assert.deepEqual(electronBinaryTask.after, ["bootstrap.install"]);
+  assert.equal(electronBinaryTask.timeoutMs, 180_000);
+  assert.deepEqual(electronBinaryTask.obligations, []);
   assert.equal(mcpBuildTask.command.command, "pnpm");
   assert.deepEqual(mcpBuildTask.command.args, ["mcp:build"]);
-  assert.deepEqual(mcpBuildTask.after, ["electron.build", "native.build"]);
+  assert.deepEqual(mcpBuildTask.after, [
+    "electron.build",
+    "native.build",
+    "bootstrap.electron-binary",
+  ]);
   assert.equal(mcpBuildTask.lane, "cargo-shared");
   assert.equal(mcpBuildTask.slots, 2);
   assert.equal(mcpBuildTask.timeoutMs, 180_000);
   assert.equal(mcpBuildTask.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
   assert.equal(mcpBuildTask.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
   assert.equal(mcpBuildTask.command.env.CARGO_BUILD_JOBS, "2");
-  for (const shard of ["1", "2", "3"]) {
+  for (const shard of ["1", "2", "3", "4", "5", "6", "7"]) {
     const task = tasksById.get(`journeys.shard-${shard}`);
     assert.equal(task.command.command, "node");
     assert.deepEqual(task.command.args, [
@@ -4070,7 +4094,12 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       journeyArtifactDir,
     ]);
     assert.deepEqual(task.command.env, journeyEnv);
-    assert.deepEqual(task.after, shardDependencies);
+    assert.deepEqual(
+      task.after,
+      Number(shard) <= 3
+        ? shardDependencies
+        : [...shardDependencies, `journeys.shard-${Number(shard) - 3}`],
+    );
     assert.deepEqual(task.obligations, []);
     assert.equal(task.lane, `journey-shard-${shard}`);
     assert.equal(task.slots, 2);
@@ -4111,6 +4140,10 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "journeys.shard-1",
     "journeys.shard-2",
     "journeys.shard-3",
+    "journeys.shard-4",
+    "journeys.shard-5",
+    "journeys.shard-6",
+    "journeys.shard-7",
   ]);
   assert.equal(aggregate.obligations, undefined);
   assert.equal(

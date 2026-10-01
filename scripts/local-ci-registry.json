@@ -45,6 +45,15 @@
           "id": "bootstrap.install"
         },
         {
+          "label": "Install pinned Electron binary",
+          "command": "node",
+          "args": ["scripts/ensure-electron-binary.mjs"],
+          "id": "bootstrap.electron-binary",
+          "after": ["bootstrap.install"],
+          "timeoutMs": 180000,
+          "obligations": []
+        },
+        {
           "label": "Build shared workspace dependencies",
           "command": "pnpm",
           "args": ["build:workspace:dependencies"],
@@ -1118,7 +1127,11 @@
           "command": "pnpm",
           "args": ["mcp:build"],
           "id": "journeys.mcp-build",
-          "after": ["electron.build", "native.build"],
+          "after": [
+            "electron.build",
+            "native.build",
+            "bootstrap.electron-binary"
+          ],
           "lane": "cargo-shared",
           "slots": 2,
           "timeoutMs": 180000,
@@ -1202,6 +1215,110 @@
           "obligations": []
         },
         {
+          "label": "Run product journey shard 4",
+          "command": "node",
+          "args": [
+            "scripts/local-ci-xvfb.mjs",
+            "node",
+            "electron/scripts/product-journey-shards.mjs",
+            "run",
+            "--shard",
+            "4",
+            "--output-dir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
+          ],
+          "id": "journeys.shard-4",
+          "after": [
+            "journeys.mcp-build",
+            "native.public-tests",
+            "c2zc.fixture-verify",
+            "webgl.tests",
+            "journeys.shard-1"
+          ],
+          "lane": "journey-shard-4",
+          "slots": 2,
+          "timeoutMs": 240000,
+          "obligations": []
+        },
+        {
+          "label": "Run product journey shard 5",
+          "command": "node",
+          "args": [
+            "scripts/local-ci-xvfb.mjs",
+            "node",
+            "electron/scripts/product-journey-shards.mjs",
+            "run",
+            "--shard",
+            "5",
+            "--output-dir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
+          ],
+          "id": "journeys.shard-5",
+          "after": [
+            "journeys.mcp-build",
+            "native.public-tests",
+            "c2zc.fixture-verify",
+            "webgl.tests",
+            "journeys.shard-2"
+          ],
+          "lane": "journey-shard-5",
+          "slots": 2,
+          "timeoutMs": 240000,
+          "obligations": []
+        },
+        {
+          "label": "Run product journey shard 6",
+          "command": "node",
+          "args": [
+            "scripts/local-ci-xvfb.mjs",
+            "node",
+            "electron/scripts/product-journey-shards.mjs",
+            "run",
+            "--shard",
+            "6",
+            "--output-dir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
+          ],
+          "id": "journeys.shard-6",
+          "after": [
+            "journeys.mcp-build",
+            "native.public-tests",
+            "c2zc.fixture-verify",
+            "webgl.tests",
+            "journeys.shard-3"
+          ],
+          "lane": "journey-shard-6",
+          "slots": 2,
+          "timeoutMs": 240000,
+          "obligations": []
+        },
+        {
+          "label": "Run product journey shard 7",
+          "command": "node",
+          "args": [
+            "scripts/local-ci-xvfb.mjs",
+            "node",
+            "electron/scripts/product-journey-shards.mjs",
+            "run",
+            "--shard",
+            "7",
+            "--output-dir",
+            ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
+          ],
+          "id": "journeys.shard-7",
+          "after": [
+            "journeys.mcp-build",
+            "native.public-tests",
+            "c2zc.fixture-verify",
+            "webgl.tests",
+            "journeys.shard-4"
+          ],
+          "lane": "journey-shard-7",
+          "slots": 2,
+          "timeoutMs": 240000,
+          "obligations": []
+        },
+        {
           "label": "Run every product journey",
           "command": "node",
           "args": [
@@ -1211,7 +1328,15 @@
             ".artifacts/local-ci/runs/__LOCAL_CI_RUN_ID__/product-journeys"
           ],
           "id": "journeys.run",
-          "after": ["journeys.shard-1", "journeys.shard-2", "journeys.shard-3"],
+          "after": [
+            "journeys.shard-1",
+            "journeys.shard-2",
+            "journeys.shard-3",
+            "journeys.shard-4",
+            "journeys.shard-5",
+            "journeys.shard-6",
+            "journeys.shard-7"
+          ],
           "slots": 1,
           "timeoutMs": 30000
         }

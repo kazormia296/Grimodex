@@ -448,6 +448,9 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Install pinned Electron binary
+        run: node scripts/ensure-electron-binary.mjs
+
       - name: Electron runtime performance contracts
         run: pnpm test:electron-perf
 
@@ -564,6 +567,10 @@ jobs:
 
       - if: steps.product-journey-impact.outputs.should_run == 'true'
         run: pnpm install --frozen-lockfile
+
+      - name: Install pinned Electron binary
+        if: steps.product-journey-impact.outputs.should_run == 'true'
+        run: node scripts/ensure-electron-binary.mjs
 
       - name: Electron system dependencies
         if: steps.product-journey-impact.outputs.should_run == 'true'

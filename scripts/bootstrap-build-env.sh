@@ -158,6 +158,9 @@ if [ "${SKIP_PNPM_INSTALL:-0}" = "1" ]; then
 else
   log "pnpm install --frozen-lockfile を実行します"
   $PNPM install --frozen-lockfile
+  # .npmrc disables lifecycle scripts, so install the pinned Electron binary
+  # explicitly before any smoke or product journey command launches it.
+  node scripts/ensure-electron-binary.mjs
 fi
 
 # ---------------------------------------------------------------------------
