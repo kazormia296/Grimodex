@@ -287,8 +287,69 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
   );
 
   const workerScript = "scripts/nir1-c-query-worker-ci.sh";
+  const allocatorTest =
+    "q_s_origins_no_fallback_failed_realloc_and_zero_live_seal";
+  const workerScriptBody = await read(workerScript);
+  const allocatorSource = await read(
+    "src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs",
+  );
+  assert.ok(
+    workerScriptBody.includes(`--bin nir1-c-query-worker ${allocatorTest}`),
+  );
+  assert.match(allocatorSource, new RegExp(`fn ${allocatorTest}\\(`));
+  assert.ok(
+    workerScriptBody.includes(
+      '"id":"Q512/R2/A3-eligible-shared","qualifiedMaterials":140,"qualifiedRevisions":1,"ineligibleCandidates":0',
+    ),
+  );
+  assert.ok(
+    workerScriptBody.includes(
+      'fixture "$manifest_path" Q512/R2/A3-eligible-shared "$q512_fixture_builder_path"',
+    ),
+  );
+  const q512Test =
+    "native_worker_returns_canonical_512_a3_eligible_seed_local_graph";
+  const q513Test =
+    "native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge";
+  for (const testName of [q512Test, q513Test]) {
+    assert.ok(
+      workerScriptBody.includes(testName),
+      `worker gate omits ${testName}`,
+    );
+  }
+  assert.ok(
+    workerScriptBody.indexOf(
+      'NIR1_Q2_FIXTURE_PATH="$q512_worker_fixture_path"',
+    ) < workerScriptBody.indexOf(q512Test),
+    "Q512 Gold test must use its private copy of the canonical fixture",
+  );
+  assert.ok(
+    workerScriptBody.indexOf(
+      'NIR1_Q2_FIXTURE_PATH="$q513_worker_fixture_path"',
+    ) < workerScriptBody.indexOf(q513Test),
+    "Q513 test must use a separate disposable copy",
+  );
+  assert.ok(
+    workerScriptBody.includes(
+      'cp -- "$q512_fixture_file" "$q512_test_fixture_file"',
+    ),
+  );
+  assert.ok(
+    workerScriptBody.includes(
+      'cp -- "$q512_fixture_file" "$q513_test_fixture_file"',
+    ),
+  );
+  assert.ok(workerScriptBody.includes("-wal -shm -journal"));
+  assert.equal(
+    (workerScriptBody.match(/^assert_q512_source_unchanged$/gm) ?? []).length,
+    2,
+  );
+  assert.ok(workerScriptBody.includes("trap cleanup_fixture EXIT"));
+  assert.ok(workerScriptBody.includes('rm -rf -- "$fixture_dir"'));
   const workerStep = workflow.jobs["nir1-c-query-worker"].steps.find(
-    ({ name }) => name === "Build the private Q2 fixture and run focused real-worker tests",
+    ({ name }) =>
+      name ===
+      "Build private Q2/Q512 fixtures and run focused real-worker tests",
   );
   const workerTask = registry.stages.rust.commands.find(
     ({ id }) => id === "rust.c-query-worker",

@@ -66,7 +66,7 @@ pub(crate) use self::input::{A2SqlObservation, A3SqlObservation};
 use self::memory::{RetainedLedger, RetainedPart};
 
 pub(crate) const QUERY_SQL_STEPS: u64 = 100_000;
-pub(crate) const QUERY_DEADLINE: Duration = Duration::from_millis(8);
+pub(crate) const QUERY_DEADLINE: Duration = Duration::from_millis(100);
 const QUERY_MAX_PAGES: usize = 32;
 // JSON/A2/A3 parsing allocates typed values and fixed per-record metadata
 // before the qualified material can be moved into the shared cache.  Reserve

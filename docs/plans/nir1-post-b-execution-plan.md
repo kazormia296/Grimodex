@@ -154,12 +154,12 @@ queryごとに完全Graphをscanして完全性を証明しない。既存構造
 
 | 単位 | 契約 |
 |---|---|
-| 単一Revision validation | 現行512 records / 2 MiB。query/build全体の容量と混同しない |
-| seed-local query | read/admission 512、batch 16×32、SQL 100,000 VM steps、1,000 steps刻みの取消・期限確認、2 MiB、Graph 8ms、reader/busy wait 0 |
+| 単一Revision validation | 現行512 records / 6,291,456 B（6 MiB）。query全体のmemory上限とは別のvalidation limit |
+| seed-local query | read/admission 512、batch 16×32、SQL 100,000 VM steps、1,000 steps刻みの取消・期限確認、aggregate 6,291,456 B（worker Q 4,718,592 B + Native 1,572,864 B）、親のadmission→valid Native result lease ≤100 ms、reader/busy wait 0 |
 | 意味上の探索 | 最大2hop、発見Entity 12、適格edge展開144、返却Scene 8 |
 | whole-project build | B-closeで測定・確定する独立資源契約 |
 
-以上は既存固定契約値であり、今回測定した結果ではない。[S3]
+C-queryの6 MiB / 100 msは明示批准された現行契約で、旧2 MiB / 8 msのquery全体上限・期限を置き換える。Registration/READYとcleanup/retirementの待機はこのadmission期限とは別。単一Revision validationも6 MiBで、Packingだけが2 MiB上限を維持する。記録済みの過去値は変更しない。以上は固定契約値であり、今回測定した結果ではない。[S3]
 
 query予算は候補SQL、A2/A3、JSON解析、Evidence解決、path構築、必要なserializationを通じて共有する。helper/Revision/pageごとにリセットしない。不適格行もread/admissionを消費するが、frontier・適格edge展開・順位には寄与しない。非開示edgeを橋にして先の適格Entityへ到達することは禁止する。
 
@@ -201,7 +201,7 @@ R+IRの既存membership、順位、excerpt、Raw anchorを保持する。Graph�
 
 既存24検索case、G-01〜G-08を、共通query/manual seed/contextで R / R+IR / R+IR+Graph 比較する。Graph改善の比較相手はR+IR。seed-onlyは診断専用。macro非回帰、G-01の事前指定改善、Evidence妥当性100%、禁止寄与0を要求し、path Evidence追加とScene検索改善を別計測する。
 
-Pは固定B=54.2ms、D=10.84ms、上限65.04ms、T=2144.7msの既存契約、Gold、model hash、warmup/run数、測定起点を維持する。Graph8msを追加待機予算として足さない。既存standalone性能合格は過去証跡であり、Graph統合後のPASSではない。build/回復測定のどの区間へ固定Tが適用されるかも既存P契約へ対応付け、B容量診断と都合よく混ぜない。[S3]
+Pは固定B=54.2ms、D=10.84ms、上限65.04ms、T=2144.7msの既存契約、Gold、model hash、warmup/run数、測定起点を維持する。Graph queryの親admission→valid Native result lease期限は§6.2の100msで、Pの固定予算とは別契約として扱い、追加待機予算へ足さない。既存standalone性能合格は過去証跡であり、Graph統合後のPASSではない。build/回復測定のどの区間へ固定Tが適用されるかも既存P契約へ対応付け、B容量診断と都合よく混ぜない。[S3]
 
 Graphの常時unavailableで速さと禁止寄与0だけを満たしても合格にしない。品質・可用性・性能を同時に満たすこと。C-productでGraphを公開してもAI送信の停止は維持する。
 
@@ -297,7 +297,7 @@ Source/Decision未変更でもScene/holder/Worldlineの変更で不適格なら�
 
 ### 10.2. 1 turn全体の資源契約
 
-依存node/edge訪問、SQL/read量、参照解決bytes、保持メモリ、wall time、取消/cleanupを一つのturn予算で管理する。候補ごとにリセットしない。同一snapshot/purpose/Scopeの検証結果を共有し、長いchain、共有祖先が多いdiamond/fan-out、欠損、循環を測定する。数値は実測後に固定し、Graphの512/8msを流用しない。
+依存node/edge訪問、SQL/read量、参照解決bytes、保持メモリ、wall time、取消/cleanupを一つのturn予算で管理する。候補ごとにリセットしない。同一snapshot/purpose/Scopeの検証結果を共有し、長いchain、共有祖先が多いdiamond/fan-out、欠損、循環を測定する。数値は実測後に固定し、C-queryの512 read/admission上限や100ms admission-to-lease期限を流用しない。
 
 子の検証完了前に親を適格と確定しない。循環/欠損/未知version/上限到達は検証未完了として扱い、残りを安全と仮定しない。全closure本文を各messageに複製せず、immutable参照をたどる。
 

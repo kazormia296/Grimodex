@@ -1,20 +1,24 @@
-# NIR-1 C-query 2 MiB 同時メモリ強制 — 旧提案と批准済み実装境界
+# NIR-1 C-query 6 MiB 同時メモリ強制 — 旧提案と批准済み実装境界
 
 状態: 2026-09-29にユーザーが `nir610-q-default-registration-scratch/1` を批准した。現行の実装境界は以下の「批准済み実装境界」が正本であり、方式の批准は実装・受入れ合格・Graph製品公開を意味しない。C-queryと製品Graph入口は引き続きHOLD／非公開。旧 `draftRef` `nir1-c-query-memory-enforcement-proposal/1` と `contractId` `graph-query-memory-accounting/1` は、下記に保存する未批准の歴史的提案を指す識別子であり、批准済み契約ではない。
 
-旧提案のうち、Native/UI全copyを一つのleaseで数える方式、worker基礎量に対するOS別RSS/数値上限、旧脅威モデル・受入れ表は批准済み設計と衝突する範囲で superseded であり、現行C-query要件として実装してはならない。この文書の対象はprivate workerとNative leaseまでであり、将来のC-product UI copyは別途受け入れる。ここでUI copyの計上・解放を証明せず、無視を承認もしない。メモリ除外を新設しない。維持する除外は既存のOS/stack/mapping境界だけで、SQLite・通常Rust・control・allocator metadata・frameを2 MiBの計上対象から外さない。既存固定値と [post-B §6.2](nir1-post-b-execution-plan.md#62-資源契約) の機能契約は変わらない。
+2026-10-01追記: PR #610の数値契約についてユーザーが明示改訂した。従来の2,097,152 B合計／8 msは本候補の受入れ条件ではなく、合計6,291,456 B（worker Q 4,718,592 B、Native 1,572,864 B）／parent admission-to-returned-result-lease 16 msを適用する。これは明示的改訂であり、Source／Revision／Decision／Scope／Freshness／A2／A3認可、512 charged records、100,000 SQLite steps、Gold、registration S/baseline、ownershipと実retirement条件は変更しない。C-queryと製品Graph入口は引き続きHOLD／非公開。
+
+2026-10-02追記: ユーザーが parent admission-to-valid-Native-result-lease の期限を16 msから100 msへ明示改訂した。6,291,456 B（worker Q 4,718,592 B、Native 1,572,864 B）、512 charged records、100,000 SQLite steps、Gold、registration S/baseline、authorization/current-binding、late-result拒否と実retirement条件は変更しない。registration/READYはquery admissionより前、startup/retirement waitsは別期限のまま。100 ms内に完全なbound frame・terminal commit・clean EOF・current bindingを検証できた場合だけleaseを返し、期限後の結果は採用しない。C-queryと製品Graph入口は引き続きHOLD／非公開。
+
+旧提案のうち、Native/UI全copyを一つのleaseで数える方式、worker基礎量に対するOS別RSS/数値上限、旧脅威モデル・受入れ表は批准済み設計と衝突する範囲で superseded であり、現行C-query要件として実装してはならない。この文書の対象はprivate workerとNative leaseまでであり、将来のC-product UI copyは別途受け入れる。ここでUI copyの計上・解放を証明せず、無視を承認もしない。メモリ除外を新設しない。維持する除外は既存のOS/stack/mapping境界だけで、SQLite・通常Rust・control・allocator metadata・frameを6 MiBの計上対象から外さない。上記2026-10-01/02の数値改訂以外の機能・認可契約は [post-B §6.2](nir1-post-b-execution-plan.md#62-資源契約) に従う。
 
 ## 批准済み実装境界 — `nir610-q-default-registration-scratch/1`
 
 ### 固定資源領域と所有者
 
-1. **Worker Q — 1,572,864 bytes。** Qは最初の通常Rust allocationから唯一のdefault heapで、worker内の全通常Rust allocationと全SQLite allocationを含む。SQLite connection/cache/JSON、reader/control/callback/Registration、query/frame、allocator control・metadata・alignmentも含める。SQLite callbackはscratch scope中も常にQを使う。Qをgrowせず、Systemや外部PCACHEへのfallbackを行わず、Sの空き容量をQへcreditしない。
+1. **Worker Q — 4,718,592 bytes。** Qは最初の通常Rust allocationから唯一のdefault heapで、worker内の全通常Rust allocationと全SQLite allocationを含む。SQLite connection/cache/JSON、reader/control/callback/Registration、query/frame、allocator control・metadata・alignmentも含める。SQLite callbackはscratch scope中も常にQを使う。Qをgrowせず、Systemや外部PCACHEへのfallbackを行わず、Sの空き容量をQへcreditしない。
 2. **Registration S — 最大64 MiB。** 既存baseline枠は、明示scope内の同期的なregistration一時Rust allocationだけに使う。Qのdefault・query処理・SQLite fallbackではなく、SのfreeはQ予算を増やさない。scopeを抜けたS allocationは解放し、外側のregistration/maintenance cleanup、hook/transaction復元、同一connectionのidentity/current/cancel確認が成功した後、実allocation live countが0であることを確認してSを永久sealしてからREADYを公開する。Q所有のPendingRegistrationは、この順序が完了するまで使用可能なRegistrationにならない。
-3. **Native — 524,288 bytes。** Native request/response領域、bounded frame検証、結果保持と `GraphResultLease` を含む固定領域。Qとの貸借・未使用分の移転はしない。Q + Native は **2,097,152 bytes** で固定する。
+3. **Native — 1,572,864 bytes。** Native request/response領域、bounded frame検証、結果保持と `GraphResultLease` を含む固定領域。Qとの貸借・未使用分の移転はしない。Q + Native は **6,291,456 bytes** で固定する。
 
 ### 接続・結果期限・retirement
 
-Nativeの単一ownerとworkerは、同じcanonical authority SQLite connectionをregistrationとqueryで共有する。別connectionのcopied grant、generation値またはworkerのstatus申告は認可にならない。Source/Revision/Decision/Scope/Freshness、ReadIdentity、A2/A3、sealed indexと既存canonical SQL・順序・digestを維持し、partial/stale resultは拒否する。workerはquery admission前にREADYでなければならず、親の8 ms期限はadmissionからNativeが結果leaseを受け取るまで一つだけ適用する。
+Nativeの単一ownerとworkerは、同じcanonical authority SQLite connectionをregistrationとqueryで共有する。別connectionのcopied grant、generation値またはworkerのstatus申告は認可にならない。Source/Revision/Decision/Scope/Freshness、ReadIdentity、A2/A3、sealed indexと既存canonical SQL・順序・digestを維持し、partial/stale resultは拒否する。workerはquery admission前にREADYでなければならず、親の100 ms期限はadmissionからNativeが結果leaseを受け取るまで一つだけ適用する。
 
 期限内に完全なbound frame、terminal commit、clean EOF、current bindingが確認できれば、child exit前でも結果を返せる。pre-commit failureは拒否し、post-commit nonzeroはretirement anomalyとする。結果leaseのdropに加え、再loan前に実child exit・pipe EOF・reader joinを確認する。kill要求、error、EOFだけではcleanup完了を証明しない。Restore/cancel/shutdown時もownerを保持し、実終了を証明できなければslotをquarantineする。
 
@@ -30,7 +34,7 @@ Nativeの単一ownerとworkerは、同じcanonical authority SQLite connection�
 
 ### 受入れへの影響とHOLD
 
-2 MiB、worker/Native固定分割、512/513 charged records、100,000/100,001 SQLite steps、8 ms parent admission-to-lease、original Q2/old-Q512 fixturesとGold、canonical identity/digest、cleanup条件は変更しない。Q2の成功はQ512/513、3 OS実行、Native/allocator境界、残る独立review・Quick/Full等の受入れを代替しない。診断・単体試験・批准文書だけではGraphを公開せず、既存product Graph入口は閉じたままとする。
+6,291,456 B aggregate / worker Q 4,718,592 B / Native 1,572,864 B、100 ms parent admission-to-leaseを適用し、512/513 charged records、100,000/100,001 SQLite steps、original Q2/old-Q512 fixturesとindependent Gold、canonical identity/digest、cleanup条件は変更しない。Q2の成功はQ512/513、3 OS実行、Native/allocator境界、残る独立review・Quick/Full等の受入れを代替しない。診断・単体試験・批准文書だけではGraphを公開せず、既存product Graph入口は閉じたままとする。
 
 ## 旧v1提案本文（履歴保存のみ。以下は批准済み実装要件ではない）
 

@@ -753,11 +753,11 @@ mod tests {
         assert!(PrivateDirectory::create().is_err());
     }
 
-    // A debug test may legitimately miss the fixed 8 ms deadline. Keep the
+    // A debug test may legitimately miss the fixed 100 ms deadline. Keep the
     // positive available-response gate explicit for isolated release runs.
     #[cfg(target_os = "linux")]
     #[test]
-    #[ignore = "requires isolated release build and 8 ms Graph response"]
+    #[ignore = "requires isolated release build and 100 ms Graph response"]
     fn private_fixture_registered_graph_positive() -> Result<()> {
         let report = run_private_fixture(
             CASE_ID,

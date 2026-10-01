@@ -194,7 +194,7 @@ function validateGraphProposalContract(executionPlan) {
     return row;
   };
   const revisionResourceRow = resourceRow("Entity／Relation Revision bundle");
-  assert.match(revisionResourceRow, /512 records.*2 MiB.*validation contract/);
+  assert.match(revisionResourceRow, /512 records.*6 MiB.*validation contract/);
   assert.doesNotMatch(revisionResourceRow, /whole-project|query totals|deadline/i);
   const queryResourceRow = resourceRow("seed-local Graph query");
   for (const queryBound of [
@@ -202,8 +202,8 @@ function validateGraphProposalContract(executionPlan) {
     "batch `16x32`",
     "SQL `100,000 VM steps`",
     "`1,000` steps",
-    "`2 MiB`",
-    "Graph `8ms`",
+    "`6 MiB`",
+    "Graph `100ms`",
     "reader／busy wait `0`",
   ]) {
     assert.match(queryResourceRow, new RegExp(escapeRegExp(queryBound)));
@@ -225,7 +225,7 @@ function validateGraphProposalContract(executionPlan) {
   assert.match(buildResourceRow, /supported capacityの数値は第1診断stage後まで未批准/);
   assert.doesNotMatch(
     buildResourceRow,
-    /(?:candidate count|compact roster count|cumulative bytes|cumulative SQL)[^|]*(?:512|100,000|2 MiB|8ms|deadline\s*[:=]|\d+ms)/i,
+    /(?:candidate count|compact roster count|cumulative bytes|cumulative SQL)[^|]*(?:512|100,000|6 MiB|100ms|deadline\s*[:=]|\d+ms)/i,
     "whole-project row must not impose a numeric build cap or deadline",
   );
   assert.doesNotMatch(
@@ -1388,7 +1388,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         "batch `16x32`",
         "SQL `100,000 VM steps`",
         "cancellation every `1,000` steps",
-        "Graph `8ms`",
+        "Graph `100ms`",
         "reader／busy wait `0`",
         "oversized row",
         "allocation前",
@@ -1680,8 +1680,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       );
       for (const [pattern, label] of [
         [/三つのresource unit/, "three resource units"],
-        [/512 records.*2 MiB.*validation contract/, "Revision bundle validation limits"],
-        [/read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*`2 MiB`.*Graph `8ms`.*reader／busy wait `0`/, "seed-local query limits"],
+        [/512 records.*6 MiB.*validation contract/, "Revision bundle validation limits"],
+        [/read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*`6 MiB`.*Graph `100ms`.*reader／busy wait `0`/, "seed-local query limits"],
         [/whole-project B Index build.*現在の全候補.*qualified material.*atomic publish/, "whole-project build scope"],
         [/queryの合計値はbuildのcandidate count、compact roster count、cumulative bytes、cumulative SQLをcapしない/, "query totals must not cap build totals"],
         [/small／keyset pages.*一度に一つのA2 Revision/, "paged one-revision-at-a-time build"],

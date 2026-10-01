@@ -24,7 +24,7 @@ use super::{
     Nir1GraphRequest, QUERY_DEADLINE,
 };
 
-const PARENT_BYTES: usize = 524_288;
+const PARENT_BYTES: usize = 1_572_864;
 pub const REQUEST_BYTES: usize = 8_192;
 const REQUEST_CAPACITY_BYTES: usize = REQUEST_BYTES;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -280,14 +280,21 @@ const _: () = assert!(
 type Storage = Vec<NativeRegion>;
 
 impl NativeRegion {
-    fn new() -> Self {
-        Self {
-            mailbox: ReaderMailbox {
+    /// Initialize a heap-reserved region in place, without a backing-sized stack temporary.
+    ///
+    /// # Safety
+    /// `pointer` must reference aligned, writable storage for an uninitialized `NativeRegion`.
+    unsafe fn initialize_at(pointer: *mut Self) {
+        unsafe {
+            std::ptr::addr_of_mut!((*pointer).mailbox).write(ReaderMailbox {
                 events: AtomicUsize::new(0),
                 frame_len: AtomicUsize::new(0),
                 parent_thread: UnsafeCell::new(None),
-            },
-            bytes: UnsafeCell::new([0; STORAGE_BYTES]),
+            });
+            // Zero is valid for every byte in the UnsafeCell array backing.
+            std::ptr::addr_of_mut!((*pointer).bytes)
+                .cast::<u8>()
+                .write_bytes(0, STORAGE_BYTES);
         }
     }
 
@@ -362,7 +369,12 @@ fn reserve_storage() -> Result<Storage> {
     let mut storage = Vec::new();
     storage.try_reserve_exact(1)?;
     ensure!(storage.capacity() == 1, "NIR1_GRAPH_NATIVE_ARENA_CAPACITY");
-    storage.push(NativeRegion::new());
+    // SAFETY: the reserved Vec slot is aligned writable storage; initialize the
+    // complete region before making it part of the Vec's initialized length.
+    unsafe {
+        NativeRegion::initialize_at(storage.as_mut_ptr());
+        storage.set_len(1);
+    }
     Ok(storage)
 }
 
@@ -1988,13 +2000,14 @@ mod tests {
         wire.extend_from_slice(frame);
         wire.extend_from_slice(suffix);
 
-        let region = Box::new(NativeRegion::new());
+        let storage = reserve_storage().expect("reserve Native test region");
+        let region = &storage[0];
         let timing = ReaderPublicationTiming::default();
         timing.begin_query(Instant::now());
         region.set_parent_thread(thread::current());
         region.request();
         // SAFETY: this test is the only reader and keeps the region alive.
-        unsafe { read_worker_pipe(Cursor::new(wire), &*region as *const NativeRegion, &timing) };
+        unsafe { read_worker_pipe(Cursor::new(wire), region as *const NativeRegion, &timing) };
         (
             region.mailbox.events.load(Ordering::Acquire),
             timing.stamps(),
@@ -2151,6 +2164,11 @@ mod tests {
 
     #[test]
     fn native_region_reserves_metadata_and_bounds_request() -> Result<()> {
+        assert_eq!(PARENT_BYTES, 1_572_864);
+        assert_eq!(
+            4_718_592 + PARENT_BYTES,
+            grimodex_core::narrative_nir1::MAX_GRAPH_INPUT_BYTES
+        );
         let child_session_bytes = std::mem::size_of::<Option<ChildSession>>();
         let request_bytes = REQUEST_CAPACITY_BYTES + std::mem::size_of::<Nir1GraphRequest>();
         let metadata = std::mem::size_of::<RegionControl>()

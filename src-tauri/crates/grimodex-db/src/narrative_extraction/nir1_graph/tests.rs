@@ -180,8 +180,8 @@ fn graph_request(seed: &str) -> Nir1GraphRequest {
     }
 }
 
-// Functional contracts have their own generous deadline; the production 8ms
-// limit remains unchanged and deterministic exhaustion is tested separately.
+// Functional contracts have their own generous deadline; production's 100ms
+// limit is independently tested and deterministic exhaustion stays separate.
 fn query(reader: &mut Nir1GraphReader, seed: &str) -> Result<Nir1GraphResponse> {
     reader.query_with_deadline(&graph_request(seed), Duration::from_secs(2), 100_000)
 }
@@ -543,8 +543,8 @@ fn worker_registration_observes_cancellation_during_postflight_identity() -> Res
 }
 
 #[test]
-#[ignore = "run explicitly as the production 8ms availability measurement"]
-fn production_query_has_an_available_8ms_success_path() -> Result<()> {
+#[ignore = "run explicitly as the production 100ms availability measurement"]
+fn production_query_has_an_available_100ms_success_path() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut reader = fixture.registered_reader()?;
     let started = Instant::now();
@@ -555,7 +555,7 @@ fn production_query_has_an_available_8ms_success_path() -> Result<()> {
         response.status, response.reason
     );
     if response.status != "available" {
-        // Diagnostic only: distinguish the 8 ms deadline from a fixture or
+        // Diagnostic only: distinguish the 100 ms deadline from a fixture or
         // qualification failure without relaxing the production assertion.
         let diagnostic_started = Instant::now();
         let diagnostic = query(&mut reader, "nir1-alice")?;
@@ -568,8 +568,8 @@ fn production_query_has_an_available_8ms_success_path() -> Result<()> {
     }
     assert_eq!(response.status, "available", "{:?}", response.reason);
     assert!(
-        elapsed < Duration::from_millis(8),
-        "production query exceeded its 8ms wall budget: {elapsed:?}"
+        elapsed <= QUERY_DEADLINE,
+        "production query exceeded its 100ms wall budget: {elapsed:?}"
     );
     Ok(())
 }
@@ -1492,7 +1492,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             );
             ensure!(
                 returned_elapsed > QUERY_DEADLINE,
-                "cleanup timeout was conflated with the 8ms Graph deadline: {returned_elapsed:?}"
+                "cleanup timeout was conflated with the 100ms Graph deadline: {returned_elapsed:?}"
             );
             eprintln!(
                 "Native Q2 cleanup-unproved: call-to-error={returned_elapsed:?}; query deadline={QUERY_DEADLINE:?}; cleanup deadline=500ms; child exit + real EOF + full frame observed, EOF proof transfer suppressed"
@@ -1735,7 +1735,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             };
             ensure!(
                 owner.frame_commit_observed_within_deadline_for_test(),
-                "Native did not observe FRAME+COMMIT inside the 8ms query loop"
+                "Native did not observe FRAME+COMMIT inside the 100ms query loop"
             );
             let error_text = format!("{error:#}");
             ensure!(
@@ -1870,8 +1870,8 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 | Q2WorkerScenario::ResultHeldReaderJoinFailure
         ) {
             ensure!(
-                returned_elapsed <= Duration::from_millis(8)
-                    && lease.elapsed() <= Duration::from_millis(8),
+                returned_elapsed <= QUERY_DEADLINE
+                    && lease.elapsed() <= QUERY_DEADLINE,
                 "committed live-child lease missed the fixed deadline: call={returned_elapsed:?}, admission={:?}",
                 lease.elapsed()
             );
@@ -2035,9 +2035,9 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         }
         if scenario == Q2WorkerScenario::PostCommitNonzero {
             ensure!(
-                returned_elapsed <= Duration::from_millis(8)
-                    && admission_elapsed <= Duration::from_millis(8),
-                "terminal-commit lease missed its 8ms deadline: call={returned_elapsed:?}, admission={admission_elapsed:?}"
+                returned_elapsed <= QUERY_DEADLINE
+                    && admission_elapsed <= QUERY_DEADLINE,
+                "terminal-commit lease missed its 100ms deadline: call={returned_elapsed:?}, admission={admission_elapsed:?}"
             );
             ensure!(
                 lease.committed_eof_with_reader_pending_for_test(),
@@ -2090,11 +2090,11 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             "Native Q2 worker phase diagnostic (test instrumentation; diagnostic only): call_entry_to_return={returned_elapsed:?}; admission_to_lease={admission_elapsed:?}; outcome=lease; phases={phases:?}"
         );
         ensure!(
-            returned_elapsed <= Duration::from_millis(8),
+            returned_elapsed <= QUERY_DEADLINE,
             "Native Q2 worker returned after deadline: {returned_elapsed:?}"
         );
         ensure!(
-            admission_elapsed <= Duration::from_millis(8),
+            admission_elapsed <= QUERY_DEADLINE,
             "Native Q2 worker admission deadline: {admission_elapsed:?}"
         );
         {
@@ -2430,6 +2430,19 @@ fn native_worker_returns_canonical_512_a3_eligible_seed_local_graph() -> Result<
         entity_count: 70,
         registry_rows: 4,
         a3_rows: 370,
+        add_unrelated_seed_edge: false,
+    })
+}
+
+#[test]
+#[ignore = "requires official Q512 preseed and normal worker binary"]
+fn native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge() -> Result<()> {
+    run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(Canonical512FixtureCase {
+        label: "Q513-unrelated-seed-edge",
+        entity_count: 70,
+        registry_rows: 4,
+        a3_rows: 370,
+        add_unrelated_seed_edge: true,
     })
 }
 
@@ -2441,6 +2454,7 @@ fn native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph()
         entity_count: 12,
         registry_rows: 33,
         a3_rows: 486,
+        add_unrelated_seed_edge: false,
     })
 }
 
@@ -2450,6 +2464,7 @@ struct Canonical512FixtureCase {
     entity_count: usize,
     registry_rows: usize,
     a3_rows: usize,
+    add_unrelated_seed_edge: bool,
 }
 
 fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
@@ -2561,9 +2576,9 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     assert_eq!(a3_rows, case.a3_rows);
     assert_eq!(charged_rows, MAX_GRAPH_RECORDS - 1);
     assert_eq!(MAX_GRAPH_RECORDS, 512);
-    assert_eq!(MAX_GRAPH_INPUT_BYTES, 2_097_152);
+    assert_eq!(MAX_GRAPH_INPUT_BYTES, 6_291_456);
     assert_eq!(QUERY_SQL_STEPS, 100_000);
-    assert_eq!(QUERY_DEADLINE, Duration::from_millis(8));
+    assert_eq!(QUERY_DEADLINE, Duration::from_millis(100));
     drop(source_db);
 
     let directory = TestDirectory(std::env::temp_dir().join(format!(
@@ -2659,6 +2674,36 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     native_state.switching.core().set_ready(original_binding)?;
     let snapshot = active_workspace_snapshot(&native_state)?;
     let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
+    if case.add_unrelated_seed_edge {
+        let edge_id = format!("q513-seed-decoy-{}", uuid::Uuid::new_v4());
+        let source_identity = format!("codex:{SEED}");
+        authority.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let inserted = tx.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id,project_id,consumer_kind,consumer_key,source_object_identity,created_at)
+                 VALUES (?1,?2,'graph-test-unrelated',?1,?3,'2026-10-01T00:00:00Z')",
+                rusqlite::params![edge_id, PROJECT, source_identity],
+            )?;
+            ensure!(
+                inserted == 1,
+                "Q513 decoy edge was not inserted exactly once"
+            );
+            let count: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges
+                  WHERE id=?1 AND project_id=?2 AND consumer_kind='graph-test-unrelated'
+                    AND consumer_key=?1 AND source_object_identity=?3",
+                rusqlite::params![edge_id, PROJECT, source_identity],
+                |row| row.get(0),
+            )?;
+            ensure!(
+                count == 1,
+                "Q513 disposable DB must contain exactly one decoy edge"
+            );
+            tx.commit()?;
+            Ok(())
+        })?;
+    }
     let post_maintenance = authority.with_read_transaction(|conn| {
         let mut usage = QueryUsage::default();
         usage.admit(0, PROJECT.len() + QUERY_SCENE.len() + SEED.len())?;
@@ -2719,6 +2764,18 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                 break;
             }
             a2_rows += a2.rows;
+            if case.add_unrelated_seed_edge {
+                let shape = super::input::preflight_disclosure_with_payload_bytes(
+                    conn,
+                    PROJECT,
+                    revision_id,
+                    QUERY_SCENE,
+                    a2.payload_bytes,
+                    MAX_GRAPH_RECORDS,
+                    MAX_GRAPH_INPUT_BYTES - usage.bytes,
+                )?;
+                a3_rows += shape.rows;
+            }
             let a3 = match super::input::preflight_disclosure_with_payload_bytes(
                 conn,
                 PROJECT,
@@ -2740,28 +2797,43 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             }
             a3_rows += a3.rows;
         }
+        let attempted_rows = candidate_rows + a2_rows + a3_rows;
         Ok((
             candidate_rows,
             candidates.len(),
             a2_rows,
             a3_rows,
             usage.rows,
+            attempted_rows,
             first_refusal,
         ))
     })?;
     eprintln!(
-        "{} post-maintenance preflight: candidate_rows={} canonical_candidates={} A2_rows={} A3_rows={} charged_rows={} first_refusal={:?}",
+        "{} post-maintenance preflight: candidate_rows={} canonical_candidates={} A2_rows={} A3_rows={} admitted_rows={} attempted_rows={} first_refusal={:?}",
         case.label,
         post_maintenance.0,
         post_maintenance.1,
         post_maintenance.2,
         post_maintenance.3,
         post_maintenance.4,
-        post_maintenance.5
+        post_maintenance.5,
+        post_maintenance.6
     );
+    let extra = if case.add_unrelated_seed_edge { 1 } else { 0 };
+    let expected_refusal = case
+        .add_unrelated_seed_edge
+        .then(|| "A3: NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT".to_owned());
     assert_eq!(
         post_maintenance,
-        (2, 1, 2 * case.entity_count, case.a3_rows, 512, None)
+        (
+            2 + extra,
+            1,
+            2 * case.entity_count,
+            case.a3_rows,
+            if extra == 0 { MAX_GRAPH_RECORDS } else { 143 },
+            MAX_GRAPH_RECORDS + extra,
+            expected_refusal,
+        )
     );
     owner.prepare(PROJECT)?;
     let request = Nir1GraphRequest {
@@ -2769,6 +2841,47 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         query_scene_id: QUERY_SCENE.to_owned(),
         seed_entity_id: SEED.to_owned(),
     };
+    if case.add_unrelated_seed_edge {
+        const REFUSAL: &str =
+            "query-worker-work-disclosure-record-limit-pre-cleanup-work-failed-disclosure-record-limit";
+        let started = Instant::now();
+        let error = match owner.query_once(&request) {
+            Ok(lease) => {
+                drop(lease);
+                anyhow::bail!("Q513 worker unexpectedly returned a result lease")
+            }
+            Err(error) => error,
+        };
+        let returned_elapsed = started.elapsed();
+        let error_text = format!("{error:#}");
+        ensure!(
+            error_text.contains("NIR1_GRAPH_WORKER_UNAVAILABLE")
+                && error_text.contains(REFUSAL)
+                && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
+            "Native Q513 refusal cause or cleanup proof changed: {error_text}"
+        );
+        ensure!(
+            owner.cleanup_proved_for_test(),
+            "Q513 reloan preceded child exit + stdout EOF + reader join"
+        );
+        let claim = authority
+            .claim_c_query_child()
+            .ok_or_else(|| anyhow::anyhow!("Q513 retirement did not release the child claim"))?;
+        claim.release();
+        drop(owner);
+        ensure!(
+            native_state
+                .switching
+                .core()
+                .workspace_participant_count()?
+                == 0,
+            "Q513 owner retained its workspace participant after retirement"
+        );
+        eprintln!(
+            "Native Q513 unrelated reverse-index refusal: reason={REFUSAL}; call-including-cleanup={returned_elapsed:?}; retirement=exit+EOF+reader-join"
+        );
+        return Ok(());
+    }
     let started = Instant::now();
     let lease = owner.query_once(&request)?;
     let returned_elapsed = started.elapsed();
@@ -2778,9 +2891,8 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         case.label
     );
     ensure!(
-        returned_elapsed <= Duration::from_millis(8)
-            && admission_elapsed <= Duration::from_millis(8),
-        "Native Q512 worker exceeded the unchanged 8 ms deadline"
+        returned_elapsed <= QUERY_DEADLINE && admission_elapsed <= QUERY_DEADLINE,
+        "Native Q512 worker exceeded the 100 ms deadline"
     );
     {
         let frame = lease.frame()?;
@@ -2881,6 +2993,10 @@ fn registered_graph_preserves_multi_edge_order_and_bindings() -> Result<()> {
 
 #[test]
 fn fixed_worker_arena_replaces_only_the_transient_reader_reserve() -> Result<()> {
+    assert_eq!(MAX_GRAPH_INPUT_BYTES, 6_291_456);
+    assert_eq!(MAX_GRAPH_RECORDS, 512);
+    assert_eq!(QUERY_SQL_STEPS, 100_000);
+    assert_eq!(QUERY_DEADLINE, Duration::from_millis(100));
     let estimate = transient_material_reserve(0, 1)?;
     let retained = MAX_GRAPH_INPUT_BYTES - estimate + 1;
 
@@ -3241,9 +3357,9 @@ fn cancellation_is_sticky_and_close_releases_physical_connection_and_participant
     assert!(reader.connection.is_none());
     assert_eq!(fixture.lifecycle.workspace_participant_count()?, 0);
     reader.close()?;
-    assert_unavailable(
-        &reader.query(&graph_request("nir1-alice"))?,
-        "reader-unavailable",
-    );
+    let error = reader
+        .query(&graph_request("nir1-alice"))
+        .expect_err("a closed reader must refuse queries");
+    assert!(error.to_string().contains("NIR1_GRAPH_READER_CLOSED"));
     Ok(())
 }

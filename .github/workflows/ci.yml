@@ -909,7 +909,7 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - name: Build the private Q2 fixture and run focused real-worker tests
+      - name: Build private Q2/Q512 fixtures and run focused real-worker tests
         shell: bash
         run: bash scripts/nir1-c-query-worker-ci.sh
 
