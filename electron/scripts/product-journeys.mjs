@@ -1905,6 +1905,7 @@ async function prepareSnippetScopeAnchor(harness) {
 }
 
 async function createFolderScopeAnchor(harness, page) {
+  const title = "Product Journey Folder";
   const existing = new Set(
     (
       await queryRows(
@@ -1924,7 +1925,7 @@ async function createFolderScopeAnchor(harness, page) {
     '[data-droptarget-id="scenes-panel"] input:focus',
   );
   await renameInput.waitFor({ state: "visible", timeout: 5_000 });
-  await renameInput.fill("Product Journey Folder");
+  await renameInput.fill(title);
   await renameInput.press("Enter");
   return harness.waitUntil(async () => {
     const rows = await queryRows(
@@ -1932,8 +1933,17 @@ async function createFolderScopeAnchor(harness, page) {
       page,
       "SELECT id, title FROM tree_nodes WHERE node_type = 'folder'",
     );
-    return rows.find((row) => !existing.has(String(row.id))) ?? null;
+    return selectPersistedFolderScopeAnchor(rows, existing, title);
   }, "folder scope anchor persistence");
+}
+
+/** Keep the folder picker bound to the renamed row, not its initial title. */
+export function selectPersistedFolderScopeAnchor(rows, existing, title) {
+  return (
+    rows.find(
+      (row) => !existing.has(String(row.id)) && row.title === title,
+    ) ?? null
+  );
 }
 
 async function pickScopeAnchor(page, kind, title) {

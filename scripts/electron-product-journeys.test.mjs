@@ -54,6 +54,7 @@ import {
 import {
   configureWorkspace,
   PRODUCT_JOURNEYS,
+  selectPersistedFolderScopeAnchor,
 } from "../electron/scripts/product-journeys.mjs";
 import {
   NARRATIVE_MAINTENANCE_FAULT_ENV,
@@ -65,6 +66,21 @@ const repoRoot = path.resolve(
   "..",
 );
 const execFile = promisify(execFileCallback);
+
+test("folder scope anchor waits for the new folder's persisted rename", () => {
+  const existing = new Set(["older-folder"]);
+  const title = "Product Journey Folder";
+  const rows = [
+    { id: "older-folder", title },
+    { id: "new-folder", title: "Part.1" },
+  ];
+  assert.equal(selectPersistedFolderScopeAnchor(rows, existing, title), null);
+  rows[1].title = title;
+  assert.deepEqual(selectPersistedFolderScopeAnchor(rows, existing, title), {
+    id: "new-folder",
+    title,
+  });
+});
 
 async function read(relativePath) {
   return readFile(path.join(repoRoot, relativePath), "utf8");
