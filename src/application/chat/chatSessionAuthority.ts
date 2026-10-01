@@ -65,6 +65,22 @@ export function isCapturedWorkspaceCurrent(
   return getCurrentImeWorkspaceIdentity() === null;
 }
 
+export function isCapturedProjectCurrent(
+  projectId: string,
+  sources: {
+    get: () => Pick<ChatState, "activeProjectId">;
+    getTreeProjectId: () => string;
+    getLoadedProjectId: () => string | null;
+  },
+): boolean {
+  const liveProjectIds = [
+    sources.get().activeProjectId,
+    sources.getTreeProjectId(),
+    sources.getLoadedProjectId(),
+  ].filter((id): id is string => Boolean(id));
+  return liveProjectIds.every((id) => id === projectId);
+}
+
 export function isSessionMutationAuthorityCurrent(
   authority: SessionMutationAuthority,
   state: Pick<
