@@ -26,6 +26,11 @@ const EXPECTED_JOURNEY_IDS = [
   "cross-feature-authoring",
   "chat-stream-project-switch",
   "chat-stream-workspace-switch",
+  "agent-stream-project-switch",
+  "agent-stream-workspace-switch",
+  "chat-stream-folder-scope",
+  "chat-stream-codex-scope",
+  "chat-stream-snippet-scope",
   "editor-pending-project-switch",
   "mcp-external-write-conflict",
   "chronicle-native-roundtrip",
@@ -41,6 +46,11 @@ const EXPECTED_JOURNEY_IDS = [
 const IMPLEMENTED_CONTRACT_IDS = [
   "scope-transition:chat-stream:project",
   "scope-transition:chat-stream:workspace",
+  "scope-transition:agent-stream:project",
+  "scope-transition:agent-stream:workspace",
+  "scope-transition:chat-stream:folder",
+  "scope-transition:chat-stream:codex",
+  "scope-transition:chat-stream:snippet",
   "scope-transition:editor-pending:project",
   "d2a:mcp:pre-dispatch-denial",
   "native-command-roundtrip:chronicle-bulk",
@@ -54,15 +64,9 @@ const IMPLEMENTED_CONTRACT_IDS = [
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.flatMap((entry) => entry.contracts),
 ];
 
-const EXEMPTED_CHAT_SCOPE_CONTRACT_IDS = [
-  "scope-transition:chat-stream:folder",
-  "scope-transition:chat-stream:codex",
-  "scope-transition:chat-stream:snippet",
-];
+const EXEMPTED_CHAT_SCOPE_CONTRACT_IDS = [];
 
 const PLANNED_JOURNEY_IDS = [
-  "agent-stream-project-switch",
-  "agent-stream-workspace-switch",
   "chronicle-ui-roundtrip",
   "lint-ui-roundtrip",
   "map-ui-roundtrip",
@@ -70,8 +74,6 @@ const PLANNED_JOURNEY_IDS = [
 ];
 
 const PLANNED_CONTRACT_IDS = [
-  "scope-transition:agent-stream:project",
-  "scope-transition:agent-stream:workspace",
   "ui-roundtrip:chronicle",
   "ui-roundtrip:lint",
   "ui-roundtrip:map",
@@ -164,14 +166,6 @@ test("tracked scope exemptions and planned journeys keep affected execution lock
     PRODUCT_JOURNEY_COVERAGE_BACKLOG.flatMap((journey) => journey.contracts),
     PLANNED_CONTRACT_IDS,
   );
-  for (const plannedAgentJourney of PRODUCT_JOURNEY_COVERAGE_BACKLOG.filter(
-    (journey) => journey.id.startsWith("agent-stream-"),
-  )) {
-    assert.equal(plannedAgentJourney.trackingIssue, "#429");
-    assert.equal(plannedAgentJourney.expiresOn, "2026-09-30");
-    assert.ok(plannedAgentJourney.reason.length > 0);
-  }
-
   const coverage = validateCurrentProductJourneyCoverage();
   assert.equal(coverage.affectedReady, false);
   assert.deepEqual(

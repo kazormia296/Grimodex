@@ -55,7 +55,7 @@ const REPORT_FIELDS = [
 ];
 
 if (
-  IDS.length !== 28 ||
+  IDS.length !== 33 ||
   PRODUCT_JOURNEY_CATALOG.some(
     (entry) =>
       entry.required === false || entry.acceptanceRole === "diagnostic",
@@ -66,6 +66,7 @@ if (
 export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
   Object.freeze([
     "chat-stream-workspace-switch",
+    "agent-stream-workspace-switch",
     "lint-native-roundtrip",
     "snapshot-native-roundtrip",
     "chronicle-extract-review-apply-reopen",
@@ -79,6 +80,8 @@ export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
   Object.freeze([
     "cross-feature-authoring",
     "chat-stream-project-switch",
+    "agent-stream-project-switch",
+    "chat-stream-codex-scope",
     "editor-pending-project-switch",
     "mcp-external-write-conflict",
     "map-native-roundtrip",
@@ -92,6 +95,8 @@ export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
     "chat-authority-isolation",
     "workspace-switch-authority",
     "external-write-conflict",
+    "chat-stream-folder-scope",
+    "chat-stream-snippet-scope",
     "chronicle-native-roundtrip",
     "c2-5b-restore-verify-rebuild-verify",
     "c2-5b-transient-bounded-retry",
@@ -114,7 +119,7 @@ if (
   FIXED_PRODUCT_JOURNEY_SHARDS.length !== 3 ||
   FIXED_PRODUCT_JOURNEY_SHARDS.some(
     (ids, index) =>
-      (index === 0 ? ids.length !== 10 : ids.length !== 9) ||
+      ids.length !== 11 ||
       !isDeepStrictEqual(
         ids,
         IDS.filter((id) => ids.includes(id)),

@@ -7,6 +7,8 @@ export const PRODUCT_JOURNEY_AUTHORITY_EARLY = "AUTHORITY-OLD-EARLY";
 export const PRODUCT_JOURNEY_AUTHORITY_LATE = "AUTHORITY-OLD-LATE";
 export const PRODUCT_JOURNEY_AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
 export const PRODUCT_JOURNEY_CODEX_MARKER = "CODEX-CONTEXT-JOURNEY";
+export const PRODUCT_JOURNEY_AGENT_MARKER = "AGENT-AUTHORITY-JOURNEY";
+export const PRODUCT_JOURNEY_AGENT_OUTPUT = "AGENT-OLD-SCOPE-OUTPUT";
 
 const STREAM_BOUNDARY_DELAY_MS = 4_000;
 
@@ -113,6 +115,26 @@ export function wrapBackendForProductJourneyAi(
       });
     },
 
+    async sendAgentMessage(args) {
+      const authorityJourney = messageText(args).includes(
+        PRODUCT_JOURNEY_AGENT_MARKER,
+      );
+      if (authorityJourney) await wait(STREAM_BOUNDARY_DELAY_MS);
+      return JSON.stringify({
+        blocks: [
+          {
+            type: "text",
+            content: authorityJourney
+              ? PRODUCT_JOURNEY_AGENT_OUTPUT
+              : "Product Journey",
+          },
+        ],
+        stopReason: "end_turn",
+        inputTokens: 1,
+        outputTokens: 4,
+      });
+    },
+
     async sendChatMessageStream(args) {
       if (activeStream) {
         throw new Error("product journey AI supports one active stream");
@@ -195,6 +217,7 @@ export function wrapBackendForProductJourneyAi(
           effectiveContextLength: 32_768,
           effectiveContextSource: "runner",
           maxCompletionTokens: 4_096,
+          supportedParameters: ["tools"],
         },
       ]);
     },

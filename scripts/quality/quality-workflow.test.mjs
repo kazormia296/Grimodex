@@ -684,7 +684,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   assert.match(identity, /selector.*(?:ready|readiness)/i);
   assert.match(runbook, /durable ID.*corresponding UI\s*projection before editing/is);
   assert.match(runbook, /selector.*ready signal/);
-  assert.match(runbook, /28 catalog entries as 10\/9\/9 shards/);
+  assert.match(runbook, /33 catalog entries as 11\/11\/11 shards/);
   assert.match(
     bump,
     /PR／releaseの証跡が依頼範囲に含まれ.*CIが許可されている場合だけ/is,

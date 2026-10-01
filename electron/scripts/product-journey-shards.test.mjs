@@ -193,14 +193,15 @@ async function setupAggregateFixture(t) {
   return { bindings, dependencies, outputDirectory, root, shardDirectories };
 }
 
-test("fixed shards are disjoint and preserve catalog order within all 28 entries", () => {
+test("fixed shards are disjoint and preserve catalog order within all 33 entries", () => {
   assert.deepEqual(
     FIXED_PRODUCT_JOURNEY_SHARDS.map((ids) => ids.length),
-    [10, 9, 9],
+    [11, 11, 11],
   );
   assert.deepEqual(FIXED_PRODUCT_JOURNEY_SHARDS, [
     [
       "chat-stream-workspace-switch",
+      "agent-stream-workspace-switch",
       "lint-native-roundtrip",
       "snapshot-native-roundtrip",
       "chronicle-extract-review-apply-reopen",
@@ -214,6 +215,8 @@ test("fixed shards are disjoint and preserve catalog order within all 28 entries
     [
       "cross-feature-authoring",
       "chat-stream-project-switch",
+      "agent-stream-project-switch",
+      "chat-stream-codex-scope",
       "editor-pending-project-switch",
       "mcp-external-write-conflict",
       "map-native-roundtrip",
@@ -227,6 +230,8 @@ test("fixed shards are disjoint and preserve catalog order within all 28 entries
       "chat-authority-isolation",
       "workspace-switch-authority",
       "external-write-conflict",
+      "chat-stream-folder-scope",
+      "chat-stream-snippet-scope",
       "chronicle-native-roundtrip",
       "c2-5b-restore-verify-rebuild-verify",
       "c2-5b-transient-bounded-retry",
@@ -234,7 +239,7 @@ test("fixed shards are disjoint and preserve catalog order within all 28 entries
       "c2-5b-incremental-liveness",
     ],
   ]);
-  assert.equal(new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()).size, 28);
+  assert.equal(new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()).size, 33);
   assert.deepEqual(
     new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()),
     new Set(catalogIds),
@@ -277,7 +282,7 @@ test("fixed shard runner binds its partition and private artifact directory", as
     received.journeys.map(({ id }) => id),
     FIXED_PRODUCT_JOURNEY_SHARDS[2],
   );
-  assert.equal(received.artifactJourneys.length, 28);
+  assert.equal(received.artifactJourneys.length, 33);
   assert.deepEqual(
     received.requiredJourneyIds,
     FIXED_PRODUCT_JOURNEY_SHARDS[2],

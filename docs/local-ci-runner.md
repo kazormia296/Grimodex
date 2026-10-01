@@ -40,7 +40,6 @@ diagnostic evidence and cannot establish merge readiness.
 Product journeys wait for the created durable ID and its corresponding UI
 projection before editing. A visible selector alone is not a ready signal.
 
-
 The shared-Rust test obligation stays Cargo-native. Three two-slot tasks run the
 DB library, the DB integration targets plus `schema-contract`, and the rest of
 the workspace. The non-DB shard retains its doctests; a fourth Cargo task runs
@@ -82,7 +81,7 @@ its own 120-second timeout. The four-slot runtime contract task starts
 after workspace dependency bootstrap and can overlap independent gates. Runtime
 performance waits for it and every pre-runtime terminal task, then owns all
 twelve slots as the final group. Product journeys run as three fixed, disjoint
-processes covering all 28 catalog entries as 10/9/9 shards. Catalog order is retained within
+processes covering all 33 catalog entries as 11/11/11 shards. Catalog order is retained within
 each shard, and only the shard containing the catalog's C2-ZC acceptance roles
 sets `acceptanceRequired` and can complete C2-ZC acceptance. Each process
 has a calibrated two-slot scheduler admission weight. Exact co-load with all

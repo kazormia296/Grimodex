@@ -38,13 +38,31 @@ it("moves contained nodes with native drag events and retains marks until persis
   const start: OnNodeDrag = result.current.onNodeDragStart;
   const drag: OnNodeDrag = result.current.onNodeDrag;
   const stop: OnNodeDrag = result.current.onNodeDragStop;
-  act(() => start(new MouseEvent("mousedown"), frame, nodes));
+  act(() =>
+    start(
+      new MouseEvent("mousedown") as unknown as Parameters<OnNodeDrag>[0],
+      frame,
+      nodes,
+    ),
+  );
   expect([...groupDraggingRef.current]).toEqual(["scene:1"]);
   const movedFrame = { ...frame, position: { x: 50, y: 80 } };
-  act(() => drag(new MouseEvent("mousemove"), movedFrame, nodes));
+  act(() =>
+    drag(
+      new MouseEvent("mousemove") as unknown as Parameters<OnNodeDrag>[0],
+      movedFrame,
+      nodes,
+    ),
+  );
   expect(nodes[1].position).toEqual({ x: 60, y: 100 });
   expect(nodes[2].position).toEqual({ x: 500, y: 500 });
-  act(() => stop(new MouseEvent("mouseup"), movedFrame, nodes));
+  act(() =>
+    stop(
+      new MouseEvent("mouseup") as unknown as Parameters<OnNodeDrag>[0],
+      movedFrame,
+      nodes,
+    ),
+  );
   expect(persistPosition).toHaveBeenCalledExactlyOnceWith("scene:1", 60, 100);
   expect(groupDraggingRef.current.has("scene:1")).toBe(true);
   await act(async () => completePersist());

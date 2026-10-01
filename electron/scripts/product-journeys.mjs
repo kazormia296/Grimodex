@@ -49,6 +49,10 @@ const DIRTY_EXTERNAL_TEXT = `DIRTY-EXTERNAL-JOURNEY-${Date.now()}`;
 const CHAT_AUTHORITY_PROMPT = `CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
 const PROJECT_CHAT_AUTHORITY_PROMPT = `PROJECT-CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
 const WORKSPACE_CHAT_AUTHORITY_PROMPT = `WORKSPACE-CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
+const AGENT_PROJECT_AUTHORITY_PROMPT = `AGENT-AUTHORITY-JOURNEY-PROJECT-${Date.now()}`;
+const AGENT_WORKSPACE_AUTHORITY_PROMPT = `AGENT-AUTHORITY-JOURNEY-WORKSPACE-${Date.now()}`;
+const AGENT_AUTHORITY_OUTPUT = "AGENT-OLD-SCOPE-OUTPUT";
+const NEW_SCOPED_CHAT_PROMPT = `NEW-SCOPE-JOURNEY-${Date.now()}`;
 const CHAT_AUTHORITY_EARLY = "AUTHORITY-OLD-EARLY";
 const CHAT_AUTHORITY_LATE = "AUTHORITY-OLD-LATE";
 const WORKSPACE_CHAT_AUTHORITY_TITLE = WORKSPACE_CHAT_AUTHORITY_PROMPT.slice(
@@ -541,9 +545,7 @@ export function resolveProductJourneySet(
   if (name === "c2-zc") return NARRATIVE_C2ZC_PRODUCT_JOURNEYS;
   if (name === "nir1-entity-relation-review") {
     const ids = new Set(
-      NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG.map(
-        ({ id }) => id,
-      ),
+      NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG.map(({ id }) => id),
     );
     return PRODUCT_JOURNEYS.filter((journey) => ids.has(journey.id));
   }
@@ -726,6 +728,35 @@ async function switchProjectThroughUi(harness, page, { id, title }, label) {
   }, label);
 }
 
+async function switchProjectThroughUiDuringAgentTurn(
+  harness,
+  page,
+  { id, title },
+  label,
+) {
+  // A pending Agent response has a fixed four-second boundary. Dispatch DOM
+  // clicks as soon as the controls are visible; Playwright's pointer-stability
+  // wait can outlast that boundary on Xvfb's software renderer.
+  const trigger = page.getByTestId("project-menu-trigger");
+  await trigger.waitFor({ state: "visible" });
+  await trigger.evaluate((button) => button.click());
+  const option = page.getByTestId(`project-switch-${id}`);
+  await option.waitFor({ state: "visible" });
+  await option.evaluate((button) => button.click());
+  await harness.waitUntil(async () => {
+    const activeSetting = await queryRows(
+      harness,
+      page,
+      "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
+    );
+    const triggerText = await trigger.textContent();
+    return (
+      activeSetting[0]?.value === id &&
+      String(triggerText ?? "").includes(title)
+    );
+  }, label);
+}
+
 async function switchWorkspaceThroughUi(harness, page, workspace, label) {
   const previousRevision = await workspaceOpenRevision(page);
   const workspaceName = path.basename(workspace);
@@ -742,6 +773,31 @@ async function switchWorkspaceThroughUi(harness, page, workspace, label) {
     return (
       String(triggerText ?? "").includes(workspaceName) &&
       nextRevision > previousRevision
+    );
+  }, label);
+}
+
+async function switchWorkspaceThroughUiDuringAgentTurn(
+  harness,
+  page,
+  workspace,
+  label,
+) {
+  const previousRevision = await workspaceOpenRevision(page);
+  const workspaceName = path.basename(workspace);
+  const trigger = page.getByTestId("workspace-menu-trigger");
+  await trigger.waitFor({ state: "visible" });
+  await trigger.evaluate((button) => button.click());
+  const option = page
+    .getByTestId("workspace-menu-dropdown")
+    .getByRole("button", { name: workspaceName, exact: true });
+  await option.waitFor({ state: "visible" });
+  await option.evaluate((button) => button.click());
+  await harness.waitUntil(async () => {
+    const triggerText = await trigger.textContent();
+    return (
+      String(triggerText ?? "").includes(workspaceName) &&
+      (await workspaceOpenRevision(page)) > previousRevision
     );
   }, label);
 }
@@ -772,6 +828,8 @@ async function listChatAuthorityRows(harness, page, projectId) {
     sql: `SELECT
       s.id AS sessionId,
       s.node_id AS nodeId,
+      s.codex_anchor_id AS codexAnchorId,
+      s.snippet_anchor_id AS snippetAnchorId,
       s.title AS sessionTitle,
       m.id AS messageId,
       m.role AS role,
@@ -788,7 +846,14 @@ async function listChatAuthorityRows(harness, page, projectId) {
   return result?.rows ?? [];
 }
 
-function assertCompletedChatAuthority(rows, { prompt, label }) {
+function assertCompletedChatAuthority(
+  rows,
+  {
+    prompt,
+    label,
+    outputMarkers = [CHAT_AUTHORITY_EARLY, CHAT_AUTHORITY_LATE],
+  },
+) {
   if (
     !rows.some(
       (row) =>
@@ -797,7 +862,7 @@ function assertCompletedChatAuthority(rows, { prompt, label }) {
   ) {
     throw new Error(`${label} did not persist the user prompt`);
   }
-  for (const marker of [CHAT_AUTHORITY_EARLY, CHAT_AUTHORITY_LATE]) {
+  for (const marker of outputMarkers) {
     if (
       !rows.some(
         (row) =>
@@ -824,6 +889,62 @@ function chatAuthorityLeaks(rows, prompt) {
       systemPrompt.includes(prompt)
     );
   });
+}
+
+async function startAgentAuthorityTurn(harness, page, projectId, prompt) {
+  const toggle = page.getByTestId("agent-mode-toggle");
+  await toggle.waitFor({ state: "visible", timeout: 30_000 });
+  if (await toggle.isDisabled()) {
+    throw new Error("Agent mode is unavailable in the deterministic journey");
+  }
+  await toggle.click();
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") {
+    throw new Error("Agent mode did not engage");
+  }
+  await sendChatPrompt(page, prompt);
+  await harness.waitUntil(async () => {
+    const rows = await queryRows(
+      harness,
+      page,
+      `SELECT execution_id AS executionId FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_agent_main'
+         AND event_type = 'request.dispatched'
+       ORDER BY id DESC LIMIT 1`,
+      [projectId],
+    );
+    return rows[0]?.executionId ?? null;
+  }, "Agent transport dispatch before lifecycle switch");
+  await page
+    .getByTestId("chat-send")
+    .waitFor({ state: "detached", timeout: 5_000 });
+}
+
+function assertCompletedAgentAuthority(rows, { prompt, label }) {
+  if (
+    !rows.some(
+      (row) =>
+        row.role === "user" && String(row.content ?? "").includes(prompt),
+    ) ||
+    !rows.some(
+      (row) =>
+        row.role === "assistant" &&
+        String(row.content ?? "").includes(AGENT_AUTHORITY_OUTPUT),
+    ) ||
+    !rows.some((row) => row.systemPrompt != null)
+  ) {
+    throw new Error(
+      `${label} did not persist the Agent turn and prompt snapshot`,
+    );
+  }
+}
+
+function agentAuthorityLeaks(rows, prompt) {
+  return rows.filter(
+    (row) =>
+      String(row.content ?? "").includes(prompt) ||
+      String(row.content ?? "").includes(AGENT_AUTHORITY_OUTPUT) ||
+      String(row.systemPrompt ?? "").includes(prompt),
+  );
 }
 
 async function setProjectChatScope(page) {
@@ -1564,6 +1685,404 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
   }
 }
 
+async function runAgentStreamProjectSwitchJourney(harness) {
+  const workspace = harness.workspacePath("agent-stream-project-switch");
+  await configureWorkspace(harness, workspace, { deterministicAi: true });
+  const projects = await prepareSecondProject(harness, {
+    phase: "agent-stream-project-switch",
+    workspace,
+    id: `product-agent-project-b-${Date.now()}`,
+    title: "Product Agent Project B",
+  });
+  const agent = await harness.launch("agent-stream-project-switch");
+  try {
+    const sceneA = await createSceneThroughUi(harness, agent.page);
+    if (sceneA.projectId !== projects.projectA.id) {
+      throw new Error("Agent project journey started under the wrong project");
+    }
+    await setProjectChatScope(agent.page);
+    await startAgentAuthorityTurn(
+      harness,
+      agent.page,
+      sceneA.projectId,
+      AGENT_PROJECT_AUTHORITY_PROMPT,
+    );
+    harness.recordTimeline("project-agent-request-dispatched", {
+      workspace,
+      projectId: sceneA.projectId,
+      workspaceOpenRevision: await workspaceOpenRevision(agent.page),
+    });
+    await switchProjectThroughUiDuringAgentTurn(
+      harness,
+      agent.page,
+      projects.projectB,
+      "project B UI authority after Agent drain",
+    );
+    await assertLifecycleTransitionOrder(harness, agent.page, {
+      kind: "project",
+      from: { workspacePath: workspace, projectId: projects.projectA.id },
+      to: { workspacePath: workspace, projectId: projects.projectB.id },
+      label: "project Agent switch",
+    });
+    await sceneA.editorSurface.waitFor({ state: "detached", timeout: 30_000 });
+    const rowsA = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(
+        harness,
+        agent.page,
+        projects.projectA.id,
+      );
+      try {
+        assertCompletedAgentAuthority(rows, {
+          prompt: AGENT_PROJECT_AUTHORITY_PROMPT,
+          label: "project A Agent turn",
+        });
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "project A Agent drain and persistence");
+    const rowsB = await listChatAuthorityRows(
+      harness,
+      agent.page,
+      projects.projectB.id,
+    );
+    if (agentAuthorityLeaks(rowsB, AGENT_PROJECT_AUTHORITY_PROMPT).length) {
+      throw new Error(
+        "project B received project A Agent output or prompt snapshot",
+      );
+    }
+    await harness.waitUntil(
+      async () =>
+        (await agent.page.getByText(AGENT_AUTHORITY_OUTPUT).count()) === 0,
+      "project B Agent UI isolation",
+    );
+    harness.recordTimeline("project-agent-request-drained", {
+      workspace,
+      fromProjectId: projects.projectA.id,
+      toProjectId: projects.projectB.id,
+      sessionIds: [...new Set(rowsA.map((row) => String(row.sessionId)))],
+      oldScopeCompleted: true,
+      newScopeLeak: false,
+    });
+  } finally {
+    await harness.close(agent.app, agent.page, "agent-stream-project-switch");
+  }
+}
+
+async function runAgentStreamWorkspaceSwitchJourney(harness) {
+  const workspaceA = harness.workspacePath("agent-workspace-a");
+  const workspaceB = harness.workspacePath("agent-workspace-b");
+  await configureWorkspace(harness, workspaceA, {
+    deterministicAi: true,
+    additionalWorkspaces: [workspaceB],
+  });
+  const agent = await harness.launch("agent-stream-workspace-switch");
+  try {
+    const sceneA = await createSceneThroughUi(harness, agent.page);
+    await setProjectChatScope(agent.page);
+    await startAgentAuthorityTurn(
+      harness,
+      agent.page,
+      sceneA.projectId,
+      AGENT_WORKSPACE_AUTHORITY_PROMPT,
+    );
+    harness.recordTimeline("workspace-agent-request-dispatched", {
+      workspace: workspaceA,
+      projectId: sceneA.projectId,
+      workspaceOpenRevision: await workspaceOpenRevision(agent.page),
+    });
+    await switchWorkspaceThroughUiDuringAgentTurn(
+      harness,
+      agent.page,
+      workspaceB,
+      "workspace B UI authority after Agent drain",
+    );
+    await assertLifecycleTransitionOrder(harness, agent.page, {
+      kind: "workspace",
+      from: { workspacePath: workspaceA, projectId: sceneA.projectId },
+      to: { workspacePath: workspaceB },
+      label: "workspace Agent switch",
+    });
+    const projectB = await currentProjectRow(harness, agent.page);
+    const rowsB = await listChatAuthorityRows(
+      harness,
+      agent.page,
+      String(projectB.id),
+    );
+    if (agentAuthorityLeaks(rowsB, AGENT_WORKSPACE_AUTHORITY_PROMPT).length) {
+      throw new Error(
+        "workspace B received workspace A Agent output or prompt snapshot",
+      );
+    }
+    await harness.waitUntil(
+      async () =>
+        (await agent.page.getByText(AGENT_AUTHORITY_OUTPUT).count()) === 0,
+      "workspace B Agent UI isolation",
+    );
+    await switchWorkspaceThroughUi(
+      harness,
+      agent.page,
+      workspaceA,
+      "workspace A Agent authority after return",
+    );
+    const rowsA = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(
+        harness,
+        agent.page,
+        sceneA.projectId,
+      );
+      try {
+        assertCompletedAgentAuthority(rows, {
+          prompt: AGENT_WORKSPACE_AUTHORITY_PROMPT,
+          label: "workspace A Agent turn",
+        });
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "workspace A Agent drain and persistence");
+    harness.recordTimeline("workspace-agent-request-drained", {
+      from: workspaceA,
+      to: workspaceB,
+      fromProjectId: sceneA.projectId,
+      toProjectId: String(projectB.id),
+      sessionIds: [...new Set(rowsA.map((row) => String(row.sessionId)))],
+      oldScopeCompleted: true,
+      newScopeLeak: false,
+    });
+  } finally {
+    await harness.close(agent.app, agent.page, "agent-stream-workspace-switch");
+  }
+}
+
+async function prepareSnippetScopeAnchor(harness) {
+  const prepared = await harness.launch("chat-stream-snippet-scope/prepare");
+  try {
+    const project = await currentProjectRow(harness, prepared.page);
+    const snippetId = `product-snippet-${Date.now()}`;
+    await harness.invokeOk(prepared.page, "snippet_create", {
+      payload: {
+        requestId: `product-snippet-create:${snippetId}`,
+        projectId: String(project.id),
+        sessionId: "electron-product-journey",
+        eventUid: `product-snippet-create-event:${snippetId}`,
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "manual-wrapper",
+        controls: [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
+        snippetId,
+        title: "Product Journey Snippet",
+        content: sceneDocument("Product Journey Snippet Context"),
+        tagsCache: null,
+        contentSource: "human",
+        sceneId: null,
+        sourceChatMessageId: null,
+        canonicalPayload: {
+          title: "Product Journey Snippet",
+          sceneId: null,
+        },
+      },
+    });
+    return { projectId: String(project.id), anchorId: snippetId };
+  } finally {
+    await harness.close(
+      prepared.app,
+      prepared.page,
+      "chat-stream-snippet-scope/prepare",
+    );
+  }
+}
+
+async function createFolderScopeAnchor(harness, page) {
+  const existing = new Set(
+    (
+      await queryRows(
+        harness,
+        page,
+        "SELECT id FROM tree_nodes WHERE node_type = 'folder'",
+      )
+    ).map((row) => String(row.id)),
+  );
+  await scenesPanelHeader(page)
+    .locator(`button[title="${CREATE_BUTTON_TITLE}"]`)
+    .click();
+  await page
+    .getByRole("menuitem", { name: "New folder", exact: true })
+    .evaluate((item) => item.click());
+  const renameInput = page.locator(
+    '[data-droptarget-id="scenes-panel"] input:focus',
+  );
+  await renameInput.waitFor({ state: "visible", timeout: 5_000 });
+  await renameInput.fill("Product Journey Folder");
+  await renameInput.press("Enter");
+  return harness.waitUntil(async () => {
+    const rows = await queryRows(
+      harness,
+      page,
+      "SELECT id, title FROM tree_nodes WHERE node_type = 'folder'",
+    );
+    return rows.find((row) => !existing.has(String(row.id))) ?? null;
+  }, "folder scope anchor persistence");
+}
+
+async function pickScopeAnchor(page, kind, title) {
+  const picker = page.getByTestId("chat-scope-picker");
+  await picker.click();
+  if (kind !== "folder") {
+    const tab = page.getByRole("tab", {
+      name: kind === "codex" ? /Codex/ : /Snippet/i,
+    });
+    await tab.evaluate((button) => button.click());
+  }
+  await page
+    .getByRole("button", { name: title, exact: kind === "folder" })
+    .last()
+    .click();
+  return picker.getAttribute("data-chat-scope");
+}
+
+async function runChatStreamAnchorScopeJourney(harness, kind) {
+  const phase = `chat-stream-${kind}-scope`;
+  const workspace = harness.workspacePath(phase);
+  await configureWorkspace(harness, workspace, { deterministicAi: true });
+  let prepared = null;
+  if (kind === "codex") {
+    const codex = await prepareCodexContextEntry(harness);
+    prepared = {
+      projectId: codex.projectId,
+      anchorId: codex.entryId,
+      title: "Product Journey Codex",
+    };
+  } else if (kind === "snippet") {
+    prepared = {
+      ...(await prepareSnippetScopeAnchor(harness)),
+      title: "Product Journey Snippet",
+    };
+  }
+  const chat = await harness.launch(phase);
+  try {
+    const scene = await createSceneThroughUi(harness, chat.page);
+    if (prepared && prepared.projectId !== scene.projectId) {
+      throw new Error(`${kind} anchor belongs to a different project`);
+    }
+    if (kind === "folder") {
+      const folder = await createFolderScopeAnchor(harness, chat.page);
+      prepared = {
+        projectId: scene.projectId,
+        anchorId: String(folder.id),
+        title: String(folder.title),
+      };
+    }
+    const oldPrompt = `${CHAT_AUTHORITY_PROMPT}-${kind}`;
+    await sendChatPrompt(chat.page, oldPrompt);
+    await chat.page
+      .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+      .last()
+      .waitFor({ state: "visible", timeout: 30_000 });
+    harness.recordTimeline("anchor-chat-stream-started", {
+      workspace,
+      kind,
+      sceneId: scene.sceneId,
+      workspaceOpenRevision: await workspaceOpenRevision(chat.page),
+    });
+    const blockedScope = await pickScopeAnchor(chat.page, kind, prepared.title);
+    if (blockedScope !== "scene") {
+      throw new Error(`${kind} scope changed during the old stream`);
+    }
+    harness.recordTimeline("anchor-chat-switch-blocked-during-stream", {
+      workspace,
+      kind,
+      oldScope: "scene",
+      targetAnchorId: prepared.anchorId,
+    });
+    const oldRows = await harness.waitUntil(async () => {
+      const rows = (
+        await listChatAuthorityRows(harness, chat.page, scene.projectId)
+      ).filter((row) => row.nodeId === scene.sceneId);
+      try {
+        assertCompletedChatAuthority(rows, {
+          prompt: oldPrompt,
+          label: `${kind} old scene stream`,
+        });
+        return rows;
+      } catch {
+        return null;
+      }
+    }, `${kind} old scene stream completion`);
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "visible", timeout: 30_000 });
+    const committedScope = await pickScopeAnchor(
+      chat.page,
+      kind,
+      prepared.title,
+    );
+    if (committedScope !== kind) {
+      throw new Error(`${kind} scope did not commit after stream completion`);
+    }
+    const newPrompt = `${NEW_SCOPED_CHAT_PROMPT}-${kind}`;
+    await sendChatPrompt(chat.page, newPrompt);
+    const newRows = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(
+        harness,
+        chat.page,
+        scene.projectId,
+      );
+      const scoped = rows.filter((row) =>
+        kind === "folder"
+          ? row.nodeId === prepared.anchorId
+          : kind === "codex"
+            ? row.codexAnchorId === prepared.anchorId
+            : row.snippetAnchorId === prepared.anchorId,
+      );
+      try {
+        assertCompletedChatAuthority(scoped, {
+          prompt: newPrompt,
+          label: `${kind} new scope stream`,
+          outputMarkers:
+            kind === "codex"
+              ? [AUTHORING_OUTPUT]
+              : [CHAT_AUTHORITY_EARLY, CHAT_AUTHORITY_LATE],
+        });
+        return scoped;
+      } catch {
+        return null;
+      }
+    }, `${kind} new scope persistence`);
+    if (
+      newRows.some((row) => String(row.content ?? "").includes(oldPrompt)) ||
+      newRows.some((row) =>
+        oldRows.some((old) => old.sessionId === row.sessionId),
+      )
+    ) {
+      throw new Error(`${kind} scope reused the old stream session authority`);
+    }
+    harness.recordTimeline("anchor-chat-stream-isolated", {
+      workspace,
+      kind,
+      fromSceneId: scene.sceneId,
+      toAnchorId: prepared.anchorId,
+      oldSessionIds: [...new Set(oldRows.map((row) => String(row.sessionId)))],
+      newSessionIds: [...new Set(newRows.map((row) => String(row.sessionId)))],
+      oldScopeCompleted: true,
+      newScopeLeak: false,
+    });
+  } finally {
+    await harness.close(chat.app, chat.page, phase);
+  }
+}
+
 async function runEditorPendingProjectSwitchJourney(harness) {
   const workspace = harness.workspacePath("editor-pending-project-switch");
   await configureWorkspace(harness, workspace, {
@@ -2178,6 +2697,26 @@ export const PRODUCT_JOURNEYS = [
   {
     id: "chat-stream-workspace-switch",
     run: runChatStreamWorkspaceSwitchJourney,
+  },
+  {
+    id: "agent-stream-project-switch",
+    run: runAgentStreamProjectSwitchJourney,
+  },
+  {
+    id: "agent-stream-workspace-switch",
+    run: runAgentStreamWorkspaceSwitchJourney,
+  },
+  {
+    id: "chat-stream-folder-scope",
+    run: (harness) => runChatStreamAnchorScopeJourney(harness, "folder"),
+  },
+  {
+    id: "chat-stream-codex-scope",
+    run: (harness) => runChatStreamAnchorScopeJourney(harness, "codex"),
+  },
+  {
+    id: "chat-stream-snippet-scope",
+    run: (harness) => runChatStreamAnchorScopeJourney(harness, "snippet"),
   },
   {
     id: "editor-pending-project-switch",

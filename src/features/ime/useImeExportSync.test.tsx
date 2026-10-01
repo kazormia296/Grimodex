@@ -131,6 +131,10 @@ describe("useImeExportSync", () => {
   it("deactivates and cancels pending refreshes as soon as workspace switching starts", async () => {
     const { rerender } = renderHook(() => useImeExportSync());
     await waitFor(() => expect(refreshImeExportMock).toHaveBeenCalled());
+    expect(getCurrentImeWorkspaceIdentity()).toEqual({
+      path: "/workspaces/a",
+      openRevision: 1,
+    });
     refreshImeExportMock.mockClear();
     setActiveImeProjectMock.mockClear();
     cancelScheduledImeExportsMock.mockClear();
@@ -144,6 +148,12 @@ describe("useImeExportSync", () => {
       expect(setActiveImeProjectMock).toHaveBeenCalledWith(null);
     });
     expect(refreshImeExportMock).not.toHaveBeenCalled();
+    // The old identity belongs to in-flight turns until strict quiescence
+    // finishes; the workspace open lifecycle then clears it for the swap.
+    expect(getCurrentImeWorkspaceIdentity()).toEqual({
+      path: "/workspaces/a",
+      openRevision: 1,
+    });
   });
 
   it("keeps the active pointer null when the replacement project refresh fails", async () => {

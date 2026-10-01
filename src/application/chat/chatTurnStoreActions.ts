@@ -1426,7 +1426,13 @@ function createChatTurnStoreActions(
           } = agentLoopResult;
 
           const stoppedAgentTurnCanFinalize = canFinalizeStoppedAgentTurn();
-          if (shouldAbortTurn() && !stoppedAgentTurnCanFinalize) return;
+          if (shouldAbortTurn() && !stoppedAgentTurnCanFinalize) {
+            debugLog.warn(
+              "ChatStore",
+              `Agent completion lost turn authority: aborted=${sendControl.aborted} current=${isCurrentTurn()} transport=${transportStarted} workspace=${capturedWorkspaceIsCurrent()} project=${capturedProjectIsCurrent()} chat=${capturedChatAuthorityIsCurrent()}`,
+            );
+            return;
+          }
 
           // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
           // 続行対象外（ユーザー回答待ちで止まる性質なので新予算で再開しても無意味）。

@@ -4588,10 +4588,20 @@ export function createProductJourneyHarness({
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
     env[PRODUCT_JOURNEY_AI_ENV] = PRODUCT_JOURNEY_AI_VERSION;
+    // Xvfb has no hardware GPU. Use Chromium's software GL implementation so
+    // WebGL remains testable without relying on expired GPU-noise allowances.
+    const softwareGraphicsArgs =
+      process.platform === "linux" && env.DISPLAY
+        ? [
+            "--use-angle=swiftshader",
+            "--enable-unsafe-swiftshader",
+            "--ignore-gpu-blocklist",
+          ]
+        : [];
     const electronArgs =
       env.ELECTRON_DISABLE_SANDBOX === "1"
-        ? ["--no-sandbox", mainCjs]
-        : [mainCjs];
+        ? ["--no-sandbox", ...softwareGraphicsArgs, mainCjs]
+        : [...softwareGraphicsArgs, mainCjs];
     const expectedReceipt = expectedNarrativeMaintenanceCiReceipt(env);
     const receiptState = {
       root: await ensureNarrativeMaintenanceReceiptRoot(userDataDir),

@@ -4925,7 +4925,7 @@ test("product journey harness fails closed on unallowed error-class main stderr"
   );
 });
 
-test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics", async (t) => {
+test("expired default Ubuntu Xvfb allowances leave every error unallowed", async (t) => {
   const mainStderr = new EventEmitter();
   const page = {
     isClosed: () => false,
@@ -4981,7 +4981,29 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
       phase,
       message,
     })),
-    [{ phase: "configure", message: "Fatal: database corruption\n" }],
+    [
+      {
+        phase: "configure",
+        message:
+          '[6341:0730/134519.105645:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")\n',
+      },
+      {
+        phase: "configure",
+        message:
+          "[6341:0730/134519.106425:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n",
+      },
+      {
+        phase: "configure",
+        message:
+          "[6468:0730/134521.502865:ERROR:gpu/command_buffer/service/context_group.cc:148] ContextResult::kFatalFailure: WebGL2 blocklisted\n",
+      },
+      {
+        phase: "configure",
+        message:
+          "[8054:0730/135929.157713:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox.\n",
+      },
+      { phase: "configure", message: "Fatal: database corruption\n" },
+    ],
   );
 });
 
@@ -5098,7 +5120,7 @@ test("restore reload allowance enforces exact phase, message, and expiry", async
   }
 });
 
-test("C2-ZC restore reload allows the exact Ubuntu Xvfb Skia mailbox line", async (t) => {
+test("expired C2-ZC Skia mailbox allowance fails clean diagnostics", async (t) => {
   const mainStderr = new EventEmitter();
   const page = {
     isClosed: () => false,
@@ -5130,10 +5152,14 @@ test("C2-ZC restore reload allows the exact Ubuntu Xvfb Skia mailbox line", asyn
   );
   await harness.close(launched.app, launched.page, phase);
 
-  const diagnostics = await harness.finalizeDiagnostics();
-  assert.equal(diagnostics.mainErrorCount, 1);
-  assert.deepEqual(diagnostics.unallowedMainErrors, []);
-  assert.equal(diagnostics.mainCleanPass, true);
+  await assert.rejects(
+    harness.finalizeDiagnostics(),
+    (error) =>
+      error.name === "MainProcessDiagnosticsError" &&
+      error.diagnostics.mainErrorCount === 1 &&
+      error.diagnostics.unallowedMainErrors.length === 1 &&
+      error.diagnostics.mainCleanPass === false,
+  );
 });
 
 test("C2-ZC Skia mailbox allowance remains phase- and message-exact", async (t) => {
