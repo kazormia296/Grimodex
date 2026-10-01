@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import yaml from "js-yaml";
 
@@ -1140,6 +1141,51 @@ test("C2-5B journey seam constants keep exact durable failure contracts", () => 
     "productJourneyBarrierId",
     "correlation",
   ]);
+});
+
+test("restore ledger observation waits for the editor renderer to finish startup", async () => {
+  const waitForRenderer =
+    narrativeMaintenanceProductJourneys.waitForRestoreRendererStartupForTest;
+  assert.equal(typeof waitForRenderer, "function");
+  let states = [null, "initializing", "webgl"];
+  const observed = [];
+  const page = {
+    waitForFunction: async (predicate, argument, options) => {
+      assert.equal(argument, undefined);
+      assert.equal(options.timeout, 60_000);
+      for (const state of states) {
+        const ready = runInNewContext(`(${predicate.toString()})()`, {
+          document: {
+            querySelector: (selector) => {
+              assert.equal(selector, "[data-editor-ambient]");
+              return state === null ? null : { getAttribute: () => state };
+            },
+          },
+        });
+        observed.push({ state, ready });
+        if (ready) return;
+      }
+      throw new Error("renderer startup did not reach a terminal state");
+    },
+  };
+  await waitForRenderer(page);
+  assert.deepEqual(observed, [
+    { state: null, ready: false },
+    { state: "initializing", ready: false },
+    { state: "webgl", ready: true },
+  ]);
+
+  for (const state of ["fallback", "none"]) {
+    states = ["initializing", state];
+    observed.length = 0;
+    await waitForRenderer(page);
+    assert.deepEqual(observed, [
+      { state: "initializing", ready: false },
+      { state, ready: true },
+    ]);
+  }
+  states = ["initializing"];
+  await assert.rejects(waitForRenderer(page), /did not reach a terminal state/);
 });
 
 test("C2-5B restore scenario phases capture an active owner receipt per launch", async () => {

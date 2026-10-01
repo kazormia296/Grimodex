@@ -1553,6 +1553,10 @@ async function waitForRunSequence(
 }
 
 async function waitForRestorePhaseRows(context, baselineRows) {
+  // WebGL context creation can hold the renderer thread for several seconds
+  // after workspace hydration. Start the bounded ledger observation only once
+  // the editor's existing background renderer has finished initializing.
+  await waitForRestoreRendererStartup(context.page);
   await waitForLedger(
     context,
     (rows) => {
@@ -1575,9 +1579,7 @@ async function waitForRestorePhaseRows(context, baselineRows) {
       const completedPhaseRows = phaseRows.filter(
         (row) => row.status === "completed",
       );
-      if (
-        completedPhaseRows.length < 3
-      ) {
+      if (completedPhaseRows.length < 3) {
         return null;
       }
       return phaseRows;
@@ -1595,11 +1597,29 @@ async function waitForRestorePhaseRows(context, baselineRows) {
     baselineRows,
     "restore/epoch settled automatic phase rows",
   );
-  return rowsAfter(stableRows, baselineRows).filter((row) =>
-    RESTORE_AUTOMATIC_PHASE_RUN_KINDS.has(row.runKind) &&
-    row.status === "completed",
+  return rowsAfter(stableRows, baselineRows).filter(
+    (row) =>
+      RESTORE_AUTOMATIC_PHASE_RUN_KINDS.has(row.runKind) &&
+      row.status === "completed",
   );
 }
+
+async function waitForRestoreRendererStartup(page) {
+  await page.waitForFunction(
+    () => {
+      const ambient = document.querySelector("[data-editor-ambient]");
+      return ["webgl", "fallback", "none"].includes(
+        ambient?.getAttribute("data-background-renderer"),
+      );
+    },
+    undefined,
+    { timeout: 60_000 },
+  );
+}
+
+/** Narrow test seam for the restore observation's renderer startup boundary. */
+export const waitForRestoreRendererStartupForTest =
+  waitForRestoreRendererStartup;
 
 async function waitForLedger(
   context,
