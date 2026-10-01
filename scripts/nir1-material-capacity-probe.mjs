@@ -854,19 +854,37 @@ function scanOwnedProcessIds(ownerToken, knownPids = [], pipeInodes = []) {
   const token = `${CHILD_OWNER_ENV}=${ownerToken}`;
   const ownedPipes = new Set(pipeInodes);
   const pids = [];
+  const zombiePids = [];
   for (const entry of entries) {
     if (!/^\d+$/.test(entry)) continue;
     const pid = Number(entry);
     if (pid === process.pid) continue;
     let ownsPipe = false;
+    let environmentError = null;
     try {
       const environment = readFileSync(path.join("/proc", entry, "environ"), "utf8");
       if (environment.split("\0").includes(token)) pids.push(pid);
     } catch (error) {
       if (error.code === "ENOENT") continue;
-      if (known.has(pid)) {
-        return { supported: false, pids, error };
+      if (known.has(pid)) environmentError = error;
+    }
+    if (known.has(pid) && !pids.includes(pid)) {
+      try {
+        const stat = readFileSync(path.join("/proc", entry, "stat"), "utf8");
+        const close = stat.lastIndexOf(")");
+        if (close < 0) throw new Error(`malformed procfs stat for ${pid}`);
+        const state = stat.slice(close + 2, close + 3);
+        if (state === "Z" || state === "X") {
+          // A reparented child remains owned until its reaper removes /proc.
+          pids.push(pid);
+          zombiePids.push(pid);
+          continue;
+        }
+      } catch (error) {
+        if (error.code === "ENOENT") continue;
+        environmentError ??= error;
       }
+      if (environmentError) return { supported: false, pids, error: environmentError };
     }
     if (ownedPipes.size > 0) {
       try {
@@ -890,7 +908,7 @@ function scanOwnedProcessIds(ownerToken, knownPids = [], pipeInodes = []) {
     }
     if (ownsPipe && !pids.includes(pid)) pids.push(pid);
   }
-  return { supported: true, pids, error: null };
+  return { supported: true, pids, zombiePids, error: null };
 }
 
 function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGraceMs) {
@@ -1074,7 +1092,10 @@ function spawnChildProcess(binary, childArgs, context, timeoutMs, terminationGra
       killSent = sendSignal("SIGKILL") || killSent;
       const ownership = scanOwned();
       if (ownership.supported) {
-        killSent = signalOwned(ownership.pids, "SIGKILL") || killSent;
+        const livePids = ownership.pids.filter(
+          (pid) => !ownership.zombiePids.includes(pid),
+        );
+        killSent = signalOwned(livePids, "SIGKILL") || killSent;
       }
       destroyStreams();
       void waitForOwnedProcesses(terminationGraceMs).then(({ confirmed, ownership: finalOwnership }) => {
