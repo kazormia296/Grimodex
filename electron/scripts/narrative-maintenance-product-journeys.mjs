@@ -3199,8 +3199,68 @@ async function runSchemaBackfillVerify(
   );
 }
 
+export async function verifyRestoreRendererRecovery(context, workspaceName) {
+  const { page, harness } = context;
+  const canvasSelector = "[data-editor-ambient] canvas";
+  const rendering = await harness.waitUntil(
+    () =>
+      page.evaluate((selector) => {
+        const canvas = document.querySelector(selector);
+        const renderer = canvas
+          ?.closest("[data-editor-ambient]")
+          ?.getAttribute("data-background-renderer");
+        const gl = canvas?.getContext("webgl2");
+        const stats =
+          canvas?.parentElement?.paperShaderMount?.getPerformanceStats();
+        if (
+          renderer !== "webgl" ||
+          !gl ||
+          gl.isContextLost() ||
+          !canvas.width ||
+          !canvas.height ||
+          !stats?.isStaticFrameReady ||
+          !(stats.drawCount > 0)
+        )
+          return null;
+        return {
+          renderer,
+          canvasWidth: canvas.width,
+          canvasHeight: canvas.height,
+          contextLost: false,
+          drawCount: stats.drawCount,
+          timeOrigin: performance.timeOrigin,
+        };
+      }, canvasSelector),
+    "restore reload renders a healthy WebGL frame",
+    10_000,
+    100,
+  );
+
+  // Exercise the restored renderer without mutating the restored inventory.
+  const trigger = page.getByTestId("workspace-menu-trigger");
+  const actualName = await trigger.locator("span").first().textContent();
+  if (!workspaceName?.trim() || actualName !== workspaceName) {
+    throw new Error("restore reload changed the displayed workspace identity");
+  }
+  await trigger.click();
+  const menu = page.getByTestId("workspace-menu-dropdown");
+  await menu.waitFor({ state: "visible" });
+  await menu
+    .getByText(workspaceName, { exact: true })
+    .first()
+    .waitFor({ state: "visible" });
+  await trigger.click();
+  await menu.waitFor({ state: "hidden" });
+  return { ...rendering, canvasSelector, interaction: true };
+}
+
 export async function restoreBackupThroughSettingsUi(context, backupName) {
   const { page, harness } = context;
+  const workspaceName = await page
+    .getByTestId("workspace-menu-trigger")
+    .locator("span")
+    .first()
+    .textContent();
   const backups = await harness.invokeOk(page, "list_backups");
   const matchingBackups = Array.isArray(backups)
     ? backups.filter((backup) => backup?.fileName === backupName)
@@ -3254,30 +3314,32 @@ export async function restoreBackupThroughSettingsUi(context, backupName) {
   // invoke restore_backup, then reload the renderer. Observe the main-frame
   // navigation and the new document timing rather than bypassing production
   // with a raw restore_backup IPC call.
-  const previousTimeOrigin = await page.evaluate(() => performance.timeOrigin);
-  const mainFrameReload = page.waitForEvent("framenavigated", {
-    predicate: (frame) => frame === page.mainFrame(),
-    timeout: 60_000,
-  });
-  const reload = page.waitForFunction(
-    (origin) => performance.timeOrigin !== origin,
-    previousTimeOrigin,
-    { timeout: 60_000 },
-  );
-  await confirmButton.click();
-  await Promise.all([mainFrameReload, reload]);
-  await page.waitForFunction(
-    () => globalThis.grimodex?.shell === "electron",
-    undefined,
-    { timeout: 60_000 },
-  );
+  await harness.withRestoreRendererReload(page, async () => {
+    const previousTimeOrigin = await page.evaluate(() => performance.timeOrigin);
+    const mainFrameReload = page.waitForEvent("framenavigated", {
+      predicate: (frame) => frame === page.mainFrame(),
+      timeout: 60_000,
+    });
+    const reload = page.waitForFunction(
+      (origin) => performance.timeOrigin !== origin,
+      previousTimeOrigin,
+      { timeout: 60_000 },
+    );
+    await confirmButton.click();
+    await Promise.all([mainFrameReload, reload]);
+    await page.waitForFunction(
+      () => globalThis.grimodex?.shell === "electron",
+      undefined,
+      { timeout: 60_000 },
+    );
 
-  // The new document may expose the preload bridge before bootstrap has
-  // reopened the workspace. Wait for hydrated workspace chrome; the caller
-  // then rebuilds DB context closures against this reloaded page.
-  await page
-    .getByTestId("workspace-menu-trigger")
-    .waitFor({ state: "visible", timeout: 60_000 });
+    // The preload bridge can precede workspace hydration. Require the new
+    // renderer to draw and respond before accepting the reload observation.
+    await page
+      .getByTestId("workspace-menu-trigger")
+      .waitFor({ state: "visible", timeout: 60_000 });
+    return verifyRestoreRendererRecovery(context, workspaceName);
+  });
   return { backupName };
 }
 

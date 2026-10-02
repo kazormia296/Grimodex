@@ -53,6 +53,7 @@ import {
   selectChangedDigestRun,
   finishDigestChangeBaseline,
   waitForStableLedger,
+  verifyRestoreRendererRecovery,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
@@ -2359,6 +2360,98 @@ test("restore fixture binds owner Run mutations to the exact active workspace", 
   );
 });
 
+test("restore recovery requires a rendered WebGL frame and a working workspace menu", async () => {
+  for (const invalid of [
+    null,
+    "fallback",
+    "dimensions",
+    "lost",
+    "pending",
+    "undrawn",
+    "workspace",
+  ]) {
+    const events = [];
+    const canvas = {
+      width: invalid === "dimensions" ? 0 : 800,
+      height: 551,
+      closest: () => ({
+        getAttribute: () => (invalid === "fallback" ? "fallback" : "webgl"),
+      }),
+      getContext: () => ({ isContextLost: () => invalid === "lost" }),
+      parentElement: {
+        paperShaderMount: {
+          getPerformanceStats: () => ({
+            drawCount: invalid === "undrawn" ? 0 : 2,
+            isStaticFrameReady: invalid !== "pending",
+          }),
+        },
+      },
+    };
+    const trigger = {
+      locator: () => ({
+        first: () => ({
+          textContent: async () =>
+            invalid === "workspace" ? "wrong" : "restored",
+        }),
+      }),
+      click: async () => events.push("click"),
+    };
+    const menu = {
+      waitFor: async ({ state }) => events.push(state),
+      getByText: (text, options) => {
+        assert.equal(text, "restored");
+        assert.equal(options.exact, true);
+        return {
+          first: () => ({ waitFor: async () => events.push("restored-label") }),
+        };
+      },
+    };
+    const context = {
+      page: {
+        evaluate: async (fn, selector) =>
+          runInNewContext(`(${fn})(${JSON.stringify(selector)})`, {
+            document: { querySelector: () => canvas },
+            performance: { timeOrigin: 456 },
+          }),
+        getByTestId: (id) => (id === "workspace-menu-trigger" ? trigger : menu),
+      },
+      harness: {
+        waitUntil: async (read) => {
+          const state = await read();
+          if (!state) throw new Error("renderer is not healthy");
+          return state;
+        },
+      },
+    };
+    if (invalid) {
+      await assert.rejects(
+        verifyRestoreRendererRecovery(context, "restored"),
+        /not healthy|workspace identity/,
+      );
+      assert.deepEqual(events, []);
+    } else {
+      const proof = await verifyRestoreRendererRecovery(context, "restored");
+      assert.deepEqual(proof, {
+        renderer: "webgl",
+        canvasWidth: 800,
+        canvasHeight: 551,
+        contextLost: false,
+        drawCount: 2,
+        timeOrigin: 456,
+        canvasSelector: "[data-editor-ambient] canvas",
+        interaction: true,
+      });
+      assert.deepEqual(events, [
+        "click",
+        "visible",
+        "restored-label",
+        "click",
+        "hidden",
+      ]);
+    }
+  }
+});
+
 test("restore journey must exercise the Settings backup UI and rebind after reload", async () => {
   const source = await readFile(
     new URL(
@@ -2426,6 +2519,11 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
     helperBody,
     /framenavigated[\s\S]*frame === page\.mainFrame\(\)/,
     "restore helper must observe the main-frame reload",
+  );
+  assert.match(helperBody, /withRestoreRendererReload\(page, async \(\) =>/);
+  assert.match(
+    helperBody,
+    /verifyRestoreRendererRecovery\(context, workspaceName\)/,
   );
   assert.match(
     scenarioBody,

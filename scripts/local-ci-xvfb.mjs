@@ -178,9 +178,18 @@ async function runWithXvfb(command, args) {
     await authorize(authFile, display, cookie);
     if (server.done)
       throw failure ?? new Error("Xvfb exited before command admission");
-    const application = start(command, args, {
-      env: { ...process.env, DISPLAY: `:${display}`, XAUTHORITY: authFile },
-    });
+    // Chromium selects native Wayland from the session even when DISPLAY is
+    // set. Keep applications on the Xvfb server this wrapper owns.
+    const env = {
+      ...process.env,
+      DISPLAY: `:${display}`,
+      XAUTHORITY: authFile,
+      XDG_SESSION_TYPE: "x11",
+      GRIMODEX_LOCAL_CI_XVFB: "1",
+    };
+    delete env.WAYLAND_DISPLAY;
+    delete env.WAYLAND_SOCKET;
+    const application = start(command, args, { env });
     const result = await application.closed;
     if (result.error) throw result.error;
     exitCode = result.signal

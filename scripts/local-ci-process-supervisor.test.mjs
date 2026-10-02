@@ -346,7 +346,7 @@ async function assertXvfbClean(root, result) {
 const xvfbApplicationStarted =
   "require('node:fs').writeFileSync(require('node:path').join(process.env.XVFB_TEST_ROOT,'application-started'),'yes');";
 
-test("Xvfb owners run concurrently with separate displays and private authorization", async (t) => {
+test("Xvfb owners isolate X11 sessions with separate displays and private authorization", async (t) => {
   const fixtures = await Promise.all([
     xvfbFixture(t),
     xvfbFixture(t),
@@ -354,16 +354,24 @@ test("Xvfb owners run concurrently with separate displays and private authorizat
   ]);
   const results = await Promise.all(
     fixtures.map(async ({ root, entry, options }) => {
-      const result = await runLocalCiCommand(
-        entry(`
+      const command = entry(`
       const fs = require('node:fs');
       const auth = fs.readFileSync(process.env.XAUTHORITY, 'utf8');
-      require('node:assert/strict').match(auth, new RegExp('add ' + process.env.DISPLAY + ' MIT-MAGIC-COOKIE-1'));
+      const assert = require('node:assert/strict');
+      assert.match(auth, new RegExp('add ' + process.env.DISPLAY + ' MIT-MAGIC-COOKIE-1'));
+      assert.equal(process.env.XDG_SESSION_TYPE, 'x11');
+      assert.equal(process.env.GRIMODEX_LOCAL_CI_XVFB, '1');
+      assert.equal(process.env.WAYLAND_DISPLAY, undefined);
+      assert.equal(process.env.WAYLAND_SOCKET, undefined);
       console.log(JSON.stringify({display:process.env.DISPLAY,auth:process.env.XAUTHORITY}));
       setTimeout(() => {}, 100);
-    `),
-        options,
-      );
+    `);
+      Object.assign(command.env, {
+        XDG_SESSION_TYPE: "wayland",
+        WAYLAND_DISPLAY: "wayland-test",
+        WAYLAND_SOCKET: "10",
+      });
+      const result = await runLocalCiCommand(command, options);
       assert.equal(result.exitCode, 0);
       await assertXvfbClean(root, result);
       return JSON.parse(
