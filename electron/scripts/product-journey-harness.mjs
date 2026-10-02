@@ -4276,7 +4276,7 @@ export function createProductJourneyHarness({
       }
       const png = await page.locator(reportedProof.canvasSelector).screenshot({
         style:
-          "body * { visibility: hidden !important; } [data-editor-ambient], [data-editor-ambient] * { visibility: visible !important; }",
+          "html, body { background: #000 !important; } body * { visibility: hidden !important; } [data-editor-ambient] canvas { visibility: visible !important; background: #000 !important; }",
         timeout: 5_000,
       });
       if (

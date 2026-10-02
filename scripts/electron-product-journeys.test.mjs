@@ -5267,7 +5267,22 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
         assert.equal(selector, "[data-editor-ambient] canvas");
         return {
           screenshot: async (options) => {
-            assert.match(options.style, /visibility: hidden/);
+            assert.match(
+              options.style,
+              /html, body \{ background: #000 !important; \}/,
+            );
+            assert.match(
+              options.style,
+              /body \* \{ visibility: hidden !important; \}/,
+            );
+            assert.match(
+              options.style,
+              /\[data-editor-ambient\] canvas \{ visibility: visible !important; background: #000 !important; \}/,
+            );
+            assert.doesNotMatch(
+              options.style,
+              /\[data-editor-ambient\]\s*(?:,|\*)/,
+            );
             return png;
           },
         };
