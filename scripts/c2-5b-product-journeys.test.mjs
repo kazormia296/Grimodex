@@ -52,6 +52,7 @@ import {
   runRestoreVerifyRebuildVerifyScenario,
   selectChangedDigestRun,
   finishDigestChangeBaseline,
+  waitForStableLedger,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
@@ -65,6 +66,7 @@ import {
 import {
   expectedNarrativeMaintenanceCiReceipt,
   PRODUCT_JOURNEY_ELECTRON_PHASES,
+  waitUntil,
 } from "../electron/scripts/product-journey-harness.mjs";
 import {
   resolveProductJourneyImpactCatalog,
@@ -2750,6 +2752,54 @@ test("settled interruption recovery rejects duplicate, non-terminal, and stale r
       ),
     /at or before the stale Run completedAt/,
     "a recovery created before stale completion must remain red",
+  );
+});
+
+test("stable ledger allows slow reads while retaining delayed Repair and timeout checks", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => now);
+  const verify = {
+    id: "verify",
+    runKind: "dependency-verify",
+    status: "completed",
+  };
+  const repair = {
+    id: "repair",
+    runKind: "dependency-repair",
+    status: "completed",
+  };
+  let reads = 0;
+  let rowsForRead = () => [verify];
+  const context = {
+    harness: {
+      waitUntil: (predicate, label, timeoutMs) =>
+        waitUntil(predicate, label, timeoutMs, 0),
+    },
+    runs: async () => {
+      now += 1_500;
+      reads += 1;
+      return rowsForRead(reads);
+    },
+  };
+
+  const stableRows = await waitForStableLedger(context, [], "slow ledger");
+  assert.equal(reads, 4, "all four equal samples remain required");
+  assertNoAutomaticRepair(stableRows);
+
+  reads = 0;
+  rowsForRead = (read) => (read < 4 ? [verify] : [verify, repair]);
+  const repairedRows = await waitForStableLedger(context, [], "late repair");
+  assert.equal(reads, 7, "a changed ledger resets the stability count");
+  assert.throws(
+    () => assertNoAutomaticRepair(repairedRows),
+    /human-only Repair/,
+  );
+
+  reads = 0;
+  rowsForRead = (read) => [{ ...verify, id: `changing-${read}` }];
+  await assert.rejects(
+    waitForStableLedger(context, [], "changing ledger"),
+    /timeout waiting for changing ledger/,
   );
 });
 

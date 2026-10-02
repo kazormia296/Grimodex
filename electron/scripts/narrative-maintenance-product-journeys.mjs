@@ -3067,13 +3067,14 @@ function terminalInboxEntryForRun(entries, failedRun) {
   });
 }
 
-async function waitForStableLedger(
+export async function waitForStableLedger(
   context,
   baselineRows,
   label,
   {
     minimumObservationMs = NARRATIVE_MAINTENANCE_RETRY_OBSERVATION_MS,
-    timeoutMs = minimumObservationMs + 2_000,
+    // Stability needs the initial read and three repeats, including IPC time.
+    timeoutMs = minimumObservationMs + 4 * NARRATIVE_MAINTENANCE_WAIT_MS,
   } = {},
 ) {
   const observationStartedAt = Date.now();
