@@ -241,6 +241,11 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["vivliostyle_detect", AI_IPC_TIMEOUT_MS],
 ]);
 
+// An update check only reads remote availability and updates ephemeral updater
+// metadata. It must not hold document close open if its network request fails.
+// Keep its existing no-timeout caller behavior; download/install remain writes.
+const NON_PERSISTENT_READ_COMMANDS = new Set(["updater_check"]);
+
 /**
  * Rebuildable semantic indexes are not manuscript authority. Rust pins every
  * request to the Database/cache epoch captured at command start, and its
@@ -356,6 +361,7 @@ function ipcCategoryForCommand(
   args?: Record<string, unknown>,
 ): "mutation" | "read" | "derived" {
   if (DERIVED_INDEX_COMMANDS.has(command)) return "derived";
+  if (NON_PERSISTENT_READ_COMMANDS.has(command)) return "read";
   if (AUDIT_EXPORT_READ_COMMANDS.has(command)) return "read";
   return callerTimeoutForCommand(command, args) === null ? "mutation" : "read";
 }
