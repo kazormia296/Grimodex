@@ -6,6 +6,7 @@ import { constants, createReadStream } from "node:fs";
 import {
   copyFile,
   link,
+  lstat,
   mkdir,
   mkdtemp,
   open,
@@ -3010,6 +3011,102 @@ function executionPassed(execution) {
   );
 }
 
+const NATIVE_CARGO_TARGET = "electron/native/grimodex-node/target";
+const NATIVE_CARGO_CLEANUP_TASKS = {
+  "native.build": "release",
+  "c2zc.rust-acceptance": "debug",
+};
+
+export async function resolveNativeCargoTargetDirectory(
+  root,
+  command,
+  signal,
+  taskId,
+  runMetadata = execFileAsync,
+) {
+  if (!Object.hasOwn(NATIVE_CARGO_CLEANUP_TASKS, taskId)) {
+    throw new Error(`No native Cargo target resolution after ${taskId}`);
+  }
+  const manifest = path.join(root, "electron/native/grimodex-node/Cargo.toml");
+  const cwd = taskId === "native.build" ? path.dirname(manifest) : root;
+  const { stdout } = await runMetadata(
+    "cargo",
+    [
+      "metadata",
+      "--no-deps",
+      "--locked",
+      "--offline",
+      "--format-version",
+      "1",
+      "--manifest-path",
+      manifest,
+    ],
+    {
+      cwd,
+      env: { ...process.env, ...command.env },
+      maxBuffer: 1024 * 1024,
+      signal,
+      timeout: 30_000,
+    },
+  );
+  const target = JSON.parse(stdout).target_directory;
+  if (typeof target !== "string" || !path.isAbsolute(target)) {
+    throw new Error(
+      "Cargo metadata did not provide an absolute native target directory",
+    );
+  }
+  return path.resolve(target);
+}
+
+export async function cleanupNativeCargoTargetAfterTask(taskId, { root }) {
+  if (!Object.hasOwn(NATIVE_CARGO_CLEANUP_TASKS, taskId)) {
+    throw new Error(`No native Cargo cleanup after ${taskId}`);
+  }
+  if (typeof root !== "string" || !path.isAbsolute(root)) {
+    throw new Error("Native Cargo cleanup requires an absolute root");
+  }
+  const profile = NATIVE_CARGO_CLEANUP_TASKS[taskId];
+
+  const resolvedRoot = path.resolve(root);
+  if ((await realpath(resolvedRoot)) !== resolvedRoot) {
+    throw new Error("Native Cargo cleanup root must not be a symlink");
+  }
+  let parent = resolvedRoot;
+  for (const component of NATIVE_CARGO_TARGET.split("/")) {
+    parent = path.join(parent, component);
+    const entry = await lstat(parent);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error(
+        `Native Cargo cleanup parent is not a real directory: ${parent}`,
+      );
+    }
+  }
+  const binary = path.join(
+    resolvedRoot,
+    "electron/native/grimodex-node/grimodex-node.node",
+  );
+  const binaryEntry = await lstat(binary).catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  if (
+    !binaryEntry?.isFile() ||
+    binaryEntry.isSymbolicLink() ||
+    binaryEntry.size === 0
+  ) {
+    throw new Error("Native Cargo cleanup requires the copied N-API binary");
+  }
+  const target = path.join(parent, profile);
+  const targetEntry = await lstat(target);
+  if (!targetEntry.isDirectory() || targetEntry.isSymbolicLink()) {
+    throw new Error(
+      `Native Cargo cleanup target is not a real directory: ${target}`,
+    );
+  }
+  await rm(target, { recursive: true });
+  return path.relative(resolvedRoot, target);
+}
+
 async function validateRunSpecificWebArtifact(command, { root, runId }) {
   const outputIndex = command.args.indexOf("--outDir");
   const expected = path.join(
@@ -3036,6 +3133,7 @@ async function runConcurrentLocalCiPlan(
     logDirectory,
     notify,
     productJourneyEvidence,
+    resolveNativeTargetDirectory,
     root,
     runId,
     signal,
@@ -3159,6 +3257,44 @@ async function runConcurrentLocalCiPlan(
           };
         }
       }
+      if (
+        executionPassed(execution) &&
+        plan.profile === "full" &&
+        plan.maxParallelTasks === 1 &&
+        Object.hasOwn(NATIVE_CARGO_CLEANUP_TASKS, task.id)
+      ) {
+        try {
+          if (execution.cleanup?.groupAlive !== false) {
+            throw new Error(
+              `Native Cargo cleanup requires process-group exit after ${task.id}`,
+            );
+          }
+          const configuredTarget = await resolveNativeTargetDirectory(
+            root,
+            command,
+            signal,
+            task.id,
+          );
+          const expectedTarget = path.join(
+            path.resolve(root),
+            NATIVE_CARGO_TARGET,
+          );
+          if (configuredTarget !== expectedTarget) {
+            notify({ taskId: task.id, type: "build-cache-cleanup-skipped" });
+          } else {
+            const target = await cleanupNativeCargoTargetAfterTask(task.id, {
+              root,
+            });
+            notify({ taskId: task.id, target, type: "build-cache-cleanup" });
+          }
+        } catch (error) {
+          execution = {
+            ...execution,
+            error: error instanceof Error ? error.message : String(error),
+            exitCode: 1,
+          };
+        }
+      }
       const status = executionPassed(execution) ? "passed" : "failed";
       if (task.stageId === C2ZC_RESTORE_FIXTURE_STAGE && status === "failed") {
         if (c2zcRestoreFixtureEvidenceOwned) {
@@ -3257,6 +3393,7 @@ export async function runLocalCiPlan(
       executeCommand(entry, options),
     notify = () => {},
     productJourneyEvidence = null,
+    resolveNativeTargetDirectory = resolveNativeCargoTargetDirectory,
     root = repoRoot,
     runId: requestedRunId = null,
     concurrent = false,
@@ -3277,6 +3414,7 @@ export async function runLocalCiPlan(
       logDirectory: logDirectory ?? `.artifacts/local-ci/runs/${runId}/logs`,
       notify,
       productJourneyEvidence,
+      resolveNativeTargetDirectory,
       root,
       runId,
       signal,
@@ -4346,6 +4484,14 @@ async function main() {
             process.stderr.write(`[local-ci] ${stream}=${logPath}\n`);
         }
       }
+    } else if (event.type === "build-cache-cleanup") {
+      process.stdout.write(
+        `[local-ci] removed ${event.target} after ${event.taskId}\n`,
+      );
+    } else if (event.type === "build-cache-cleanup-skipped") {
+      process.stdout.write(
+        `[local-ci] native Cargo target differs from default; cleanup skipped after ${event.taskId}\n`,
+      );
     }
   };
   if (args.dryRun) {

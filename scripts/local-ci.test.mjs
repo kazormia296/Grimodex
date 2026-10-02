@@ -38,12 +38,14 @@ import {
   expectedC2ZcAcceptanceForPlan,
   acquireCheckoutLock,
   checkoutLockCleanupComplete,
+  cleanupNativeCargoTargetAfterTask,
   finalizeCheckoutLock,
   finalizeLocalCiExecution,
   parseLocalCiArgs,
   prepareLocalCiArtifacts,
   recoverCheckoutLock,
   readC2ZcRestoreFixtureEvidence,
+  resolveNativeCargoTargetDirectory,
   resolveLocalCiCandidate,
   runLocalCiInvocationTasks,
   runLocalCiPlan,
@@ -4898,6 +4900,317 @@ test("concurrent plan forwards run scope and external abort to the supervisor", 
   assert.throws(
     () => process.kill(-task.pid, 0),
     (error) => error?.code === "ESRCH",
+  );
+});
+
+async function nativeCleanupFixture(t) {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-native-ci-cleanup-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const native = path.join(root, "electron/native/grimodex-node");
+  const release = path.join(native, "target/release");
+  const debug = path.join(native, "target/debug");
+  const binary = path.join(native, "grimodex-node.node");
+  const protectedPaths = [
+    path.join(root, "src-tauri/target/debug/deps/shared.rlib"),
+    path.join(root, "fixtures/restore.json"),
+    path.join(root, ".artifacts/local-ci/full.json"),
+    path.join(
+      root,
+      ".artifacts/local-ci/runs/test/logs/native.build.stdout.log",
+    ),
+  ];
+  for (const file of [
+    binary,
+    path.join(release, "deps/native.rlib"),
+    path.join(debug, "deps/native-test"),
+    ...protectedPaths,
+  ]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, file);
+  }
+  return { root, native, release, debug, binary, protectedPaths };
+}
+
+function nativeCleanupPlan() {
+  const commands = [
+    ["native.build", "electron-native", []],
+    ["native.public-tests", "electron-native", ["native.build"]],
+    [
+      "c2zc.rust-acceptance",
+      "c2-zc-rust-acceptance-gate",
+      ["native.public-tests"],
+    ],
+    ["after-c2zc", "after", ["c2zc.rust-acceptance"]],
+  ];
+  const stages = [];
+  const tasks = [];
+  for (const [id, stageId, after] of commands) {
+    const command = {
+      id,
+      label: id,
+      command: "mock",
+      args: [],
+      cwd: ".",
+      env: {},
+    };
+    let stage = stages.find((entry) => entry.id === stageId);
+    if (!stage) {
+      stage = { id: stageId, label: stageId, commands: [] };
+      stages.push(stage);
+    }
+    const commandIndex = stage.commands.length;
+    stage.commands.push(command);
+    tasks.push({
+      id,
+      stageId,
+      stageLabel: stageId,
+      commandIndex,
+      command: { label: id, command: "mock", args: [], cwd: ".", env: {} },
+      after,
+    });
+  }
+  return {
+    profile: "full",
+    comparison: { base: "base", head: "head" },
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 1,
+    maxParallelTasks: 1,
+    registryDigest: `sha256:${"a".repeat(64)}`,
+    releaseOnlyJobs: [],
+    stages,
+    tasks,
+  };
+}
+
+test("Full awaits native build-target cleanup at both last-consumer boundaries", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const outside = path.join(fixture.root, "outside.txt");
+  await writeFile(outside, "keep");
+  await symlink(outside, path.join(fixture.debug, "external-link"));
+  const observed = [];
+  const result = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () =>
+      path.join(fixture.native, "target"),
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    async executeCommand(_command, { taskId }) {
+      observed.push(taskId);
+      if (taskId === "native.public-tests") {
+        await assert.rejects(access(fixture.release), { code: "ENOENT" });
+        assert.equal(await readFile(fixture.binary, "utf8"), fixture.binary);
+      }
+      if (taskId === "after-c2zc") {
+        await assert.rejects(access(fixture.debug), { code: "ENOENT" });
+      }
+      return {
+        cleanup: { complete: true, groupAlive: false },
+        exitCode: 0,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(result.status, "passed");
+  assert.deepEqual(
+    observed,
+    nativeCleanupPlan().tasks.map((task) => task.id),
+  );
+  assert.equal(await readFile(outside, "utf8"), "keep");
+  assert.equal(await readFile(fixture.binary, "utf8"), fixture.binary);
+  for (const file of fixture.protectedPaths) {
+    assert.equal(await readFile(file, "utf8"), file);
+  }
+});
+
+test("native Cargo cleanup rejects symlinked parents and targets", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const external = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-native-ci-external-"),
+  );
+  t.after(() => rm(external, { recursive: true, force: true }));
+  const marker = path.join(external, "marker");
+  await writeFile(marker, "keep");
+  await rm(fixture.release, { recursive: true });
+  await symlink(external, fixture.release);
+  await assert.rejects(
+    cleanupNativeCargoTargetAfterTask("native.build", { root: fixture.root }),
+    /target is not a real directory/u,
+  );
+  assert.equal(await readFile(marker, "utf8"), "keep");
+  await rm(fixture.release);
+  await rm(path.join(fixture.native, "target"), { recursive: true });
+  await symlink(external, path.join(fixture.native, "target"));
+  await assert.rejects(
+    cleanupNativeCargoTargetAfterTask("native.build", { root: fixture.root }),
+    /parent is not a real directory/u,
+  );
+  assert.equal(await readFile(marker, "utf8"), "keep");
+  const linkedRoot = `${fixture.root}-link`;
+  await symlink(fixture.root, linkedRoot);
+  t.after(() => rm(linkedRoot));
+  await assert.rejects(
+    cleanupNativeCargoTargetAfterTask("native.build", { root: linkedRoot }),
+    /root must not be a symlink/u,
+  );
+});
+
+test("native Cargo cleanup fails closed on missing binary and unfinished process cleanup", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  await rm(fixture.binary);
+  await assert.rejects(
+    cleanupNativeCargoTargetAfterTask("native.build", { root: fixture.root }),
+    /requires the copied N-API binary/u,
+  );
+  await access(fixture.release);
+  await writeFile(fixture.binary, "native");
+  const result = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () =>
+      path.join(fixture.native, "target"),
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    async executeCommand() {
+      return {
+        cleanup: { complete: true, groupAlive: true },
+        exitCode: 0,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(result.status, "failed");
+  assert.match(result.tasks[0].error, /requires process-group exit/u);
+  assert.equal(result.tasks[1].status, "not-run");
+  await access(fixture.release);
+  await access(fixture.debug);
+});
+
+test("failed native and C2-ZC commands never trigger build-target cleanup", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const failedBuild = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () =>
+      path.join(fixture.native, "target"),
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    async executeCommand() {
+      return {
+        cleanup: { complete: true, groupAlive: false },
+        exitCode: 1,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(failedBuild.tasks[0].status, "failed");
+  await access(fixture.release);
+  await access(fixture.debug);
+
+  const failedGate = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () =>
+      path.join(fixture.native, "target"),
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    async executeCommand(_command, { taskId }) {
+      return {
+        cleanup: { complete: true, groupAlive: false },
+        exitCode: taskId === "c2zc.rust-acceptance" ? 1 : 0,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(failedGate.tasks[2].status, "failed");
+  assert.equal(failedGate.tasks[3].status, "not-run");
+  await assert.rejects(access(fixture.release), { code: "ENOENT" });
+  await access(fixture.debug);
+  assert.equal(await readFile(fixture.binary, "utf8"), fixture.binary);
+});
+
+test("redirected Cargo targets leave the default native build tree intact", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const redirected = path.join(fixture.root, "redirected-cargo-target");
+  await mkdir(redirected);
+  const events = [];
+  const result = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () => redirected,
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    notify(event) {
+      events.push(event);
+    },
+    async executeCommand() {
+      return {
+        cleanup: { complete: true, groupAlive: false },
+        exitCode: 0,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(result.status, "passed");
+  assert.equal(
+    events.filter((event) => event.type === "build-cache-cleanup-skipped")
+      .length,
+    2,
+  );
+  await access(fixture.release);
+  await access(fixture.debug);
+  assert.equal(await readFile(fixture.binary, "utf8"), fixture.binary);
+});
+
+test("native target metadata uses each Cargo consumer's working directory", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const redirected = path.join(fixture.root, "redirected-cargo-target");
+  const nativeCwd = fixture.native;
+  const seen = [];
+  const runMetadata = async (command, args, options) => {
+    seen.push({ command, args, cwd: options.cwd });
+    return {
+      stdout: JSON.stringify({
+        target_directory:
+          options.cwd === nativeCwd
+            ? redirected
+            : path.join(fixture.native, "target"),
+      }),
+    };
+  };
+  assert.equal(
+    await resolveNativeCargoTargetDirectory(
+      fixture.root,
+      { env: {} },
+      null,
+      "native.build",
+      runMetadata,
+    ),
+    redirected,
+  );
+  assert.equal(
+    await resolveNativeCargoTargetDirectory(
+      fixture.root,
+      { env: {} },
+      null,
+      "c2zc.rust-acceptance",
+      runMetadata,
+    ),
+    path.join(fixture.native, "target"),
+  );
+  assert.deepEqual(
+    seen.map(({ cwd }) => cwd),
+    [fixture.native, fixture.root],
+  );
+  assert.ok(
+    seen.every(
+      ({ command, args }) =>
+        command === "cargo" &&
+        args.includes("--locked") &&
+        args.includes("--offline"),
+    ),
   );
 });
 
