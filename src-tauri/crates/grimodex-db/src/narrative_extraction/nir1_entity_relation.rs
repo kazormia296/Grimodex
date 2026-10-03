@@ -1852,26 +1852,21 @@ pub fn find_nir1_entity_relation_revision_run(
     .map_err(Into::into)
 }
 
-enum TypedRevisionCoreReadWithScopeAuthority {
+enum TypedRevisionCoreRead<T> {
     Draft {
         revision: Box<Nir1EntityRelationRevision>,
     },
-    Available {
-        revision: Box<Nir1EntityRelationRevision>,
-        authority: NarrativeProjectScopeAuthorityV1,
-    },
+    Available(T),
     Unavailable {
         reason: String,
     },
 }
 
-impl TypedRevisionCoreReadWithScopeAuthority {
+impl TypedRevisionCoreRead<Box<Nir1EntityRelationRevision>> {
     fn into_current_read(self) -> Nir1EntityRelationRevisionCurrentRead {
         match self {
             Self::Draft { revision } => Nir1EntityRelationRevisionCurrentRead::Draft(revision),
-            Self::Available { revision, .. } => {
-                Nir1EntityRelationRevisionCurrentRead::Available(revision)
-            }
+            Self::Available(revision) => Nir1EntityRelationRevisionCurrentRead::Available(revision),
             Self::Unavailable { reason } => {
                 Nir1EntityRelationRevisionCurrentRead::Unavailable { reason }
             }
@@ -1885,18 +1880,26 @@ fn read_typed_revision_core(
     revision_id: &str,
     allow_draft: bool,
 ) -> anyhow::Result<Nir1EntityRelationRevisionCurrentRead> {
-    Ok(
-        read_typed_revision_core_with_scope_authority(conn, project_id, revision_id, allow_draft)?
-            .into_current_read(),
-    )
+    Ok(read_typed_revision_core_with_scope_authority(
+        conn,
+        project_id,
+        revision_id,
+        allow_draft,
+        |revision, _authority| Ok(revision),
+    )?
+    .into_current_read())
 }
 
-fn read_typed_revision_core_with_scope_authority(
+fn read_typed_revision_core_with_scope_authority<T>(
     conn: &Connection,
     project_id: &str,
     revision_id: &str,
     allow_draft: bool,
-) -> anyhow::Result<TypedRevisionCoreReadWithScopeAuthority> {
+    on_available: impl FnOnce(
+        Box<Nir1EntityRelationRevision>,
+        NarrativeProjectScopeAuthorityV1,
+    ) -> anyhow::Result<T>,
+) -> anyhow::Result<TypedRevisionCoreRead<T>> {
     if conn.is_autocommit() {
         anyhow::bail!("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION");
     }
@@ -2164,12 +2167,11 @@ fn read_typed_revision_core_with_scope_authority(
         decision,
     });
     if human_approved {
-        Ok(TypedRevisionCoreReadWithScopeAuthority::Available {
-            revision,
-            authority,
-        })
+        Ok(TypedRevisionCoreRead::Available(on_available(
+            revision, authority,
+        )?))
     } else {
-        Ok(TypedRevisionCoreReadWithScopeAuthority::Draft { revision })
+        Ok(TypedRevisionCoreRead::Draft { revision })
     }
 }
 
@@ -2198,36 +2200,34 @@ pub fn evaluate_nir1_entity_relation_disclosure(
         "NIR1_ENTITY_RELATION_A3_INVALID_READ_REQUEST"
     );
 
-    // Keep the exact typed A2 current reader as the mandatory first gate. It
-    // returns its validated Scope authority through a private carrier so A3
-    // consumes the same caller-owned read snapshot without reloading it.
-    let (revision, authority) = match read_typed_revision_core_with_scope_authority(
+    // Keep the exact typed A2 current reader as the mandatory first gate. Its
+    // validated Scope authority goes directly to A3, preserving the same
+    // caller-owned snapshot without reloading or allocating a carrier.
+    let result = read_typed_revision_core_with_scope_authority(
         conn,
         project_id,
         revision_id,
         false,
-    )? {
-        TypedRevisionCoreReadWithScopeAuthority::Available {
-            revision,
-            authority,
-        } => (revision, authority),
-        TypedRevisionCoreReadWithScopeAuthority::Draft { .. } => {
-            return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-                reason: "revision-not-human-approved".into(),
-            });
+        |revision, authority| {
+            evaluate_nir1_entity_relation_disclosure_with_authority(
+                conn,
+                project_id,
+                revision_id,
+                query_scene_id,
+                revision,
+                authority,
+            )
+        },
+    )?;
+    match result {
+        TypedRevisionCoreRead::Available(disclosure) => Ok(disclosure),
+        TypedRevisionCoreRead::Draft { .. } => Ok(Nir1EntityRelationDisclosureRead::Unavailable {
+            reason: "revision-not-human-approved".into(),
+        }),
+        TypedRevisionCoreRead::Unavailable { reason } => {
+            Ok(Nir1EntityRelationDisclosureRead::Unavailable { reason })
         }
-        TypedRevisionCoreReadWithScopeAuthority::Unavailable { reason } => {
-            return Ok(Nir1EntityRelationDisclosureRead::Unavailable { reason });
-        }
-    };
-    evaluate_nir1_entity_relation_disclosure_with_authority(
-        conn,
-        project_id,
-        revision_id,
-        query_scene_id,
-        revision,
-        authority,
-    )
+    }
 }
 
 fn evaluate_nir1_entity_relation_disclosure_with_authority(
@@ -3384,8 +3384,8 @@ fn read_scene_viewpoint(
     Ok(viewpoint)
 }
 
-fn unavailable(reason: &str) -> TypedRevisionCoreReadWithScopeAuthority {
-    TypedRevisionCoreReadWithScopeAuthority::Unavailable {
+fn unavailable<T>(reason: &str) -> TypedRevisionCoreRead<T> {
+    TypedRevisionCoreRead::Unavailable {
         reason: reason.into(),
     }
 }

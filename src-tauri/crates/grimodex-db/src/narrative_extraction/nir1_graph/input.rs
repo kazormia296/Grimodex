@@ -253,7 +253,11 @@ fn preflight_revision_inner(
     }
     // Include persisted authorities even if A2 will later reject them. Live
     // bodies are joined from payload IDs, not potentially tampered basis IDs.
-    for (_related_index, sql) in RELATED_BYTES_SQL.iter().enumerate() {
+    #[cfg(feature = "nir1-material-diagnostics")]
+    let related_queries = RELATED_BYTES_SQL.iter().enumerate();
+    #[cfg(not(feature = "nir1-material-diagnostics"))]
+    let related_queries = RELATED_BYTES_SQL.iter().map(|sql| ((), sql));
+    for (_related_index, sql) in related_queries {
         #[cfg(feature = "nir1-material-diagnostics")]
         let related_started = start_a2_sql_timer(&observation);
         let value_query = conn.query_row(sql, params![project, revision_id], |row| row.get(0));
@@ -919,7 +923,11 @@ fn preflight_disclosure_inner(
         .and_then(|count| count.checked_add(2))
         .ok_or_else(|| anyhow::anyhow!(ERROR))?;
     let mut rows = 0usize;
-    for (_index, &(sql, multiplier, parameters)) in DISCLOSURE_GLOBAL_ROWS_SQL.iter().enumerate() {
+    #[cfg(feature = "nir1-material-diagnostics")]
+    let global_row_queries = DISCLOSURE_GLOBAL_ROWS_SQL.iter().enumerate();
+    #[cfg(not(feature = "nir1-material-diagnostics"))]
+    let global_row_queries = DISCLOSURE_GLOBAL_ROWS_SQL.iter().map(|query| ((), query));
+    for (_index, &(sql, multiplier, parameters)) in global_row_queries {
         #[cfg(feature = "nir1-material-diagnostics")]
         let started = start_a3_sql_timer(&observation);
         let value_query: rusqlite::Result<i64> = match parameters {
@@ -965,7 +973,11 @@ fn preflight_disclosure_inner(
         admit_rows(&mut rows, value, 1, remaining_rows)?;
     }
     let mut bytes = 0usize;
-    for (_index, &(sql, multiplier)) in DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate() {
+    #[cfg(feature = "nir1-material-diagnostics")]
+    let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate();
+    #[cfg(not(feature = "nir1-material-diagnostics"))]
+    let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().map(|query| ((), query));
+    for (_index, &(sql, multiplier)) in global_byte_queries {
         #[cfg(feature = "nir1-material-diagnostics")]
         let started = start_a3_sql_timer(&observation);
         let value_query: rusqlite::Result<i64> =
@@ -994,7 +1006,11 @@ fn preflight_disclosure_inner(
             .filter(|value| *value <= remaining_bytes.min(INPUT_BYTES))
             .ok_or_else(|| anyhow::anyhow!(ERROR))?;
     }
-    for (_index, sql) in DISCLOSURE_MATERIAL_BYTES_SQL.iter().enumerate() {
+    #[cfg(feature = "nir1-material-diagnostics")]
+    let material_byte_queries = DISCLOSURE_MATERIAL_BYTES_SQL.iter().enumerate();
+    #[cfg(not(feature = "nir1-material-diagnostics"))]
+    let material_byte_queries = DISCLOSURE_MATERIAL_BYTES_SQL.iter().map(|sql| ((), sql));
+    for (_index, sql) in material_byte_queries {
         #[cfg(feature = "nir1-material-diagnostics")]
         let started = start_a3_sql_timer(&observation);
         let value_query: rusqlite::Result<i64> =

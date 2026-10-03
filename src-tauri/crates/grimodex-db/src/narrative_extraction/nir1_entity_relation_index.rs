@@ -765,12 +765,14 @@ fn read_eligibility_source_bounded(
     )
 }
 
+type ScratchScopeCallback<'a> = &'a mut dyn FnMut(&mut dyn FnMut()) -> bool;
+
 fn read_eligibility_source_counted(
     conn: &Connection,
     project: &str,
     admission: Option<&GraphReadAdmission<'_>>,
     mut control: Option<&mut dyn GraphWorkControl>,
-    mut scratch_scope: Option<&mut dyn FnMut(&mut dyn FnMut()) -> bool>,
+    mut scratch_scope: Option<ScratchScopeCallback<'_>>,
     capacity: &mut SourceCapacity,
 ) -> Result<GraphEligibilitySource> {
     ensure!(
@@ -2700,7 +2702,9 @@ mod tests {
             ("codex-entry", "codex:entity-1", "entity-token"),
             scope_basis[0],
         ];
-        let cases: [(&str, &str, &[(&str, &str, &str)], bool); 12] = [
+        type SourceBasisPreflightCase<'a> =
+            (&'a str, &'a str, &'a [(&'a str, &'a str, &'a str)], bool);
+        let cases: [SourceBasisPreflightCase<'_>; 12] = [
             (
                 "normal arrays",
                 r#"{"bundle":{"entities":[{"entityId":"entity-1","sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}}],"relations":[{"edgeId":"relation-1","sourceToken":"relation-token"}]}}"#,

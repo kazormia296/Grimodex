@@ -34,6 +34,12 @@ import {
 } from "@/application/lifecycle/lifecycleTrace";
 
 const cancelScheduledImeExportsMock = vi.hoisted(() => vi.fn());
+const setImeExportRefreshPausedMock = vi.hoisted(() => vi.fn());
+const scheduleImeExportRefreshMock = vi.hoisted(() => vi.fn());
+const imeSchedulerHarness = vi.hoisted(() => ({
+  paused: false,
+  acceptedSchedules: 0,
+}));
 const cancelAllScheduledSemanticIndexesMock = vi.hoisted(() => vi.fn());
 const lifecycleHarness = vi.hoisted(() => ({
   listener: null as ((payload: unknown) => void) | null,
@@ -41,6 +47,14 @@ const lifecycleHarness = vi.hoisted(() => ({
 
 vi.mock("@/features/ime/scheduler", () => ({
   cancelScheduledImeExports: cancelScheduledImeExportsMock,
+  setImeExportRefreshPaused: (paused: boolean) => {
+    imeSchedulerHarness.paused = paused;
+    setImeExportRefreshPausedMock(paused);
+  },
+  scheduleImeExportRefresh: (...args: unknown[]) => {
+    scheduleImeExportRefreshMock(...args);
+    if (!imeSchedulerHarness.paused) imeSchedulerHarness.acceptedSchedules += 1;
+  },
 }));
 
 vi.mock("@/features/semantic-search/scheduler", () => ({
@@ -57,7 +71,8 @@ vi.mock("@/lib/tauri", () => ({
   ),
 }));
 
-// Import the mocked module to configure per-test
+// Import the mocked modules to configure per-test
+import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { invoke } from "@/lib/tauri";
 import {
   applyWorkspaceLifecycleProjectionForTest,
@@ -103,6 +118,8 @@ describe("useWorkspaceStore", () => {
       loadProjectWithinLifecycle: vi.fn(async () => {}),
     });
     vi.clearAllMocks();
+    imeSchedulerHarness.paused = false;
+    imeSchedulerHarness.acceptedSchedules = 0;
   });
 
   afterEach(() => {
@@ -457,8 +474,11 @@ describe("useWorkspaceStore", () => {
       expect(isQuiescenceLeaseActive()).toBe(false);
     });
 
-    it("cancels workspace-scoped schedules before invoking the native workspace swap", async () => {
+    it("pauses IME scheduling before switch publication and cancels before the native swap", async () => {
       const order: string[] = [];
+      setImeExportRefreshPausedMock.mockImplementation((paused: boolean) => {
+        order.push(paused ? "pause-ime" : "resume-ime");
+      });
       cancelScheduledImeExportsMock.mockImplementation(() => {
         order.push("cancel-ime");
       });
@@ -482,10 +502,27 @@ describe("useWorkspaceStore", () => {
         }
         return { rows: [] };
       });
+      const unsubscribe = useWorkspaceStore.subscribe((state, previous) => {
+        if (
+          state.workspaceSwitchInProgress &&
+          !previous.workspaceSwitchInProgress
+        ) {
+          // Simulate a Codex write completion before React's passive effect.
+          scheduleImeExportRefresh("project-a");
+        }
+      });
 
-      await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\MyNovel");
+      try {
+        await useWorkspaceStore.getState().openWorkspace("D:\\Novels\\MyNovel");
+      } finally {
+        unsubscribe();
+      }
 
-      expect(order).toContain("cancel-ime");
+      expect(setImeExportRefreshPausedMock).toHaveBeenCalledWith(true);
+      expect(setImeExportRefreshPausedMock).toHaveBeenLastCalledWith(false);
+      expect(order.indexOf("pause-ime")).toBeLessThan(
+        order.indexOf("cancel-ime"),
+      );
       expect(order).toEqual(
         expect.arrayContaining(["cancel-ime", "cancel-semantic"]),
       );
@@ -495,6 +532,9 @@ describe("useWorkspaceStore", () => {
       expect(order.indexOf("cancel-semantic")).toBeLessThan(
         order.indexOf("open-workspace"),
       );
+      expect(scheduleImeExportRefreshMock).toHaveBeenCalledWith("project-a");
+      expect(imeSchedulerHarness.acceptedSchedules).toBe(0);
+      expect(imeSchedulerHarness.paused).toBe(false);
     });
 
     it("sets editor view and active workspace without automatically optimizing FTS", async () => {

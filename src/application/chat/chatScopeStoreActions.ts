@@ -11,6 +11,7 @@ import { isTreeNavigationLeaseActive } from "@/lib/chatNavigationGuard";
 
 interface ChatScopeActionRuntime {
   hasPendingCompletedTurnPersistence: () => boolean;
+  isActiveAnchoredChatStream: () => boolean;
   notifyPendingCompletedTurnPersistence: () => void;
   resetRecallPromote: () => void;
 }
@@ -43,8 +44,13 @@ export function createChatScopeStoreActions(
 ): ChatScopeActions {
   const { get, set, runtime } = ports;
 
-  const blockDestructiveMutation = (): boolean => {
-    const isStreaming = get().isStreaming;
+  const blockDestructiveMutation = (
+    allowAnchoredStreamSwitch = false,
+  ): boolean => {
+    const current = get();
+    const isStreaming =
+      current.isStreaming &&
+      !(allowAnchoredStreamSwitch && runtime.isActiveAnchoredChatStream());
     const hasPendingCompletedTurnPersistence =
       runtime.hasPendingCompletedTurnPersistence();
     if (
@@ -55,7 +61,7 @@ export function createChatScopeStoreActions(
     ) {
       return false;
     }
-    if (isStreaming || !hasPendingCompletedTurnPersistence) return true;
+    if (current.isStreaming || !hasPendingCompletedTurnPersistence) return true;
     runtime.notifyPendingCompletedTurnPersistence();
     return true;
   };
@@ -117,7 +123,13 @@ export function createChatScopeStoreActions(
     },
 
     setChatScope: (scope, anchorId) => {
-      if (blockDestructiveMutation()) return;
+      const before = get();
+      const anchoredStreamSwitch =
+        (scope === "folder" || scope === "codex" || scope === "snippet") &&
+        Boolean(anchorId) &&
+        before.chatScope === scope &&
+        anchorId !== before.scopeAnchorId;
+      if (blockDestructiveMutation(anchoredStreamSwitch)) return;
       const current = get();
       // scope === "folder" / "codex" / "snippet" のとき anchorId 必須。
       // 空指定なら scene に fallback。includeBodies は scope ごとの

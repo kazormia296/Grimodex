@@ -214,7 +214,7 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
     let registered = match reader.register_with_worker_maintenance_diagnostic(
         &project,
         &mut registration_stage,
-        |operation: &mut dyn FnMut()| WORKER_ALLOCATOR.with_scratch_scope(|| operation()).is_ok(),
+        |operation: &mut dyn FnMut()| WORKER_ALLOCATOR.with_scratch_scope(operation).is_ok(),
         || {
             *startup_stage = StartupStage::ScratchSeal;
             let sealed = WORKER_ALLOCATOR.seal_scratch();
@@ -246,7 +246,7 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
     let mut header = [0u8; 2];
     input.read_exact(&mut header)?;
     let size = u16::from_le_bytes(header) as usize;
-    ensure!(size <= REQUEST_BYTES && size >= 6, "worker request length");
+    ensure!((6..=REQUEST_BYTES).contains(&size), "worker request length");
     let mut request_bytes = vec![0; size];
     input.read_exact(&mut request_bytes)?;
     let mut fields = request_bytes.as_slice();

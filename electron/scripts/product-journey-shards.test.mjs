@@ -208,12 +208,12 @@ test("fixed shards are disjoint and preserve catalog order within all 33 entries
       "chat-stream-project-switch",
     ],
     [
-      "chat-stream-workspace-switch",
+      "chat-stream-folder-switch",
       "agent-stream-project-switch",
+      "chat-stream-workspace-switch",
       "agent-stream-workspace-switch",
-      "chat-stream-folder-scope",
     ],
-    ["chat-stream-codex-scope", "chat-stream-snippet-scope"],
+    ["chat-stream-snippet-switch", "chat-stream-codex-switch"],
     [
       "editor-pending-project-switch",
       "mcp-external-write-conflict",

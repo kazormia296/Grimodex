@@ -1977,6 +1977,31 @@ fn begin_workspace_lifecycle_transition_wire_for_recovery(
             .try_begin_transition_kind_for_recovery(kind, descriptor_id)?,
         None => state.workspace_lifecycle.try_begin_transition_kind(kind)?,
     };
+    finish_workspace_lifecycle_transition_admission(state, outcome)
+}
+
+fn begin_workspace_lifecycle_open_wire_for_target(
+    state: &AppState,
+    locator: &str,
+    workspace_id: Option<&str>,
+    database_file_identity: Option<&str>,
+    recovery_descriptor_id: Option<grimodex_db::RecoveryDescriptorId>,
+) -> std::result::Result<Option<String>, AppError> {
+    let outcome = state
+        .workspace_lifecycle
+        .try_begin_open_transition_for_target(
+            locator,
+            workspace_id,
+            database_file_identity,
+            recovery_descriptor_id,
+        )?;
+    finish_workspace_lifecycle_transition_admission(state, outcome)
+}
+
+fn finish_workspace_lifecycle_transition_admission(
+    state: &AppState,
+    outcome: AdmissionOutcome,
+) -> std::result::Result<Option<String>, AppError> {
     match outcome {
         AdmissionOutcome::Admitted(_) => {
             // Stop long-lived semantic/post-effect/related-scenes work before
@@ -2026,10 +2051,10 @@ impl WorkspaceRecoveryTarget {
     }
 
     fn matches(&self, expected: &grimodex_db::LiveBinding) -> bool {
-        let expected_path = std::fs::canonicalize(&expected.locator)
-            .unwrap_or_else(|_| PathBuf::from(&expected.locator));
+        let expected_path = std::fs::canonicalize(expected.locator.as_ref())
+            .unwrap_or_else(|_| PathBuf::from(expected.locator.as_ref()));
         self.path == expected_path
-            && self.workspace_id.as_deref() == Some(expected.workspace_id.as_str())
+            && self.workspace_id.as_deref() == Some(expected.workspace_id.as_ref())
     }
 }
 
@@ -2039,10 +2064,9 @@ impl WorkspaceRecoveryTarget {
 /// to another path must leave the old root owned by its original descriptor.
 fn workspace_transition_recovery_for_open(
     state: &AppState,
-    requested_path: &str,
+    target: &WorkspaceRecoveryTarget,
 ) -> std::result::Result<Option<grimodex_db::RecoveryDescriptorId>, AppError> {
     let snapshot = state.workspace_lifecycle.lifecycle_snapshot()?;
-    let target = WorkspaceRecoveryTarget::read(requested_path);
     let descriptor_ids = match snapshot.state {
         grimodex_db::LifecycleState::RecoveryRequired { descriptor_id }
             if descriptor_id
@@ -2299,7 +2323,7 @@ fn restore_not_admitted_outcome(state: &AppState, reason_code: &str) -> napi::Re
 fn open_descriptor_recovery_authority(
     binding: &grimodex_db::LiveBinding,
 ) -> std::result::Result<PinnedWorkspaceDb, AppError> {
-    let path = std::path::PathBuf::from(&binding.locator);
+    let path = std::path::PathBuf::from(binding.locator.as_ref());
     let metadata_path = path.join(".grimodex/workspace.json");
     let metadata = std::fs::read_to_string(&metadata_path).map_err(anyhow::Error::from)?;
     let workspace_id = serde_json::from_str::<serde_json::Value>(&metadata)
@@ -2316,7 +2340,7 @@ fn open_descriptor_recovery_authority(
                 "NEX_WORKSPACE_IDENTITY_INVALID: descriptor recovery metadata has no id"
             ))
         })?;
-    if workspace_id != binding.workspace_id {
+    if workspace_id.as_str() != binding.workspace_id.as_ref() {
         return Err(AppError::Anyhow(anyhow::anyhow!(
             "NEX_WORKSPACE_BINDING_CHANGED: descriptor locator metadata identity changed"
         )));
@@ -2359,7 +2383,7 @@ fn descriptor_expected_matches_authority_identity(
     authority: &PinnedWorkspaceDb,
 ) -> bool {
     if binding.authority_instance != authority.identity()
-        || binding.locator != authority.path().to_string_lossy()
+        || binding.locator.as_ref() != authority.path().to_string_lossy().as_ref()
     {
         return false;
     }
@@ -2372,7 +2396,7 @@ fn descriptor_replacement_matches_expected_workspace(
     binding: &grimodex_db::LiveBinding,
     authority: &PinnedWorkspaceDb,
 ) -> bool {
-    if binding.locator != authority.path().to_string_lossy() {
+    if binding.locator.as_ref() != authority.path().to_string_lossy().as_ref() {
         return false;
     }
     descriptor_expected_matches_workspace(binding, authority)
@@ -2392,7 +2416,7 @@ fn descriptor_expected_matches_workspace(
                 .and_then(serde_json::Value::as_str)
                 .map(ToOwned::to_owned)
         });
-    workspace_id.as_deref() == Some(binding.workspace_id.as_str())
+    workspace_id.as_deref() == Some(binding.workspace_id.as_ref())
 }
 
 fn descriptor_replacement_retirement_proven(
@@ -2451,7 +2475,7 @@ fn retry_recovery_baton_close(
     binding: &grimodex_db::LiveBinding,
 ) -> std::result::Result<bool, AppError> {
     let key = recovery_baton_key(
-        std::path::Path::new(&binding.locator),
+        std::path::Path::new(binding.locator.as_ref()),
         binding.authority_instance,
     );
     let baton = state
@@ -2656,8 +2680,8 @@ fn reconcile_maintenance_recovery_descriptor(
                         .and_then(serde_json::Value::as_str)
                         .map(ToOwned::to_owned)
                 });
-            if binding.locator == authority.path().to_string_lossy()
-                && workspace_id.as_deref() == Some(binding.workspace_id.as_str())
+            if binding.locator.as_ref() == authority.path().to_string_lossy().as_ref()
+                && workspace_id.as_deref() == Some(binding.workspace_id.as_ref())
                 && authority.db().connection_reusable()
             {
                 selected = Some((descriptor_id, Arc::clone(authority)));
@@ -3019,7 +3043,7 @@ fn reconcile_maintenance_recovery_descriptor(
             // still alive here, so removing the baton cannot create a gap.
             if let Some(binding) = descriptor.expected_binding.as_ref() {
                 let key = recovery_baton_key(
-                    std::path::Path::new(&binding.locator),
+                    std::path::Path::new(binding.locator.as_ref()),
                     binding.authority_instance,
                 );
                 if let Ok(mut batons) = state.narrative_maintenance_recovery_batons.lock() {
@@ -9720,15 +9744,23 @@ impl Backend {
 
     async fn open_workspace_supervised(self, path: String) -> Result<String> {
         preflight_workspace_open_target(&path).map_err(app_err_to_napi)?;
+        let target = WorkspaceRecoveryTarget::read(&path);
+        let database_file_identity =
+            grimodex_db::state::WorkspaceAuthority::database_file_identity_for_path(
+                &Path::new(&path).join("grimodex.db"),
+            )
+            .ok();
         let _workspace_operation = self
             .state
             .begin_workspace_operation()
             .map_err(|error| app_err_to_napi(AppError::Anyhow(error)))?;
-        let recovery_descriptor =
-            workspace_transition_recovery_for_open(&self.state, &path).map_err(app_err_to_napi)?;
-        if let Some(not_admitted) = begin_workspace_lifecycle_transition_wire_for_recovery(
+        let recovery_descriptor = workspace_transition_recovery_for_open(&self.state, &target)
+            .map_err(app_err_to_napi)?;
+        if let Some(not_admitted) = begin_workspace_lifecycle_open_wire_for_target(
             &self.state,
-            AdmissionKind::Open,
+            &path,
+            target.workspace_id.as_deref(),
+            database_file_identity.as_deref(),
             recovery_descriptor,
         )
         .map_err(app_err_to_napi)?
@@ -16409,6 +16441,117 @@ mod narrative_maintenance_admission_unwind_tests {
         )
     }
 
+    async fn assert_native_open_accepts_workspace_id_through_ready_snapshot(
+        label: &str,
+        workspace_id_bytes: usize,
+    ) {
+        let (backend, root) = backend_with_active_workspace(label);
+        let workspace_path = root.join(format!("{label}-target"));
+        let workspace_id = "w".repeat(workspace_id_bytes);
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": workspace_id,
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        drop(database);
+
+        let opened = backend
+            .open_workspace(workspace_path.to_string_lossy().into_owned())
+            .await
+            .expect("Native Open accepts the metadata workspace ID");
+        let opened: serde_json::Value = serde_json::from_str(&opened).expect("Open result JSON");
+        assert!(matches!(
+            opened["status"].as_str(),
+            Some("ready" | "migrated")
+        ));
+        assert!(
+            opened["workspace"]["workspaceId"].as_str() == Some(workspace_id.as_str()),
+            "Open result must preserve all {workspace_id_bytes} workspace-ID bytes"
+        );
+
+        let snapshot = active_workspace_snapshot(&backend.state.ws)
+            .expect("Ready workspace snapshot after Native Open");
+        let lifecycle = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("Ready lifecycle snapshot");
+        let ready_revision = lifecycle.revision;
+        let LifecycleState::Ready(binding) = lifecycle.state else {
+            panic!("Native Open did not publish Ready");
+        };
+        assert_eq!(binding.workspace_id.len(), workspace_id_bytes);
+        assert!(
+            binding.workspace_id.as_ref() == workspace_id.as_str(),
+            "Ready binding must preserve all {workspace_id_bytes} workspace-ID bytes"
+        );
+        assert_eq!(snapshot.authority.identity(), binding.authority_instance);
+        assert_eq!(snapshot.path(), workspace_path.as_path());
+        let authority_instance = binding.authority_instance;
+        drop(binding);
+        drop(snapshot);
+
+        let recovery_state = Arc::clone(&backend.state);
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let settled = recovery_state
+                    .nir1_generation_recovery_statuses
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry
+                    .as_ref()
+                    .is_some_and(|entry| {
+                        entry.ready_revision == ready_revision
+                            && entry.binding.authority_instance == authority_instance
+                            && matches!(
+                                entry.state,
+                                crate::state::GenerationRecoveryHookState::Incomplete
+                                    | crate::state::GenerationRecoveryHookState::Complete
+                            )
+                    });
+                if settled {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("detached generation recovery settles before fixture cleanup");
+        drop(recovery_state);
+        drop(backend);
+        let maintenance_drain =
+            grimodex_db::open::drain_workspace_maintenance_for_test(&workspace_path, || {})
+                .expect("wait for W2 workspace maintenance before fixture cleanup");
+        std::fs::remove_dir_all(&root).expect("remove isolated Open fixture");
+        drop(maintenance_drain);
+    }
+
+    #[tokio::test]
+    async fn native_open_accepts_16k_workspace_id_through_ready_snapshot() {
+        assert_native_open_accepts_workspace_id_through_ready_snapshot(
+            "workspace-id-16k",
+            16 * 1024,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn native_open_accepts_workspace_id_one_byte_over_native_region_through_ready_snapshot() {
+        assert_native_open_accepts_workspace_id_through_ready_snapshot(
+            "workspace-id-over-native-region",
+            1_572_865,
+        )
+        .await;
+    }
+
     fn retain_maintenance_descriptor(backend: &Backend) -> grimodex_db::RecoveryDescriptorId {
         let authority = active_database(&backend.state.ws).expect("active authority");
         let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
@@ -16489,7 +16632,8 @@ mod narrative_maintenance_admission_unwind_tests {
             .lifecycle_snapshot()
             .expect("C Ready");
 
-        assert!(workspace_transition_recovery_for_open(&backend.state, &path_a).is_err());
+        let target_a = WorkspaceRecoveryTarget::read(&path_a);
+        assert!(workspace_transition_recovery_for_open(&backend.state, &target_a).is_err());
         let none: serde_json::Value = serde_json::from_str(
             &backend
                 .reconcile_narrative_maintenance_recovery(Some(path_c))
@@ -17282,6 +17426,207 @@ mod narrative_maintenance_admission_unwind_tests {
         eprintln!(
             "BC-2 {operation} Native stop-to-Join + DB path drain: {:.3} ms",
             requested_at.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+
+    async fn wait_for_transition_or_exit(
+        backend: &Backend,
+        task: &tokio::task::JoinHandle<Result<String>>,
+    ) -> bool {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    backend
+                        .state
+                        .workspace_lifecycle
+                        .lifecycle_snapshot()
+                        .expect("lifecycle snapshot")
+                        .state,
+                    LifecycleState::Transition { .. }
+                ) {
+                    return true;
+                }
+                if task.is_finished() {
+                    return false;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or(false)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn distinct_workspace_open_waits_for_w1_participant_before_protected_io() {
+        let (backend, root) = backend_with_active_workspace("open-participant-race");
+        let backend = Arc::new(backend);
+        let w1 = active_database(&backend.state.ws).expect("W1 authority");
+        let w1_id = w1.identity();
+        let w1_database_identity = w1.main_database_file_identity().expect("W1 file identity");
+        drop(w1);
+
+        let w2_path = root.join("workspace-w2");
+        std::fs::create_dir_all(w2_path.join(".grimodex")).expect("W2 metadata directory");
+        std::fs::write(
+            w2_path.join(".grimodex/workspace.json"),
+            serde_json::json!({
+                "id": "workspace-w2",
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("W2 metadata");
+        let w2_database = Database::new(&w2_path.join("grimodex.db")).expect("W2 database");
+        w2_database.migrate().expect("W2 migration");
+        drop(w2_database);
+        let w2_database_identity =
+            WorkspaceAuthority::database_file_identity_for_path(&w2_path.join("grimodex.db"))
+                .expect("W2 file identity");
+        assert_ne!(w1_database_identity, w2_database_identity);
+
+        let held_w1 = active_workspace_snapshot(&backend.state.ws).expect("W1 participant");
+        let open_backend = Arc::clone(&backend);
+        let open_path = w2_path.to_string_lossy().into_owned();
+        let open = tokio::spawn(async move { open_backend.open_workspace(open_path).await });
+        let transition_admitted = wait_for_transition_or_exit(&backend, &open).await;
+        let participant_retained = backend
+            .state
+            .workspace_lifecycle
+            .workspace_participant_count()
+            .expect("participant count")
+            == 1;
+        let w1_remains_active = workspace_swap_owner_authority(&backend.state, true)
+            .is_ok_and(|authority| authority.identity() == w1_id);
+        let opener_waiting = !open.is_finished();
+        let open_lock_free = backend.state.ws.open_lock.try_lock().is_ok();
+        let w2_lock_not_created = !w2_path.join(".grimodex-workspace.lock").exists();
+
+        drop(held_w1);
+        let (opened, open_detail) = match open.await {
+            Ok(Ok(wire)) => {
+                let opened = serde_json::from_str::<serde_json::Value>(&wire)
+                    .ok()
+                    .is_some_and(|value| {
+                        matches!(value["status"].as_str(), Some("ready" | "migrated"))
+                    });
+                (opened, format!("wire={wire}"))
+            }
+            Ok(Err(error)) => (false, format!("Native Open error: {error}")),
+            Err(error) => (false, format!("Open supervisor join error: {error}")),
+        };
+        let w2_activated =
+            active_database(&backend.state.ws).is_ok_and(|authority| authority.path() == w2_path);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(
+            transition_admitted,
+            "Open must be admitted before draining W1"
+        );
+        assert!(participant_retained, "W1's participant must hold the drain");
+        assert!(
+            w1_remains_active,
+            "W1 must remain published before protected I/O"
+        );
+        assert!(opener_waiting, "Open must wait for W1's participant");
+        assert!(
+            open_lock_free,
+            "Open must not enter its physical lock before drain"
+        );
+        assert!(
+            w2_lock_not_created,
+            "Open must not reach W2 protected I/O before drain"
+        );
+        assert!(
+            opened,
+            "distinct-W2 Open must complete after W1 releases: {open_detail}"
+        );
+        assert!(
+            w2_activated,
+            "W2 must be the published authority after Open"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w1_restore_waits_for_its_participant_before_protected_io() {
+        let (backend, root) = backend_with_active_workspace("restore-participant-race");
+        let backend = Arc::new(backend);
+        let w1 = active_database(&backend.state.ws).expect("W1 authority");
+        let w1_id = w1.identity();
+        let backups = root.join("workspace/backups");
+        std::fs::create_dir_all(&backups).expect("backups directory");
+        let backup_name = "grimodex-participant-race.db";
+        w1.db()
+            .backup_to(&backups.join(backup_name))
+            .expect("W1 restore candidate");
+        drop(w1);
+
+        let held_w1 = active_workspace_snapshot(&backend.state.ws).expect("W1 participant");
+        let restore_backend = Arc::clone(&backend);
+        let restore = tokio::spawn(async move {
+            restore_backend
+                .restore_backup(backup_name.to_string())
+                .await
+        });
+        let transition_admitted = wait_for_transition_or_exit(&backend, &restore).await;
+        let participant_retained = backend
+            .state
+            .workspace_lifecycle
+            .workspace_participant_count()
+            .expect("participant count")
+            == 1;
+        let w1_remains_active = workspace_swap_owner_authority(&backend.state, true)
+            .is_ok_and(|authority| authority.identity() == w1_id);
+        let restore_waiting = !restore.is_finished();
+        let open_lock_free = backend.state.ws.open_lock.try_lock().is_ok();
+        let restore_marker_absent =
+            grimodex_db::backup_restore::read_incomplete_restore_session(&root.join("workspace"))
+                .expect("restore marker")
+                .is_none();
+
+        drop(held_w1);
+        let (restored, restore_detail) = match restore.await {
+            Ok(Ok(wire)) => {
+                let restored = serde_json::from_str::<serde_json::Value>(&wire)
+                    .ok()
+                    .is_some_and(|value| value["status"] == "restored");
+                (restored, format!("wire={wire}"))
+            }
+            Ok(Err(error)) => (false, format!("Native Restore error: {error}")),
+            Err(error) => (false, format!("Restore supervisor join error: {error}")),
+        };
+        let replacement_published =
+            workspace_swap_owner_authority(&backend.state, true).is_ok_and(|authority| {
+                authority.path() == root.join("workspace") && authority.identity() != w1_id
+            });
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+
+        assert!(
+            transition_admitted,
+            "Restore must be admitted before draining W1"
+        );
+        assert!(participant_retained, "W1's participant must hold the drain");
+        assert!(
+            w1_remains_active,
+            "W1 must remain published before protected I/O"
+        );
+        assert!(restore_waiting, "Restore must wait for W1's participant");
+        assert!(
+            open_lock_free,
+            "Restore must not enter its physical lock before drain"
+        );
+        assert!(
+            restore_marker_absent,
+            "Restore must not install before drain"
+        );
+        assert!(
+            restored,
+            "W1 Restore must complete after W1 releases: {restore_detail}"
+        );
+        assert!(
+            replacement_published,
+            "Restore must publish the replacement W1 authority"
         );
     }
 

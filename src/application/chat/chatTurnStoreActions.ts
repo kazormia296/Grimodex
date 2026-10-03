@@ -212,6 +212,27 @@ function createChatTurnStoreActions(
     debugLog,
     errorDetail,
   });
+  const hasManualSessionTitleInStore = (sessionId: string): boolean => {
+    const currentSession = get().sessions.find(
+      (session) => session.id === sessionId,
+    );
+    return Boolean(currentSession && currentSession.titleManual !== 0);
+  };
+  const hasManualSessionTitle = async (
+    sessionId: string,
+    projectId: string,
+  ): Promise<boolean> => {
+    if (hasManualSessionTitleInStore(sessionId)) return true;
+
+    const persistedSession = await chatApi.getSessionForProject(
+      sessionId,
+      projectId,
+    );
+    return (
+      hasManualSessionTitleInStore(sessionId) ||
+      Boolean(persistedSession && persistedSession.titleManual !== 0)
+    );
+  };
 
   return {
     sendMessage: async (
@@ -665,6 +686,11 @@ function createChatTurnStoreActions(
         }
       }
       if (cancelBeforeTransport()) return;
+      // Scope changes clear the live session list while the captured turn still
+      // owns its persisted session and may need to finish its first title.
+      const titleEligibleAtTurnStart =
+        get().sessions.find((session) => session.id === sessionIdForPersist)
+          ?.titleManual === 0;
       // -----------------------------------------------------------------------
       // Agent mode path — tool-use loop
       //
@@ -1611,10 +1637,20 @@ function createChatTurnStoreActions(
                     if (!title) {
                       title = content.slice(0, 30);
                     }
-                    await chatApi.updateSessionTitle(
+                    const updated = await chatApi.updateSessionTitleIfAutomatic(
                       sessionIdForPersist,
                       title,
                     );
+                    if (!updated) return;
+                    if (
+                      (await hasManualSessionTitle(
+                        sessionIdForPersist,
+                        turnProjectId,
+                      )) ||
+                      hasManualSessionTitleInStore(sessionIdForPersist)
+                    ) {
+                      return;
+                    }
                     set((state) => ({
                       sessions: state.sessions.map((s) =>
                         s.id === sessionIdForPersist ? { ...s, title } : s,
@@ -1987,6 +2023,7 @@ function createChatTurnStoreActions(
           // virtualizer の配列 identity は生成完了まで安定する。
           // onDone/onError/stop では必ず同期 flush して末尾を取りこぼさない。
           let pendingDelta = "";
+          let observedResponseText = "";
           let flushHandle: number | null = null;
           let lastDraftPublishAt = Number.NEGATIVE_INFINITY;
           let callbacksSettled = false;
@@ -2037,6 +2074,7 @@ function createChatTurnStoreActions(
           const callbacks: StreamCallbacks = {
             onTextDelta: (delta: string) => {
               if (!isCurrentTurn()) return;
+              observedResponseText += delta;
               pendingDelta += delta;
               scheduleFlush();
             },
@@ -2194,7 +2232,10 @@ function createChatTurnStoreActions(
               // Persist to DB
               const lastMsg = get().messages.find(
                 (message) => message.id === assistantMsg.id,
-              );
+              ) ?? {
+                ...assistantMsg,
+                content: observedResponseText,
+              };
               const userMetadata =
                 options?.mentionedSceneIds &&
                 options.mentionedSceneIds.length > 0
@@ -2318,10 +2359,12 @@ function createChatTurnStoreActions(
                   const currentSession = get().sessions.find(
                     (s) => s.id === sessionIdForPersist,
                   );
+                  const titleEligible = currentSession
+                    ? currentSession.titleManual === 0
+                    : titleEligibleAtTurnStart;
                   if (
                     isFirstResponse &&
-                    currentSession &&
-                    currentSession.titleManual === 0 &&
+                    titleEligible &&
                     lastMsg?.role === "assistant" &&
                     lastMsg.content
                   ) {
@@ -2338,10 +2381,21 @@ function createChatTurnStoreActions(
                           title = content.slice(0, 30);
                         }
                         if (sessionIdForPersist) {
-                          await chatApi.updateSessionTitle(
-                            sessionIdForPersist,
-                            title,
-                          );
+                          const updated =
+                            await chatApi.updateSessionTitleIfAutomatic(
+                              sessionIdForPersist,
+                              title,
+                            );
+                          if (!updated) return;
+                          if (
+                            (await hasManualSessionTitle(
+                              sessionIdForPersist,
+                              turnProjectId,
+                            )) ||
+                            hasManualSessionTitleInStore(sessionIdForPersist)
+                          ) {
+                            return;
+                          }
                           if (isCodexAppServer && turnWorkspaceIdentity) {
                             void codexAppApi
                               .setCodexSessionThreadName({

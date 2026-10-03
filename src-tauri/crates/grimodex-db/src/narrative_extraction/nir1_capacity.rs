@@ -762,7 +762,7 @@ mod tests {
 
     const INSERT: &str = "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<?1) INSERT INTO bounded SELECT n FROM x";
 
-    fn run_sql(limit: u64, rows: usize) -> (u64, bool) {
+    fn run_sql(limit: u64, rows: usize, padding_selects: usize) -> (u64, bool) {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE bounded(n INTEGER)")
             .unwrap();
@@ -786,6 +786,12 @@ mod tests {
             &mut ForegroundValidationControl,
             |_, _| {
                 tx.execute(INSERT, [rows as i64])?;
+                for _ in 0..padding_selects {
+                    let _: i64 = tx.query_row("SELECT 1", [], |row| row.get(0))?;
+                }
+                if padding_selects > 0 {
+                    let _: i64 = tx.query_row("SELECT 1 + 1", [], |row| row.get(0))?;
+                }
                 Ok(())
             },
         );
@@ -831,17 +837,24 @@ mod tests {
 
     #[test]
     fn sql_n_succeeds_n_plus_one_refuses_and_preserves_outer_owner() {
-        let (n, succeeded) = run_sql(u64::MAX, 200);
+        let (n, succeeded) = run_sql(u64::MAX, 200, 0);
         assert!(succeeded && n > 1);
-        assert_eq!(run_sql(n, 200), (n, true));
-        assert_eq!(run_sql(n - 1, 200), (n, false));
+        assert_eq!(run_sql(n, 200, 0), (n, true));
+        assert_eq!(run_sql(n - 1, 200, 0), (n, false));
     }
 
     #[test]
     fn fixed_graph_sql_budget_admits_100000_steps_and_refuses_100001() {
         let limit = super::super::nir1_graph::QUERY_SQL_STEPS;
         assert_eq!(limit, 100_000);
-        let (used, succeeded) = run_sql(limit, 50_000);
+        let (used, succeeded) = run_sql(limit, 4_346, 5);
+        assert!(succeeded, "the exact-cap workload must commit");
+        assert_eq!(
+            used, limit,
+            "successful work must use exactly 100,000 steps"
+        );
+
+        let (used, succeeded) = run_sql(limit, 50_000, 0);
         assert!(
             !succeeded,
             "the recursive statement must exceed the fixed budget"

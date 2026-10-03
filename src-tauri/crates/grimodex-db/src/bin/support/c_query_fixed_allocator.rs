@@ -346,7 +346,7 @@ impl WorkerAllocator {
     }
 
     fn scratch_scope_is_current(&self) -> bool {
-        SCRATCH_SCOPE.with(|scope| scope.get() == self as *const Self)
+        SCRATCH_SCOPE.with(|scope| ptr::eq(scope.get(), self))
     }
 
     fn scratch_alloc(&self, layout: Layout) -> *mut u8 {
@@ -752,7 +752,7 @@ mod tests {
                 let mut low = 0usize;
                 let mut high = SCRATCH_BYTES;
                 while low < high {
-                    let candidate = low + (high - low + 1) / 2;
+                    let candidate = low + (high - low).div_ceil(2);
                     let layout = Layout::from_size_align(candidate, 8).unwrap();
                     let allocation = unsafe { TEST_ALLOCATOR.alloc(layout) };
                     if allocation.is_null() {
@@ -828,7 +828,7 @@ mod tests {
         let mut low = 0usize;
         let mut high = QUERY_BYTES;
         while low < high {
-            let candidate = low + (high - low + 1) / 2;
+            let candidate = low + (high - low).div_ceil(2);
             let allocation =
                 unsafe { sqlite_malloc(&TEST_ALLOCATOR, c_int::try_from(candidate).unwrap()) };
             if allocation.is_null() {

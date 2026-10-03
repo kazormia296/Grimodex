@@ -978,8 +978,20 @@ export async function updateSessionTitle(
 ): Promise<void> {
   await db
     .update(chatSessions)
-    .set({ title, updatedAt: new Date().toISOString() })
+    .set({ title, titleManual: 1, updatedAt: new Date().toISOString() })
     .where(eq(chatSessions.id, id));
+}
+
+export async function updateSessionTitleIfAutomatic(
+  id: string,
+  title: string,
+): Promise<boolean> {
+  const updated = await db
+    .update(chatSessions)
+    .set({ title, updatedAt: new Date().toISOString() })
+    .where(and(eq(chatSessions.id, id), eq(chatSessions.titleManual, 0)))
+    .returning({ id: chatSessions.id });
+  return updated.length > 0;
 }
 
 // --- Pinned Codex entries (normalized: chat_session_pinned_codex table) ---

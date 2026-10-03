@@ -9,13 +9,16 @@ use crate::narrative_extraction::nir1_entity_relation_index::{
 };
 use crate::state::{active_workspace_snapshot, ActiveWorkspace, WorkspaceState};
 use crate::workspace_lifecycle::{
-    AdmissionKind, AdmissionOutcome, LiveBinding, WorkspaceLifecycleCompatibilityView,
-    WorkspaceLifecycleCore,
+    AdmissionKind, AdmissionOutcome, AdmissionTicket, LiveBinding,
+    WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
 };
 use grimodex_core::narrative_nir1::ScopeValue;
 use std::{
     path::PathBuf,
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -26,6 +29,11 @@ const PROJECT: &str = "default-project";
 enum Q2WorkerScenario {
     ReaderOnly,
     NativeOwner,
+    OversizedWorkspaceId,
+    OversizedBindingIdentityPayload,
+    OversizedWorkerPath,
+    OversizedAuthorityPath,
+    OversizedCommandProjectId,
     StartupRegistrationRefused,
     PostCommitNonzero,
     #[cfg(target_os = "linux")]
@@ -43,6 +51,8 @@ enum Q2WorkerScenario {
     RustOom,
     SqliteNoMem,
     CleanupUnproved,
+    #[cfg(target_os = "linux")]
+    CleanupUnprovedDuringTransition,
     #[cfg(target_os = "linux")]
     OwnerDeathHelper,
 }
@@ -272,7 +282,8 @@ fn worker_reader_restore_admitted_during_query_read_refuses_result() -> Result<(
         format!("test-workspace:{}", fixture.authority.identity()),
         fixture.authority.identity(),
         0,
-    );
+    )
+    .with_main_database_file_identity(fixture.authority.main_database_file_identity()?);
     fixture.lifecycle.set_ready(original_binding.clone())?;
     fixture.authority.db().with_conn(|conn| {
         conn.busy_timeout(Duration::ZERO)?;
@@ -590,6 +601,36 @@ fn native_worker_returns_fixed_q2_frame_from_real_workspace_owner() -> Result<()
 }
 
 #[test]
+#[ignore = "requires the official Q2 preseed"]
+fn native_worker_refuses_over_budget_workspace_id_before_native_reservation() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::OversizedWorkspaceId)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed"]
+fn native_worker_refuses_over_budget_binding_identity_before_native_reservation() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::OversizedBindingIdentityPayload)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed"]
+fn native_worker_refuses_over_budget_worker_path_before_native_reservation() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::OversizedWorkerPath)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed"]
+fn native_worker_refuses_over_budget_authority_path_before_native_reservation() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::OversizedAuthorityPath)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed"]
+fn native_worker_refuses_over_budget_command_project_id_before_native_reservation() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::OversizedCommandProjectId)
+}
+
+#[test]
 #[ignore = "requires the official Q2 preseed and a normal worker binary"]
 fn native_worker_reports_canonical_registration_refusal_before_ready() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::StartupRegistrationRefused)
@@ -664,6 +705,14 @@ fn native_worker_refuses_after_real_child_sqlite_nomem() -> Result<()> {
 #[ignore = "isolated real-worker test; intentionally quarantines one owner until test-process exit"]
 fn native_worker_quarantines_when_cleanup_proof_is_unobserved() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::CleanupUnproved)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated real-worker test; intentionally retains one fallback owner until test-process exit"]
+fn native_worker_cleanup_unproved_without_file_identity_retains_participant_and_blocks_io(
+) -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::CleanupUnprovedDuringTransition)
 }
 
 #[cfg(target_os = "linux")]
@@ -1056,7 +1105,8 @@ fn owner_death_helper(authority: &Arc<WorkspaceAuthority>) -> Result<()> {
         format!("test-workspace:{}", authority.identity()),
         authority.identity(),
         0,
-    );
+    )
+    .with_main_database_file_identity(authority.main_database_file_identity()?);
     native_state.switching.core().set_ready(binding)?;
     let snapshot = active_workspace_snapshot(&native_state)?;
     let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
@@ -1161,10 +1211,23 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     }
     let path = directory.0.join("grimodex.db");
     std::fs::copy(&source, &path)?;
-    let authority = WorkspaceAuthority::from_database_for_test(
-        crate::Database::new(&path)?,
-        directory.0.clone(),
-    )?;
+    let authority_path = if scenario == Q2WorkerScenario::OversizedAuthorityPath {
+        let mut authority_path = PathBuf::with_capacity(super::c_query_worker::REQUEST_BYTES + 1);
+        authority_path.push(&directory.0);
+        ensure!(
+            authority_path == directory.0,
+            "authority path over-reservation changed its path value"
+        );
+        ensure!(
+            authority_path.capacity() >= super::c_query_worker::REQUEST_BYTES + 1,
+            "authority path did not retain the deliberate over-reservation"
+        );
+        authority_path
+    } else {
+        directory.0.clone()
+    };
+    let authority =
+        WorkspaceAuthority::from_database_for_test(crate::Database::new(&path)?, authority_path)?;
     let (original_revision, run_id, mut bundle): (String, String, EntityRelationBundle) = authority.with_read_transaction(|conn| {
         for scene in [SOURCE_SCENE, QUERY_SCENE] {
             let original = read_narrative_scene_scope(conn, PROJECT, scene)?;
@@ -1435,12 +1498,28 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     );
     reader.close()?;
     assert_eq!(lifecycle.workspace_participant_count()?, 0);
+    drop(reader);
 
     if scenario != Q2WorkerScenario::ReaderOnly {
-        let worker_path = PathBuf::from(
-            std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
-                .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
-        );
+        let worker_path = if scenario == Q2WorkerScenario::OversizedWorkerPath {
+            let mut path = PathBuf::with_capacity(super::c_query_worker::REQUEST_BYTES + 1);
+            path.push(&directory.0);
+            path.push("must-not-spawn-worker");
+            path
+        } else if matches!(
+            scenario,
+            Q2WorkerScenario::OversizedWorkspaceId
+                | Q2WorkerScenario::OversizedBindingIdentityPayload
+                | Q2WorkerScenario::OversizedAuthorityPath
+                | Q2WorkerScenario::OversizedCommandProjectId
+        ) {
+            directory.0.join("must-not-spawn-worker")
+        } else {
+            PathBuf::from(
+                std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
+                    .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
+            )
+        };
         let switching = WorkspaceLifecycleCompatibilityView::new(false);
         let native_state = WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
@@ -1448,18 +1527,323 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             switching,
             open_lock: Mutex::new(()),
         };
-        let original_binding = LiveBinding::new(
+        let workspace_id = match scenario {
+            Q2WorkerScenario::OversizedWorkspaceId => "x".repeat(1_572_865),
+            Q2WorkerScenario::OversizedBindingIdentityPayload => "x".repeat(4_096),
+            _ => format!("test-workspace:{}", authority.identity()),
+        };
+        let binding = LiveBinding::new(
             authority.path().to_string_lossy(),
-            format!("test-workspace:{}", authority.identity()),
+            workspace_id,
             authority.identity(),
             0,
         );
+        let binding = if scenario == Q2WorkerScenario::OversizedBindingIdentityPayload {
+            let identity_bytes = 8_193usize
+                .checked_sub(binding.locator.len())
+                .and_then(|bytes| bytes.checked_sub(binding.workspace_id.len()))
+                .ok_or_else(|| anyhow::anyhow!("combined identity test terms exceed boundary"))?;
+            binding.with_main_database_file_identity("d".repeat(identity_bytes))
+        } else {
+            binding
+        };
+        let binding_payload_bytes = binding.c_query_identity_payload_byte_len();
+        let oversized_workspace_id = (scenario == Q2WorkerScenario::OversizedWorkspaceId)
+            .then(|| Arc::downgrade(&binding.workspace_id));
+        #[cfg(target_os = "linux")]
+        let original_binding = if matches!(
+            scenario,
+            Q2WorkerScenario::CleanupUnprovedDuringTransition
+                | Q2WorkerScenario::OversizedBindingIdentityPayload
+        ) {
+            binding
+        } else {
+            binding.with_main_database_file_identity(authority.main_database_file_identity()?)
+        };
+        #[cfg(not(target_os = "linux"))]
+        let original_binding = if scenario == Q2WorkerScenario::OversizedBindingIdentityPayload {
+            binding
+        } else {
+            binding.with_main_database_file_identity(authority.main_database_file_identity()?)
+        };
+        let original_binding_payload_bytes = original_binding.c_query_identity_payload_byte_len();
         native_state
             .switching
             .core()
             .set_ready(original_binding.clone())?;
 
+        if scenario == Q2WorkerScenario::OversizedCommandProjectId {
+            let project_id = "x".repeat(super::c_query_worker::REQUEST_BYTES - 1);
+            let snapshot = active_workspace_snapshot(&native_state)?;
+            let binding_payload_bytes = original_binding_payload_bytes
+                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
+            let command_argument_bytes =
+                super::c_query_worker::command_argument_payload_lower_bound(
+                    snapshot.path().as_os_str(),
+                    &project_id,
+                )
+                .ok_or_else(|| anyhow::anyhow!("command argument lower bound unavailable"))?;
+            let non_argument_bytes = binding_payload_bytes
+                .checked_add(worker_path.capacity())
+                .and_then(|bytes| bytes.checked_add(snapshot.c_query_authority_path_capacity()))
+                .ok_or_else(|| anyhow::anyhow!("test owner payload overflowed"))?;
+            ensure!(
+                project_id.len() < super::c_query_worker::REQUEST_BYTES,
+                "command project ID must remain below the existing prepare length bound"
+            );
+            ensure!(
+                non_argument_bytes <= super::c_query_worker::REQUEST_BYTES
+                    && non_argument_bytes
+                        .checked_add(command_argument_bytes)
+                        .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
+                "the distinct Command argument payload did not cause the capacity refusal"
+            );
+            ensure!(
+                !worker_path.exists(),
+                "test worker path unexpectedly exists"
+            );
+            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
+            let error = owner.prepare(&project_id).expect_err(
+                "over-budget Command arguments must be refused before Native reservation",
+            );
+            ensure!(
+                error
+                    .to_string()
+                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
+                "Command argument payload was not refused by the pre-reservation guard: {error:#}"
+            );
+            ensure!(
+                owner.capacity_refusal_left_no_resources_for_test(),
+                "Command argument refusal acquired Native storage, permit, claim, or child"
+            );
+            drop(original_binding);
+            eprintln!(
+                "Native Q2 owner refused over-budget Command argument payload before permit, claim, storage, or worker spawn"
+            );
+            return Ok(());
+        }
+
+        if scenario == Q2WorkerScenario::OversizedAuthorityPath {
+            let snapshot = active_workspace_snapshot(&native_state)?;
+            let authority_path_capacity = snapshot.c_query_authority_path_capacity();
+            let binding_payload_bytes = original_binding_payload_bytes
+                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
+            let guarded_without_authority_path = binding_payload_bytes
+                .checked_add(worker_path.capacity())
+                .ok_or_else(|| anyhow::anyhow!("test guard payload overflowed"))?;
+            ensure!(
+                snapshot.path() == directory.0.as_path(),
+                "authority path value changed while reserving additional capacity"
+            );
+            ensure!(
+                binding_payload_bytes < super::c_query_worker::REQUEST_BYTES,
+                "authority-path-only case requires binding strings within the residual"
+            );
+            ensure!(
+                guarded_without_authority_path <= super::c_query_worker::REQUEST_BYTES,
+                "authority-path-only case must not be refused by the existing binding/worker terms"
+            );
+            ensure!(
+                guarded_without_authority_path
+                    .checked_add(authority_path_capacity)
+                    .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
+                "authority path capacity did not exceed the residual with existing owner terms"
+            );
+            ensure!(
+                !worker_path.exists(),
+                "test worker path unexpectedly exists"
+            );
+            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
+            let error = owner
+                .prepare(&request.project_id)
+                .expect_err("over-budget authority path must be refused before Native reservation");
+            ensure!(
+                error
+                    .to_string()
+                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
+                "authority path capacity was not refused by the pre-reservation guard: {error:#}"
+            );
+            ensure!(
+                owner.capacity_refusal_left_no_resources_for_test(),
+                "over-budget authority path refusal acquired Native storage, permit, claim, or child"
+            );
+            drop(original_binding);
+            eprintln!(
+                "Native Q2 owner refused over-budget authority path capacity before permit, claim, storage, or worker spawn"
+            );
+            return Ok(());
+        }
+
+        if scenario == Q2WorkerScenario::OversizedWorkerPath {
+            let worker_path_capacity = worker_path.capacity();
+            ensure!(
+                worker_path.as_os_str().len() < super::c_query_worker::REQUEST_BYTES,
+                "path-only case requires path payload below the residual"
+            );
+            let binding_payload_bytes = original_binding_payload_bytes
+                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
+            ensure!(
+                binding_payload_bytes < super::c_query_worker::REQUEST_BYTES,
+                "path-only case requires binding strings within the residual"
+            );
+            ensure!(
+                binding_payload_bytes
+                    .checked_add(worker_path_capacity)
+                    .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
+                "path capacity did not exceed the residual with the Ready binding payload"
+            );
+            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(
+                active_workspace_snapshot(&native_state)?,
+                worker_path,
+            );
+            let error = owner
+                .prepare(&request.project_id)
+                .expect_err("over-budget worker path must be refused before Native reservation");
+            ensure!(
+                error
+                    .to_string()
+                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
+                "path capacity was not refused by the pre-reservation guard: {error:#}"
+            );
+            ensure!(
+                owner.capacity_refusal_left_no_resources_for_test(),
+                "over-budget path refusal acquired Native storage, permit, claim, or child"
+            );
+            drop(original_binding);
+            eprintln!(
+                "Native Q2 owner refused over-budget worker path capacity before permit, claim, storage, or worker spawn"
+            );
+            return Ok(());
+        }
+
+        #[cfg(target_os = "linux")]
+        if scenario == Q2WorkerScenario::CleanupUnprovedDuringTransition {
+            let authority_weak = Arc::downgrade(&authority);
+            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(
+                active_workspace_snapshot(&native_state)?,
+                worker_path.clone(),
+            );
+            owner.prepare(&request.project_id)?;
+            owner.suppress_eof_proof_for_test();
+            let marker_dir = TestDirectory(std::env::temp_dir().join(format!(
+                "nir1-c-query-transition-race-{}",
+                uuid::Uuid::new_v4()
+            )));
+            std::fs::create_dir_all(&marker_dir.0)?;
+            let marker_path = marker_dir.0.join("query-error-ready");
+            let coordinator_release = Arc::new(AtomicBool::new(false));
+            owner.hold_before_cleanup_for_transition_test(
+                marker_path.clone(),
+                Arc::clone(&coordinator_release),
+            );
+            let query_thread = thread::current();
+            let core = native_state.switching.core();
+            let transition_core = core.clone();
+            let coordinator_release_for_thread = Arc::clone(&coordinator_release);
+            let (ticket_tx, ticket_rx) =
+                std::sync::mpsc::channel::<std::result::Result<AdmissionTicket, String>>();
+            let coordinator = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !marker_path.exists() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(1));
+                }
+                let admission = if marker_path.exists() {
+                    transition_core
+                        .begin_transition(AdmissionKind::Open)
+                        .map_err(|error| error.to_string())
+                        .and_then(|outcome| match outcome {
+                            AdmissionOutcome::Admitted(ticket) => Ok(ticket),
+                            AdmissionOutcome::NotAdmitted { reason, .. } => {
+                                Err(format!("Open not admitted: {reason:?}"))
+                            }
+                        })
+                } else {
+                    Err("query request rendezvous timed out".to_owned())
+                };
+                let _ = ticket_tx.send(admission);
+                coordinator_release_for_thread.store(true, Ordering::Release);
+                query_thread.unpark();
+            });
+            let query_error = match owner.query_once(&request) {
+                Ok(_) => None,
+                Err(error) => Some(format!("{error:#}")),
+            };
+            let admitted = ticket_rx.recv_timeout(Duration::from_secs(10));
+            let coordinator_joined = coordinator.join().is_ok();
+            let ticket = admitted
+                .as_ref()
+                .ok()
+                .and_then(|admission| admission.as_ref().ok())
+                .cloned();
+            let participant_retained = core.workspace_participant_count()? == 1;
+            let physical_io_blocked = ticket.as_ref().is_some_and(|ticket| {
+                matches!(
+                    core.physical_exclusive_for_ticket(ticket),
+                    Err(crate::workspace_lifecycle::LifecycleError::ActiveOperations)
+                )
+            });
+            drop(authority);
+            let owner_authority_pin_released = authority_weak
+                .upgrade()
+                .is_some_and(|authority| Arc::strong_count(&authority) == 2);
+            ensure!(coordinator_joined, "transition coordinator was not joined");
+            ensure!(
+                ticket.is_some(),
+                "Open transition admission failed: {admitted:?}"
+            );
+            ensure!(
+                query_error.as_deref().is_some_and(|error| {
+                    error.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED")
+                        && error.contains("NIR1_GRAPH_TEST_EOF_PROOF_UNOBSERVED")
+                        && !error.contains("NIR1_GRAPH_TEST_TRANSITION_SIGNAL_TIMEOUT")
+                }),
+                "query did not fail specifically on suppressed EOF proof after coordinator release: {query_error:?}"
+            );
+            ensure!(
+                owner.normal_exit_and_eof_observed_for_test(),
+                "test did not observe successful child exit + real reader EOF + complete frame"
+            );
+            ensure!(
+                participant_retained && physical_io_blocked && owner_authority_pin_released,
+                "fallback must release only this owner's authority pin while retaining the participant barrier"
+            );
+            eprintln!(
+                "Native W1 cleanup-unproved after Open admission: owner authority pin released, participant count=1, protected I/O refused"
+            );
+            drop(owner);
+            return Ok(());
+        }
+
         if scenario == Q2WorkerScenario::CleanupUnproved {
+            let authority_weak = Arc::downgrade(&authority);
+            let workspace_path = authority.path().to_path_buf();
+            let alias_path = workspace_path
+                .with_file_name(format!("nir1-c-quarantine-alias-{}", uuid::Uuid::new_v4()));
+            let _alias_directory = TestDirectory(alias_path.clone());
+            std::fs::create_dir_all(alias_path.join(".grimodex"))?;
+            std::fs::hard_link(
+                workspace_path.join("grimodex.db"),
+                alias_path.join("grimodex.db"),
+            )?;
+            std::fs::write(
+                alias_path.join(".grimodex/workspace.json"),
+                serde_json::json!({"id": "edited-workspace-metadata-id"}).to_string(),
+            )?;
+            let alias_database_identity =
+                crate::narrative_extraction::sqlite_database_file_identity(
+                    &alias_path.join("grimodex.db"),
+                )?;
+            ensure!(
+                alias_database_identity == authority.main_database_file_identity()?,
+                "hard-link alias must resolve to the held main DB file identity"
+            );
+            let alias_binding = LiveBinding::new(
+                alias_path.to_string_lossy(),
+                "edited-workspace-metadata-id",
+                authority.identity().wrapping_add(1),
+                1,
+            )
+            .with_main_database_file_identity(alias_database_identity);
             let mut owner = super::c_query_worker::CQueryWorkerOwner::new(
                 active_workspace_snapshot(&native_state)?,
                 worker_path.clone(),
@@ -1498,6 +1882,43 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 "Native Q2 cleanup-unproved: call-to-error={returned_elapsed:?}; query deadline={QUERY_DEADLINE:?}; cleanup deadline=500ms; child exit + real EOF + full frame observed, EOF proof transfer suppressed"
             );
 
+            let other_path = std::env::temp_dir().join(format!(
+                "nir1-c-capacity-permit-other-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let _other_directory = TestDirectory(other_path.clone());
+            let other_authority = crate::state::WorkspaceAuthority::from_database_for_test(
+                crate::Database::new(std::path::Path::new(":memory:"))?,
+                other_path,
+            )?;
+            let other_state = WorkspaceState {
+                inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&other_authority)))),
+                safe_mode: crate::recovery::SafeModeState::default(),
+                switching: WorkspaceLifecycleCompatibilityView::new(false),
+                open_lock: Mutex::new(()),
+            };
+            other_state.switching.core().set_ready(LiveBinding::new(
+                other_authority.path().to_string_lossy(),
+                format!("other-workspace:{}", other_authority.identity()),
+                other_authority.identity(),
+                0,
+            ))?;
+            let mut other_owner = super::c_query_worker::CQueryWorkerOwner::new(
+                active_workspace_snapshot(&other_state)?,
+                worker_path.clone(),
+            );
+            let capacity_error = other_owner
+                .prepare(&request.project_id)
+                .expect_err("detached old owner must retain process capacity");
+            ensure!(
+                capacity_error
+                    .to_string()
+                    .contains("NIR1_GRAPH_WORKER_CAPACITY_BUSY")
+                    && other_owner.capacity_refusal_left_no_resources_for_test(),
+                "distinct workspace reserved storage or spawned while old quarantine held capacity: {capacity_error:#}"
+            );
+            drop(other_owner);
+
             let late_error = match owner.query_once(&request) {
                 Ok(_) => anyhow::bail!("quarantined owner adopted a late result"),
                 Err(error) => error,
@@ -1517,10 +1938,34 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     .switching
                     .core()
                     .workspace_participant_count()?,
-                1
+                0,
+                "cleanup-unproved detached the snapshot participant immediately"
+            );
+            let immediate_reloan_error = match active_workspace_snapshot(&native_state) {
+                Ok(_) => anyhow::bail!("same-workspace admission bypassed live quarantine"),
+                Err(error) => error,
+            };
+            ensure!(
+                immediate_reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                "live quarantine did not fence same-workspace admission: {immediate_reloan_error:#}"
             );
 
             drop(owner);
+            let mut owner_after_drop = super::c_query_worker::CQueryWorkerOwner::new(
+                active_workspace_snapshot(&other_state)?,
+                worker_path.clone(),
+            );
+            let still_busy = owner_after_drop
+                .prepare(&request.project_id)
+                .expect_err("dropping the detached query owner must not release its permit");
+            ensure!(
+                still_busy
+                    .to_string()
+                    .contains("NIR1_GRAPH_WORKER_CAPACITY_BUSY")
+                    && owner_after_drop.capacity_refusal_left_no_resources_for_test(),
+                "owner Drop released process capacity before retirement: {still_busy:#}"
+            );
+            drop(owner_after_drop);
             if let Some(claim) = authority.claim_c_query_child() {
                 claim.release();
                 anyhow::bail!("claim was reloaned by owner Drop");
@@ -1530,27 +1975,89 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     .switching
                     .core()
                     .workspace_participant_count()?,
-                1,
-                "owner Drop released its quarantined workspace snapshot"
+                0,
+                "detached quarantine must replace, not retain, the snapshot participant"
             );
-            let mut reloan_owner = super::c_query_worker::CQueryWorkerOwner::new(
-                active_workspace_snapshot(&native_state)?,
-                worker_path,
-            );
-            let reloan_error = reloan_owner
-                .prepare(&request.project_id)
-                .expect_err("same-authority reloan must remain closed after owner Drop");
+            let reloan_error = match active_workspace_snapshot(&native_state) {
+                Ok(_) => anyhow::bail!("same-workspace snapshot admission bypassed quarantine"),
+                Err(error) => error,
+            };
             ensure!(
-                reloan_error.to_string().contains("NIR1_GRAPH_WORKER_BUSY"),
-                "same-authority reloan was not rejected: {reloan_error:#}"
+                reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                "quarantine did not reject same-workspace admission: {reloan_error:#}"
             );
-            drop(reloan_owner);
-            assert_eq!(
+            assert!(
                 native_state
                     .switching
                     .core()
-                    .workspace_participant_count()?,
-                1
+                    .set_ready(LiveBinding::new(
+                        workspace_path.to_string_lossy(),
+                        "test-workspace-reopened",
+                        authority.identity().wrapping_add(1),
+                        1,
+                    ))
+                    .is_err(),
+                "same-path new authority bypassed quarantine"
+            );
+            let replacement_path = std::env::temp_dir().join(format!(
+                "nir1-c-quarantine-replacement-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let _replacement_directory = TestDirectory(replacement_path.clone());
+            let replacement_authority = WorkspaceAuthority::from_database_for_test(
+                crate::Database::new(std::path::Path::new(":memory:"))?,
+                replacement_path.clone(),
+            )?;
+            let replacement_workspace_id = "different-test-workspace";
+            let replacement_database_file_identity = "different-test-database";
+            let replacement_binding = LiveBinding::new(
+                replacement_path.to_string_lossy(),
+                replacement_workspace_id,
+                replacement_authority.identity(),
+                1,
+            )
+            .with_main_database_file_identity(replacement_database_file_identity.to_owned());
+            let replacement_locator = replacement_path.to_string_lossy().into_owned();
+            let core = native_state.switching.core();
+            let transition = match core.begin_open_transition_for_target(
+                &replacement_locator,
+                Some(replacement_workspace_id),
+                Some(replacement_database_file_identity),
+                None,
+            )? {
+                AdmissionOutcome::Admitted(ticket) => ticket,
+                AdmissionOutcome::NotAdmitted { .. } => {
+                    anyhow::bail!("unrelated workspace transition was blocked")
+                }
+            };
+            let physical_exclusive = core.physical_exclusive_for_ticket(&transition)?;
+            eprintln!("Native Q2 cleanup handoff preceded known-distinct W2 protected exclusivity");
+            drop(physical_exclusive);
+            core.mark_transition_joined(&transition)?;
+            let old_active = native_state
+                .inner
+                .lock()
+                .expect("workspace lock")
+                .replace(ActiveWorkspace::new(replacement_authority));
+            drop(old_active);
+            core.activate(
+                &transition,
+                replacement_binding,
+                crate::workspace_lifecycle::ContentEffect::Retained,
+            )?;
+            drop(authority);
+            ensure!(
+                authority_weak.upgrade().is_none(),
+                "detached child claim still retained the DB/index authority after transition"
+            );
+            assert!(
+                core.set_ready(alias_binding).is_err(),
+                "same-file alias with changed metadata bypassed quarantine after old authority drop"
+            );
+            assert!(
+                crate::workspace_lease::acquire_exclusive(&workspace_path, Duration::ZERO,)
+                    .is_err(),
+                "detached child claim released the original shared file lease"
             );
             return Ok(());
         }
@@ -1579,6 +2086,44 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             Q2WorkerScenario::RustOom => owner.rust_oom_for_test(),
             Q2WorkerScenario::SqliteNoMem => owner.sqlite_nomem_for_test(),
             _ => {}
+        }
+        if matches!(
+            scenario,
+            Q2WorkerScenario::OversizedWorkspaceId
+                | Q2WorkerScenario::OversizedBindingIdentityPayload
+        ) {
+            let error = owner
+                .prepare(&request.project_id)
+                .expect_err("binding identity payload over Native capacity must be refused");
+            ensure!(
+                error
+                    .to_string()
+                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
+                "over-budget identity was not refused by the pre-reservation guard: {error:#}"
+            );
+            ensure!(
+                owner.capacity_refusal_left_no_resources_for_test(),
+                "over-budget identity refusal acquired Native storage, a permit, claim, or child"
+            );
+            if scenario == Q2WorkerScenario::OversizedWorkspaceId {
+                ensure!(
+                    oversized_workspace_id
+                        .as_ref()
+                        .and_then(|id| id.upgrade())
+                        .is_some_and(|id| id.len() == 1_572_865),
+                    "fail-closed query preparation changed the accepted Ready workspace ID"
+                );
+            } else {
+                ensure!(
+                    binding_payload_bytes == Some(8_193),
+                    "combined workspace-ID, locator, and DB identity test payload was not 8,193 bytes: {binding_payload_bytes:?}"
+                );
+            }
+            drop(original_binding);
+            eprintln!(
+                "Native Q2 owner refused over-budget binding identity before permit, claim, storage, or worker spawn"
+            );
+            return Ok(());
         }
         if scenario == Q2WorkerScenario::StartupRegistrationRefused {
             let error = owner
@@ -1910,8 +2455,8 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                         .switching
                         .core()
                         .workspace_participant_count()?,
-                    1,
-                    "reader-join quarantine released the workspace snapshot"
+                    0,
+                    "reader-join quarantine did not detach the snapshot participant"
                 );
                 drop(owner);
                 ensure!(
@@ -1923,27 +2468,18 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                         .switching
                         .core()
                         .workspace_participant_count()?,
-                    1,
-                    "owner Drop released its reader-join-quarantined snapshot"
+                    0,
+                    "detached reader-join quarantine retained the snapshot participant"
                 );
-                let mut reloan_owner = super::c_query_worker::CQueryWorkerOwner::new(
-                    active_workspace_snapshot(&native_state)?,
-                    worker_path,
-                );
-                let reloan_error = reloan_owner.prepare(&request.project_id).expect_err(
-                    "same-authority reloan must remain closed after reader-join failure",
-                );
+                let reloan_error = match active_workspace_snapshot(&native_state) {
+                    Ok(_) => {
+                        anyhow::bail!("reader-join quarantine permitted same-workspace reloan")
+                    }
+                    Err(error) => error,
+                };
                 ensure!(
-                    reloan_error.to_string().contains("NIR1_GRAPH_WORKER_BUSY"),
-                    "same-authority reloan was not rejected: {reloan_error:#}"
-                );
-                drop(reloan_owner);
-                assert_eq!(
-                    native_state
-                        .switching
-                        .core()
-                        .workspace_participant_count()?,
-                    1
+                    reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                    "same-workspace reloan was not rejected: {reloan_error:#}"
                 );
                 eprintln!(
                     "Native ResultHeld reader-join failure: committed Q2 lease returned with real EOF/live child; cleanup observed child exit + EOF but the actual reader thread panicked on join; resources quarantined and no claim reloaned"
@@ -1968,8 +2504,8 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                         .switching
                         .core()
                         .workspace_participant_count()?,
-                    1,
-                    "quarantine released the workspace snapshot"
+                    0,
+                    "quarantine did not detach the workspace snapshot"
                 );
                 drop(owner);
                 ensure!(
@@ -1981,27 +2517,16 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                         .switching
                         .core()
                         .workspace_participant_count()?,
-                    1,
-                    "owner Drop released its quarantined workspace snapshot"
+                    0,
+                    "detached quarantine retained the snapshot participant"
                 );
-                let mut reloan_owner = super::c_query_worker::CQueryWorkerOwner::new(
-                    active_workspace_snapshot(&native_state)?,
-                    worker_path,
-                );
-                let reloan_error = reloan_owner
-                    .prepare(&request.project_id)
-                    .expect_err("same-authority reloan must remain closed after quarantine");
+                let reloan_error = match active_workspace_snapshot(&native_state) {
+                    Ok(_) => anyhow::bail!("quarantine permitted same-workspace reloan"),
+                    Err(error) => error,
+                };
                 ensure!(
-                    reloan_error.to_string().contains("NIR1_GRAPH_WORKER_BUSY"),
-                    "same-authority reloan was not rejected: {reloan_error:#}"
-                );
-                drop(reloan_owner);
-                assert_eq!(
-                    native_state
-                        .switching
-                        .core()
-                        .workspace_participant_count()?,
-                    1
+                    reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                    "same-workspace reloan was not rejected: {reloan_error:#}"
                 );
                 eprintln!(
                     "Native ResultHeld exit-proof failure: committed current-bound Q2 lease returned with real EOF/live child; exit-status transfer suppressed during lease drop; resources quarantined and no claim reloaned"
@@ -2670,7 +3195,8 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         format!("test-workspace:{}", authority.identity()),
         authority.identity(),
         0,
-    );
+    )
+    .with_main_database_file_identity(authority.main_database_file_identity()?);
     native_state.switching.core().set_ready(original_binding)?;
     let snapshot = active_workspace_snapshot(&native_state)?;
     let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);

@@ -4,7 +4,7 @@ use std::{
     io::{Read, Write},
     path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -16,6 +16,7 @@ use anyhow::{anyhow, ensure, Result};
 
 use crate::{
     state::{ActiveWorkspaceSnapshot, CQueryChildClaim},
+    workspace_lifecycle::{WorkspaceParticipant, WorkspaceQuarantineFence},
     WorkspaceAuthority,
 };
 
@@ -32,6 +33,26 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
 const FRAME_EXIT_POLL_INTERVAL: Duration = Duration::from_micros(100);
 const STARTUP_STDERR_CAPTURE_BYTES: usize = 256;
+
+// ponytail: one process-local owner; use a bounded permit count only if approved capacity grows.
+static C_QUERY_CAPACITY_IN_USE: AtomicBool = AtomicBool::new(false);
+
+struct CQueryCapacityPermit;
+
+impl CQueryCapacityPermit {
+    fn acquire() -> Result<Self> {
+        C_QUERY_CAPACITY_IN_USE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self)
+            .map_err(|_| anyhow!("NIR1_GRAPH_WORKER_CAPACITY_BUSY"))
+    }
+}
+
+impl Drop for CQueryCapacityPermit {
+    fn drop(&mut self) {
+        C_QUERY_CAPACITY_IN_USE.store(false, Ordering::Release);
+    }
+}
 
 #[cfg(feature = "nir1-c-query-test-seam")]
 const SQLITE_FAILURE_RECEIPT_LINE_BYTES: usize = 192;
@@ -135,7 +156,7 @@ fn startup_exit_error_from_bytes(bytes: &[u8]) -> anyhow::Error {
 /// Owner metadata and bounded caller-owned request storage are deducted from
 /// the Native request/result allowance; the allocation never grows after reservation.
 struct RegionControl {
-    storage: Option<Vec<NativeRegion>>,
+    storage: Option<NativeRegionReservation>,
     claim: Option<CQueryChildClaim>,
     elapsed: Option<Duration>,
     result_len: usize,
@@ -145,6 +166,12 @@ struct RegionControl {
     started: bool,
     lease_held: bool,
     quarantined: bool,
+}
+
+impl RegionControl {
+    fn native_region(&self) -> Option<&NativeRegion> {
+        self.storage.as_ref().map(NativeRegionReservation::region)
+    }
 }
 
 const READER_READY: usize = 1 << 0;
@@ -174,7 +201,8 @@ pub const FRAME_BYTES: usize = PARENT_BYTES
     - std::mem::size_of::<Option<ChildSession>>()
     - std::mem::size_of::<usize>() // borrowed lease handle
     - MAILBOX_BYTES;
-const STORAGE_BYTES: usize = REQUEST_BYTES + FRAME_BYTES;
+// The request occupies this frame backing only before OWNER_REQUEST is published.
+const STORAGE_BYTES: usize = FRAME_BYTES;
 
 /// The sole Native allocation owns both the bytes and the mailbox. Its address
 /// stays stable while the detached reader runs; quarantine leaks it if the
@@ -187,8 +215,10 @@ struct NativeRegion {
 // SAFETY: `bytes` transfers from owner to reader at OWNER_REQUEST and back at
 // READER_FRAME; those release/acquire bits prevent concurrent access. The
 // parent-thread handle is initialized before PARENT_THREAD_READY and remains
-// immutable until the reader is joined or the allocation is quarantined.
+// immutable until the reader is joined or the slot is quarantined.
 unsafe impl Sync for NativeRegion {}
+
+static NATIVE_REGION_SLOT: NativeRegion = NativeRegion::new();
 
 #[cfg(test)]
 #[derive(Clone, Copy, Default)]
@@ -266,24 +296,114 @@ impl NativeRegionPtr {
     }
 }
 
+const NATIVE_FIXED_BYTES: usize = std::mem::size_of::<NativeRegion>()
+    + std::mem::size_of::<RegionControl>()
+    + std::mem::size_of::<Option<ChildSession>>()
+    + std::mem::size_of::<usize>()
+    + REQUEST_CAPACITY_BYTES
+    + std::mem::size_of::<Nir1GraphRequest>();
+const NATIVE_OWNER_PAYLOAD_BUDGET_BYTES: usize = PARENT_BYTES - NATIVE_FIXED_BYTES;
+const _: () = assert!(FRAME_BYTES >= REQUEST_BYTES);
 const _: () = assert!(std::mem::size_of::<NativeRegion>() == MAILBOX_BYTES + STORAGE_BYTES);
-const _: () = assert!(
-    std::mem::size_of::<NativeRegion>()
-        + std::mem::size_of::<RegionControl>()
-        + std::mem::size_of::<Option<ChildSession>>()
-        + std::mem::size_of::<usize>()
-        + REQUEST_CAPACITY_BYTES
-        + std::mem::size_of::<Nir1GraphRequest>()
-        == PARENT_BYTES
-);
+const _: () = assert!(NATIVE_FIXED_BYTES == PARENT_BYTES - REQUEST_BYTES);
 
-type Storage = Vec<NativeRegion>;
+/// Lower bound for the two distinct Command arguments live across spawn.
+/// Unix uses std's CString argv payload; Windows takes the smaller encoded/wide payload.
+pub(super) fn command_argument_payload_lower_bound(
+    authority_path: &std::ffi::OsStr,
+    project_id: &str,
+) -> Option<usize> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+
+        fn c_string_payload(bytes: &[u8]) -> Option<usize> {
+            if bytes.contains(&0) {
+                return Some(1); // Guaranteed terminator; std substitutes this invalid argument.
+            }
+            bytes.len().checked_add(1)
+        }
+
+        c_string_payload(authority_path.as_bytes())?
+            .checked_add(c_string_payload(project_id.as_bytes())?)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+
+        fn wide_bytes(units: impl Iterator<Item = u16>) -> Option<usize> {
+            units.count().checked_mul(std::mem::size_of::<u16>())
+        }
+
+        // Current Windows OsString uses WTF-8; CreateProcessW staging uses UTF-16.
+        // The smaller payload remains a lower bound for either retained representation.
+        let project_id = std::ffi::OsStr::new(project_id);
+        let authority_path_bytes = authority_path
+            .as_encoded_bytes()
+            .len()
+            .min(wide_bytes(authority_path.encode_wide())?);
+        let project_id_bytes = project_id
+            .as_encoded_bytes()
+            .len()
+            .min(wide_bytes(project_id.encode_wide())?);
+        authority_path_bytes.checked_add(project_id_bytes)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (authority_path, project_id);
+        None
+    }
+}
+
+fn native_owner_payload_fits(
+    binding_payload_bytes: usize,
+    worker_path_capacity: usize,
+    authority_path_capacity: usize,
+    command_argument_payload_bytes: usize,
+) -> bool {
+    binding_payload_bytes
+        .checked_add(worker_path_capacity)
+        .and_then(|bytes| bytes.checked_add(authority_path_capacity))
+        .and_then(|bytes| bytes.checked_add(command_argument_payload_bytes))
+        .is_some_and(|bytes| bytes <= NATIVE_OWNER_PAYLOAD_BUDGET_BYTES)
+}
+
+struct NativeRegionReservation {
+    region: &'static NativeRegion,
+    _capacity_permit: CQueryCapacityPermit,
+}
+
+impl NativeRegionReservation {
+    fn region(&self) -> &NativeRegion {
+        self.region
+    }
+}
+
+impl Drop for NativeRegionReservation {
+    fn drop(&mut self) {
+        // The reservation is dropped only before a reader starts or after exit,
+        // EOF and reader join; quarantine forgets this token instead.
+        unsafe { drop((&mut *self.region.mailbox.parent_thread.get()).take()) };
+    }
+}
 
 impl NativeRegion {
-    /// Initialize a heap-reserved region in place, without a backing-sized stack temporary.
+    const fn new() -> Self {
+        Self {
+            mailbox: ReaderMailbox {
+                events: AtomicUsize::new(0),
+                frame_len: AtomicUsize::new(0),
+                parent_thread: UnsafeCell::new(None),
+            },
+            bytes: UnsafeCell::new([0; STORAGE_BYTES]),
+        }
+    }
+
+    /// Initialize a test-local heap reservation in place, without a backing-sized stack temporary.
     ///
     /// # Safety
     /// `pointer` must reference aligned, writable storage for an uninitialized `NativeRegion`.
+    #[cfg(test)]
     unsafe fn initialize_at(pointer: *mut Self) {
         unsafe {
             std::ptr::addr_of_mut!((*pointer).mailbox).write(ReaderMailbox {
@@ -354,9 +474,8 @@ impl NativeRegion {
             .fetch_or(OWNER_CANCEL, Ordering::Release);
     }
 
-    unsafe fn bytes_mut(&self) -> &mut [u8] {
-        // SAFETY: callers must hold the exclusive buffer phase described above.
-        unsafe { std::slice::from_raw_parts_mut(self.bytes.get().cast::<u8>(), STORAGE_BYTES) }
+    fn bytes_mut_ptr(&self) -> *mut [u8; STORAGE_BYTES] {
+        self.bytes.get()
     }
 
     unsafe fn bytes(&self) -> &[u8] {
@@ -365,7 +484,29 @@ impl NativeRegion {
     }
 }
 
-fn reserve_storage() -> Result<Storage> {
+fn reserve_storage() -> Result<NativeRegionReservation> {
+    let capacity_permit = CQueryCapacityPermit::acquire()?;
+    // SAFETY: acquiring the process permit proves that any prior slot owner
+    // retired and dropped its reader handle, or permanently leaked this permit.
+    unsafe {
+        let region = &NATIVE_REGION_SLOT;
+        drop((&mut *region.mailbox.parent_thread.get()).take());
+        region.mailbox.events.store(0, Ordering::Relaxed);
+        region.mailbox.frame_len.store(0, Ordering::Relaxed);
+        region
+            .bytes
+            .get()
+            .cast::<u8>()
+            .write_bytes(0, STORAGE_BYTES);
+    }
+    Ok(NativeRegionReservation {
+        region: &NATIVE_REGION_SLOT,
+        _capacity_permit: capacity_permit,
+    })
+}
+
+#[cfg(test)]
+fn reserve_test_storage() -> Result<Vec<NativeRegion>> {
     let mut storage = Vec::new();
     storage.try_reserve_exact(1)?;
     ensure!(storage.capacity() == 1, "NIR1_GRAPH_NATIVE_ARENA_CAPACITY");
@@ -394,6 +535,21 @@ struct ChildSession {
     reader: Option<JoinHandle<()>>,
     exit: Option<ExitStatus>,
     eof: bool,
+}
+
+/// Lifecycle barrier retained with an unproved child until process exit.
+enum DetachedCQueryLifecycle {
+    Quarantine { _fence: WorkspaceQuarantineFence },
+    Participant { _participant: WorkspaceParticipant },
+}
+
+/// Process-lifetime owner for a C-query whose termination could not be proved.
+/// It intentionally has no WorkspaceAuthority/Database/index reference.
+struct DetachedCQueryOwner {
+    _lifecycle: DetachedCQueryLifecycle,
+    _claim: Option<CQueryChildClaim>,
+    _storage: Option<NativeRegionReservation>,
+    _session: Option<ChildSession>,
 }
 
 #[cfg(test)]
@@ -432,17 +588,27 @@ impl QueryPhaseDiagnostics {
     }
 }
 
-/// Holds one Native workspace snapshot. A result lease borrows this owner, so
-/// its fixed storage and child admission cannot be reused before lease drop.
+#[cfg(test)]
+enum RequestHoldForTest {
+    UntilKilled(PathBuf),
+    SingleWake {
+        path: PathBuf,
+        coordinator_release: Arc<AtomicBool>,
+    },
+}
+
+/// Owns one Native workspace snapshot. A result lease borrows this owner, so
+/// its fixed storage and child admission cannot be reused before lease drop;
+/// cleanup-unproved retirement transfers those resources to a detached owner.
 pub struct CQueryWorkerOwner {
     snapshot: Option<ActiveWorkspaceSnapshot>,
-    worker: PathBuf,
+    worker: Option<PathBuf>,
     region: RegionControl,
     session: Option<ChildSession>,
     #[cfg(test)]
     inject_crash_after_request_for_test: bool,
     #[cfg(test)]
-    hold_after_request_for_test: Option<PathBuf>,
+    hold_after_request_for_test: Option<RequestHoldForTest>,
     #[cfg(test)]
     suppress_eof_proof_for_test: bool,
     #[cfg(all(test, target_os = "linux"))]
@@ -479,6 +645,8 @@ pub struct CQueryWorkerOwner {
     test_missing_eof_boundary_observed_before_cleanup: bool,
     #[cfg(test)]
     test_cleanup_proved: bool,
+    #[cfg(test)]
+    test_quarantine_detached: bool,
     #[cfg(all(test, target_os = "linux"))]
     test_exit_proof_suppressed: bool,
     #[cfg(all(test, target_os = "linux"))]
@@ -499,7 +667,7 @@ impl CQueryWorkerOwner {
     pub fn new(snapshot: ActiveWorkspaceSnapshot, worker: PathBuf) -> Self {
         Self {
             snapshot: Some(snapshot),
-            worker,
+            worker: Some(worker),
             region: RegionControl {
                 storage: None,
                 claim: None,
@@ -553,6 +721,8 @@ impl CQueryWorkerOwner {
             test_missing_eof_boundary_observed_before_cleanup: false,
             #[cfg(test)]
             test_cleanup_proved: false,
+            #[cfg(test)]
+            test_quarantine_detached: false,
             #[cfg(all(test, target_os = "linux"))]
             test_exit_proof_suppressed: false,
             #[cfg(all(test, target_os = "linux"))]
@@ -587,6 +757,27 @@ impl CQueryWorkerOwner {
             .as_ref()
             .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?;
         snapshot.check_current_binding()?;
+        let identity_payload_bytes = snapshot
+            .c_query_identity_payload_byte_len()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
+        let worker_path_capacity = self
+            .worker
+            .as_ref()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?
+            .capacity();
+        let authority_path_capacity = snapshot.c_query_authority_path_capacity();
+        let command_argument_payload_bytes =
+            command_argument_payload_lower_bound(snapshot.path().as_os_str(), project_id)
+                .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
+        ensure!(
+            native_owner_payload_fits(
+                identity_payload_bytes,
+                worker_path_capacity,
+                authority_path_capacity,
+                command_argument_payload_bytes
+            ),
+            "NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"
+        );
         let authority = std::sync::Arc::clone(&snapshot.authority);
         self.region.claim = Some(
             authority
@@ -625,7 +816,19 @@ impl CQueryWorkerOwner {
 
     #[cfg(test)]
     pub(super) fn hold_after_request_for_test(&mut self, path: PathBuf) {
-        self.hold_after_request_for_test = Some(path);
+        self.hold_after_request_for_test = Some(RequestHoldForTest::UntilKilled(path));
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_before_cleanup_for_transition_test(
+        &mut self,
+        path: PathBuf,
+        coordinator_release: Arc<AtomicBool>,
+    ) {
+        self.hold_after_request_for_test = Some(RequestHoldForTest::SingleWake {
+            path,
+            coordinator_release,
+        });
     }
 
     #[cfg(test)]
@@ -721,6 +924,11 @@ impl CQueryWorkerOwner {
     }
 
     #[cfg(test)]
+    pub(super) fn capacity_refusal_left_no_resources_for_test(&self) -> bool {
+        self.region.claim.is_none() && self.region.storage.is_none() && self.session.is_none()
+    }
+
+    #[cfg(test)]
     pub(super) fn child_pid_for_test(&self) -> Result<u32> {
         self.session
             .as_ref()
@@ -787,51 +995,23 @@ impl CQueryWorkerOwner {
 
     #[cfg(test)]
     pub(super) fn quarantined_resources_held_for_test(&self) -> bool {
-        self.region.quarantined
-            && self.snapshot.is_some()
-            && self.region.claim.is_some()
-            && self.region.storage.is_some()
-            && self.session.as_ref().is_some_and(|session| {
-                !session.eof
-                    && session.exit.is_some_and(|status| status.success())
-                    && session.reader.is_some()
-            })
+        self.region.quarantined && self.test_quarantine_detached
     }
 
     #[cfg(all(test, target_os = "linux"))]
     pub(super) fn result_lease_exit_proof_quarantined_for_test(&self) -> bool {
         self.region.quarantined
-            && self.snapshot.is_some()
-            && self.region.claim.is_some()
-            && self.region.storage.is_some()
+            && self.test_quarantine_detached
+            && !self.test_cleanup_proved
             && self.test_exit_proof_suppressed
-            && self.session.as_ref().is_some_and(|session| {
-                session.eof
-                    && session.exit.is_none()
-                    && session.reader.is_some()
-                    && session.stdin.is_none()
-            })
     }
 
     #[cfg(all(test, target_os = "linux"))]
     pub(super) fn result_lease_reader_join_quarantined_for_test(&self) -> bool {
-        use std::os::unix::process::ExitStatusExt;
-
         self.region.quarantined
+            && self.test_quarantine_detached
             && !self.test_cleanup_proved
             && self.test_reader_join_failed
-            && self.snapshot.is_some()
-            && self.region.claim.is_some()
-            && self.region.storage.is_some()
-            && self.session.as_ref().is_some_and(|session| {
-                session.eof
-                    && session
-                        .exit
-                        .as_ref()
-                        .is_some_and(|status| status.signal() == Some(libc::SIGKILL))
-                    && session.reader.is_none()
-                    && session.stdin.is_none()
-            })
     }
 
     /// Admit one request after READY and return only a validated, committed frame
@@ -930,6 +1110,7 @@ impl CQueryWorkerOwner {
         if self.session.is_some() {
             if let Err(cleanup) = self.stop_and_reap() {
                 self.region.quarantined = true;
+                self.detach_quarantined_resources();
                 return anyhow!("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED: {error}; {cleanup}");
             }
         }
@@ -941,6 +1122,38 @@ impl CQueryWorkerOwner {
 
     #[cfg(test)]
     fn cleanup_query_error_for_test(&mut self, error: anyhow::Error) -> anyhow::Error {
+        let error = match self.hold_after_request_for_test.take() {
+            Some(RequestHoldForTest::SingleWake {
+                path,
+                coordinator_release,
+            }) => {
+                let temporary_path = path.with_extension("tmp");
+                let marker_result = std::fs::write(&temporary_path, b"query-error")
+                    .and_then(|()| std::fs::rename(temporary_path, path));
+                if let Err(marker_error) = marker_result {
+                    error.context(format!("NIR1_GRAPH_TEST_TRANSITION_MARKER: {marker_error}"))
+                } else {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !coordinator_release.load(Ordering::Acquire) {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() {
+                            break;
+                        }
+                        thread::park_timeout(remaining);
+                    }
+                    if coordinator_release.load(Ordering::Acquire) {
+                        error
+                    } else {
+                        error.context("NIR1_GRAPH_TEST_TRANSITION_SIGNAL_TIMEOUT")
+                    }
+                }
+            }
+            Some(hold @ RequestHoldForTest::UntilKilled(_)) => {
+                self.hold_after_request_for_test = Some(hold);
+                error
+            }
+            None => error,
+        };
         let started_at = Instant::now();
         let error = self.cleanup_error(error);
         self.query_phase_diagnostics.cleanup_elapsed = Some(started_at.elapsed());
@@ -953,14 +1166,19 @@ impl CQueryWorkerOwner {
         project_id: &str,
     ) -> Result<()> {
         let storage = reserve_storage()?;
-        // SAFETY: the reader cannot access bytes until REQUEST is published.
+        // SAFETY: no reader exists yet and this reservation owns the process slot.
         unsafe {
-            storage[0].bytes_mut()[..project_id.len()].copy_from_slice(project_id.as_bytes());
+            let bytes = &mut *storage.region().bytes_mut_ptr();
+            bytes[..project_id.len()].copy_from_slice(project_id.as_bytes());
         }
         self.region.prepared_project_len = project_id.len();
         self.region.storage = Some(storage);
 
-        let mut command = Command::new(&self.worker);
+        let worker = self
+            .worker
+            .take()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?;
+        let mut command = Command::new(worker);
         command
             .arg(authority.path())
             .arg(project_id)
@@ -995,26 +1213,30 @@ impl CQueryWorkerOwner {
         if self.sqlite_nomem_for_test {
             command.env("NIR1_C_QUERY_TEST_SQLITE_NOMEM", "query");
         }
-        let mut child = command.spawn()?;
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-        if stdin.is_none() || stdout.is_none() {
-            self.session = Some(ChildSession {
-                child,
-                stdin,
-                reader: None,
-                exit: None,
-                eof: false,
-            });
-            anyhow::bail!("NIR1_GRAPH_WORKER_PIPE_MISSING");
-        }
-        let stdin = stdin.ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDIN"))?;
-        let stdout = stdout.ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDOUT"))?;
+        let child = command.spawn()?;
+        drop(command);
+        self.session = Some(ChildSession {
+            child,
+            stdin: None,
+            reader: None,
+            exit: None,
+            eof: false,
+        });
+        let stdout = {
+            let session = self
+                .session
+                .as_mut()
+                .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?;
+            session.stdin = session.child.stdin.take();
+            let stdout = session.child.stdout.take();
+            if session.stdin.is_none() || stdout.is_none() {
+                anyhow::bail!("NIR1_GRAPH_WORKER_PIPE_MISSING");
+            }
+            stdout.ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDOUT"))?
+        };
         let region_address = self
             .region
-            .storage
-            .as_ref()
-            .and_then(|storage| storage.first())
+            .native_region()
             .map(|region| NativeRegionPtr {
                 region: region as *const NativeRegion,
                 reader_timing: {
@@ -1043,29 +1265,17 @@ impl CQueryWorkerOwner {
             Err(error) => {
                 // stdout was transferred to a thread that could not start; cleanup
                 // will quarantine unless actual exit and pipe EOF can be proved.
-                self.session = Some(ChildSession {
-                    child,
-                    stdin: Some(stdin),
-                    reader: None,
-                    exit: None,
-                    eof: false,
-                });
                 return Err(error.into());
             }
         };
         let parent_thread = thread::current();
-        self.session = Some(ChildSession {
-            child,
-            stdin: Some(stdin),
-            reader: Some(reader),
-            exit: None,
-            eof: false,
-        });
+        self.session
+            .as_mut()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_SESSION"))?
+            .reader = Some(reader);
         let native = self
             .region
-            .storage
-            .as_ref()
-            .and_then(|storage| storage.first())
+            .native_region()
             .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
         native.set_parent_thread(parent_thread);
         self.session
@@ -1091,13 +1301,11 @@ impl CQueryWorkerOwner {
         {
             let native = self
                 .region
-                .storage
-                .as_ref()
-                .and_then(|storage| storage.first())
+                .native_region()
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
             // SAFETY: the reader is waiting for OWNER_REQUEST and has not touched
             // the buffer; this owner exclusively prepares the request bytes.
-            let bytes = unsafe { native.bytes_mut() };
+            let bytes = unsafe { &mut *native.bytes_mut_ptr() };
             ensure!(
                 project_len == request.project_id.len()
                     && &bytes[..project_len] == request.project_id.as_bytes(),
@@ -1113,9 +1321,7 @@ impl CQueryWorkerOwner {
         let write_result = {
             let native = self
                 .region
-                .storage
-                .as_ref()
-                .and_then(|storage| storage.first())
+                .native_region()
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
             // SAFETY: the reader still waits for OWNER_REQUEST.
             let bytes = unsafe { native.bytes() };
@@ -1125,9 +1331,7 @@ impl CQueryWorkerOwner {
         write_result?;
         let native = self
             .region
-            .storage
-            .as_ref()
-            .and_then(|storage| storage.first())
+            .native_region()
             .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
         native.request();
         self.session
@@ -1157,7 +1361,9 @@ impl CQueryWorkerOwner {
         }
 
         #[cfg(test)]
-        if let Some(path) = self.hold_after_request_for_test.take() {
+        if let Some(RequestHoldForTest::UntilKilled(path)) =
+            self.hold_after_request_for_test.as_ref()
+        {
             let temporary_path = path.with_extension("tmp");
             std::fs::write(&temporary_path, b"admitted")?;
             std::fs::rename(temporary_path, path)?;
@@ -1207,9 +1413,7 @@ impl CQueryWorkerOwner {
             {
                 let events = self
                     .region
-                    .storage
-                    .as_ref()
-                    .and_then(|storage| storage.first())
+                    .native_region()
                     .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?
                     .mailbox
                     .events
@@ -1234,9 +1438,7 @@ impl CQueryWorkerOwner {
             }
             let native = self
                 .region
-                .storage
-                .as_ref()
-                .and_then(|storage| storage.first())
+                .native_region()
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
             let events = native.mailbox.events.load(Ordering::Acquire);
             #[cfg(test)]
@@ -1389,9 +1591,7 @@ impl CQueryWorkerOwner {
             }
             let native = self
                 .region
-                .storage
-                .as_ref()
-                .and_then(|storage| storage.first())
+                .native_region()
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
             let events = native.mailbox.events.load(Ordering::Acquire);
             if events & READER_FAILED != 0 {
@@ -1524,12 +1724,7 @@ impl CQueryWorkerOwner {
         required_events: usize,
         forbidden_events: usize,
     ) -> bool {
-        let Some(native) = self
-            .region
-            .storage
-            .as_ref()
-            .and_then(|storage| storage.first())
-        else {
+        let Some(native) = self.region.native_region() else {
             return false;
         };
         let events = native.mailbox.events.load(Ordering::Acquire);
@@ -1537,16 +1732,13 @@ impl CQueryWorkerOwner {
             return false;
         }
         let len = native.mailbox.frame_len.load(Ordering::Relaxed);
-        let Some(end) = REQUEST_BYTES.checked_add(len) else {
-            return false;
-        };
-        if !frame_length_allowed(len) || end > STORAGE_BYTES {
+        if !frame_length_allowed(len) {
             return false;
         }
         // SAFETY: READER_FRAME is acquire-observed, so the reader no longer
         // mutates these bytes; the fixed region remains owned through cleanup.
         let bytes = unsafe { native.bytes() };
-        let Ok(frame) = worker_frame::validate(&bytes[REQUEST_BYTES..end]) else {
+        let Ok(frame) = worker_frame::validate(&bytes[..len]) else {
             return false;
         };
         frame.project == request.project_id.as_str()
@@ -1565,19 +1757,13 @@ impl CQueryWorkerOwner {
     fn result_bytes(&self, len: usize) -> Result<&[u8]> {
         let native = self
             .region
-            .storage
-            .as_ref()
-            .and_then(|storage| storage.first())
+            .native_region()
             .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
         ensure!(frame_length_allowed(len), "NIR1_GRAPH_FRAME_LIMIT");
-        let end = REQUEST_BYTES
-            .checked_add(len)
-            .filter(|end| *end <= STORAGE_BYTES)
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_FRAME_LIMIT"))?;
         // SAFETY: READER_FRAME is acquire-observed before validation, and the
         // reader no longer mutates the frame buffer after publishing it.
         let bytes = unsafe { native.bytes() };
-        Ok(&bytes[REQUEST_BYTES..end])
+        Ok(&bytes[..len])
     }
 
     /// Kill then wait only for the bounded cleanup interval. The claim and
@@ -1586,12 +1772,7 @@ impl CQueryWorkerOwner {
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
-        if let Some(native) = self
-            .region
-            .storage
-            .as_ref()
-            .and_then(|storage| storage.first())
-        {
+        if let Some(native) = self.region.native_region() {
             native.cancel();
         }
         if let Some(reader) = session.reader.as_ref() {
@@ -1606,9 +1787,7 @@ impl CQueryWorkerOwner {
             self.poll_exit()?;
             let events = self
                 .region
-                .storage
-                .as_ref()
-                .and_then(|storage| storage.first())
+                .native_region()
                 .map(|native| native.mailbox.events.load(Ordering::Acquire))
                 .unwrap_or_default();
             if events & READER_EOF != 0 {
@@ -1707,13 +1886,7 @@ impl CQueryResultLease<'_> {
         let Some(session) = self.owner.session.as_ref() else {
             return false;
         };
-        let Some(native) = self
-            .owner
-            .region
-            .storage
-            .as_ref()
-            .and_then(|storage| storage.first())
-        else {
+        let Some(native) = self.owner.region.native_region() else {
             return false;
         };
         self.owner.region.result_len > 0
@@ -1745,6 +1918,7 @@ impl Drop for CQueryResultLease<'_> {
         self.owner.region.elapsed = None;
         if self.owner.session.is_some() && self.owner.stop_and_reap().is_err() {
             self.owner.region.quarantined = true;
+            self.owner.detach_quarantined_resources();
             return;
         }
         self.owner.region.prepared = false;
@@ -1753,41 +1927,99 @@ impl Drop for CQueryResultLease<'_> {
 }
 
 impl CQueryWorkerOwner {
+    fn detach_quarantined_resources(&mut self) {
+        if !self.region.quarantined
+            || (self.snapshot.is_none()
+                && self.region.claim.is_none()
+                && self.region.storage.is_none()
+                && self.session.is_none())
+        {
+            return;
+        }
+
+        let complete_child =
+            self.region.claim.is_some() && self.region.storage.is_some() && self.session.is_some();
+        let lifecycle = if complete_child {
+            self.snapshot
+                .as_ref()
+                .and_then(ActiveWorkspaceSnapshot::detach_c_query_quarantine)
+        } else {
+            None
+        };
+        if let Some(fence) = lifecycle {
+            drop(self.snapshot.take());
+            self.forget_detached_child(DetachedCQueryLifecycle::Quarantine { _fence: fence });
+            return;
+        }
+
+        if complete_child {
+            if let Some(snapshot) = self.snapshot.take() {
+                match snapshot.into_c_query_fallback_participant() {
+                    Ok(participant) => {
+                        self.forget_detached_child(DetachedCQueryLifecycle::Participant {
+                            _participant: participant,
+                        });
+                        return;
+                    }
+                    Err(snapshot) => self.snapshot = Some(snapshot),
+                }
+            }
+        }
+
+        // Ambiguous, released or uncounted participant, marker/fence winner,
+        // poisoned lifecycle lock, or any missing child resource: preserve the
+        // original authority pin and every resource fail-closed.
+        if let Some(snapshot) = self.snapshot.take() {
+            std::mem::forget(snapshot);
+        }
+        if let Some(claim) = self.region.claim.take() {
+            std::mem::forget(claim);
+        }
+        if let Some(storage) = self.region.storage.take() {
+            std::mem::forget(storage);
+        }
+        if let Some(session) = self.session.take() {
+            std::mem::forget(session);
+        }
+    }
+
+    fn forget_detached_child(&mut self, lifecycle: DetachedCQueryLifecycle) {
+        std::mem::forget(DetachedCQueryOwner {
+            _lifecycle: lifecycle,
+            _claim: self.region.claim.take(),
+            _storage: self.region.storage.take(),
+            _session: self.session.take(),
+        });
+        #[cfg(test)]
+        {
+            self.test_quarantine_detached = true;
+        }
+    }
+
     fn release_claim_after_retirement(&mut self) {
         if self.region.lease_held || self.session.is_some() {
             return;
         }
-        drop(self.region.storage.take());
         drop(self.snapshot.take());
         if let Some(claim) = self.region.claim.take() {
             claim.release();
         }
+        // The reservation owns the permit and is released after claim retirement.
+        // `session` can be absent only before spawn or after exit + EOF + reader join.
+        drop(self.region.storage.take());
     }
 }
 
 impl Drop for CQueryWorkerOwner {
     fn drop(&mut self) {
-        if self.session.is_some() && !self.region.quarantined {
-            if self.stop_and_reap().is_err() {
-                self.region.quarantined = true;
-            }
+        if self.session.is_some() && !self.region.quarantined && self.stop_and_reap().is_err() {
+            self.region.quarantined = true;
         }
         if self.region.lease_held {
             self.region.quarantined = true;
         }
         if self.region.quarantined {
-            if let Some(snapshot) = self.snapshot.take() {
-                std::mem::forget(snapshot);
-            }
-            if let Some(claim) = self.region.claim.take() {
-                std::mem::forget(claim);
-            }
-            if let Some(storage) = self.region.storage.take() {
-                std::mem::forget(storage);
-            }
-            if let Some(session) = self.session.take() {
-                std::mem::forget(session);
-            }
+            self.detach_quarantined_resources();
         } else {
             self.release_claim_after_retirement();
         }
@@ -1867,9 +2099,9 @@ fn encode_request(request: &Nir1GraphRequest, storage: &mut [u8]) -> Result<()> 
     Ok(())
 }
 
-/// The address points into the one-element Native reservation. The owner keeps
-/// that allocation alive until this thread is joined; on unproved cleanup it
-/// deliberately leaks the allocation before dropping the owner.
+/// The address points into the one-element Native reservation. The active or
+/// detached owner keeps that allocation alive until this thread is joined; on
+/// unproved cleanup the detached owner deliberately retains it process-wide.
 unsafe fn read_worker_pipe(
     mut stdout: impl Read,
     region_ptr: *const NativeRegion,
@@ -1883,7 +2115,7 @@ unsafe fn read_worker_pipe(
     }
 
     let mut ready = [0u8; 1];
-    if stdout.read_exact(&mut ready).is_err() || ready != [b'R'] {
+    if stdout.read_exact(&mut ready).is_err() || ready != *b"R" {
         region.publish(READER_PIPE_ERROR);
         drain_to_eof(&mut stdout, region, reader_timing);
         return;
@@ -1897,7 +2129,7 @@ unsafe fn read_worker_pipe(
     let len = {
         // SAFETY: the owner has stopped touching bytes before publishing
         // OWNER_REQUEST; the reader exclusively owns the buffer until FRAME.
-        let bytes = unsafe { region.bytes_mut() };
+        let bytes = unsafe { &mut *region.bytes_mut_ptr() };
         if stdout.read_exact(&mut bytes[..4]).is_err() {
             region.publish(READER_FAILED);
             drain_to_eof(&mut stdout, region, reader_timing);
@@ -1910,16 +2142,12 @@ unsafe fn read_worker_pipe(
         drain_to_eof(&mut stdout, region, reader_timing);
         return;
     }
-    let Some(end) = REQUEST_BYTES.checked_add(len) else {
-        region.publish(READER_FAILED);
-        drain_to_eof(&mut stdout, region, reader_timing);
-        return;
-    };
     {
-        // SAFETY: still the reader-owned buffer phase; publishing FRAME below
-        // transfers read-only access back to the Native owner.
-        let bytes = unsafe { region.bytes_mut() };
-        if stdout.read_exact(&mut bytes[REQUEST_BYTES..end]).is_err() {
+        // SAFETY: the request write completed before OWNER_REQUEST was
+        // published; the reader now reuses the same bytes for the result frame.
+        // Publishing FRAME below transfers read-only access back to the owner.
+        let bytes = unsafe { &mut *region.bytes_mut_ptr() };
+        if stdout.read_exact(&mut bytes[..len]).is_err() {
             region.publish(READER_FAILED);
             drain_to_eof(&mut stdout, region, reader_timing);
             return;
@@ -2000,7 +2228,7 @@ mod tests {
         wire.extend_from_slice(frame);
         wire.extend_from_slice(suffix);
 
-        let storage = reserve_storage().expect("reserve Native test region");
+        let storage = reserve_test_storage().expect("reserve local Native test region");
         let region = &storage[0];
         let timing = ReaderPublicationTiming::default();
         timing.begin_query(Instant::now());
@@ -2163,6 +2391,88 @@ mod tests {
     }
 
     #[test]
+    fn reader_reuses_request_bytes_after_release_handoff() -> Result<()> {
+        let request = Nir1GraphRequest {
+            project_id: "p".into(),
+            query_scene_id: "s".into(),
+            seed_entity_id: "e".into(),
+        };
+        let request_len = request_len(&request)?;
+        let frame = unavailable_test_frame("r");
+        let mut wire = vec![b'R'];
+        wire.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+        wire.extend_from_slice(&frame);
+        wire.extend_from_slice(worker_frame::TERMINAL_SUCCESS_COMMIT);
+
+        let storage = reserve_test_storage()?;
+        let native = &storage[0];
+        // SAFETY: the reader has not been signaled yet; this test is the owner.
+        unsafe {
+            let bytes = &mut *native.bytes_mut_ptr();
+            encode_request(&request, &mut bytes[..REQUEST_BYTES])?;
+            assert_eq!(
+                u16::from_le_bytes([bytes[0], bytes[1]]) as usize + 2,
+                request_len
+            );
+            assert_ne!(&bytes[..request_len], &frame[..request_len]);
+        }
+        native.set_parent_thread(thread::current());
+        // Models the owner's Release publication after its successful write_all.
+        native.request();
+        // SAFETY: the request handoff has completed and the test retains storage.
+        unsafe {
+            read_worker_pipe(
+                Cursor::new(wire),
+                native as *const NativeRegion,
+                &ReaderPublicationTiming::default(),
+            );
+        }
+
+        let events = native.mailbox.events.load(Ordering::Acquire);
+        assert!(result_wire_complete(events));
+        assert_eq!(
+            native.mailbox.frame_len.load(Ordering::Relaxed),
+            frame.len()
+        );
+        // SAFETY: READER_FRAME was acquire-observed and the synchronous reader ended.
+        let bytes = unsafe { native.bytes() };
+        assert_eq!(&bytes[..frame.len()], frame.as_slice());
+        let view = worker_frame::validate(&bytes[..frame.len()])?;
+        assert_eq!(view.project, request.project_id);
+        assert_eq!(view.scene, request.query_scene_id);
+        Ok(())
+    }
+
+    #[test]
+    fn native_static_slot_is_exclusive_and_resets_after_retirement() -> Result<()> {
+        let first = reserve_storage()?;
+        let region = first.region();
+        let address = region as *const NativeRegion;
+        // SAFETY: this test owns the process reservation and has no reader.
+        unsafe { (&mut *region.bytes_mut_ptr())[0] = 0xA5 };
+        region.mailbox.frame_len.store(17, Ordering::Relaxed);
+        region.set_parent_thread(thread::current());
+
+        assert!(reserve_storage().is_err());
+        assert_eq!(region.mailbox.frame_len.load(Ordering::Relaxed), 17);
+        // SAFETY: this test owns the process reservation and has no reader.
+        assert_eq!(unsafe { region.bytes() }[0], 0xA5);
+        drop(first);
+
+        let second = reserve_storage()?;
+        let region = second.region();
+        assert_eq!(address, region as *const NativeRegion);
+        assert_eq!(region.mailbox.events.load(Ordering::Acquire), 0);
+        assert_eq!(region.mailbox.frame_len.load(Ordering::Relaxed), 0);
+        // SAFETY: the exclusive reservation permits retiring the prior handle.
+        assert!(unsafe { (&*region.mailbox.parent_thread.get()).is_none() });
+        // SAFETY: this test owns the process reservation and has no reader.
+        assert_eq!(unsafe { region.bytes() }[0], 0);
+        drop(second);
+        Ok(())
+    }
+
+    #[test]
     fn native_region_reserves_metadata_and_bounds_request() -> Result<()> {
         assert_eq!(PARENT_BYTES, 1_572_864);
         assert_eq!(
@@ -2180,14 +2490,46 @@ mod tests {
             std::mem::size_of::<NativeRegion>(),
             MAILBOX_BYTES + STORAGE_BYTES
         );
+        let named_native_bytes = std::mem::size_of::<NativeRegion>()
+            + std::mem::size_of::<RegionControl>()
+            + child_session_bytes
+            + std::mem::size_of::<usize>()
+            + request_bytes;
+        assert_eq!(named_native_bytes, NATIVE_FIXED_BYTES);
+        assert_eq!(named_native_bytes, PARENT_BYTES - REQUEST_BYTES);
+        assert_eq!(NATIVE_OWNER_PAYLOAD_BUDGET_BYTES, REQUEST_BYTES);
+        assert!(native_owner_payload_fits(REQUEST_BYTES, 0, 0, 0));
+        assert!(native_owner_payload_fits(REQUEST_BYTES - 1, 1, 0, 0));
+        assert!(native_owner_payload_fits(REQUEST_BYTES - 2, 1, 1, 0));
+        assert!(native_owner_payload_fits(REQUEST_BYTES - 3, 1, 1, 1));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES - 2, 1, 1, 1));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES - 1, 1, 1, 1));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES, 1, 0, 0));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES + 1, 0, 0, 0));
+        assert!(!native_owner_payload_fits(usize::MAX, 1, 0, 0));
+        assert!(!native_owner_payload_fits(0, usize::MAX, 1, 0));
+        assert!(!native_owner_payload_fits(0, 0, usize::MAX, 1));
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                command_argument_payload_lower_bound(std::ffi::OsStr::new("é"), "🌹"),
+                Some(8)
+            );
+            assert_eq!(
+                command_argument_payload_lower_bound(std::ffi::OsStr::new("bad\0path"), "x"),
+                Some(3)
+            );
+        }
+        #[cfg(windows)]
         assert_eq!(
-            std::mem::size_of::<NativeRegion>()
-                + std::mem::size_of::<RegionControl>()
-                + child_session_bytes
-                + std::mem::size_of::<usize>()
-                + request_bytes,
+            command_argument_payload_lower_bound(std::ffi::OsStr::new("é"), "🌹"),
+            Some(6)
+        );
+        assert_eq!(
+            named_native_bytes + NATIVE_OWNER_PAYLOAD_BUDGET_BYTES,
             PARENT_BYTES
         );
+        assert_eq!(named_native_bytes + REQUEST_BYTES, PARENT_BYTES);
         assert_eq!(REQUEST_BYTES + FRAME_BYTES + metadata, PARENT_BYTES);
         assert!(REQUEST_BYTES + FRAME_BYTES + 1 + metadata > PARENT_BYTES);
         assert!(frame_length_allowed(FRAME_BYTES));
@@ -2226,18 +2568,19 @@ mod tests {
         assert!(error
             .to_string()
             .contains("NIR1_GRAPH_WORKER_REQUEST_CAPACITY_LIMIT"));
-        let storage = reserve_storage()?;
+        let storage = reserve_test_storage()?;
         assert_eq!(storage.len(), 1);
         assert_eq!(storage.capacity(), 1);
         let native = &storage[0];
-        // This exact one-element allocation holds mailbox, request and frame.
+        // The frame backing is the same size as before; request bytes overlay it.
+        assert_eq!(STORAGE_BYTES, FRAME_BYTES);
         assert_eq!(
             std::mem::size_of_val(native)
                 + std::mem::size_of::<RegionControl>()
                 + child_session_bytes
                 + std::mem::size_of::<usize>()
                 + request_bytes,
-            PARENT_BYTES
+            PARENT_BYTES - REQUEST_BYTES
         );
         native.set_parent_thread(thread::current());
         native.mailbox.frame_len.store(17, Ordering::Relaxed);
@@ -2248,13 +2591,13 @@ mod tests {
         assert_ne!(events & READER_FRAME, 0);
         assert_ne!(events & READER_EOF, 0);
         // SAFETY: no reader thread is active in this test.
-        let bytes = unsafe { native.bytes_mut() };
+        let bytes = unsafe { &mut *native.bytes_mut_ptr() };
         encode_request(&request, &mut bytes[..REQUEST_BYTES])?;
         assert_eq!(
             u16::from_le_bytes([bytes[0], bytes[1]]) as usize + 2,
             REQUEST_BYTES
         );
-        assert_eq!(bytes[REQUEST_BYTES..].len(), FRAME_BYTES);
+        assert_eq!(bytes.len(), FRAME_BYTES);
         let mut over_project = String::with_capacity(REQUEST_BYTES - 9);
         over_project.push_str(&request.project_id);
         over_project.push('p');

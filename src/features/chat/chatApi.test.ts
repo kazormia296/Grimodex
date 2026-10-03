@@ -37,6 +37,7 @@ vi.mock("@/db/schema", () => ({
     codexAnchorId: "codexAnchorId",
     snippetAnchorId: "snippetAnchorId",
     updatedAt: "updatedAt",
+    titleManual: "titleManual",
     projectId: "projectId",
   },
   chatMessages: { id: "id", sessionId: "sessionId", createdAt: "createdAt" },
@@ -105,6 +106,7 @@ import {
   addMessage,
   updateMessageMetadata,
   updateSessionTitle,
+  updateSessionTitleIfAutomatic,
   unpinStickyEntry,
   saveMessagePrompt,
   getMessagePrompt,
@@ -154,7 +156,8 @@ function mockSelectLimitChain(rows: Record<string, unknown>[]) {
 function mockUpdateChain() {
   const chain = {
     set: vi.fn().mockReturnThis(),
-    where: vi.fn().mockResolvedValue(undefined),
+    where: vi.fn().mockReturnThis(),
+    returning: vi.fn().mockResolvedValue([]),
   };
   mockDb.update.mockReturnValue(chain as never);
   return chain;
@@ -861,12 +864,43 @@ describe("chatApi - session/message persistence", () => {
   });
 
   describe("updateSessionTitle", () => {
-    it("updates the session title", async () => {
-      mockUpdateChain();
+    it("marks user-renamed titles as manual", async () => {
+      const chain = mockUpdateChain();
 
-      await updateSessionTitle("session-1", "新しいタイトル");
+      await updateSessionTitle("session-1", "手動タイトル");
 
-      expect(mockDb.update).toHaveBeenCalled();
+      expect(chain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "手動タイトル", titleManual: 1 }),
+      );
+      expect(chain.where).toHaveBeenCalledWith({
+        eq: ["id", "session-1"],
+      });
+    });
+
+    it("reports whether the conditional generated-title update matched", async () => {
+      const chain = mockUpdateChain();
+
+      await expect(
+        updateSessionTitleIfAutomatic("session-1", "自動タイトル"),
+      ).resolves.toBe(false);
+
+      expect(chain.set).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "自動タイトル" }),
+      );
+      expect(chain.set.mock.calls[0][0]).not.toHaveProperty("titleManual");
+      expect(chain.where).toHaveBeenCalledWith({
+        and: [{ eq: ["id", "session-1"] }, { eq: ["titleManual", 0] }],
+      });
+      expect(chain.returning).toHaveBeenCalledWith({ id: "id" });
+    });
+
+    it("returns true when an automatic title row was updated", async () => {
+      const chain = mockUpdateChain();
+      chain.returning.mockResolvedValueOnce([{ id: "session-1" }]);
+
+      await expect(
+        updateSessionTitleIfAutomatic("session-1", "自動タイトル"),
+      ).resolves.toBe(true);
     });
   });
 

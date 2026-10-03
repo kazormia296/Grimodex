@@ -344,7 +344,7 @@ fn process_narrative_maintenance_generation_seed() -> u64 {
 fn cursor_narrative_maintenance_generation() -> u64 {
     let seed = process_narrative_maintenance_generation_seed();
     let previous = NARRATIVE_MAINTENANCE_GENERATION_CURSOR
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             Some(if current == 0 {
                 seed
             } else {
@@ -1418,7 +1418,7 @@ impl Drop for NarrativeMaintenanceWaiterAdmission {
     fn drop(&mut self) {
         let _ = self
             .waiter_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
             });
     }

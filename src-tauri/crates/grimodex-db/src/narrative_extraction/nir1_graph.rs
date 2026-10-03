@@ -339,6 +339,12 @@ enum ReaderConnection {
     Closed,
 }
 
+enum QueryPath<'a> {
+    Reader,
+    Worker,
+    WorkerMaintenance(&'a mut dyn GraphWorkControl),
+}
+
 impl ReaderConnection {
     #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     fn as_ref(&self) -> Option<&Connection> {
@@ -615,7 +621,7 @@ impl Nir1GraphReader {
     fn register_with_worker_maintenance_observed(
         &mut self,
         project: &str,
-        mut observer: Option<&mut Nir1GraphRegistrationStage>,
+        observer: Option<&mut Nir1GraphRegistrationStage>,
         mut scratch_scope: impl FnMut(&mut dyn FnMut()) -> bool,
         seal_scratch: impl FnOnce() -> bool,
     ) -> Result<bool> {
@@ -637,7 +643,7 @@ impl Nir1GraphReader {
                     conn,
                     project,
                     control,
-                    observer.as_deref_mut(),
+                    observer,
                     &mut scratch_scope,
                 )
             },
@@ -699,8 +705,7 @@ impl Nir1GraphReader {
             QUERY_DEADLINE,
             QUERY_SQL_STEPS,
             None,
-            false,
-            None,
+            QueryPath::Reader,
         );
         self.connection = ReaderConnection::Owned(conn);
         result
@@ -716,8 +721,7 @@ impl Nir1GraphReader {
             QUERY_DEADLINE,
             QUERY_SQL_STEPS,
             None,
-            true,
-            None,
+            QueryPath::Worker,
         );
         self.connection = ReaderConnection::Owned(conn);
         result
@@ -756,8 +760,7 @@ impl Nir1GraphReader {
                     duration,
                     QUERY_SQL_STEPS,
                     None,
-                    true,
-                    Some(control),
+                    QueryPath::WorkerMaintenance(control),
                 )
             },
         )?;
@@ -766,6 +769,7 @@ impl Nir1GraphReader {
             .into_result()
     }
 
+    #[cfg(test)]
     fn query_with_deadline(
         &mut self,
         request: &Nir1GraphRequest,
@@ -773,8 +777,14 @@ impl Nir1GraphReader {
         sql_steps: u64,
     ) -> Result<Nir1GraphResponse> {
         let conn = self.take_owned_connection()?;
-        let result = self
-            .query_with_deadline_observed(&conn, request, duration, sql_steps, None, false, None);
+        let result = self.query_with_deadline_observed(
+            &conn,
+            request,
+            duration,
+            sql_steps,
+            None,
+            QueryPath::Reader,
+        );
         self.connection = ReaderConnection::Owned(conn);
         result
     }
@@ -805,8 +815,7 @@ impl Nir1GraphReader {
             duration,
             sql_steps,
             Some(&mut observation),
-            false,
-            None,
+            QueryPath::Reader,
         );
         self.connection = ReaderConnection::Owned(conn);
         (result, observation)
@@ -819,10 +828,14 @@ impl Nir1GraphReader {
         duration: Duration,
         sql_steps: u64,
         mut _observation: Option<&mut StageObservation>,
-        worker_path: bool,
-        external_owner: Option<&mut dyn GraphWorkControl>,
+        path: QueryPath<'_>,
     ) -> Result<Nir1GraphResponse> {
         let deadline = Instant::now() + duration;
+        let (worker_path, external_owner) = match path {
+            QueryPath::Reader => (false, None),
+            QueryPath::Worker => (true, None),
+            QueryPath::WorkerMaintenance(owner) => (true, Some(owner)),
+        };
         validate_request(request)?;
         if self.check().is_err() {
             return Ok(unavailable_response(request, "reader-unavailable"));
@@ -1855,7 +1868,7 @@ fn query_in_snapshot(
             }
             usage.admit_retained(
                 retained_string(&revision_id)
-                    + retained_string(&edge_id)
+                    + retained_string(edge_id)
                     + std::mem::size_of::<(String, String)>()
                     + std::mem::size_of::<Nir1GraphEdge>()
                     + 4 * std::mem::size_of::<usize>(),

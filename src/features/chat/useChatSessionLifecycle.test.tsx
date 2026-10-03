@@ -43,6 +43,7 @@ function lifecycleOptions(
     chatScope: "scene",
     scopeAnchorId: null,
     activeSessionId: mocks.state.activeSessionId,
+    isStreaming: false,
     includeBodies: true,
     includeMapBoard: false,
     mapBoardId: null,
@@ -147,6 +148,37 @@ describe("useChatSessionLifecycle", () => {
     await waitFor(() =>
       expect(selectSession).toHaveBeenCalledWith(session1.id),
     );
+  });
+
+  it("loads the new folder history after its old-scope stream drains", async () => {
+    const loadSessions = vi.fn(async () => true);
+    const { rerender } = renderHook(
+      ({
+        scopeAnchorId,
+        isStreaming,
+      }: {
+        scopeAnchorId: string;
+        isStreaming: boolean;
+      }) =>
+        useChatSessionLifecycle(
+          lifecycleOptions({
+            chatScope: "folder",
+            scopeAnchorId,
+            isStreaming,
+            loadSessions,
+          }),
+        ),
+      { initialProps: { scopeAnchorId: "folder-a", isStreaming: false } },
+    );
+
+    await waitFor(() => expect(loadSessions).toHaveBeenCalledTimes(1));
+    loadSessions.mockClear();
+    rerender({ scopeAnchorId: "folder-b", isStreaming: true });
+    expect(loadSessions).not.toHaveBeenCalled();
+
+    rerender({ scopeAnchorId: "folder-b", isStreaming: false });
+    await waitFor(() => expect(loadSessions).toHaveBeenCalledTimes(1));
+    expect(loadSessions).toHaveBeenCalledWith("folder-b", undefined, undefined);
   });
 
   it("does not redundantly select null when the refreshed list is empty", async () => {

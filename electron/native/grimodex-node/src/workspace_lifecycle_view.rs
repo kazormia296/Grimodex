@@ -10,6 +10,7 @@
 use std::sync::Mutex;
 
 use grimodex_db::state::{PinnedWorkspaceDb, WorkspaceState};
+use grimodex_db::workspace_lifecycle::JoinedTransitionOutcome;
 use grimodex_db::AppResult;
 use grimodex_db::{
     AdmissionKind, AdmissionOutcome, AdmissionTicket, ContentEffect, ControlGeneration,
@@ -269,7 +270,33 @@ impl WorkspaceLifecycleViewAdapter {
         kind: AdmissionKind,
     ) -> AppResult<AdmissionOutcome> {
         let outcome = self.core.begin_transition(kind)?;
-        if let AdmissionOutcome::Admitted(ticket) = &outcome {
+        self.record_transition_admission(kind, &outcome)?;
+        Ok(outcome)
+    }
+
+    pub(crate) fn try_begin_open_transition_for_target(
+        &self,
+        locator: &str,
+        workspace_id: Option<&str>,
+        database_file_identity: Option<&str>,
+        recovery_descriptor_id: Option<RecoveryDescriptorId>,
+    ) -> AppResult<AdmissionOutcome> {
+        let outcome = self.core.begin_open_transition_for_target(
+            locator,
+            workspace_id,
+            database_file_identity,
+            recovery_descriptor_id,
+        )?;
+        self.record_transition_admission(AdmissionKind::Open, &outcome)?;
+        Ok(outcome)
+    }
+
+    fn record_transition_admission(
+        &self,
+        kind: AdmissionKind,
+        outcome: &AdmissionOutcome,
+    ) -> AppResult<()> {
+        if let AdmissionOutcome::Admitted(ticket) = outcome {
             let mut projection = self.lock_projection()?;
             projection.last_terminal_kind = None;
             if matches!(kind, AdmissionKind::Open | AdmissionKind::Restore) {
@@ -277,7 +304,7 @@ impl WorkspaceLifecycleViewAdapter {
             }
             projection.transition_ticket = Some(ticket.clone());
         }
-        Ok(outcome)
+        Ok(())
     }
 
     pub(crate) fn try_begin_transition_kind_for_recovery(
@@ -681,16 +708,24 @@ impl WorkspaceLifecycleViewAdapter {
             // worker at this boundary. Mark that Join observation before the
             // core can publish Ready, Unchanged, or a recovery descriptor.
             self.core.mark_transition_joined(&ticket)?;
-            if self.core.shutdown_requested()? {
-                self.core.abandon_transition_for_shutdown(&ticket)?;
-                let mut projection = self.lock_projection()?;
-                projection.last_terminal_kind = None;
-                projection.transition_ticket = None;
-                // `projected_view` acquires the same mutex.  The shutdown
-                // path already owns its guard, so route through the
-                // guard-aware projector instead of attempting a recursive
-                // lock while publishing the terminal transition.
-                return self.projected_view_with_projection(&mut projection);
+            match self.core.resolve_joined_transition(&ticket)? {
+                JoinedTransitionOutcome::Shutdown => {
+                    let mut projection = self.lock_projection()?;
+                    projection.last_terminal_kind = None;
+                    projection.transition_ticket = None;
+                    // `projected_view` acquires the same mutex. The shutdown
+                    // path already owns its guard, so use the guard-aware
+                    // projector while publishing the terminal transition.
+                    return self.projected_view_with_projection(&mut projection);
+                }
+                JoinedTransitionOutcome::RecoveryRequired => {
+                    self.lock_projection()?.previous_ready_token = None;
+                    let mut projection = self.lock_projection()?;
+                    projection.last_terminal_kind = Some(LifecycleTerminalKind::RecoveryRequired);
+                    projection.transition_ticket = None;
+                    return self.projected_view_with_projection(&mut projection);
+                }
+                JoinedTransitionOutcome::Continue => {}
             }
             if !workspace.safe_mode.is_active()
                 && ticket.original_binding.is_none()
@@ -739,6 +774,7 @@ impl WorkspaceLifecycleViewAdapter {
                     original.locator == binding.locator
                         && original.workspace_id == binding.workspace_id
                         && original.authority_instance == binding.authority_instance
+                        && original.same_main_database_file(&binding)
                 }) {
                     self.core.complete_unchanged(
                         &ticket,
@@ -965,8 +1001,12 @@ impl WorkspaceLifecycleViewAdapter {
 }
 
 fn authority_matches_live_binding(binding: &LiveBinding, authority: &PinnedWorkspaceDb) -> bool {
+    let Ok(database_file_identity) = authority.main_database_file_identity() else {
+        return false;
+    };
     if binding.authority_instance != authority.identity()
-        || binding.locator != authority.path().to_string_lossy()
+        || binding.locator.as_ref() != authority.path().to_string_lossy().as_ref()
+        || !binding.matches_main_database_file_identity(&database_file_identity)
     {
         return false;
     }
@@ -980,7 +1020,7 @@ fn authority_matches_live_binding(binding: &LiveBinding, authority: &PinnedWorks
                 .and_then(serde_json::Value::as_str)
                 .map(ToOwned::to_owned)
         });
-    workspace_id.as_deref() == Some(binding.workspace_id.as_str())
+    workspace_id.as_deref() == Some(binding.workspace_id.as_ref())
 }
 
 fn live_binding(workspace: &WorkspaceState, recovery_generation: u64) -> AppResult<LiveBinding> {
@@ -1009,16 +1049,16 @@ fn live_binding(workspace: &WorkspaceState, recovery_generation: u64) -> AppResu
                 metadata_path.display()
             )
         })?;
-    // The durable workspace identity is intentionally not exposed on the main
-    // wire.  The canonical locator and metadata id are read from the already
-    // verified authority; authority_instance still distinguishes a same-path
-    // reopen.
+    // The durable workspace and physical database identities stay internal;
+    // LiveBinding skips the latter when serialized to preserve its wire shape.
+    let database_file_identity = authority.main_database_file_identity()?;
     Ok(LiveBinding::new(
-        locator.clone(),
+        locator,
         workspace_id,
         authority.identity(),
         recovery_generation.max(1),
-    ))
+    )
+    .with_main_database_file_identity(database_file_identity))
 }
 
 #[allow(dead_code)]
@@ -1094,8 +1134,8 @@ mod tests {
         )
         .expect("workspace metadata");
         let authority = grimodex_db::state::WorkspaceAuthority::from_database_for_test(
-            grimodex_db::Database::new(std::path::Path::new(":memory:")).expect("database"),
-            path,
+            grimodex_db::Database::new(&path.join("grimodex.db")).expect("database"),
+            path.clone(),
         )
         .expect("authority");
         workspace.inner = Mutex::new(Some(grimodex_db::state::ActiveWorkspace::new(authority)));
@@ -1107,6 +1147,8 @@ mod tests {
             Some(transition_token.as_str())
         );
         assert!(ready.revision > transition.revision);
+        drop(workspace);
+        std::fs::remove_dir_all(path).expect("remove ready workspace fixture");
     }
 
     #[test]

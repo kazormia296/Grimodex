@@ -300,7 +300,8 @@ impl GenerationRecoveryCoordinator {
         }
         ensure!(
             live_binding.authority_instance == workspace.authority.identity()
-                && live_binding.locator == workspace.authority.path().to_string_lossy(),
+                && live_binding.locator.as_ref()
+                    == workspace.authority.path().to_string_lossy().as_ref(),
             "NIR1_GENERATION_RECOVERY_BINDING_MISMATCH"
         );
         let Some(single_flight) = GenerationRecoverySingleFlight::acquire(&state, &live_binding)
@@ -339,10 +340,9 @@ impl GenerationRecoveryCoordinator {
                 MAX_RECOVERY_PAGE_SIZE,
                 budget.operation(),
             )
-            .map_err(|error| {
+            .inspect_err(|_| {
                 #[cfg(test)]
                 eprintln!("NIR1_RECOVERY_BOUNDED_OP=project-page");
-                error
             })?;
             summary.project_pages += 1;
             if projects.is_empty() {
@@ -361,10 +361,9 @@ impl GenerationRecoveryCoordinator {
                         MAX_RECOVERY_PAGE_SIZE,
                         budget.operation(),
                     )
-                    .map_err(|error| {
+                    .inspect_err(|_| {
                         #[cfg(test)]
                         eprintln!("NIR1_RECOVERY_BOUNDED_OP=attempt-page");
-                        error
                     })?;
                     summary.attempt_pages += 1;
                     if attempts.is_empty() {
@@ -378,10 +377,9 @@ impl GenerationRecoveryCoordinator {
                             now_ms()?,
                             budget.operation(),
                         )
-                        .map_err(|error| {
+                        .inspect_err(|_| {
                             #[cfg(test)]
                             eprintln!("NIR1_RECOVERY_BOUNDED_OP=recover-attempt");
-                            error
                         })?;
                         summary.recovered += 1;
                         after_attempt_id = Some(attempt_id);

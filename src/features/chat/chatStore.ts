@@ -223,8 +223,24 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     runtime: {
       hasPendingCompletedTurnPersistence: () =>
         turnRuntime.hasPendingCompletedTurnPersistence(),
+      isActiveAnchoredChatStream: () => {
+        const turn = turnRuntime.coordinator.current();
+        const current = get();
+        return Boolean(
+          turn?.surface === "chat" &&
+          turn.phase === "streaming" &&
+          turn.transportStarted &&
+          turn.transport === "http" &&
+          (turn.request.scope === "folder" ||
+            turn.request.scope === "codex" ||
+            turn.request.scope === "snippet") &&
+          turn.request.scope === current.chatScope &&
+          turn.request.scopeAnchorId === current.scopeAnchorId,
+        );
+      },
       notifyPendingCompletedTurnPersistence: () =>
         toast.error(i18next.t("chat.pendingCompletedTurnPersistence")),
+
       resetRecallPromote: () => resetRecallPromote(recallPromoteTracker),
     },
   }),

@@ -3,7 +3,7 @@
 //! napi 側は `Backend` の `AppState` でこの型をそのまま保持する。
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::error::{AppError, AppResult};
@@ -20,18 +20,23 @@ use crate::Database;
 ///
 /// Background tasks must pin [`Arc<WorkspaceAuthority>`] (via
 /// [`active_workspace_snapshot`] / [`active_database`]), never a bare
-/// `Arc<Database>`. Dropping the last authority Arc releases the lease and
-/// allows cross-process exclusive migration / restore.
+/// `Arc<Database>`. Dropping the last authority Arc releases the DB/index;
+/// the shared lease normally follows it, except a detached cleanup-unproved
+/// child claim may retain the separate lease/slot fence until process exit.
 pub struct WorkspaceAuthority {
     db: Database,
     path: PathBuf,
-    lease: WorkspaceLease,
-    identity: u64,
-    // The one-query child slot belongs to the exact Native workspace authority.
-    // It stays closed if worker exit/pipe EOF cannot be proved.
-    c_query_child_claimed: std::sync::atomic::AtomicBool,
+    retention: Arc<WorkspaceRetentionFence>,
     nir_chronicle_index:
         crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime,
+}
+
+/// The exact file lease and one-child slot can outlive the DB/index authority
+/// only while a cleanup-unproved C-query is quarantined.
+struct WorkspaceRetentionFence {
+    lease: WorkspaceLease,
+    identity: u64,
+    c_query_child_claimed: AtomicBool,
 }
 
 static NEXT_WORKSPACE_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
@@ -46,9 +51,11 @@ impl WorkspaceAuthority {
         Self {
             db,
             path,
-            lease,
-            identity,
-            c_query_child_claimed: std::sync::atomic::AtomicBool::new(false),
+            retention: Arc::new(WorkspaceRetentionFence {
+                lease,
+                identity,
+                c_query_child_claimed: AtomicBool::new(false),
+            }),
             nir_chronicle_index,
         }
     }
@@ -62,22 +69,53 @@ impl WorkspaceAuthority {
     }
 
     pub fn lease(&self) -> &WorkspaceLease {
-        &self.lease
+        &self.retention.lease
     }
 
     /// Monotonic process-local authority instance identity. Unlike an Arc
     /// address, it cannot be reused when a same-path restore drops and
     /// replaces the previous authority.
     pub fn identity(&self) -> u64 {
-        self.identity
+        self.retention.identity
+    }
+
+    /// Stable identity of this authority's opened SQLite main database file.
+    /// This stays internal to Native lifecycle checks and is never serialized.
+    #[doc(hidden)]
+    pub fn main_database_file_identity(&self) -> anyhow::Result<String> {
+        let path = self.db.with_conn(|conn| {
+            let path: String = conn.query_row(
+                "SELECT file FROM pragma_database_list WHERE name = 'main'",
+                [],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                !path.trim().is_empty(),
+                "physical main database identity is unavailable"
+            );
+            Ok(PathBuf::from(path))
+        })?;
+        Self::database_file_identity_for_path(&path)
+    }
+
+    /// Capture a target's stable file identity before Native Open admission.
+    /// Missing/unavailable identity is handled fail-closed by a live quarantine.
+    #[doc(hidden)]
+    pub fn database_file_identity_for_path(path: &Path) -> anyhow::Result<String> {
+        #[cfg(not(any(unix, windows)))]
+        anyhow::bail!("physical main database identity is unavailable on this platform");
+
+        #[cfg(any(unix, windows))]
+        crate::narrative_extraction::sqlite_database_file_identity(path)
     }
 
     pub(crate) fn claim_c_query_child(self: &Arc<Self>) -> Option<CQueryChildClaim> {
-        self.c_query_child_claimed
+        self.retention
+            .c_query_child_claimed
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()
             .map(|_| CQueryChildClaim {
-                authority: Arc::clone(self),
+                retention: Arc::clone(&self.retention),
             })
     }
 
@@ -96,14 +134,15 @@ impl WorkspaceAuthority {
 }
 
 /// Never released by Drop: only a proved exit+EOF and a dropped result lease
-/// allow the owner to reopen this workspace's child admission. A failed
-/// cleanup leaves the authority pinned and the slot closed instead.
+/// allow the owner to reopen this workspace's child admission. Cleanup-unproved
+/// detachment can release the DB/index authority while this exact lease/slot
+/// fence remains pinned; if detachment is ambiguous, the whole owner is kept.
 pub(crate) struct CQueryChildClaim {
-    authority: Arc<WorkspaceAuthority>,
+    retention: Arc<WorkspaceRetentionFence>,
 }
 impl CQueryChildClaim {
     pub(crate) fn release(self) {
-        self.authority
+        self.retention
             .c_query_child_claimed
             .store(false, Ordering::Release);
     }
@@ -210,6 +249,42 @@ impl ActiveWorkspaceSnapshot {
             .ok_or_else(|| anyhow::anyhow!("NEX_WORKSPACE_BINDING_UNAVAILABLE"))?;
         self._participant.with_current_binding(binding, || ())?;
         Ok(())
+    }
+
+    pub(crate) fn c_query_identity_payload_byte_len(&self) -> Option<usize> {
+        self.binding.as_ref()?.c_query_identity_payload_byte_len()
+    }
+
+    pub(crate) fn c_query_authority_path_capacity(&self) -> usize {
+        self.authority.path.capacity()
+    }
+
+    pub(crate) fn detach_c_query_quarantine(
+        &self,
+    ) -> Option<crate::workspace_lifecycle::WorkspaceQuarantineFence> {
+        self._participant
+            .detach_c_query_quarantine(self.binding.as_ref()?)
+    }
+
+    /// Drop this snapshot's authority/binding references but retain its exact
+    /// lifecycle participant only while the core still counts it as a safe
+    /// pre-I/O drain barrier. Refusal returns the intact snapshot.
+    pub(crate) fn into_c_query_fallback_participant(
+        self,
+    ) -> Result<crate::workspace_lifecycle::WorkspaceParticipant, Self> {
+        let Self {
+            authority,
+            binding,
+            _participant,
+        } = self;
+        match _participant.try_retain_for_c_query_fallback() {
+            Ok(_participant) => Ok(_participant),
+            Err(_participant) => Err(Self {
+                authority,
+                binding,
+                _participant,
+            }),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -732,6 +807,132 @@ mod tests {
         assert!(error.to_string().contains("WORKSPACE_SWITCHING"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn main_database_file_identity_matches_directory_symlink_alias() -> anyhow::Result<()> {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-state-file-identity-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&path)?;
+        let db = Database::new(&path.join("grimodex.db"))?;
+        let authority = WorkspaceAuthority::from_database_for_test(db, path.clone())?;
+        let identity = authority.main_database_file_identity()?;
+        let alias = path.with_file_name(format!(
+            "{}-alias",
+            path.file_name().expect("unique temp dir").to_string_lossy()
+        ));
+        std::os::unix::fs::symlink(&path, &alias)?;
+        let alias_path = alias.join("grimodex.db");
+        let alias_identity = WorkspaceAuthority::database_file_identity_for_path(&alias_path)?;
+        assert_eq!(identity, alias_identity);
+        let hard_link = path.with_file_name(format!(
+            "{}-hard-link.db",
+            path.file_name().expect("unique temp dir").to_string_lossy()
+        ));
+        std::fs::hard_link(path.join("grimodex.db"), &hard_link)?;
+        let hard_link_identity = WorkspaceAuthority::database_file_identity_for_path(&hard_link)?;
+        assert_eq!(identity, hard_link_identity);
+
+        drop(authority);
+        std::fs::remove_file(alias)?;
+        std::fs::remove_file(hard_link)?;
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    fn child_claim_retains_file_lease_without_retaining_database_authority() {
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-state-retention-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        let authority =
+            WorkspaceAuthority::from_database_for_test(db, path.clone()).expect("test authority");
+        let weak = Arc::downgrade(&authority);
+        let claim = authority.claim_c_query_child().expect("child slot");
+        assert!(authority.claim_c_query_child().is_none());
+
+        drop(authority);
+        assert!(
+            weak.upgrade().is_none(),
+            "claim must not retain DB/index authority"
+        );
+        assert!(
+            crate::workspace_lease::acquire_exclusive(&path, std::time::Duration::ZERO).is_err(),
+            "detached child claim must retain its original shared file lease"
+        );
+
+        claim.release();
+        crate::workspace_lease::acquire_exclusive(&path, std::time::Duration::ZERO)
+            .expect("proved claim release drops the shared file lease");
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn active_workspace_snapshot_shares_live_binding_payloads() {
+        let state = workspace_state_with_db();
+        let (locator, authority_instance) = {
+            let workspace = state.inner.lock().expect("workspace lock");
+            let authority = &workspace.as_ref().expect("active workspace").authority;
+            (
+                authority.path().to_string_lossy().into_owned(),
+                authority.identity(),
+            )
+        };
+        let workspace_id = "w".repeat(16_384);
+        let binding = LiveBinding::new(locator, workspace_id, authority_instance, 1);
+        let core = state.lifecycle_core();
+        core.set_ready(binding.clone())
+            .expect("long-ID binding ready");
+
+        let snapshot = active_workspace_snapshot(&state).expect("workspace snapshot");
+        let captured = snapshot.binding.as_ref().expect("Ready binding");
+        let lifecycle_snapshot = core.snapshot().expect("lifecycle snapshot");
+        let LifecycleState::Ready(ready_binding) = lifecycle_snapshot.state else {
+            panic!("expected Ready binding");
+        };
+
+        assert_eq!(captured, &binding);
+        assert_eq!(captured.workspace_id.len(), 16_384);
+        assert!(Arc::ptr_eq(&binding.locator, &captured.locator));
+        assert!(Arc::ptr_eq(&binding.workspace_id, &captured.workspace_id));
+        assert!(Arc::ptr_eq(&ready_binding.locator, &captured.locator));
+        assert!(Arc::ptr_eq(
+            &ready_binding.workspace_id,
+            &captured.workspace_id
+        ));
+        let separately_allocated = LiveBinding::new(
+            captured.locator.as_ref(),
+            captured.workspace_id.as_ref(),
+            authority_instance,
+            1,
+        );
+        assert_eq!(captured, &separately_allocated);
+        assert!(!Arc::ptr_eq(
+            &captured.workspace_id,
+            &separately_allocated.workspace_id
+        ));
+
+        let serialized = serde_json::to_value(captured).expect("serialize binding");
+        let fields = serialized.as_object().expect("binding object");
+        assert_eq!(fields.len(), 4);
+        assert_eq!(
+            serialized["locator"].as_str(),
+            Some(captured.locator.as_ref())
+        );
+        assert_eq!(
+            serialized["workspace_id"].as_str(),
+            Some(captured.workspace_id.as_ref())
+        );
+        assert_eq!(
+            serialized["authority_instance"].as_u64(),
+            Some(authority_instance)
+        );
+        assert_eq!(serialized["recovery_generation"].as_u64(), Some(1));
+    }
+
     #[test]
     fn active_workspace_snapshot_pins_authority_including_lease() {
         let state = workspace_state_with_db();
@@ -765,5 +966,43 @@ mod tests {
             "snapshot must keep shared lease alive after workspace swap"
         );
         drop(snapshot);
+    }
+
+    #[test]
+    fn c_query_fallback_split_drops_owner_authority_and_keeps_transition_barrier() {
+        let state = workspace_state_with_db();
+        let core = state.lifecycle_core();
+        let authority_weak = {
+            let workspace = state.inner.lock().expect("workspace lock");
+            Arc::downgrade(&workspace.as_ref().expect("active workspace").authority)
+        };
+        let snapshot = active_workspace_snapshot(&state).expect("snapshot");
+        let participant = match snapshot.into_c_query_fallback_participant() {
+            Ok(participant) => participant,
+            Err(_) => panic!("live participant must be transferable"),
+        };
+        assert_eq!(core.workspace_participant_count().expect("count"), 1);
+        assert!(authority_weak
+            .upgrade()
+            .is_some_and(|authority| Arc::strong_count(&authority) == 2));
+
+        let ticket = match core
+            .begin_transition(crate::workspace_lifecycle::AdmissionKind::Open)
+            .expect("Open admission")
+        {
+            crate::workspace_lifecycle::AdmissionOutcome::Admitted(ticket) => ticket,
+            crate::workspace_lifecycle::AdmissionOutcome::NotAdmitted { .. } => {
+                panic!("Open must wait for the retained participant")
+            }
+        };
+        assert!(matches!(
+            core.physical_exclusive_for_ticket(&ticket),
+            Err(crate::workspace_lifecycle::LifecycleError::ActiveOperations)
+        ));
+        drop(participant);
+        let exclusive = core
+            .physical_exclusive_for_ticket(&ticket)
+            .expect("retired participant permits protected transition");
+        drop(exclusive);
     }
 }
