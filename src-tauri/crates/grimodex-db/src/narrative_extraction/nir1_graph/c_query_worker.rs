@@ -355,6 +355,12 @@ pub(super) fn command_argument_payload_lower_bound(
     }
 }
 
+/// Payload lower bound for Windows Command's separately-owned program OsString.
+#[cfg(any(windows, test))]
+pub(super) fn command_program_os_string_payload_lower_bound(program: &std::ffi::OsStr) -> usize {
+    program.as_encoded_bytes().len()
+}
+
 #[cfg(unix)]
 pub(super) fn command_executable_and_argv_payload_lower_bound(
     worker_path: &std::ffi::OsStr,
@@ -793,7 +799,10 @@ impl CQueryWorkerOwner {
         let command_executable_payload_bytes =
             command_executable_and_argv_payload_lower_bound(worker.as_os_str())
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        let command_executable_payload_bytes =
+            command_program_os_string_payload_lower_bound(worker.as_os_str());
+        #[cfg(not(any(unix, windows)))]
         let command_executable_payload_bytes = 0;
         ensure!(
             native_owner_payload_fits(
@@ -2561,6 +2570,26 @@ mod tests {
                 Some(0)
             );
         }
+        assert_eq!(
+            command_program_os_string_payload_lower_bound(std::ffi::OsStr::new("w🌹")),
+            "w🌹".len()
+        );
+        let program_payload =
+            command_program_os_string_payload_lower_bound(std::ffi::OsStr::new("worker"));
+        assert!(native_owner_payload_fits(
+            REQUEST_BYTES - program_payload,
+            0,
+            0,
+            0,
+            program_payload
+        ));
+        assert!(!native_owner_payload_fits(
+            REQUEST_BYTES - program_payload + 1,
+            0,
+            0,
+            0,
+            program_payload
+        ));
         #[cfg(windows)]
         assert_eq!(
             command_argument_payload_lower_bound(std::ffi::OsStr::new("é"), "🌹"),

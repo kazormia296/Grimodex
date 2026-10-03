@@ -34,6 +34,8 @@ enum Q2WorkerScenario {
     OversizedWorkerPath,
     #[cfg(target_os = "linux")]
     CommandExecutablePathLowerBound,
+    #[cfg(windows)]
+    CommandProgramOsString,
     OversizedAuthorityPath,
     OversizedCommandProjectId,
     StartupRegistrationRefused,
@@ -98,6 +100,20 @@ fn long_worker_symlink(directory: &Path, worker: &Path) -> Result<PathBuf> {
         "long worker symlink target changed"
     );
     Ok(link)
+}
+
+#[cfg(windows)]
+fn long_command_program_path() -> PathBuf {
+    const PATH_BYTES: usize = 4_300;
+    let component = "x".repeat(200);
+    let mut path = String::with_capacity(PATH_BYTES);
+    path.push_str(r"\\?\C:\");
+    while path.len() + component.len() + 1 + "worker.exe".len() <= PATH_BYTES {
+        path.push_str(&component);
+        path.push('\\');
+    }
+    path.push_str("worker.exe");
+    PathBuf::from(path)
 }
 
 struct Fixture {
@@ -659,6 +675,13 @@ fn native_worker_refuses_over_budget_worker_path_before_native_reservation() -> 
 #[ignore = "requires the official Q2 preseed and a built normal worker binary"]
 fn native_worker_refuses_command_executable_payload_before_claim() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::CommandExecutablePathLowerBound)
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore = "requires the official Q2 preseed"]
+fn native_worker_refuses_command_program_os_string_before_claim() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::CommandProgramOsString)
 }
 
 #[test]
@@ -1544,7 +1567,14 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     drop(reader);
 
     if scenario != Q2WorkerScenario::ReaderOnly {
-        let worker_path = if scenario == Q2WorkerScenario::OversizedWorkerPath {
+        #[cfg(windows)]
+        let command_program_path =
+            (scenario == Q2WorkerScenario::CommandProgramOsString).then(long_command_program_path);
+        #[cfg(not(windows))]
+        let command_program_path: Option<PathBuf> = None;
+        let worker_path = if let Some(path) = command_program_path {
+            path
+        } else if scenario == Q2WorkerScenario::OversizedWorkerPath {
             let mut path = PathBuf::with_capacity(super::c_query_worker::REQUEST_BYTES + 1);
             path.push(&directory.0);
             path.push("must-not-spawn-worker");
@@ -1622,6 +1652,60 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             .switching
             .core()
             .set_ready(original_binding.clone())?;
+
+        #[cfg(windows)]
+        if scenario == Q2WorkerScenario::CommandProgramOsString {
+            let snapshot = active_workspace_snapshot(&native_state)?;
+            let binding_payload_bytes = original_binding_payload_bytes
+                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
+            let worker_path_bytes = worker_path.as_os_str().as_encoded_bytes().len();
+            ensure!(
+                worker_path_bytes >= 4_000,
+                "regression requires a long synthetic Windows program path"
+            );
+            let authority_path_capacity = snapshot.c_query_authority_path_capacity();
+            let command_argument_bytes =
+                super::c_query_worker::command_argument_payload_lower_bound(
+                    snapshot.path().as_os_str(),
+                    &request.project_id,
+                )
+                .ok_or_else(|| anyhow::anyhow!("command argument lower bound unavailable"))?;
+            let existing_terms = binding_payload_bytes
+                .checked_add(worker_path.capacity())
+                .and_then(|bytes| bytes.checked_add(authority_path_capacity))
+                .and_then(|bytes| bytes.checked_add(command_argument_bytes))
+                .ok_or_else(|| anyhow::anyhow!("existing owner terms overflowed"))?;
+            let program_terms =
+                super::c_query_worker::command_program_os_string_payload_lower_bound(
+                    worker_path.as_os_str(),
+                );
+            ensure!(
+                existing_terms <= super::c_query_worker::REQUEST_BYTES
+                    && existing_terms
+                        .checked_add(program_terms)
+                        .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
+                "only the Command-owned program OsString should push this path over the residual"
+            );
+            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
+            let error = owner
+                .prepare(&request.project_id)
+                .expect_err("program OsString lower bound must refuse before child claim");
+            ensure!(
+                error
+                    .to_string()
+                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
+                "program OsString payload was not refused by the pre-claim guard: {error:#}"
+            );
+            ensure!(
+                owner.capacity_refusal_left_no_resources_for_test(),
+                "program OsString refusal acquired claim, Native permit/storage, or child"
+            );
+            drop(original_binding);
+            eprintln!(
+                "Native Q2 owner refused a synthetic long Windows program path before claim, permit, storage, or spawn"
+            );
+            return Ok(());
+        }
 
         #[cfg(target_os = "linux")]
         if scenario == Q2WorkerScenario::CommandExecutablePathLowerBound {
