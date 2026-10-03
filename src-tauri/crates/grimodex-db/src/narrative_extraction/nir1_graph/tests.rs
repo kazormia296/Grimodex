@@ -14,7 +14,7 @@ use crate::workspace_lifecycle::{
 };
 use grimodex_core::narrative_nir1::ScopeValue;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -32,6 +32,8 @@ enum Q2WorkerScenario {
     OversizedWorkspaceId,
     OversizedBindingIdentityPayload,
     OversizedWorkerPath,
+    #[cfg(target_os = "linux")]
+    CommandExecutablePathLowerBound,
     OversizedAuthorityPath,
     OversizedCommandProjectId,
     StartupRegistrationRefused,
@@ -62,6 +64,40 @@ impl Drop for TestDirectory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn long_worker_symlink(directory: &Path, worker: &Path) -> Result<PathBuf> {
+    const LINK_BYTES: usize = 4_088;
+    const NAME: &str = "worker";
+    let parent_bytes = LINK_BYTES - NAME.len() - 1;
+    let mut parent = directory.to_path_buf();
+    let mut remaining = parent_bytes
+        .checked_sub(parent.as_os_str().len())
+        .ok_or_else(|| anyhow::anyhow!("Q2 temp root exceeds long-link path"))?;
+    while remaining > 256 {
+        parent.push("x".repeat(254));
+        remaining -= 255;
+    }
+    ensure!(remaining > 1, "cannot form long worker symlink path");
+    parent.push("x".repeat(remaining - 1));
+    std::fs::create_dir_all(&parent)?;
+    ensure!(
+        parent.as_os_str().len() == parent_bytes,
+        "long worker symlink parent has unexpected length"
+    );
+    let mut link = parent.join(NAME);
+    link.shrink_to_fit();
+    std::os::unix::fs::symlink(worker, &link)?;
+    ensure!(
+        link.as_os_str().len() == LINK_BYTES && link.is_file(),
+        "long worker symlink is not a valid file path"
+    );
+    ensure!(
+        std::fs::canonicalize(&link)? == std::fs::canonicalize(worker)?,
+        "long worker symlink target changed"
+    );
+    Ok(link)
 }
 
 struct Fixture {
@@ -616,6 +652,13 @@ fn native_worker_refuses_over_budget_binding_identity_before_native_reservation(
 #[ignore = "requires the official Q2 preseed"]
 fn native_worker_refuses_over_budget_worker_path_before_native_reservation() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::OversizedWorkerPath)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the official Q2 preseed and a built normal worker binary"]
+fn native_worker_refuses_command_executable_payload_before_claim() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::CommandExecutablePathLowerBound)
 }
 
 #[test]
@@ -1515,10 +1558,18 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         ) {
             directory.0.join("must-not-spawn-worker")
         } else {
-            PathBuf::from(
+            let worker_binary = PathBuf::from(
                 std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
                     .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
-            )
+            );
+            #[cfg(target_os = "linux")]
+            if scenario == Q2WorkerScenario::CommandExecutablePathLowerBound {
+                long_worker_symlink(&directory.0, &worker_binary)?
+            } else {
+                worker_binary
+            }
+            #[cfg(not(target_os = "linux"))]
+            worker_binary
         };
         let switching = WorkspaceLifecycleCompatibilityView::new(false);
         let native_state = WorkspaceState {
@@ -1571,6 +1622,61 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             .switching
             .core()
             .set_ready(original_binding.clone())?;
+
+        #[cfg(target_os = "linux")]
+        if scenario == Q2WorkerScenario::CommandExecutablePathLowerBound {
+            let snapshot = active_workspace_snapshot(&native_state)?;
+            let binding_payload_bytes = original_binding_payload_bytes
+                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
+            let worker_path_bytes = worker_path.as_os_str().len();
+            ensure!(
+                worker_path_bytes == 4_088 && worker_path.is_file(),
+                "regression requires a valid 4,088-byte worker symlink"
+            );
+            let authority_path_capacity = snapshot.c_query_authority_path_capacity();
+            let command_argument_bytes =
+                super::c_query_worker::command_argument_payload_lower_bound(
+                    snapshot.path().as_os_str(),
+                    &request.project_id,
+                )
+                .ok_or_else(|| anyhow::anyhow!("command argument lower bound unavailable"))?;
+            let existing_terms = binding_payload_bytes
+                .checked_add(worker_path.capacity())
+                .and_then(|bytes| bytes.checked_add(authority_path_capacity))
+                .and_then(|bytes| bytes.checked_add(command_argument_bytes))
+                .ok_or_else(|| anyhow::anyhow!("existing owner terms overflowed"))?;
+            let executable_terms =
+                super::c_query_worker::command_executable_and_argv_payload_lower_bound(
+                    worker_path.as_os_str(),
+                )
+                .ok_or_else(|| anyhow::anyhow!("executable payload lower bound unavailable"))?;
+            ensure!(
+                existing_terms <= super::c_query_worker::REQUEST_BYTES
+                    && existing_terms
+                        .checked_add(executable_terms)
+                        .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
+                "only the executable/argv terms should push this valid path over the residual"
+            );
+            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
+            let error = owner
+                .prepare(&request.project_id)
+                .expect_err("executable lower bound must refuse before child claim");
+            ensure!(
+                error
+                    .to_string()
+                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
+                "executable payload was not refused by the pre-claim guard: {error:#}"
+            );
+            ensure!(
+                owner.capacity_refusal_left_no_resources_for_test(),
+                "executable payload refusal acquired claim, Native permit/storage, or child"
+            );
+            drop(original_binding);
+            eprintln!(
+                "Native Q2 owner refused valid 4,088-byte worker path before claim, permit, storage, or spawn"
+            );
+            return Ok(());
+        }
 
         if scenario == Q2WorkerScenario::OversizedCommandProjectId {
             let project_id = "x".repeat(super::c_query_worker::REQUEST_BYTES - 1);

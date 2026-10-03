@@ -355,16 +355,36 @@ pub(super) fn command_argument_payload_lower_bound(
     }
 }
 
+#[cfg(unix)]
+pub(super) fn command_executable_and_argv_payload_lower_bound(
+    worker_path: &std::ffi::OsStr,
+) -> Option<usize> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let path = worker_path.as_bytes();
+    if path.contains(&0) {
+        return Some(0);
+    }
+    // Unix Command owns the executable CString and clones it for argv[0].
+    // argv[0], two explicit arguments, and the trailing null need four pointers.
+    path.len()
+        .checked_add(1)?
+        .checked_mul(2)?
+        .checked_add(std::mem::size_of::<*const std::ffi::c_char>().checked_mul(4)?)
+}
+
 fn native_owner_payload_fits(
     binding_payload_bytes: usize,
     worker_path_capacity: usize,
     authority_path_capacity: usize,
     command_argument_payload_bytes: usize,
+    command_executable_payload_bytes: usize,
 ) -> bool {
     binding_payload_bytes
         .checked_add(worker_path_capacity)
         .and_then(|bytes| bytes.checked_add(authority_path_capacity))
         .and_then(|bytes| bytes.checked_add(command_argument_payload_bytes))
+        .and_then(|bytes| bytes.checked_add(command_executable_payload_bytes))
         .is_some_and(|bytes| bytes <= NATIVE_OWNER_PAYLOAD_BUDGET_BYTES)
 }
 
@@ -760,21 +780,28 @@ impl CQueryWorkerOwner {
         let identity_payload_bytes = snapshot
             .c_query_identity_payload_byte_len()
             .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
-        let worker_path_capacity = self
+        let worker = self
             .worker
             .as_ref()
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?
-            .capacity();
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?;
+        let worker_path_capacity = worker.capacity();
         let authority_path_capacity = snapshot.c_query_authority_path_capacity();
         let command_argument_payload_bytes =
             command_argument_payload_lower_bound(snapshot.path().as_os_str(), project_id)
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
+        #[cfg(unix)]
+        let command_executable_payload_bytes =
+            command_executable_and_argv_payload_lower_bound(worker.as_os_str())
+                .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
+        #[cfg(not(unix))]
+        let command_executable_payload_bytes = 0;
         ensure!(
             native_owner_payload_fits(
                 identity_payload_bytes,
                 worker_path_capacity,
                 authority_path_capacity,
-                command_argument_payload_bytes
+                command_argument_payload_bytes,
+                command_executable_payload_bytes,
             ),
             "NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"
         );
@@ -2498,17 +2525,20 @@ mod tests {
         assert_eq!(named_native_bytes, NATIVE_FIXED_BYTES);
         assert_eq!(named_native_bytes, PARENT_BYTES - REQUEST_BYTES);
         assert_eq!(NATIVE_OWNER_PAYLOAD_BUDGET_BYTES, REQUEST_BYTES);
-        assert!(native_owner_payload_fits(REQUEST_BYTES, 0, 0, 0));
-        assert!(native_owner_payload_fits(REQUEST_BYTES - 1, 1, 0, 0));
-        assert!(native_owner_payload_fits(REQUEST_BYTES - 2, 1, 1, 0));
-        assert!(native_owner_payload_fits(REQUEST_BYTES - 3, 1, 1, 1));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES - 2, 1, 1, 1));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES - 1, 1, 1, 1));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES, 1, 0, 0));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES + 1, 0, 0, 0));
-        assert!(!native_owner_payload_fits(usize::MAX, 1, 0, 0));
-        assert!(!native_owner_payload_fits(0, usize::MAX, 1, 0));
-        assert!(!native_owner_payload_fits(0, 0, usize::MAX, 1));
+        assert!(native_owner_payload_fits(REQUEST_BYTES, 0, 0, 0, 0));
+        assert!(native_owner_payload_fits(REQUEST_BYTES - 1, 1, 0, 0, 0));
+        assert!(native_owner_payload_fits(REQUEST_BYTES - 2, 1, 1, 0, 0));
+        assert!(native_owner_payload_fits(REQUEST_BYTES - 3, 1, 1, 1, 0));
+        assert!(native_owner_payload_fits(REQUEST_BYTES - 4, 1, 1, 1, 1));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES - 2, 1, 1, 1, 0));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES - 3, 1, 1, 1, 1));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES - 1, 1, 1, 1, 0));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES, 1, 0, 0, 0));
+        assert!(!native_owner_payload_fits(REQUEST_BYTES + 1, 0, 0, 0, 0));
+        assert!(!native_owner_payload_fits(usize::MAX, 1, 0, 0, 0));
+        assert!(!native_owner_payload_fits(0, usize::MAX, 1, 0, 0));
+        assert!(!native_owner_payload_fits(0, 0, usize::MAX, 1, 0));
+        assert!(!native_owner_payload_fits(0, 0, 0, usize::MAX, 1));
         #[cfg(unix)]
         {
             assert_eq!(
@@ -2518,6 +2548,17 @@ mod tests {
             assert_eq!(
                 command_argument_payload_lower_bound(std::ffi::OsStr::new("bad\0path"), "x"),
                 Some(3)
+            );
+            let pointer_bytes = std::mem::size_of::<*const std::ffi::c_char>()
+                .checked_mul(4)
+                .unwrap();
+            assert_eq!(
+                command_executable_and_argv_payload_lower_bound(std::ffi::OsStr::new("/worker")),
+                Some(("/worker".len() + 1) * 2 + pointer_bytes)
+            );
+            assert_eq!(
+                command_executable_and_argv_payload_lower_bound(std::ffi::OsStr::new("bad\0path")),
+                Some(0)
             );
         }
         #[cfg(windows)]
