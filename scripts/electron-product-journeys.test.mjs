@@ -3651,6 +3651,75 @@ test("catalog and runner implementation IDs match in deterministic order", () =>
   );
 });
 
+test("active anchor-stream journeys retain coverage and outer-lane ownership", async () => {
+  const source = await read("electron/scripts/product-journeys.mjs");
+  for (const [runner, kind] of [
+    ["runFolderStreamSwitchJourney", "folder"],
+    ["runSnippetStreamSwitchJourney", "snippet"],
+    ["runCodexStreamSwitchJourney", "codex"],
+  ]) {
+    const start = source.indexOf(`async function ${runner}(`);
+    const end = source.indexOf("\nasync function ", start + 1);
+    assert.notEqual(start, -1, `${runner} must remain implemented`);
+    assert.notEqual(end, -1, `${runner} must remain a distinct journey`);
+    const runnerBody = source.slice(start, end);
+    assert.match(
+      runnerBody,
+      new RegExp(
+        `runIsolatedChatStreamAnchorScopeJourney\\(\\s*harness,\\s*"${kind}",\\s*laneContext,`,
+      ),
+    );
+    assert.match(runnerBody, /return \{ anchorScopeDiagnostics \}/);
+  }
+  const anchorStart = source.indexOf(
+    "async function runChatStreamAnchorScopeJourney(",
+  );
+  const anchorEnd = source.indexOf("\nasync function ", anchorStart + 1);
+  assert.notEqual(
+    anchorStart,
+    -1,
+    "the anchor-scope journey must remain implemented",
+  );
+  assert.notEqual(
+    anchorEnd,
+    -1,
+    "the anchor-scope journey must remain a distinct helper",
+  );
+  const anchorJourney = source.slice(anchorStart, anchorEnd);
+  const isolatedStart = source.indexOf(
+    "async function runIsolatedChatStreamAnchorScopeJourney(",
+  );
+  const isolatedEnd = source.indexOf("\nasync function ", isolatedStart + 1);
+  assert.notEqual(isolatedStart, -1);
+  assert.notEqual(isolatedEnd, -1);
+  const isolatedJourney = source.slice(isolatedStart, isolatedEnd);
+  assert.match(isolatedJourney, /createProductJourneyHarness\(/);
+  assert.match(isolatedJourney, /onChildProcess: laneContext\.registerChild/);
+  assert.match(isolatedJourney, /scopeHarness\.withLaneWatchdog\(/);
+  assert.match(isolatedJourney, /signal: laneContext\.signal/);
+  assert.match(isolatedJourney, /laneContext\.registerCleanup\(/);
+  assert.match(isolatedJourney, /scopeHarness\.finalizeDiagnostics\(\)/);
+  assert.match(isolatedJourney, /error\.diagnostics = diagnostics/);
+  assert.match(isolatedJourney, /error\.nestedDiagnostics = diagnostics/);
+  assert.match(
+    isolatedJourney,
+    /await runChatStreamAnchorScopeJourney\(scopeHarness, kind\)/,
+  );
+  assert.match(
+    isolatedJourney,
+    /scopeHarness\.dispose\(\{ success: succeeded, name \}/,
+  );
+  assert.match(isolatedJourney, /diagnostics,/);
+  assert.match(anchorJourney, /scope changed during the old stream/);
+  assert.match(anchorJourney, /scope did not commit after stream completion/);
+  assert.match(anchorJourney, /new scope persistence/);
+  assert.match(anchorJourney, /scope reused the old stream session authority/);
+  assert.match(
+    source,
+    /const runJourney = \(laneContext\) => journey\.run\(harness, laneContext\)/,
+  );
+});
+
 test("receipt is reverified after bridge readiness and after process close", async () => {
   const previousCi = process.env.CI;
   const previousOwner = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
@@ -5997,6 +6066,97 @@ test("lane watchdog captures partial evidence and kills registered children", as
     ),
     "partial",
   );
+});
+
+test("harness lane watchdog relays outer-lane cancellation", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-linked-watchdog-"),
+  );
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+  });
+  const outerController = new AbortController();
+  const started = createPromiseBarrier();
+  let nestedSignal;
+  t.after(async () => {
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const running = harness.withLaneWatchdog(
+    ({ signal }) => {
+      nestedSignal = signal;
+      started.resolve();
+      return new Promise((resolve) =>
+        signal.addEventListener("abort", resolve, { once: true }),
+      );
+    },
+    {
+      phase: "observability/linked-watchdog",
+      timeoutMs: 1_000,
+      signal: outerController.signal,
+    },
+  );
+  await started.promise;
+  outerController.abort("outer-lane-timeout");
+  await assert.rejects(running, /aborted.*outer-lane-timeout/i);
+  assert.equal(nestedSignal.aborted, true);
+  await harness.dispose({ success: false, name: "linked-watchdog" });
+});
+
+test("lane watchdog owns dynamic children and awaits registered cleanup", async () => {
+  const child = new EventEmitter();
+  child.pid = 424246;
+  child.exitCode = null;
+  child.signalCode = null;
+  let cleanupSettled = false;
+  let captureAfterCleanup = false;
+  let terminationVerified = false;
+  await assert.rejects(
+    runWithLaneWatchdog(
+      ({ registerChild, registerCleanup }) => {
+        registerChild(child);
+        registerCleanup(async ({ status, error }) => {
+          assert.equal(status, "timeout");
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          cleanupSettled = true;
+          error.cleanupDiagnosticsAttached = true;
+        });
+        return new Promise(() => {});
+      },
+      {
+        phase: "observability/registered-cleanup",
+        timeoutMs: 20,
+        killGraceMs: 0,
+        killChildren: async (registeredChild) => {
+          assert.equal(registeredChild, child);
+          registeredChild.exitCode = 0;
+          terminationVerified = true;
+          return { terminationVerified: true, failures: [] };
+        },
+        cleanup: async () => {
+          assert.equal(cleanupSettled, true);
+        },
+        captureFailureArtifact: async () => {
+          captureAfterCleanup = cleanupSettled;
+        },
+      },
+    ),
+    (error) => {
+      assert.match(
+        error.message,
+        /watchdog.*observability\/registered-cleanup/i,
+      );
+      assert.equal(error.cleanupDiagnosticsAttached, true);
+      return true;
+    },
+  );
+  assert.equal(cleanupSettled, true);
+  assert.equal(captureAfterCleanup, true);
+  assert.equal(terminationVerified, true);
+  assert.equal(child.exitCode, 0);
 });
 
 test("harness bounds lifecycle init-script installation and retains a partial lane artifact", async (t) => {

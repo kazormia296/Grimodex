@@ -1721,7 +1721,7 @@ async function selectChatSnippet(harness, page, snippet) {
   }, `chat Snippet scope ${snippet.title}`);
 }
 
-async function runFolderStreamSwitchJourney(harness) {
+async function runFolderStreamSwitchJourney(harness, laneContext) {
   const workspace = harness.workspacePath("chat-stream-folder-switch");
   await configureWorkspace(harness, workspace, { deterministicAi: true });
 
@@ -1967,9 +1967,15 @@ async function runFolderStreamSwitchJourney(harness) {
   } finally {
     await harness.close(chat.app, chat.page, "chat-stream-folder-switch");
   }
+  const anchorScopeDiagnostics = await runIsolatedChatStreamAnchorScopeJourney(
+    harness,
+    "folder",
+    laneContext,
+  );
+  return { anchorScopeDiagnostics };
 }
 
-async function runSnippetStreamSwitchJourney(harness) {
+async function runSnippetStreamSwitchJourney(harness, laneContext) {
   const journeyId = "chat-stream-snippet-switch";
   const workspace = harness.workspacePath(journeyId);
   await configureWorkspace(harness, workspace, { deterministicAi: true });
@@ -2226,9 +2232,15 @@ async function runSnippetStreamSwitchJourney(harness) {
   } finally {
     await harness.close(chat.app, chat.page, journeyId);
   }
+  const anchorScopeDiagnostics = await runIsolatedChatStreamAnchorScopeJourney(
+    harness,
+    "snippet",
+    laneContext,
+  );
+  return { anchorScopeDiagnostics };
 }
 
-async function runCodexStreamSwitchJourney(harness) {
+async function runCodexStreamSwitchJourney(harness, laneContext) {
   const journeyId = "chat-stream-codex-switch";
   const workspace = harness.workspacePath(journeyId);
   await configureWorkspace(harness, workspace, { deterministicAi: true });
@@ -2491,6 +2503,12 @@ async function runCodexStreamSwitchJourney(harness) {
   } finally {
     await harness.close(chat.app, chat.page, `${journeyId}/write`);
   }
+  const anchorScopeDiagnostics = await runIsolatedChatStreamAnchorScopeJourney(
+    harness,
+    "codex",
+    laneContext,
+  );
+  return { anchorScopeDiagnostics };
 }
 
 async function runChatStreamProjectSwitchJourney(harness) {
@@ -3380,6 +3398,89 @@ async function runChatStreamAnchorScopeJourney(harness, kind) {
     });
   } finally {
     await harness.close(chat.app, chat.page, phase);
+  }
+}
+
+async function runIsolatedChatStreamAnchorScopeJourney(
+  harness,
+  kind,
+  laneContext,
+) {
+  if (
+    !laneContext?.signal ||
+    typeof laneContext.registerChild !== "function" ||
+    typeof laneContext.registerCleanup !== "function"
+  ) {
+    throw new Error(
+      "isolated anchor-scope journey requires outer lane ownership",
+    );
+  }
+  const name = `chat-stream-${kind}-scope`;
+  const scopeHarness = createProductJourneyHarness({
+    mainCjs: path.join(rootDir, "dist-electron", "main.cjs"),
+    onChildProcess: laneContext.registerChild,
+  });
+  let succeeded = false;
+  const nestedTask = (async () => {
+    try {
+      let operationError = null;
+      let diagnostics;
+      try {
+        await scopeHarness.withLaneWatchdog(
+          async () => {
+            await runChatStreamAnchorScopeJourney(scopeHarness, kind);
+            diagnostics = await scopeHarness.finalizeDiagnostics();
+          },
+          {
+            phase: name,
+            timeoutMs: PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS,
+            signal: laneContext.signal,
+          },
+        );
+      } catch (error) {
+        diagnostics = error?.diagnostics ?? scopeHarness.diagnostics();
+        operationError = error;
+      }
+      harness.recordTimeline("nested-product-journey-diagnostics", {
+        kind,
+        diagnostics,
+        passed: operationError === null,
+      });
+      if (operationError) {
+        const error =
+          operationError instanceof Error
+            ? operationError
+            : new Error(String(operationError), { cause: operationError });
+        error.diagnostics = diagnostics;
+        error.nestedDiagnostics = diagnostics;
+        throw error;
+      }
+      succeeded = true;
+      return diagnostics;
+    } finally {
+      await scopeHarness.dispose({ success: succeeded, name });
+    }
+  })();
+  const unregisterCleanup = laneContext.registerCleanup(({ error }) => {
+    const attachDiagnostics = (diagnostics) => {
+      if (error && typeof error === "object") {
+        error.diagnostics = diagnostics;
+        error.nestedDiagnostics = diagnostics;
+      }
+    };
+    attachDiagnostics(scopeHarness.diagnostics());
+    return nestedTask.catch((nestedError) => {
+      attachDiagnostics(
+        nestedError?.nestedDiagnostics ??
+          nestedError?.diagnostics ??
+          scopeHarness.diagnostics(),
+      );
+    });
+  });
+  try {
+    return await nestedTask;
+  } finally {
+    unregisterCleanup();
   }
 }
 
@@ -5012,7 +5113,7 @@ export async function runProductJourneys({
     try {
       harness = factory();
       harness.c2zcRustAcceptanceEvidence = report.c2zcRustAcceptance;
-      const runJourney = () => journey.run(harness);
+      const runJourney = (laneContext) => journey.run(harness, laneContext);
       const c2zcWatchdogRequired =
         selectionName === "c2-zc" &&
         C2ZC_PRODUCT_JOURNEY_IDS.includes(journey.id);

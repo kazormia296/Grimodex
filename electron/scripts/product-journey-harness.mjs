@@ -2808,6 +2808,7 @@ export async function runWithLaneWatchdog(
   let cleanupStarted = false;
   const killedChildren = new Set();
   const pendingChildKills = new Set();
+  const registeredCleanups = new Set();
   let timerId;
   let abortListener;
   let externalAbortListener;
@@ -2955,6 +2956,16 @@ export async function runWithLaneWatchdog(
         // explicit unverified diagnostic when the late resource misses this
         // bounded window.
       }
+      for (const registeredCleanup of [...registeredCleanups]) {
+        try {
+          await settleWithin(
+            Promise.resolve().then(() => registeredCleanup({ error, status })),
+            PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+          );
+        } catch {
+          // Continue to mandatory process cleanup while preserving the lane error.
+        }
+      }
       try {
         await settleWithin(
           Promise.resolve().then(() => cleanup({ error, status })),
@@ -3028,6 +3039,13 @@ export async function runWithLaneWatchdog(
         childSet.add(child);
         return child;
       },
+      registerCleanup(callback) {
+        if (typeof callback !== "function") {
+          throw new TypeError("lane cleanup registration requires a function");
+        }
+        registeredCleanups.add(callback);
+        return () => registeredCleanups.delete(callback);
+      },
     });
   });
   try {
@@ -3088,6 +3106,7 @@ export function createProductJourneyHarness({
   electronLauncher = _electron,
   closeApp = closeElectronAppWithDiagnostics,
   mainProcessNoiseAllowlist = MAIN_PROCESS_NOISE_ALLOWLIST,
+  onChildProcess = () => undefined,
 } = {}) {
   if (!mainCjs) throw new Error("product journey harness requires mainCjs");
   if (
@@ -3120,6 +3139,9 @@ export function createProductJourneyHarness({
     );
   }
   validateMainProcessNoiseAllowlist(mainProcessNoiseAllowlist);
+  if (typeof onChildProcess !== "function") {
+    throw new TypeError("onChildProcess must be a function");
+  }
   const failureCleanupBudget = Math.max(1, Math.floor(failureCleanupTimeoutMs));
   const trustedCloseApp = closeApp === closeElectronAppWithDiagnostics;
 
@@ -3390,6 +3412,7 @@ export function createProductJourneyHarness({
   function trackChild(child) {
     if (!child || typeof child !== "object") return child;
     trackedChildren.add(child);
+    onChildProcess(child);
     const remove = () => {
       trackedChildren.delete(child);
       trackedChildRemovers.delete(child);
@@ -5648,7 +5671,7 @@ export function createProductJourneyHarness({
         }),
       awaitLateResources: () => awaitLateElectronLaunches(),
       journal: operationJournal,
-      signal: controller.signal,
+      signal: laneOptions.signal ?? controller.signal,
       abortController: controller,
     });
     laneWatchdogPromise = watchdog;
