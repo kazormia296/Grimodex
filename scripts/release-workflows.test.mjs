@@ -664,18 +664,35 @@ describe("release workflow boundary", () => {
     assert.doesNotMatch(definition, /KSXGitHub\/github-actions-deploy-aur/);
   });
 
-  it("runs npm dependency audits through the supported bulk advisory client", async () => {
+  it("runs hosted and local audits through the same scoped advisory check", async () => {
     const workflow = await readWorkflow("ci.yml");
     const securitySteps = workflow.jobs.security.steps;
     const setupNode = securitySteps.find((step) =>
       step.uses?.startsWith("actions/setup-node@"),
     );
     const auditStep = securitySteps.find((step) => step.name === "pnpm audit");
+    const registry = JSON.parse(
+      await readFile(
+        path.join(repoRoot, "scripts/local-ci-registry.json"),
+        "utf8",
+      ),
+    );
+    const localAudit = registry.stages.security.commands.find(
+      (command) => command.id === "security.pnpm-audit",
+    );
+    const wrapper = await readFile(
+      path.join(repoRoot, "scripts/pnpm-audit.mjs"),
+      "utf8",
+    );
 
     assert.equal(setupNode?.with?.["node-version"], 22);
-    assert.match(auditStep?.run ?? "", /pnpm dlx pnpm@11\.13\.0/);
-    assert.match(auditStep?.run ?? "", /--pm-on-fail=ignore/);
-    assert.match(auditStep?.run ?? "", /audit --audit-level high/);
+    assert.equal(auditStep?.run, "node scripts/pnpm-audit.mjs");
+    assert.equal(localAudit?.command, "node");
+    assert.deepEqual(localAudit?.args, ["scripts/pnpm-audit.mjs"]);
+    assert.match(wrapper, /pnpm@11\.13\.0/);
+    assert.match(wrapper, /--pm-on-fail=ignore/);
+    assert.match(wrapper, /--audit-level/);
+    assert.match(wrapper, /GHSA-ch52-4w7c-c8xp/);
   });
 
   it("gives every root TypeScript build explicit Node heap headroom", async () => {

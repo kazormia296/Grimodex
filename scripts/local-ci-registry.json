@@ -324,15 +324,8 @@
       "commands": [
         {
           "label": "pnpm high-severity audit",
-          "command": "pnpm",
-          "args": [
-            "dlx",
-            "pnpm@11.13.0",
-            "--pm-on-fail=ignore",
-            "audit",
-            "--audit-level",
-            "high"
-          ],
+          "command": "node",
+          "args": ["scripts/pnpm-audit.mjs"],
           "id": "security.pnpm-audit",
           "after": ["bootstrap.install"]
         },

@@ -328,7 +328,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: pnpm audit
-        run: pnpm dlx pnpm@11.13.0 --pm-on-fail=ignore audit --audit-level high
+        run: node scripts/pnpm-audit.mjs
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
