@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
   access,
@@ -18,6 +19,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import yaml from "js-yaml";
 
@@ -36,12 +38,14 @@ import {
   expectedC2ZcAcceptanceForPlan,
   acquireCheckoutLock,
   checkoutLockCleanupComplete,
+  cleanupNativeCargoTargetAfterTask,
   finalizeCheckoutLock,
   finalizeLocalCiExecution,
   parseLocalCiArgs,
   prepareLocalCiArtifacts,
   recoverCheckoutLock,
   readC2ZcRestoreFixtureEvidence,
+  resolveNativeCargoTargetDirectory,
   resolveLocalCiCandidate,
   runLocalCiInvocationTasks,
   runLocalCiPlan,
@@ -530,7 +534,7 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   });
 
   assert.equal(result.status, "passed");
-  assert.equal(executed.length, 6);
+  assert.equal(executed.length, 10);
   const rustCommand = executed.find(
     (command) =>
       command.command === "node" &&
@@ -556,6 +560,10 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
       "journeys.shard-1",
       "journeys.shard-2",
       "journeys.shard-3",
+      "journeys.shard-4",
+      "journeys.shard-5",
+      "journeys.shard-6",
+      "journeys.shard-7",
       "journeys.run",
     ],
   );
@@ -1802,6 +1810,7 @@ test("local CI argument parsing supports comparison, resume, and dry-run", () =>
       from: "security",
       head: "topic",
       list: false,
+      maxParallelTasks: null,
       profile: "full",
       report: "/tmp/local-ci.json",
       recoverLock: false,
@@ -1809,6 +1818,28 @@ test("local CI argument parsing supports comparison, resume, and dry-run", () =>
     },
   );
   assert.equal(parseLocalCiArgs(["--verify", "full"]).verify, true);
+  assert.equal(
+    parseLocalCiArgs(["full", "--max-parallel-tasks", "1"]).maxParallelTasks,
+    1,
+  );
+  for (const value of [
+    "0",
+    "-1",
+    "1.5",
+    "NaN",
+    "Infinity",
+    "1e1",
+    "9007199254740992",
+  ]) {
+    assert.throws(
+      () => parseLocalCiArgs(["full", "--max-parallel-tasks", value]),
+      /positive integer/u,
+    );
+  }
+  assert.throws(
+    () => parseLocalCiArgs(["full", "--max-parallel-tasks"]),
+    /requires a value/u,
+  );
   assert.throws(
     () => parseLocalCiArgs(["--verify", "--verify-staging", "full"]),
     /Unknown argument: --verify-staging/u,
@@ -2030,6 +2061,94 @@ function finalizationTestResult(runId) {
     version: 3,
   };
 }
+
+test("external staging verifier receives the parallel cap and rejects its omission", async (t) => {
+  // Synthetic verifier fixture only: never publish a canonical Quick receipt.
+  const runId = randomUUID();
+  const directory = path.join(repoRoot, ".artifacts/local-ci/runs", runId);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const args = {
+    profile: "quick",
+    base: "HEAD",
+    head: "HEAD",
+    maxParallelTasks: 1,
+  };
+  const plan = buildLocalCiPlan(await readRegistry(), args);
+  const candidate = await resolveLocalCiCandidate(plan);
+  const tasks = [];
+  for (const task of plan.tasks) {
+    const logs = {};
+    for (const stream of ["stdout", "stderr"]) {
+      const relative = `.artifacts/local-ci/runs/${runId}/logs/${task.id}.${stream}.log`;
+      await mkdir(path.dirname(path.join(repoRoot, relative)), {
+        recursive: true,
+      });
+      await writeFile(
+        path.join(repoRoot, relative),
+        "synthetic verifier fixture\n",
+      );
+      logs[stream] = {
+        path: relative,
+        size: Buffer.byteLength("synthetic verifier fixture\n"),
+        sha256: `sha256:${createHash("sha256").update("synthetic verifier fixture\n").digest("hex")}`,
+      };
+    }
+    tasks.push({
+      id: task.id,
+      status: "passed",
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+      cleanup: { complete: true },
+      logs,
+    });
+  }
+  const result = {
+    ...finalizationTestResult(runId),
+    candidate,
+    candidateAfter: candidate,
+    plan: createLocalCiPlanDescriptor(plan),
+    registryDigest: plan.registryDigest,
+    durationMs: 1,
+    tasks,
+  };
+  const finalized = await finalizeLocalCiExecution({
+    args,
+    result,
+    runId,
+    root: repoRoot,
+    reportPath: path.join(directory, "synthetic-quick.json"),
+    stagingReceiptPath: path.join(directory, "synthetic-staging.json"),
+    signal: new AbortController().signal,
+    invocationStarted: performance.now(),
+  });
+  assert.equal(
+    finalized.success,
+    true,
+    JSON.stringify(finalized.result.receiptError),
+  );
+  assert.equal(finalized.result.finalization.externalVerify.status, "passed");
+  await assert.rejects(
+    promisify(execFile)(
+      process.execPath,
+      [
+        path.join(repoRoot, "scripts/local-ci-staging-verifier.mjs"),
+        "quick",
+        "--base",
+        "HEAD",
+        "--head",
+        "HEAD",
+        "--report",
+        finalized.reportPath,
+      ],
+      { timeout: 10000 },
+    ),
+    (error) => {
+      assert.match(error.stderr, /exact task plan/u);
+      return true;
+    },
+  );
+});
 
 async function fullFinalizationFixture(root, runId) {
   const candidate = completeCandidate();
@@ -3893,11 +4012,15 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "journeys.shard-1",
       "journeys.shard-2",
       "journeys.shard-3",
+      "journeys.shard-4",
+      "journeys.shard-5",
+      "journeys.shard-6",
+      "journeys.shard-7",
       "journeys.run",
     ],
   );
-  assert.equal(plan.tasks.length, 62);
-  assert.equal(tasksById.size, 62);
+  assert.equal(plan.tasks.length, 67);
+  assert.equal(tasksById.size, 67);
   assert.equal(obligations.length, 52);
   assert.equal(new Set(obligations).size, 52);
   assert.equal(
@@ -3938,21 +4061,32 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "webgl.tests",
   ];
   const mcpBuildTask = tasksById.get("journeys.mcp-build");
+  const electronBinaryTask = tasksById.get("bootstrap.electron-binary");
+  assert.equal(electronBinaryTask.command.command, "node");
+  assert.deepEqual(electronBinaryTask.command.args, [
+    "scripts/ensure-electron-binary.mjs",
+  ]);
+  assert.deepEqual(electronBinaryTask.after, ["bootstrap.install"]);
+  assert.equal(electronBinaryTask.timeoutMs, 180_000);
+  assert.deepEqual(electronBinaryTask.obligations, []);
   assert.equal(mcpBuildTask.command.command, "pnpm");
   assert.deepEqual(mcpBuildTask.command.args, ["mcp:build"]);
-  assert.deepEqual(mcpBuildTask.after, ["electron.build", "native.build"]);
+  assert.deepEqual(mcpBuildTask.after, [
+    "electron.build",
+    "native.build",
+    "bootstrap.electron-binary",
+  ]);
   assert.equal(mcpBuildTask.lane, "cargo-shared");
   assert.equal(mcpBuildTask.slots, 2);
   assert.equal(mcpBuildTask.timeoutMs, 180_000);
   assert.equal(mcpBuildTask.command.env.CARGO_PROFILE_DEV_DEBUG, "0");
   assert.equal(mcpBuildTask.command.env.CARGO_PROFILE_TEST_DEBUG, "0");
   assert.equal(mcpBuildTask.command.env.CARGO_BUILD_JOBS, "2");
-  for (const shard of ["1", "2", "3"]) {
+  for (const shard of ["1", "2", "3", "4", "5", "6", "7"]) {
     const task = tasksById.get(`journeys.shard-${shard}`);
-    assert.equal(task.command.command, "xvfb-run");
+    assert.equal(task.command.command, "node");
     assert.deepEqual(task.command.args, [
-      "--auto-display",
-      "--server-args=-screen 0 1920x1080x24",
+      "scripts/local-ci-xvfb.mjs",
       "node",
       "electron/scripts/product-journey-shards.mjs",
       "run",
@@ -3962,7 +4096,12 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       journeyArtifactDir,
     ]);
     assert.deepEqual(task.command.env, journeyEnv);
-    assert.deepEqual(task.after, shardDependencies);
+    assert.deepEqual(
+      task.after,
+      Number(shard) <= 3
+        ? shardDependencies
+        : [...shardDependencies, `journeys.shard-${Number(shard) - 3}`],
+    );
     assert.deepEqual(task.obligations, []);
     assert.equal(task.lane, `journey-shard-${shard}`);
     assert.equal(task.slots, 2);
@@ -4003,6 +4142,10 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     "journeys.shard-1",
     "journeys.shard-2",
     "journeys.shard-3",
+    "journeys.shard-4",
+    "journeys.shard-5",
+    "journeys.shard-6",
+    "journeys.shard-7",
   ]);
   assert.equal(aggregate.obligations, undefined);
   assert.equal(
@@ -4398,6 +4541,29 @@ test("Full priority admits ready browser work when two slots reopen before later
   assert.equal((await running).status, "passed");
 });
 
+test("parallel task cap preserves the complete plan and default slot budget", async () => {
+  const registry = await readRegistry();
+  const options = { profile: "full", base: "origin/master", head: "HEAD" };
+  const normal = buildLocalCiPlan(registry, options);
+  const serial = buildLocalCiPlan(registry, {
+    ...options,
+    maxParallelTasks: 1,
+  });
+  assert.equal(normal.maxParallelTasks, 12);
+  assert.equal(serial.maxSlots, 12);
+  assert.equal(serial.maxParallelTasks, 1);
+  assert.deepEqual(serial.tasks, normal.tasks);
+  assert.deepEqual(serial.stages, normal.stages);
+  assert.deepEqual(serial.coverage, normal.coverage);
+  assert.equal(serial.registryDigest, normal.registryDigest);
+  for (const maxParallelTasks of [0, -1, 1.5, 13, NaN, Infinity]) {
+    assert.throws(
+      () => buildLocalCiPlan(registry, { ...options, maxParallelTasks }),
+      /--max-parallel-tasks/u,
+    );
+  }
+});
+
 test("receipt plan binding rejects descriptor changes and unclean task results", async () => {
   const registry = await readRegistry();
   const plan = buildLocalCiPlan(registry, {
@@ -4446,6 +4612,40 @@ test("receipt plan binding rejects descriptor changes and unclean task results",
   );
 
   const tampered = structuredClone(receipt);
+  const serialPlan = buildLocalCiPlan(registry, {
+    profile: "quick",
+    base: "origin/master",
+    head: "HEAD",
+    maxParallelTasks: 1,
+  });
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(receipt, {
+        candidate,
+        plan: serialPlan,
+        profile: "quick",
+      }),
+    /exact task plan/u,
+  );
+  const serialReceipt = structuredClone(receipt);
+  serialReceipt.plan = createLocalCiPlanDescriptor(serialPlan);
+  assert.equal(
+    verifyLocalCiReceipt(serialReceipt, {
+      candidate,
+      plan: serialPlan,
+      profile: "quick",
+    }),
+    serialReceipt,
+  );
+  assert.throws(
+    () =>
+      verifyLocalCiReceipt(serialReceipt, {
+        candidate,
+        plan,
+        profile: "quick",
+      }),
+    /exact task plan/u,
+  );
   tampered.plan.tasks[0].command.args.push("--changed");
   assert.throws(
     () => verifyLocalCiReceipt(tampered, { candidate, plan, profile: "quick" }),
@@ -4700,6 +4900,317 @@ test("concurrent plan forwards run scope and external abort to the supervisor", 
   assert.throws(
     () => process.kill(-task.pid, 0),
     (error) => error?.code === "ESRCH",
+  );
+});
+
+async function nativeCleanupFixture(t) {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-native-ci-cleanup-"),
+  );
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const native = path.join(root, "electron/native/grimodex-node");
+  const release = path.join(native, "target/release");
+  const debug = path.join(native, "target/debug");
+  const binary = path.join(native, "grimodex-node.node");
+  const protectedPaths = [
+    path.join(root, "src-tauri/target/debug/deps/shared.rlib"),
+    path.join(root, "fixtures/restore.json"),
+    path.join(root, ".artifacts/local-ci/full.json"),
+    path.join(
+      root,
+      ".artifacts/local-ci/runs/test/logs/native.build.stdout.log",
+    ),
+  ];
+  for (const file of [
+    binary,
+    path.join(release, "deps/native.rlib"),
+    path.join(debug, "deps/native-test"),
+    ...protectedPaths,
+  ]) {
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, file);
+  }
+  return { root, native, release, debug, binary, protectedPaths };
+}
+
+function nativeCleanupPlan() {
+  const commands = [
+    ["native.build", "electron-native", []],
+    ["native.public-tests", "electron-native", ["native.build"]],
+    [
+      "c2zc.rust-acceptance",
+      "c2-zc-rust-acceptance-gate",
+      ["native.public-tests"],
+    ],
+    ["after-c2zc", "after", ["c2zc.rust-acceptance"]],
+  ];
+  const stages = [];
+  const tasks = [];
+  for (const [id, stageId, after] of commands) {
+    const command = {
+      id,
+      label: id,
+      command: "mock",
+      args: [],
+      cwd: ".",
+      env: {},
+    };
+    let stage = stages.find((entry) => entry.id === stageId);
+    if (!stage) {
+      stage = { id: stageId, label: stageId, commands: [] };
+      stages.push(stage);
+    }
+    const commandIndex = stage.commands.length;
+    stage.commands.push(command);
+    tasks.push({
+      id,
+      stageId,
+      stageLabel: stageId,
+      commandIndex,
+      command: { label: id, command: "mock", args: [], cwd: ".", env: {} },
+      after,
+    });
+  }
+  return {
+    profile: "full",
+    comparison: { base: "base", head: "head" },
+    coverage: { completeness: "complete", fromStage: null },
+    maxSlots: 1,
+    maxParallelTasks: 1,
+    registryDigest: `sha256:${"a".repeat(64)}`,
+    releaseOnlyJobs: [],
+    stages,
+    tasks,
+  };
+}
+
+test("Full awaits native build-target cleanup at both last-consumer boundaries", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const outside = path.join(fixture.root, "outside.txt");
+  await writeFile(outside, "keep");
+  await symlink(outside, path.join(fixture.debug, "external-link"));
+  const observed = [];
+  const result = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () =>
+      path.join(fixture.native, "target"),
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    async executeCommand(_command, { taskId }) {
+      observed.push(taskId);
+      if (taskId === "native.public-tests") {
+        await assert.rejects(access(fixture.release), { code: "ENOENT" });
+        assert.equal(await readFile(fixture.binary, "utf8"), fixture.binary);
+      }
+      if (taskId === "after-c2zc") {
+        await assert.rejects(access(fixture.debug), { code: "ENOENT" });
+      }
+      return {
+        cleanup: { complete: true, groupAlive: false },
+        exitCode: 0,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(result.status, "passed");
+  assert.deepEqual(
+    observed,
+    nativeCleanupPlan().tasks.map((task) => task.id),
+  );
+  assert.equal(await readFile(outside, "utf8"), "keep");
+  assert.equal(await readFile(fixture.binary, "utf8"), fixture.binary);
+  for (const file of fixture.protectedPaths) {
+    assert.equal(await readFile(file, "utf8"), file);
+  }
+});
+
+test("native Cargo cleanup rejects symlinked parents and targets", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const external = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-native-ci-external-"),
+  );
+  t.after(() => rm(external, { recursive: true, force: true }));
+  const marker = path.join(external, "marker");
+  await writeFile(marker, "keep");
+  await rm(fixture.release, { recursive: true });
+  await symlink(external, fixture.release);
+  await assert.rejects(
+    cleanupNativeCargoTargetAfterTask("native.build", { root: fixture.root }),
+    /target is not a real directory/u,
+  );
+  assert.equal(await readFile(marker, "utf8"), "keep");
+  await rm(fixture.release);
+  await rm(path.join(fixture.native, "target"), { recursive: true });
+  await symlink(external, path.join(fixture.native, "target"));
+  await assert.rejects(
+    cleanupNativeCargoTargetAfterTask("native.build", { root: fixture.root }),
+    /parent is not a real directory/u,
+  );
+  assert.equal(await readFile(marker, "utf8"), "keep");
+  const linkedRoot = `${fixture.root}-link`;
+  await symlink(fixture.root, linkedRoot);
+  t.after(() => rm(linkedRoot));
+  await assert.rejects(
+    cleanupNativeCargoTargetAfterTask("native.build", { root: linkedRoot }),
+    /root must not be a symlink/u,
+  );
+});
+
+test("native Cargo cleanup fails closed on missing binary and unfinished process cleanup", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  await rm(fixture.binary);
+  await assert.rejects(
+    cleanupNativeCargoTargetAfterTask("native.build", { root: fixture.root }),
+    /requires the copied N-API binary/u,
+  );
+  await access(fixture.release);
+  await writeFile(fixture.binary, "native");
+  const result = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () =>
+      path.join(fixture.native, "target"),
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    async executeCommand() {
+      return {
+        cleanup: { complete: true, groupAlive: true },
+        exitCode: 0,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(result.status, "failed");
+  assert.match(result.tasks[0].error, /requires process-group exit/u);
+  assert.equal(result.tasks[1].status, "not-run");
+  await access(fixture.release);
+  await access(fixture.debug);
+});
+
+test("failed native and C2-ZC commands never trigger build-target cleanup", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const failedBuild = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () =>
+      path.join(fixture.native, "target"),
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    async executeCommand() {
+      return {
+        cleanup: { complete: true, groupAlive: false },
+        exitCode: 1,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(failedBuild.tasks[0].status, "failed");
+  await access(fixture.release);
+  await access(fixture.debug);
+
+  const failedGate = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () =>
+      path.join(fixture.native, "target"),
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    async executeCommand(_command, { taskId }) {
+      return {
+        cleanup: { complete: true, groupAlive: false },
+        exitCode: taskId === "c2zc.rust-acceptance" ? 1 : 0,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(failedGate.tasks[2].status, "failed");
+  assert.equal(failedGate.tasks[3].status, "not-run");
+  await assert.rejects(access(fixture.release), { code: "ENOENT" });
+  await access(fixture.debug);
+  assert.equal(await readFile(fixture.binary, "utf8"), fixture.binary);
+});
+
+test("redirected Cargo targets leave the default native build tree intact", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const redirected = path.join(fixture.root, "redirected-cargo-target");
+  await mkdir(redirected);
+  const events = [];
+  const result = await runLocalCiPlan(nativeCleanupPlan(), {
+    candidate: completeCandidate(),
+    concurrent: true,
+    resolveNativeTargetDirectory: async () => redirected,
+    root: fixture.root,
+    runId: LOCAL_CI_TEST_RUN_ID,
+    notify(event) {
+      events.push(event);
+    },
+    async executeCommand() {
+      return {
+        cleanup: { complete: true, groupAlive: false },
+        exitCode: 0,
+        signal: null,
+      };
+    },
+  });
+  assert.equal(result.status, "passed");
+  assert.equal(
+    events.filter((event) => event.type === "build-cache-cleanup-skipped")
+      .length,
+    2,
+  );
+  await access(fixture.release);
+  await access(fixture.debug);
+  assert.equal(await readFile(fixture.binary, "utf8"), fixture.binary);
+});
+
+test("native target metadata uses each Cargo consumer's working directory", async (t) => {
+  const fixture = await nativeCleanupFixture(t);
+  const redirected = path.join(fixture.root, "redirected-cargo-target");
+  const nativeCwd = fixture.native;
+  const seen = [];
+  const runMetadata = async (command, args, options) => {
+    seen.push({ command, args, cwd: options.cwd });
+    return {
+      stdout: JSON.stringify({
+        target_directory:
+          options.cwd === nativeCwd
+            ? redirected
+            : path.join(fixture.native, "target"),
+      }),
+    };
+  };
+  assert.equal(
+    await resolveNativeCargoTargetDirectory(
+      fixture.root,
+      { env: {} },
+      null,
+      "native.build",
+      runMetadata,
+    ),
+    redirected,
+  );
+  assert.equal(
+    await resolveNativeCargoTargetDirectory(
+      fixture.root,
+      { env: {} },
+      null,
+      "c2zc.rust-acceptance",
+      runMetadata,
+    ),
+    path.join(fixture.native, "target"),
+  );
+  assert.deepEqual(
+    seen.map(({ cwd }) => cwd),
+    [fixture.native, fixture.root],
+  );
+  assert.ok(
+    seen.every(
+      ({ command, args }) =>
+        command === "cargo" &&
+        args.includes("--locked") &&
+        args.includes("--offline"),
+    ),
   );
 });
 

@@ -580,6 +580,122 @@ describe("D2a profile egress gate", () => {
     ).not.toThrow();
   });
 
+  describe("successful Open result and queued Native notifications", () => {
+    const ready = {
+      schemaVersion: 1,
+      revision: 6,
+      status: "ready",
+      bindingToken: "opened-binding",
+      activation: "ready",
+    };
+    const result = { status: "ready", lifecycle: ready };
+
+    it.each(["result-first", "opened-first", "events-first"])(
+      "keeps new target readers alive for %s delivery",
+      async (order) => {
+        const invalidateProfileEgressCallers = vi.fn();
+        const gate = await createProfileEgressGate({
+          ...backend(),
+          invalidateProfileEgressCallers,
+        });
+        const old = gate.issueCallerIdentity(11);
+        if (order !== "result-first") {
+          gate.observeBackendEvent?.("workspace:opened", { path: "/target" });
+        }
+        if (order === "events-first") {
+          gate.observeBackendEvent?.("workspace:lifecycle-state", ready);
+        }
+        gate.observeWorkspaceOpenResult?.(JSON.stringify(result), "/target");
+        const current = gate.issueCallerIdentity(11);
+        expect(current.workspaceId).toBe("/target");
+        expect(current.callerId).not.toBe(old.callerId);
+        expect(() =>
+          gate.assertInvoke("save_global_settings", {
+            callerIdentity: old,
+          }),
+        ).toThrow(D2A_EGRESS_DENIED_MARKER);
+        const revocationsBeforeRead =
+          invalidateProfileEgressCallers.mock.calls.length;
+        if (order === "result-first") {
+          // This callback arrives while the new target DB reader is active.
+          gate.observeBackendEvent?.("workspace:opened", { path: "/target" });
+        }
+        gate.observeBackendEvent?.("workspace:lifecycle-state", ready);
+        expect(invalidateProfileEgressCallers).toHaveBeenCalledTimes(
+          revocationsBeforeRead,
+        );
+        expect(gate.issueCallerIdentity(11)).toEqual(current);
+        expect(() =>
+          gate.assertInvoke("save_global_settings", {
+            callerIdentity: current,
+          }),
+        ).not.toThrow();
+
+        // A real subsequent Open at the same path must still revoke readers.
+        gate.observeBackendEvent?.("workspace:lifecycle-state", {
+          ...ready,
+          revision: 7,
+          status: "transition",
+          activation: "none",
+        });
+        gate.observeBackendEvent?.("workspace:opened", { path: "/target" });
+        expect(() =>
+          gate.assertInvoke("save_global_settings", {
+            callerIdentity: current,
+          }),
+        ).toThrow(D2A_EGRESS_DENIED_MARKER);
+      },
+    );
+
+    it.each([
+      { ...result, status: "recovery-required" },
+      { ...result, lifecycle: { ...ready, revision: -1 } },
+      { ...result, lifecycle: { ...ready, bindingToken: "" } },
+      { ...result, lifecycle: { ...ready, schemaVersion: 2 } },
+      { ...result, lifecycle: { ...ready, activation: "requires-open" } },
+    ])(
+      "does not bind malformed or non-Ready Open results: %j",
+      async (invalid) => {
+        const gate = await createProfileEgressGate(backend());
+        const before = gate.issueCallerIdentity(11);
+        gate.observeWorkspaceOpenResult?.(invalid, "/target");
+        expect(gate.issueCallerIdentity(11)).toEqual(before);
+        gate.observeBackendEvent?.("workspace:opened", { path: "/target" });
+        expect(gate.issueCallerIdentity(11).callerId).not.toBe(before.callerId);
+      },
+    );
+
+    it("cannot resurrect an old result after a newer Closed lifecycle", async () => {
+      const gate = await createProfileEgressGate(backend());
+      gate.observeWorkspaceOpenResult?.(result, "/target");
+      gate.observeBackendEvent?.("workspace:lifecycle-state", {
+        ...ready,
+        revision: 8,
+        status: "closed",
+        activation: "none",
+        bindingToken: null,
+      });
+      gate.observeWorkspaceOpenResult?.(result, "/target");
+      expect(gate.issueCallerIdentity(11).workspaceId).toBeNull();
+    });
+
+    it("does not acknowledge a different workspace or a restore-only notification", async () => {
+      const gate = await createProfileEgressGate(backend());
+      gate.observeWorkspaceOpenResult?.(result, "/target");
+      const before = gate.issueCallerIdentity(11);
+      gate.observeBackendEvent?.("workspace:opened", {
+        path: "/other",
+        restoreOnly: true,
+      });
+      expect(gate.issueCallerIdentity(11).workspaceId).toBe("/other");
+      expect(() =>
+        gate.assertInvoke("save_global_settings", {
+          callerIdentity: before,
+        }),
+      ).toThrow(D2A_EGRESS_DENIED_MARKER);
+    });
+  });
+
   it("retains the Native recovery binding through requires-open", async () => {
     const gate = await createProfileEgressGate(backend());
     gate.observeBackendEvent?.("workspace:opened", {

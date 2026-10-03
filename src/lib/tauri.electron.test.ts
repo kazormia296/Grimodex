@@ -334,6 +334,66 @@ describe("caller timeout policy（electron 分岐）", () => {
     await Promise.resolve();
   });
 
+  it("a failed update check in flight does not veto document quiescence", async () => {
+    let rejectBridge!: (error: Error) => void;
+    installBridge({
+      invoke: vi.fn().mockReturnValue(
+        new Promise((_resolve, reject) => {
+          rejectBridge = reject;
+        }),
+      ),
+    });
+    const [{ invoke }, { flushQuiescenceProviderStage }] = await Promise.all([
+      import("./tauri"),
+      import("./quiescenceProviders"),
+    ]);
+    const checkOutcome = invoke("updater_check").catch(
+      (error: unknown) => error,
+    );
+    await Promise.resolve();
+
+    const quiescence = flushQuiescenceProviderStage("ipc-actual-tasks");
+    rejectBridge(
+      new Error("Electron updater is unavailable in development builds"),
+    );
+
+    await expect(quiescence).resolves.toBeUndefined();
+    await expect(checkOutcome).resolves.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_READ_CANCELLED",
+    });
+  });
+
+  it.each(["updater_download", "updater_install"])(
+    "%s failure still vetoes document quiescence",
+    async (command) => {
+      let rejectBridge!: (error: Error) => void;
+      installBridge({
+        invoke: vi.fn().mockReturnValue(
+          new Promise((_resolve, reject) => {
+            rejectBridge = reject;
+          }),
+        ),
+      });
+      const [{ invoke }, { flushQuiescenceProviderStage }] = await Promise.all([
+        import("./tauri"),
+        import("./quiescenceProviders"),
+      ]);
+      const updateOutcome = invoke(command).catch((error: unknown) => error);
+      await Promise.resolve();
+
+      const quiescence = flushQuiescenceProviderStage("ipc-actual-tasks");
+      rejectBridge(new Error("update operation failed"));
+
+      await expect(quiescence).rejects.toMatchObject({
+        name: "QuiescenceProviderStageError",
+      });
+      await expect(updateOutcome).resolves.toMatchObject({
+        name: "IpcInvokeError",
+      });
+    },
+  );
+
   it.each([
     "fts_search",
     "nir1_evidence_qualify",

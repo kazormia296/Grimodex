@@ -26,6 +26,7 @@ import {
   createProductJourneyJournal,
   createProductJourneyHarness,
   invokeOk,
+  isMainProcessErrorMessage,
   killProcessTree,
   NARRATIVE_MAINTENANCE_NONCE_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
@@ -53,6 +54,7 @@ import {
 import {
   configureWorkspace,
   PRODUCT_JOURNEYS,
+  selectPersistedFolderScopeAnchor,
 } from "../electron/scripts/product-journeys.mjs";
 import {
   NARRATIVE_MAINTENANCE_FAULT_ENV,
@@ -65,6 +67,21 @@ const repoRoot = path.resolve(
 );
 const execFile = promisify(execFileCallback);
 
+test("folder scope anchor waits for the new folder's persisted rename", () => {
+  const existing = new Set(["older-folder"]);
+  const title = "Product Journey Folder";
+  const rows = [
+    { id: "older-folder", title },
+    { id: "new-folder", title: "Part.1" },
+  ];
+  assert.equal(selectPersistedFolderScopeAnchor(rows, existing, title), null);
+  rows[1].title = title;
+  assert.deepEqual(selectPersistedFolderScopeAnchor(rows, existing, title), {
+    id: "new-folder",
+    title,
+  });
+});
+
 async function read(relativePath) {
   return readFile(path.join(repoRoot, relativePath), "utf8");
 }
@@ -75,6 +92,33 @@ function runCommands(job) {
     .map((step) => step.run)
     .join("\n");
 }
+
+test("Native lifecycle evidence preserves existing stderr classifications", () => {
+  // Native records use E/P/J for returned-error/panic/non-panic JoinError.
+  // Metadata cannot turn an already allowed retry into an extra CI failure.
+  for (const cause of ["E", "P", "J"]) {
+    const record = `[workspace-lifecycle-diag] ${JSON.stringify({
+      version: 1,
+      pid: 1,
+      timestampMs: 1,
+      producer: "freshness",
+      cause,
+      boundary: "handoff",
+      site: null,
+      revision: 3,
+      state: "recovery-required",
+      shutdownRequested: false,
+      descriptorId: 1,
+      owner: "Maintenance",
+      rootOperationId: 1,
+    })}`;
+    assert.equal(isMainProcessErrorMessage(record), false);
+    assert.equal(
+      isMainProcessErrorMessage(`${record}\nactual worker failed`),
+      true,
+    );
+  }
+});
 
 test("package.json exposes the runner and canonical product journey contracts", async () => {
   const packageJson = JSON.parse(await read("package.json"));
@@ -4897,7 +4941,7 @@ test("product journey harness fails closed on unallowed error-class main stderr"
   );
 });
 
-test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics", async (t) => {
+test("expired default Ubuntu Xvfb allowances leave every error unallowed", async (t) => {
   const mainStderr = new EventEmitter();
   const page = {
     isClosed: () => false,
@@ -4953,19 +4997,41 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
       phase,
       message,
     })),
-    [{ phase: "configure", message: "Fatal: database corruption\n" }],
+    [
+      {
+        phase: "configure",
+        message:
+          '[6341:0730/134519.105645:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")\n',
+      },
+      {
+        phase: "configure",
+        message:
+          "[6341:0730/134519.106425:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n",
+      },
+      {
+        phase: "configure",
+        message:
+          "[6468:0730/134521.502865:ERROR:gpu/command_buffer/service/context_group.cc:148] ContextResult::kFatalFailure: WebGL2 blocklisted\n",
+      },
+      {
+        phase: "configure",
+        message:
+          "[8054:0730/135929.157713:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox.\n",
+      },
+      { phase: "configure", message: "Fatal: database corruption\n" },
+    ],
   );
 });
 
-test("restore reload allowance enforces exact phase, message, and expiry", async (t) => {
+test("restore reload warning has no static phase-and-message allowance", async (t) => {
   const exact =
     "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n";
-  for (const { name, phase, message, allowed, now = "2026-09-07" } of [
+  for (const { name, phase, message, allowed, now = "2026-10-03" } of [
     {
       name: "exact restore message",
       phase: "c2-5b-restore-verify-rebuild-verify/restore",
       message: exact,
-      allowed: true,
+      allowed: false,
     },
     {
       name: "old open phase is rejected",
@@ -4990,7 +5056,7 @@ test("restore reload allowance enforces exact phase, message, and expiry", async
       phase: "c2-5b-restore-verify-rebuild-verify/restore",
       message: exact,
       allowed: false,
-      now: "2026-10-01",
+      now: "2026-10-18",
     },
   ]) {
     await t.test(name, async (t) => {
@@ -5070,7 +5136,312 @@ test("restore reload allowance enforces exact phase, message, and expiry", async
   }
 });
 
-test("C2-ZC restore reload allows the exact Ubuntu Xvfb Skia mailbox line", async (t) => {
+test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL reload", async (t) => {
+  const exact =
+    "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n";
+  const runtime = {
+    electron: "43.5.0",
+    chrome: "150.0.7871.250",
+    platform: "linux",
+    x11Session: true,
+    display: true,
+    waylandDisplay: false,
+    waylandSocket: false,
+    xvfbMarker: true,
+    swiftshader: true,
+  };
+  const png = Buffer.alloc(24);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
+  png.write("IHDR", 12, "ascii");
+  png.writeUInt32BE(8, 16);
+  png.writeUInt32BE(8, 20);
+  const phases = [
+    "c2-5b-restore-verify-rebuild-verify/restore",
+    "c2-zc-canonical-authority-cutover/restore",
+    "c2-zc-post-marker-lifecycle/bootstrap-restore",
+  ];
+  const cases = [
+    ...phases.map((phase) => ({
+      name: `recovered ${phase}`,
+      phase,
+      allowed: true,
+    })),
+    { name: "warning before the guard", emission: "before", allowed: false },
+    { name: "warning after the callback", emission: "after", allowed: false },
+    { name: "two exact warnings", warningCount: 2, allowed: false },
+    {
+      name: "no main-frame navigation",
+      navigationCount: 0,
+      recoveryFails: true,
+    },
+    {
+      name: "two main-frame navigations",
+      navigationCount: 2,
+      recoveryFails: true,
+    },
+    { name: "unchanged time origin", changeOrigin: false, recoveryFails: true },
+    {
+      name: "callback throws after warning",
+      callbackThrows: true,
+      recoveryFails: true,
+    },
+    {
+      name: "page closes during restore",
+      pageCloses: true,
+      recoveryFails: true,
+    },
+    {
+      name: "renderer fallback",
+      proof: { renderer: "none" },
+      recoveryFails: true,
+    },
+    {
+      name: "lost context",
+      proof: { contextLost: true },
+      recoveryFails: true,
+    },
+    {
+      name: "blank canvas pixels",
+      pixels: { nonBlankPixels: false },
+      recoveryFails: true,
+    },
+    {
+      name: "no UI interaction",
+      proof: { interaction: false },
+      recoveryFails: true,
+    },
+    {
+      name: "wrong Chromium runtime",
+      runtime: { chrome: "150.0.7871.251" },
+      allowed: false,
+    },
+    {
+      name: "Wayland socket is still present",
+      runtime: { waylandSocket: true },
+      allowed: false,
+    },
+    {
+      name: "wrong restore phase",
+      phase: "c2-zc-canonical-authority-cutover/open",
+      allowed: false,
+    },
+    { name: "expired exception", now: "2026-10-18", allowed: false },
+    {
+      name: "near-match GPU warning",
+      message: exact.replace("ProduceSkia:", "ProduceSkiaNearMatch:"),
+      allowed: false,
+    },
+    {
+      name: "warning too early for navigation",
+      earlyMs: 5_001,
+      allowed: false,
+    },
+    {
+      name: "unsupported runtime without warning still runs",
+      runtime: { xvfbMarker: false },
+      message: null,
+      allowed: true,
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      t.mock.timers.enable({
+        apis: ["Date"],
+        now: new Date(scenario.now ?? "2026-10-03T00:00:00Z"),
+      });
+      const artifactRoot = await mkdtemp(path.join(os.tmpdir(), "skia-guard-"));
+      t.after(() => rm(artifactRoot, { recursive: true, force: true }));
+      const stderr = new EventEmitter();
+      const frame = {};
+      let timeOrigin = 100;
+      let pageClosed = false;
+      const page = new EventEmitter();
+      page.isClosed = () => pageClosed;
+      page.mainFrame = () => frame;
+      page.evaluate = async (fn) =>
+        fn.toString().includes("performance.timeOrigin") ? timeOrigin : [];
+      page.waitForFunction = async () => undefined;
+      page.screenshot = async () => undefined;
+      page.locator = (selector) => {
+        assert.equal(selector, "[data-editor-ambient] canvas");
+        return {
+          screenshot: async (options) => {
+            assert.match(
+              options.style,
+              /html, body \{ background: #000 !important; \}/,
+            );
+            assert.match(
+              options.style,
+              /body \* \{ visibility: hidden !important; \}/,
+            );
+            assert.match(
+              options.style,
+              /\[data-editor-ambient\] canvas \{ visibility: visible !important; background: #000 !important; \}/,
+            );
+            assert.doesNotMatch(
+              options.style,
+              /\[data-editor-ambient\]\s*(?:,|\*)/,
+            );
+            return png;
+          },
+        };
+      };
+      let appEvaluations = 0;
+      const app = {
+        firstWindow: async () => page,
+        process: () => childProcessStub({ stderr }),
+        evaluate: async (_fn, screenshotBase64) => {
+          appEvaluations += 1;
+          if (appEvaluations === 1) {
+            assert.equal(screenshotBase64, undefined);
+            return { ...runtime, ...scenario.runtime };
+          }
+          assert.equal(screenshotBase64, png.toString("base64"));
+          return {
+            width: 8,
+            height: 8,
+            pixelSampleCount: 64,
+            nonBlankPixels: true,
+            ...scenario.pixels,
+          };
+        },
+      };
+      const harness = createProductJourneyHarness({
+        artifactRoot,
+        mainCjs: "/tmp/fake-main.cjs",
+        electronBin: "/tmp/fake-electron",
+        electronLauncher: { launch: async () => app },
+        closeApp: async () => stderr.emit("end"),
+      });
+      t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
+
+      const phase = scenario.phase ?? phases[0];
+      const launched = await harness.launch(phase);
+      const message = scenario.message === undefined ? exact : scenario.message;
+      if (scenario.emission === "before") stderr.emit("data", message);
+      const restore = harness.withRestoreRendererReload(page, async () => {
+        if (scenario.name === `recovered ${phases[0]}`) {
+          await assert.rejects(
+            harness.withRestoreRendererReload(page, async () => undefined),
+            /one live, unused launch/,
+          );
+        }
+        if (scenario.emission !== "before" && scenario.emission !== "after") {
+          for (let n = 0; n < (scenario.warningCount ?? 1); n += 1) {
+            if (message) stderr.emit("data", message);
+          }
+        }
+        if (scenario.earlyMs) {
+          t.mock.timers.setTime(Date.now() + scenario.earlyMs);
+        }
+        if ((scenario.navigationCount ?? 1) > 0) {
+          if (scenario.changeOrigin !== false) timeOrigin = 200;
+          for (let n = 0; n < (scenario.navigationCount ?? 1); n += 1) {
+            page.emit("framenavigated", frame);
+          }
+        }
+        if (scenario.pageCloses) pageClosed = true;
+        if (scenario.callbackThrows) {
+          throw new Error("deliberate restore callback failure");
+        }
+        return {
+          renderer: "webgl",
+          canvasSelector: "[data-editor-ambient] canvas",
+          canvasWidth: 8,
+          canvasHeight: 8,
+          contextLost: false,
+          drawCount: 2,
+          interaction: true,
+          timeOrigin,
+          ...scenario.proof,
+        };
+      });
+      if (scenario.recoveryFails) {
+        await assert.rejects(
+          restore,
+          scenario.callbackThrows
+            ? /deliberate restore callback failure/
+            : /restore reload/,
+        );
+      } else {
+        await restore;
+      }
+      if (scenario.name === `recovered ${phases[0]}`) {
+        await assert.rejects(
+          harness.withRestoreRendererReload(page, async () => undefined),
+          /one live, unused launch/,
+        );
+      }
+      if (scenario.emission === "after" && message)
+        stderr.emit("data", message);
+      await harness.close(launched.app, launched.page, phase);
+      const diagnosticError = await harness.finalizeDiagnostics().then(
+        () => null,
+        (error) => error,
+      );
+      const allowed = scenario.allowed === true;
+      assert.equal(
+        diagnosticError?.name ?? null,
+        allowed ? null : "MainProcessDiagnosticsError",
+      );
+      const diagnostics = harness.diagnostics();
+      assert.equal(diagnostics.mainCleanPass, allowed);
+      assert.equal(
+        diagnostics.mainErrorCount,
+        message ? (scenario.warningCount ?? 1) : 0,
+      );
+      assert.equal(diagnostics.restoreReloadGuards.length, 1);
+      assert.equal(page.listenerCount("framenavigated"), 0);
+      if (scenario.name === `recovered ${phases[0]}`) {
+        const receipt = diagnostics.restoreReloadGuards[0];
+        assert.equal(receipt.status, "eligible");
+        assert.equal(receipt.allowanceApplied, true);
+        assert.equal(receipt.proof.pixelSampleCount, 64);
+        assert.equal(receipt.proof.nonBlankPixels, true);
+        assert.equal(
+          receipt.proof.screenshotSha256,
+          createHash("sha256").update(png).digest("hex"),
+        );
+        assert.deepEqual(await readFile(receipt.proof.screenshotPath), png);
+        await harness.captureFailureArtifact("boundary");
+        const records = JSON.parse(
+          await readFile(
+            path.join(
+              artifactRoot,
+              "boundary",
+              "runtime",
+              "diagnostics",
+              "main-diagnostics.json",
+            ),
+            "utf8",
+          ),
+        );
+        assert.equal(records[0].launchId, launched.launchId);
+        assert.equal(records[0].allowance.guardReceiptId, receipt.id);
+        const timeline = JSON.parse(
+          await readFile(
+            path.join(
+              artifactRoot,
+              "boundary",
+              "runtime",
+              "diagnostics",
+              "authority-timeline.json",
+            ),
+            "utf8",
+          ),
+        );
+        assert.ok(
+          timeline.some((entry) => entry.event === "restore-reload-guard"),
+        );
+        t.mock.timers.setTime(new Date("2026-10-18T00:00:00Z").getTime());
+        assert.equal(harness.diagnostics().mainCleanPass, false);
+      }
+    });
+  }
+});
+
+test("expired C2-ZC Skia mailbox allowance fails clean diagnostics", async (t) => {
   const mainStderr = new EventEmitter();
   const page = {
     isClosed: () => false,
@@ -5102,10 +5473,14 @@ test("C2-ZC restore reload allows the exact Ubuntu Xvfb Skia mailbox line", asyn
   );
   await harness.close(launched.app, launched.page, phase);
 
-  const diagnostics = await harness.finalizeDiagnostics();
-  assert.equal(diagnostics.mainErrorCount, 1);
-  assert.deepEqual(diagnostics.unallowedMainErrors, []);
-  assert.equal(diagnostics.mainCleanPass, true);
+  await assert.rejects(
+    harness.finalizeDiagnostics(),
+    (error) =>
+      error.name === "MainProcessDiagnosticsError" &&
+      error.diagnostics.mainErrorCount === 1 &&
+      error.diagnostics.unallowedMainErrors.length === 1 &&
+      error.diagnostics.mainCleanPass === false,
+  );
 });
 
 test("C2-ZC Skia mailbox allowance remains phase- and message-exact", async (t) => {

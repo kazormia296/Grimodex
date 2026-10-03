@@ -6,6 +6,8 @@ import {
   PRODUCT_JOURNEY_AI_VERSION,
   PRODUCT_JOURNEY_AUTHORITY_EARLY,
   PRODUCT_JOURNEY_AUTHORITY_LATE,
+  PRODUCT_JOURNEY_AGENT_MARKER,
+  PRODUCT_JOURNEY_AGENT_OUTPUT,
   shouldUseProductJourneyAi,
   wrapBackendForProductJourneyAi,
 } from "./productJourneyAi.js";
@@ -151,6 +153,39 @@ describe("product journey AI backend", () => {
           },
         },
       ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds an Agent response at the lifecycle boundary before returning its old-scope output", async () => {
+    vi.useFakeTimers();
+    try {
+      const { backend } = backendStub();
+      const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+      expect(
+        JSON.parse(
+          await wrapped.listAiModels!({ provider: "ollama" }, {}, ""),
+        )[0],
+      ).toMatchObject({
+        id: "product-journey-model",
+        supportedParameters: ["tools"],
+      });
+      let settled = false;
+      const response = wrapped.sendAgentMessage!(
+        { messages: [{ role: "user", content: PRODUCT_JOURNEY_AGENT_MARKER }] },
+        {},
+        "",
+      ).then((wire) => {
+        settled = true;
+        return JSON.parse(wire);
+      });
+      await vi.advanceTimersByTimeAsync(3_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect((await response).blocks[0].content).toBe(
+        PRODUCT_JOURNEY_AGENT_OUTPUT,
+      );
     } finally {
       vi.useRealTimers();
     }

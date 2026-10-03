@@ -1327,6 +1327,10 @@ mod tests {
         assert_eq!(completed.status, WorkspaceLifecycleStatus::Ready);
         assert_eq!(completed.activation, WorkspaceLifecycleActivation::Ready);
         assert_eq!(completed.binding_token, Some(w2_token));
+        // Background recovery preserves the live binding but really advances
+        // the Native revision exposed to renderer hydration consumers.
+        assert!(completed.revision > ready_w2.revision);
+        assert!(completed.revision > retry.revision);
 
         let _ = std::fs::remove_dir_all(root);
     }

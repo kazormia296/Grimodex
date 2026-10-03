@@ -547,6 +547,8 @@ export interface ProfileEgressGate {
   observeBackendEvent?(channel: string, payload: unknown): void;
   /** Main-only proof from a Native restore result; never exposed to renderer. */
   observeWorkspaceLifecycleResult?(payload: unknown): void;
+  /** Trusted successful Native Open result plus the main-validated target. */
+  observeWorkspaceOpenResult?(payload: unknown, workspacePath: string): void;
 }
 
 interface ReadyWorkspaceBinding {
@@ -591,6 +593,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
    */
   private lastReadyWorkspaceBinding: ReadyWorkspaceBinding | null = null;
   private pendingUnchangedWorkspaceBinding: ReadyWorkspaceBinding | null = null;
+  private pendingOpenedWorkspaceBinding: ReadyWorkspaceBinding | null = null;
   private readonly identities = new Map<number, MainIssuedCallerIdentity>();
   private readonly registrationErrors = new Map<number, string>();
 
@@ -948,6 +951,59 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     }
   }
 
+  observeWorkspaceOpenResult(payload: unknown, workspacePath: string): void {
+    let value: unknown = payload;
+    if (typeof value === "string") {
+      try {
+        value = JSON.parse(value) as unknown;
+      } catch {
+        return;
+      }
+    }
+    if (value === null || typeof value !== "object") return;
+    const result = value as Record<string, unknown>;
+    if (result.status !== "ready" && result.status !== "migrated") return;
+    const snapshot = result.lifecycle;
+    if (snapshot === null || typeof snapshot !== "object") return;
+    const lifecycle = snapshot as Record<string, unknown>;
+    if (
+      workspacePath.trim() === "" ||
+      lifecycle.schemaVersion !== 1 ||
+      !Number.isSafeInteger(lifecycle.revision) ||
+      (lifecycle.revision as number) < 0 ||
+      lifecycle.status !== "ready" ||
+      lifecycle.activation !== "ready" ||
+      typeof lifecycle.bindingToken !== "string" ||
+      lifecycle.bindingToken.trim() === "" ||
+      (lifecycle.revision as number) < this.lifecycleRevision ||
+      ((lifecycle.revision as number) === this.lifecycleRevision &&
+        lifecycle.bindingToken !== this.lifecycleBindingToken)
+    ) {
+      return;
+    }
+    if (
+      this.lifecycleRevision === lifecycle.revision &&
+      this.lifecycleStatus === "ready" &&
+      this.lifecycleActivation === "ready" &&
+      this.workspaceId === workspacePath
+    ) {
+      return;
+    }
+
+    // Native publishes Opened then Ready through one nonblocking event bus;
+    // its Promise result can overtake those callbacks. Bind before replying,
+    // so renderer hydration cannot mint readers that those queued callbacks
+    // immediately revoke. The next terminal Ready or newer lifecycle closes
+    // this single acknowledgement; genuine replacement still revokes.
+    this.observeBackendEvent("workspace:opened", { path: workspacePath });
+    this.observeBackendEvent("workspace:lifecycle-state", lifecycle);
+    this.pendingOpenedWorkspaceBinding = {
+      workspaceId: workspacePath,
+      bindingToken: lifecycle.bindingToken,
+      revision: lifecycle.revision as number,
+    };
+  }
+
   private restoreNormalWorkspaceBinding(proof: ReadyWorkspaceBinding): void {
     if (this.recoveryWorkspaceId !== null) {
       this.pendingUnchangedWorkspaceBinding = null;
@@ -993,6 +1049,12 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       }
       const revision = record.revision as number;
       if (revision < this.lifecycleRevision) return;
+      if (
+        this.pendingOpenedWorkspaceBinding !== null &&
+        revision >= this.pendingOpenedWorkspaceBinding.revision
+      ) {
+        this.pendingOpenedWorkspaceBinding = null;
+      }
       const token =
         typeof record.bindingToken === "string" ? record.bindingToken : null;
       const bindingChanged =
@@ -1108,6 +1170,21 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     // contract or exposing renderer-supplied identity.
     const workspaceId = nestedWorkspaceId ?? record.workspaceId ?? record.path;
     if (typeof workspaceId !== "string" || workspaceId.trim() === "") return;
+    const pendingOpened = this.pendingOpenedWorkspaceBinding;
+    this.pendingOpenedWorkspaceBinding = null;
+    if (
+      record.restoreOnly !== true &&
+      pendingOpened !== null &&
+      workspaceId === pendingOpened.workspaceId &&
+      this.workspaceId === pendingOpened.workspaceId &&
+      this.lifecycleRevision === pendingOpened.revision &&
+      this.lifecycleBindingToken === pendingOpened.bindingToken &&
+      this.lifecycleStatus === "ready" &&
+      this.lifecycleActivation === "ready"
+    ) {
+      return;
+    }
+
     if (workspaceId !== this.workspaceId || this.identities.size > 0) {
       const senderIds = [...this.identities.keys()];
       try {

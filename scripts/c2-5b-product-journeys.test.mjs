@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
 import initSqlJs from "sql.js/dist/sql-asm.js";
 import yaml from "js-yaml";
 
@@ -51,6 +52,8 @@ import {
   runRestoreVerifyRebuildVerifyScenario,
   selectChangedDigestRun,
   finishDigestChangeBaseline,
+  waitForStableLedger,
+  verifyRestoreRendererRecovery,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
@@ -64,6 +67,7 @@ import {
 import {
   expectedNarrativeMaintenanceCiReceipt,
   PRODUCT_JOURNEY_ELECTRON_PHASES,
+  waitUntil,
 } from "../electron/scripts/product-journey-harness.mjs";
 import {
   resolveProductJourneyImpactCatalog,
@@ -1140,6 +1144,51 @@ test("C2-5B journey seam constants keep exact durable failure contracts", () => 
     "productJourneyBarrierId",
     "correlation",
   ]);
+});
+
+test("restore ledger observation waits for the editor renderer to finish startup", async () => {
+  const waitForRenderer =
+    narrativeMaintenanceProductJourneys.waitForRestoreRendererStartupForTest;
+  assert.equal(typeof waitForRenderer, "function");
+  let states = [null, "initializing", "webgl"];
+  const observed = [];
+  const page = {
+    waitForFunction: async (predicate, argument, options) => {
+      assert.equal(argument, undefined);
+      assert.equal(options.timeout, 60_000);
+      for (const state of states) {
+        const ready = runInNewContext(`(${predicate.toString()})()`, {
+          document: {
+            querySelector: (selector) => {
+              assert.equal(selector, "[data-editor-ambient]");
+              return state === null ? null : { getAttribute: () => state };
+            },
+          },
+        });
+        observed.push({ state, ready });
+        if (ready) return;
+      }
+      throw new Error("renderer startup did not reach a terminal state");
+    },
+  };
+  await waitForRenderer(page);
+  assert.deepEqual(observed, [
+    { state: null, ready: false },
+    { state: "initializing", ready: false },
+    { state: "webgl", ready: true },
+  ]);
+
+  for (const state of ["fallback", "none"]) {
+    states = ["initializing", state];
+    observed.length = 0;
+    await waitForRenderer(page);
+    assert.deepEqual(observed, [
+      { state: "initializing", ready: false },
+      { state, ready: true },
+    ]);
+  }
+  states = ["initializing"];
+  await assert.rejects(waitForRenderer(page), /did not reach a terminal state/);
 });
 
 test("C2-5B restore scenario phases capture an active owner receipt per launch", async () => {
@@ -2311,6 +2360,98 @@ test("restore fixture binds owner Run mutations to the exact active workspace", 
   );
 });
 
+test("restore recovery requires a rendered WebGL frame and a working workspace menu", async () => {
+  for (const invalid of [
+    null,
+    "fallback",
+    "dimensions",
+    "lost",
+    "pending",
+    "undrawn",
+    "workspace",
+  ]) {
+    const events = [];
+    const canvas = {
+      width: invalid === "dimensions" ? 0 : 800,
+      height: 551,
+      closest: () => ({
+        getAttribute: () => (invalid === "fallback" ? "fallback" : "webgl"),
+      }),
+      getContext: () => ({ isContextLost: () => invalid === "lost" }),
+      parentElement: {
+        paperShaderMount: {
+          getPerformanceStats: () => ({
+            drawCount: invalid === "undrawn" ? 0 : 2,
+            isStaticFrameReady: invalid !== "pending",
+          }),
+        },
+      },
+    };
+    const trigger = {
+      locator: () => ({
+        first: () => ({
+          textContent: async () =>
+            invalid === "workspace" ? "wrong" : "restored",
+        }),
+      }),
+      click: async () => events.push("click"),
+    };
+    const menu = {
+      waitFor: async ({ state }) => events.push(state),
+      getByText: (text, options) => {
+        assert.equal(text, "restored");
+        assert.equal(options.exact, true);
+        return {
+          first: () => ({ waitFor: async () => events.push("restored-label") }),
+        };
+      },
+    };
+    const context = {
+      page: {
+        evaluate: async (fn, selector) =>
+          runInNewContext(`(${fn})(${JSON.stringify(selector)})`, {
+            document: { querySelector: () => canvas },
+            performance: { timeOrigin: 456 },
+          }),
+        getByTestId: (id) => (id === "workspace-menu-trigger" ? trigger : menu),
+      },
+      harness: {
+        waitUntil: async (read) => {
+          const state = await read();
+          if (!state) throw new Error("renderer is not healthy");
+          return state;
+        },
+      },
+    };
+    if (invalid) {
+      await assert.rejects(
+        verifyRestoreRendererRecovery(context, "restored"),
+        /not healthy|workspace identity/,
+      );
+      assert.deepEqual(events, []);
+    } else {
+      const proof = await verifyRestoreRendererRecovery(context, "restored");
+      assert.deepEqual(proof, {
+        renderer: "webgl",
+        canvasWidth: 800,
+        canvasHeight: 551,
+        contextLost: false,
+        drawCount: 2,
+        timeOrigin: 456,
+        canvasSelector: "[data-editor-ambient] canvas",
+        interaction: true,
+      });
+      assert.deepEqual(events, [
+        "click",
+        "visible",
+        "restored-label",
+        "click",
+        "hidden",
+      ]);
+    }
+  }
+});
+
 test("restore journey must exercise the Settings backup UI and rebind after reload", async () => {
   const source = await readFile(
     new URL(
@@ -2378,6 +2519,11 @@ test("restore journey must exercise the Settings backup UI and rebind after relo
     helperBody,
     /framenavigated[\s\S]*frame === page\.mainFrame\(\)/,
     "restore helper must observe the main-frame reload",
+  );
+  assert.match(helperBody, /withRestoreRendererReload\(page, async \(\) =>/);
+  assert.match(
+    helperBody,
+    /verifyRestoreRendererRecovery\(context, workspaceName\)/,
   );
   assert.match(
     scenarioBody,
@@ -2704,6 +2850,54 @@ test("settled interruption recovery rejects duplicate, non-terminal, and stale r
       ),
     /at or before the stale Run completedAt/,
     "a recovery created before stale completion must remain red",
+  );
+});
+
+test("stable ledger allows slow reads while retaining delayed Repair and timeout checks", async (t) => {
+  let now = 0;
+  t.mock.method(Date, "now", () => now);
+  const verify = {
+    id: "verify",
+    runKind: "dependency-verify",
+    status: "completed",
+  };
+  const repair = {
+    id: "repair",
+    runKind: "dependency-repair",
+    status: "completed",
+  };
+  let reads = 0;
+  let rowsForRead = () => [verify];
+  const context = {
+    harness: {
+      waitUntil: (predicate, label, timeoutMs) =>
+        waitUntil(predicate, label, timeoutMs, 0),
+    },
+    runs: async () => {
+      now += 1_500;
+      reads += 1;
+      return rowsForRead(reads);
+    },
+  };
+
+  const stableRows = await waitForStableLedger(context, [], "slow ledger");
+  assert.equal(reads, 4, "all four equal samples remain required");
+  assertNoAutomaticRepair(stableRows);
+
+  reads = 0;
+  rowsForRead = (read) => (read < 4 ? [verify] : [verify, repair]);
+  const repairedRows = await waitForStableLedger(context, [], "late repair");
+  assert.equal(reads, 7, "a changed ledger resets the stability count");
+  assert.throws(
+    () => assertNoAutomaticRepair(repairedRows),
+    /human-only Repair/,
+  );
+
+  reads = 0;
+  rowsForRead = (read) => [{ ...verify, id: `changing-${read}` }];
+  await assert.rejects(
+    waitForStableLedger(context, [], "changing ledger"),
+    /timeout waiting for changing ledger/,
   );
 });
 

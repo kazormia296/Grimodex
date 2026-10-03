@@ -1,5 +1,5 @@
 import { useRef, useCallback } from "react";
-import type { Node } from "@xyflow/react";
+import type { Node, OnNodeDrag } from "@xyflow/react";
 
 // Fallback sizes for containment detection when React Flow hasn't measured yet
 const DEFAULT_NODE_SIZE: Record<string, { w: number; h: number }> = {
@@ -38,7 +38,7 @@ export function useFrameGroupDrag({
   const stateRef = useRef<FrameDragState | null>(null);
 
   const onNodeDragStart = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
+    (_event: Parameters<OnNodeDrag>[0], node: Node) => {
       if (!node.id.startsWith("frame:")) return;
 
       const fw = (node.style?.width as number) ?? 400;
@@ -73,7 +73,7 @@ export function useFrameGroupDrag({
   );
 
   const onNodeDrag = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
+    (_event: Parameters<OnNodeDrag>[0], node: Node) => {
       const state = stateRef.current;
       if (!state || node.id !== state.frameId || state.contained.length === 0)
         return;
@@ -96,7 +96,7 @@ export function useFrameGroupDrag({
   );
 
   const onNodeDragStop = useCallback(
-    (_event: React.MouseEvent, node: Node) => {
+    (_event: Parameters<OnNodeDrag>[0], node: Node) => {
       const state = stateRef.current;
       stateRef.current = null;
       if (!state || node.id !== state.frameId || state.contained.length === 0)

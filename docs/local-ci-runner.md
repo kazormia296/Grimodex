@@ -17,6 +17,16 @@ overlapping, `slots` reserves part of the global twelve-slot limit, and
 `timeoutMs` optionally shortens the task timeout. The runner validates IDs,
 dependencies, slot bounds, and cycles before starting a command.
 
+Use `--max-parallel-tasks N` (1 through 12, default 12) to additionally limit
+the number of tasks admitted at once on a constrained host. For example,
+`pnpm ci:local:full -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks 1`
+runs tasks serially while preserving the twelve-slot budget, every task's
+command, internal worker count, timeout, and acceptance criteria. Twelve-slot
+tasks still run normally. The selected limit is bound into the existing receipt
+plan; pass the same option to `pnpm ci:local:verify -- full` with the same base
+and head. Quick supports the same option. This limits task overlap, not the
+resource consumption inside an individual task.
+
 PR-bound Quick evidence is collected only after focused validation and the
 requested candidate commit. Confirm the candidate worktree is clean, resolve
 `candidate_base` and `candidate_head` once, and pass those same expanded values
@@ -29,7 +39,6 @@ diagnostic evidence and cannot establish merge readiness.
 
 Product journeys wait for the created durable ID and its corresponding UI
 projection before editing. A visible selector alone is not a ready signal.
-
 
 The shared-Rust test obligation stays Cargo-native. Three two-slot tasks run the
 DB library, the DB integration targets plus `schema-contract`, and the rest of
@@ -72,7 +81,7 @@ its own 120-second timeout. The four-slot runtime contract task starts
 after workspace dependency bootstrap and can overlap independent gates. Runtime
 performance waits for it and every pre-runtime terminal task, then owns all
 twelve slots as the final group. Product journeys run as three fixed, disjoint
-processes covering all 28 catalog entries as 10/9/9 shards. Catalog order is retained within
+processes covering all 33 catalog entries as 11/11/11 shards. Catalog order is retained within
 each shard, and only the shard containing the catalog's C2-ZC acceptance roles
 sets `acceptanceRequired` and can complete C2-ZC acceptance. Each process
 has a calibrated two-slot scheduler admission weight. Exact co-load with all

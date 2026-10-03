@@ -1971,6 +1971,40 @@ describe("registerIpcRouter workspace-open main trace", () => {
     return { openWorkspace } as unknown as NapiBackendLike;
   }
 
+  it("consumes the trusted Open lifecycle proof before returning to renderer", async () => {
+    const value = JSON.stringify({
+      status: "ready",
+      lifecycle: {
+        schemaVersion: 1,
+        revision: 6,
+        status: "ready",
+        bindingToken: "open-token",
+        activation: "ready",
+      },
+    });
+    const gate = await createProfileEgressGate(null);
+    vi.spyOn(gate, "assertInvoke").mockImplementation(() => undefined);
+    const observeWorkspaceOpenResult = vi
+      .spyOn(gate, "observeWorkspaceOpenResult")
+      .mockImplementation(() => undefined);
+    registerIpcRouter(
+      backendWithOpenWorkspace(async () => value),
+      {},
+      undefined,
+      undefined,
+      undefined,
+      gate,
+    );
+    const envelope = await invokeHandler()({ sender: {} }, "open_workspace", {
+      path: "/target",
+    });
+    expect(envelope.ok).toBe(true);
+    expect(observeWorkspaceOpenResult).toHaveBeenCalledExactlyOnceWith(
+      JSON.parse(value),
+      "/target",
+    );
+  });
+
   it("waits for maintenance quiescence before swapping the native workspace", async () => {
     const order: string[] = [];
     let releaseQuiescence!: () => void;

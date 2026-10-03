@@ -3610,9 +3610,11 @@ mod tests {
             };
         let first_group_tokens = group_tokens(&first_revision_items[..5])?;
         let remaining_group_tokens = first_revision_items[5..]
-            .chunks_exact(5)
-            .chain(second_revision_items.chunks_exact(5))
-            .map(group_tokens)
+            .as_chunks::<5>()
+            .0
+            .iter()
+            .chain(second_revision_items.as_chunks::<5>().0.iter())
+            .map(|group| group_tokens(group))
             .collect::<anyhow::Result<Vec<_>>>()?;
         let smallest_omitted_group = *remaining_group_tokens
             .iter()
@@ -4557,7 +4559,9 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(revision_items.len(), 15);
             let group_token_counts = revision_items
-                .chunks_exact(5)
+                .as_chunks::<5>()
+                .0
+                .iter()
                 .map(|group| {
                     group.iter().try_fold(0usize, |tokens, item| {
                         tokens
@@ -4879,7 +4883,9 @@ mod tests {
             .filter(|item| item.input_ordinal() == revision_ordinal)
             .collect::<Vec<_>>();
         let group_tokens = revision_items
-            .chunks_exact(5)
+            .as_chunks::<5>()
+            .0
+            .iter()
             .map(|group| {
                 group.iter().try_fold(0usize, |tokens, item| {
                     tokens

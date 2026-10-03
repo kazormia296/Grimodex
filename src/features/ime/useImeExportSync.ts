@@ -87,8 +87,11 @@ export function useImeExportSync(): void {
   // Each renderer has its own scheduler module, so both main and panel publish
   // their local binding. Pointer ownership below remains main-only.
   useEffect(() => {
+    // Keep the old database identity valid while strict quiescence drains
+    // admitted turns. Workspace open clears it explicitly after that drain.
+    if (workspaceSwitchInProgress) return;
     setCurrentImeWorkspaceIdentity(workspaceIdentity);
-  }, [workspaceIdentity]);
+  }, [workspaceIdentity, workspaceSwitchInProgress]);
 
   // Project open/switch/language change: deactivate first. If refresh fails,
   // the previous workspace/project can never remain active by accident.

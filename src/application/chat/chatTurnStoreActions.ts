@@ -28,7 +28,10 @@ import {
   snapshotInputTokenRoute,
 } from "./chatTurnPayload";
 import { maybeRunSummarization } from "./chatSummarization";
-import { isCapturedWorkspaceCurrent } from "./chatSessionAuthority";
+import {
+  isCapturedProjectCurrent,
+  isCapturedWorkspaceCurrent,
+} from "./chatSessionAuthority";
 import {
   ChatTurnPersistenceError,
   MAX_RATE_LIMIT_RETRIES,
@@ -179,8 +182,6 @@ function createChatTurnStoreActions(
     executeTool,
     executeReadOnlyTool,
     recordAiUsage,
-    getTreeProjectId,
-    getLoadedProjectId,
     getCurrentProjectId,
     isCapturedWorkspaceCurrent,
     captureAgentPreflightAuthority,
@@ -387,14 +388,10 @@ function createChatTurnStoreActions(
       turnRuntime.setStoppedStreamFinalizer(null);
       const isCurrentTurn = (): boolean =>
         turnCoordinator.isCurrent(sendControl);
-      const capturedProjectIsCurrent = (): boolean => {
-        const liveProjectIds = [
-          get().activeProjectId,
-          getTreeProjectId(),
-          getLoadedProjectId(),
-        ].filter((id): id is string => Boolean(id));
-        return liveProjectIds.every((id) => id === turnProjectId);
-      };
+      // A stale async result can retain one project ID after another source
+      // has switched; compare all injected project projections each time.
+      const capturedProjectIsCurrent = (): boolean =>
+        isCapturedProjectCurrent(turnProjectId, ports);
       const capturedWorkspaceIsCurrent = (): boolean =>
         isCapturedWorkspaceCurrent(turnWorkspaceIdentity);
       const capturedChatAuthorityIsCurrent = (): boolean => {
@@ -427,25 +424,26 @@ function createChatTurnStoreActions(
           ) === turnRouteAuthorityKey
         );
       };
+      const capturedTurnAuthorityIsCurrent = (): boolean => {
+        return (
+          capturedWorkspaceIsCurrent() &&
+          capturedProjectIsCurrent() &&
+          capturedChatAuthorityIsCurrent()
+        );
+      };
       let replacementCommitted = false;
       const commitAssistantReplacement = async (): Promise<void> => {
         if (
           !replacementAssistantMessageId ||
           replacementCommitted ||
-          !capturedWorkspaceIsCurrent() ||
-          !capturedProjectIsCurrent() ||
-          !capturedChatAuthorityIsCurrent()
+          !capturedTurnAuthorityIsCurrent()
         ) {
           return;
         }
         try {
           await chatApi.deleteMessage(replacementAssistantMessageId);
           replacementCommitted = true;
-          if (
-            capturedWorkspaceIsCurrent() &&
-            capturedProjectIsCurrent() &&
-            capturedChatAuthorityIsCurrent()
-          ) {
+          if (capturedTurnAuthorityIsCurrent()) {
             set((state) => ({
               messages: state.messages.filter(
                 (message) => message.id !== replacementAssistantMessageId,
@@ -458,11 +456,7 @@ function createChatTurnStoreActions(
             "regenerate replacement cleanup",
             errorDetail(error),
           );
-          if (
-            capturedWorkspaceIsCurrent() &&
-            capturedProjectIsCurrent() &&
-            capturedChatAuthorityIsCurrent()
-          ) {
+          if (capturedTurnAuthorityIsCurrent()) {
             toast.error(i18next.t("chat.deleteMessageFailed"));
           }
         }
@@ -1426,7 +1420,13 @@ function createChatTurnStoreActions(
           } = agentLoopResult;
 
           const stoppedAgentTurnCanFinalize = canFinalizeStoppedAgentTurn();
-          if (shouldAbortTurn() && !stoppedAgentTurnCanFinalize) return;
+          if (shouldAbortTurn() && !stoppedAgentTurnCanFinalize) {
+            debugLog.warn(
+              "ChatStore",
+              `Agent completion lost turn authority: aborted=${sendControl.aborted} current=${isCurrentTurn()} transport=${transportStarted} workspace=${capturedWorkspaceIsCurrent()} project=${capturedProjectIsCurrent()} chat=${capturedChatAuthorityIsCurrent()}`,
+            );
+            return;
+          }
 
           // 上限で打ち切られたターンには「続行」ボタンを出す。質問上限(ask_user)は
           // 続行対象外（ユーザー回答待ちで止まる性質なので新予算で再開しても無意味）。

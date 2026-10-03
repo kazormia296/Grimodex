@@ -193,48 +193,58 @@ async function setupAggregateFixture(t) {
   return { bindings, dependencies, outputDirectory, root, shardDirectories };
 }
 
-test("fixed shards are disjoint and preserve catalog order within all 28 entries", () => {
+test("fixed shards are disjoint and preserve catalog order within all 33 entries", () => {
   assert.deepEqual(
     FIXED_PRODUCT_JOURNEY_SHARDS.map((ids) => ids.length),
-    [10, 9, 9],
+    [6, 4, 2, 6, 5, 6, 4],
   );
   assert.deepEqual(FIXED_PRODUCT_JOURNEY_SHARDS, [
-    [
-      "chat-stream-workspace-switch",
-      "lint-native-roundtrip",
-      "snapshot-native-roundtrip",
-      "chronicle-extract-review-apply-reopen",
-      "codex-entity-relation-review-apply-reopen",
-      "c2-5b-producer-generation-no-skip",
-      "c2-5b-interrupted-run-recovery",
-      "c2-5b-foreground-write-workspace-wake",
-      "c2-zc-canonical-authority-cutover",
-      "c2-zc-renderer-mcp-dml-denial",
-    ],
-    [
-      "cross-feature-authoring",
-      "chat-stream-project-switch",
-      "editor-pending-project-switch",
-      "mcp-external-write-conflict",
-      "map-native-roundtrip",
-      "c2-5b-schema-backfill-verify",
-      "c2-5b-graph-digest-no-skip",
-      "c2-5b-rule-digest-no-skip",
-      "c2-5b-terminal-failure-inbox",
-    ],
     [
       "editor-persistence",
       "chat-authority-isolation",
       "workspace-switch-authority",
       "external-write-conflict",
+      "cross-feature-authoring",
+      "chat-stream-project-switch",
+    ],
+    [
+      "chat-stream-workspace-switch",
+      "agent-stream-project-switch",
+      "agent-stream-workspace-switch",
+      "chat-stream-folder-scope",
+    ],
+    ["chat-stream-codex-scope", "chat-stream-snippet-scope"],
+    [
+      "editor-pending-project-switch",
+      "mcp-external-write-conflict",
       "chronicle-native-roundtrip",
+      "lint-native-roundtrip",
+      "map-native-roundtrip",
+      "snapshot-native-roundtrip",
+    ],
+    [
+      "chronicle-extract-review-apply-reopen",
+      "codex-entity-relation-review-apply-reopen",
+      "c2-5b-schema-backfill-verify",
       "c2-5b-restore-verify-rebuild-verify",
+      "c2-5b-graph-digest-no-skip",
+    ],
+    [
+      "c2-5b-rule-digest-no-skip",
+      "c2-5b-producer-generation-no-skip",
       "c2-5b-transient-bounded-retry",
+      "c2-5b-terminal-failure-inbox",
+      "c2-5b-interrupted-run-recovery",
       "c2-5b-no-automatic-repair",
+    ],
+    [
+      "c2-5b-foreground-write-workspace-wake",
       "c2-5b-incremental-liveness",
+      "c2-zc-canonical-authority-cutover",
+      "c2-zc-renderer-mcp-dml-denial",
     ],
   ]);
-  assert.equal(new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()).size, 28);
+  assert.equal(new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()).size, 33);
   assert.deepEqual(
     new Set(FIXED_PRODUCT_JOURNEY_SHARDS.flat()),
     new Set(catalogIds),
@@ -251,7 +261,7 @@ test("fixed shards are disjoint and preserve catalog order within all 28 entries
     FIXED_PRODUCT_JOURNEY_SHARDS.flatMap((ids, index) =>
       ids.some((id) => acceptanceJourneyIds.has(id)) ? [index + 1] : [],
     ),
-    [1],
+    [7],
   );
 });
 
@@ -261,7 +271,7 @@ test("fixed shard runner binds its partition and private artifact directory", as
   let received;
   const marker = {};
   const result = await runFixedProductJourneyShard({
-    shard: 3,
+    shard: 7,
     outputDirectory: "artifacts/product-journeys",
     root,
     environment: { GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL: "true" },
@@ -270,20 +280,20 @@ test("fixed shard runner binds its partition and private artifact directory", as
       return marker;
     },
   });
-  const shardDirectory = path.join(root, "artifacts/product-journeys/shard-3");
+  const shardDirectory = path.join(root, "artifacts/product-journeys/shard-7");
 
   assert.equal(result, marker);
   assert.deepEqual(
     received.journeys.map(({ id }) => id),
-    FIXED_PRODUCT_JOURNEY_SHARDS[2],
+    FIXED_PRODUCT_JOURNEY_SHARDS[6],
   );
-  assert.equal(received.artifactJourneys.length, 28);
+  assert.equal(received.artifactJourneys.length, 33);
   assert.deepEqual(
     received.requiredJourneyIds,
-    FIXED_PRODUCT_JOURNEY_SHARDS[2],
+    FIXED_PRODUCT_JOURNEY_SHARDS[6],
   );
   assert.equal(received.requireAll, false);
-  assert.equal(received.selectionName, "fixed-shard-3");
+  assert.equal(received.selectionName, "fixed-shard-7");
   assert.equal(received.resultsPath, path.join(shardDirectory, "results.json"));
   assert.equal(
     received.environment.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR,
@@ -291,7 +301,7 @@ test("fixed shard runner binds its partition and private artifact directory", as
   );
 });
 
-test("aggregate accepts three clean bound shards and writes the canonical v5 result and v1 manifest", async (t) => {
+test("aggregate accepts seven clean bound shards and writes the canonical v5 result and v1 manifest", async (t) => {
   const fixture = await setupAggregateFixture(t);
   const report = await aggregateProductJourneyShards({
     ...fixture,
@@ -424,14 +434,14 @@ test("aggregate rejects shard evidence that does not match live acceptance input
   const reportCases = [
     {
       name: "fabricated Rust receipt",
-      shard: 1,
+      shard: 7,
       mutate: (report) => {
         report.c2zcRustAcceptance.receiptSha256 = `sha256:${"f".repeat(64)}`;
       },
     },
     {
       name: "mismatched fixture",
-      shard: 1,
+      shard: 7,
       mutate: (report) => {
         report.c2zcRestoreFixture.fixtureSha256 = `sha256:${"f".repeat(64)}`;
       },

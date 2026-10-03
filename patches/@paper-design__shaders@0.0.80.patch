@@ -1,0 +1,187 @@
+--- a/dist/shader-mount.d.ts
++++ b/dist/shader-mount.d.ts
+@@ -31,6 +31,10 @@
+     private isSafari;
+     private uniformCache;
+     private textureUnitMap;
++    private drawCount;
++    private gpuTimeMs;
++    private timerExtension;
++    private timerQueries;
+     private ownerDocument;
+     constructor(
+     /** The div you'd like to mount the shader to. The shader will match its size. */
+@@ -79,6 +83,9 @@
+     private handleResize;
+     private render;
+     private requestRender;
++    private pollTimerQueries;
++    getPerformanceStats: () => { drawCount: number; gpuTimeMs: number | null; isStaticFrameReady: boolean };
++    resetPerformanceStats: () => void;
+     /** Creates a texture from an image and sets it into a uniform value */
+     private setTextureUniform;
+     /** Utility: recursive equality test for all the uniforms */
+@@ -117,7 +124,7 @@
+  * We just skip setting the uniform if it's undefined. This allows the shader mount to still take up space during server rendering
+  */
+ export interface ShaderMountUniforms {
+-    [key: string]: boolean | number | number[] | number[][] | HTMLImageElement | undefined;
++    [key: string]: boolean | number | number[] | number[][] | Float32Array | HTMLImageElement | undefined;
+ }
+ export interface ShaderMotionParams {
+     speed?: number;
+--- a/dist/shader-mount.js
++++ b/dist/shader-mount.js
+@@ -38,6 +38,10 @@
+   isSafari = isSafari();
+   uniformCache = {};
+   textureUnitMap = /* @__PURE__ */ new Map();
++  drawCount = 0;
++  gpuTimeMs = null;
++  timerExtension = null;
++  timerQueries = [];
+   ownerDocument;
+   constructor(parentElement, fragmentShader, uniforms, webGlContextAttributes, speed = 0, frame = 0, minPixelRatio = 2, maxPixelCount = DEFAULT_MAX_PIXEL_COUNT, mipmaps = []) {
+     if (parentElement?.nodeType === 1) {
+@@ -66,6 +70,7 @@
+       throw new Error("Paper Shaders: WebGL is not supported in this browser");
+     }
+     this.gl = gl;
++    this.timerExtension = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+     this.initProgram();
+     this.setupPositionAttribute();
+     this.setupUniforms();
+@@ -187,10 +192,11 @@
+       this.canvasElement.height = newHeight;
+       this.resolutionChanged = true;
+       this.gl.viewport(0, 0, this.gl.canvas.width, this.gl.canvas.height);
+-      this.render(performance.now());
++      this.requestRender();
+     }
+   };
+   render = (currentTime) => {
++    this.rafId = null;
+     if (this.hasBeenDisposed) return;
+     if (this.program === null) {
+       console.warn("Tried to render before program or gl was initialized");
+@@ -201,6 +207,9 @@
+     if (this.currentSpeed !== 0) {
+       this.currentFrame += dt * this.currentSpeed;
+     }
++    this.pollTimerQueries();
++    const query = this.timerExtension && this.gl.createQuery();
++    if (query) this.gl.beginQuery(this.timerExtension.TIME_ELAPSED_EXT, query);
+     this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+     this.gl.useProgram(this.program);
+     this.gl.uniform1f(this.uniformLocations.u_time, this.currentFrame * 1e-3);
+@@ -210,6 +219,11 @@
+       this.resolutionChanged = false;
+     }
+     this.gl.drawArrays(this.gl.TRIANGLES, 0, 6);
++    this.drawCount += 1;
++    if (query) {
++      this.gl.endQuery(this.timerExtension.TIME_ELAPSED_EXT);
++      this.timerQueries.push(query);
++    }
+     if (this.currentSpeed !== 0) {
+       this.requestRender();
+     } else {
+@@ -217,11 +231,29 @@
+     }
+   };
+   requestRender = () => {
+-    if (this.rafId !== null) {
+-      cancelAnimationFrame(this.rafId);
+-    }
++    if (this.rafId !== null) return;
+     this.rafId = requestAnimationFrame(this.render);
+   };
++  pollTimerQueries = () => {
++    const extension = this.timerExtension;
++    if (!extension) return;
++    const disjoint = this.gl.getParameter(extension.GPU_DISJOINT_EXT);
++    this.timerQueries = this.timerQueries.filter((query) => {
++      const available = this.gl.getQueryParameter(query, this.gl.QUERY_RESULT_AVAILABLE);
++      if (!available) return true;
++      if (!disjoint) {
++        this.gpuTimeMs = this.gl.getQueryParameter(query, this.gl.QUERY_RESULT) / 1e6;
++      }
++      this.gl.deleteQuery(query);
++      return false;
++    });
++  };
++  getPerformanceStats = () => ({
++    drawCount: this.drawCount,
++    gpuTimeMs: this.gpuTimeMs,
++    isStaticFrameReady: this.drawCount > 0 && this.parentWidth > 0 && this.parentHeight > 0 && !this.resolutionChanged && this.rafId === null
++  });
++  resetPerformanceStats = () => { this.drawCount = 0; this.gpuTimeMs = null; };
+   /** Creates a texture from an image and sets it into a uniform value */
+   setTextureUniform = (uniformName, image) => {
+     if (!image.complete || image.naturalWidth === 0) {
+@@ -267,7 +299,7 @@
+   /** Utility: recursive equality test for all the uniforms */
+   areUniformValuesEqual = (a, b) => {
+     if (a === b) return true;
+-    if (Array.isArray(a) && Array.isArray(b) && a.length === b.length) {
++    if ((Array.isArray(a) || a instanceof Float32Array) && (Array.isArray(b) || b instanceof Float32Array) && a.length === b.length) {
+       return a.every((val, i) => this.areUniformValuesEqual(val, b[i]));
+     }
+     return false;
+@@ -277,6 +309,9 @@
+     this.gl.useProgram(this.program);
+     Object.entries(updatedUniforms).forEach(([key, value]) => {
+       let cacheValue = value;
++      if (value instanceof Float32Array) {
++        cacheValue = value.slice();
++      }
+       if (value instanceof HTMLImageElement) {
+         cacheValue = `${value.src.slice(0, 200)}|${value.naturalWidth}x${value.naturalHeight}`;
+       }
+@@ -289,6 +324,8 @@
+       }
+       if (value instanceof HTMLImageElement) {
+         this.setTextureUniform(key, value);
++      } else if (value instanceof Float32Array) {
++        this.gl.uniform4fv(location, value);
+       } else if (Array.isArray(value)) {
+         let flatArray = null;
+         let valueLength = null;
+@@ -341,7 +378,7 @@
+   setFrame = (newFrame) => {
+     this.currentFrame = newFrame;
+     this.lastRenderTime = performance.now();
+-    this.render(performance.now());
++    this.requestRender();
+   };
+   /** Set an animation speed (or 0 to stop animation) */
+   setSpeed = (newSpeed = 1) => {
+@@ -358,10 +395,6 @@
+       this.lastRenderTime = performance.now();
+       this.rafId = requestAnimationFrame(this.render);
+     }
+-    if (this.rafId !== null && newSpeed === 0) {
+-      cancelAnimationFrame(this.rafId);
+-      this.rafId = null;
+-    }
+   };
+   /** Set the maximum pixel count for the shader, this will limit the number of pixels that will be rendered */
+   setMaxPixelCount = (newMaxPixelCount = DEFAULT_MAX_PIXEL_COUNT) => {
+@@ -377,7 +410,7 @@
+   setUniforms = (newUniforms) => {
+     this.setUniformValues(newUniforms);
+     this.providedUniforms = { ...this.providedUniforms, ...newUniforms };
+-    this.render(performance.now());
++    this.requestRender();
+   };
+   handleDocumentVisibilityChange = () => {
+     this.updateCurrentSpeed();
+@@ -394,6 +427,8 @@
+         this.gl.deleteTexture(texture);
+       });
+       this.textures.clear();
++      this.timerQueries.forEach((query) => this.gl.deleteQuery(query));
++      this.timerQueries = [];
+       this.gl.deleteProgram(this.program);
+       this.program = null;
+       this.gl.bindBuffer(this.gl.ARRAY_BUFFER, null);

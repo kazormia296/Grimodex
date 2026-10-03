@@ -225,6 +225,41 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     capabilities: ["electron", "napi"],
   },
   {
+    id: "agent-stream-project-switch",
+    domains: ["chat", "project-lifecycle"],
+    interactions: ["project-lifecycle->chat"],
+    contracts: ["scope-transition:agent-stream:project"],
+    capabilities: ["electron", "napi"],
+  },
+  {
+    id: "agent-stream-workspace-switch",
+    domains: ["chat", "workspace-lifecycle"],
+    interactions: ["workspace-lifecycle->chat"],
+    contracts: ["scope-transition:agent-stream:workspace"],
+    capabilities: ["electron", "napi"],
+  },
+  {
+    id: "chat-stream-folder-scope",
+    domains: ["chat", "scene-scope"],
+    interactions: [],
+    contracts: ["scope-transition:chat-stream:folder"],
+    capabilities: ["electron", "napi"],
+  },
+  {
+    id: "chat-stream-codex-scope",
+    domains: ["chat", "codex"],
+    interactions: [],
+    contracts: ["scope-transition:chat-stream:codex"],
+    capabilities: ["electron", "napi"],
+  },
+  {
+    id: "chat-stream-snippet-scope",
+    domains: ["chat", "snippet"],
+    interactions: [],
+    contracts: ["scope-transition:chat-stream:snippet"],
+    capabilities: ["electron", "napi"],
+  },
+  {
     id: "editor-pending-project-switch",
     domains: ["editor", "project-lifecycle"],
     interactions: ["editor->project-lifecycle"],
@@ -335,28 +370,6 @@ export const NIR1_ENTITY_RELATION_PRODUCT_JOURNEY_CATALOG_DIGEST =
  * contract evidence land together.
  */
 export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([
-  {
-    id: "agent-stream-project-switch",
-    domains: ["chat", "project-lifecycle"],
-    interactions: ["project-lifecycle->chat"],
-    contracts: ["scope-transition:agent-stream:project"],
-    capabilities: ["electron", "napi"],
-    reason:
-      "Agent transport lifecycle is unit-covered but still needs a deterministic Electron journey.",
-    trackingIssue: "#429",
-    expiresOn: "2026-09-30",
-  },
-  {
-    id: "agent-stream-workspace-switch",
-    domains: ["chat", "workspace-lifecycle"],
-    interactions: ["workspace-lifecycle->chat"],
-    contracts: ["scope-transition:agent-stream:workspace"],
-    capabilities: ["electron", "napi"],
-    reason:
-      "Agent transport lifecycle is unit-covered but still needs a deterministic Electron journey.",
-    trackingIssue: "#429",
-    expiresOn: "2026-09-30",
-  },
   {
     id: "chronicle-ui-roundtrip",
     domains: ["chronicle-ui"],
@@ -728,6 +741,14 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     domains: ["chat", "workspace-lifecycle"],
   },
   {
+    id: "scope-transition:agent-stream:project",
+    domains: ["chat", "project-lifecycle"],
+  },
+  {
+    id: "scope-transition:agent-stream:workspace",
+    domains: ["chat", "workspace-lifecycle"],
+  },
+  {
     id: "scope-transition:editor-pending:project",
     domains: ["editor", "project-lifecycle"],
   },
@@ -799,6 +820,18 @@ export const PRODUCT_SCOPE_TRANSITIONS = freezeEntries([
     operation: "chat-stream",
     scope: "workspace",
     contractId: "scope-transition:chat-stream:workspace",
+  },
+  {
+    authority: "lifecycle",
+    operation: "agent-stream",
+    scope: "project",
+    contractId: "scope-transition:agent-stream:project",
+  },
+  {
+    authority: "lifecycle",
+    operation: "agent-stream",
+    scope: "workspace",
+    contractId: "scope-transition:agent-stream:workspace",
   },
   {
     authority: "lifecycle",
@@ -922,29 +955,4 @@ export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
  * Temporary gaps must remain tracked and expiring. Active exemptions keep
  * affected execution locked in shadow mode.
  */
-export const PRODUCT_CONTRACT_EXEMPTIONS = freezeEntries([
-  {
-    targetType: "contract",
-    targetId: "scope-transition:chat-stream:folder",
-    reason:
-      "A dedicated streaming folder-scope transition journey has not landed yet.",
-    trackingIssue: "#429",
-    expiresOn: "2026-09-30",
-  },
-  {
-    targetType: "contract",
-    targetId: "scope-transition:chat-stream:codex",
-    reason:
-      "A dedicated streaming Codex-scope transition journey has not landed yet.",
-    trackingIssue: "#429",
-    expiresOn: "2026-09-30",
-  },
-  {
-    targetType: "contract",
-    targetId: "scope-transition:chat-stream:snippet",
-    reason:
-      "A dedicated streaming snippet-scope transition journey has not landed yet.",
-    trackingIssue: "#429",
-    expiresOn: "2026-09-30",
-  },
-]);
+export const PRODUCT_CONTRACT_EXEMPTIONS = freezeEntries([]);

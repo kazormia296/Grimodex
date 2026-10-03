@@ -170,8 +170,8 @@ export async function ensureSemanticModelForProject(
   // main-thread work. Downloading a 37 MB model during the run makes the
   // result depend on network timing and can inject machine-specific ONNX work
   // into later, unrelated interaction gates. Incremental indexing is still
-  // scheduled and launched; with the fixture's isolated user-data directory it
-  // fails fast at the normal "model unavailable" boundary.
+  // scheduled and launched; the fixture isolates both downloaded and bundled
+  // semantic model roots, so it fails at the normal "model unavailable" boundary.
   if (hasRuntimePerformanceCapability()) return;
   const scope = captureScope(projectId, workspaceKey);
   if (!scope || modelAttempted.has(scope.guardKey)) return;

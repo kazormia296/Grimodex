@@ -134,7 +134,7 @@ fi
 # ---------------------------------------------------------------------------
 # 3) Node / pnpm（packageManager フィールドに従い corepack で固定）
 # ---------------------------------------------------------------------------
-have node || die "Node.js が見つかりません。Node 20 LTS 以上を導入してから再実行してください（CI は Node 20 を使用）。"
+have node || die "Node.js が見つかりません。Node 22 LTS 以上を導入してから再実行してください（CI は Node 22 を使用）。"
 log "Node: $(node --version)"
 
 if ! have corepack; then
@@ -158,6 +158,9 @@ if [ "${SKIP_PNPM_INSTALL:-0}" = "1" ]; then
 else
   log "pnpm install --frozen-lockfile を実行します"
   $PNPM install --frozen-lockfile
+  # .npmrc disables lifecycle scripts, so install the pinned Electron binary
+  # explicitly before any smoke or product journey command launches it.
+  node scripts/ensure-electron-binary.mjs
 fi
 
 # ---------------------------------------------------------------------------

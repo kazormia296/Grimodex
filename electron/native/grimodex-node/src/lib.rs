@@ -15,6 +15,7 @@
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
 mod convert;
+mod lifecycle_failure_diagnostics;
 #[cfg(feature = "legacy-keyring-migration")]
 mod legacy_keyring;
 mod narrative_maintenance;
@@ -33,6 +34,7 @@ mod state;
 #[cfg(test)]
 mod test_link_stubs;
 mod workspace_lifecycle_view;
+use lifecycle_failure_diagnostics::{FailureClass, Producer};
 
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
@@ -3436,15 +3438,19 @@ where
         mark_run_terminalized: Some(&mark_run_terminalized),
     };
 
+    let mut failure_class = FailureClass::Error;
     let operation_result = match catch_unwind(AssertUnwindSafe(|| {
         grimodex_db::with_foreground_maintenance_wait(|| {
             operation(authority.db(), &control, &canonical_work_key)
         })
     })) {
         Ok(result) => result,
-        Err(_) => Err(anyhow::anyhow!(
-            "NEX_MAINTENANCE_PANIC: manual maintenance worker panicked"
-        )),
+        Err(_) => {
+            failure_class = FailureClass::Panic;
+            Err(anyhow::anyhow!(
+                "NEX_MAINTENANCE_PANIC: manual maintenance worker panicked"
+            ))
+        }
     };
     let result = match operation_result {
         Ok(completion) => {
@@ -3546,7 +3552,13 @@ where
                     }
                 }
                 let descriptor_id = lifecycle_permit
-                    .transfer_to_recovery()
+                    .transfer_to_recovery_diagnosed(|evidence| {
+                        lifecycle_failure_diagnostics::handoff(
+                            Producer::ManualMaintenance,
+                            failure_class,
+                            evidence,
+                        )
+                    })
                     .map_err(|error| anyhow::anyhow!("{error}"))?;
                 record_maintenance_recovery_binding(
                     &state,
@@ -4324,6 +4336,7 @@ fn finish_foreground_lifecycle_permit<T>(
     mut permit: MaintenancePermit,
     operation: std::result::Result<T, AppError>,
     cleanup_proven: bool,
+    failure_class: FailureClass,
     pinned_authority: PinnedWorkspaceDb,
 ) -> std::result::Result<T, AppError> {
     let finalization = match permit.mark_joined() {
@@ -4350,7 +4363,13 @@ fn finish_foreground_lifecycle_permit<T>(
                             AppError::Anyhow(anyhow::anyhow!(error.to_string()))
                         })?;
                     }
-                    match permit.transfer_to_recovery() {
+                    match permit.transfer_to_recovery_diagnosed(|evidence| {
+                        lifecycle_failure_diagnostics::handoff(
+                            Producer::Foreground,
+                            failure_class,
+                            evidence,
+                        )
+                    }) {
                         Ok(descriptor_id) => {
                             let recovery_binding = narrative_maintenance_binding_for_authority(
                                 state,
@@ -4441,6 +4460,7 @@ where
         let pinned_authority = Arc::clone(&pinned_workspace.authority);
         let lifecycle_permit = begin_foreground_lifecycle_permit(&state)?;
         let mut cleanup_proven = true;
+        let mut failure_class = FailureClass::Error;
         let operation = match catch_unwind(AssertUnwindSafe(
             || -> std::result::Result<String, AppError> {
                 let authority_context = if payload.get("authorityRoute").is_some() {
@@ -4483,6 +4503,7 @@ where
                 operation
             }
             Err(_) => {
+                failure_class = FailureClass::Panic;
                 cleanup_proven = false;
                 Err(AppError::Anyhow(anyhow::anyhow!(
                     "NEX_FOREGROUND_TRANSACTION_PANIC: foreground transaction panicked"
@@ -4494,6 +4515,7 @@ where
             lifecycle_permit,
             operation,
             cleanup_proven,
+            failure_class,
             pinned_authority,
         );
         drop(pinned_workspace);
@@ -4579,6 +4601,7 @@ where
         let pinned_authority = Arc::clone(&pinned_workspace.authority);
         let lifecycle_permit = begin_foreground_lifecycle_permit(&state)?;
         let mut cleanup_proven = true;
+        let mut failure_class = FailureClass::Error;
         let operation = match catch_unwind(AssertUnwindSafe(|| -> std::result::Result<String, AppError> {
             let requested_binding: NarrativeExtractionWorkspaceBinding =
                 from_wire("workspaceBinding", workspace_binding)?;
@@ -4619,6 +4642,7 @@ where
                 operation
             }
             Err(_) => {
+                failure_class = FailureClass::Panic;
                 cleanup_proven = false;
                 Err(AppError::Anyhow(anyhow::anyhow!(
                     "NEX_FOREGROUND_TRANSACTION_PANIC: foreground transaction panicked"
@@ -4630,6 +4654,7 @@ where
             lifecycle_permit,
             operation,
             cleanup_proven,
+            failure_class,
             pinned_authority,
         );
         drop(pinned_workspace);
@@ -6004,6 +6029,7 @@ struct NarrativeMaintenanceAttemptGuard {
 /// back to the async supervisor instead of being finalized by the worker
 /// itself, so Join (including JoinError/panic) is an observable boundary.
 struct NarrativeMaintenanceWorkerOutcome {
+    failure_class: FailureClass,
     result: std::result::Result<String, AppError>,
     lifecycle_permit: Option<MaintenancePermit>,
     lifecycle_work_started: bool,
@@ -6561,7 +6587,14 @@ impl Backend {
                 run_narrative_freshness_cycle_body(&worker_state, || {})
             }))
         });
-        match worker_join.await {
+        let worker_result = worker_join.await;
+        let failure_class = match &worker_result {
+            Ok(Err(_)) => FailureClass::Panic,
+            Err(error) if error.is_panic() => FailureClass::Panic,
+            Err(_) => FailureClass::Join,
+            _ => FailureClass::Error,
+        };
+        match worker_result {
             Ok(Ok(result)) => {
                 lifecycle_permit
                     .mark_joined()
@@ -6589,7 +6622,13 @@ impl Backend {
                                 .map_err(|error| Error::from_reason(error.to_string()))?;
                         }
                         let descriptor_id = lifecycle_permit
-                            .transfer_to_recovery()
+                            .transfer_to_recovery_diagnosed(|evidence| {
+                                lifecycle_failure_diagnostics::handoff(
+                                    Producer::Freshness,
+                                    failure_class,
+                                    evidence,
+                                )
+                            })
                             .map_err(|error| Error::from_reason(error.to_string()))?;
                         record_maintenance_recovery_binding(
                             &state,
@@ -6633,7 +6672,13 @@ impl Backend {
                         .map_err(|error| Error::from_reason(error.to_string()))?;
                 }
                 let descriptor_id = lifecycle_permit
-                    .transfer_to_recovery()
+                    .transfer_to_recovery_diagnosed(|evidence| {
+                        lifecycle_failure_diagnostics::handoff(
+                            Producer::Freshness,
+                            failure_class,
+                            evidence,
+                        )
+                    })
                     .map_err(|error| Error::from_reason(error.to_string()))?;
                 record_maintenance_recovery_binding(
                     &state,
@@ -7198,6 +7243,7 @@ impl Backend {
             let mut worker_authority: Option<PinnedWorkspaceDb> = None;
             let mut outcome_attempt_id: Option<String> = None;
             let mut outcome_binding: Option<MaintenanceWorkspaceBinding> = None;
+            let mut failure_class = FailureClass::Error;
             let operation_result = match catch_unwind(AssertUnwindSafe(|| {
                 (|| -> std::result::Result<String, AppError> {
                     let attempt_id = payload
@@ -8139,9 +8185,12 @@ impl Backend {
                 })()
             })) {
                 Ok(result) => result,
-                Err(_) => Err(AppError::Anyhow(anyhow::anyhow!(
-                    "NEX_MAINTENANCE_PANIC: maintenance worker panicked"
-                ))),
+                Err(_) => {
+                    failure_class = FailureClass::Panic;
+                    Err(AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_MAINTENANCE_PANIC: maintenance worker panicked"
+                    )))
+                }
             };
             let operation_result = match operation_result {
                 Err(error) if is_narrative_maintenance_preemption(&error) => {
@@ -8155,6 +8204,7 @@ impl Backend {
                 other => other,
             };
             Ok(NarrativeMaintenanceWorkerOutcome {
+                failure_class,
                 result: operation_result,
                 lifecycle_permit: lifecycle_permit.take(),
                 lifecycle_work_started,
@@ -8182,6 +8232,7 @@ impl Backend {
                         .ok()
                         .and_then(|mut slot| slot.take());
                     NarrativeMaintenanceWorkerOutcome {
+                        failure_class: FailureClass::Error,
                         result: Err(error),
                         lifecycle_permit,
                         lifecycle_work_started: true,
@@ -8200,6 +8251,11 @@ impl Backend {
                         .ok()
                         .and_then(|mut slot| slot.take());
                     NarrativeMaintenanceWorkerOutcome {
+                        failure_class: if join_error.is_panic() {
+                            FailureClass::Panic
+                        } else {
+                            FailureClass::Join
+                        },
                         result: Err(AppError::Anyhow(anyhow::anyhow!(
                             "NEX_MAINTENANCE_WORKER_JOIN_FAILED: {join_error}"
                         ))),
@@ -8239,7 +8295,13 @@ impl Backend {
                                 .mark_connection_retired()
                                 .map_err(|error| Error::from_reason(error.to_string()))?;
                         }
-                        match permit.transfer_to_recovery() {
+                        match permit.transfer_to_recovery_diagnosed(|evidence| {
+                            lifecycle_failure_diagnostics::handoff(
+                                Producer::AutomaticMaintenance,
+                                worker.failure_class,
+                                evidence,
+                            )
+                        }) {
                             Ok(descriptor_id) => {
                                 record_maintenance_recovery_binding(
                                     &supervisor_state,
@@ -10566,10 +10628,15 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let events: Vec<AppendChangeEvent> = from_wire("events", events)?;
-            with_db_state(&state.ws, |db| {
-                let result = db.append_renderer_change_events(&project_id, &session_id, &events)?;
-                Ok(serde_json::to_string(&result)?)
-            })
+            grimodex_db::state::with_db_state_diagnosed(
+                &state.ws,
+                |db| {
+                    let result =
+                        db.append_renderer_change_events(&project_id, &session_id, &events)?;
+                    Ok(serde_json::to_string(&result)?)
+                },
+                lifecycle_failure_diagnostics::append_rejected,
+            )
         })
         .await
     }
@@ -16359,6 +16426,45 @@ mod narrative_maintenance_admission_unwind_tests {
         let descriptor_id = permit.transfer_to_recovery().expect("retain exact root");
         record_maintenance_recovery_binding(&backend.state, descriptor_id, None, Some(&binding));
         descriptor_id
+    }
+
+    #[tokio::test]
+    async fn append_refusal_keeps_lossless_recovery_and_distinct_shutdown_contract() {
+        let (backend, root) = backend_with_active_workspace("append-diagnostics");
+        let authority = active_database(&backend.state.ws).expect("Ready");
+        authority.db().with_conn(|conn| {
+            conn.execute("INSERT INTO projects (id, title, language) VALUES ('diagnostic-project', 'Test', 'ja')", [])?;
+            Ok(())
+        }).expect("seed project");
+        let event = || serde_json::json!([{
+            "eventUid": "retained-event", "sceneId": null, "domain": "chronicle",
+            "opType": "test", "entityType": "event", "entityId": "diagnostic-entity",
+            "payload": "{}", "timestamp": 1
+        }]);
+        let descriptor = retain_maintenance_descriptor(&backend);
+        let core = backend.state.ws.switching.core();
+        let expected = core.snapshot().expect("fixed recovery state");
+        let refusal = backend.timelapse_append_batch("diagnostic-project".into(), "diagnostic-session".into(), event())
+            .await.expect_err("append refused");
+        assert!(refusal.to_string().contains("WORKSPACE_SWITCHING"));
+        assert_eq!(core.snapshot().expect("unchanged by diagnosis"), expected);
+        let count: i64 = authority.db().with_conn(|conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM change_events WHERE event_uid = 'retained-event'", [], |row| row.get(0))?)
+        }).expect("not persisted through rejected authority");
+        assert_eq!(count, 0);
+        drop(authority);
+        backend.reconcile_narrative_maintenance_recovery(None).await.expect("normal recovery");
+        backend.ack_narrative_maintenance_recovery(descriptor.to_string()).expect("ACK");
+        let append: serde_json::Value = serde_json::from_str(&backend.timelapse_append_batch(
+            "diagnostic-project".into(), "diagnostic-session".into(), event()
+        ).await.expect("same event persists after normal recovery")).expect("append JSON");
+        assert_eq!(append["insertedCount"], 1);
+        core.request_shutdown().expect("shutdown");
+        let refusal = backend.timelapse_append_batch("diagnostic-project".into(), "diagnostic-session".into(), event())
+            .await.expect_err("shutdown refusal");
+        assert!(!refusal.to_string().contains("WORKSPACE_SWITCHING"));
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

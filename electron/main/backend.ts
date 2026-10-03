@@ -23,6 +23,7 @@ interface SemanticResourceResolution {
   isPackaged: boolean;
   resourcesPath: string;
   mainDir: string;
+  userDataPath?: string;
 }
 
 interface RerankerResourceResolution {
@@ -68,9 +69,26 @@ export function resolveSemanticResourceRoot(
     resourcesPath: process.resourcesPath,
     mainDir: __dirname,
   },
+  env: NodeJS.ProcessEnv = process.env,
 ): string {
   if (resolution.isPackaged) {
     return path.join(resolution.resourcesPath, "resources", "semantic");
+  }
+  const ownerToken = env.GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN;
+  if (
+    typeof ownerToken === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      ownerToken,
+    )
+  ) {
+    // The deterministic renderer fixture keeps semantic scheduling and IPC,
+    // but expects the normal model-unavailable result. Its fresh userData
+    // already isolates downloaded models; also exclude repository bundles.
+    return path.join(
+      resolution.userDataPath ?? app.getPath("userData"),
+      "runtime-performance",
+      "semantic",
+    );
   }
   return path.join(
     resolution.mainDir,

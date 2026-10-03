@@ -183,6 +183,11 @@ fn foreground_dispatch_outcome(
     run_id: &str,
     control: Option<&MaintenanceCycleControl<'_>>,
 ) -> anyhow::Result<MaintenanceDispatchOutcome> {
+    if !foreground_system_work_barrier_requested() {
+        // Controlled adapters already attach their Run before returning; avoid
+        // a post-commit read that can lose the no-wait connection to foreground work.
+        return Ok(MaintenanceDispatchOutcome::Completed);
+    }
     if let Some(control) = control {
         if let Some(attach_run) = control.attach_run {
             let ownership = db.with_conn(|conn| {
@@ -195,9 +200,6 @@ fn foreground_dispatch_outcome(
                 attach_run(ownership)?;
             }
         }
-    }
-    if !foreground_system_work_barrier_requested() {
-        return Ok(MaintenanceDispatchOutcome::Completed);
     }
     let status = db.with_conn(|conn| {
         Ok(conn
@@ -218,6 +220,46 @@ fn foreground_dispatch_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unmarked_completed_dispatch_does_not_reacquire_busy_connection() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        let no_stop = || Ok(());
+        let no_run = |_: &str| Ok(());
+        let no_work = |_: &DesiredWork| Ok(());
+        let unexpected_attach =
+            |_: crate::workspace_lifecycle::RunOwnership| -> anyhow::Result<()> {
+                panic!("unmarked completed dispatch must not attach a Run")
+            };
+        let control = MaintenanceCycleControl {
+            should_stop: &no_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_run,
+            grant_finalize: &no_run,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+            attach_run: Some(&unexpected_attach),
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: None,
+        };
+        let _held = db.lock().expect("hold connection");
+        let _no_wait = db.enter_maintenance_connection_no_wait();
+
+        assert_eq!(
+            foreground_dispatch_outcome(&db, "completed-run", Some(&control))
+                .expect("unmarked completed dispatch needs no connection"),
+            MaintenanceDispatchOutcome::Completed,
+        );
+    }
 
     #[test]
     fn registry_is_the_exact_closed_set_with_stable_route_ids() {

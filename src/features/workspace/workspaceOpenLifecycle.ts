@@ -55,6 +55,7 @@ import {
   cancelExplicitWorkspaceHydration,
   isExplicitWorkspaceHydrationCurrent,
   noteExplicitWorkspaceHydration,
+  resolveExplicitWorkspaceHydrationReadyProof,
 } from "./workspaceLifecycleProjection";
 
 type WorkspaceStoreGetter = () => WorkspaceState;
@@ -285,16 +286,19 @@ export function createWorkspaceOpenHandler(
         nextOpenRevision,
         createWorkspaceOpenProjectLifecycleTiming(trace),
       );
+      const hydrationEvidence = openLifecycleProof
+        ? {
+            workspacePath: path,
+            workspaceId: result.workspaceId ?? path,
+            workspaceName: result.name,
+            openRevision: nextOpenRevision,
+            lifecycleRevision: openLifecycleProof.revision,
+            lifecycleBindingToken: openLifecycleProof.bindingToken,
+          }
+        : null;
       if (
-        openLifecycleProof &&
-        !isExplicitWorkspaceHydrationCurrent({
-          workspacePath: path,
-          workspaceId: result.workspaceId ?? path,
-          workspaceName: result.name,
-          openRevision: nextOpenRevision,
-          lifecycleRevision: openLifecycleProof.revision,
-          lifecycleBindingToken: openLifecycleProof.bindingToken,
-        })
+        hydrationEvidence &&
+        !isExplicitWorkspaceHydrationCurrent(hydrationEvidence)
       ) {
         throw new Error(
           "Workspace hydration was superseded before authority publication",
@@ -315,16 +319,18 @@ export function createWorkspaceOpenHandler(
       // through this publication, so a queued Project load cannot supersede
       // the mandatory hydrate in between.
       quiescenceLease.sealReadsForAuthorityCommit();
-      if (openLifecycleProof) {
+      if (hydrationEvidence) {
+        const ready =
+          resolveExplicitWorkspaceHydrationReadyProof(hydrationEvidence);
         const lifecycle = get();
         const lifecycleRevision = lifecycle.workspaceLifecycleRevision ?? 0;
         if (
-          lifecycleRevision > openLifecycleProof.revision ||
-          (lifecycleRevision === openLifecycleProof.revision &&
+          !ready ||
+          lifecycleRevision > ready.revision ||
+          (lifecycleRevision === ready.revision &&
             (lifecycle.workspaceLifecycleStatus !== "ready" ||
               lifecycle.workspaceLifecycleActivation !== "ready" ||
-              lifecycle.workspaceLifecycleBindingToken !==
-                openLifecycleProof.bindingToken))
+              lifecycle.workspaceLifecycleBindingToken !== ready.bindingToken))
         ) {
           throw new Error(
             "Native lifecycle changed before explicit workspace hydration completed",
@@ -352,15 +358,8 @@ export function createWorkspaceOpenHandler(
         workspaceSwitchInProgress: false,
         workspaceHydrated: true,
       });
-      if (openLifecycleProof) {
-        noteExplicitWorkspaceHydration({
-          workspacePath: path,
-          workspaceId: result.workspaceId ?? path,
-          workspaceName: result.name,
-          openRevision: nextOpenRevision,
-          lifecycleRevision: openLifecycleProof.revision,
-          lifecycleBindingToken: openLifecycleProof.bindingToken,
-        });
+      if (hydrationEvidence) {
+        noteExplicitWorkspaceHydration(hydrationEvidence);
       }
       // Only discard the old scope's detached drafts after the replacement
       // authority has hydrated and been published. Recovery-required and

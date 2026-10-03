@@ -1,4 +1,12 @@
 import path from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -20,6 +28,94 @@ const {
 } = await import("./backend.js");
 
 describe("resolveSemanticResourceRoot", () => {
+  const ownerToken = "a761ab47-4c49-4f0f-9237-d65d33d6bfc3";
+
+  it("does not discover an ambient bundled model from the runtime fixture root", () => {
+    const root = mkdtempSync(
+      path.join(os.tmpdir(), "grimodex-perf-model-root-"),
+    );
+    try {
+      const resolution = {
+        isPackaged: false,
+        resourcesPath: path.join(root, "packaged-resources"),
+        mainDir: path.join(root, "repo", "dist-electron"),
+        userDataPath: path.join(root, "user-data"),
+      };
+      const bundledRoot = resolveSemanticResourceRoot(resolution, {});
+      const modelPath = path.join("bge-small-en-v15", "model_int8.onnx");
+      mkdirSync(path.dirname(path.join(bundledRoot, modelPath)), {
+        recursive: true,
+      });
+      writeFileSync(path.join(bundledRoot, modelPath), "ambient model marker");
+
+      const fixtureRoot = resolveSemanticResourceRoot(resolution, {
+        GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN: ownerToken,
+      });
+
+      expect(existsSync(path.join(bundledRoot, modelPath))).toBe(true);
+      expect(existsSync(path.join(fixtureRoot, modelPath))).toBe(false);
+      expect(fixtureRoot).toBe(
+        path.join(resolution.userDataPath, "runtime-performance", "semantic"),
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates bundled semantic models for each deterministic runtime fixture", () => {
+    for (const userDataPath of [
+      "/tmp/run-a/user-data",
+      "/tmp/run-b/user-data",
+    ]) {
+      expect(
+        resolveSemanticResourceRoot(
+          {
+            isPackaged: false,
+            resourcesPath: "/opt/Grimodex/resources",
+            mainDir: "/repo/Grimodex/dist-electron",
+            userDataPath,
+          },
+          { GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN: ownerToken },
+        ),
+      ).toBe(path.join(userDataPath, "runtime-performance", "semantic"));
+    }
+  });
+
+  it("does not isolate models for absent or invalid runtime owner tokens", () => {
+    for (const token of [
+      undefined,
+      "",
+      "invalid",
+      ownerToken.replace("4f0f", "5f0f"),
+    ]) {
+      expect(
+        resolveSemanticResourceRoot(
+          {
+            isPackaged: false,
+            resourcesPath: "/opt/Grimodex/resources",
+            mainDir: "/repo/Grimodex/dist-electron",
+            userDataPath: "/tmp/run-a/user-data",
+          },
+          { GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN: token },
+        ),
+      ).toBe(path.join("/repo/Grimodex", "src-tauri", "resources", "semantic"));
+    }
+  });
+
+  it("keeps packaged resources even with an inherited runtime owner token", () => {
+    expect(
+      resolveSemanticResourceRoot(
+        {
+          isPackaged: true,
+          resourcesPath: "/opt/Grimodex/resources",
+          mainDir: "/opt/Grimodex/resources/app.asar/dist-electron",
+          userDataPath: "/tmp/run-a/user-data",
+        },
+        { GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN: ownerToken },
+      ),
+    ).toBe(path.join("/opt/Grimodex/resources", "resources", "semantic"));
+  });
+
   it("devではrepositoryのsrc-tauri/resources/semanticを明示注入する", () => {
     expect(
       resolveSemanticResourceRoot({

@@ -55,7 +55,7 @@ const REPORT_FIELDS = [
 ];
 
 if (
-  IDS.length !== 28 ||
+  IDS.length !== 33 ||
   PRODUCT_JOURNEY_CATALOG.some(
     (entry) =>
       entry.required === false || entry.acceptanceRole === "diagnostic",
@@ -65,38 +65,48 @@ if (
 
 export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
   Object.freeze([
-    "chat-stream-workspace-switch",
-    "lint-native-roundtrip",
-    "snapshot-native-roundtrip",
-    "chronicle-extract-review-apply-reopen",
-    "codex-entity-relation-review-apply-reopen",
-    "c2-5b-producer-generation-no-skip",
-    "c2-5b-interrupted-run-recovery",
-    "c2-5b-foreground-write-workspace-wake",
-    "c2-zc-canonical-authority-cutover",
-    "c2-zc-renderer-mcp-dml-denial",
-  ]),
-  Object.freeze([
-    "cross-feature-authoring",
-    "chat-stream-project-switch",
-    "editor-pending-project-switch",
-    "mcp-external-write-conflict",
-    "map-native-roundtrip",
-    "c2-5b-schema-backfill-verify",
-    "c2-5b-graph-digest-no-skip",
-    "c2-5b-rule-digest-no-skip",
-    "c2-5b-terminal-failure-inbox",
-  ]),
-  Object.freeze([
     "editor-persistence",
     "chat-authority-isolation",
     "workspace-switch-authority",
     "external-write-conflict",
+    "cross-feature-authoring",
+    "chat-stream-project-switch",
+  ]),
+  Object.freeze([
+    "chat-stream-workspace-switch",
+    "agent-stream-project-switch",
+    "agent-stream-workspace-switch",
+    "chat-stream-folder-scope",
+  ]),
+  Object.freeze(["chat-stream-codex-scope", "chat-stream-snippet-scope"]),
+  Object.freeze([
+    "editor-pending-project-switch",
+    "mcp-external-write-conflict",
     "chronicle-native-roundtrip",
+    "lint-native-roundtrip",
+    "map-native-roundtrip",
+    "snapshot-native-roundtrip",
+  ]),
+  Object.freeze([
+    "chronicle-extract-review-apply-reopen",
+    "codex-entity-relation-review-apply-reopen",
+    "c2-5b-schema-backfill-verify",
     "c2-5b-restore-verify-rebuild-verify",
+    "c2-5b-graph-digest-no-skip",
+  ]),
+  Object.freeze([
+    "c2-5b-rule-digest-no-skip",
+    "c2-5b-producer-generation-no-skip",
     "c2-5b-transient-bounded-retry",
+    "c2-5b-terminal-failure-inbox",
+    "c2-5b-interrupted-run-recovery",
     "c2-5b-no-automatic-repair",
+  ]),
+  Object.freeze([
+    "c2-5b-foreground-write-workspace-wake",
     "c2-5b-incremental-liveness",
+    "c2-zc-canonical-authority-cutover",
+    "c2-zc-renderer-mcp-dml-denial",
   ]),
 ]);
 
@@ -111,10 +121,10 @@ const acceptanceShardNumbers = FIXED_PRODUCT_JOURNEY_SHARDS.flatMap(
     ids.some((id) => acceptanceJourneyIds.has(id)) ? [index + 1] : [],
 );
 if (
-  FIXED_PRODUCT_JOURNEY_SHARDS.length !== 3 ||
+  FIXED_PRODUCT_JOURNEY_SHARDS.length !== 7 ||
   FIXED_PRODUCT_JOURNEY_SHARDS.some(
     (ids, index) =>
-      (index === 0 ? ids.length !== 10 : ids.length !== 9) ||
+      ids.length !== [6, 4, 2, 6, 5, 6, 4][index] ||
       !isDeepStrictEqual(
         ids,
         IDS.filter((id) => ids.includes(id)),
@@ -185,7 +195,7 @@ export async function runFixedProductJourneyShard({
     number < 1 ||
     number > FIXED_PRODUCT_JOURNEY_SHARDS.length
   ) {
-    throw new Error("fixed product journey shard must be 1, 2, or 3");
+    throw new Error("fixed product journey shard must be 1 through 7");
   }
   const artifactDirectory = shardDirectory(
     resolveOutput(outputDirectory, root),
@@ -364,7 +374,7 @@ async function publish(output, report, artifacts, root) {
   });
 }
 
-/** Merge three fixed shard reports into the unchanged canonical v5 contract. */
+/** Merge seven fixed shard reports into the unchanged canonical v5 contract. */
 export async function aggregateProductJourneyShards({
   outputDirectory,
   root = rootDir,
@@ -459,7 +469,7 @@ function parseCli(args) {
     return { action: "aggregate", outputDirectory: args[2] };
   }
   throw new Error(
-    "usage: product-journey-shards.mjs run --shard 1|2|3 --output-dir DIR; or aggregate --output-dir DIR",
+    "usage: product-journey-shards.mjs run --shard 1|2|3|4|5|6|7 --output-dir DIR; or aggregate --output-dir DIR",
   );
 }
 
