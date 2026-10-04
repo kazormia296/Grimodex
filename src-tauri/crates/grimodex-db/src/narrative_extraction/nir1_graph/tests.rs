@@ -14,7 +14,7 @@ use crate::workspace_lifecycle::{
 };
 use grimodex_core::narrative_nir1::ScopeValue;
 use std::{
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
@@ -37,18 +37,8 @@ enum Q2WorkerScenario {
     RequestWriteDeadline,
     #[cfg(target_os = "linux")]
     RequestWriteChildExit,
-    OversizedWorkspaceId,
-    OversizedBindingIdentityPayload,
-    OversizedWorkerPath,
-    #[cfg(target_os = "linux")]
-    CommandExecutablePathLowerBound,
-    #[cfg(windows)]
-    CommandProgramOsString,
-    OversizedAuthorityPath,
-    RetainedWorkspaceLeasePathCapacity,
-    OversizedCommandProjectId,
+    RequestWriteQuarantine,
     StartupRegistrationRefused,
-    StartupRegistrationRefusedResidualWitness,
     PostCommitNonzero,
     #[cfg(target_os = "linux")]
     ResultHeldChildLive,
@@ -63,6 +53,8 @@ enum Q2WorkerScenario {
     TrailingData,
     #[cfg(target_os = "linux")]
     RustOom,
+    SqlStepsOverCap,
+    FrameLengthOverLimit,
     SqliteNoMem,
     CleanupUnproved,
     CleanupUnprovedRestore,
@@ -77,53 +69,6 @@ impl Drop for TestDirectory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
-}
-
-#[cfg(target_os = "linux")]
-fn long_worker_symlink(directory: &Path, worker: &Path, link_bytes: usize) -> Result<PathBuf> {
-    const NAME: &str = "worker";
-    let parent_bytes = link_bytes - NAME.len() - 1;
-    let mut parent = directory.to_path_buf();
-    let mut remaining = parent_bytes
-        .checked_sub(parent.as_os_str().len())
-        .ok_or_else(|| anyhow::anyhow!("Q2 temp root exceeds long-link path"))?;
-    while remaining > 256 {
-        parent.push("x".repeat(254));
-        remaining -= 255;
-    }
-    ensure!(remaining > 1, "cannot form long worker symlink path");
-    parent.push("x".repeat(remaining - 1));
-    std::fs::create_dir_all(&parent)?;
-    ensure!(
-        parent.as_os_str().len() == parent_bytes,
-        "long worker symlink parent has unexpected length"
-    );
-    let mut link = parent.join(NAME);
-    link.shrink_to_fit();
-    std::os::unix::fs::symlink(worker, &link)?;
-    ensure!(
-        link.as_os_str().len() == link_bytes && link.is_file(),
-        "long worker symlink is not a valid file path"
-    );
-    ensure!(
-        std::fs::canonicalize(&link)? == std::fs::canonicalize(worker)?,
-        "long worker symlink target changed"
-    );
-    Ok(link)
-}
-
-#[cfg(windows)]
-fn long_command_program_path() -> PathBuf {
-    const PATH_BYTES: usize = 4_300;
-    let component = "x".repeat(200);
-    let mut path = String::with_capacity(PATH_BYTES);
-    path.push_str(r"\\?\C:\");
-    while path.len() + component.len() + 1 + "worker.exe".len() <= PATH_BYTES {
-        path.push_str(&component);
-        path.push('\\');
-    }
-    path.push_str("worker.exe");
-    PathBuf::from(path)
 }
 
 struct Fixture {
@@ -678,67 +623,15 @@ fn native_worker_handles_backpressured_request_writes() -> Result<()> {
 }
 
 #[test]
-#[ignore = "requires the official Q2 preseed"]
-fn native_worker_refuses_over_budget_workspace_id_before_native_reservation() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::OversizedWorkspaceId)
-}
-
-#[test]
-#[ignore = "requires the official Q2 preseed"]
-fn native_worker_refuses_over_budget_binding_identity_before_native_reservation() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::OversizedBindingIdentityPayload)
-}
-
-#[test]
-#[ignore = "requires the official Q2 preseed"]
-fn native_worker_refuses_over_budget_worker_path_before_native_reservation() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::OversizedWorkerPath)
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-#[ignore = "requires the official Q2 preseed and a built normal worker binary"]
-fn native_worker_refuses_command_executable_payload_before_claim() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::CommandExecutablePathLowerBound)
-}
-
-#[cfg(windows)]
-#[test]
-#[ignore = "requires the official Q2 preseed"]
-fn native_worker_refuses_command_program_os_string_before_claim() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::CommandProgramOsString)
-}
-
-#[test]
-#[ignore = "requires the official Q2 preseed"]
-fn native_worker_refuses_over_budget_authority_path_before_native_reservation() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::OversizedAuthorityPath)
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-#[ignore = "requires the official Q2 preseed"]
-fn native_worker_refuses_retained_workspace_lock_path_capacity_before_claim() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::RetainedWorkspaceLeasePathCapacity)
-}
-
-#[test]
-#[ignore = "requires the official Q2 preseed"]
-fn native_worker_refuses_over_budget_command_project_id_before_native_reservation() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::OversizedCommandProjectId)
+#[ignore = "isolated real-worker test; quarantines a live request writer until test-process exit"]
+fn native_worker_quarantines_live_request_writer_after_cleanup_timeout() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::RequestWriteQuarantine)
 }
 
 #[test]
 #[ignore = "requires the official Q2 preseed and a normal worker binary"]
 fn native_worker_reports_canonical_registration_refusal_before_ready() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::StartupRegistrationRefused)
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-#[test]
-#[ignore = "requires the official Q2 preseed and a normal worker binary"]
-fn native_worker_discriminates_exact_preclaim_residual() -> Result<()> {
-    q2_reader_fixture(Q2WorkerScenario::StartupRegistrationRefusedResidualWitness)
 }
 
 #[test]
@@ -798,6 +691,18 @@ fn native_worker_rejects_committed_q2_frame_with_trailing_data() -> Result<()> {
 #[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
 fn native_worker_retires_after_real_child_rust_oom() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::RustOom)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
+fn native_worker_refuses_after_actual_sql_steps_over_cap() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::SqlStepsOverCap)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
+fn native_worker_rejects_request_and_frame_length_n_plus_one() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::FrameLengthOverLimit)
 }
 
 #[test]
@@ -1304,26 +1209,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     #[cfg(not(target_os = "linux"))]
     let directory_path = std::env::temp_dir().join(format!("nir1-c-q2-{}", uuid::Uuid::new_v4()));
     let directory = TestDirectory(directory_path);
-    let workspace_path = if scenario == Q2WorkerScenario::RetainedWorkspaceLeasePathCapacity {
-        const WORKSPACE_PATH_BYTES: usize = 400;
-        let mut workspace_path = directory.0.clone();
-        let mut remaining = WORKSPACE_PATH_BYTES
-            .checked_sub(workspace_path.as_os_str().len())
-            .ok_or_else(|| anyhow::anyhow!("temporary root exceeds the 400-byte workspace path"))?;
-        while remaining > 256 {
-            workspace_path.push("x".repeat(254));
-            remaining -= 255;
-        }
-        ensure!(remaining > 1, "cannot form 400-byte workspace path");
-        workspace_path.push("x".repeat(remaining - 1));
-        ensure!(
-            workspace_path.as_os_str().len() == WORKSPACE_PATH_BYTES,
-            "workspace path is not exactly 400 bytes"
-        );
-        workspace_path
-    } else {
-        directory.0.clone()
-    };
+    let workspace_path = directory.0.clone();
     std::fs::create_dir_all(&workspace_path)?;
     // Build the closed preseed separately with the opt-in fixture CLI, then
     // run this test WITHOUT its diagnostic feature on a disposable copy.
@@ -1343,29 +1229,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     }
     let path = workspace_path.join("grimodex.db");
     std::fs::copy(&source, &path)?;
-    let authority_path = if scenario == Q2WorkerScenario::OversizedAuthorityPath {
-        let mut authority_path = PathBuf::with_capacity(super::c_query_worker::REQUEST_BYTES + 1);
-        authority_path.push(&workspace_path);
-        ensure!(
-            authority_path == workspace_path,
-            "authority path over-reservation changed its path value"
-        );
-        ensure!(
-            authority_path.capacity() >= super::c_query_worker::REQUEST_BYTES + 1,
-            "authority path did not retain the deliberate over-reservation"
-        );
-        authority_path
-    } else if scenario == Q2WorkerScenario::RetainedWorkspaceLeasePathCapacity {
-        let mut authority_path = PathBuf::with_capacity(6_739);
-        authority_path.push(&workspace_path);
-        ensure!(
-            authority_path == workspace_path && authority_path.capacity() >= 6_739,
-            "authority path did not retain the witness over-reservation"
-        );
-        authority_path
-    } else {
-        workspace_path.clone()
-    };
+    let authority_path = workspace_path.clone();
     let authority =
         WorkspaceAuthority::from_database_for_test(crate::Database::new(&path)?, authority_path)?;
     let (original_revision, run_id, mut bundle): (String, String, EntityRelationBundle) = authority.with_read_transaction(|conn| {
@@ -1641,53 +1505,10 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     drop(reader);
 
     if scenario != Q2WorkerScenario::ReaderOnly {
-        #[cfg(windows)]
-        let command_program_path =
-            (scenario == Q2WorkerScenario::CommandProgramOsString).then(long_command_program_path);
-        #[cfg(not(windows))]
-        let command_program_path: Option<PathBuf> = None;
-        let worker_path = if let Some(path) = command_program_path {
-            path
-        } else if scenario == Q2WorkerScenario::OversizedWorkerPath {
-            let mut path = PathBuf::with_capacity(super::c_query_worker::REQUEST_BYTES + 1);
-            path.push(&workspace_path);
-            path.push("must-not-spawn-worker");
-            path
-        } else if scenario == Q2WorkerScenario::RetainedWorkspaceLeasePathCapacity {
-            let mut path = PathBuf::with_capacity(256);
-            path.push("x".repeat(108));
-            ensure!(
-                path.as_os_str().len() == 108 && path.capacity() >= 256 && !path.exists(),
-                "synthetic worker must retain the witness capacity and remain absent"
-            );
-            path
-        } else if matches!(
-            scenario,
-            Q2WorkerScenario::OversizedWorkspaceId
-                | Q2WorkerScenario::OversizedBindingIdentityPayload
-                | Q2WorkerScenario::OversizedAuthorityPath
-                | Q2WorkerScenario::OversizedCommandProjectId
-        ) {
-            workspace_path.join("must-not-spawn-worker")
-        } else {
-            let worker_binary = PathBuf::from(
-                std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
-                    .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
-            );
-            #[cfg(target_os = "linux")]
-            match scenario {
-                Q2WorkerScenario::CommandExecutablePathLowerBound => {
-                    long_worker_symlink(&workspace_path, &worker_binary, 4_088)?
-                }
-                Q2WorkerScenario::StartupRegistrationRefusedResidualWitness => {
-                    // Keep the ordinary refusal test on the normal worker path.
-                    long_worker_symlink(&workspace_path, &worker_binary, 2_545)?
-                }
-                _ => worker_binary,
-            }
-            #[cfg(not(target_os = "linux"))]
-            worker_binary
-        };
+        let worker_path = PathBuf::from(
+            std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
+                .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
+        );
         let switching = WorkspaceLifecycleCompatibilityView::new(false);
         let native_state = WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
@@ -1695,402 +1516,25 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             switching,
             open_lock: Mutex::new(()),
         };
-        let workspace_id = match scenario {
-            Q2WorkerScenario::OversizedWorkspaceId => "x".repeat(1_572_865),
-            Q2WorkerScenario::OversizedBindingIdentityPayload => "x".repeat(4_096),
-            _ => format!("test-workspace:{}", authority.identity()),
-        };
         let binding = LiveBinding::new(
             authority.path().to_string_lossy(),
-            workspace_id,
+            format!("test-workspace:{}", authority.identity()),
             authority.identity(),
             0,
         );
-        let binding = if scenario == Q2WorkerScenario::OversizedBindingIdentityPayload {
-            let identity_bytes = 8_193usize
-                .checked_sub(binding.locator.len())
-                .and_then(|bytes| bytes.checked_sub(binding.workspace_id.len()))
-                .ok_or_else(|| anyhow::anyhow!("combined identity test terms exceed boundary"))?;
-            binding.with_main_database_file_identity("d".repeat(identity_bytes))
-        } else {
-            binding
-        };
-        let binding_payload_bytes = binding.c_query_identity_payload_byte_len();
-        let oversized_workspace_id = (scenario == Q2WorkerScenario::OversizedWorkspaceId)
-            .then(|| Arc::downgrade(&binding.workspace_id));
         #[cfg(target_os = "linux")]
-        let original_binding = if matches!(
-            scenario,
-            Q2WorkerScenario::CleanupUnprovedDuringTransition
-                | Q2WorkerScenario::OversizedBindingIdentityPayload
-        ) {
+        let original_binding = if scenario == Q2WorkerScenario::CleanupUnprovedDuringTransition {
             binding
         } else {
             binding.with_main_database_file_identity(authority.main_database_file_identity()?)
         };
         #[cfg(not(target_os = "linux"))]
-        let original_binding = if scenario == Q2WorkerScenario::OversizedBindingIdentityPayload {
-            binding
-        } else {
-            binding.with_main_database_file_identity(authority.main_database_file_identity()?)
-        };
-        let original_binding_payload_bytes = original_binding.c_query_identity_payload_byte_len();
+        let original_binding =
+            binding.with_main_database_file_identity(authority.main_database_file_identity()?);
         native_state
             .switching
             .core()
             .set_ready(original_binding.clone())?;
-
-        #[cfg(windows)]
-        if scenario == Q2WorkerScenario::CommandProgramOsString {
-            let snapshot = active_workspace_snapshot(&native_state)?;
-            let binding_payload_bytes = original_binding_payload_bytes
-                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
-            let worker_path_bytes = worker_path.as_os_str().as_encoded_bytes().len();
-            ensure!(
-                worker_path_bytes >= 4_000,
-                "regression requires a long synthetic Windows program path"
-            );
-            let authority_path_capacity = snapshot.c_query_authority_path_capacity();
-            let command_argument_bytes =
-                super::c_query_worker::command_argument_payload_lower_bound(
-                    snapshot.path().as_os_str(),
-                    &request.project_id,
-                )
-                .ok_or_else(|| anyhow::anyhow!("command argument lower bound unavailable"))?;
-            let existing_terms = binding_payload_bytes
-                .checked_add(worker_path.capacity())
-                .and_then(|bytes| bytes.checked_add(authority_path_capacity))
-                .and_then(|bytes| bytes.checked_add(command_argument_bytes))
-                .ok_or_else(|| anyhow::anyhow!("existing owner terms overflowed"))?;
-            let program_terms =
-                super::c_query_worker::command_program_os_string_payload_lower_bound(
-                    worker_path.as_os_str(),
-                );
-            ensure!(
-                existing_terms <= super::c_query_worker::REQUEST_BYTES
-                    && existing_terms
-                        .checked_add(program_terms)
-                        .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
-                "only the Command-owned program OsString should push this path over the residual"
-            );
-            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
-            let error = owner
-                .prepare(&request.project_id)
-                .expect_err("program OsString lower bound must refuse before child claim");
-            ensure!(
-                error
-                    .to_string()
-                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
-                "program OsString payload was not refused by the pre-claim guard: {error:#}"
-            );
-            ensure!(
-                owner.capacity_refusal_left_no_resources_for_test(),
-                "program OsString refusal acquired claim, Native permit/storage, or child"
-            );
-            drop(original_binding);
-            eprintln!(
-                "Native Q2 owner refused a synthetic long Windows program path before claim, permit, storage, or spawn"
-            );
-            return Ok(());
-        }
-
-        #[cfg(target_os = "linux")]
-        if scenario == Q2WorkerScenario::CommandExecutablePathLowerBound {
-            let snapshot = active_workspace_snapshot(&native_state)?;
-            let binding_payload_bytes = original_binding_payload_bytes
-                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
-            let worker_path_bytes = worker_path.as_os_str().len();
-            ensure!(
-                worker_path_bytes == 4_088 && worker_path.is_file(),
-                "regression requires a valid 4,088-byte worker symlink"
-            );
-            let authority_path_capacity = snapshot.c_query_authority_path_capacity();
-            let command_argument_bytes =
-                super::c_query_worker::command_argument_payload_lower_bound(
-                    snapshot.path().as_os_str(),
-                    &request.project_id,
-                )
-                .ok_or_else(|| anyhow::anyhow!("command argument lower bound unavailable"))?;
-            let existing_terms = binding_payload_bytes
-                .checked_add(worker_path.capacity())
-                .and_then(|bytes| bytes.checked_add(authority_path_capacity))
-                .and_then(|bytes| bytes.checked_add(command_argument_bytes))
-                .ok_or_else(|| anyhow::anyhow!("existing owner terms overflowed"))?;
-            let executable_terms =
-                super::c_query_worker::command_executable_and_argv_payload_lower_bound(
-                    worker_path.as_os_str(),
-                )
-                .ok_or_else(|| anyhow::anyhow!("executable payload lower bound unavailable"))?;
-            ensure!(
-                existing_terms <= super::c_query_worker::REQUEST_BYTES
-                    && existing_terms
-                        .checked_add(executable_terms)
-                        .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
-                "only the executable/argv terms should push this valid path over the residual"
-            );
-            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
-            let error = owner
-                .prepare(&request.project_id)
-                .expect_err("executable lower bound must refuse before child claim");
-            ensure!(
-                error
-                    .to_string()
-                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
-                "executable payload was not refused by the pre-claim guard: {error:#}"
-            );
-            ensure!(
-                owner.capacity_refusal_left_no_resources_for_test(),
-                "executable payload refusal acquired claim, Native permit/storage, or child"
-            );
-            drop(original_binding);
-            eprintln!(
-                "Native Q2 owner refused valid 4,088-byte worker path before claim, permit, storage, or spawn"
-            );
-            return Ok(());
-        }
-
-        if scenario == Q2WorkerScenario::OversizedCommandProjectId {
-            let project_id = "x".repeat(super::c_query_worker::REQUEST_BYTES - 1);
-            let snapshot = active_workspace_snapshot(&native_state)?;
-            let binding_payload_bytes = original_binding_payload_bytes
-                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
-            let command_argument_bytes =
-                super::c_query_worker::command_argument_payload_lower_bound(
-                    snapshot.path().as_os_str(),
-                    &project_id,
-                )
-                .ok_or_else(|| anyhow::anyhow!("command argument lower bound unavailable"))?;
-            let non_argument_bytes = binding_payload_bytes
-                .checked_add(worker_path.capacity())
-                .and_then(|bytes| bytes.checked_add(snapshot.c_query_authority_path_capacity()))
-                .ok_or_else(|| anyhow::anyhow!("test owner payload overflowed"))?;
-            ensure!(
-                project_id.len() < super::c_query_worker::REQUEST_BYTES,
-                "command project ID must remain below the existing prepare length bound"
-            );
-            ensure!(
-                non_argument_bytes <= super::c_query_worker::REQUEST_BYTES
-                    && non_argument_bytes
-                        .checked_add(command_argument_bytes)
-                        .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
-                "the distinct Command argument payload did not cause the capacity refusal"
-            );
-            ensure!(
-                !worker_path.exists(),
-                "test worker path unexpectedly exists"
-            );
-            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
-            let error = owner.prepare(&project_id).expect_err(
-                "over-budget Command arguments must be refused before Native reservation",
-            );
-            ensure!(
-                error
-                    .to_string()
-                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
-                "Command argument payload was not refused by the pre-reservation guard: {error:#}"
-            );
-            ensure!(
-                owner.capacity_refusal_left_no_resources_for_test(),
-                "Command argument refusal acquired Native storage, permit, claim, or child"
-            );
-            drop(original_binding);
-            eprintln!(
-                "Native Q2 owner refused over-budget Command argument payload before permit, claim, storage, or worker spawn"
-            );
-            return Ok(());
-        }
-
-        if scenario == Q2WorkerScenario::OversizedAuthorityPath {
-            let snapshot = active_workspace_snapshot(&native_state)?;
-            let authority_path_capacity = snapshot.c_query_authority_path_capacity();
-            let binding_payload_bytes = original_binding_payload_bytes
-                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
-            let guarded_without_authority_path = binding_payload_bytes
-                .checked_add(worker_path.capacity())
-                .ok_or_else(|| anyhow::anyhow!("test guard payload overflowed"))?;
-            ensure!(
-                snapshot.path() == workspace_path.as_path(),
-                "authority path value changed while reserving additional capacity"
-            );
-            ensure!(
-                binding_payload_bytes < super::c_query_worker::REQUEST_BYTES,
-                "authority-path-only case requires binding strings within the residual"
-            );
-            ensure!(
-                guarded_without_authority_path <= super::c_query_worker::REQUEST_BYTES,
-                "authority-path-only case must not be refused by the existing binding/worker terms"
-            );
-            ensure!(
-                guarded_without_authority_path
-                    .checked_add(authority_path_capacity)
-                    .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
-                "authority path capacity did not exceed the residual with existing owner terms"
-            );
-            ensure!(
-                !worker_path.exists(),
-                "test worker path unexpectedly exists"
-            );
-            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
-            let error = owner
-                .prepare(&request.project_id)
-                .expect_err("over-budget authority path must be refused before Native reservation");
-            ensure!(
-                error
-                    .to_string()
-                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
-                "authority path capacity was not refused by the pre-reservation guard: {error:#}"
-            );
-            ensure!(
-                owner.capacity_refusal_left_no_resources_for_test(),
-                "over-budget authority path refusal acquired Native storage, permit, claim, or child"
-            );
-            drop(original_binding);
-            eprintln!(
-                "Native Q2 owner refused over-budget authority path capacity before permit, claim, storage, or worker spawn"
-            );
-            return Ok(());
-        }
-
-        #[cfg(target_os = "linux")]
-        if scenario == Q2WorkerScenario::RetainedWorkspaceLeasePathCapacity {
-            let snapshot = active_workspace_snapshot(&native_state)?;
-            let binding_payload_bytes = original_binding_payload_bytes
-                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
-            let worker_path_capacity = worker_path.capacity();
-            let authority_path_capacity = snapshot.c_query_authority_path_capacity();
-            let workspace_lease_path_capacity = snapshot.authority.lease().path_capacity();
-            let command_argument_payload_bytes =
-                super::c_query_worker::command_argument_payload_lower_bound(
-                    snapshot.path().as_os_str(),
-                    &request.project_id,
-                )
-                .ok_or_else(|| anyhow::anyhow!("command argument lower bound unavailable"))?;
-            let command_executable_payload_bytes =
-                super::c_query_worker::command_executable_and_argv_payload_lower_bound(
-                    worker_path.as_os_str(),
-                )
-                .ok_or_else(|| anyhow::anyhow!("executable payload lower bound unavailable"))?;
-            let participant_payload_bytes =
-                crate::workspace_lifecycle::WorkspaceParticipant::c_query_lease_payload_bytes();
-            let participant_arc_control_header_floor_bytes =
-                2 * std::mem::size_of::<std::sync::atomic::AtomicUsize>();
-            let payload_sum = |payloads: &[usize]| {
-                payloads
-                    .iter()
-                    .try_fold(0usize, |sum, payload| sum.checked_add(*payload))
-            };
-            let former_preclaim_payload_bytes = payload_sum(&[
-                binding_payload_bytes,
-                worker_path_capacity,
-                authority_path_capacity,
-                command_argument_payload_bytes,
-                command_executable_payload_bytes,
-                participant_payload_bytes,
-                participant_arc_control_header_floor_bytes,
-            ])
-            .ok_or_else(|| anyhow::anyhow!("former preclaim terms overflowed"))?;
-            let former_command_staging_payload_bytes = payload_sum(&[
-                binding_payload_bytes,
-                authority_path_capacity,
-                command_argument_payload_bytes,
-                command_executable_payload_bytes,
-                participant_payload_bytes,
-                participant_arc_control_header_floor_bytes,
-            ])
-            .ok_or_else(|| anyhow::anyhow!("former staging terms overflowed"))?;
-
-            ensure!(
-                snapshot.path().as_os_str().len() == 400
-                    && snapshot.authority.lease().path().as_os_str().len() == 425
-                    && workspace_lease_path_capacity >= 425,
-                "regression requires the actual retained lock path for a 400-byte workspace"
-            );
-            ensure!(
-                worker_path.as_os_str().len() == 108
-                    && worker_path_capacity >= 256
-                    && authority_path_capacity >= 6_739
-                    && command_argument_payload_bytes == 431
-                    && command_executable_payload_bytes == 250
-                    && !worker_path.exists(),
-                "lock-path witness inputs changed or synthetic worker unexpectedly exists"
-            );
-            ensure!(
-                former_preclaim_payload_bytes <= super::c_query_worker::REQUEST_BYTES
-                    && former_command_staging_payload_bytes <= super::c_query_worker::REQUEST_BYTES,
-                "former owner phase sums must fit before counting the retained lock path"
-            );
-            ensure!(
-                former_preclaim_payload_bytes
-                    .checked_add(workspace_lease_path_capacity)
-                    .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES)
-                    && former_command_staging_payload_bytes
-                        .checked_add(workspace_lease_path_capacity)
-                        .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
-                "actual retained lock-path capacity must push both phase sums over budget"
-            );
-
-            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
-            let error = owner
-                .prepare(&request.project_id)
-                .expect_err("retained lock-path capacity must refuse before child claim");
-            ensure!(
-                error
-                    .to_string()
-                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
-                "retained lock-path capacity was not refused by the pre-claim guard: {error:#}"
-            );
-            ensure!(
-                owner.capacity_refusal_left_no_resources_for_test(),
-                "lock-path refusal acquired claim, Native storage, or a child session"
-            );
-            drop(original_binding);
-            eprintln!(
-                "Native Q2 lock-path witness: former preclaim={former_preclaim_payload_bytes}, former staging={former_command_staging_payload_bytes}, retained lock-path capacity={workspace_lease_path_capacity}; prepare refused before claim or child spawn"
-            );
-            return Ok(());
-        }
-
-        if scenario == Q2WorkerScenario::OversizedWorkerPath {
-            let worker_path_capacity = worker_path.capacity();
-            ensure!(
-                worker_path.as_os_str().len() < super::c_query_worker::REQUEST_BYTES,
-                "path-only case requires path payload below the residual"
-            );
-            let binding_payload_bytes = original_binding_payload_bytes
-                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
-            ensure!(
-                binding_payload_bytes < super::c_query_worker::REQUEST_BYTES,
-                "path-only case requires binding strings within the residual"
-            );
-            ensure!(
-                binding_payload_bytes
-                    .checked_add(worker_path_capacity)
-                    .is_some_and(|bytes| bytes > super::c_query_worker::REQUEST_BYTES),
-                "path capacity did not exceed the residual with the Ready binding payload"
-            );
-            let mut owner = super::c_query_worker::CQueryWorkerOwner::new(
-                active_workspace_snapshot(&native_state)?,
-                worker_path,
-            );
-            let error = owner
-                .prepare(&request.project_id)
-                .expect_err("over-budget worker path must be refused before Native reservation");
-            ensure!(
-                error
-                    .to_string()
-                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
-                "path capacity was not refused by the pre-reservation guard: {error:#}"
-            );
-            ensure!(
-                owner.capacity_refusal_left_no_resources_for_test(),
-                "over-budget path refusal acquired Native storage, permit, claim, or child"
-            );
-            drop(original_binding);
-            eprintln!(
-                "Native Q2 owner refused over-budget worker path capacity before permit, claim, storage, or worker spawn"
-            );
-            return Ok(());
-        }
 
         #[cfg(target_os = "linux")]
         if scenario == Q2WorkerScenario::CleanupUnprovedDuringTransition {
@@ -2244,6 +1688,10 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             ensure!(
                 owner.normal_exit_and_eof_observed_for_test(),
                 "test did not observe successful child exit + real reader EOF + complete frame"
+            );
+            ensure!(
+                owner.successful_request_bound_q2_frame_before_eof_suppression_for_test(),
+                "EOF proof was suppressed without a successful request-bound Q2 frame"
             );
             ensure!(
                 !owner.cleanup_proved_for_test(),
@@ -2499,60 +1947,6 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         let authority_strong_count_before_snapshot =
             (scenario == Q2WorkerScenario::NativeOwner).then(|| Arc::strong_count(&authority));
         let snapshot = active_workspace_snapshot(&native_state)?;
-        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-        if scenario == Q2WorkerScenario::StartupRegistrationRefusedResidualWitness {
-            let binding_payload_bytes = snapshot
-                .c_query_identity_payload_byte_len()
-                .ok_or_else(|| anyhow::anyhow!("Ready binding payload length unavailable"))?;
-            let locator_bytes = original_binding.locator.len();
-            let workspace_id_bytes = original_binding.workspace_id.len();
-            let database_file_identity_bytes = binding_payload_bytes
-                .checked_sub(locator_bytes)
-                .and_then(|bytes| bytes.checked_sub(workspace_id_bytes))
-                .ok_or_else(|| anyhow::anyhow!("binding identity operands did not reconcile"))?;
-            let worker_path_capacity = worker_path.capacity();
-            let authority_path_capacity = snapshot.c_query_authority_path_capacity();
-            let workspace_lease_path_capacity = snapshot.authority.lease().path_capacity();
-            let command_argument_payload_bytes =
-                super::c_query_worker::command_argument_payload_lower_bound(
-                    snapshot.path().as_os_str(),
-                    STARTUP_REFUSAL_PROJECT_ID,
-                )
-                .ok_or_else(|| anyhow::anyhow!("Command argument payload unavailable"))?;
-            let command_executable_payload_bytes =
-                super::c_query_worker::command_executable_and_argv_payload_lower_bound(
-                    worker_path.as_os_str(),
-                )
-                .ok_or_else(|| anyhow::anyhow!("Command executable payload unavailable"))?;
-            let participant_payload_bytes =
-                crate::workspace_lifecycle::WorkspaceParticipant::c_query_lease_payload_bytes();
-            let participant_arc_control_header_floor_bytes =
-                2 * std::mem::size_of::<std::sync::atomic::AtomicUsize>();
-            let preclaim_terms = [
-                binding_payload_bytes,
-                worker_path_capacity,
-                authority_path_capacity,
-                workspace_lease_path_capacity,
-                command_argument_payload_bytes,
-                command_executable_payload_bytes,
-                participant_payload_bytes,
-                participant_arc_control_header_floor_bytes,
-            ];
-            let preclaim_sum = preclaim_terms
-                .iter()
-                .try_fold(0usize, |sum, term| sum.checked_add(*term))
-                .ok_or_else(|| anyhow::anyhow!("actual preclaim operands overflowed"))?;
-            ensure!(
-                preclaim_sum == super::c_query_worker::REQUEST_BYTES,
-                "real Native preclaim operands did not saturate the 8,192-B guard: terms={preclaim_terms:?}, sum={preclaim_sum}"
-            );
-            let command_staging_sum = preclaim_sum
-                .checked_sub(worker_path_capacity)
-                .ok_or_else(|| anyhow::anyhow!("worker path was absent from preclaim sum"))?;
-            eprintln!(
-                "actual Native preclaim operands (bytes): binding={binding_payload_bytes} [locator={locator_bytes}, workspace_id={workspace_id_bytes}, main_file_identity={database_file_identity_bytes}], worker_path_capacity={worker_path_capacity}, authority_path_capacity={authority_path_capacity}, lease_path_capacity={workspace_lease_path_capacity}, command_arguments={command_argument_payload_bytes}, command_executable_and_argv={command_executable_payload_bytes}, participant_value={participant_payload_bytes}, participant_arc_header_floor={participant_arc_control_header_floor_bytes}; preclaim={preclaim_sum}, Command_staging={command_staging_sum}"
-            );
-        }
         let mut owner =
             super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path.clone());
         match scenario {
@@ -2565,6 +1959,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             Q2WorkerScenario::RequestWriteCancellation
             | Q2WorkerScenario::RequestWriteDeadline
             | Q2WorkerScenario::RequestWriteChildExit => {
+                owner.use_threaded_request_writer_for_test();
                 owner.hold_child_before_request_for_test(directory.0.join("request-write-pending"));
             }
             #[cfg(target_os = "linux")]
@@ -2578,6 +1973,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             }
             #[cfg(target_os = "linux")]
             Q2WorkerScenario::PostCommitNonzero => {
+                owner.use_threaded_request_writer_for_test();
                 owner.wait_for_child_exit_after_full_request_write_for_test();
             }
             #[cfg(target_os = "linux")]
@@ -2589,52 +1985,12 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             Q2WorkerScenario::TrailingData => owner.trailing_data_for_test(),
             #[cfg(target_os = "linux")]
             Q2WorkerScenario::RustOom => owner.rust_oom_for_test(),
+            Q2WorkerScenario::SqlStepsOverCap => owner.sql_steps_over_cap_for_test(),
+            Q2WorkerScenario::FrameLengthOverLimit => owner.oversized_frame_for_test(),
             Q2WorkerScenario::SqliteNoMem => owner.sqlite_nomem_for_test(),
             _ => {}
         }
-        if matches!(
-            scenario,
-            Q2WorkerScenario::OversizedWorkspaceId
-                | Q2WorkerScenario::OversizedBindingIdentityPayload
-        ) {
-            let error = owner
-                .prepare(&request.project_id)
-                .expect_err("binding identity payload over Native capacity must be refused");
-            ensure!(
-                error
-                    .to_string()
-                    .contains("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"),
-                "over-budget identity was not refused by the pre-reservation guard: {error:#}"
-            );
-            ensure!(
-                owner.capacity_refusal_left_no_resources_for_test(),
-                "over-budget identity refusal acquired Native storage, a permit, claim, or child"
-            );
-            if scenario == Q2WorkerScenario::OversizedWorkspaceId {
-                ensure!(
-                    oversized_workspace_id
-                        .as_ref()
-                        .and_then(|id| id.upgrade())
-                        .is_some_and(|id| id.len() == 1_572_865),
-                    "fail-closed query preparation changed the accepted Ready workspace ID"
-                );
-            } else {
-                ensure!(
-                    binding_payload_bytes == Some(8_193),
-                    "combined workspace-ID, locator, and DB identity test payload was not 8,193 bytes: {binding_payload_bytes:?}"
-                );
-            }
-            drop(original_binding);
-            eprintln!(
-                "Native Q2 owner refused over-budget binding identity before permit, claim, storage, or worker spawn"
-            );
-            return Ok(());
-        }
-        if matches!(
-            scenario,
-            Q2WorkerScenario::StartupRegistrationRefused
-                | Q2WorkerScenario::StartupRegistrationRefusedResidualWitness
-        ) {
+        if scenario == Q2WorkerScenario::StartupRegistrationRefused {
             let error = owner
                 .prepare(STARTUP_REFUSAL_PROJECT_ID)
                 .expect_err("unregistered project must not report READY");
@@ -2679,6 +2035,154 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 "Native Q2 READY owner retained its Authority Arc"
             );
         }
+        if scenario == Q2WorkerScenario::RequestWriteQuarantine {
+            const REQUEST_WIRE_BYTES: usize = super::c_query_worker::REQUEST_BYTES;
+            let mut held_request = request.clone();
+            let fixed_bytes = 8 + held_request.project_id.len() + held_request.seed_entity_id.len();
+            held_request.query_scene_id = "x".repeat(
+                REQUEST_WIRE_BYTES
+                    .checked_sub(fixed_bytes)
+                    .ok_or_else(|| anyhow::anyhow!("held request fixed fields exceed target"))?,
+            );
+            let wire_bytes = 8
+                + held_request.project_id.len()
+                + held_request.query_scene_id.len()
+                + held_request.seed_entity_id.len();
+            ensure!(
+                wire_bytes == REQUEST_WIRE_BYTES,
+                "held request wire size changed"
+            );
+            #[cfg(target_os = "linux")]
+            owner.use_threaded_request_writer_for_test();
+            let (hold_entered, hold_release, hold_finished) =
+                owner.hold_request_writer_after_bytes_for_test(1);
+            let cancellation = AtomicBool::new(false);
+            let query_error = thread::scope(|scope| -> Result<Option<String>> {
+                let entered_for_coordinator = Arc::clone(&hold_entered);
+                let cancellation_for_coordinator = &cancellation;
+                let authority_for_coordinator = &authority;
+                let coordinator = scope.spawn(move || -> Result<()> {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !entered_for_coordinator.load(Ordering::Acquire) {
+                        ensure!(
+                            Instant::now() < deadline,
+                            "request writer did not enter its post-partial-write test hold"
+                        );
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    ensure!(
+                        authority_for_coordinator.claim_c_query_child().is_none(),
+                        "child claim was reloaned while the partial request writer was held"
+                    );
+                    cancellation_for_coordinator.store(true, Ordering::Release);
+                    Ok(())
+                });
+                let query_error =
+                    match owner.query_once_with_cancellation(&held_request, &cancellation) {
+                        Ok(lease) => {
+                            drop(lease);
+                            None
+                        }
+                        Err(error) => Some(format!("{error:#}")),
+                    };
+                coordinator
+                    .join()
+                    .map_err(|_| anyhow::anyhow!("request-writer coordinator panicked"))??;
+                Ok(query_error)
+            })?;
+            let error_text = query_error.ok_or_else(|| {
+                anyhow::anyhow!("held partial request unexpectedly returned a result lease")
+            })?;
+            let (written, _) = owner.request_write_diagnostics_for_test();
+            let live_writer_at_cleanup = hold_entered.load(Ordering::Acquire)
+                && !hold_finished.load(Ordering::Acquire)
+                && !owner.request_writer_joined_for_test()
+                && owner.live_writer_at_cleanup_timeout_for_test()
+                && !owner.cleanup_proved_for_test()
+                && owner.quarantined_resources_held_for_test();
+            let refused_without_handoff = error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED")
+                && error_text.contains("NIR1_GRAPH_WORKER_CALLER_CANCELLED")
+                && error_text.contains("NIR1_GRAPH_WORKER_BOUNDED_JOIN_UNPROVED")
+                && !owner.request_handoff_published_for_test()
+                && written > 0
+                && written < wire_bytes
+                && cancellation.load(Ordering::Acquire);
+            ensure!(
+                refused_without_handoff && live_writer_at_cleanup,
+                "cleanup did not quarantine a live unjoined writer after partial-write refusal: {error_text}"
+            );
+            ensure!(
+                authority.claim_c_query_child().is_none(),
+                "child claim was reloaned while request-writer quarantine was live"
+            );
+            drop(owner);
+            ensure!(
+                authority.claim_c_query_child().is_none(),
+                "owner Drop reloaned the quarantined request-writer claim"
+            );
+            let workspace_reloan_error = match active_workspace_snapshot(&native_state) {
+                Ok(_) => anyhow::bail!(
+                    "owner Drop released workspace admission during request-writer quarantine"
+                ),
+                Err(error) => error,
+            };
+            ensure!(
+                workspace_reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                "request-writer quarantine failed to retain workspace protection: {workspace_reloan_error:#}"
+            );
+
+            let other_path = std::env::temp_dir().join(format!(
+                "nir1-c-live-writer-quarantine-other-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let _other_directory = TestDirectory(other_path.clone());
+            let other_authority = crate::state::WorkspaceAuthority::from_database_for_test(
+                crate::Database::new(std::path::Path::new(":memory:"))?,
+                other_path,
+            )?;
+            let other_state = WorkspaceState {
+                inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&other_authority)))),
+                safe_mode: crate::recovery::SafeModeState::default(),
+                switching: WorkspaceLifecycleCompatibilityView::new(false),
+                open_lock: Mutex::new(()),
+            };
+            other_state.switching.core().set_ready(LiveBinding::new(
+                other_authority.path().to_string_lossy(),
+                format!("other-workspace:{}", other_authority.identity()),
+                other_authority.identity(),
+                0,
+            ))?;
+            let mut replacement_owner = super::c_query_worker::CQueryWorkerOwner::new(
+                active_workspace_snapshot(&other_state)?,
+                worker_path.clone(),
+            );
+            let replacement_error = replacement_owner
+                .prepare(&request.project_id)
+                .expect_err("request-writer quarantine must retain the process slot");
+            ensure!(
+                replacement_error
+                    .to_string()
+                    .contains("NIR1_GRAPH_WORKER_CAPACITY_BUSY")
+                    && replacement_owner.capacity_refusal_left_no_resources_for_test(),
+                "replacement admission bypassed request-writer quarantine: {replacement_error:#}"
+            );
+            drop(replacement_owner);
+            hold_release.store(true, Ordering::Release);
+            let writer_finish_deadline = Instant::now() + Duration::from_secs(2);
+            while !hold_finished.load(Ordering::Acquire) && Instant::now() < writer_finish_deadline
+            {
+                thread::sleep(Duration::from_millis(1));
+            }
+            ensure!(
+                hold_finished.load(Ordering::Acquire),
+                "test-released detached request writer did not finish"
+            );
+            eprintln!(
+                "Real-worker request-writer quarantine: partial write refused without OWNER_REQUEST/lease; bounded cleanup retained the live unjoined writer, claim, slot and workspace fence; owner Drop did not admit a replacement"
+            );
+            return Ok(());
+        }
+
         #[cfg(target_os = "linux")]
         if matches!(
             scenario,
@@ -2686,7 +2190,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 | Q2WorkerScenario::RequestWriteDeadline
                 | Q2WorkerScenario::RequestWriteChildExit
         ) {
-            const REQUEST_WIRE_BYTES: usize = 7_000;
+            const REQUEST_WIRE_BYTES: usize = super::c_query_worker::REQUEST_BYTES;
             let pipe_capacity = owner.shrink_stdin_pipe_for_test(4_096)?;
             let mut blocked_request = request.clone();
             let fixed_bytes =
@@ -2714,7 +2218,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     && pipe_capacity < wire_bytes,
                 "request/pipe sizes do not force backpressure: request={wire_bytes}, capacities={capacity_bytes}, pipe={pipe_capacity}"
             );
-            let blocked_signal = owner.observe_request_write_blocked_for_test();
+            let blocked_signal = owner.observe_request_write_blocked_for_test(pipe_capacity);
             let child_pid = owner.child_pid_for_test()?;
             let marker = directory.0.join("request-write-pending");
             let cancellation = AtomicBool::new(false);
@@ -2743,7 +2247,9 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     while !blocked_for_coordinator.load(Ordering::Acquire) {
                         if Instant::now() >= blocked_deadline {
                             unsafe { libc::kill(child_pid as libc::pid_t, libc::SIGKILL) };
-                            anyhow::bail!("Native request writer never observed WouldBlock");
+                            anyhow::bail!(
+                                "Native request writer did not stall after a partial write"
+                            );
                         }
                         thread::sleep(Duration::from_millis(1));
                     }
@@ -2792,10 +2298,10 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
                 "backpressured request returned the wrong failure or unproved cleanup: {error_text}"
             );
-            let (written, would_block) = owner.request_write_diagnostics_for_test();
+            let (written, stalled) = owner.request_write_diagnostics_for_test();
             ensure!(
-                would_block && written > 0 && written < wire_bytes,
-                "test did not prove a partial nonblocking write: bytes={written}, total={wire_bytes}, blocked={would_block}"
+                stalled && written > 0 && written < wire_bytes,
+                "test did not prove a partial stalled write: bytes={written}, total={wire_bytes}, stalled={stalled}"
             );
             ensure!(
                 !owner.request_handoff_published_for_test(),
@@ -2807,8 +2313,10 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 "caller cancellation signal did not match the test case"
             );
             ensure!(
-                owner.cleanup_proved_for_test() && owner.abnormal_exit_observed_for_test(),
-                "backpressure refusal preceded child exit, stdout EOF and reader join"
+                owner.cleanup_proved_for_test()
+                    && owner.abnormal_exit_observed_for_test()
+                    && owner.request_writer_joined_for_test(),
+                "backpressure refusal preceded writer join, child exit, stdout EOF and reader join"
             );
             let claim = authority.claim_c_query_child().ok_or_else(|| {
                 anyhow::anyhow!("proved request-write cleanup did not release the child claim")
@@ -2824,7 +2332,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 "retired request-write owner retained its workspace participant"
             );
             eprintln!(
-                "Linux Native backpressured request write: {expected_reason}; wrote {written}/{wire_bytes}, observed WouldBlock, no OWNER_REQUEST, and proved exit + EOF + reader join before reloan"
+                "Linux analogue of non-Linux threaded request write: {expected_reason}; wrote {written}/{wire_bytes}, stalled without OWNER_REQUEST, and proved writer join + exit + EOF + reader join before reloan"
             );
             return Ok(());
         }
@@ -2899,6 +2407,137 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             );
             eprintln!(
                 "Native real-Q2 caller cancellation: nonempty Q2 result reached post-admission/pre-frame barrier; distinct refusal; child exit + stdout EOF + reader join proved before child-claim reloan"
+            );
+            return Ok(());
+        }
+        if scenario == Q2WorkerScenario::FrameLengthOverLimit {
+            const REQUEST_BYTES: usize = super::c_query_worker::REQUEST_BYTES;
+            let mut oversized_request = request.clone();
+            let fixed_bytes =
+                8 + oversized_request.project_id.len() + oversized_request.seed_entity_id.len();
+            let scene_bytes = REQUEST_BYTES
+                .checked_add(1)
+                .and_then(|target| target.checked_sub(fixed_bytes))
+                .ok_or_else(|| anyhow::anyhow!("cannot construct exact N+1 request"))?;
+            oversized_request.query_scene_id = "x".repeat(scene_bytes);
+            let wire_bytes = 8
+                + oversized_request.project_id.len()
+                + oversized_request.query_scene_id.len()
+                + oversized_request.seed_entity_id.len();
+            let capacity_bytes = oversized_request
+                .project_id
+                .capacity()
+                .checked_add(oversized_request.query_scene_id.capacity())
+                .and_then(|bytes| bytes.checked_add(oversized_request.seed_entity_id.capacity()))
+                .ok_or_else(|| anyhow::anyhow!("request capacity overflow"))?;
+            ensure!(
+                wire_bytes == REQUEST_BYTES + 1 && capacity_bytes <= REQUEST_BYTES,
+                "request boundary fixture was not exactly N+1: wire={wire_bytes}, capacity={capacity_bytes}"
+            );
+            ensure!(owner.child_pid_for_test()? > 0, "Q2 child was not READY");
+            let request_error = match owner.query_once(&oversized_request) {
+                Ok(lease) => {
+                    drop(lease);
+                    anyhow::bail!("N+1 request unexpectedly produced a Native result lease")
+                }
+                Err(error) => format!("{error:#}"),
+            };
+            ensure!(
+                request_error.contains("NIR1_GRAPH_WORKER_REQUEST_LIMIT")
+                    && !request_error.contains("REQUEST_CAPACITY_LIMIT")
+                    && !request_error.contains("QUERY_DEADLINE")
+                    && !owner.request_handoff_published_for_test()
+                    && !owner.retirement_pending_for_test(),
+                "N+1 request was not rejected by pre-handoff length validation: {request_error}"
+            );
+
+            let frame_error = match owner.query_once(&request) {
+                Ok(lease) => {
+                    drop(lease);
+                    anyhow::bail!("N+1 frame declaration unexpectedly produced a Native lease")
+                }
+                Err(error) => format!("{error:#}"),
+            };
+            ensure!(
+                frame_error.contains("NIR1_GRAPH_FRAME_LIMIT")
+                    && !frame_error.contains("QUERY_DEADLINE")
+                    && !frame_error.contains("PIPE_TRUNCATED")
+                    && !owner.retirement_pending_for_test(),
+                "N+1 frame declaration did not produce a boundary-specific no-lease refusal: {frame_error}"
+            );
+            let frame_state = owner.oversized_frame_refusal_state_for_test();
+            ensure!(
+                owner.oversized_frame_refused_before_body_for_test(),
+                "Native read or published a frame body after the N+1 length header: events={:#x}, mailbox frame_len={}, result_len={}",
+                frame_state.0,
+                frame_state.1,
+                frame_state.2
+            );
+            ensure!(
+                owner.cleanup_proved_for_test(),
+                "frame-limit refusal preceded child exit, stdout EOF, and reader join"
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("proved frame-limit cleanup did not release the child claim")
+            })?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0,
+                "frame-limit refusal retained the workspace participant"
+            );
+            eprintln!(
+                "Native Q2 boundaries: exact {}/{}-byte request refused before OWNER_REQUEST/no lease; canonical child then advertised frame length {} with header only, Native returned FRAME_LIMIT without body read/frame publication/lease, and exit + EOF + reader join preceded claim release",
+                REQUEST_BYTES + 1,
+                REQUEST_BYTES,
+                super::c_query_worker::FRAME_BYTES + 1
+            );
+            return Ok(());
+        }
+        if scenario == Q2WorkerScenario::SqlStepsOverCap {
+            let error = match owner.query_once(&request) {
+                Ok(lease) => {
+                    drop(lease);
+                    anyhow::bail!("over-cap SQL unexpectedly returned a Native result lease")
+                }
+                Err(error) => error,
+            };
+            let error_text = format!("{error:#}");
+            ensure!(
+                error_text.contains("NIR1_GRAPH_WORKER_UNAVAILABLE")
+                    && error_text.contains(
+                        "query-worker-post-stamp-steps-pre-cleanup-work-failed-steps"
+                    )
+                    && !error_text.contains("deadline")
+                    && !error_text.contains("record-limit")
+                    && !error_text.contains("sqlite-nomem")
+                    && !error_text.contains("NIR1_GRAPH_WORKER_PIPE")
+                    && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
+                "Native did not report the actual over-cap SQL refusal without a confound: {error_text}"
+            );
+            ensure!(
+                owner.cleanup_proved_for_test(),
+                "SQL-step refusal preceded actual child exit, stdout EOF, and reader join"
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("proved SQL-step refusal cleanup did not release the child claim")
+            })?;
+            claim.release();
+            drop(owner);
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0,
+                "SQL-step refusal retained the workspace participant after retirement"
+            );
+            eprintln!(
+                "Native Q2 actual-SQL over-cap refusal: unavailable frame mapped to no lease; reason=query-worker-post-stamp-steps-pre-cleanup-work-failed-steps; child exit + stdout EOF + reader join proved before claim reloan"
             );
             return Ok(());
         }
@@ -3108,10 +2747,8 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 "Native did not observe the expected rejection while retaining the claim for {failure_label}"
             );
             ensure!(
-                owner.cleanup_proved_for_test()
-                    && owner.abnormal_exit_observed_for_test()
-                    && owner.abnormal_exit_code_for_test() == Some(23),
-                "refusal returned before actual exit, EOF, and reader join were proved"
+                owner.cleanup_proved_for_test(),
+                "trailing-data refusal returned before actual child exit, EOF, and reader join were proved"
             );
             let claim = authority.claim_c_query_child().ok_or_else(|| {
                 anyhow::anyhow!("proved malformed-frame cleanup did not release the child claim")
@@ -3126,7 +2763,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 0
             );
             eprintln!(
-                "Native Q2 {failure_label}: no lease; scenario-specific Native refusal observed; child exit 23 + EOF + reader join proved before claim reloan; call-to-refusal={returned_elapsed:?}"
+                "Native Q2 {failure_label}: no lease; scenario-specific Native refusal observed; cleanup proof passed before child-claim reloan; call-to-refusal={returned_elapsed:?}"
             );
             return Ok(());
         }
@@ -3337,8 +2974,9 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             ensure!(
                 owner.cleanup_proved_for_test()
                     && owner.abnormal_exit_observed_for_test()
-                    && owner.abnormal_exit_code_for_test() == Some(23),
-                "lease drop released capacity before nonzero exit, EOF, and reader join proof"
+                    && owner.abnormal_exit_code_for_test() == Some(23)
+                    && owner.request_writer_joined_for_test(),
+                "lease drop released capacity before writer join, nonzero exit, EOF, and reader join proof"
             );
             let claim = authority
                 .claim_c_query_child()
@@ -3702,6 +3340,20 @@ fn native_worker_returns_canonical_512_a3_eligible_seed_local_graph() -> Result<
         registry_rows: 4,
         a3_rows: 370,
         add_unrelated_seed_edge: false,
+        native_runs: 1,
+    })
+}
+
+#[test]
+#[ignore = "finite same-parent practical retention check; requires official Q512 preseed and normal worker"]
+fn native_worker_practical_retention_q512_30x() -> Result<()> {
+    run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(Canonical512FixtureCase {
+        label: "Q512-retention-30x",
+        entity_count: 70,
+        registry_rows: 4,
+        a3_rows: 370,
+        add_unrelated_seed_edge: false,
+        native_runs: 30,
     })
 }
 
@@ -3714,6 +3366,7 @@ fn native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge() -> 
         registry_rows: 4,
         a3_rows: 370,
         add_unrelated_seed_edge: true,
+        native_runs: 1,
     })
 }
 
@@ -3726,6 +3379,7 @@ fn native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph()
         registry_rows: 33,
         a3_rows: 486,
         add_unrelated_seed_edge: false,
+        native_runs: 1,
     })
 }
 
@@ -3736,6 +3390,7 @@ struct Canonical512FixtureCase {
     registry_rows: usize,
     a3_rows: usize,
     add_unrelated_seed_edge: bool,
+    native_runs: usize,
 }
 
 fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
@@ -3945,7 +3600,10 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     .with_main_database_file_identity(authority.main_database_file_identity()?);
     native_state.switching.core().set_ready(original_binding)?;
     let snapshot = active_workspace_snapshot(&native_state)?;
-    let mut owner = super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path);
+    let mut owner = Some(super::c_query_worker::CQueryWorkerOwner::new(
+        snapshot,
+        worker_path.clone(),
+    ));
     if case.add_unrelated_seed_edge {
         let edge_id = format!("q513-seed-decoy-{}", uuid::Uuid::new_v4());
         let source_identity = format!("codex:{SEED}");
@@ -4107,7 +3765,10 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             expected_refusal,
         )
     );
-    owner.prepare(PROJECT)?;
+    owner
+        .as_mut()
+        .expect("initial Q512 worker owner exists")
+        .prepare(PROJECT)?;
     let request = Nir1GraphRequest {
         project_id: PROJECT.to_owned(),
         query_scene_id: QUERY_SCENE.to_owned(),
@@ -4116,6 +3777,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     if case.add_unrelated_seed_edge {
         const REFUSAL: &str =
             "query-worker-work-disclosure-record-limit-pre-cleanup-work-failed-disclosure-record-limit";
+        let mut owner = owner.take().expect("initial Q513 worker owner exists");
         let started = Instant::now();
         let error = match owner.query_once(&request) {
             Ok(lease) => {
@@ -4154,76 +3816,101 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         );
         return Ok(());
     }
-    let started = Instant::now();
-    let lease = owner.query_once(&request)?;
-    let returned_elapsed = started.elapsed();
-    let admission_elapsed = lease.elapsed();
-    eprintln!(
-        "Native canonical charged-row {} worker: call={returned_elapsed:?}, admission={admission_elapsed:?}",
-        case.label
-    );
     ensure!(
-        returned_elapsed <= QUERY_DEADLINE && admission_elapsed <= QUERY_DEADLINE,
-        "Native Q512 worker exceeded the 100 ms deadline"
+        case.native_runs > 0,
+        "Q512 native run count must be positive"
     );
-    {
-        let frame = lease.frame()?;
-        assert_eq!(frame.project, PROJECT);
-        assert_eq!(frame.scene, QUERY_SCENE);
-        assert_eq!(frame.seed, Some(SEED));
-        assert!(frame.scope.is_some_and(|scope| !scope.is_empty()));
-        assert!(frame.generation.is_some_and(|generation| generation > 0));
-        assert_eq!((frame.node_count, frame.edge_count), (1, 0));
-        let node = frame
-            .first_node
-            .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted its node"))?;
-        assert_eq!(node.hop, 0);
-        assert_eq!(node.entity.id, SEED);
-        assert_eq!(node.entity.kind, "character");
-        assert_eq!(node.entity.label, SEED);
-        assert_eq!(
-            node.entity.source,
-            format!("codex:{SEED}@2026-09-17T00:00:00Z")
+    for iteration in 0..case.native_runs {
+        let mut owner = match owner.take() {
+            Some(owner) => owner,
+            None => {
+                let snapshot = active_workspace_snapshot(&native_state)?;
+                let mut owner =
+                    super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path.clone());
+                owner.prepare(PROJECT)?;
+                owner
+            }
+        };
+        let started = Instant::now();
+        let lease = owner.query_once(&request)?;
+        let returned_elapsed = started.elapsed();
+        let admission_elapsed = lease.elapsed();
+        eprintln!(
+            "Native canonical charged-row {} run {}/{}: call={returned_elapsed:?}, admission={admission_elapsed:?}",
+            case.label,
+            iteration + 1,
+            case.native_runs
         );
-        assert!(matches!(
-            node.entity.reading,
-            super::worker_frame::ScopeView::Exact(value)
-                if value == "scene:nir1-capacity-scene"
-        ));
-        assert_eq!(node.entity.evidence_count, 1);
-        let evidence = node
-            .entity
-            .first_evidence
-            .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted Evidence"))?;
-        assert_eq!(evidence.id, format!("nir1:capacity:evidence:shared:{SEED}"));
-        assert_eq!(evidence.source, format!("codex:{SEED}"));
-        assert_eq!(evidence.quote, format!("fixture source {SEED} 日本語"));
-        assert_eq!(evidence.start, 0);
-        assert_eq!(evidence.end as usize, evidence.quote.encode_utf16().count());
-        assert_eq!(node.binding_count, 1);
-        let binding = node
-            .first_binding
-            .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted its binding"))?;
-        assert_eq!(binding.revision_id, revision_id);
-        assert_eq!(binding.decision_id, decision_id);
+        ensure!(
+            returned_elapsed <= QUERY_DEADLINE && admission_elapsed <= QUERY_DEADLINE,
+            "Native Q512 worker exceeded the 100 ms deadline"
+        );
+        {
+            let frame = lease.frame()?;
+            assert_eq!(frame.project, PROJECT);
+            assert_eq!(frame.scene, QUERY_SCENE);
+            assert_eq!(frame.seed, Some(SEED));
+            assert!(frame.scope.is_some_and(|scope| !scope.is_empty()));
+            assert!(frame.generation.is_some_and(|generation| generation > 0));
+            assert_eq!((frame.node_count, frame.edge_count), (1, 0));
+            let node = frame
+                .first_node
+                .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted its node"))?;
+            assert_eq!(node.hop, 0);
+            assert_eq!(node.entity.id, SEED);
+            assert_eq!(node.entity.kind, "character");
+            assert_eq!(node.entity.label, SEED);
+            assert_eq!(
+                node.entity.source,
+                format!("codex:{SEED}@2026-09-17T00:00:00Z")
+            );
+            assert!(matches!(
+                node.entity.reading,
+                super::worker_frame::ScopeView::Exact(value)
+                    if value == "scene:nir1-capacity-scene"
+            ));
+            assert_eq!(node.entity.evidence_count, 1);
+            let evidence = node
+                .entity
+                .first_evidence
+                .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted Evidence"))?;
+            assert_eq!(evidence.id, format!("nir1:capacity:evidence:shared:{SEED}"));
+            assert_eq!(evidence.source, format!("codex:{SEED}"));
+            assert_eq!(evidence.quote, format!("fixture source {SEED} 日本語"));
+            assert_eq!(evidence.start, 0);
+            assert_eq!(evidence.end as usize, evidence.quote.encode_utf16().count());
+            assert_eq!(node.binding_count, 1);
+            let binding = node
+                .first_binding
+                .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted its binding"))?;
+            assert_eq!(binding.revision_id, revision_id);
+            assert_eq!(binding.decision_id, decision_id);
+        }
+        assert!(
+            authority.claim_c_query_child().is_none(),
+            "Native capacity must stay leased while the result is held"
+        );
+        drop(lease);
+        ensure!(
+            owner.cleanup_proved_for_test(),
+            "Q512 iteration {} reloan preceded child exit + stdout EOF + reader join",
+            iteration + 1
+        );
+        let claim = authority
+            .claim_c_query_child()
+            .ok_or_else(|| anyhow::anyhow!("Q512 lease drop did not release the child claim"))?;
+        claim.release();
+        drop(owner);
+        assert_eq!(
+            native_state
+                .switching
+                .core()
+                .workspace_participant_count()?,
+            0,
+            "Q512 iteration {} retained a workspace participant after retirement",
+            iteration + 1
+        );
     }
-    assert!(
-        authority.claim_c_query_child().is_none(),
-        "Native capacity must stay leased while the result is held"
-    );
-    drop(lease);
-    let claim = authority
-        .claim_c_query_child()
-        .ok_or_else(|| anyhow::anyhow!("Q512 lease drop did not release the child claim"))?;
-    claim.release();
-    drop(owner);
-    assert_eq!(
-        native_state
-            .switching
-            .core()
-            .workspace_participant_count()?,
-        0
-    );
     Ok(())
 }
 

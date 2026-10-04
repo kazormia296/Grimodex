@@ -910,6 +910,22 @@ impl Nir1GraphReader {
                     pre_snapshot_started,
                 );
                 pre_snapshot_result?;
+                #[cfg(feature = "nir1-c-query-test-seam")]
+                if worker_path
+                    && std::env::var_os("NIR1_C_QUERY_TEST_SQL_STEPS")
+                        .is_some_and(|value| value.to_str() == Some("over-limit"))
+                {
+                    // Bounded real SQLite work on this borrowed connection, transaction,
+                    // and CapacityBudget; never used by a default-feature worker.
+                    let _: i64 = conn.query_row(
+                        "WITH RECURSIVE step_probe(n) AS (
+                             VALUES(1) UNION ALL
+                             SELECT n + 1 FROM step_probe WHERE n < 200000
+                         ) SELECT sum(n) FROM step_probe",
+                        [],
+                        |row| row.get(0),
+                    )?;
+                }
                 query_in_snapshot(
                     conn,
                     request,

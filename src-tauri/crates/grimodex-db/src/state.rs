@@ -257,14 +257,6 @@ impl ActiveWorkspaceSnapshot {
         Ok(())
     }
 
-    pub(crate) fn c_query_identity_payload_byte_len(&self) -> Option<usize> {
-        self.binding.as_ref()?.c_query_identity_payload_byte_len()
-    }
-
-    pub(crate) fn c_query_authority_path_capacity(&self) -> usize {
-        self.authority.path.capacity()
-    }
-
     pub(crate) fn detach_c_query_quarantine(
         &self,
     ) -> Option<crate::workspace_lifecycle::WorkspaceQuarantineFence> {

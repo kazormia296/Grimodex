@@ -31,6 +31,8 @@ const REQUEST_CAPACITY_BYTES: usize = REQUEST_BYTES;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL_INTERVAL: Duration = Duration::from_millis(1);
+#[cfg(any(not(target_os = "linux"), test))]
+const REQUEST_WRITE_CHUNK_BYTES: usize = 1_024;
 const FRAME_EXIT_POLL_INTERVAL: Duration = Duration::from_micros(100);
 const STARTUP_STDERR_CAPTURE_BYTES: usize = 256;
 
@@ -153,8 +155,7 @@ fn startup_exit_error_from_bytes(bytes: &[u8]) -> anyhow::Error {
     anyhow!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: {stage}")
 }
 
-/// Owner metadata and bounded caller-owned request storage are deducted from
-/// the Native request/result allowance; the allocation never grows after reservation.
+/// Per-query owner state; fixed request/result buffers do not cap other process memory.
 struct RegionControl {
     storage: Option<NativeRegionReservation>,
     claim: Option<CQueryChildClaim>,
@@ -184,6 +185,7 @@ const OWNER_REQUEST: usize = 1 << 6;
 const OWNER_CANCEL: usize = 1 << 7;
 const PARENT_THREAD_READY: usize = 1 << 8;
 const READER_COMMIT: usize = 1 << 9;
+const READER_FRAME_LIMIT: usize = 1 << 10;
 
 /// Inline one-shot state and wake handles; no channel queue or backing allocation.
 struct ReaderMailbox {
@@ -302,141 +304,7 @@ impl NativeRegionPtr {
     }
 }
 
-const NATIVE_FIXED_BYTES: usize = std::mem::size_of::<NativeRegion>()
-    + std::mem::size_of::<RegionControl>()
-    + std::mem::size_of::<Option<ChildSession>>()
-    + std::mem::size_of::<usize>()
-    + REQUEST_CAPACITY_BYTES
-    + std::mem::size_of::<Nir1GraphRequest>();
-const NATIVE_OWNER_PAYLOAD_BUDGET_BYTES: usize = PARENT_BYTES - NATIVE_FIXED_BYTES;
-// ArcInner stores strong and weak Atomic<usize> counters before its value. Count only their
-// source-backed field floor; padding and allocator extent are not covered.
-const PARTICIPANT_ARC_CONTROL_HEADER_FLOOR_BYTES: usize = 2 * std::mem::size_of::<AtomicUsize>();
 const _: () = assert!(FRAME_BYTES >= REQUEST_BYTES);
-const _: () = assert!(std::mem::size_of::<NativeRegion>() == MAILBOX_BYTES + STORAGE_BYTES);
-const _: () = assert!(NATIVE_FIXED_BYTES == PARENT_BYTES - REQUEST_BYTES);
-
-/// Lower bound for the two distinct Command arguments live across spawn.
-/// Unix uses std's CString argv payload; Windows takes the smaller encoded/wide payload.
-pub(super) fn command_argument_payload_lower_bound(
-    authority_path: &std::ffi::OsStr,
-    project_id: &str,
-) -> Option<usize> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-
-        fn c_string_payload(bytes: &[u8]) -> Option<usize> {
-            if bytes.contains(&0) {
-                return Some(1); // Guaranteed terminator; std substitutes this invalid argument.
-            }
-            bytes.len().checked_add(1)
-        }
-
-        c_string_payload(authority_path.as_bytes())?
-            .checked_add(c_string_payload(project_id.as_bytes())?)
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-
-        fn wide_bytes(units: impl Iterator<Item = u16>) -> Option<usize> {
-            units.count().checked_mul(std::mem::size_of::<u16>())
-        }
-
-        // Current Windows OsString uses WTF-8; CreateProcessW staging uses UTF-16.
-        // The smaller payload remains a lower bound for either retained representation.
-        let project_id = std::ffi::OsStr::new(project_id);
-        let authority_path_bytes = authority_path
-            .as_encoded_bytes()
-            .len()
-            .min(wide_bytes(authority_path.encode_wide())?);
-        let project_id_bytes = project_id
-            .as_encoded_bytes()
-            .len()
-            .min(wide_bytes(project_id.encode_wide())?);
-        authority_path_bytes.checked_add(project_id_bytes)
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = (authority_path, project_id);
-        None
-    }
-}
-
-/// Payload lower bound for Windows Command's separately-owned program OsString.
-#[cfg(any(windows, test))]
-pub(super) fn command_program_os_string_payload_lower_bound(program: &std::ffi::OsStr) -> usize {
-    program.as_encoded_bytes().len()
-}
-
-#[cfg(unix)]
-pub(super) fn command_executable_and_argv_payload_lower_bound(
-    worker_path: &std::ffi::OsStr,
-) -> Option<usize> {
-    use std::os::unix::ffi::OsStrExt;
-
-    let path = worker_path.as_bytes();
-    if path.contains(&0) {
-        return Some(0);
-    }
-    // Unix Command owns the executable CString and clones it for argv[0].
-    // argv[0], two explicit arguments, and the trailing null need four pointers.
-    path.len()
-        .checked_add(1)?
-        .checked_mul(2)?
-        .checked_add(std::mem::size_of::<*const std::ffi::c_char>().checked_mul(4)?)
-}
-
-/// Check one phase's source-visible payload terms; this is not a physical extent bound.
-fn native_owner_payload_fits(payloads: &[usize]) -> bool {
-    payloads
-        .iter()
-        .try_fold(0usize, |sum, payload| sum.checked_add(*payload))
-        .is_some_and(|bytes| bytes <= NATIVE_OWNER_PAYLOAD_BUDGET_BYTES)
-}
-
-fn native_owner_preclaim_payload_fits(
-    binding_payload_bytes: usize,
-    worker_path_capacity: usize,
-    authority_path_capacity: usize,
-    workspace_lease_path_capacity: usize,
-    command_argument_payload_bytes: usize,
-    command_executable_payload_bytes: usize,
-    participant_payload_bytes: usize,
-    participant_arc_control_header_floor_bytes: usize,
-) -> bool {
-    native_owner_payload_fits(&[
-        binding_payload_bytes,
-        worker_path_capacity,
-        authority_path_capacity,
-        workspace_lease_path_capacity,
-        command_argument_payload_bytes,
-        command_executable_payload_bytes,
-        participant_payload_bytes,
-        participant_arc_control_header_floor_bytes,
-    ])
-}
-
-fn native_owner_command_staging_payload_fits(
-    binding_payload_bytes: usize,
-    authority_path_capacity: usize,
-    workspace_lease_path_capacity: usize,
-    command_argument_payload_bytes: usize,
-    command_executable_payload_bytes: usize,
-    participant_payload_bytes: usize,
-    participant_arc_control_header_floor_bytes: usize,
-) -> bool {
-    native_owner_payload_fits(&[
-        binding_payload_bytes,
-        authority_path_capacity,
-        workspace_lease_path_capacity,
-        command_argument_payload_bytes,
-        command_executable_payload_bytes,
-        participant_payload_bytes,
-        participant_arc_control_header_floor_bytes,
-    ])
-}
 
 struct NativeRegionReservation {
     region: &'static NativeRegion,
@@ -607,6 +475,13 @@ struct ChildSession {
     eof: bool,
 }
 
+#[cfg(any(not(target_os = "linux"), test))]
+struct RequestWriteCompletion {
+    stdin: ChildStdin,
+    written: usize,
+    result: std::io::Result<()>,
+}
+
 /// Lifecycle barrier retained with an unproved child until process exit.
 enum DetachedCQueryLifecycle {
     Quarantine { _fence: WorkspaceQuarantineFence },
@@ -669,6 +544,8 @@ struct DetachedCQueryOwner {
     _claim: Option<CQueryChildClaim>,
     _storage: Option<NativeRegionReservation>,
     _session: Option<ChildSession>,
+    #[cfg(any(not(target_os = "linux"), test))]
+    _request_writer: Option<JoinHandle<RequestWriteCompletion>>,
 }
 
 #[cfg(test)]
@@ -676,7 +553,7 @@ struct DetachedCQueryOwner {
 pub(super) struct QueryPhaseDiagnostics {
     frame_binding_validated_at: Option<Duration>,
     request_bytes_written: usize,
-    request_write_would_block: bool,
+    request_write_stalled: bool,
     reader_commit_published_at: Option<Duration>,
     reader_eof_published_at: Option<Duration>,
     parent_commit_observed_at: Option<Duration>,
@@ -718,6 +595,15 @@ enum RequestHoldForTest {
     },
 }
 
+#[cfg(test)]
+#[derive(Clone)]
+struct RequestWriterHoldForTest {
+    after_bytes: usize,
+    entered: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
+}
+
 /// Pins the broad workspace snapshot through worker READY, then keeps only the
 /// exact binding/participant with the child claim and Native region. A result
 /// lease borrows this owner; unproved retirement transfers its child resources.
@@ -726,6 +612,20 @@ pub struct CQueryWorkerOwner {
     worker: Option<PathBuf>,
     region: RegionControl,
     session: Option<ChildSession>,
+    #[cfg(any(not(target_os = "linux"), test))]
+    request_writer: Option<JoinHandle<RequestWriteCompletion>>,
+    #[cfg(all(test, target_os = "linux"))]
+    threaded_request_writer_for_test: bool,
+    #[cfg(test)]
+    request_write_progress_for_test: Option<Arc<AtomicUsize>>,
+    #[cfg(test)]
+    request_write_stall_threshold_for_test: usize,
+    #[cfg(test)]
+    request_writer_hold_for_test: Option<RequestWriterHoldForTest>,
+    #[cfg(test)]
+    test_live_writer_at_cleanup_timeout: bool,
+    #[cfg(test)]
+    test_request_writer_joined: bool,
     #[cfg(test)]
     inject_crash_after_request_for_test: bool,
     #[cfg(test)]
@@ -764,12 +664,18 @@ pub struct CQueryWorkerOwner {
     rust_oom_for_test: bool,
     #[cfg(test)]
     sqlite_nomem_for_test: bool,
+    #[cfg(test)]
+    sql_steps_over_cap_for_test: bool,
+    #[cfg(test)]
+    oversized_frame_for_test: bool,
     #[cfg(all(test, unix))]
     test_abnormal_exit_signal: Option<i32>,
     #[cfg(test)]
     test_available_request_bound_q2_frame_observed: bool,
     #[cfg(test)]
     test_committed_request_bound_q2_frame_with_trailing_observed: bool,
+    #[cfg(test)]
+    test_oversized_frame_refusal_state: (usize, usize, usize),
     #[cfg(all(test, target_os = "linux"))]
     test_frame_commit_observed_within_deadline: bool,
     #[cfg(all(test, target_os = "linux"))]
@@ -788,6 +694,8 @@ pub struct CQueryWorkerOwner {
     test_abnormal_exit_code: Option<i32>,
     #[cfg(test)]
     test_normal_exit_and_eof_observed: bool,
+    #[cfg(test)]
+    test_successful_request_bound_q2_frame_before_eof_suppression: bool,
     #[cfg(test)]
     query_phase_diagnostics: QueryPhaseDiagnostics,
     #[cfg(test)]
@@ -812,6 +720,20 @@ impl CQueryWorkerOwner {
                 quarantined: false,
             },
             session: None,
+            #[cfg(any(not(target_os = "linux"), test))]
+            request_writer: None,
+            #[cfg(all(test, target_os = "linux"))]
+            threaded_request_writer_for_test: false,
+            #[cfg(test)]
+            request_write_progress_for_test: None,
+            #[cfg(test)]
+            request_write_stall_threshold_for_test: 0,
+            #[cfg(test)]
+            request_writer_hold_for_test: None,
+            #[cfg(test)]
+            test_live_writer_at_cleanup_timeout: false,
+            #[cfg(test)]
+            test_request_writer_joined: false,
             #[cfg(test)]
             inject_crash_after_request_for_test: false,
             #[cfg(test)]
@@ -850,12 +772,18 @@ impl CQueryWorkerOwner {
             rust_oom_for_test: false,
             #[cfg(test)]
             sqlite_nomem_for_test: false,
+            #[cfg(test)]
+            sql_steps_over_cap_for_test: false,
+            #[cfg(test)]
+            oversized_frame_for_test: false,
             #[cfg(all(test, unix))]
             test_abnormal_exit_signal: None,
             #[cfg(test)]
             test_available_request_bound_q2_frame_observed: false,
             #[cfg(test)]
             test_committed_request_bound_q2_frame_with_trailing_observed: false,
+            #[cfg(test)]
+            test_oversized_frame_refusal_state: (0, 0, 0),
             #[cfg(all(test, target_os = "linux"))]
             test_frame_commit_observed_within_deadline: false,
             #[cfg(all(test, target_os = "linux"))]
@@ -875,9 +803,22 @@ impl CQueryWorkerOwner {
             #[cfg(test)]
             test_normal_exit_and_eof_observed: false,
             #[cfg(test)]
+            test_successful_request_bound_q2_frame_before_eof_suppression: false,
+            #[cfg(test)]
             query_phase_diagnostics: QueryPhaseDiagnostics::default(),
             #[cfg(test)]
             reader_timing_for_test: ReaderPublicationTiming::default(),
+        }
+    }
+
+    fn request_writer_present(&self) -> bool {
+        #[cfg(any(not(target_os = "linux"), test))]
+        {
+            self.request_writer.is_some()
+        }
+        #[cfg(all(target_os = "linux", not(test)))]
+        {
+            false
         }
     }
 
@@ -932,51 +873,6 @@ impl CQueryWorkerOwner {
             .and_then(CQueryWorkspacePin::preparing_snapshot)
             .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?;
         snapshot.check_current_binding()?;
-        let identity_payload_bytes = snapshot
-            .c_query_identity_payload_byte_len()
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
-        let worker = self
-            .worker
-            .as_ref()
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?;
-        let worker_path_capacity = worker.capacity();
-        let authority_path_capacity = snapshot.c_query_authority_path_capacity();
-        let workspace_lease_path_capacity = snapshot.authority.lease().path_capacity();
-        let command_argument_payload_bytes =
-            command_argument_payload_lower_bound(snapshot.path().as_os_str(), project_id)
-                .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
-        #[cfg(unix)]
-        let command_executable_payload_bytes =
-            command_executable_and_argv_payload_lower_bound(worker.as_os_str())
-                .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
-        #[cfg(windows)]
-        let command_executable_payload_bytes =
-            command_program_os_string_payload_lower_bound(worker.as_os_str());
-        #[cfg(not(any(unix, windows)))]
-        let command_executable_payload_bytes = 0;
-        let participant_payload_bytes = WorkspaceParticipant::c_query_lease_payload_bytes();
-        let participant_arc_control_header_floor_bytes = PARTICIPANT_ARC_CONTROL_HEADER_FLOOR_BYTES;
-        ensure!(
-            native_owner_preclaim_payload_fits(
-                identity_payload_bytes,
-                worker_path_capacity,
-                authority_path_capacity,
-                workspace_lease_path_capacity,
-                command_argument_payload_bytes,
-                command_executable_payload_bytes,
-                participant_payload_bytes,
-                participant_arc_control_header_floor_bytes,
-            ) && native_owner_command_staging_payload_fits(
-                identity_payload_bytes,
-                authority_path_capacity,
-                workspace_lease_path_capacity,
-                command_argument_payload_bytes,
-                command_executable_payload_bytes,
-                participant_payload_bytes,
-                participant_arc_control_header_floor_bytes,
-            ),
-            "NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"
-        );
         let authority = std::sync::Arc::clone(&snapshot.authority);
         self.region.claim = Some(
             authority
@@ -1061,21 +957,59 @@ impl CQueryWorkerOwner {
     }
 
     #[cfg(all(test, target_os = "linux"))]
-    pub(super) fn observe_request_write_blocked_for_test(&mut self) -> std::sync::Arc<AtomicBool> {
+    pub(super) fn observe_request_write_blocked_for_test(
+        &mut self,
+        pipe_capacity: usize,
+    ) -> std::sync::Arc<AtomicBool> {
         let blocked = std::sync::Arc::new(AtomicBool::new(false));
         self.request_write_blocked_signal_for_test = Some(std::sync::Arc::clone(&blocked));
+        self.request_write_progress_for_test = Some(Arc::new(AtomicUsize::new(0)));
+        self.request_write_stall_threshold_for_test = pipe_capacity;
         blocked
     }
 
     #[cfg(all(test, target_os = "linux"))]
-    pub(super) fn request_write_diagnostics_for_test(&self) -> (usize, bool) {
-        (
-            self.query_phase_diagnostics.request_bytes_written,
-            self.query_phase_diagnostics.request_write_would_block,
-        )
+    pub(super) fn use_threaded_request_writer_for_test(&mut self) {
+        self.threaded_request_writer_for_test = true;
     }
 
-    #[cfg(all(test, target_os = "linux"))]
+    #[cfg(test)]
+    pub(super) fn hold_request_writer_after_bytes_for_test(
+        &mut self,
+        after_bytes: usize,
+    ) -> (Arc<AtomicBool>, Arc<AtomicBool>, Arc<AtomicBool>) {
+        let hold = RequestWriterHoldForTest {
+            after_bytes,
+            entered: Arc::new(AtomicBool::new(false)),
+            release: Arc::new(AtomicBool::new(false)),
+            finished: Arc::new(AtomicBool::new(false)),
+        };
+        self.request_write_progress_for_test = Some(Arc::new(AtomicUsize::new(0)));
+        self.request_write_stall_threshold_for_test = after_bytes;
+        self.request_writer_hold_for_test = Some(hold.clone());
+        (hold.entered, hold.release, hold.finished)
+    }
+
+    #[cfg(test)]
+    pub(super) fn request_write_diagnostics_for_test(&self) -> (usize, bool) {
+        let written = self.request_write_progress_for_test.as_ref().map_or(
+            self.query_phase_diagnostics.request_bytes_written,
+            |progress| progress.load(Ordering::Acquire),
+        );
+        (written, self.query_phase_diagnostics.request_write_stalled)
+    }
+
+    #[cfg(test)]
+    pub(super) fn request_writer_joined_for_test(&self) -> bool {
+        self.test_request_writer_joined
+    }
+
+    #[cfg(test)]
+    pub(super) fn live_writer_at_cleanup_timeout_for_test(&self) -> bool {
+        self.test_live_writer_at_cleanup_timeout && !self.test_request_writer_joined
+    }
+
+    #[cfg(test)]
     pub(super) fn request_handoff_published_for_test(&self) -> bool {
         self.region.native_region().is_some_and(|native| {
             native.mailbox.events.load(Ordering::Acquire) & OWNER_REQUEST != 0
@@ -1158,6 +1092,43 @@ impl CQueryWorkerOwner {
     #[cfg(test)]
     pub(super) fn sqlite_nomem_for_test(&mut self) {
         self.sqlite_nomem_for_test = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn sql_steps_over_cap_for_test(&mut self) {
+        self.sql_steps_over_cap_for_test = true;
+    }
+
+    #[cfg(test)]
+    pub(super) fn oversized_frame_for_test(&mut self) {
+        self.oversized_frame_for_test = true;
+    }
+
+    #[cfg(test)]
+    fn current_oversized_frame_refusal_state(&self) -> (usize, usize, usize) {
+        self.region
+            .native_region()
+            .map_or((0, 0, self.region.result_len), |native| {
+                (
+                    native.mailbox.events.load(Ordering::Acquire),
+                    native.mailbox.frame_len.load(Ordering::Relaxed),
+                    self.region.result_len,
+                )
+            })
+    }
+
+    #[cfg(test)]
+    pub(super) fn oversized_frame_refusal_state_for_test(&self) -> (usize, usize, usize) {
+        self.test_oversized_frame_refusal_state
+    }
+
+    #[cfg(test)]
+    pub(super) fn oversized_frame_refused_before_body_for_test(&self) -> bool {
+        let (events, frame_len, result_len) = self.oversized_frame_refusal_state_for_test();
+        events & READER_FRAME_LIMIT != 0
+            && events & (READER_FRAME | READER_FAILED) == 0
+            && frame_len == 0
+            && result_len == 0
     }
 
     #[cfg(test)]
@@ -1251,6 +1222,11 @@ impl CQueryWorkerOwner {
     #[cfg(test)]
     pub(super) fn normal_exit_and_eof_observed_for_test(&self) -> bool {
         self.test_normal_exit_and_eof_observed
+    }
+
+    #[cfg(test)]
+    pub(super) fn successful_request_bound_q2_frame_before_eof_suppression_for_test(&self) -> bool {
+        self.test_successful_request_bound_q2_frame_before_eof_suppression
     }
 
     #[cfg(test)]
@@ -1383,6 +1359,8 @@ impl CQueryWorkerOwner {
                         self.available_request_bound_q2_frame_for_test(request);
                     self.test_committed_request_bound_q2_frame_with_trailing_observed =
                         self.committed_request_bound_q2_frame_with_trailing_for_test(request);
+                    self.test_oversized_frame_refusal_state =
+                        self.current_oversized_frame_refusal_state();
                 }
                 #[cfg(test)]
                 {
@@ -1397,7 +1375,7 @@ impl CQueryWorkerOwner {
     }
 
     fn cleanup_error(&mut self, error: anyhow::Error) -> anyhow::Error {
-        if self.session.is_some() {
+        if self.session.is_some() || self.request_writer_present() {
             if let Err(cleanup) = self.stop_and_reap() {
                 self.region.quarantined = true;
                 self.detach_quarantined_resources();
@@ -1511,6 +1489,14 @@ impl CQueryWorkerOwner {
         if self.sqlite_nomem_for_test {
             command.env("NIR1_C_QUERY_TEST_SQLITE_NOMEM", "query");
         }
+        #[cfg(test)]
+        if self.sql_steps_over_cap_for_test {
+            command.env("NIR1_C_QUERY_TEST_SQL_STEPS", "over-limit");
+        }
+        #[cfg(test)]
+        if self.oversized_frame_for_test {
+            command.env("NIR1_C_QUERY_TEST_OVERSIZED_FRAME_LENGTH", "one-over-limit");
+        }
         let child = command.spawn()?;
         drop(command);
         self.session = Some(ChildSession {
@@ -1609,25 +1595,26 @@ impl CQueryWorkerOwner {
             );
             encode_request(request, &mut bytes[..REQUEST_BYTES])?;
         }
-        let mut stdin = self
-            .session
-            .as_mut()
-            .and_then(|session| session.stdin.take())
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDIN"))?;
-        #[cfg(target_os = "linux")]
-        let write_result =
-            self.write_request_nonblocking(&mut stdin, request_len, admitted_at, cancellation);
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(all(target_os = "linux", not(test)))]
         let write_result = {
-            let native = self
-                .region
-                .native_region()
-                .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
-            // SAFETY: the reader still waits for OWNER_REQUEST.
-            let bytes = unsafe { native.bytes() };
-            stdin.write_all(&bytes[..request_len])
+            let mut stdin = self.take_request_stdin()?;
+            let result =
+                self.write_request_nonblocking(&mut stdin, request_len, admitted_at, cancellation);
+            drop(stdin);
+            result
         };
-        drop(stdin);
+        #[cfg(all(target_os = "linux", test))]
+        let write_result = if self.threaded_request_writer_for_test {
+            self.write_request_threaded(request_len, admitted_at, cancellation)
+        } else {
+            let mut stdin = self.take_request_stdin()?;
+            let result =
+                self.write_request_nonblocking(&mut stdin, request_len, admitted_at, cancellation);
+            drop(stdin);
+            result
+        };
+        #[cfg(not(target_os = "linux"))]
+        let write_result = self.write_request_threaded(request_len, admitted_at, cancellation);
         write_result?;
         let native = self
             .region
@@ -1747,6 +1734,9 @@ impl CQueryWorkerOwner {
             if events & READER_TRAILING != 0 {
                 anyhow::bail!("NIR1_GRAPH_WORKER_TRAILING_PIPE_DATA");
             }
+            if events & READER_FRAME_LIMIT != 0 {
+                anyhow::bail!("NIR1_GRAPH_FRAME_LIMIT");
+            }
             if events & READER_FAILED != 0 {
                 #[cfg(test)]
                 if self.partial_frame_for_test {
@@ -1770,25 +1760,6 @@ impl CQueryWorkerOwner {
                         events & READER_FRAME != 0,
                         "NIR1_GRAPH_TEST_EOF_WITHOUT_COMPLETE_FRAME"
                     );
-                    let exit_deadline = Instant::now() + CLEANUP_TIMEOUT;
-                    loop {
-                        self.poll_exit()?;
-                        if let Some(status) = self
-                            .session
-                            .as_ref()
-                            .and_then(|session| session.exit.as_ref())
-                        {
-                            ensure!(status.success(), "NIR1_GRAPH_TEST_CHILD_EXIT_FAILURE");
-                            break;
-                        }
-                        ensure!(
-                            Instant::now() < exit_deadline,
-                            "NIR1_GRAPH_TEST_CHILD_EXIT_UNOBSERVED"
-                        );
-                        thread::yield_now();
-                    }
-                    self.test_normal_exit_and_eof_observed = true;
-                    anyhow::bail!("NIR1_GRAPH_TEST_EOF_PROOF_UNOBSERVED");
                 } else {
                     self.session
                         .as_mut()
@@ -1838,6 +1809,38 @@ impl CQueryWorkerOwner {
                 }
                 self.region.result_len = len;
             }
+            #[cfg(test)]
+            if self.suppress_eof_proof_for_test && events & READER_EOF != 0 {
+                ensure!(
+                    self.region.result_len > 0
+                        && self.request_bound_q2_frame_for_test(
+                            request,
+                            READER_FRAME | READER_COMMIT | READER_EOF,
+                            READER_FAILED | READER_TRAILING | READER_PIPE_ERROR,
+                        ),
+                    "NIR1_GRAPH_TEST_EOF_SUPPRESSION_WITHOUT_SUCCESSFUL_Q2_FRAME"
+                );
+                self.test_successful_request_bound_q2_frame_before_eof_suppression = true;
+                let exit_deadline = Instant::now() + CLEANUP_TIMEOUT;
+                loop {
+                    self.poll_exit()?;
+                    if let Some(status) = self
+                        .session
+                        .as_ref()
+                        .and_then(|session| session.exit.as_ref())
+                    {
+                        ensure!(status.success(), "NIR1_GRAPH_TEST_CHILD_EXIT_FAILURE");
+                        break;
+                    }
+                    ensure!(
+                        Instant::now() < exit_deadline,
+                        "NIR1_GRAPH_TEST_CHILD_EXIT_UNOBSERVED"
+                    );
+                    thread::yield_now();
+                }
+                self.test_normal_exit_and_eof_observed = true;
+                anyhow::bail!("NIR1_GRAPH_TEST_EOF_PROOF_UNOBSERVED");
+            }
             if self.region.result_len > 0 && result_wire_complete(events) {
                 check_caller_cancellation(cancellation)?;
                 return Ok(());
@@ -1864,6 +1867,264 @@ impl CQueryWorkerOwner {
             }
             thread::park_timeout(timeout);
         }
+    }
+
+    fn take_request_stdin(&mut self) -> Result<ChildStdin> {
+        self.session
+            .as_mut()
+            .and_then(|session| session.stdin.take())
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDIN"))
+    }
+
+    #[cfg(any(not(target_os = "linux"), test))]
+    fn write_request_threaded(
+        &mut self,
+        request_len: usize,
+        admitted_at: Instant,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<()> {
+        self.check_current_binding()?;
+        check_caller_cancellation(cancellation)?;
+        if admitted_at.elapsed() >= QUERY_DEADLINE {
+            #[cfg(test)]
+            self.record_deadline_decision_for_test(admitted_at.elapsed());
+            anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
+        }
+        let native = self
+            .region
+            .native_region()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
+        let mut request_bytes = [0; REQUEST_BYTES];
+        // SAFETY: the reader remains behind OWNER_REQUEST while these bytes are copied.
+        request_bytes[..request_len].copy_from_slice(unsafe { &native.bytes()[..request_len] });
+        self.check_current_binding()?;
+        check_caller_cancellation(cancellation)?;
+        let stdin = self.take_request_stdin()?;
+        #[cfg(test)]
+        let progress = self.request_write_progress_for_test.clone();
+        #[cfg(test)]
+        let writer_hold = self.request_writer_hold_for_test.clone();
+        let writer = thread::Builder::new().spawn(move || {
+            let mut stdin = stdin;
+            let mut written = 0;
+            let result = loop {
+                if written == request_len {
+                    break Ok(());
+                }
+                let end = (written + REQUEST_WRITE_CHUNK_BYTES).min(request_len);
+                match stdin.write(&request_bytes[written..end]) {
+                    Ok(0) => {
+                        break Err(std::io::Error::new(
+                            std::io::ErrorKind::WriteZero,
+                            "NIR1_GRAPH_WORKER_STDIN_WRITE_ZERO",
+                        ));
+                    }
+                    Ok(count) => {
+                        written += count;
+                        #[cfg(test)]
+                        if let Some(progress) = &progress {
+                            progress.store(written, Ordering::Release);
+                        }
+                        #[cfg(test)]
+                        if let Some(hold) = &writer_hold {
+                            if written >= hold.after_bytes
+                                && !hold.entered.swap(true, Ordering::AcqRel)
+                            {
+                                while !hold.release.load(Ordering::Acquire) {
+                                    thread::park_timeout(POLL_INTERVAL);
+                                }
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => break Err(error),
+                }
+            };
+            let completion = RequestWriteCompletion {
+                stdin,
+                written,
+                result,
+            };
+            #[cfg(test)]
+            if let Some(hold) = &writer_hold {
+                hold.finished.store(true, Ordering::Release);
+            }
+            completion
+        })?;
+        self.request_writer = Some(writer);
+
+        loop {
+            self.check_current_binding()?;
+            check_caller_cancellation(cancellation)?;
+            let writer_finished = self
+                .request_writer
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished);
+            #[cfg(test)]
+            {
+                let written = self
+                    .request_write_progress_for_test
+                    .as_ref()
+                    .map_or(0, |progress| progress.load(Ordering::Acquire));
+                self.query_phase_diagnostics.request_bytes_written = written;
+                if !writer_finished
+                    && written >= self.request_write_stall_threshold_for_test
+                    && written < request_len
+                {
+                    self.query_phase_diagnostics.request_write_stalled = true;
+                    #[cfg(target_os = "linux")]
+                    if let Some(blocked) = &self.request_write_blocked_signal_for_test {
+                        blocked.store(true, Ordering::Release);
+                    }
+                }
+            }
+            if writer_finished {
+                let RequestWriteCompletion {
+                    stdin,
+                    written,
+                    result,
+                } = self.join_request_writer()?;
+                #[cfg(test)]
+                {
+                    self.query_phase_diagnostics.request_bytes_written = written;
+                }
+                drop(stdin);
+                match result {
+                    Ok(()) => {
+                        ensure!(
+                            written == request_len,
+                            "NIR1_GRAPH_WORKER_STDIN_WRITE_INCOMPLETE"
+                        );
+                        if admitted_at.elapsed() >= QUERY_DEADLINE {
+                            #[cfg(test)]
+                            self.record_deadline_decision_for_test(admitted_at.elapsed());
+                            anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
+                        }
+                        #[cfg(all(test, target_os = "linux"))]
+                        if self.wait_for_child_exit_after_full_request_write_for_test {
+                            loop {
+                                self.poll_exit()?;
+                                if self
+                                    .session
+                                    .as_ref()
+                                    .is_some_and(|session| session.exit.is_some())
+                                {
+                                    self.test_child_exit_observed_before_request_handoff = true;
+                                    break;
+                                }
+                                ensure!(
+                                    admitted_at.elapsed() < QUERY_DEADLINE,
+                                    "NIR1_GRAPH_TEST_CHILD_DID_NOT_EXIT_BEFORE_DEADLINE"
+                                );
+                                thread::yield_now();
+                            }
+                        }
+                        return Ok(());
+                    }
+                    Err(error) => {
+                        self.poll_exit()?;
+                        if self
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.exit.is_some())
+                        {
+                            anyhow::bail!("NIR1_GRAPH_WORKER_EXIT_DURING_REQUEST");
+                        }
+                        if error.kind() == std::io::ErrorKind::BrokenPipe {
+                            return self
+                                .wait_for_child_exit_after_broken_pipe(admitted_at, cancellation);
+                        }
+                        if error.kind() == std::io::ErrorKind::WriteZero {
+                            anyhow::bail!("NIR1_GRAPH_WORKER_STDIN_WRITE_ZERO");
+                        }
+                        return Err(error.into());
+                    }
+                }
+            }
+            self.poll_exit()?;
+            let child_exited = self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.exit.is_some());
+            if admitted_at.elapsed() >= QUERY_DEADLINE {
+                #[cfg(test)]
+                self.record_deadline_decision_for_test(admitted_at.elapsed());
+                if child_exited {
+                    anyhow::bail!("NIR1_GRAPH_WORKER_EXIT_DURING_REQUEST");
+                }
+                anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
+            }
+            thread::park_timeout(POLL_INTERVAL);
+        }
+    }
+
+    #[cfg(any(not(target_os = "linux"), test))]
+    fn wait_for_child_exit_after_broken_pipe(
+        &mut self,
+        admitted_at: Instant,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<()> {
+        loop {
+            self.check_current_binding()?;
+            check_caller_cancellation(cancellation)?;
+            self.poll_exit()?;
+            if self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.exit.is_some())
+            {
+                anyhow::bail!("NIR1_GRAPH_WORKER_EXIT_DURING_REQUEST");
+            }
+            if admitted_at.elapsed() >= QUERY_DEADLINE {
+                #[cfg(test)]
+                self.record_deadline_decision_for_test(admitted_at.elapsed());
+                anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
+            }
+            thread::park_timeout(POLL_INTERVAL);
+        }
+    }
+
+    #[cfg(any(not(target_os = "linux"), test))]
+    fn join_request_writer(&mut self) -> Result<RequestWriteCompletion> {
+        ensure!(
+            self.request_writer
+                .as_ref()
+                .is_some_and(JoinHandle::is_finished),
+            "NIR1_GRAPH_WORKER_STDIN_WRITER_NOT_FINISHED"
+        );
+        let writer = self
+            .request_writer
+            .take()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDIN_WRITER"))?;
+        let result = writer
+            .join()
+            .map_err(|_| anyhow!("NIR1_GRAPH_WORKER_STDIN_WRITER_PANIC"));
+        #[cfg(test)]
+        {
+            self.test_request_writer_joined = true;
+        }
+        result
+    }
+
+    #[cfg(any(not(target_os = "linux"), test))]
+    fn join_request_writer_if_finished(&mut self) -> bool {
+        let Some(writer) = self.request_writer.as_ref() else {
+            return true;
+        };
+        if !writer.is_finished() {
+            return false;
+        }
+        let Some(writer) = self.request_writer.take() else {
+            return true;
+        };
+        if let Ok(completion) = writer.join() {
+            drop(completion.stdin);
+        }
+        #[cfg(test)]
+        {
+            self.test_request_writer_joined = true;
+        }
+        true
     }
 
     #[cfg(target_os = "linux")]
@@ -1960,7 +2221,7 @@ impl CQueryWorkerOwner {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     #[cfg(test)]
                     {
-                        self.query_phase_diagnostics.request_write_would_block = true;
+                        self.query_phase_diagnostics.request_write_stalled = true;
                         if let Some(blocked) = &self.request_write_blocked_signal_for_test {
                             blocked.store(true, Ordering::Release);
                         }
@@ -1987,16 +2248,24 @@ impl CQueryWorkerOwner {
                         "NIR1_GRAPH_WORKER_STDIN_POLL_INVALID"
                     );
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => loop {
+                    self.check_current_binding()?;
+                    check_caller_cancellation(cancellation)?;
                     self.poll_exit()?;
-                    ensure!(
-                        self.session
-                            .as_ref()
-                            .is_some_and(|session| session.exit.is_some()),
-                        "NIR1_GRAPH_WORKER_STDIN_CLOSED"
-                    );
-                    anyhow::bail!("NIR1_GRAPH_WORKER_EXIT_DURING_REQUEST");
-                }
+                    if self
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.exit.is_some())
+                    {
+                        anyhow::bail!("NIR1_GRAPH_WORKER_EXIT_DURING_REQUEST");
+                    }
+                    if admitted_at.elapsed() >= QUERY_DEADLINE {
+                        #[cfg(test)]
+                        self.record_deadline_decision_for_test(admitted_at.elapsed());
+                        anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
+                    }
+                    thread::park_timeout(POLL_INTERVAL);
+                },
                 Err(error) => return Err(error.into()),
             }
         }
@@ -2197,6 +2466,13 @@ impl CQueryWorkerOwner {
     /// Kill then wait only for the bounded cleanup interval. The claim and
     /// snapshot are intentionally retained if exit or pipe EOF is unproved.
     fn stop_and_reap(&mut self) -> Result<()> {
+        if self.session.is_none() {
+            ensure!(
+                !self.request_writer_present(),
+                "NIR1_GRAPH_WORKER_STDIN_WRITER_WITHOUT_SESSION"
+            );
+            return Ok(());
+        }
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
@@ -2230,10 +2506,15 @@ impl CQueryWorkerOwner {
                     session.eof = true;
                 }
             }
-            if self
-                .session
-                .as_ref()
-                .is_some_and(|session| session.exit.is_some() && session.eof)
+            #[cfg(any(not(target_os = "linux"), test))]
+            let request_writer_joined = self.join_request_writer_if_finished();
+            #[cfg(all(target_os = "linux", not(test)))]
+            let request_writer_joined = true;
+            if request_writer_joined
+                && self
+                    .session
+                    .as_ref()
+                    .is_some_and(|session| session.exit.is_some() && session.eof)
             {
                 let session = self
                     .session
@@ -2266,13 +2547,24 @@ impl CQueryWorkerOwner {
                         self.test_abnormal_exit_signal =
                             session.exit.as_ref().and_then(|status| status.signal());
                     }
-                    // Retirement proof is actual exit + stdout EOF + successful reader join.
+                    // Retirement requires writer completion (if any), actual exit,
+                    // stdout EOF and successful reader join.
                     self.test_cleanup_proved = true;
                 }
                 drop(session);
                 return Ok(());
             }
             thread::park_timeout(POLL_INTERVAL);
+        }
+        #[cfg(test)]
+        {
+            self.test_live_writer_at_cleanup_timeout = self
+                .request_writer
+                .as_ref()
+                .is_some_and(|writer| !writer.is_finished())
+                && self.session.as_ref().is_some_and(|session| {
+                    session.exit.is_some() && session.eof && session.reader.is_some()
+                });
         }
         anyhow::bail!("NIR1_GRAPH_WORKER_BOUNDED_JOIN_UNPROVED")
     }
@@ -2344,7 +2636,9 @@ impl Drop for CQueryResultLease<'_> {
         self.owner.region.lease_held = false;
         self.owner.region.result_len = 0;
         self.owner.region.elapsed = None;
-        if self.owner.session.is_some() && self.owner.stop_and_reap().is_err() {
+        if (self.owner.session.is_some() || self.owner.request_writer_present())
+            && self.owner.stop_and_reap().is_err()
+        {
             self.owner.region.quarantined = true;
             self.owner.detach_quarantined_resources();
             return;
@@ -2360,7 +2654,8 @@ impl CQueryWorkerOwner {
             || (self.workspace.is_none()
                 && self.region.claim.is_none()
                 && self.region.storage.is_none()
-                && self.session.is_none())
+                && self.session.is_none()
+                && !self.request_writer_present())
         {
             return;
         }
@@ -2409,6 +2704,10 @@ impl CQueryWorkerOwner {
         if let Some(session) = self.session.take() {
             std::mem::forget(session);
         }
+        #[cfg(any(not(target_os = "linux"), test))]
+        if let Some(writer) = self.request_writer.take() {
+            std::mem::forget(writer);
+        }
     }
 
     fn forget_detached_child(&mut self, lifecycle: DetachedCQueryLifecycle) {
@@ -2417,6 +2716,8 @@ impl CQueryWorkerOwner {
             _claim: self.region.claim.take(),
             _storage: self.region.storage.take(),
             _session: self.session.take(),
+            #[cfg(any(not(target_os = "linux"), test))]
+            _request_writer: self.request_writer.take(),
         });
         #[cfg(test)]
         {
@@ -2425,7 +2726,7 @@ impl CQueryWorkerOwner {
     }
 
     fn release_claim_after_retirement(&mut self) {
-        if self.region.lease_held || self.session.is_some() {
+        if self.region.lease_held || self.session.is_some() || self.request_writer_present() {
             return;
         }
         drop(self.workspace.take());
@@ -2440,7 +2741,10 @@ impl CQueryWorkerOwner {
 
 impl Drop for CQueryWorkerOwner {
     fn drop(&mut self) {
-        if self.session.is_some() && !self.region.quarantined && self.stop_and_reap().is_err() {
+        if (self.session.is_some() || self.request_writer_present())
+            && !self.region.quarantined
+            && self.stop_and_reap().is_err()
+        {
             self.region.quarantined = true;
         }
         if self.region.lease_held {
@@ -2574,7 +2878,7 @@ unsafe fn read_worker_pipe(
         u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize
     };
     if !frame_length_allowed(len) {
-        region.publish(READER_FAILED);
+        region.publish(READER_FRAME_LIMIT);
         drain_to_eof(&mut stdout, region, reader_timing);
         return;
     }
@@ -3096,288 +3400,7 @@ mod tests {
     }
 
     #[test]
-    fn native_region_reserves_metadata_and_bounds_request() -> Result<()> {
-        assert_eq!(PARENT_BYTES, 1_572_864);
-        assert_eq!(
-            4_718_592 + PARENT_BYTES,
-            grimodex_core::narrative_nir1::MAX_GRAPH_INPUT_BYTES
-        );
-        let child_session_bytes = std::mem::size_of::<Option<ChildSession>>();
-        let request_bytes = REQUEST_CAPACITY_BYTES + std::mem::size_of::<Nir1GraphRequest>();
-        let metadata = std::mem::size_of::<RegionControl>()
-            + child_session_bytes
-            + std::mem::size_of::<usize>()
-            + MAILBOX_BYTES
-            + request_bytes;
-        assert_eq!(
-            std::mem::size_of::<NativeRegion>(),
-            MAILBOX_BYTES + STORAGE_BYTES
-        );
-        let named_native_bytes = std::mem::size_of::<NativeRegion>()
-            + std::mem::size_of::<RegionControl>()
-            + child_session_bytes
-            + std::mem::size_of::<usize>()
-            + request_bytes;
-        assert_eq!(named_native_bytes, NATIVE_FIXED_BYTES);
-        assert_eq!(named_native_bytes, PARENT_BYTES - REQUEST_BYTES);
-        assert_eq!(NATIVE_OWNER_PAYLOAD_BUDGET_BYTES, REQUEST_BYTES);
-        assert!(native_owner_payload_fits(&[REQUEST_BYTES, 0, 0, 0, 0, 0]));
-        assert!(native_owner_payload_fits(&[
-            REQUEST_BYTES - 1,
-            1,
-            0,
-            0,
-            0,
-            0
-        ]));
-        assert!(native_owner_payload_fits(&[
-            REQUEST_BYTES - 2,
-            1,
-            1,
-            0,
-            0,
-            0
-        ]));
-        assert!(native_owner_payload_fits(&[
-            REQUEST_BYTES - 3,
-            1,
-            1,
-            1,
-            0,
-            0
-        ]));
-        assert!(native_owner_payload_fits(&[
-            REQUEST_BYTES - 4,
-            1,
-            1,
-            1,
-            1,
-            0
-        ]));
-        assert!(!native_owner_payload_fits(&[
-            REQUEST_BYTES - 2,
-            1,
-            1,
-            1,
-            0,
-            0
-        ]));
-        assert!(!native_owner_payload_fits(&[
-            REQUEST_BYTES - 3,
-            1,
-            1,
-            1,
-            1,
-            0
-        ]));
-        assert!(!native_owner_payload_fits(&[
-            REQUEST_BYTES - 1,
-            1,
-            1,
-            1,
-            0,
-            0
-        ]));
-        assert!(!native_owner_payload_fits(&[REQUEST_BYTES, 1, 0, 0, 0, 0]));
-        assert!(!native_owner_payload_fits(&[
-            REQUEST_BYTES + 1,
-            0,
-            0,
-            0,
-            0,
-            0
-        ]));
-        assert!(!native_owner_payload_fits(&[usize::MAX, 1]));
-        assert!(!native_owner_payload_fits(&[0, usize::MAX, 1]));
-        assert!(!native_owner_payload_fits(&[0, 0, usize::MAX, 1]));
-        assert!(!native_owner_payload_fits(&[0, 0, 0, usize::MAX, 1]));
-        let participant_payload_bytes = WorkspaceParticipant::c_query_lease_payload_bytes();
-        let participant_arc_control_header_floor_bytes = PARTICIPANT_ARC_CONTROL_HEADER_FLOOR_BYTES;
-        let participant_accounted_bytes =
-            participant_payload_bytes + participant_arc_control_header_floor_bytes;
-        assert!(participant_payload_bytes > 0);
-        assert!(participant_arc_control_header_floor_bytes > 0);
-        assert!(participant_accounted_bytes <= REQUEST_BYTES);
-        assert!(native_owner_preclaim_payload_fits(
-            REQUEST_BYTES - participant_accounted_bytes,
-            0,
-            0,
-            0,
-            0,
-            0,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-        assert!(!native_owner_preclaim_payload_fits(
-            REQUEST_BYTES - participant_accounted_bytes + 1,
-            0,
-            0,
-            0,
-            0,
-            0,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-        assert!(native_owner_command_staging_payload_fits(
-            REQUEST_BYTES - participant_accounted_bytes,
-            0,
-            0,
-            0,
-            0,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-        assert!(!native_owner_command_staging_payload_fits(
-            REQUEST_BYTES - participant_accounted_bytes + 1,
-            0,
-            0,
-            0,
-            0,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-
-        let workspace_path_bytes = 400;
-        let workspace_lease_path_capacity =
-            workspace_path_bytes + b"/.grimodex-workspace.lock".len();
-        let exact_fit_binding_payload_bytes =
-            REQUEST_BYTES - participant_accounted_bytes - workspace_lease_path_capacity;
-        assert!(native_owner_preclaim_payload_fits(
-            exact_fit_binding_payload_bytes,
-            0,
-            0,
-            workspace_lease_path_capacity,
-            0,
-            0,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-        assert!(!native_owner_preclaim_payload_fits(
-            exact_fit_binding_payload_bytes + 1,
-            0,
-            0,
-            workspace_lease_path_capacity,
-            0,
-            0,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-        assert!(native_owner_command_staging_payload_fits(
-            exact_fit_binding_payload_bytes,
-            0,
-            workspace_lease_path_capacity,
-            0,
-            0,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-        assert!(!native_owner_command_staging_payload_fits(
-            exact_fit_binding_payload_bytes + 1,
-            0,
-            workspace_lease_path_capacity,
-            0,
-            0,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-
-        let witness_binding_payload_bytes = workspace_path_bytes + 84;
-        let witness_worker_path_capacity = 256;
-        let witness_authority_path_capacity = 6_739;
-        let witness_command_argument_payload_bytes = 431;
-        let witness_command_executable_payload_bytes = 250;
-        assert!(native_owner_payload_fits(&[
-            witness_binding_payload_bytes,
-            witness_worker_path_capacity,
-            witness_authority_path_capacity,
-            witness_command_argument_payload_bytes,
-            witness_command_executable_payload_bytes,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ]));
-        assert!(native_owner_payload_fits(&[
-            witness_binding_payload_bytes,
-            witness_authority_path_capacity,
-            witness_command_argument_payload_bytes,
-            witness_command_executable_payload_bytes,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ]));
-        assert!(!native_owner_preclaim_payload_fits(
-            witness_binding_payload_bytes,
-            witness_worker_path_capacity,
-            witness_authority_path_capacity,
-            workspace_lease_path_capacity,
-            witness_command_argument_payload_bytes,
-            witness_command_executable_payload_bytes,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-        assert!(!native_owner_command_staging_payload_fits(
-            witness_binding_payload_bytes,
-            witness_authority_path_capacity,
-            workspace_lease_path_capacity,
-            witness_command_argument_payload_bytes,
-            witness_command_executable_payload_bytes,
-            participant_payload_bytes,
-            participant_arc_control_header_floor_bytes,
-        ));
-        #[cfg(unix)]
-        {
-            assert_eq!(
-                command_argument_payload_lower_bound(std::ffi::OsStr::new("é"), "🌹"),
-                Some(8)
-            );
-            assert_eq!(
-                command_argument_payload_lower_bound(std::ffi::OsStr::new("bad\0path"), "x"),
-                Some(3)
-            );
-            let pointer_bytes = std::mem::size_of::<*const std::ffi::c_char>()
-                .checked_mul(4)
-                .unwrap();
-            assert_eq!(
-                command_executable_and_argv_payload_lower_bound(std::ffi::OsStr::new("/worker")),
-                Some(("/worker".len() + 1) * 2 + pointer_bytes)
-            );
-            assert_eq!(
-                command_executable_and_argv_payload_lower_bound(std::ffi::OsStr::new("bad\0path")),
-                Some(0)
-            );
-        }
-        assert_eq!(
-            command_program_os_string_payload_lower_bound(std::ffi::OsStr::new("w🌹")),
-            "w🌹".len()
-        );
-        let program_payload =
-            command_program_os_string_payload_lower_bound(std::ffi::OsStr::new("worker"));
-        assert!(native_owner_payload_fits(&[
-            REQUEST_BYTES - program_payload,
-            0,
-            0,
-            0,
-            program_payload,
-            0,
-        ]));
-        assert!(!native_owner_payload_fits(&[
-            REQUEST_BYTES - program_payload + 1,
-            0,
-            0,
-            0,
-            program_payload,
-            0,
-        ]));
-        #[cfg(windows)]
-        assert_eq!(
-            command_argument_payload_lower_bound(std::ffi::OsStr::new("é"), "🌹"),
-            Some(6)
-        );
-        assert_eq!(
-            named_native_bytes + NATIVE_OWNER_PAYLOAD_BUDGET_BYTES,
-            PARENT_BYTES
-        );
-        assert_eq!(named_native_bytes + REQUEST_BYTES, PARENT_BYTES);
-        assert_eq!(REQUEST_BYTES + FRAME_BYTES + metadata, PARENT_BYTES);
-        assert!(REQUEST_BYTES + FRAME_BYTES + 1 + metadata > PARENT_BYTES);
+    fn native_region_bounds_request_and_frame() -> Result<()> {
         assert!(frame_length_allowed(FRAME_BYTES));
         assert!(!frame_length_allowed(FRAME_BYTES + 1));
         assert!(!frame_length_allowed(0));
@@ -3420,14 +3443,6 @@ mod tests {
         let native = &storage[0];
         // The frame backing is the same size as before; request bytes overlay it.
         assert_eq!(STORAGE_BYTES, FRAME_BYTES);
-        assert_eq!(
-            std::mem::size_of_val(native)
-                + std::mem::size_of::<RegionControl>()
-                + child_session_bytes
-                + std::mem::size_of::<usize>()
-                + request_bytes,
-            PARENT_BYTES - REQUEST_BYTES
-        );
         native.set_parent_thread(thread::current());
         native.mailbox.frame_len.store(17, Ordering::Relaxed);
         native.publish(READER_FRAME);

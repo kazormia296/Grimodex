@@ -36,6 +36,10 @@ printf '%s' \
 q2_fixture_file="$fixture_dir/q2-preseed.db"
 q512_fixture_file="$fixture_dir/q512-preseed.db"
 q2_test_fixture_file="$fixture_dir/q2-worker-input.db"
+q2_quarantine_test_fixture_file="$fixture_dir/q2-quarantine-worker-input.db"
+q2_postcommit_test_fixture_file="$fixture_dir/q2-postcommit-worker-input.db"
+q2_sql_steps_test_fixture_file="$fixture_dir/q2-sql-steps-worker-input.db"
+q2_boundary_test_fixture_file="$fixture_dir/q2-boundary-worker-input.db"
 q512_test_fixture_file="$fixture_dir/q512-worker-input.db"
 q513_test_fixture_file="$fixture_dir/q513-worker-input.db"
 
@@ -52,6 +56,10 @@ if [[ "$is_windows" == true ]]; then
   q2_fixture_builder_path="$(cygpath -w "$q2_fixture_file")"
   q512_fixture_builder_path="$(cygpath -w "$q512_fixture_file")"
   q2_worker_fixture_path="$(cygpath -w "$q2_test_fixture_file")"
+  q2_quarantine_worker_fixture_path="$(cygpath -w "$q2_quarantine_test_fixture_file")"
+  q2_postcommit_worker_fixture_path="$(cygpath -w "$q2_postcommit_test_fixture_file")"
+  q2_sql_steps_worker_fixture_path="$(cygpath -w "$q2_sql_steps_test_fixture_file")"
+  q2_boundary_worker_fixture_path="$(cygpath -w "$q2_boundary_test_fixture_file")"
   q512_worker_fixture_path="$(cygpath -w "$q512_test_fixture_file")"
   q513_worker_fixture_path="$(cygpath -w "$q513_test_fixture_file")"
   worker_file="$PWD/src-tauri/target/release/nir1-c-query-worker.exe"
@@ -61,6 +69,10 @@ else
   q2_fixture_builder_path="$q2_fixture_file"
   q512_fixture_builder_path="$q512_fixture_file"
   q2_worker_fixture_path="$q2_test_fixture_file"
+  q2_quarantine_worker_fixture_path="$q2_quarantine_test_fixture_file"
+  q2_postcommit_worker_fixture_path="$q2_postcommit_test_fixture_file"
+  q2_sql_steps_worker_fixture_path="$q2_sql_steps_test_fixture_file"
+  q2_boundary_worker_fixture_path="$q2_boundary_test_fixture_file"
   q512_worker_fixture_path="$q512_test_fixture_file"
   q513_worker_fixture_path="$q513_test_fixture_file"
   worker_file="$PWD/src-tauri/target/release/nir1-c-query-worker"
@@ -100,12 +112,15 @@ assert_closed_fixture "$q512_fixture_file"
 q2_fixture_checksum="$(cksum < "$q2_fixture_file")"
 q512_fixture_checksum="$(cksum < "$q512_fixture_file")"
 cp -- "$q2_fixture_file" "$q2_test_fixture_file"
+cp -- "$q2_fixture_file" "$q2_quarantine_test_fixture_file"
 cp -- "$q512_fixture_file" "$q512_test_fixture_file"
 cp -- "$q512_fixture_file" "$q513_test_fixture_file"
 test "$(cksum < "$q2_test_fixture_file")" = "$q2_fixture_checksum"
+test "$(cksum < "$q2_quarantine_test_fixture_file")" = "$q2_fixture_checksum"
 test "$(cksum < "$q512_test_fixture_file")" = "$q512_fixture_checksum"
 test "$(cksum < "$q513_test_fixture_file")" = "$q512_fixture_checksum"
 assert_closed_fixture "$q2_test_fixture_file"
+assert_closed_fixture "$q2_quarantine_test_fixture_file"
 assert_closed_fixture "$q512_test_fixture_file"
 assert_closed_fixture "$q513_test_fixture_file"
 
@@ -125,6 +140,13 @@ NIR1_C_QUERY_WORKER_BIN="$worker_path" \
     -p grimodex-db --lib native_worker_returns_fixed_q2_frame_from_real_workspace_owner \
     -- --ignored --nocapture --test-threads=1
 
+# This test intentionally quarantines process-global worker capacity; keep it in its own process.
+NIR1_Q2_FIXTURE_PATH="$q2_quarantine_worker_fixture_path" \
+NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --lib native_worker_quarantines_live_request_writer_after_cleanup_timeout \
+    -- --ignored --nocapture --test-threads=1
+
 NIR1_Q2_FIXTURE_PATH="$q512_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
@@ -139,11 +161,48 @@ NIR1_C_QUERY_WORKER_BIN="$worker_path" \
     -- --ignored --nocapture --test-threads=1
 assert_q512_source_unchanged
 
+# Keep the post-commit retirement case separate from ordinary-worker fixtures and runs.
+cp -- "$q2_fixture_file" "$q2_postcommit_test_fixture_file"
+cp -- "$q2_fixture_file" "$q2_sql_steps_test_fixture_file"
+cp -- "$q2_fixture_file" "$q2_boundary_test_fixture_file"
+test "$(cksum < "$q2_postcommit_test_fixture_file")" = "$q2_fixture_checksum"
+test "$(cksum < "$q2_sql_steps_test_fixture_file")" = "$q2_fixture_checksum"
+test "$(cksum < "$q2_boundary_test_fixture_file")" = "$q2_fixture_checksum"
+assert_closed_fixture "$q2_postcommit_test_fixture_file"
+assert_closed_fixture "$q2_sql_steps_test_fixture_file"
+assert_closed_fixture "$q2_boundary_test_fixture_file"
+
+cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+  -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
+NIR1_Q2_FIXTURE_PATH="$q2_sql_steps_worker_fixture_path" \
+NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --lib native_worker_refuses_after_actual_sql_steps_over_cap \
+    -- --ignored --nocapture --test-threads=1
+test "$(cksum < "$q2_sql_steps_test_fixture_file")" = "$q2_fixture_checksum"
+assert_closed_fixture "$q2_sql_steps_test_fixture_file"
+
+NIR1_Q2_FIXTURE_PATH="$q2_boundary_worker_fixture_path" \
+NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --lib native_worker_rejects_request_and_frame_length_n_plus_one \
+    -- --ignored --nocapture --test-threads=1
+test "$(cksum < "$q2_boundary_test_fixture_file")" = "$q2_fixture_checksum"
+assert_closed_fixture "$q2_boundary_test_fixture_file"
+
+NIR1_Q2_FIXTURE_PATH="$q2_postcommit_worker_fixture_path" \
+NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --lib native_worker_accepts_committed_q2_frame_before_nonzero_exit \
+    -- --ignored --nocapture --test-threads=1
+test "$(cksum < "$q2_postcommit_test_fixture_file")" = "$q2_fixture_checksum"
+assert_closed_fixture "$q2_postcommit_test_fixture_file"
+
 cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
   -p grimodex-db --lib malformed_child_frame_rejected_before_view \
   -- --nocapture --test-threads=1
 cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
-  -p grimodex-db --lib native_region_reserves_metadata_and_bounds_request \
+  -p grimodex-db --lib native_region_bounds_request_and_frame \
   -- --nocapture --test-threads=1
 cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
   -p grimodex-db --bin nir1-c-query-worker q_s_origins_no_fallback_failed_realloc_and_zero_live_seal \

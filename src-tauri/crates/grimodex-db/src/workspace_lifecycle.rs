@@ -153,14 +153,6 @@ impl LiveBinding {
         self
     }
 
-    pub(crate) fn c_query_identity_payload_byte_len(&self) -> Option<usize> {
-        checked_c_query_identity_payload_bytes(
-            self.workspace_id.len(),
-            self.locator.len(),
-            self.database_file_identity.as_deref().map(str::len),
-        )
-    }
-
     /// Test whether this internal binding came from the supplied opened DB file.
     #[doc(hidden)]
     pub fn matches_main_database_file_identity(&self, identity: &str) -> bool {
@@ -178,16 +170,6 @@ impl LiveBinding {
             (Some(left), Some(right)) if left == right
         )
     }
-}
-
-fn checked_c_query_identity_payload_bytes(
-    workspace_id_bytes: usize,
-    locator_bytes: usize,
-    database_file_identity_bytes: Option<usize>,
-) -> Option<usize> {
-    workspace_id_bytes
-        .checked_add(locator_bytes)?
-        .checked_add(database_file_identity_bytes.unwrap_or_default())
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -397,11 +379,6 @@ impl Drop for WorkspaceQuarantineFence {
 }
 
 impl WorkspaceParticipant {
-    /// Value size of the Arc target; excludes Arc metadata and allocator extents.
-    pub(crate) const fn c_query_lease_payload_bytes() -> usize {
-        std::mem::size_of::<WorkspaceParticipantLease>()
-    }
-
     /// Atomically replace this unique participant with a process-local C-query
     /// quarantine fence. The caller transfers child/storage ownership together.
     pub(crate) fn detach_c_query_quarantine(
@@ -4763,35 +4740,6 @@ mod tests {
     fn binding(instance: u64) -> LiveBinding {
         LiveBinding::new("/tmp/workspace", "workspace-1", instance, 1)
             .with_main_database_file_identity(format!("test-db-{instance}"))
-    }
-
-    #[test]
-    fn c_query_identity_payload_length_includes_all_strings_and_checks_overflow() {
-        assert_eq!(
-            checked_c_query_identity_payload_bytes(8_191, 1, None),
-            Some(8_192)
-        );
-        assert_eq!(
-            checked_c_query_identity_payload_bytes(8_191, 1, Some(1)),
-            Some(8_193)
-        );
-        assert_eq!(
-            checked_c_query_identity_payload_bytes(usize::MAX, 1, None),
-            None
-        );
-        assert_eq!(
-            checked_c_query_identity_payload_bytes(1, usize::MAX, Some(1)),
-            None
-        );
-
-        let binding = LiveBinding::new("locator", "workspace", 1, 0);
-        assert_eq!(binding.c_query_identity_payload_byte_len(), Some(16));
-        assert_eq!(
-            binding
-                .with_main_database_file_identity("file-id".to_owned())
-                .c_query_identity_payload_byte_len(),
-            Some(23)
-        );
     }
 
     fn run_handle(run_id: &str, work_key: &str) -> DurableRunHandle {

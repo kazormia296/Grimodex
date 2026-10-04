@@ -4,6 +4,8 @@ mod c_query_fixed_allocator;
 
 use anyhow::{ensure, Result};
 use c_query_fixed_allocator::WorkerAllocator;
+#[cfg(feature = "nir1-c-query-test-seam")]
+use grimodex_db::narrative_extraction::nir1_graph::c_query_worker::FRAME_BYTES;
 use grimodex_db::narrative_extraction::nir1_graph::{
     c_query_worker::REQUEST_BYTES, worker_frame, Nir1GraphReader, Nir1GraphRegistrationStage,
     Nir1GraphRequest,
@@ -324,6 +326,28 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
         });
     }
     let response = reader.query_for_worker_with_maintenance(&request)?;
+    #[cfg(feature = "nir1-c-query-test-seam")]
+    if std::env::var_os("NIR1_C_QUERY_TEST_OVERSIZED_FRAME_LENGTH")
+        .is_some_and(|value| value.to_str() == Some("one-over-limit"))
+    {
+        ensure!(
+            response.status == "available"
+                && response
+                    .graph
+                    .as_ref()
+                    .is_some_and(|graph| graph.nodes.len() == 1 && graph.edges.is_empty()),
+            "oversized frame test requires the real nonempty Q2 response"
+        );
+        let declared_len = u32::try_from(
+            FRAME_BYTES
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("frame length overflow"))?,
+        )?;
+        output.write_all(&declared_len.to_le_bytes())?;
+        output.flush()?;
+        close_protocol_output(output);
+        return Ok(());
+    }
     #[cfg(feature = "nir1-c-query-test-seam")]
     if let Some(marker) = std::env::var_os("NIR1_C_QUERY_TEST_HOLD_BEFORE_FRAME") {
         ensure!(

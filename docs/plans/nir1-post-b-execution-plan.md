@@ -1,9 +1,11 @@
 # NIR-1 残工程実装計画 — 最終版
 
-更新日：2026-09-22（Asia/Tokyo）
+更新日：2026-10-04
 対象：Grimodex / NIR-1 B-close、C、D2b、P、E
 状態：B-closeの実装・必須focused証跡は完了。C以降、G-01実行可能性検証、残る追加契約と製品公開は未完了。
 リポジトリ配置：`docs/plans/nir1-post-b-execution-plan.md`
+
+2026-10-04 PR #610 C-query revision: §6.2以下は、aggregate physical-memory proofとNative fixed-area packingを必須条件から削除したユーザー承認済み境界へ同期した。512/513、100,000 VM steps、入力/frame/traversal/checked-arithmetic/concurrency、Gold、認可、100 ms result lease、owner/retirement契約は維持する。単一Revision validation、Packing、whole-project等の別budgetは変更しない。Graphは機能/lifecycle受入れと残るPR gateが終わるまで閉じたままで、この文書更新はPASSや公開許可ではない。
 
 実装開始基点は `origin/master@6217e0155f53c9f8d267ed3c17e3952bc2f8f986`。2026-09-22 B-close追記: #604を親とするstacked実装で、lifecycle SQL上界・WAL/journal/backup/Restore copyを含む総一時logical disk上界、必須lifecycle境界、数値容量契約とN/N+1検証を完了した。19-path / 114-childの測定と、確定値に対する8成功・4安全拒否のrelease childを分けて記録する。数値と適用範囲はユーザーが明示確認した。詳細は [B-close completion evidence](nir1-b-close-completion-2026-09-22.md)。Graph、Packing、AI dispatchは未activateで、NIR-1全体受入れは未完了。ユーザー指定により本候補のFull CI・独立受入れレビューは省略し、mergeは依頼範囲外として行っていない。
 
@@ -155,23 +157,23 @@ queryごとに完全Graphをscanして完全性を証明しない。既存構造
 | 単位 | 契約 |
 |---|---|
 | 単一Revision validation | 現行512 records / 6,291,456 B（6 MiB）。query全体のmemory上限とは別のvalidation limit |
-| seed-local query | read/admission 512、batch 16×32、SQL 100,000 VM steps、1,000 steps刻みの取消・期限確認、aggregate 6,291,456 B（worker Q 4,718,592 B + Native 1,572,864 B）、親のadmission→valid Native result lease ≤100 ms、reader/busy wait 0 |
+| seed-local query | read/admission 512（513件目はrefuse）、batch 16×32、SQL 100,000 VM steps、1,000 steps刻みの取消・期限確認、既存input/frame/fixed-buffer limitsとchecked arithmetic、aggregate physical-memory capなし、親のadmission→valid Native result lease ≤100 ms、reader/busy wait 0 |
 | 意味上の探索 | 最大2hop、発見Entity 12、適格edge展開144、返却Scene 8 |
 | whole-project build | B-closeで測定・確定する独立資源契約 |
 
-C-queryの6 MiB / 100 msは明示批准された現行契約で、旧2 MiB / 8 msのquery全体上限・期限を置き換える。Registration/READYとcleanup/retirementの待機はこのadmission期限とは別。単一Revision validationも6 MiBで、Packingだけが2 MiB上限を維持する。記録済みの過去値は変更しない。以上は固定契約値であり、今回測定した結果ではない。[S3]
+C-queryではparent admission-to-valid-Native-result-leaseの100 msを維持し、旧query-wide 2 MiB / 8 ms条件を適用しない。100 msは結果leaseの期限であり、registration/READY前のstartupやcleanup/retirement待ちを含めない。単一Revision validationは引き続き512 records / 6 MiB、Packingは引き続き2 MiBで、whole-project build等の別budgetも変更しない。C-queryにQ 4,718,592 B + Native 1,572,864 B = 6,291,456 Bのaggregate physical cap/proofはない。過去のこれらの値は旧実装設計の履歴であり、現行の物理上限ではない。[S3]
 
-query予算は候補SQL、A2/A3、JSON解析、Evidence解決、path構築、必要なserializationを通じて共有する。helper/Revision/pageごとにリセットしない。不適格行もread/admissionを消費するが、frontier・適格edge展開・順位には寄与しない。非開示edgeを橋にして先の適格Entityへ到達することは禁止する。
+queryのread/admissionとSQL作業上限は、候補SQL、A2/A3、JSON解析、Evidence解決、path構築、必要なserializationを通じて共有し、helper/Revision/pageごとにリセットしない。不適格行もread/admissionを消費するが、frontier・適格edge展開・順位には寄与しない。非開示edgeを橋にして先の適格Entityへ到達することは禁止する。
 
-一度に必要なものだけを読み、巨大行はallocation前に検査する。同一query/snapshot/Scopeの同じRevisionはrequest-localで重複検証を抑えるが、保持メモリも予算へ含める。Revision全体の開示確認が必要な契約を、使うedgeだけの検証に縮めない。
+一度に必要なものだけを読み、巨大行はallocation前に検査する。同一query/snapshot/Scopeの同じRevisionはrequest-localで重複検証を抑える。既存の個別input/frame/fixed-buffer limits、checked arithmetic、partial refusalは維持するが、総物理memory byte上限は課さない。Revision全体の開示確認が必要な契約を、使うedgeだけの検証に縮めない。
 
-専用read-only connectionと既存lifecycle participantを使い、Rawのconnectionを占有/interruptしない。取得待ち、SQL最初のrow以前、Rust/JSON処理、queued workまで取消を伝える。資源超過/取消/競合ではpartial Graphを返さない。Graphの結果期限とcleanup完了時間は別測定とし、期限超過後も実解放までownerを残す。
+専用read-only connectionと既存lifecycle participantを使い、Rawのconnectionを占有/interruptしない。取得待ち、SQL最初のrow以前、Rust/JSON処理、queued workまで取消を伝える。上限超過/取消/競合ではpartial Graphを返さない。Parentはadmissionから100 ms以内に、完全なsuccessful bound frame、terminal commit、trailing-free clean pipe EOF、current bindingを確認した時点でresult leaseを返す。条件成立後に不要な待ちを足さず、child exit/reader joinはこのlease期限の条件にしない。pre-commit fault/cancel/invalidation/deadline/partial resultはrefuseし、期限後のresultは採用しない。post-commit child nonzeroはretirement anomalyであり、受理済みresultを自動失効させない。
 
-Native launch stagingも同じ固定予算と所有境界に従う。全体6,291,456 B（worker Q 4,718,592 B + Native 1,572,864 B）には、idle時も含めNativeの全static regionを計上し、未使用領域をbaselineや追加予算として扱わない。`OWNER_REQUEST`前はNative ownerがrequest/frame領域を所有する。そこへ一時stageする場合はprepared project prefixを保持し、範囲を検査してから書き込み、request encodingとhandoff前にstage領域をclearする。handoff後、ownerはreaderのframe領域をstage・上書きせず、`READER_FRAME`を確認してから検証する。親はadmissionから100 ms以内に、完全なbound frame、terminal commit、clean EOF、current bindingを確認した場合だけresult leaseを返す。childの実終了はlease返却の前提ではないが、再loanには実child exit・stdout EOF・reader joinの全てを要し、未確認の間はowner/regionを保持し、必要ならquarantineする。
+Native launch stagingにもaggregate physical-memory proofや全data/metadataを固定領域へpackする要件はない。現行のrequest/frame buffer・input上限、checked arithmetic、allocation-originに沿ったsafe cleanupは維持し、その個別容量を総物理上界とは説明しない。`OWNER_REQUEST`前はNative ownerがrequest bytesを排他的に保持し、完全なtransfer前にhandoffしない。handoff後はownerがreader領域を上書きせず、reader側の既存frame/commit/EOF/current-binding検証を維持する。lease返却後もchild/pipes/claim/reader/workspace protectionの一意ownerを保持し、再利用はlease release (または未発行) + 実child exit + 必要なEOF + reader join成功の全てを確認してから行う。kill要求、error、lease drop、exitだけでは再利用しない。有限cleanupで証明できなければquarantineしてowner/claim/slot/workspace fenceを保持する。
 
-2026-10-03のtest-only 16-KiB staging/handoff試験が示すのは、当該sliceでprefix維持・checked refusal・clear-before-handoff後に既存frame/commit/EOF/reader-join経路へ移れることだけである。Windowsの全launch branchの論理fitは、関連path API出力や重なる一時表現に厳密な最大値がないため**UNKNOWN**。現在の`Command` private buffersにもapp-controlled capacityはなく、物理Native fitとaggregate 6-MiB fitも**UNKNOWN**のままであり、このtestはlauncher実装や受入れ合格を示さない。
+**Historical diagnostic, not a current proof obligation:** 2026-10-03のtest-only 16-KiB staging/handoff試験は、そのsliceでprefix維持・checked refusal・clear-before-handoff後にframe/commit/EOF/reader-join経路へ移れたことだけを示した。当時のWindows全branchのlogical/physical fitは**UNKNOWN**と記録されたが、今回の承認ではそのfit立証は受入れ条件から削除された。この試験の結果や当時の未知事項は歴史として保持し、解消を要求しない。
 
-2026-10-04の実W1 witnessは`prepare()`のPRECLAIM guardを正確に8,192 Bまで満たした（`tests.rs:717`; guard定義・利用は`c_query_worker.rs:399–435,938`）。ただしguardは後段の`Command` payload lower boundsも含む論理accountingであり、PRECLAIM時点の同時allocation extentではない。phaseを分けても物理headroomは証明されない。W1 `LiveBinding`の`Arc<str>` backingは`NativeRegion`外に残る（`workspace_lifecycle.rs:99–112`）。したがってstatic-record/Native physical fitは**UNKNOWN**で、overrunもfitも立証していない。
+**Historical diagnostic, not a current proof obligation:** 2026-10-04の実W1 witnessは`prepare()`のPRECLAIM guardを正確に8,192 Bまで満たした（`tests.rs:717`; guard定義・利用は`c_query_worker.rs:399–435,938`）。guardは後段の`Command` payload lower boundsも含む論理accountingであり、PRECLAIM時点の同時allocation extentではなかった。W1 `LiveBinding`の`Arc<str>` backingは`NativeRegion`外に残る（`workspace_lifecycle.rs:99–112`）。当時static-record/Native physical fitは**UNKNOWN**と記録された。この観測はphysical fitを証明しないが、現在その証明は要求しない。
 
 ### 6.3. SceneとEvidence
 
@@ -185,7 +187,9 @@ Graph→Sceneのjoinには既存の正本上の対応情報、Source token、失
 
 独立したcanonical読取による正解経路と比較する。seed近傍を固定して無関係Revisionを増量し、全件scan/JSON展開へ退行しないことをSQL計画と実測で確認する。
 
-欠落候補、世代不一致、keyset飛ばし、ページ境界の重複、不適格bridge、方向違い、巨大行、上限、取消、失効を試験する。実行時不整合をどの登録/admission境界で検出するかと、列挙アルゴリズムの欠陥を独立比較で防ぐことを区別する。任意の物理DB破損を毎queryで全面検出する保証には広げない。
+欠落候補、世代不一致、keyset飛ばし、ページ境界の重複、不適格bridge、方向違い、巨大行、512/513 records、100,000 VM-step上限、frame/input上限、取消、失効を試験する。実行時不整合をどの登録/admission境界で検出するかと、列挙アルゴリズムの欠陥を独立比較で防ぐことを区別する。任意の物理DB破損を毎queryで全面検出する保証には広げない。
+
+memory/lifetimeの有限な実用確認では、既存の反復testを再利用するか、必要なら同一Native parent processでQ512を30回逐次実行し、各lease releaseと実worker reapを次回の前に確認する。既存maximum-size fixtureも一度実行し、fixture/work scale、環境、parent/workerの観測使用量、reap後resourceを記録する。具体的なowner/result/worker retention、継続的growth、OOM、stalled operationがあれば修正する。固定byte/RSS thresholdやRSS baselineへの完全復帰は要求せず、この有限観測を全入力のmemory upper-boundやleak不存在の証明としない。
 
 製品Graph入口への直接呼び出しは拒否されたままにする。
 
