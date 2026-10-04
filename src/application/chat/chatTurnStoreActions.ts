@@ -713,7 +713,6 @@ function createChatTurnStoreActions(
           current.scopeAnchorId === null ||
           current.scopeAnchorId === scopeAnchorId ||
           current.activeProjectId !== turnProjectId ||
-          current.activeSceneId !== activeSceneId ||
           !capturedWorkspaceIsCurrent() ||
           !capturedProjectIsCurrent() ||
           isAiFeatureBlockedByPolicy("chat") ||

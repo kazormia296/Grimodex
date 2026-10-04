@@ -37,6 +37,7 @@ import {
   isQuiescenceLeaseActive,
 } from "@/application/lifecycle/quiescenceLease";
 import {
+  isChatSceneTransitionBlocked,
   tryAcquireChatAnchorDeletionLease,
   tryAcquireTreeCreationLease,
   tryAcquireTreeNavigationLease,
@@ -7626,7 +7627,7 @@ describe("useChatStore", () => {
         },
       );
       useChatStore.setState({
-        activeSceneId: "",
+        activeSceneId: "scene-a",
         activeProjectId: "proj-1",
         activeSessionId: folderSession.id,
         sessions: [folderSession],
@@ -7648,6 +7649,14 @@ describe("useChatStore", () => {
 
         useChatStore.getState().setChatScope("folder", "folder-b");
         expect(useChatStore.getState()).toMatchObject({
+          chatScope: "folder",
+          scopeAnchorId: "folder-b",
+          isStreaming: true,
+        });
+        expect(isChatSceneTransitionBlocked()).toBe(false);
+        useChatStore.getState().setActiveSceneId("scene-c");
+        expect(useChatStore.getState()).toMatchObject({
+          activeSceneId: "scene-c",
           chatScope: "folder",
           scopeAnchorId: "folder-b",
           isStreaming: true,
