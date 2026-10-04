@@ -317,8 +317,10 @@ impl<'a> Cursor<'a> {
         let start = self.u32()?;
         let end = self.u32()?;
         let quote_len = quote.encode_utf16().count();
+        // These offsets address the canonical source, not the extracted quote.
         ensure!(
-            end >= start && end as usize <= quote_len,
+            end.checked_sub(start)
+                .is_some_and(|span| span as usize == quote_len),
             "NIR1_GRAPH_FRAME_EVIDENCE_RANGE"
         );
         Ok(EvidenceView {
@@ -476,6 +478,42 @@ pub fn validate(bytes: &[u8]) -> Result<FrameView<'_>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn evidence_bytes(quote: &str, start: u32, end: u32) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for value in ["id", "source", quote] {
+            bytes.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        bytes.extend_from_slice(&start.to_le_bytes());
+        bytes.extend_from_slice(&end.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn evidence_offsets_are_source_relative_utf16_ranges() -> Result<()> {
+        let bytes = evidence_bytes("猫🙂", 8, 11);
+        let mut cursor = Cursor {
+            bytes: &bytes,
+            position: 0,
+        };
+        let evidence = cursor.evidence()?;
+        assert_eq!(
+            (evidence.start, evidence.end, evidence.quote),
+            (8, 11, "猫🙂")
+        );
+
+        for (start, end) in [(8, 10), (11, 8)] {
+            let bytes = evidence_bytes("猫🙂", start, end);
+            let mut cursor = Cursor {
+                bytes: &bytes,
+                position: 0,
+            };
+            assert!(cursor.evidence().is_err());
+        }
+        Ok(())
+    }
+
     #[test]
     fn malformed_child_frame_rejected_before_view() -> Result<()> {
         let mut raw = b"NQG1\x00\x01\x00\x00\x00x\x01\x00\x00\x00s\x01\x00\x00\x00r".to_vec();
