@@ -38,6 +38,7 @@ q512_fixture_file="$fixture_dir/q512-preseed.db"
 q2_test_fixture_file="$fixture_dir/q2-worker-input.db"
 q2_quarantine_test_fixture_file="$fixture_dir/q2-quarantine-worker-input.db"
 q2_postcommit_test_fixture_file="$fixture_dir/q2-postcommit-worker-input.db"
+q2_post_admission_crash_test_fixture_file="$fixture_dir/q2-post-admission-crash-worker-input.db"
 q2_sql_steps_test_fixture_file="$fixture_dir/q2-sql-steps-worker-input.db"
 q2_boundary_test_fixture_file="$fixture_dir/q2-boundary-worker-input.db"
 q512_test_fixture_file="$fixture_dir/q512-worker-input.db"
@@ -58,6 +59,7 @@ if [[ "$is_windows" == true ]]; then
   q2_worker_fixture_path="$(cygpath -w "$q2_test_fixture_file")"
   q2_quarantine_worker_fixture_path="$(cygpath -w "$q2_quarantine_test_fixture_file")"
   q2_postcommit_worker_fixture_path="$(cygpath -w "$q2_postcommit_test_fixture_file")"
+  q2_post_admission_crash_worker_fixture_path="$(cygpath -w "$q2_post_admission_crash_test_fixture_file")"
   q2_sql_steps_worker_fixture_path="$(cygpath -w "$q2_sql_steps_test_fixture_file")"
   q2_boundary_worker_fixture_path="$(cygpath -w "$q2_boundary_test_fixture_file")"
   q512_worker_fixture_path="$(cygpath -w "$q512_test_fixture_file")"
@@ -71,6 +73,7 @@ else
   q2_worker_fixture_path="$q2_test_fixture_file"
   q2_quarantine_worker_fixture_path="$q2_quarantine_test_fixture_file"
   q2_postcommit_worker_fixture_path="$q2_postcommit_test_fixture_file"
+  q2_post_admission_crash_worker_fixture_path="$q2_post_admission_crash_test_fixture_file"
   q2_sql_steps_worker_fixture_path="$q2_sql_steps_test_fixture_file"
   q2_boundary_worker_fixture_path="$q2_boundary_test_fixture_file"
   q512_worker_fixture_path="$q512_test_fixture_file"
@@ -172,8 +175,20 @@ assert_closed_fixture "$q2_postcommit_test_fixture_file"
 assert_closed_fixture "$q2_sql_steps_test_fixture_file"
 assert_closed_fixture "$q2_boundary_test_fixture_file"
 
+cp -- "$q2_fixture_file" "$q2_post_admission_crash_test_fixture_file"
+test "$(cksum < "$q2_post_admission_crash_test_fixture_file")" = "$q2_fixture_checksum"
+assert_closed_fixture "$q2_post_admission_crash_test_fixture_file"
+
 cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
   -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
+NIR1_Q2_FIXTURE_PATH="$q2_post_admission_crash_worker_fixture_path" \
+NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --lib native_worker_crashes_after_q2_ack_before_frame \
+    -- --ignored --nocapture --test-threads=1
+test "$(cksum < "$q2_post_admission_crash_test_fixture_file")" = "$q2_fixture_checksum"
+assert_closed_fixture "$q2_post_admission_crash_test_fixture_file"
+
 NIR1_Q2_FIXTURE_PATH="$q2_sql_steps_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \

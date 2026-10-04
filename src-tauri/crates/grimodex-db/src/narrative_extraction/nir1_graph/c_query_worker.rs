@@ -907,11 +907,11 @@ impl CQueryWorkerOwner {
         Ok(())
     }
 
-    /// Crash the real child after request admission. This proves Native admission
-    /// only; it does not prove child SQL began or that any frame bytes were emitted.
+    /// Kill the real child after it acknowledges the completed Q2 query and parks before frame output.
     #[cfg(test)]
-    pub(super) fn crash_after_request_for_test(&mut self) {
+    pub(super) fn crash_after_request_for_test(&mut self, marker: PathBuf) {
         self.inject_crash_after_request_for_test = true;
+        self.child_frame_barrier_for_test = Some(marker);
     }
 
     #[cfg(test)]
@@ -1636,6 +1636,39 @@ impl CQueryWorkerOwner {
                     .as_ref()
                     .is_some_and(CQueryChildClaim::is_held_for_test),
                 "NIR1_GRAPH_TEST_CLAIM_NOT_BUSY_AFTER_REQUEST"
+            );
+            let marker = self
+                .child_frame_barrier_for_test
+                .clone()
+                .ok_or_else(|| anyhow!("NIR1_GRAPH_TEST_CHILD_ACK_PATH_MISSING"))?;
+            // Bound only a broken test seam; this is not the query or retirement deadline.
+            let acknowledgement_deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                self.check_current_binding()?;
+                check_caller_cancellation(cancellation)?;
+                if marker.is_file() {
+                    ensure!(
+                        std::fs::read(&marker)?.as_slice() == b"q2-frame-pending",
+                        "NIR1_GRAPH_TEST_CHILD_ACK_INVALID"
+                    );
+                    break;
+                }
+                self.poll_exit()?;
+                if let Some(status) = self
+                    .session
+                    .as_ref()
+                    .and_then(|session| session.exit.as_ref())
+                {
+                    anyhow::bail!("NIR1_GRAPH_TEST_CHILD_ACK_EXITED_BEFORE_BARRIER: {status:?}");
+                }
+                ensure!(
+                    Instant::now() < acknowledgement_deadline,
+                    "NIR1_GRAPH_TEST_CHILD_ACK_TIMEOUT"
+                );
+                thread::sleep(POLL_INTERVAL);
+            }
+            eprintln!(
+                "Native test fault: child acknowledged completed Q2 and held before frame; injecting termination"
             );
             self.session
                 .as_mut()

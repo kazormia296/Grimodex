@@ -39,6 +39,7 @@ enum Q2WorkerScenario {
     RequestWriteChildExit,
     RequestWriteQuarantine,
     StartupRegistrationRefused,
+    PostAdmissionCrash,
     PostCommitNonzero,
     #[cfg(target_os = "linux")]
     ResultHeldChildLive,
@@ -605,6 +606,12 @@ fn ordinary_reader_registers_and_queries_fixed_q2_fixture() -> Result<()> {
 #[ignore = "requires a closed Q2/R1/D0-local preseed and a built normal worker binary"]
 fn native_worker_returns_fixed_q2_frame_from_real_workspace_owner() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::NativeOwner)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a seam-enabled worker binary"]
+fn native_worker_crashes_after_q2_ack_before_frame() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::PostAdmissionCrash)
 }
 
 #[test]
@@ -1955,6 +1962,9 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                     directory.0.join("caller-cancel-frame-ready"),
                 );
             }
+            Q2WorkerScenario::PostAdmissionCrash => {
+                owner.crash_after_request_for_test(directory.0.join("post-admission-q2-ready"))
+            }
             #[cfg(target_os = "linux")]
             Q2WorkerScenario::RequestWriteCancellation
             | Q2WorkerScenario::RequestWriteDeadline
@@ -2034,6 +2044,78 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 Arc::strong_count(&authority) == expected_authority_count,
                 "Native Q2 READY owner retained its Authority Arc"
             );
+        }
+        if scenario == Q2WorkerScenario::PostAdmissionCrash {
+            let mut busy_owner = super::c_query_worker::CQueryWorkerOwner::new(
+                active_workspace_snapshot(&native_state)?,
+                worker_path.clone(),
+            );
+            let busy_error = busy_owner
+                .prepare(&request.project_id)
+                .expect_err("post-admission child must retain its authority claim");
+            ensure!(
+                busy_error.to_string().contains("NIR1_GRAPH_WORKER_BUSY"),
+                "post-admission child did not retain capacity: {busy_error:#}"
+            );
+            drop(busy_owner);
+
+            let crash_error = match owner.query_once(&request) {
+                Ok(_) => anyhow::bail!("post-admission child crash returned a result lease"),
+                Err(error) => error,
+            };
+            let crash_text = format!("{crash_error:#}");
+            ensure!(
+                crash_text.contains("NIR1_GRAPH_TEST_CHILD_CRASH_AFTER_REQUEST")
+                    && !crash_text.contains("NIR1_GRAPH_TEST_CHILD_ACK_")
+                    && !crash_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
+                "fault did not kill the acknowledged child with proved cleanup: {crash_text}"
+            );
+            ensure!(
+                owner.abnormal_exit_observed_for_test(),
+                "post-admission fault did not observe an abnormal child exit"
+            );
+            ensure!(
+                owner.cleanup_proved_for_test(),
+                "claim release preceded observed child exit, stdout EOF and reader join"
+            );
+            #[cfg(unix)]
+            eprintln!(
+                "Native acknowledged post-admission Q2 fault: observed abnormal exit code={:?}, signal={:?}; child exit + stdout EOF + reader join proved before claim reloan",
+                owner.abnormal_exit_code_for_test(),
+                owner.abnormal_exit_signal_for_test()
+            );
+            #[cfg(not(unix))]
+            eprintln!(
+                "Native acknowledged post-admission Q2 fault: observed abnormal exit code={:?}; child exit + stdout EOF + reader join proved before claim reloan",
+                owner.abnormal_exit_code_for_test()
+            );
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("post-admission cleanup did not release the child claim")
+            })?;
+            claim.release();
+            drop(owner);
+
+            let mut reloan_owner = super::c_query_worker::CQueryWorkerOwner::new(
+                active_workspace_snapshot(&native_state)?,
+                worker_path.clone(),
+            );
+            reloan_owner.prepare(&request.project_id).map_err(|error| {
+                anyhow::anyhow!("same-authority reloan after acknowledged crash failed: {error:#}")
+            })?;
+            drop(reloan_owner);
+            let claim = authority.claim_c_query_child().ok_or_else(|| {
+                anyhow::anyhow!("same-authority reloan cleanup did not release the child claim")
+            })?;
+            claim.release();
+            assert_eq!(
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?,
+                0,
+                "post-admission crash owner retained its workspace participant"
+            );
+            return Ok(());
         }
         if scenario == Q2WorkerScenario::RequestWriteQuarantine {
             const REQUEST_WIRE_BYTES: usize = super::c_query_worker::REQUEST_BYTES;
@@ -3184,73 +3266,6 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         drop(fresh_owner);
         let claim = authority.claim_c_query_child().ok_or_else(|| {
             anyhow::anyhow!("fresh owner cleanup did not release the child claim")
-        })?;
-        claim.release();
-
-        let mut admitted_crashed_owner = super::c_query_worker::CQueryWorkerOwner::new(
-            active_workspace_snapshot(&native_state)?,
-            worker_path.clone(),
-        );
-        admitted_crashed_owner.prepare(&request.project_id)?;
-        let mut busy_during_admitted_fault = super::c_query_worker::CQueryWorkerOwner::new(
-            active_workspace_snapshot(&native_state)?,
-            worker_path.clone(),
-        );
-        let busy_error = busy_during_admitted_fault
-            .prepare(&request.project_id)
-            .expect_err("admitted-fault child must retain its authority claim");
-        ensure!(
-            busy_error.to_string().contains("NIR1_GRAPH_WORKER_BUSY"),
-            "admitted-fault child did not retain capacity: {busy_error:#}"
-        );
-        drop(busy_during_admitted_fault);
-
-        admitted_crashed_owner.crash_after_request_for_test();
-        eprintln!(
-            "Native admitted-query fault: request write + OWNER_REQUEST publication precede kill; SQL/frame progress is unobserved"
-        );
-        let admission_crash_error = match admitted_crashed_owner.query_once(&request) {
-            Ok(_) => anyhow::bail!("post-admission child crash returned a result lease"),
-            Err(error) => error,
-        };
-        let admission_crash_text = format!("{admission_crash_error:#}");
-        ensure!(
-            admission_crash_text.contains("NIR1_GRAPH_TEST_CHILD_CRASH_AFTER_REQUEST"),
-            "fault did not terminate the child after Native request admission: {admission_crash_text}"
-        );
-        ensure!(
-            !admission_crash_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
-            "post-admission cleanup did not prove child exit and stdout EOF: {admission_crash_text}"
-        );
-        ensure!(
-            admitted_crashed_owner.abnormal_exit_observed_for_test(),
-            "post-admission fault did not observe an abnormal child exit"
-        );
-        ensure!(
-            admitted_crashed_owner.cleanup_proved_for_test(),
-            "claim release preceded observed child exit, stdout EOF and reader join"
-        );
-        eprintln!(
-            "Native admitted-query cleanup proved: child exit + stdout EOF + reader join before claim release"
-        );
-        let claim = authority.claim_c_query_child().ok_or_else(|| {
-            anyhow::anyhow!("post-admission cleanup did not release the child claim")
-        })?;
-        claim.release();
-        drop(admitted_crashed_owner);
-
-        let mut admitted_reloan_owner = super::c_query_worker::CQueryWorkerOwner::new(
-            active_workspace_snapshot(&native_state)?,
-            worker_path.clone(),
-        );
-        admitted_reloan_owner
-            .prepare(&request.project_id)
-            .map_err(|error| {
-                anyhow::anyhow!("same-authority reloan after admission cleanup failed: {error:#}")
-            })?;
-        drop(admitted_reloan_owner);
-        let claim = authority.claim_c_query_child().ok_or_else(|| {
-            anyhow::anyhow!("same-authority reloan cleanup did not release the child claim")
         })?;
         claim.release();
 
