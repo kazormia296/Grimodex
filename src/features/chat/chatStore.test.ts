@@ -16,6 +16,7 @@ import {
 import type { ChatMessage, ChatSession } from "./chatTypes";
 import type { AiModel } from "./types";
 import { toast } from "sonner";
+import { collectQuiescenceProviderRecovery } from "@/lib/quiescenceProviders";
 import { registerChatContextPreparation } from "@/application/chat/chatContextPreparation";
 import { chatContextPreparationComposition } from "@/application/composition/chatContextPreparationComposition";
 import { IpcInvokeError } from "@/lib/tauri";
@@ -7575,6 +7576,131 @@ describe("useChatStore", () => {
         streamingDraft: null,
         isStreaming: false,
       });
+    });
+
+    it("retains a failed anchored stream for its captured scope after switching", async () => {
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      vi.mocked(useTreeStore.getState).mockReturnValue({
+        nodes: [
+          {
+            id: "folder-a",
+            parentId: null,
+            nodeType: "folder",
+            title: "Folder A",
+            sortOrder: "a0",
+            synopsis: null,
+            charCount: 0,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
+      const folderSession = {
+        ...session1,
+        id: "folder-a-failed-session",
+        nodeId: "folder-a",
+        titleManual: 1,
+      };
+      const persistenceFailure = new Error("old-scope assistant write failed");
+      mockAddMessage.mockImplementation(
+        async (sessionId, role, content, extra) => {
+          if (role === "assistant") throw persistenceFailure;
+          return {
+            id: extra?.id ?? crypto.randomUUID(),
+            sessionId,
+            role,
+            content,
+            model: extra?.model ?? null,
+            tokensIn: extra?.tokensIn ?? null,
+            tokensOut: extra?.tokensOut ?? null,
+            durationMs: extra?.durationMs ?? null,
+            metadata: extra?.metadata ?? null,
+            createdAt: extra?.createdAt ?? "2026-01-01T00:00:00.000Z",
+          };
+        },
+      );
+      let callbacks: StreamCallbacks | undefined;
+      mockSendChatMessageStream.mockImplementationOnce(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: folderSession.id,
+        sessions: [folderSession],
+        chatScope: "folder",
+        scopeAnchorId: "folder-a",
+      });
+
+      try {
+        const send = useChatStore
+          .getState()
+          .sendMessage("folder A failed prompt");
+        await vi.waitFor(() => expect(callbacks).toBeDefined());
+        callbacks?.onTextDelta("PARTIAL-OLD-ANSWER");
+        await vi.waitFor(() =>
+          expect(useChatStore.getState().streamingDraft?.content).toBe(
+            "PARTIAL-OLD-ANSWER",
+          ),
+        );
+
+        useChatStore.getState().setChatScope("folder", "folder-b");
+        expect(useChatStore.getState()).toMatchObject({
+          chatScope: "folder",
+          scopeAnchorId: "folder-b",
+          isStreaming: true,
+        });
+        callbacks?.onError("network connection failed");
+        await send;
+
+        expect(mockAddMessage.mock.calls).toEqual([
+          [
+            folderSession.id,
+            "user",
+            "folder A failed prompt",
+            expect.any(Object),
+          ],
+          [
+            folderSession.id,
+            "assistant",
+            "PARTIAL-OLD-ANSWER",
+            expect.any(Object),
+          ],
+        ]);
+        expect(useChatStore.getState()).toMatchObject({
+          chatScope: "folder",
+          scopeAnchorId: "folder-b",
+          activeSessionId: null,
+          messages: [],
+          streamingDraft: null,
+          isStreaming: false,
+          error: null,
+        });
+        expect(collectQuiescenceProviderRecovery()).toContainEqual(
+          expect.objectContaining({
+            kind: "chat-completed-turn",
+            projectId: "proj-1",
+            sessionId: folderSession.id,
+            userMessage: expect.objectContaining({
+              content: "folder A failed prompt",
+            }),
+            assistantMessage: expect.objectContaining({
+              content: "PARTIAL-OLD-ANSWER",
+              metadata: expect.stringContaining("network connection failed"),
+            }),
+          }),
+        );
+        expect(toast.error).toHaveBeenCalled();
+      } finally {
+        __discardPendingCompletedChatTurnsForTests();
+        mockAddMessage.mockReset();
+        mockSendChatMessageStream.mockReset();
+        vi.mocked(useTreeStore.getState).mockReturnValue({
+          nodes: [],
+        } as never);
+      }
     });
 
     it("persists a Codex stream switch only to its captured Codex A", async () => {

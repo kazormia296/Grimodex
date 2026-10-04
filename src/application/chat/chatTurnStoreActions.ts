@@ -405,6 +405,7 @@ function createChatTurnStoreActions(
       // session it creates below. Any other session transition invalidates it.
       let turnSessionId = activeSessionId;
       let transportStarted = false;
+      let observedResponseText = "";
       const captureTurn = turnLifecycle.createTurn(sendControl, turnRoute);
       turnRuntime.setStoppedStreamFinalizer(null);
       const isCurrentTurn = (): boolean =>
@@ -691,6 +692,116 @@ function createChatTurnStoreActions(
       const titleEligibleAtTurnStart =
         get().sessions.find((session) => session.id === sessionIdForPersist)
           ?.titleManual === 0;
+      const preserveFailedAnchoredTurn = async (
+        error: unknown,
+      ): Promise<boolean> => {
+        const current = get();
+        const anchoredScope =
+          chatScope === "folder" ||
+          chatScope === "codex" ||
+          chatScope === "snippet";
+        if (
+          !transportStarted ||
+          sendControl.aborted ||
+          !isCurrentTurn() ||
+          useAgentPath ||
+          sendControl.transport !== "http" ||
+          !sessionIdForPersist ||
+          !anchoredScope ||
+          !scopeAnchorId ||
+          current.chatScope !== chatScope ||
+          current.scopeAnchorId === null ||
+          current.scopeAnchorId === scopeAnchorId ||
+          current.activeProjectId !== turnProjectId ||
+          current.activeSceneId !== activeSceneId ||
+          !capturedWorkspaceIsCurrent() ||
+          !capturedProjectIsCurrent() ||
+          isAiFeatureBlockedByPolicy("chat") ||
+          isWriteRestrictedByLicense()
+        ) {
+          return false;
+        }
+
+        if (error instanceof ChatTurnPersistenceError) {
+          toast.error(i18next.t("chat.pendingCompletedTurnPersistence"));
+          return true;
+        }
+
+        const failureMessage =
+          error instanceof Error ? error.message : String(error);
+        const userMetadata =
+          options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
+            ? JSON.stringify({
+                mentioned_scene_ids: options.mentionedSceneIds,
+              })
+            : undefined;
+        const failedAssistant = observedResponseText
+          ? {
+              ...assistantMsg,
+              sessionId: sessionIdForPersist,
+              content: observedResponseText,
+              model: turnRoute?.model ?? chatModelEarly ?? null,
+              metadata: JSON.stringify({ runtime_error: failureMessage }),
+            }
+          : undefined;
+        const retry = createRetryableCompletedTurnPersistence({
+          persistUser: async () => {
+            await chatApi.addMessage(sessionIdForPersist, "user", content, {
+              id: userMsg.id,
+              createdAt: userMsg.createdAt,
+              recordTimelapse: false,
+              ...(userMetadata ? { metadata: userMetadata } : {}),
+            });
+          },
+          ...(failedAssistant
+            ? {
+                persistAssistant: async () => {
+                  await chatApi.addMessage(
+                    sessionIdForPersist,
+                    "assistant",
+                    failedAssistant.content,
+                    {
+                      id: failedAssistant.id,
+                      model: failedAssistant.model ?? undefined,
+                      metadata: failedAssistant.metadata ?? undefined,
+                      createdAt: failedAssistant.createdAt,
+                      recordTimelapse: false,
+                    },
+                  );
+                },
+              }
+            : {}),
+        });
+        try {
+          await persistCompletedTurn({
+            retry,
+            sessionId: sessionIdForPersist,
+            ...(userMetadata ? { userMetadata } : {}),
+            ...(failedAssistant ? { assistantMessage: failedAssistant } : {}),
+          });
+        } catch (persistenceError) {
+          debugLog.error(
+            "ChatStore",
+            "preserve failed anchored turn",
+            errorDetail(persistenceError),
+          );
+          toast.error(i18next.t("chat.pendingCompletedTurnPersistence"));
+        }
+
+        const kind = classifyError(error);
+        if (kind === "auth") {
+          toast.error(i18next.t("chat.invalidApiKey"));
+        } else if (kind === "rate_limit") {
+          toast.warning(i18next.t("chat.rateLimited"));
+        } else if (kind === "network") {
+          toast.error(i18next.t("chat.networkError"));
+        } else {
+          toast.error(
+            i18next.t("chat.sendFailed", { message: failureMessage }),
+          );
+        }
+        return true;
+      };
       // -----------------------------------------------------------------------
       // Agent mode path — tool-use loop
       //
@@ -2023,7 +2134,6 @@ function createChatTurnStoreActions(
           // virtualizer の配列 identity は生成完了まで安定する。
           // onDone/onError/stop では必ず同期 flush して末尾を取りこぼさない。
           let pendingDelta = "";
-          let observedResponseText = "";
           let flushHandle: number | null = null;
           let lastDraftPublishAt = Number.NEGATIVE_INFINITY;
           let callbacksSettled = false;
@@ -2672,6 +2782,9 @@ function createChatTurnStoreActions(
           // A destructive lifecycle must remain on the old authority when the
           // completed turn could not become durable in that old scope.
           throw e;
+        }
+        if (!captureCleanupFailed && (await preserveFailedAnchoredTurn(e))) {
+          return;
         }
         if (
           shouldAbortTurn() &&
