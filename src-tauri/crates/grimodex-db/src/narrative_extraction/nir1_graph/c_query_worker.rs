@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use anyhow::{anyhow, ensure, Result};
 
 use crate::{
-    state::{ActiveWorkspaceSnapshot, CQueryChildClaim},
+    state::{ActiveWorkspaceSnapshot, CQueryChildClaim, CQueryReadyWorkspace},
     workspace_lifecycle::{WorkspaceParticipant, WorkspaceQuarantineFence},
     WorkspaceAuthority,
 };
@@ -294,6 +294,12 @@ impl NativeRegionPtr {
         // SAFETY: preserved from the owner's stable-reservation contract.
         unsafe { read_worker_pipe(stdout, self.region, &self.reader_timing) };
     }
+
+    #[cfg(test)]
+    unsafe fn read_test_pipe(self, stdout: impl Read) {
+        // SAFETY: the test retains the NativeRegion until this reader is joined.
+        unsafe { read_worker_pipe(stdout, self.region, &self.reader_timing) };
+    }
 }
 
 const NATIVE_FIXED_BYTES: usize = std::mem::size_of::<NativeRegion>()
@@ -303,6 +309,9 @@ const NATIVE_FIXED_BYTES: usize = std::mem::size_of::<NativeRegion>()
     + REQUEST_CAPACITY_BYTES
     + std::mem::size_of::<Nir1GraphRequest>();
 const NATIVE_OWNER_PAYLOAD_BUDGET_BYTES: usize = PARENT_BYTES - NATIVE_FIXED_BYTES;
+// ArcInner stores strong and weak Atomic<usize> counters before its value. Count only their
+// source-backed field floor; padding and allocator extent are not covered.
+const PARTICIPANT_ARC_CONTROL_HEADER_FLOOR_BYTES: usize = 2 * std::mem::size_of::<AtomicUsize>();
 const _: () = assert!(FRAME_BYTES >= REQUEST_BYTES);
 const _: () = assert!(std::mem::size_of::<NativeRegion>() == MAILBOX_BYTES + STORAGE_BYTES);
 const _: () = assert!(NATIVE_FIXED_BYTES == PARENT_BYTES - REQUEST_BYTES);
@@ -379,19 +388,54 @@ pub(super) fn command_executable_and_argv_payload_lower_bound(
         .checked_add(std::mem::size_of::<*const std::ffi::c_char>().checked_mul(4)?)
 }
 
-fn native_owner_payload_fits(
+/// Check one phase's source-visible payload terms; this is not a physical extent bound.
+fn native_owner_payload_fits(payloads: &[usize]) -> bool {
+    payloads
+        .iter()
+        .try_fold(0usize, |sum, payload| sum.checked_add(*payload))
+        .is_some_and(|bytes| bytes <= NATIVE_OWNER_PAYLOAD_BUDGET_BYTES)
+}
+
+fn native_owner_preclaim_payload_fits(
     binding_payload_bytes: usize,
     worker_path_capacity: usize,
     authority_path_capacity: usize,
+    workspace_lease_path_capacity: usize,
     command_argument_payload_bytes: usize,
     command_executable_payload_bytes: usize,
+    participant_payload_bytes: usize,
+    participant_arc_control_header_floor_bytes: usize,
 ) -> bool {
-    binding_payload_bytes
-        .checked_add(worker_path_capacity)
-        .and_then(|bytes| bytes.checked_add(authority_path_capacity))
-        .and_then(|bytes| bytes.checked_add(command_argument_payload_bytes))
-        .and_then(|bytes| bytes.checked_add(command_executable_payload_bytes))
-        .is_some_and(|bytes| bytes <= NATIVE_OWNER_PAYLOAD_BUDGET_BYTES)
+    native_owner_payload_fits(&[
+        binding_payload_bytes,
+        worker_path_capacity,
+        authority_path_capacity,
+        workspace_lease_path_capacity,
+        command_argument_payload_bytes,
+        command_executable_payload_bytes,
+        participant_payload_bytes,
+        participant_arc_control_header_floor_bytes,
+    ])
+}
+
+fn native_owner_command_staging_payload_fits(
+    binding_payload_bytes: usize,
+    authority_path_capacity: usize,
+    workspace_lease_path_capacity: usize,
+    command_argument_payload_bytes: usize,
+    command_executable_payload_bytes: usize,
+    participant_payload_bytes: usize,
+    participant_arc_control_header_floor_bytes: usize,
+) -> bool {
+    native_owner_payload_fits(&[
+        binding_payload_bytes,
+        authority_path_capacity,
+        workspace_lease_path_capacity,
+        command_argument_payload_bytes,
+        command_executable_payload_bytes,
+        participant_payload_bytes,
+        participant_arc_control_header_floor_bytes,
+    ])
 }
 
 struct NativeRegionReservation {
@@ -569,6 +613,55 @@ enum DetachedCQueryLifecycle {
     Participant { _participant: WorkspaceParticipant },
 }
 
+enum CQueryWorkspacePin {
+    Preparing(ActiveWorkspaceSnapshot),
+    Ready(CQueryReadyWorkspace),
+}
+
+impl CQueryWorkspacePin {
+    fn preparing_snapshot(&self) -> Option<&ActiveWorkspaceSnapshot> {
+        match self {
+            Self::Preparing(snapshot) => Some(snapshot),
+            Self::Ready(_) => None,
+        }
+    }
+
+    fn check_current_binding(&self) -> Result<()> {
+        match self {
+            Self::Preparing(snapshot) => snapshot.check_current_binding(),
+            Self::Ready(workspace) => workspace.check_current_binding(),
+        }
+    }
+
+    fn detach_c_query_quarantine(&self) -> Option<WorkspaceQuarantineFence> {
+        match self {
+            Self::Preparing(snapshot) => snapshot.detach_c_query_quarantine(),
+            Self::Ready(workspace) => workspace.detach_c_query_quarantine(),
+        }
+    }
+
+    fn into_ready(self) -> std::result::Result<Self, Self> {
+        match self {
+            Self::Preparing(snapshot) => snapshot
+                .into_c_query_ready_owner()
+                .map(Self::Ready)
+                .map_err(Self::Preparing),
+            ready @ Self::Ready(_) => Err(ready),
+        }
+    }
+
+    fn into_fallback_participant(self) -> std::result::Result<WorkspaceParticipant, Self> {
+        match self {
+            Self::Preparing(snapshot) => snapshot
+                .into_c_query_fallback_participant()
+                .map_err(Self::Preparing),
+            Self::Ready(workspace) => workspace
+                .into_c_query_fallback_participant()
+                .map_err(Self::Ready),
+        }
+    }
+}
+
 /// Process-lifetime owner for a C-query whose termination could not be proved.
 /// It intentionally has no WorkspaceAuthority/Database/index reference.
 struct DetachedCQueryOwner {
@@ -582,6 +675,8 @@ struct DetachedCQueryOwner {
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct QueryPhaseDiagnostics {
     frame_binding_validated_at: Option<Duration>,
+    request_bytes_written: usize,
+    request_write_would_block: bool,
     reader_commit_published_at: Option<Duration>,
     reader_eof_published_at: Option<Duration>,
     parent_commit_observed_at: Option<Duration>,
@@ -623,11 +718,11 @@ enum RequestHoldForTest {
     },
 }
 
-/// Owns one Native workspace snapshot. A result lease borrows this owner, so
-/// its fixed storage and child admission cannot be reused before lease drop;
-/// cleanup-unproved retirement transfers those resources to a detached owner.
+/// Pins the broad workspace snapshot through worker READY, then keeps only the
+/// exact binding/participant with the child claim and Native region. A result
+/// lease borrows this owner; unproved retirement transfers its child resources.
 pub struct CQueryWorkerOwner {
-    snapshot: Option<ActiveWorkspaceSnapshot>,
+    workspace: Option<CQueryWorkspacePin>,
     worker: Option<PathBuf>,
     region: RegionControl,
     session: Option<ChildSession>,
@@ -635,6 +730,16 @@ pub struct CQueryWorkerOwner {
     inject_crash_after_request_for_test: bool,
     #[cfg(test)]
     hold_after_request_for_test: Option<RequestHoldForTest>,
+    #[cfg(test)]
+    child_frame_barrier_for_test: Option<PathBuf>,
+    #[cfg(all(test, target_os = "linux"))]
+    child_request_barrier_for_test: Option<PathBuf>,
+    #[cfg(all(test, target_os = "linux"))]
+    request_write_blocked_signal_for_test: Option<std::sync::Arc<AtomicBool>>,
+    #[cfg(all(test, target_os = "linux"))]
+    wait_for_child_exit_after_full_request_write_for_test: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    test_child_exit_observed_before_request_handoff: bool,
     #[cfg(test)]
     suppress_eof_proof_for_test: bool,
     #[cfg(all(test, target_os = "linux"))]
@@ -692,7 +797,7 @@ pub struct CQueryWorkerOwner {
 impl CQueryWorkerOwner {
     pub fn new(snapshot: ActiveWorkspaceSnapshot, worker: PathBuf) -> Self {
         Self {
-            snapshot: Some(snapshot),
+            workspace: Some(CQueryWorkspacePin::Preparing(snapshot)),
             worker: Some(worker),
             region: RegionControl {
                 storage: None,
@@ -711,6 +816,16 @@ impl CQueryWorkerOwner {
             inject_crash_after_request_for_test: false,
             #[cfg(test)]
             hold_after_request_for_test: None,
+            #[cfg(test)]
+            child_frame_barrier_for_test: None,
+            #[cfg(all(test, target_os = "linux"))]
+            child_request_barrier_for_test: None,
+            #[cfg(all(test, target_os = "linux"))]
+            request_write_blocked_signal_for_test: None,
+            #[cfg(all(test, target_os = "linux"))]
+            wait_for_child_exit_after_full_request_write_for_test: false,
+            #[cfg(all(test, target_os = "linux"))]
+            test_child_exit_observed_before_request_handoff: false,
             #[cfg(test)]
             suppress_eof_proof_for_test: false,
             #[cfg(all(test, target_os = "linux"))]
@@ -766,8 +881,41 @@ impl CQueryWorkerOwner {
         }
     }
 
+    fn check_current_binding(&self) -> Result<()> {
+        self.workspace
+            .as_ref()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
+            .check_current_binding()
+    }
+
+    fn release_authority_after_ready(&mut self) -> Result<()> {
+        let native = self
+            .region
+            .native_region()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
+        ensure!(
+            native.mailbox.events.load(Ordering::Acquire) & READER_READY != 0,
+            "NIR1_GRAPH_WORKER_READY_NOT_PUBLISHED"
+        );
+        let workspace = self
+            .workspace
+            .take()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?;
+        match workspace.into_ready() {
+            Ok(workspace) => {
+                self.workspace = Some(workspace);
+                Ok(())
+            }
+            Err(workspace) => {
+                self.workspace = Some(workspace);
+                anyhow::bail!("NIR1_GRAPH_WORKER_READY_OWNER")
+            }
+        }
+    }
+
     /// Start and canonically register one isolated worker before request admission.
-    /// The pinned Native participant and child claim remain held until cleanup.
+    /// Keep the broad snapshot through READY, then retain its exact binding and
+    /// participant with the child claim and Native reservation until cleanup.
     pub fn prepare(&mut self, project_id: &str) -> Result<()> {
         ensure!(
             !project_id.is_empty() && project_id.len() < REQUEST_BYTES,
@@ -779,8 +927,9 @@ impl CQueryWorkerOwner {
         );
         self.region.preparation_attempted = true;
         let snapshot = self
-            .snapshot
+            .workspace
             .as_ref()
+            .and_then(CQueryWorkspacePin::preparing_snapshot)
             .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?;
         snapshot.check_current_binding()?;
         let identity_payload_bytes = snapshot
@@ -792,6 +941,7 @@ impl CQueryWorkerOwner {
             .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?;
         let worker_path_capacity = worker.capacity();
         let authority_path_capacity = snapshot.c_query_authority_path_capacity();
+        let workspace_lease_path_capacity = snapshot.authority.lease().path_capacity();
         let command_argument_payload_bytes =
             command_argument_payload_lower_bound(snapshot.path().as_os_str(), project_id)
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"))?;
@@ -804,13 +954,26 @@ impl CQueryWorkerOwner {
             command_program_os_string_payload_lower_bound(worker.as_os_str());
         #[cfg(not(any(unix, windows)))]
         let command_executable_payload_bytes = 0;
+        let participant_payload_bytes = WorkspaceParticipant::c_query_lease_payload_bytes();
+        let participant_arc_control_header_floor_bytes = PARTICIPANT_ARC_CONTROL_HEADER_FLOOR_BYTES;
         ensure!(
-            native_owner_payload_fits(
+            native_owner_preclaim_payload_fits(
                 identity_payload_bytes,
                 worker_path_capacity,
                 authority_path_capacity,
+                workspace_lease_path_capacity,
                 command_argument_payload_bytes,
                 command_executable_payload_bytes,
+                participant_payload_bytes,
+                participant_arc_control_header_floor_bytes,
+            ) && native_owner_command_staging_payload_fits(
+                identity_payload_bytes,
+                authority_path_capacity,
+                workspace_lease_path_capacity,
+                command_argument_payload_bytes,
+                command_executable_payload_bytes,
+                participant_payload_bytes,
+                participant_arc_control_header_floor_bytes,
             ),
             "NIR1_GRAPH_NATIVE_WORKSPACE_ID_CAPACITY"
         );
@@ -820,11 +983,16 @@ impl CQueryWorkerOwner {
                 .claim_c_query_child()
                 .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_BUSY"))?,
         );
-        match self.prepare_claimed(&authority, project_id) {
-            Ok(()) => {
-                self.region.prepared = true;
-                Ok(())
-            }
+        let startup = self.prepare_claimed(&authority, project_id);
+        drop(authority);
+        match startup {
+            Ok(()) => match self.release_authority_after_ready() {
+                Ok(()) => {
+                    self.region.prepared = true;
+                    Ok(())
+                }
+                Err(error) => Err(self.cleanup_error(error)),
+            },
             Err(error) => Err(self.cleanup_error(error)),
         }
     }
@@ -853,6 +1021,65 @@ impl CQueryWorkerOwner {
     #[cfg(test)]
     pub(super) fn hold_after_request_for_test(&mut self, path: PathBuf) {
         self.hold_after_request_for_test = Some(RequestHoldForTest::UntilKilled(path));
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_child_before_frame_for_test(&mut self, marker: PathBuf) {
+        self.child_frame_barrier_for_test = Some(marker);
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn hold_child_before_request_for_test(&mut self, marker: PathBuf) {
+        self.child_request_barrier_for_test = Some(marker);
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn shrink_stdin_pipe_for_test(&self, capacity: libc::c_int) -> Result<usize> {
+        use std::os::fd::AsRawFd;
+
+        let stdin = self
+            .session
+            .as_ref()
+            .and_then(|session| session.stdin.as_ref())
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDIN"))?;
+        let fd = stdin.as_raw_fd();
+        // SAFETY: fd is the live write end of this child's stdin pipe.
+        let resized = unsafe { libc::fcntl(fd, libc::F_SETPIPE_SZ, capacity) };
+        ensure!(
+            resized >= 0,
+            "NIR1_GRAPH_TEST_PIPE_RESIZE: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: F_GETPIPE_SZ only queries the same live pipe descriptor.
+        let actual = unsafe { libc::fcntl(fd, libc::F_GETPIPE_SZ) };
+        ensure!(
+            actual >= 0,
+            "NIR1_GRAPH_TEST_PIPE_SIZE: {}",
+            std::io::Error::last_os_error()
+        );
+        Ok(actual as usize)
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn observe_request_write_blocked_for_test(&mut self) -> std::sync::Arc<AtomicBool> {
+        let blocked = std::sync::Arc::new(AtomicBool::new(false));
+        self.request_write_blocked_signal_for_test = Some(std::sync::Arc::clone(&blocked));
+        blocked
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn request_write_diagnostics_for_test(&self) -> (usize, bool) {
+        (
+            self.query_phase_diagnostics.request_bytes_written,
+            self.query_phase_diagnostics.request_write_would_block,
+        )
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn request_handoff_published_for_test(&self) -> bool {
+        self.region.native_region().is_some_and(|native| {
+            native.mailbox.events.load(Ordering::Acquire) & OWNER_REQUEST != 0
+        })
     }
 
     #[cfg(test)]
@@ -896,6 +1123,16 @@ impl CQueryWorkerOwner {
     #[cfg(all(test, target_os = "linux"))]
     pub(super) fn hold_after_commit_for_test(&mut self) {
         self.hold_after_commit_for_test = true;
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn wait_for_child_exit_after_full_request_write_for_test(&mut self) {
+        self.wait_for_child_exit_after_full_request_write_for_test = true;
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn child_exit_observed_before_request_handoff_for_test(&self) -> bool {
+        self.test_child_exit_observed_before_request_handoff
     }
 
     #[cfg(all(test, target_os = "linux"))]
@@ -1056,6 +1293,24 @@ impl CQueryWorkerOwner {
         &'a mut self,
         request: &'a Nir1GraphRequest,
     ) -> Result<CQueryResultLease<'a>> {
+        self.query_once_inner(request, None)
+    }
+
+    /// Run the ordinary Native query path with a caller-owned, borrowed cancellation flag.
+    /// A concurrent cancellation observed before the lease decision refuses the query.
+    pub fn query_once_with_cancellation<'a>(
+        &'a mut self,
+        request: &'a Nir1GraphRequest,
+        cancellation: &AtomicBool,
+    ) -> Result<CQueryResultLease<'a>> {
+        self.query_once_inner(request, Some(cancellation))
+    }
+
+    fn query_once_inner<'a>(
+        &'a mut self,
+        request: &'a Nir1GraphRequest,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<CQueryResultLease<'a>> {
         ensure!(self.region.prepared, "NIR1_GRAPH_WORKER_NOT_READY");
         ensure!(!self.region.started, "NIR1_GRAPH_WORKER_ONE_QUERY_ONLY");
         let request_len = request_len(request)?;
@@ -1067,17 +1322,15 @@ impl CQueryWorkerOwner {
         }
         self.region.started = true;
         let result = self
-            .query_claimed(request, request_len, admitted_at)
+            .query_claimed(request, request_len, admitted_at, cancellation)
             .and_then(|()| {
                 #[cfg(test)]
                 {
                     self.query_phase_diagnostics.final_binding_check_start_at =
                         Some(admitted_at.elapsed());
                 }
-                self.snapshot
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
-                    .check_current_binding()?;
+                self.check_current_binding()?;
+                check_caller_cancellation(cancellation)?;
                 #[cfg(test)]
                 {
                     self.query_phase_diagnostics.final_binding_check_end_at =
@@ -1106,10 +1359,11 @@ impl CQueryWorkerOwner {
                             .session
                             .as_ref()
                             .is_some_and(|session| session.exit.is_none());
-                    let claim_still_busy = self.region.claim.is_some()
-                        && self.snapshot.as_ref().is_some_and(|snapshot| {
-                            snapshot.authority.claim_c_query_child().is_none()
-                        });
+                    let claim_still_busy = self
+                        .region
+                        .claim
+                        .as_ref()
+                        .is_some_and(CQueryChildClaim::is_held_for_test);
                     self.test_missing_eof_boundary_observed_before_cleanup = child_still_live
                         && claim_still_busy
                         && !self.region.lease_held
@@ -1233,6 +1487,14 @@ impl CQueryWorkerOwner {
         if self.trailing_data_for_test {
             command.env("NIR1_C_QUERY_TEST_TRAILING_DATA", "trailing");
         }
+        #[cfg(test)]
+        if let Some(marker) = self.child_frame_barrier_for_test.as_ref() {
+            command.env("NIR1_C_QUERY_TEST_HOLD_BEFORE_FRAME", marker);
+        }
+        #[cfg(all(test, target_os = "linux"))]
+        if let Some(marker) = self.child_request_barrier_for_test.as_ref() {
+            command.env("NIR1_C_QUERY_TEST_HOLD_BEFORE_REQUEST", marker);
+        }
         #[cfg(all(test, target_os = "linux"))]
         if self.hold_after_commit_for_test {
             command.env("NIR1_C_QUERY_TEST_HOLD_AFTER_COMMIT", "held");
@@ -1328,11 +1590,9 @@ impl CQueryWorkerOwner {
         request: &Nir1GraphRequest,
         request_len: usize,
         admitted_at: Instant,
+        cancellation: Option<&AtomicBool>,
     ) -> Result<()> {
-        self.snapshot
-            .as_ref()
-            .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
-            .check_current_binding()?;
+        self.check_current_binding()?;
         let project_len = self.region.prepared_project_len;
         {
             let native = self
@@ -1354,6 +1614,10 @@ impl CQueryWorkerOwner {
             .as_mut()
             .and_then(|session| session.stdin.take())
             .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDIN"))?;
+        #[cfg(target_os = "linux")]
+        let write_result =
+            self.write_request_nonblocking(&mut stdin, request_len, admitted_at, cancellation);
+        #[cfg(not(target_os = "linux"))]
         let write_result = {
             let native = self
                 .region
@@ -1380,12 +1644,10 @@ impl CQueryWorkerOwner {
         #[cfg(test)]
         if self.inject_crash_after_request_for_test {
             ensure!(
-                self.snapshot
+                self.region
+                    .claim
                     .as_ref()
-                    .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
-                    .authority
-                    .claim_c_query_child()
-                    .is_none(),
+                    .is_some_and(CQueryChildClaim::is_held_for_test),
                 "NIR1_GRAPH_TEST_CLAIM_NOT_BUSY_AFTER_REQUEST"
             );
             self.session
@@ -1409,10 +1671,8 @@ impl CQueryWorkerOwner {
         }
 
         loop {
-            self.snapshot
-                .as_ref()
-                .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
-                .check_current_binding()?;
+            self.check_current_binding()?;
+            check_caller_cancellation(cancellation)?;
             #[cfg(test)]
             let try_wait_pending = self
                 .session
@@ -1493,9 +1753,10 @@ impl CQueryWorkerOwner {
                     self.test_partial_frame_rejected_without_frame =
                         self.region.result_len == 0 && events & (READER_FRAME | READER_COMMIT) == 0;
                     self.test_partial_frame_claim_held_before_cleanup = self
-                        .snapshot
+                        .region
+                        .claim
                         .as_ref()
-                        .is_some_and(|snapshot| snapshot.authority.claim_c_query_child().is_none());
+                        .is_some_and(CQueryChildClaim::is_held_for_test);
                 }
                 anyhow::bail!("NIR1_GRAPH_WORKER_PIPE_TRUNCATED");
             }
@@ -1567,10 +1828,7 @@ impl CQueryWorkerOwner {
                     view.seed == Some(request.seed_entity_id.as_str()),
                     "NIR1_GRAPH_WORKER_SEED_MISMATCH"
                 );
-                self.snapshot
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
-                    .check_current_binding()?;
+                self.check_current_binding()?;
                 let frame_binding_validated_at = admitted_at.elapsed();
                 self.region.elapsed = Some(frame_binding_validated_at);
                 #[cfg(test)]
@@ -1581,6 +1839,7 @@ impl CQueryWorkerOwner {
                 self.region.result_len = len;
             }
             if self.region.result_len > 0 && result_wire_complete(events) {
+                check_caller_cancellation(cancellation)?;
                 return Ok(());
             }
             // result_len is set only after complete frame validation and the binding recheck.
@@ -1607,13 +1866,146 @@ impl CQueryWorkerOwner {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn write_request_nonblocking(
+        &mut self,
+        stdin: &mut ChildStdin,
+        request_len: usize,
+        admitted_at: Instant,
+        cancellation: Option<&AtomicBool>,
+    ) -> Result<()> {
+        use std::os::fd::AsRawFd;
+
+        let fd = stdin.as_raw_fd();
+        // SAFETY: the owner holds this live child-stdin descriptor exclusively.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        ensure!(
+            flags >= 0,
+            "NIR1_GRAPH_WORKER_STDIN_FLAGS: {}",
+            std::io::Error::last_os_error()
+        );
+        // The descriptor is closed on success or error, so O_NONBLOCK cannot escape this call.
+        // SAFETY: F_SETFL updates status flags on the live descriptor we own.
+        let set_flags = unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        ensure!(
+            set_flags >= 0,
+            "NIR1_GRAPH_WORKER_STDIN_NONBLOCK: {}",
+            std::io::Error::last_os_error()
+        );
+
+        let mut written = 0;
+        loop {
+            self.check_current_binding()?;
+            check_caller_cancellation(cancellation)?;
+            // A completed transfer may already have produced a committed frame; hand it off before classifying exit.
+            if written == request_len {
+                if admitted_at.elapsed() >= QUERY_DEADLINE {
+                    #[cfg(test)]
+                    self.record_deadline_decision_for_test(admitted_at.elapsed());
+                    anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
+                }
+                #[cfg(all(test, target_os = "linux"))]
+                if self.wait_for_child_exit_after_full_request_write_for_test {
+                    loop {
+                        self.poll_exit()?;
+                        if self
+                            .session
+                            .as_ref()
+                            .is_some_and(|session| session.exit.is_some())
+                        {
+                            self.test_child_exit_observed_before_request_handoff = true;
+                            break;
+                        }
+                        ensure!(
+                            admitted_at.elapsed() < QUERY_DEADLINE,
+                            "NIR1_GRAPH_TEST_CHILD_DID_NOT_EXIT_BEFORE_DEADLINE"
+                        );
+                        thread::yield_now();
+                    }
+                }
+                return Ok(());
+            }
+            self.poll_exit()?;
+            ensure!(
+                self.session
+                    .as_ref()
+                    .is_some_and(|session| session.exit.is_none()),
+                "NIR1_GRAPH_WORKER_EXIT_DURING_REQUEST"
+            );
+            if admitted_at.elapsed() >= QUERY_DEADLINE {
+                #[cfg(test)]
+                self.record_deadline_decision_for_test(admitted_at.elapsed());
+                anyhow::bail!("{}", deadline_refusal_reason(self.region.elapsed));
+            }
+
+            let result = {
+                let native = self
+                    .region
+                    .native_region()
+                    .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
+                // SAFETY: OWNER_REQUEST is not published until this complete transfer ends.
+                let bytes = unsafe { native.bytes() };
+                stdin.write(&bytes[written..request_len])
+            };
+            match result {
+                Ok(0) => anyhow::bail!("NIR1_GRAPH_WORKER_STDIN_WRITE_ZERO"),
+                Ok(count) => {
+                    written += count;
+                    #[cfg(test)]
+                    {
+                        self.query_phase_diagnostics.request_bytes_written = written;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    #[cfg(test)]
+                    {
+                        self.query_phase_diagnostics.request_write_would_block = true;
+                        if let Some(blocked) = &self.request_write_blocked_signal_for_test {
+                            blocked.store(true, Ordering::Release);
+                        }
+                    }
+                    let mut descriptor = libc::pollfd {
+                        fd,
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    // Keep cancellation/binding/exit checks responsive while the child is slow.
+                    // poll rounds up to milliseconds, so every wake is followed by a deadline check.
+                    let ready = unsafe {
+                        libc::poll(&mut descriptor, 1, POLL_INTERVAL.as_millis() as libc::c_int)
+                    };
+                    if ready < 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.kind() == std::io::ErrorKind::Interrupted {
+                            continue;
+                        }
+                        return Err(error.into());
+                    }
+                    ensure!(
+                        descriptor.revents & libc::POLLNVAL == 0,
+                        "NIR1_GRAPH_WORKER_STDIN_POLL_INVALID"
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                    self.poll_exit()?;
+                    ensure!(
+                        self.session
+                            .as_ref()
+                            .is_some_and(|session| session.exit.is_some()),
+                        "NIR1_GRAPH_WORKER_STDIN_CLOSED"
+                    );
+                    anyhow::bail!("NIR1_GRAPH_WORKER_EXIT_DURING_REQUEST");
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+
     fn wait_until_ready(&mut self) -> Result<()> {
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
-            self.snapshot
-                .as_ref()
-                .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_OWNER_CLOSED"))?
-                .check_current_binding()?;
+            self.check_current_binding()?;
             self.poll_exit()?;
             if self
                 .session
@@ -1965,7 +2357,7 @@ impl Drop for CQueryResultLease<'_> {
 impl CQueryWorkerOwner {
     fn detach_quarantined_resources(&mut self) {
         if !self.region.quarantined
-            || (self.snapshot.is_none()
+            || (self.workspace.is_none()
                 && self.region.claim.is_none()
                 && self.region.storage.is_none()
                 && self.session.is_none())
@@ -1976,37 +2368,37 @@ impl CQueryWorkerOwner {
         let complete_child =
             self.region.claim.is_some() && self.region.storage.is_some() && self.session.is_some();
         let lifecycle = if complete_child {
-            self.snapshot
+            self.workspace
                 .as_ref()
-                .and_then(ActiveWorkspaceSnapshot::detach_c_query_quarantine)
+                .and_then(CQueryWorkspacePin::detach_c_query_quarantine)
         } else {
             None
         };
         if let Some(fence) = lifecycle {
-            drop(self.snapshot.take());
+            drop(self.workspace.take());
             self.forget_detached_child(DetachedCQueryLifecycle::Quarantine { _fence: fence });
             return;
         }
 
         if complete_child {
-            if let Some(snapshot) = self.snapshot.take() {
-                match snapshot.into_c_query_fallback_participant() {
+            if let Some(workspace) = self.workspace.take() {
+                match workspace.into_fallback_participant() {
                     Ok(participant) => {
                         self.forget_detached_child(DetachedCQueryLifecycle::Participant {
                             _participant: participant,
                         });
                         return;
                     }
-                    Err(snapshot) => self.snapshot = Some(snapshot),
+                    Err(workspace) => self.workspace = Some(workspace),
                 }
             }
         }
 
         // Ambiguous, released or uncounted participant, marker/fence winner,
         // poisoned lifecycle lock, or any missing child resource: preserve the
-        // original authority pin and every resource fail-closed.
-        if let Some(snapshot) = self.snapshot.take() {
-            std::mem::forget(snapshot);
+        // available lifecycle pin and every child resource fail-closed.
+        if let Some(workspace) = self.workspace.take() {
+            std::mem::forget(workspace);
         }
         if let Some(claim) = self.region.claim.take() {
             std::mem::forget(claim);
@@ -2036,7 +2428,7 @@ impl CQueryWorkerOwner {
         if self.region.lease_held || self.session.is_some() {
             return;
         }
-        drop(self.snapshot.take());
+        drop(self.workspace.take());
         if let Some(claim) = self.region.claim.take() {
             claim.release();
         }
@@ -2084,6 +2476,14 @@ fn deadline_refusal_reason(frame_elapsed: Option<Duration>) -> &'static str {
     } else {
         "NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME"
     }
+}
+
+fn check_caller_cancellation(cancellation: Option<&AtomicBool>) -> Result<()> {
+    ensure!(
+        !cancellation.is_some_and(|signal| signal.load(Ordering::Acquire)),
+        "NIR1_GRAPH_WORKER_CALLER_CANCELLED"
+    );
+    Ok(())
 }
 
 fn request_len(request: &Nir1GraphRequest) -> Result<usize> {
@@ -2278,6 +2678,112 @@ mod tests {
         )
     }
 
+    fn stage_launch_bytes_for_test(
+        bytes: &mut [u8],
+        project_prefix_len: usize,
+        payload_len: usize,
+        fill: u8,
+    ) -> bool {
+        let Some(end) = project_prefix_len.checked_add(payload_len) else {
+            return false;
+        };
+        let Some(staging) = bytes.get_mut(project_prefix_len..end) else {
+            return false;
+        };
+        staging.fill(fill);
+        true
+    }
+
+    #[test]
+    fn post_ready_owner_drops_authority_but_keeps_exact_binding_claim_and_region() -> Result<()> {
+        use crate::state::{ActiveWorkspace, WorkspaceState};
+        use crate::workspace_lifecycle::{
+            AdmissionKind, AdmissionOutcome, LiveBinding, WorkspaceLifecycleCompatibilityView,
+        };
+
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-c-query-ready-owner-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::Database::new(std::path::Path::new(":memory:"))?;
+        let authority = WorkspaceAuthority::from_database_for_test(db, path.clone())?;
+        let authority_weak = std::sync::Arc::downgrade(&authority);
+        let binding = LiveBinding::new(
+            authority.path().to_string_lossy().into_owned(),
+            format!("test-workspace:{}", authority.identity()),
+            authority.identity(),
+            0,
+        );
+        let state = WorkspaceState {
+            inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(std::sync::Arc::clone(
+                &authority,
+            )))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: std::sync::Mutex::new(()),
+        };
+        let core = state.lifecycle_core();
+        core.set_ready(binding)?;
+        let snapshot = crate::state::active_workspace_snapshot(&state)?;
+        let claim = snapshot
+            .authority
+            .claim_c_query_child()
+            .ok_or_else(|| anyhow!("test child claim unavailable"))?;
+        let mut owner = CQueryWorkerOwner::new(snapshot, PathBuf::new());
+        owner.region.claim = Some(claim);
+        owner.region.storage = Some(reserve_storage()?);
+        owner
+            .region
+            .native_region()
+            .ok_or_else(|| anyhow!("test Native region unavailable"))?
+            .mailbox
+            .events
+            .fetch_or(READER_READY, Ordering::Release);
+
+        drop(state.inner.lock().expect("workspace lock").take());
+        drop(authority);
+        owner.release_authority_after_ready()?;
+
+        assert!(authority_weak.upgrade().is_none());
+        assert!(owner.check_current_binding().is_ok());
+        assert_eq!(core.workspace_participant_count()?, 1);
+        assert!(owner
+            .region
+            .claim
+            .as_ref()
+            .is_some_and(CQueryChildClaim::is_held_for_test));
+        assert!(owner.region.storage.is_some());
+        assert!(C_QUERY_CAPACITY_IN_USE.load(Ordering::Acquire));
+        assert!(crate::workspace_lease::acquire_exclusive(&path, Duration::ZERO).is_err());
+
+        let ticket = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("Open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("Open must wait for the participant"),
+        };
+        assert!(owner.check_current_binding().is_err());
+        assert!(matches!(
+            core.physical_exclusive_for_ticket(&ticket),
+            Err(crate::workspace_lifecycle::LifecycleError::ActiveOperations)
+        ));
+
+        drop(owner);
+        assert_eq!(core.workspace_participant_count()?, 0);
+        assert!(!C_QUERY_CAPACITY_IN_USE.load(Ordering::Acquire));
+        drop(
+            core.physical_exclusive_for_ticket(&ticket)
+                .expect("retired participant permits transition"),
+        );
+        drop(
+            crate::workspace_lease::acquire_exclusive(&path, Duration::ZERO)
+                .expect("retired claim releases its exact file lease"),
+        );
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
     #[test]
     fn terminal_commit_requires_exact_marker_and_eof_without_trailing_data() {
         let events = read_test_wire(worker_frame::TERMINAL_SUCCESS_COMMIT);
@@ -2428,12 +2934,15 @@ mod tests {
 
     #[test]
     fn reader_reuses_request_bytes_after_release_handoff() -> Result<()> {
+        const LAUNCH_STAGING_BYTES: usize = 16_384;
         let request = Nir1GraphRequest {
             project_id: "p".into(),
             query_scene_id: "s".into(),
             seed_entity_id: "e".into(),
         };
         let request_len = request_len(&request)?;
+        let project_prefix = request.project_id.as_bytes();
+        let stage_end = project_prefix.len() + LAUNCH_STAGING_BYTES;
         let frame = unavailable_test_frame("r");
         let mut wire = vec![b'R'];
         wire.extend_from_slice(&(frame.len() as u32).to_le_bytes());
@@ -2442,27 +2951,105 @@ mod tests {
 
         let storage = reserve_test_storage()?;
         let native = &storage[0];
-        // SAFETY: the reader has not been signaled yet; this test is the owner.
+        // SAFETY: no reader exists; this test exclusively owns the region.
         unsafe {
             let bytes = &mut *native.bytes_mut_ptr();
-            encode_request(&request, &mut bytes[..REQUEST_BYTES])?;
-            assert_eq!(
-                u16::from_le_bytes([bytes[0], bytes[1]]) as usize + 2,
-                request_len
-            );
-            assert_ne!(&bytes[..request_len], &frame[..request_len]);
+            bytes.fill(0xCC);
+            bytes[..project_prefix.len()].copy_from_slice(project_prefix);
+            assert!(stage_launch_bytes_for_test(
+                bytes,
+                project_prefix.len(),
+                LAUNCH_STAGING_BYTES,
+                0xA5,
+            ));
+            assert_eq!(&bytes[..project_prefix.len()], project_prefix);
+            assert!(bytes[project_prefix.len()..stage_end]
+                .iter()
+                .all(|byte| *byte == 0xA5));
+
+            // The checked refusal must leave every in-slice byte untouched.
+            assert!(!stage_launch_bytes_for_test(
+                bytes,
+                project_prefix.len(),
+                STORAGE_BYTES,
+                0x5A,
+            ));
+            assert_eq!(&bytes[..project_prefix.len()], project_prefix);
+            assert!(bytes[project_prefix.len()..stage_end]
+                .iter()
+                .all(|byte| *byte == 0xA5));
+            assert!(bytes[stage_end..].iter().all(|byte| *byte == 0xCC));
         }
+
         native.set_parent_thread(thread::current());
-        // Models the owner's Release publication after its successful write_all.
-        native.request();
-        // SAFETY: the request handoff has completed and the test retains storage.
-        unsafe {
-            read_worker_pipe(
-                Cursor::new(wire),
-                native as *const NativeRegion,
-                &ReaderPublicationTiming::default(),
-            );
+        let reader_region = NativeRegionPtr {
+            region: native as *const NativeRegion,
+            reader_timing: ReaderPublicationTiming::default(),
+        };
+        let reader = thread::Builder::new().spawn(move || {
+            // SAFETY: the test retains `storage` until this thread is joined.
+            unsafe { reader_region.read_test_pipe(Cursor::new(wire)) };
+        })?;
+
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        let mut reader_ready = false;
+        while Instant::now() < ready_deadline {
+            if native.mailbox.events.load(Ordering::Acquire) & READER_READY != 0 {
+                reader_ready = true;
+                break;
+            }
+            thread::park_timeout(POLL_INTERVAL);
         }
+
+        // The reader is waiting for OWNER_REQUEST and has not touched bytes.
+        // Release staging before encoding and publishing the request handoff.
+        let (
+            owner_request_unpublished,
+            prefix_preserved,
+            staging_preserved,
+            staging_released_before_handoff,
+            prefix_before_encode,
+            encoded_len,
+            encoded,
+        ) = unsafe {
+            let bytes = &mut *native.bytes_mut_ptr();
+            let owner_request_unpublished =
+                native.mailbox.events.load(Ordering::Acquire) & OWNER_REQUEST == 0;
+            let prefix_preserved = &bytes[..project_prefix.len()] == project_prefix;
+            let staging_preserved = bytes[project_prefix.len()..stage_end]
+                .iter()
+                .all(|byte| *byte == 0xA5);
+            bytes[project_prefix.len()..stage_end].fill(0);
+            let staging_released_before_handoff = bytes[project_prefix.len()..stage_end]
+                .iter()
+                .all(|byte| *byte == 0)
+                && native.mailbox.events.load(Ordering::Acquire) & OWNER_REQUEST == 0;
+            let prefix_before_encode = &bytes[..project_prefix.len()] == project_prefix;
+            let encoded = encode_request(&request, &mut bytes[..REQUEST_BYTES]);
+            let encoded_len = u16::from_le_bytes([bytes[0], bytes[1]]) as usize + 2;
+            (
+                owner_request_unpublished,
+                prefix_preserved,
+                staging_preserved,
+                staging_released_before_handoff,
+                prefix_before_encode,
+                encoded_len,
+                encoded,
+            )
+        };
+        native.request();
+        reader.thread().unpark();
+        let joined = reader.join();
+
+        assert!(reader_ready, "reader must publish READY before handoff");
+        assert!(joined.is_ok(), "reader thread must join successfully");
+        assert!(owner_request_unpublished);
+        assert!(prefix_preserved);
+        assert!(staging_preserved);
+        assert!(staging_released_before_handoff);
+        assert!(prefix_before_encode);
+        encoded?;
+        assert_eq!(encoded_len, request_len);
 
         let events = native.mailbox.events.load(Ordering::Acquire);
         assert!(result_wire_complete(events));
@@ -2470,7 +3057,7 @@ mod tests {
             native.mailbox.frame_len.load(Ordering::Relaxed),
             frame.len()
         );
-        // SAFETY: READER_FRAME was acquire-observed and the synchronous reader ended.
+        // SAFETY: the reader has been joined, so the owner exclusively reads bytes.
         let bytes = unsafe { native.bytes() };
         assert_eq!(&bytes[..frame.len()], frame.as_slice());
         let view = worker_frame::validate(&bytes[..frame.len()])?;
@@ -2534,20 +3121,207 @@ mod tests {
         assert_eq!(named_native_bytes, NATIVE_FIXED_BYTES);
         assert_eq!(named_native_bytes, PARENT_BYTES - REQUEST_BYTES);
         assert_eq!(NATIVE_OWNER_PAYLOAD_BUDGET_BYTES, REQUEST_BYTES);
-        assert!(native_owner_payload_fits(REQUEST_BYTES, 0, 0, 0, 0));
-        assert!(native_owner_payload_fits(REQUEST_BYTES - 1, 1, 0, 0, 0));
-        assert!(native_owner_payload_fits(REQUEST_BYTES - 2, 1, 1, 0, 0));
-        assert!(native_owner_payload_fits(REQUEST_BYTES - 3, 1, 1, 1, 0));
-        assert!(native_owner_payload_fits(REQUEST_BYTES - 4, 1, 1, 1, 1));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES - 2, 1, 1, 1, 0));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES - 3, 1, 1, 1, 1));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES - 1, 1, 1, 1, 0));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES, 1, 0, 0, 0));
-        assert!(!native_owner_payload_fits(REQUEST_BYTES + 1, 0, 0, 0, 0));
-        assert!(!native_owner_payload_fits(usize::MAX, 1, 0, 0, 0));
-        assert!(!native_owner_payload_fits(0, usize::MAX, 1, 0, 0));
-        assert!(!native_owner_payload_fits(0, 0, usize::MAX, 1, 0));
-        assert!(!native_owner_payload_fits(0, 0, 0, usize::MAX, 1));
+        assert!(native_owner_payload_fits(&[REQUEST_BYTES, 0, 0, 0, 0, 0]));
+        assert!(native_owner_payload_fits(&[
+            REQUEST_BYTES - 1,
+            1,
+            0,
+            0,
+            0,
+            0
+        ]));
+        assert!(native_owner_payload_fits(&[
+            REQUEST_BYTES - 2,
+            1,
+            1,
+            0,
+            0,
+            0
+        ]));
+        assert!(native_owner_payload_fits(&[
+            REQUEST_BYTES - 3,
+            1,
+            1,
+            1,
+            0,
+            0
+        ]));
+        assert!(native_owner_payload_fits(&[
+            REQUEST_BYTES - 4,
+            1,
+            1,
+            1,
+            1,
+            0
+        ]));
+        assert!(!native_owner_payload_fits(&[
+            REQUEST_BYTES - 2,
+            1,
+            1,
+            1,
+            0,
+            0
+        ]));
+        assert!(!native_owner_payload_fits(&[
+            REQUEST_BYTES - 3,
+            1,
+            1,
+            1,
+            1,
+            0
+        ]));
+        assert!(!native_owner_payload_fits(&[
+            REQUEST_BYTES - 1,
+            1,
+            1,
+            1,
+            0,
+            0
+        ]));
+        assert!(!native_owner_payload_fits(&[REQUEST_BYTES, 1, 0, 0, 0, 0]));
+        assert!(!native_owner_payload_fits(&[
+            REQUEST_BYTES + 1,
+            0,
+            0,
+            0,
+            0,
+            0
+        ]));
+        assert!(!native_owner_payload_fits(&[usize::MAX, 1]));
+        assert!(!native_owner_payload_fits(&[0, usize::MAX, 1]));
+        assert!(!native_owner_payload_fits(&[0, 0, usize::MAX, 1]));
+        assert!(!native_owner_payload_fits(&[0, 0, 0, usize::MAX, 1]));
+        let participant_payload_bytes = WorkspaceParticipant::c_query_lease_payload_bytes();
+        let participant_arc_control_header_floor_bytes = PARTICIPANT_ARC_CONTROL_HEADER_FLOOR_BYTES;
+        let participant_accounted_bytes =
+            participant_payload_bytes + participant_arc_control_header_floor_bytes;
+        assert!(participant_payload_bytes > 0);
+        assert!(participant_arc_control_header_floor_bytes > 0);
+        assert!(participant_accounted_bytes <= REQUEST_BYTES);
+        assert!(native_owner_preclaim_payload_fits(
+            REQUEST_BYTES - participant_accounted_bytes,
+            0,
+            0,
+            0,
+            0,
+            0,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+        assert!(!native_owner_preclaim_payload_fits(
+            REQUEST_BYTES - participant_accounted_bytes + 1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+        assert!(native_owner_command_staging_payload_fits(
+            REQUEST_BYTES - participant_accounted_bytes,
+            0,
+            0,
+            0,
+            0,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+        assert!(!native_owner_command_staging_payload_fits(
+            REQUEST_BYTES - participant_accounted_bytes + 1,
+            0,
+            0,
+            0,
+            0,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+
+        let workspace_path_bytes = 400;
+        let workspace_lease_path_capacity =
+            workspace_path_bytes + b"/.grimodex-workspace.lock".len();
+        let exact_fit_binding_payload_bytes =
+            REQUEST_BYTES - participant_accounted_bytes - workspace_lease_path_capacity;
+        assert!(native_owner_preclaim_payload_fits(
+            exact_fit_binding_payload_bytes,
+            0,
+            0,
+            workspace_lease_path_capacity,
+            0,
+            0,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+        assert!(!native_owner_preclaim_payload_fits(
+            exact_fit_binding_payload_bytes + 1,
+            0,
+            0,
+            workspace_lease_path_capacity,
+            0,
+            0,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+        assert!(native_owner_command_staging_payload_fits(
+            exact_fit_binding_payload_bytes,
+            0,
+            workspace_lease_path_capacity,
+            0,
+            0,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+        assert!(!native_owner_command_staging_payload_fits(
+            exact_fit_binding_payload_bytes + 1,
+            0,
+            workspace_lease_path_capacity,
+            0,
+            0,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+
+        let witness_binding_payload_bytes = workspace_path_bytes + 84;
+        let witness_worker_path_capacity = 256;
+        let witness_authority_path_capacity = 6_739;
+        let witness_command_argument_payload_bytes = 431;
+        let witness_command_executable_payload_bytes = 250;
+        assert!(native_owner_payload_fits(&[
+            witness_binding_payload_bytes,
+            witness_worker_path_capacity,
+            witness_authority_path_capacity,
+            witness_command_argument_payload_bytes,
+            witness_command_executable_payload_bytes,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ]));
+        assert!(native_owner_payload_fits(&[
+            witness_binding_payload_bytes,
+            witness_authority_path_capacity,
+            witness_command_argument_payload_bytes,
+            witness_command_executable_payload_bytes,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ]));
+        assert!(!native_owner_preclaim_payload_fits(
+            witness_binding_payload_bytes,
+            witness_worker_path_capacity,
+            witness_authority_path_capacity,
+            workspace_lease_path_capacity,
+            witness_command_argument_payload_bytes,
+            witness_command_executable_payload_bytes,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
+        assert!(!native_owner_command_staging_payload_fits(
+            witness_binding_payload_bytes,
+            witness_authority_path_capacity,
+            workspace_lease_path_capacity,
+            witness_command_argument_payload_bytes,
+            witness_command_executable_payload_bytes,
+            participant_payload_bytes,
+            participant_arc_control_header_floor_bytes,
+        ));
         #[cfg(unix)]
         {
             assert_eq!(
@@ -2576,20 +3350,22 @@ mod tests {
         );
         let program_payload =
             command_program_os_string_payload_lower_bound(std::ffi::OsStr::new("worker"));
-        assert!(native_owner_payload_fits(
+        assert!(native_owner_payload_fits(&[
             REQUEST_BYTES - program_payload,
             0,
             0,
             0,
-            program_payload
-        ));
-        assert!(!native_owner_payload_fits(
+            program_payload,
+            0,
+        ]));
+        assert!(!native_owner_payload_fits(&[
             REQUEST_BYTES - program_payload + 1,
             0,
             0,
             0,
-            program_payload
-        ));
+            program_payload,
+            0,
+        ]));
         #[cfg(windows)]
         assert_eq!(
             command_argument_payload_lower_bound(std::ffi::OsStr::new("é"), "🌹"),

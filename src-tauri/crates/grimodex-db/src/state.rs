@@ -21,8 +21,8 @@ use crate::Database;
 /// Background tasks must pin [`Arc<WorkspaceAuthority>`] (via
 /// [`active_workspace_snapshot`] / [`active_database`]), never a bare
 /// `Arc<Database>`. Dropping the last authority Arc releases the DB/index;
-/// the shared lease normally follows it, except a detached cleanup-unproved
-/// child claim may retain the separate lease/slot fence until process exit.
+/// a C-query child claim may independently retain its exact shared lease/slot
+/// fence after READY through retirement, or until process exit if quarantined.
 pub struct WorkspaceAuthority {
     db: Database,
     path: PathBuf,
@@ -31,8 +31,9 @@ pub struct WorkspaceAuthority {
         crate::narrative_extraction::nir1_chronicle_index::NirChronicleIndexRuntime,
 }
 
-/// The exact file lease and one-child slot can outlive the DB/index authority
-/// only while a cleanup-unproved C-query is quarantined.
+/// A C-query child claim keeps the exact file lease and one-child slot alive
+/// independently of DB/index authority from READY through retirement, or
+/// process-lifetime if cleanup cannot be proved.
 struct WorkspaceRetentionFence {
     lease: WorkspaceLease,
     identity: u64,
@@ -133,14 +134,19 @@ impl WorkspaceAuthority {
     }
 }
 
-/// Never released by Drop: only a proved exit+EOF and a dropped result lease
-/// allow the owner to reopen this workspace's child admission. Cleanup-unproved
-/// detachment can release the DB/index authority while this exact lease/slot
-/// fence remains pinned; if detachment is ambiguous, the whole owner is kept.
+/// Never released by Drop: only a dropped result lease plus proved child
+/// exit+EOF+reader-join allow the owner to reopen admission. After READY this
+/// exact lease/slot fence remains pinned independently of the DB/index
+/// authority; cleanup-unproved detachment may keep it process-lifetime.
 pub(crate) struct CQueryChildClaim {
     retention: Arc<WorkspaceRetentionFence>,
 }
 impl CQueryChildClaim {
+    #[cfg(test)]
+    pub(crate) fn is_held_for_test(&self) -> bool {
+        self.retention.c_query_child_claimed.load(Ordering::Acquire)
+    }
+
     pub(crate) fn release(self) {
         self.retention
             .c_query_child_claimed
@@ -266,6 +272,28 @@ impl ActiveWorkspaceSnapshot {
             .detach_c_query_quarantine(self.binding.as_ref()?)
     }
 
+    /// Transfer the exact binding and participant after the C-query reader has
+    /// published READY, then drop only this snapshot's authority reference.
+    pub(crate) fn into_c_query_ready_owner(self) -> Result<CQueryReadyWorkspace, Self> {
+        let Self {
+            authority,
+            binding,
+            _participant,
+        } = self;
+        let Some(binding) = binding else {
+            return Err(Self {
+                authority,
+                binding: None,
+                _participant,
+            });
+        };
+        drop(authority);
+        Ok(CQueryReadyWorkspace {
+            binding,
+            _participant,
+        })
+    }
+
     /// Drop this snapshot's authority/binding references but retain its exact
     /// lifecycle participant only while the core still counts it as a safe
     /// pre-I/O drain barrier. Refusal returns the intact snapshot.
@@ -289,6 +317,43 @@ impl ActiveWorkspaceSnapshot {
 
     pub fn path(&self) -> &Path {
         self.authority.path()
+    }
+}
+
+/// The exact C-query binding and lifecycle barrier retained after READY,
+/// without pinning the workspace DB/index authority.
+pub(crate) struct CQueryReadyWorkspace {
+    binding: crate::workspace_lifecycle::LiveBinding,
+    _participant: crate::workspace_lifecycle::WorkspaceParticipant,
+}
+
+impl CQueryReadyWorkspace {
+    pub(crate) fn check_current_binding(&self) -> anyhow::Result<()> {
+        self._participant
+            .with_current_binding(&self.binding, || ())?;
+        Ok(())
+    }
+
+    pub(crate) fn detach_c_query_quarantine(
+        &self,
+    ) -> Option<crate::workspace_lifecycle::WorkspaceQuarantineFence> {
+        self._participant.detach_c_query_quarantine(&self.binding)
+    }
+
+    pub(crate) fn into_c_query_fallback_participant(
+        self,
+    ) -> Result<crate::workspace_lifecycle::WorkspaceParticipant, Self> {
+        let Self {
+            binding,
+            _participant,
+        } = self;
+        match _participant.try_retain_for_c_query_fallback() {
+            Ok(_participant) => Ok(_participant),
+            Err(_participant) => Err(Self {
+                binding,
+                _participant,
+            }),
+        }
     }
 }
 

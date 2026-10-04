@@ -32,6 +32,10 @@ impl WorkspaceLease {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub(crate) fn path_capacity(&self) -> usize {
+        self.path.capacity()
+    }
 }
 
 fn lock_path(workspace: &Path) -> PathBuf {

@@ -242,6 +242,16 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
     let mut output = take_protocol_output()?;
     output.write_all(b"R")?;
     output.flush()?;
+    #[cfg(all(feature = "nir1-c-query-test-seam", target_os = "linux"))]
+    if let Some(marker) = std::env::var_os("NIR1_C_QUERY_TEST_HOLD_BEFORE_REQUEST") {
+        let marker = PathBuf::from(marker);
+        let temporary_path = marker.with_extension("tmp");
+        std::fs::write(&temporary_path, b"request-pending")?;
+        std::fs::rename(temporary_path, marker)?;
+        loop {
+            std::thread::park_timeout(std::time::Duration::from_secs(30));
+        }
+    }
     let mut input = std::io::stdin().lock();
     let mut header = [0u8; 2];
     input.read_exact(&mut header)?;
@@ -314,6 +324,24 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
         });
     }
     let response = reader.query_for_worker_with_maintenance(&request)?;
+    #[cfg(feature = "nir1-c-query-test-seam")]
+    if let Some(marker) = std::env::var_os("NIR1_C_QUERY_TEST_HOLD_BEFORE_FRAME") {
+        ensure!(
+            response.status == "available"
+                && response
+                    .graph
+                    .as_ref()
+                    .is_some_and(|graph| graph.nodes.len() == 1 && graph.edges.is_empty()),
+            "caller-cancellation barrier requires the nonempty Q2 result"
+        );
+        let marker = PathBuf::from(marker);
+        let temporary_path = marker.with_extension("tmp");
+        std::fs::write(&temporary_path, b"q2-frame-pending")?;
+        std::fs::rename(temporary_path, marker)?;
+        loop {
+            std::thread::park_timeout(std::time::Duration::from_secs(30));
+        }
+    }
     #[cfg(feature = "nir1-c-query-test-seam")]
     let partial_frame = std::env::var_os("NIR1_C_QUERY_TEST_PARTIAL_FRAME")
         .is_some_and(|value| value.to_str() == Some("partial"));

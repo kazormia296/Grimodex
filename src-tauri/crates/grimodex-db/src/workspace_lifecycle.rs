@@ -397,6 +397,11 @@ impl Drop for WorkspaceQuarantineFence {
 }
 
 impl WorkspaceParticipant {
+    /// Value size of the Arc target; excludes Arc metadata and allocator extents.
+    pub(crate) const fn c_query_lease_payload_bytes() -> usize {
+        std::mem::size_of::<WorkspaceParticipantLease>()
+    }
+
     /// Atomically replace this unique participant with a process-local C-query
     /// quarantine fence. The caller transfers child/storage ownership together.
     pub(crate) fn detach_c_query_quarantine(
@@ -407,9 +412,9 @@ impl WorkspaceParticipant {
     }
 
     /// Transfer this exact participant as the fail-closed drain barrier after
-    /// its snapshot drops the authority pin. The check and every
+    /// its owner drops the authority pin. The check and every
     /// physical-exclusive admission use the same lifecycle mutex; refusal
-    /// returns the unchanged participant to its snapshot.
+    /// returns the unchanged participant to its caller.
     pub(crate) fn try_retain_for_c_query_fallback(self) -> Result<Self, Self> {
         let safe_to_retain = {
             let Ok(state) = self.lease.core.lock_state() else {
@@ -3549,6 +3554,16 @@ impl WorkspaceLifecycleCore {
                 operation_id: ticket.operation_id,
             });
         }
+        // Restore targets its admitted W1 binding even if the caller supplies
+        // an exclusive file lease that bypasses the retained shared lease.
+        if ticket.kind == AdmissionKind::Restore
+            && ticket
+                .original_binding
+                .as_ref()
+                .is_some_and(|binding| quarantines_workspace(&state, binding))
+        {
+            return Err(LifecycleError::ActiveOperations);
+        }
         if state.admissions.values().any(|admission| {
             admission.operation_id != ticket.operation_id
                 && !admission.kind.is_capacity_independent()
@@ -5225,6 +5240,56 @@ mod tests {
         )
         .expect("known-distinct W2 activation");
         drop(quarantine);
+    }
+
+    #[test]
+    fn c_query_quarantine_blocks_w1_restore_exclusion_but_allows_distinct_w2() {
+        let w1_core = WorkspaceLifecycleCore::new();
+        let w1 = binding(1);
+        w1_core.set_ready(w1.clone()).expect("W1 ready");
+        let w1_participant = w1_core
+            .begin_workspace_participant()
+            .expect("W1 participant");
+        let _w1_quarantine = w1_participant
+            .detach_c_query_quarantine(&w1)
+            .expect("fence W1");
+        let restore = match w1_core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("Restore admission remains logical")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("Restore ticket admitted"),
+        };
+        assert!(matches!(
+            w1_core.physical_exclusive_for_ticket(&restore),
+            Err(LifecycleError::ActiveOperations)
+        ));
+
+        let w2_core = WorkspaceLifecycleCore::new();
+        let w1 = binding(1);
+        w2_core.set_ready(w1.clone()).expect("W1 ready");
+        let participant = w2_core
+            .begin_workspace_participant()
+            .expect("W1 participant");
+        let _quarantine = participant
+            .detach_c_query_quarantine(&w1)
+            .expect("fence W1");
+        let w2 = match w2_core
+            .begin_open_transition_for_target(
+                "/tmp/workspace-w2",
+                Some("workspace-w2"),
+                Some("test-db-w2"),
+                None,
+            )
+            .expect("distinct W2 Open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("distinct W2 admitted"),
+        };
+        let exclusive = w2_core
+            .physical_exclusive_for_ticket(&w2)
+            .expect("distinct W2 may acquire physical exclusion");
+        drop(exclusive);
     }
 
     #[test]

@@ -167,6 +167,12 @@ query予算は候補SQL、A2/A3、JSON解析、Evidence解決、path構築、必
 
 専用read-only connectionと既存lifecycle participantを使い、Rawのconnectionを占有/interruptしない。取得待ち、SQL最初のrow以前、Rust/JSON処理、queued workまで取消を伝える。資源超過/取消/競合ではpartial Graphを返さない。Graphの結果期限とcleanup完了時間は別測定とし、期限超過後も実解放までownerを残す。
 
+Native launch stagingも同じ固定予算と所有境界に従う。全体6,291,456 B（worker Q 4,718,592 B + Native 1,572,864 B）には、idle時も含めNativeの全static regionを計上し、未使用領域をbaselineや追加予算として扱わない。`OWNER_REQUEST`前はNative ownerがrequest/frame領域を所有する。そこへ一時stageする場合はprepared project prefixを保持し、範囲を検査してから書き込み、request encodingとhandoff前にstage領域をclearする。handoff後、ownerはreaderのframe領域をstage・上書きせず、`READER_FRAME`を確認してから検証する。親はadmissionから100 ms以内に、完全なbound frame、terminal commit、clean EOF、current bindingを確認した場合だけresult leaseを返す。childの実終了はlease返却の前提ではないが、再loanには実child exit・stdout EOF・reader joinの全てを要し、未確認の間はowner/regionを保持し、必要ならquarantineする。
+
+2026-10-03のtest-only 16-KiB staging/handoff試験が示すのは、当該sliceでprefix維持・checked refusal・clear-before-handoff後に既存frame/commit/EOF/reader-join経路へ移れることだけである。Windowsの全launch branchの論理fitは、関連path API出力や重なる一時表現に厳密な最大値がないため**UNKNOWN**。現在の`Command` private buffersにもapp-controlled capacityはなく、物理Native fitとaggregate 6-MiB fitも**UNKNOWN**のままであり、このtestはlauncher実装や受入れ合格を示さない。
+
+2026-10-04の実W1 witnessは`prepare()`のPRECLAIM guardを正確に8,192 Bまで満たした（`tests.rs:717`; guard定義・利用は`c_query_worker.rs:399–435,938`）。ただしguardは後段の`Command` payload lower boundsも含む論理accountingであり、PRECLAIM時点の同時allocation extentではない。phaseを分けても物理headroomは証明されない。W1 `LiveBinding`の`Arc<str>` backingは`NativeRegion`外に残る（`workspace_lifecycle.rs:99–112`）。したがってstatic-record/Native physical fitは**UNKNOWN**で、overrunもfitも立証していない。
+
 ### 6.3. SceneとEvidence
 
 Relation Evidence、Scope上のScene、関連Scene候補への対応、Scene本文excerptを区別する。Option Bが持つのはCodex Entity/Relationと名前/要約Evidenceであり、review時のScene IDを本文上の関係の証拠にはしない。[S3]
