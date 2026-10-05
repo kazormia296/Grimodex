@@ -31,6 +31,7 @@ import {
 } from "../electron/scripts/product-journey-catalog.mjs";
 
 import {
+  assertOutsideRepository,
   buildLocalCiPlan,
   captureC2ZcRestoreFixtureEvidence,
   collectProductJourneyEvidence,
@@ -679,6 +680,25 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   assert.equal(
     C2ZC_RUST_ACCEPTANCE_GATES[2].contract.proof,
     "direct persisted Rebuild evidence corruption blocks readiness",
+  );
+});
+
+test("C2-ZC fixture output boundary accepts external paths and rejects repository paths", () => {
+  const temporaryRoot = path.resolve(os.tmpdir(), "grimodex-c2zc-boundary");
+  const repository = path.join(temporaryRoot, "repository");
+  const external = path.join(temporaryRoot, "runner-temp");
+
+  assert.doesNotThrow(() =>
+    assertOutsideRepository(repository, external, "C2-ZC fixture output"),
+  );
+  assert.throws(
+    () =>
+      assertOutsideRepository(
+        repository,
+        path.join(repository, "fixture"),
+        "C2-ZC fixture output",
+      ),
+    /must be outside the candidate repository/u,
   );
 });
 

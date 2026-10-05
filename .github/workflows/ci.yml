@@ -604,6 +604,42 @@ jobs:
             --head "$GRIMODEX_C2ZC_RUST_REQUESTED_HEAD" \
             --output "$GRIMODEX_C2ZC_RUST_RECEIPT_PATH"
 
+      - name: Build and verify candidate-bound C2-ZC restore fixture
+        id: c2zc-restore-fixture
+        if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          output_dir="$(mktemp -d "$RUNNER_TEMP/grimodex-c2zc-restore-fixture.XXXXXXXX")"
+          printf 'output_dir=%s\n' "$output_dir" >> "$GITHUB_OUTPUT"
+          expected_head="$(git rev-parse HEAD)"
+          expected_tree="$(git rev-parse 'HEAD^{tree}')"
+          cargo run -p grimodex-db \
+            --manifest-path src-tauri/Cargo.toml \
+            --features c2zc-fixture-builder \
+            --bin c2zc-restore-fixture -- \
+            build \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --output-dir "$output_dir" \
+            --candidate HEAD \
+            --expected-head "$expected_head" \
+            --expected-tree "$expected_tree"
+          cargo run -p grimodex-db \
+            --manifest-path src-tauri/Cargo.toml \
+            --features c2zc-fixture-builder \
+            --bin c2zc-restore-fixture -- \
+            verify \
+            --manifest "$output_dir/c2zc-restore-fixture.manifest.json" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --candidate HEAD
+
+      - name: Bind candidate-bound product journey evidence
+        if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          GRIMODEX_C2ZC_RESTORE_FIXTURE_BUILD_DIR: ${{ steps.c2zc-restore-fixture.outputs.output_dir }}
+        run: node scripts/prepare-electron-product-journey-evidence.mjs
+
       - name: Product journey gate
         if: steps.product-journey-impact.outputs.should_run == 'true'
         env:

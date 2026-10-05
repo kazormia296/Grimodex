@@ -768,7 +768,7 @@ function fixtureCommandOperation(command) {
   return null;
 }
 
-function assertOutsideRepository(root, candidatePath, label) {
+export function assertOutsideRepository(root, candidatePath, label) {
   const relative = path.relative(
     path.resolve(root),
     path.resolve(candidatePath),
@@ -2905,7 +2905,7 @@ export function expectedC2ZcAcceptanceForPlan(plan) {
   return catalog.some((journey) => journey?.id === C2ZC_PRODUCT_JOURNEY_ID);
 }
 
-async function bindC2ZcProductJourneyCommand(
+export async function bindC2ZcProductJourneyCommand(
   command,
   stageId,
   {

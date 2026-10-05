@@ -3463,7 +3463,7 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
   }
 });
 
-test("CI wires the candidate-bound C2-ZC Rust receipt before product journeys", async () => {
+test("CI prepares candidate-bound C2-ZC product evidence before journeys", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const job = workflow.jobs["electron-product-journeys"];
   const electronJob = workflow.jobs.electron;
@@ -3475,6 +3475,13 @@ test("CI wires the candidate-bound C2-ZC Rust receipt before product journeys", 
   );
   const receipt = job.steps.find(
     (step) => step.name === "Candidate-bound C2-ZC Rust acceptance gate",
+  );
+  const fixture = job.steps.find(
+    (step) =>
+      step.name === "Build and verify candidate-bound C2-ZC restore fixture",
+  );
+  const evidence = job.steps.find(
+    (step) => step.name === "Bind candidate-bound product journey evidence",
   );
   const gate = job.steps.find((step) => step.name === "Product journey gate");
   const shouldRunCondition =
@@ -3492,17 +3499,50 @@ test("CI wires the candidate-bound C2-ZC Rust receipt before product journeys", 
     receipt,
     "the real candidate-bound Rust receipt producer is required",
   );
-  assert.equal(receipt.if, shouldRunCondition);
-  assert.ok(job.steps.indexOf(receipt) < job.steps.indexOf(gate));
+  assert.ok(fixture, "the real candidate-bound restore fixture is required");
+  assert.ok(evidence, "verified build and fixture evidence must be bound");
+  for (const step of [receipt, fixture, evidence]) {
+    assert.equal(step.if, shouldRunCondition);
+  }
+  assert.equal(fixture.id, "c2zc-restore-fixture");
+  assert.equal(fixture.env.CARGO_BUILD_JOBS, "2");
+  assert.match(
+    fixture.run,
+    /printf 'output_dir=%s\\n' "\$output_dir" >> "\$GITHUB_OUTPUT"/,
+  );
+  assert.equal(
+    evidence.env.GRIMODEX_C2ZC_RESTORE_FIXTURE_BUILD_DIR,
+    "${{ steps.c2zc-restore-fixture.outputs.output_dir }}",
+  );
+  assert.ok(
+    job.steps.indexOf(receipt) < job.steps.indexOf(fixture) &&
+      job.steps.indexOf(fixture) < job.steps.indexOf(evidence) &&
+      job.steps.indexOf(evidence) < job.steps.indexOf(gate),
+    "Rust acceptance, fixture validation and evidence binding must precede journeys",
+  );
+  const appBuild = job.steps.find(
+    (step) => step.name === "Build native module and production Electron app",
+  );
+  const mcpBuild = job.steps.find(
+    (step) => step.name === "Build selected MCP journey dependency",
+  );
+  assert.ok(appBuild && mcpBuild);
+  assert.ok(
+    job.steps.indexOf(appBuild) < job.steps.indexOf(evidence) &&
+      job.steps.indexOf(mcpBuild) < job.steps.indexOf(evidence),
+    "the build receipt must follow all selected artifact builds",
+  );
   for (const variable of [
     "GRIMODEX_C2ZC_RUST_RECEIPT_PATH",
     "GRIMODEX_C2ZC_RUST_REQUESTED_BASE",
     "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD",
+    "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT",
+    "GRIMODEX_C2ZC_RESTORE_FIXTURE",
   ]) {
     assert.equal(
       gate.env?.[variable],
       undefined,
-      `${variable} must stay shared`,
+      `${variable} must stay shared and consumer-verified`,
     );
   }
   assert.equal(receipt.env.CARGO_BUILD_JOBS, "2");
@@ -3511,6 +3551,49 @@ test("CI wires the candidate-bound C2-ZC Rust receipt before product journeys", 
   assert.match(receipt.run, /--base "\$GRIMODEX_C2ZC_RUST_REQUESTED_BASE"/);
   assert.match(receipt.run, /--head "\$GRIMODEX_C2ZC_RUST_REQUESTED_HEAD"/);
   assert.match(receipt.run, /--output "\$GRIMODEX_C2ZC_RUST_RECEIPT_PATH"/);
+  assert.match(
+    fixture.run,
+    /mktemp -d "\$RUNNER_TEMP\/grimodex-c2zc-restore-fixture/,
+  );
+  assert.match(fixture.run, /--features c2zc-fixture-builder/);
+  assert.match(fixture.run, /--bin c2zc-restore-fixture/);
+  assert.match(fixture.run, /expected_head="\$\(git rev-parse HEAD\)"/);
+  assert.match(
+    fixture.run,
+    /expected_tree="\$\(git rev-parse 'HEAD\^\{tree\}'\)"/,
+  );
+  assert.match(fixture.run, /--expected-head "\$expected_head"/);
+  assert.match(fixture.run, /--expected-tree "\$expected_tree"/);
+  assert.match(fixture.run, /--output-dir "\$output_dir"/);
+  assert.match(
+    fixture.run,
+    /--manifest "\$output_dir\/c2zc-restore-fixture\.manifest\.json"/,
+  );
+  assert.match(fixture.run, /--candidate HEAD/);
+  assert.match(
+    evidence.run,
+    /node scripts\/prepare-electron-product-journey-evidence\.mjs/,
+  );
+  const evidenceScript = await read(
+    "scripts/prepare-electron-product-journey-evidence.mjs",
+  );
+  for (const requiredSource of [
+    "readC2ZcRustAcceptanceEvidence",
+    "assertOutsideRepository,",
+    "assertOutsideRepository(\n    repository,\n    fixtureDirectory,",
+    "bindC2ZcProductJourneyCommand",
+    "readC2ZcRestoreFixtureEvidence",
+    "captureC2ZcRestoreFixtureEvidence",
+    "buildStagePassed: true",
+    "restoreFixtureEvidence: fixtureEvidence",
+    "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT",
+    "GRIMODEX_C2ZC_RESTORE_FIXTURE",
+    "GRIMODEX_C2ZC_RUST_RECEIPT_SHA256",
+    "await appendFile(",
+    "GITHUB_ENV",
+  ]) {
+    assert.ok(evidenceScript.includes(requiredSource), requiredSource);
+  }
   const commands = runCommands(job);
   assert.match(commands, /pnpm exec playwright install-deps chromium/);
   assert.match(commands, /pnpm napi:build/);
