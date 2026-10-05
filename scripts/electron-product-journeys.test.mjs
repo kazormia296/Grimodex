@@ -21,10 +21,15 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
 import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
-import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
+import {
+  digestProductJourneyCatalog,
+  PRODUCT_JOURNEY_CATALOG,
+} from "../electron/scripts/product-journey-catalog.mjs";
 import {
   createProductJourneyJournal,
   createProductJourneyHarness,
+  classifyDbusAddress,
+  inspectProductJourneyDbusEnvironment,
   invokeOk,
   isMainProcessErrorMessage,
   killProcessTree,
@@ -54,6 +59,7 @@ import {
 import {
   configureWorkspace,
   PRODUCT_JOURNEYS,
+  runProductJourneys,
   selectPersistedFolderScopeAnchor,
 } from "../electron/scripts/product-journeys.mjs";
 import {
@@ -138,6 +144,433 @@ test("package.json exposes the runner and canonical product journey contracts", 
       .includes("scripts/codex-entity-relation-product-journey.test.mjs"),
     "canonical product journey contracts must include the NIR-1 Entity/Relation journey",
   );
+});
+
+test("D-Bus address classification never exposes or contacts unsupported addresses", async () => {
+  const sessionAddress =
+    "tcp:host=198.51.100.17,port=4312,noncefile=never-log-this";
+  const systemAddress = "autolaunch:guid=never-log-this";
+  assert.deepEqual(classifyDbusAddress(undefined), {
+    presence: "absent",
+    transport: "other",
+    syntax: "unsupported/unknown",
+  });
+  assert.deepEqual(classifyDbusAddress(""), {
+    presence: "empty",
+    transport: "other",
+    syntax: "unsupported/unknown",
+  });
+  assert.deepEqual(
+    classifyDbusAddress(
+      "unix:path=%2Frun%2Fuser%2F1000%2Fbus,guid=0123456789abcdef0123456789abcdef",
+    ),
+    {
+      presence: "present",
+      transport: "local-unix",
+      syntax: "valid-supported-subset",
+    },
+  );
+  assert.deepEqual(classifyDbusAddress("unix:path=relative"), {
+    presence: "present",
+    transport: "local-unix",
+    syntax: "invalid",
+  });
+  assert.deepEqual(
+    classifyDbusAddress("unix:path=/run/user/1000/bus;tcp:host=remote"),
+    {
+      presence: "present",
+      transport: "local-unix",
+      syntax: "unsupported/unknown",
+    },
+  );
+
+  let invoked = false;
+  const state = await inspectProductJourneyDbusEnvironment(
+    {
+      DBUS_SESSION_BUS_ADDRESS: sessionAddress,
+      DBUS_SYSTEM_BUS_ADDRESS: systemAddress,
+    },
+    {
+      execFile: () => {
+        invoked = true;
+        throw new Error("unsupported address must not be contacted");
+      },
+    },
+  );
+  assert.equal(invoked, false);
+  assert.deepEqual(state.sessionBus, {
+    presence: "present",
+    transport: "network",
+    syntax: "unsupported/unknown",
+    availability: "unprobed/unknown",
+    retirement: "not-started",
+  });
+  assert.deepEqual(state.systemBus, {
+    presence: "present",
+    transport: "autolaunch",
+    syntax: "unsupported/unknown",
+    availability: "unprobed/unknown",
+  });
+  assert.equal(JSON.stringify(state).includes("never-log-this"), false);
+  assert.equal(JSON.stringify(state).includes("198.51.100.17"), false);
+});
+
+test("D-Bus query uses a private local address and waits for the owned child close", async () => {
+  const address =
+    "unix:path=%2Frun%2Fuser%2F1000%2Fprivate-probe.sock,guid=0123456789abcdef0123456789abcdef";
+  let command;
+  let trackedChild;
+  const state = await inspectProductJourneyDbusEnvironment(
+    {
+      DBUS_SESSION_BUS_ADDRESS: address,
+      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/dbus/system_bus_socket",
+    },
+    {
+      execFile(executable, args, options, callback) {
+        command = { executable, args, options };
+        const child = new EventEmitter();
+        child.kill = () => true;
+        process.nextTick(() => {
+          callback(
+            null,
+            "method return time=1 sender=org.freedesktop.DBus -> :1.1 serial=2 reply_serial=1\n   boolean true\n",
+            "",
+          );
+          child.emit("close", 0, null);
+        });
+        return child;
+      },
+      trackChild: (child) => {
+        trackedChild = child;
+      },
+    },
+  );
+
+  assert.equal(command.executable, "dbus-send");
+  assert.deepEqual(command.args, [
+    "--session",
+    "--print-reply",
+    "--reply-timeout=1000",
+    "/org/freedesktop/DBus",
+    "org.freedesktop.DBus.NameHasOwner",
+    "string:org.freedesktop.DBus",
+  ]);
+  assert.equal(JSON.stringify(command.args).includes(address), false);
+  assert.deepEqual(Object.keys(command.options.env).sort(), [
+    "DBUS_SESSION_BUS_ADDRESS",
+    "LANG",
+    "PATH",
+  ]);
+  assert.equal(command.options.env.DBUS_SESSION_BUS_ADDRESS, address);
+  assert.equal(command.options.maxBuffer, 1_024);
+  assert.ok(trackedChild);
+  assert.equal(state.sessionBus.availability, "available");
+  assert.equal(state.sessionBus.retirement, "closed");
+  assert.equal(state.systemBus.availability, "unprobed/unknown");
+  assert.equal(JSON.stringify(state).includes(address), false);
+  assert.equal(JSON.stringify(state).includes("boolean true"), false);
+
+  const rejected = await inspectProductJourneyDbusEnvironment(
+    { DBUS_SESSION_BUS_ADDRESS: address },
+    {
+      execFile(_executable, _args, _options, callback) {
+        const child = new EventEmitter();
+        process.nextTick(() => {
+          callback(
+            new Error("private child failure"),
+            "",
+            `Connection refused: ${address}`,
+          );
+          child.emit("close", 1, null);
+        });
+        return child;
+      },
+    },
+  );
+  assert.equal(rejected.sessionBus.availability, "connection rejected");
+  assert.equal(JSON.stringify(rejected).includes(address), false);
+});
+
+test("D-Bus probe requires both callback and close in either event order", async () => {
+  const reply =
+    "method return time=1 sender=org.freedesktop.DBus -> :1.1 serial=2 reply_serial=1\n   boolean true\n";
+  for (const order of ["close-first", "callback-first"]) {
+    const child = new EventEmitter();
+    child.kill = () => true;
+    let callback;
+    let retirement;
+    let ownerRetained = true;
+    let settled = false;
+    const statePromise = inspectProductJourneyDbusEnvironment(
+      { DBUS_SESSION_BUS_ADDRESS: "unix:abstract=grimodex-order-test" },
+      {
+        execFile(_executable, _args, _options, childCallback) {
+          callback = childCallback;
+          return child;
+        },
+        trackChild(_child, childRetirement) {
+          retirement = childRetirement;
+          childRetirement.then(() => {
+            ownerRetained = false;
+          });
+        },
+      },
+    );
+    statePromise.then(() => {
+      settled = true;
+    });
+
+    if (order === "close-first") {
+      child.emit("close", 0, null);
+      await new Promise(setImmediate);
+      assert.equal(settled, false);
+      assert.equal(ownerRetained, true);
+      callback(null, reply, "");
+    } else {
+      callback(null, reply, "");
+      await new Promise(setImmediate);
+      assert.equal(settled, false);
+      assert.equal(ownerRetained, true);
+      child.emit("close", 0, null);
+    }
+
+    const state = await statePromise;
+    await retirement;
+    assert.equal(state.sessionBus.availability, "available");
+    assert.equal(state.sessionBus.retirement, "closed");
+    assert.equal(ownerRetained, false);
+  }
+});
+
+test("D-Bus NameHasOwner false reply is unavailable", async () => {
+  const state = await inspectProductJourneyDbusEnvironment(
+    { DBUS_SESSION_BUS_ADDRESS: "unix:abstract=grimodex-no-owner-test" },
+    {
+      execFile(_executable, _args, _options, callback) {
+        const child = new EventEmitter();
+        process.nextTick(() => {
+          child.emit("close", 0, null);
+          callback(
+            null,
+            "method return time=1 sender=org.freedesktop.DBus -> :1.1 serial=2 reply_serial=1\n   boolean false\n",
+            "",
+          );
+        });
+        return child;
+      },
+    },
+  );
+  assert.equal(state.sessionBus.availability, "unavailable endpoint");
+  assert.equal(state.sessionBus.retirement, "closed");
+});
+
+test("only the first Linux Actions journey opts into the configure D-Bus probe", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "journey-dbus-runner-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const catalog = [{ id: "first-case" }, { id: "second-case" }];
+  const journeys = catalog.map((entry) => ({
+    ...entry,
+    run: async () => undefined,
+  }));
+  const harnessOptions = [];
+
+  await runProductJourneys({
+    createHarness: (options) => {
+      harnessOptions.push(options);
+      return {
+        finalizeDiagnostics: async () => undefined,
+        dispose: async () => undefined,
+      };
+    },
+    journeys,
+    catalog,
+    artifactJourneys: [],
+    assertArtifacts: async () => [],
+    expectedCatalogDigest: digestProductJourneyCatalog(catalog),
+    environment: { GITHUB_ACTIONS: "true" },
+    root,
+    resultsPath: "results.json",
+  });
+
+  assert.deepEqual(
+    harnessOptions.map(({ probeDbusAtFirstConfigure, journeyId }) => ({
+      probeDbusAtFirstConfigure,
+      journeyId,
+    })),
+    [
+      {
+        probeDbusAtFirstConfigure: process.platform === "linux",
+        journeyId: "first-case",
+      },
+      { probeDbusAtFirstConfigure: false, journeyId: "second-case" },
+    ],
+  );
+});
+
+test("first configure launch records redacted D-Bus state before Electron launch", async (t) => {
+  const rawAddress = "tcp:host=198.51.100.23,port=4312,secret=never-log-this";
+  const priorAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
+  process.env.DBUS_SESSION_BUS_ADDRESS = rawAddress;
+  const events = [];
+  const originalInfo = console.info;
+  console.info = (...args) => events.push(args.join(" "));
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => childProcessStub({ stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    probeDbusAtFirstConfigure: true,
+    journeyId: "editor-persistence",
+    electronLauncher: {
+      launch: async () => {
+        events.push("electron-launch");
+        return app;
+      },
+    },
+    closeApp: async () => mainStderr.emit("end"),
+  });
+  t.after(async () => {
+    console.info = originalInfo;
+    if (priorAddress === undefined) delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    else process.env.DBUS_SESSION_BUS_ADDRESS = priorAddress;
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+  });
+
+  const launched = await harness.launch("configure");
+  await harness.close(launched.app, launched.page, "configure");
+  await harness.finalizeDiagnostics();
+
+  assert.equal(events[1], "electron-launch");
+  assert.match(events[0], /"phase":"configure"/u);
+  assert.match(events[0], /"journeyId":"editor-persistence"/u);
+  assert.match(events[0], /"transport":"network"/u);
+  assert.equal(events.join(" ").includes(rawAddress), false);
+  assert.equal(events.join(" ").includes("never-log-this"), false);
+});
+
+test("D-Bus harness retains an exit-first child until close is verified", async (t) => {
+  const previousAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
+  process.env.DBUS_SESSION_BUS_ADDRESS =
+    "unix:abstract=grimodex-exit-close-stalled-test";
+  const signals = [];
+  let child;
+  let disposed = false;
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    probeDbusAtFirstConfigure: true,
+    dbusExecFile(_executable, _args, _options) {
+      child = new EventEmitter();
+      child.kill = (signal) => {
+        signals.push(signal);
+        return true;
+      };
+      process.nextTick(() => child.emit("exit", 0, null));
+      return child;
+    },
+    electronLauncher: {
+      launch: async () => {
+        throw new Error("Electron must not launch before probe retirement");
+      },
+    },
+  });
+  t.after(async () => {
+    if (!disposed) {
+      await harness.dispose({
+        success: false,
+        name: "dbus-exit-close-stalled",
+      });
+    }
+    if (previousAddress === undefined) {
+      delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    } else {
+      process.env.DBUS_SESSION_BUS_ADDRESS = previousAddress;
+    }
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+  });
+
+  await assert.rejects(
+    harness.launch("configure"),
+    /D-Bus probe client retirement was not verified/u,
+  );
+  assert.ok(child);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  await harness.dispose({
+    success: false,
+    name: "dbus-exit-close-stalled",
+  });
+  disposed = true;
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL", "SIGTERM", "SIGKILL"]);
+});
+
+test("D-Bus probe refuses to claim retirement when the child never closes", async () => {
+  const signals = [];
+  let trackedChild;
+  const state = await inspectProductJourneyDbusEnvironment(
+    { DBUS_SESSION_BUS_ADDRESS: "unix:abstract=grimodex-unclosed-test" },
+    {
+      execFile() {
+        const child = new EventEmitter();
+        child.kill = (signal) => {
+          signals.push(signal);
+          return true;
+        };
+        return child;
+      },
+      trackChild: (child) => {
+        trackedChild = child;
+      },
+    },
+  );
+
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.ok(trackedChild);
+  assert.equal(state.sessionBus.availability, "unprobed/unknown");
+  assert.equal(state.sessionBus.retirement, "unverified");
+});
+
+test("D-Bus cancellation terminates only the probe child and remains unknown", async () => {
+  const controller = new AbortController();
+  const signals = [];
+  const address = "unix:abstract=grimodex-test-bus";
+  const statePromise = inspectProductJourneyDbusEnvironment(
+    { DBUS_SESSION_BUS_ADDRESS: address },
+    {
+      signal: controller.signal,
+      execFile(_executable, _args, _options, callback) {
+        const child = new EventEmitter();
+        child.kill = (signal) => {
+          signals.push(signal);
+          process.nextTick(() => {
+            callback(
+              Object.assign(new Error("private failure"), {
+                code: "ABORT_ERR",
+              }),
+              "",
+              "",
+            );
+            child.emit("close", null, signal);
+          });
+          return true;
+        };
+        process.nextTick(() => controller.abort("test-cancel"));
+        return child;
+      },
+    },
+  );
+  const state = await statePromise;
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(state.sessionBus.availability, "unprobed/unknown");
+  assert.equal(state.sessionBus.retirement, "closed");
+  assert.equal(JSON.stringify(state).includes(address), false);
 });
 
 const RECEIPT_NONCE = "00000000-0000-4000-8000-000000000001";

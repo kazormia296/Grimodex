@@ -5094,10 +5094,12 @@ export async function runProductJourneys({
 
   const factory =
     createHarness ??
-    (() =>
+    (({ probeDbusAtFirstConfigure = false, journeyId = null } = {}) =>
       createProductJourneyHarness({
         mainCjs: path.join(root, "dist-electron", "main.cjs"),
         artifactRoot: environment.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
+        probeDbusAtFirstConfigure,
+        journeyId,
       }));
   const continueAfterJourneyFailure = selectionName === "c2-zc";
   let firstJourneyFailure = null;
@@ -5111,7 +5113,13 @@ export async function runProductJourneys({
     let harness = null;
     let journeyResultIndex = -1;
     try {
-      harness = factory();
+      harness = factory({
+        probeDbusAtFirstConfigure:
+          index === 0 &&
+          process.platform === "linux" &&
+          environment.GITHUB_ACTIONS === "true",
+        journeyId: journey.id,
+      });
       harness.c2zcRustAcceptanceEvidence = report.c2zcRustAcceptance;
       const runJourney = (laneContext) => journey.run(harness, laneContext);
       const c2zcWatchdogRequired =

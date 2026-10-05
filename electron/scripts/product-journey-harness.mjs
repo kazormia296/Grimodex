@@ -112,6 +112,307 @@ function nullableEnvironmentValue(env, name) {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
+const DBUS_REPLY_TIMEOUT_MS = 1_000;
+const DBUS_PARENT_TIMEOUT_MS = 1_500;
+const DBUS_TERM_GRACE_MS = 250;
+const DBUS_CLOSE_TIMEOUT_MS = 1_000;
+const DBUS_MAX_BUFFER_BYTES = 1_024;
+const DBUS_UNKNOWN = "unprobed/unknown";
+
+function analyzeDbusAddress(value) {
+  const presence =
+    typeof value !== "string" ? "absent" : value === "" ? "empty" : "present";
+  const result = {
+    presence,
+    transport: "other",
+    syntax: "unsupported/unknown",
+    supportedLocalUnix: false,
+  };
+  if (presence !== "present") return result;
+
+  const colon = value.indexOf(":");
+  if (
+    colon <= 0 ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    result.syntax = "invalid";
+    return result;
+  }
+  const scheme = value.slice(0, colon).toLowerCase();
+  if (scheme === "autolaunch") {
+    result.transport = "autolaunch";
+    return result;
+  }
+  if (scheme === "tcp" || scheme === "nonce-tcp") {
+    result.transport = "network";
+    return result;
+  }
+  if (scheme !== "unix") return result;
+  result.transport = "local-unix";
+  if (value.includes(";")) return result;
+
+  const fields = new Map();
+  for (const field of value.slice(colon + 1).split(",")) {
+    const separator = field.indexOf("=");
+    if (
+      separator <= 0 ||
+      separator !== field.lastIndexOf("=") ||
+      /%(?![\da-f]{2})/iu.test(field)
+    ) {
+      result.syntax = "invalid";
+      return result;
+    }
+    const key = field.slice(0, separator);
+    let decoded;
+    try {
+      decoded = decodeURIComponent(field.slice(separator + 1));
+    } catch {
+      result.syntax = "invalid";
+      return result;
+    }
+    if (fields.has(key)) {
+      result.syntax = "invalid";
+      return result;
+    }
+    if (/[\u0000-\u001f\u007f]/u.test(decoded)) {
+      result.syntax = "invalid";
+      return result;
+    }
+    fields.set(key, decoded);
+  }
+
+  if (
+    [...fields.keys()].some(
+      (key) => !["path", "abstract", "guid"].includes(key),
+    )
+  ) {
+    return result;
+  }
+  const pathValue = fields.get("path");
+  const abstractValue = fields.get("abstract");
+  const guid = fields.get("guid");
+  if (
+    (pathValue === undefined) === (abstractValue === undefined) ||
+    (pathValue !== undefined && !pathValue.startsWith("/")) ||
+    (abstractValue !== undefined && abstractValue.length === 0) ||
+    (guid !== undefined && !/^[\da-f]{32}$/iu.test(guid))
+  ) {
+    result.syntax = "invalid";
+    return result;
+  }
+  result.syntax = "valid-supported-subset";
+  result.supportedLocalUnix = true;
+  return result;
+}
+
+export function classifyDbusAddress(value) {
+  const analysis = analyzeDbusAddress(value);
+  return {
+    presence: analysis.presence,
+    transport: analysis.transport,
+    syntax: analysis.syntax,
+  };
+}
+
+function classifyDbusReply({ error, stdout = "", stderr = "" }) {
+  const ownerReply = /^method return[\s\S]*\n\s*boolean (true|false)\s*$/u.exec(
+    stdout.trim(),
+  );
+  if (!error && ownerReply) {
+    return ownerReply[1] === "true" ? "available" : "unavailable endpoint";
+  }
+  const diagnostic = stderr.toLowerCase();
+  if (
+    error?.code === "ETIMEDOUT" ||
+    /timed? out|timeout|did not receive a reply/iu.test(diagnostic)
+  ) {
+    return "timeout";
+  }
+  if (
+    error?.code === "ECONNREFUSED" ||
+    /connection refused|access denied|authentication failed/iu.test(diagnostic)
+  ) {
+    return "connection rejected";
+  }
+  if (
+    /no such file|failed to connect to socket|endpoint unavailable/iu.test(
+      diagnostic,
+    )
+  ) {
+    return "unavailable endpoint";
+  }
+  return DBUS_UNKNOWN;
+}
+
+function queryDbusNameOwner(address, { execFile, trackChild, signal }) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve({ availability: DBUS_UNKNOWN, retired: true, started: false });
+      return;
+    }
+
+    let child;
+    let started = false;
+    let callbackResult = null;
+    let callbackObserved = false;
+    let closeObserved = false;
+    let timedOut = false;
+    let cancelled = false;
+    let stopping = false;
+    let settled = false;
+    let parentTimer;
+    let killTimer;
+    let closeTimer;
+    let resolveChildRetirement;
+    const childRetirement = new Promise((resolve) => {
+      resolveChildRetirement = resolve;
+    });
+
+    const finish = (availability, retired) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(parentTimer);
+      clearTimeout(killTimer);
+      clearTimeout(closeTimer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ availability, retired, started });
+    };
+    const finishAfterClose = () => {
+      if (!closeObserved || !callbackObserved) return;
+      resolveChildRetirement();
+      finish(
+        timedOut
+          ? "timeout"
+          : cancelled
+            ? DBUS_UNKNOWN
+            : classifyDbusReply(callbackResult),
+        true,
+      );
+    };
+    const stop = (reason) => {
+      if (stopping || (closeObserved && callbackObserved)) return;
+      stopping = true;
+      timedOut ||= reason === "timeout";
+      cancelled ||= reason === "cancelled";
+      if (!closeObserved) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // Retirement requires both callback and close observations below.
+        }
+      }
+      killTimer = setTimeout(() => {
+        if (!closeObserved) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Keep waiting for the bounded close proof.
+          }
+        }
+      }, DBUS_TERM_GRACE_MS);
+      closeTimer = setTimeout(
+        () => finish(DBUS_UNKNOWN, false),
+        DBUS_TERM_GRACE_MS + DBUS_CLOSE_TIMEOUT_MS,
+      );
+    };
+    function onAbort() {
+      stop("cancelled");
+    }
+
+    try {
+      child = execFile(
+        "dbus-send",
+        [
+          "--session",
+          "--print-reply",
+          `--reply-timeout=${DBUS_REPLY_TIMEOUT_MS}`,
+          "/org/freedesktop/DBus",
+          "org.freedesktop.DBus.NameHasOwner",
+          "string:org.freedesktop.DBus",
+        ],
+        {
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            LANG: "C",
+            DBUS_SESSION_BUS_ADDRESS: address,
+          },
+          encoding: "utf8",
+          maxBuffer: DBUS_MAX_BUFFER_BYTES,
+          windowsHide: true,
+        },
+        (error, stdout, stderr) => {
+          callbackObserved = true;
+          callbackResult = { error, stdout, stderr };
+          finishAfterClose();
+        },
+      );
+      started = true;
+    } catch {
+      finish(DBUS_UNKNOWN, true);
+      return;
+    }
+    try {
+      trackChild(child, childRetirement);
+    } catch {
+      // This helper still owns the child and waits for callback plus close.
+    }
+    child.once("close", () => {
+      closeObserved = true;
+      finishAfterClose();
+    });
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    parentTimer = setTimeout(() => stop("timeout"), DBUS_PARENT_TIMEOUT_MS);
+  });
+}
+
+export async function inspectProductJourneyDbusEnvironment(
+  environment = process.env,
+  {
+    execFile = execFileCallback,
+    trackChild = () => undefined,
+    signal = null,
+  } = {},
+) {
+  const session = analyzeDbusAddress(environment.DBUS_SESSION_BUS_ADDRESS);
+  const system = analyzeDbusAddress(environment.DBUS_SYSTEM_BUS_ADDRESS);
+  let availability = DBUS_UNKNOWN;
+  let retirement = "not-started";
+  if (session.supportedLocalUnix) {
+    const result = await queryDbusNameOwner(
+      environment.DBUS_SESSION_BUS_ADDRESS,
+      {
+        execFile,
+        trackChild,
+        signal,
+      },
+    );
+    availability = result.availability;
+    retirement = result.started
+      ? result.retired
+        ? "closed"
+        : "unverified"
+      : "not-started";
+  }
+  return {
+    sessionBus: {
+      presence: session.presence,
+      transport: session.transport,
+      syntax: session.syntax,
+      availability,
+      retirement,
+    },
+    systemBus: {
+      presence: system.presence,
+      transport: system.transport,
+      syntax: system.syntax,
+      availability: DBUS_UNKNOWN,
+    },
+  };
+}
+
 /**
  * Derive the receipt expected for one harness launch. The owner token is
  * consulted only to decide whether an active receipt is required; it is never
@@ -3103,6 +3404,9 @@ export function createProductJourneyHarness({
   journalPath = null,
   mainProcessDrainTimeoutMs = MAIN_PROCESS_DRAIN_TIMEOUT_MS,
   artifactRoot = process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
+  probeDbusAtFirstConfigure = false,
+  journeyId = null,
+  dbusExecFile = execFileCallback,
   electronLauncher = _electron,
   closeApp = closeElectronAppWithDiagnostics,
   mainProcessNoiseAllowlist = MAIN_PROCESS_NOISE_ALLOWLIST,
@@ -3173,6 +3477,7 @@ export function createProductJourneyHarness({
   const lateLaunchTasks = new Set();
   let fixtureOperationsInFlight = false;
   let launchInFlight = false;
+  let dbusProbeAttempted = false;
   let laneWatchdogController = null;
   let laneWatchdogPromise = null;
   let failureCapturePromise = null;
@@ -3409,19 +3714,29 @@ export function createProductJourneyHarness({
     }
   }
 
-  function trackChild(child) {
+  function trackChild(child, retirement = null) {
     if (!child || typeof child !== "object") return child;
     trackedChildren.add(child);
-    onChildProcess(child);
+    let retirementObserved = retirement === null;
     const remove = () => {
+      if (!retirementObserved) return;
       trackedChildren.delete(child);
       trackedChildRemovers.delete(child);
     };
-    if (typeof child.once === "function") {
+    trackedChildRemovers.set(child, remove);
+    if (retirement !== null) {
+      Promise.resolve(retirement).then(
+        () => {
+          retirementObserved = true;
+          remove();
+        },
+        () => undefined,
+      );
+    } else if (typeof child.once === "function") {
       child.once("exit", remove);
       child.once("close", remove);
     }
-    trackedChildRemovers.set(child, remove);
+    onChildProcess(child);
     return child;
   }
 
@@ -4978,6 +5293,44 @@ export function createProductJourneyHarness({
       receiptCount: 0,
     };
     await requireCleanNarrativeMaintenanceReceiptRoot(receiptState.root, phase);
+    if (
+      probeDbusAtFirstConfigure &&
+      phase === "configure" &&
+      !dbusProbeAttempted
+    ) {
+      dbusProbeAttempted = true;
+      const signal =
+        laneWatchdogController?.signal ?? harnessAbortController.signal;
+      const dbusState = await inspectProductJourneyDbusEnvironment(env, {
+        execFile: dbusExecFile,
+        signal,
+        trackChild,
+      });
+      const dbusRecord = {
+        journeyId,
+        phase,
+        launchId,
+        ...dbusState,
+      };
+      recordTimeline("dbus-session-probe", dbusRecord);
+      console.info(
+        `[electron:product] dbus-probe ${JSON.stringify(dbusRecord)}`,
+      );
+      if (dbusState.sessionBus.retirement === "unverified") {
+        throw new Error(
+          "product-journey D-Bus probe client retirement was not verified",
+        );
+      }
+      if (signal.aborted) {
+        throw operationAbortError({
+          phase,
+          operation: "dbus-session-probe",
+          command: "dbus-send",
+          requestId: launchId,
+          reason: signal.reason ?? "abort",
+        });
+      }
+    }
     // Only an invoked launcher can resolve late. Receipt-root precheck failure
     // must not leave a launch promise for cleanup to wait on.
     let resolveLateLaunch;
