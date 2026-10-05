@@ -130,6 +130,42 @@ const MAX_RECOVERY_SWEEP_TIME: Duration = Duration::from_secs(5);
 const MAX_RECOVERY_OPERATION_TIME: Duration = Duration::from_millis(250);
 const RECOVERY_SQL_BUSY_TIMEOUT: Duration = Duration::from_millis(100);
 
+#[cfg(test)]
+fn recovery_error_chain_categories(error: &anyhow::Error) -> String {
+    let mut causes = error.chain();
+    let mut categories = causes
+        .by_ref()
+        .take(8)
+        .map(|cause| {
+            let message = cause.to_string();
+            if message.contains("SQLITE_BUSY")
+                || message.contains("database is locked")
+                || message.contains("database is busy")
+            {
+                "sqlite-busy"
+            } else if message.contains("SQLITE_LOCKED") {
+                "sqlite-locked"
+            } else if message.contains("SQLITE_CONSTRAINT")
+                || message.contains("constraint failed")
+                || message.contains("constraint violation")
+                || message.contains("injected recovery failure")
+            {
+                "sqlite-constraint"
+            } else if message.contains("SQLITE_INTERRUPT") || message.contains("interrupted") {
+                "sqlite-interrupted"
+            } else if message.contains("NIR1_GENERATION_RECOVERY_") {
+                "recovery-marker"
+            } else {
+                "other"
+            }
+        })
+        .collect::<Vec<_>>();
+    if causes.next().is_some() {
+        categories.push("more");
+    }
+    categories.join(">")
+}
+
 #[derive(Clone, Copy)]
 struct GenerationRecoveryLimits {
     pages: usize,
@@ -340,9 +376,12 @@ impl GenerationRecoveryCoordinator {
                 MAX_RECOVERY_PAGE_SIZE,
                 budget.operation(),
             )
-            .inspect_err(|_| {
+            .inspect_err(|_error| {
                 #[cfg(test)]
-                eprintln!("NIR1_RECOVERY_BOUNDED_OP=project-page");
+                eprintln!(
+                    "NIR1_RECOVERY_BOUNDED_OP=project-page error-chain={}",
+                    recovery_error_chain_categories(_error)
+                );
             })?;
             summary.project_pages += 1;
             if projects.is_empty() {
@@ -361,9 +400,12 @@ impl GenerationRecoveryCoordinator {
                         MAX_RECOVERY_PAGE_SIZE,
                         budget.operation(),
                     )
-                    .inspect_err(|_| {
+                    .inspect_err(|_error| {
                         #[cfg(test)]
-                        eprintln!("NIR1_RECOVERY_BOUNDED_OP=attempt-page");
+                        eprintln!(
+                            "NIR1_RECOVERY_BOUNDED_OP=attempt-page error-chain={}",
+                            recovery_error_chain_categories(_error)
+                        );
                     })?;
                     summary.attempt_pages += 1;
                     if attempts.is_empty() {
@@ -377,9 +419,12 @@ impl GenerationRecoveryCoordinator {
                             now_ms()?,
                             budget.operation(),
                         )
-                        .inspect_err(|_| {
+                        .inspect_err(|_error| {
                             #[cfg(test)]
-                            eprintln!("NIR1_RECOVERY_BOUNDED_OP=recover-attempt");
+                            eprintln!(
+                                "NIR1_RECOVERY_BOUNDED_OP=recover-attempt error-chain={}",
+                                recovery_error_chain_categories(_error)
+                            );
                         })?;
                         summary.recovered += 1;
                         after_attempt_id = Some(attempt_id);
@@ -2237,6 +2282,24 @@ mod tests {
             .as_ref()
             .filter(|entry| &entry.binding == binding)
             .map(|entry| entry.state)
+    }
+
+    #[test]
+    fn recovery_error_chain_diagnostic_is_redacted_and_bounded() {
+        let error = anyhow::anyhow!("SQLITE_BUSY: database is locked; opaque detail")
+            .context("recovery wrapper");
+        let diagnostic = recovery_error_chain_categories(&error);
+        assert_eq!(diagnostic, "other>sqlite-busy");
+        assert!(!diagnostic.contains("opaque detail"));
+
+        let mut deep_error = anyhow::anyhow!("unclassified terminal detail");
+        for _ in 0..8 {
+            deep_error = deep_error.context("wrapper");
+        }
+        assert_eq!(
+            recovery_error_chain_categories(&deep_error),
+            "other>other>other>other>other>other>other>other>more"
+        );
     }
 
     #[test]
