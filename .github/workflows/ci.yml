@@ -465,7 +465,16 @@ jobs:
           pnpm electron:build
 
       - name: 50k-character / 20-Beat runtime performance gate
+        id: runtime-performance
+        env:
+          GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY: "1"
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:perf:ci
+
+      - name: Runner-bound Electron runtime diagnostic (failure only)
+        if: ${{ failure() && steps.runtime-performance.outcome == 'failure' }}
+        env:
+          GRIMODEX_REQUIRED_RUNTIME_GATE_OUTCOME: ${{ steps.runtime-performance.outcome }}
+        run: node electron/scripts/runtime-performance-diagnostic.mjs
 
       - name: Upload Electron runtime performance evidence
         if: always()
