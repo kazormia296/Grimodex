@@ -3463,13 +3463,54 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
   }
 });
 
-test("CI has a dedicated product-journeys gate with native Electron and SQLite", async () => {
+test("CI wires the candidate-bound C2-ZC Rust receipt before product journeys", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const job = workflow.jobs["electron-product-journeys"];
   const electronJob = workflow.jobs.electron;
 
   assert.ok(job, "electron-product-journeys job is required");
   assert.equal(job["runs-on"], "ubuntu-24.04");
+  const checkout = job.steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  const receipt = job.steps.find(
+    (step) => step.name === "Candidate-bound C2-ZC Rust acceptance gate",
+  );
+  const gate = job.steps.find((step) => step.name === "Product journey gate");
+  const shouldRunCondition =
+    "steps.product-journey-impact.outputs.should_run == 'true'";
+  assert.ok(checkout, "product journey checkout is required");
+  assert.equal(checkout.with["fetch-depth"], 0);
+  assert.notEqual(checkout.with.clean, false, "checkout must be clean");
+  assert.equal(
+    job.env.GRIMODEX_C2ZC_RUST_RECEIPT_PATH,
+    ".artifacts/local-ci/c2-zc-rust-acceptance.json",
+  );
+  assert.equal(job.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE, "origin/master");
+  assert.equal(job.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, "HEAD");
+  assert.ok(
+    receipt,
+    "the real candidate-bound Rust receipt producer is required",
+  );
+  assert.equal(receipt.if, shouldRunCondition);
+  assert.ok(job.steps.indexOf(receipt) < job.steps.indexOf(gate));
+  for (const variable of [
+    "GRIMODEX_C2ZC_RUST_RECEIPT_PATH",
+    "GRIMODEX_C2ZC_RUST_REQUESTED_BASE",
+    "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD",
+  ]) {
+    assert.equal(
+      gate.env?.[variable],
+      undefined,
+      `${variable} must stay shared`,
+    );
+  }
+  assert.equal(receipt.env.CARGO_BUILD_JOBS, "2");
+  assert.equal(receipt.env.RUST_TEST_THREADS, "2");
+  assert.match(receipt.run, /node scripts\/c2zc-rust-acceptance-receipt\.mjs/);
+  assert.match(receipt.run, /--base "\$GRIMODEX_C2ZC_RUST_REQUESTED_BASE"/);
+  assert.match(receipt.run, /--head "\$GRIMODEX_C2ZC_RUST_REQUESTED_HEAD"/);
+  assert.match(receipt.run, /--output "\$GRIMODEX_C2ZC_RUST_RECEIPT_PATH"/);
   const commands = runCommands(job);
   assert.match(commands, /pnpm exec playwright install-deps chromium/);
   assert.match(commands, /pnpm napi:build/);

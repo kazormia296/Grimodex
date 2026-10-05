@@ -484,6 +484,9 @@ jobs:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/product-journeys
+      GRIMODEX_C2ZC_RUST_RECEIPT_PATH: .artifacts/local-ci/c2-zc-rust-acceptance.json
+      GRIMODEX_C2ZC_RUST_REQUESTED_BASE: origin/master
+      GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: HEAD
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -589,6 +592,17 @@ jobs:
           steps.product-journey-impact.outputs.should_run == 'true' &&
           contains(fromJSON(steps.product-journey-impact.outputs.execution_capabilities), 'mcp')
         run: pnpm mcp:build
+
+      - name: Candidate-bound C2-ZC Rust acceptance gate
+        if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          CARGO_BUILD_JOBS: "2"
+          RUST_TEST_THREADS: "2"
+        run: |
+          node scripts/c2zc-rust-acceptance-receipt.mjs \
+            --base "$GRIMODEX_C2ZC_RUST_REQUESTED_BASE" \
+            --head "$GRIMODEX_C2ZC_RUST_REQUESTED_HEAD" \
+            --output "$GRIMODEX_C2ZC_RUST_RECEIPT_PATH"
 
       - name: Product journey gate
         if: steps.product-journey-impact.outputs.should_run == 'true'
