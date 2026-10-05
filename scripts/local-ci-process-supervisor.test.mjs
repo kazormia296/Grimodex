@@ -266,7 +266,11 @@ const state = { pid: process.pid, parent: process.ppid, auth, argv: process.argv
   mode: fs.statSync(auth).mode & 511,
   directoryMode: fs.statSync(path.dirname(auth)).mode & 511,
   authorizedBeforeStart: /MIT-MAGIC-COOKIE-1 [0-9a-f]{32}/.test(fs.readFileSync(auth, 'utf8')) };
-fs.writeFileSync(path.join(root, 'server.json'), JSON.stringify(state));
+// The file's existence is the readiness signal, so publish complete JSON atomically.
+const serverFile = path.join(root, 'server.json');
+const pendingServerFile = serverFile + '.tmp';
+fs.writeFileSync(pendingServerFile, JSON.stringify(state));
+fs.renameSync(pendingServerFile, serverFile);
 if (mode === 'server-fail') process.exit(9);
 if (mode === 'eof') { fs.closeSync(3); setInterval(() => {}, 1000); }
 else if (mode === 'hold-ready') { setInterval(() => {}, 1000); }

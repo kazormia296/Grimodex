@@ -46,7 +46,7 @@ impl SemanticAuditAppender for RecordingAppender {
             .push((project_id.map(str::to_owned), events.to_vec()));
         if self
             .failures_remaining
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
                 remaining.checked_sub(1)
             })
             .is_ok()
