@@ -74,6 +74,27 @@ impl CapacityBudget {
                 && !grant.is_some_and(|grant| grant.load(Ordering::Acquire))
                 && Instant::now() >= self.deadline)
     }
+
+    fn try_reserve_commit_step(&self) -> bool {
+        let mut used = self.steps.load(Ordering::Relaxed);
+        loop {
+            let Some(total) = used
+                .checked_add(1)
+                .filter(|total| *total <= self.step_limit)
+            else {
+                return false;
+            };
+            match self.steps.compare_exchange_weak(
+                used,
+                total,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(current) => used = current,
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -384,17 +405,10 @@ pub(crate) fn commit_transaction(conn: &Connection) -> anyhow::Result<()> {
     // synchronous connection owner consumes this credit only in COMMIT's tail.
     // This is the only commit-hook owner in the crate.
     conn.commit_hook(Some(move || {
-        if budgets.iter().any(|active| {
-            active.check().is_err()
-                || active
-                    .budget
-                    .steps
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                        used.checked_add(1)
-                            .filter(|total| *total <= active.budget.step_limit)
-                    })
-                    .is_err()
-        }) {
+        if budgets
+            .iter()
+            .any(|active| active.check().is_err() || !active.budget.try_reserve_commit_step())
+        {
             gate_refused.store(true, Ordering::Relaxed);
             return true;
         }
@@ -661,6 +675,19 @@ mod tests {
     use crate::narrative_extraction::source_revision::ForegroundValidationControl;
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
+
+    #[test]
+    fn commit_tail_step_reservation_is_bounded_and_does_not_wrap() {
+        let budget = CapacityBudget::new(1, Instant::now() + DEADLINE);
+        assert!(budget.try_reserve_commit_step());
+        assert!(!budget.try_reserve_commit_step());
+        assert_eq!(budget.sql_steps_used(), 1);
+
+        let exhausted = CapacityBudget::new(u64::MAX, Instant::now() + DEADLINE);
+        exhausted.steps.store(u64::MAX, Ordering::Relaxed);
+        assert!(!exhausted.try_reserve_commit_step());
+        assert_eq!(exhausted.sql_steps_used(), u64::MAX);
+    }
 
     #[test]
     fn json_checks_existing_owner_inside_long_strings_without_replacing_hook() {

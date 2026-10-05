@@ -360,12 +360,7 @@ impl WorkerAllocator {
         // SAFETY: this thread owns the explicit S scope; Talc serializes the heap.
         let allocation = unsafe { self.scratch.heap.alloc(layout) };
         if !allocation.is_null()
-            && self
-                .scratch_live
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
-                    live.checked_add(1)
-                })
-                .is_err()
+            && update_scratch_live(&self.scratch_live, |live| live.checked_add(1)).is_err()
         {
             // The count cannot overflow for a 64 MiB heap; still fail closed.
             unsafe { self.scratch.heap.dealloc(allocation, layout) };
@@ -438,6 +433,22 @@ impl WorkerAllocator {
     }
 }
 
+fn update_scratch_live(
+    counter: &AtomicUsize,
+    mut update: impl FnMut(usize) -> Option<usize>,
+) -> Result<usize, usize> {
+    let mut live = counter.load(Ordering::Acquire);
+    loop {
+        let Some(next) = update(live) else {
+            return Err(live);
+        };
+        match counter.compare_exchange_weak(live, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(previous) => return Ok(previous),
+            Err(current) => live = current,
+        }
+    }
+}
+
 unsafe impl GlobalAlloc for WorkerAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if self.scratch_scope_is_current() {
@@ -452,12 +463,7 @@ unsafe impl GlobalAlloc for WorkerAllocator {
             Some((heap, scratch)) => {
                 unsafe { heap.dealloc(ptr, layout) };
                 if scratch
-                    && self
-                        .scratch_live
-                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
-                            live.checked_sub(1)
-                        })
-                        .is_err()
+                    && update_scratch_live(&self.scratch_live, |live| live.checked_sub(1)).is_err()
                 {
                     std::process::abort();
                 }
@@ -664,6 +670,30 @@ mod tests {
     use std::alloc::GlobalAlloc;
 
     static TEST_ALLOCATOR: WorkerAllocator = WorkerAllocator::new();
+
+    #[test]
+    fn scratch_live_updates_reject_overflow_and_underflow() {
+        let live = AtomicUsize::new(0);
+        assert_eq!(
+            update_scratch_live(&live, |count| count.checked_sub(1)),
+            Err(0)
+        );
+        assert_eq!(
+            update_scratch_live(&live, |count| count.checked_add(1)),
+            Ok(0)
+        );
+        assert_eq!(
+            update_scratch_live(&live, |count| count.checked_sub(1)),
+            Ok(1)
+        );
+
+        live.store(usize::MAX, Ordering::Relaxed);
+        assert_eq!(
+            update_scratch_live(&live, |count| count.checked_add(1)),
+            Err(usize::MAX)
+        );
+        assert_eq!(live.load(Ordering::Relaxed), usize::MAX);
+    }
 
     #[test]
     fn q_s_origins_no_fallback_failed_realloc_and_zero_live_seal() {

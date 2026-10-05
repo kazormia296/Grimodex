@@ -1603,7 +1603,7 @@ impl WorkspaceLifecycleCore {
                             .open_transition_conflict
                             .as_ref()
                             .filter(|(owner, _)| owner == operation_id)
-                            .map_or(true, |(_, conflicts)| *conflicts),
+                            .is_none_or(|(_, conflicts)| *conflicts),
                         _ => true,
                     };
                     (*operation_id, conflicts)
