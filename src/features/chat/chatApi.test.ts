@@ -875,6 +875,7 @@ describe("chatApi - session/message persistence", () => {
       expect(chain.where).toHaveBeenCalledWith({
         eq: ["id", "session-1"],
       });
+      expect(chain.returning).not.toHaveBeenCalled();
     });
 
     it("reports whether the conditional generated-title update matched", async () => {

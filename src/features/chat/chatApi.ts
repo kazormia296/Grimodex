@@ -848,27 +848,10 @@ export async function getMessagePrompt(
   };
 }
 
-export async function updateSessionTitle(
-  id: string,
-  title: string,
-): Promise<void> {
-  await db
-    .update(chatSessions)
-    .set({ title, titleManual: 1, updatedAt: new Date().toISOString() })
-    .where(eq(chatSessions.id, id));
-}
-
-export async function updateSessionTitleIfAutomatic(
-  id: string,
-  title: string,
-): Promise<boolean> {
-  const updated = await db
-    .update(chatSessions)
-    .set({ title, updatedAt: new Date().toISOString() })
-    .where(and(eq(chatSessions.id, id), eq(chatSessions.titleManual, 0)))
-    .returning({ id: chatSessions.id });
-  return updated.length > 0;
-}
+export {
+  updateSessionTitle,
+  updateSessionTitleIfAutomatic,
+} from "./chatHistoryApi";
 
 // --- Pinned Codex entries (normalized: chat_session_pinned_codex table) ---
 

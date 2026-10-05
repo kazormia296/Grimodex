@@ -1,5 +1,6 @@
 import type { ChatStoreActionPorts } from "./chatStoreActionPorts";
 import type { ChatState } from "./chatStoreTypes";
+import type { ChatTurnRuntime } from "./chatTurnRuntime";
 import {
   clearedSessionScopeState,
   invalidateSessionScopeAuthority,
@@ -10,8 +11,10 @@ import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenc
 import { isTreeNavigationLeaseActive } from "@/lib/chatNavigationGuard";
 
 interface ChatScopeActionRuntime {
-  hasPendingCompletedTurnPersistence: () => boolean;
-  isActiveAnchoredChatStream: () => boolean;
+  turnRuntime: Pick<
+    ChatTurnRuntime,
+    "coordinator" | "hasPendingCompletedTurnPersistence"
+  >;
   notifyPendingCompletedTurnPersistence: () => void;
   resetRecallPromote: () => void;
 }
@@ -48,11 +51,26 @@ export function createChatScopeStoreActions(
     allowAnchoredStreamSwitch = false,
   ): boolean => {
     const current = get();
+    const isActiveAnchoredChatStream = (): boolean => {
+      const turn = runtime.turnRuntime.coordinator.current();
+      const current = get();
+      return Boolean(
+        turn?.surface === "chat" &&
+        turn.phase === "streaming" &&
+        turn.transportStarted &&
+        turn.transport === "http" &&
+        (turn.request.scope === "folder" ||
+          turn.request.scope === "codex" ||
+          turn.request.scope === "snippet") &&
+        turn.request.scope === current.chatScope &&
+        turn.request.scopeAnchorId === current.scopeAnchorId,
+      );
+    };
     const isStreaming =
       current.isStreaming &&
-      !(allowAnchoredStreamSwitch && runtime.isActiveAnchoredChatStream());
+      !(allowAnchoredStreamSwitch && isActiveAnchoredChatStream());
     const hasPendingCompletedTurnPersistence =
-      runtime.hasPendingCompletedTurnPersistence();
+      runtime.turnRuntime.hasPendingCompletedTurnPersistence();
     if (
       !isChatAuthorityMutationBlocked({
         isStreaming,

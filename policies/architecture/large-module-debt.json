@@ -8,7 +8,7 @@
       "maxRuntimeImports": 36
     },
     "src/features/chat/chatApi.ts": {
-      "maxLines": 1307
+      "maxLines": 1290
     },
     "src/features/chat/contextBuilder.ts": {
       "maxLines": 2395
