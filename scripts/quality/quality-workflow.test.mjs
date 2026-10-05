@@ -202,12 +202,14 @@ function validateGraphProposalContract(executionPlan) {
     "batch `16x32`",
     "SQL `100,000 VM steps`",
     "`1,000` steps",
-    "`6 MiB`",
     "Graph `100ms`",
     "reader／busy wait `0`",
   ]) {
     assert.match(queryResourceRow, new RegExp(escapeRegExp(queryBound)));
   }
+  assert.match(queryResourceRow, /input\/frame\/fixed-buffer limits/);
+  assert.match(queryResourceRow, /aggregate physical-memory cap\/proofなし/);
+  assert.doesNotMatch(queryResourceRow, /6 MiB|4\.5 MiB|1\.5 MiB/);
   const buildResourceRow = resourceRow("whole-project B Index build");
   assert.match(
     buildResourceRow,
@@ -363,33 +365,20 @@ function validateGraphProposalContract(executionPlan) {
     "Full maintenance journeys and effective review metadata must remain explicit",
   );
 
-  const requiredMemoryPatterns = [
-    /buildには`mandatory end-to-end peak memory for the full build-through-publish interval`.*prepare／A2 qualificationからpublish＋cleanupまで/,
-    /各full-set maintenance pathにも個別のend-to-end peak total memory/,
-    /roster bytesとRevision-ID overheadはcomponents onlyとして別に報告する/,
-    /snapshot roster＋dependency edges/,
-    /A2 row／JSON／parsed bundle／material/,
-    /rescan roster＋edges/,
-    /digest／serialization/,
-    /D1 prepared／digest／verification collections/,
-    /edge observations／states/,
-    /DB／statement／cache/,
-    /container capacity／temp copies/,
-    /simultaneous high-water mark.*documented conservative upper bound/,
-    /method／coverage／uncertainty/,
-    /unaccounted major structureがあればcapacity decisionをしてはならない/,
-  ];
-  for (const memoryPattern of requiredMemoryPatterns) {
-    assert.match(
-      proposal,
-      memoryPattern,
-      "full build and maintenance memory accounting must cover every major retained structure",
-    );
-  }
+  assert.match(
+    proposal,
+    /buildと各full-set maintenance pathのworkload／wall／CPU／SQL／I\/O／temporary storage／lock・connection occupation／cancellation等は個別に観測する.*aggregate physical-memory proof、全major allocationの同時peak accounting、またはconservative upper boundは要求しない/,
+    "build and maintenance resource observations must not require aggregate memory proof",
+  );
+  assert.match(
+    proposal,
+    /supported work size\/build memory\/SQL\/deadlineはその結果から後で選ぶ/,
+    "whole-project capacity values remain unratified",
+  );
   assert.match(
     graphAcceptanceNarrative,
-    /buildの`mandatory end-to-end peak memory for the full build-through-publish interval`.*各full-set maintenance validation attemptの個別end-to-end peak total memory.*roster bytesとRevision-ID overheadはcomponents only/is,
-    "L9 capacity metrics must require end-to-end memory for build and maintenance",
+    /buildと各full-set maintenance validationのresource\/lifecycle observationsは別budgetとして扱い、aggregate physical-memory proof、mandatory total-peak accounting、または全major allocationのconservative upper boundを要求しない.*supported whole-project capacityは別途選択・確認されるまで未批准/,
+    "L9 capacity observations must retain separate budgets without restoring aggregate memory proof",
   );
   assert.match(
     graphAcceptanceNarrative,
@@ -452,7 +441,7 @@ function validateGraphProposalContract(executionPlan) {
   assert.match(rosterRow, /Entity／Relation／Evidenceの各recordを全件・同一順序.*missing／duplicateなし/);
   assert.match(
     graphAcceptanceNarrative,
-    /qualified material record count = `entities\.len \+ relations\.len \+ material_basis\.evidence_set\.len`.*各 Entity／Relation／Evidence entryを各1件.*Entity-only bundleもvalid.*Revision-ID overhead.*exact complete roster.*no missing／no duplicates/,
+    /qualified material record count = `entities\.len \+ relations\.len \+ material_basis\.evidence_set\.len`.*各 Entity／Relation／Evidence entryを各1件.*Entity-only bundleもvalid.*exact complete roster.*no missing／no duplicates/,
   );
   assert.doesNotMatch(
     graphAcceptanceNarrative,
@@ -1543,30 +1532,12 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
             ),
         },
         {
-          label: "optional whole-build peak",
-          expected: "full build and maintenance memory accounting must cover every major retained structure",
+          label: "reintroduced aggregate physical-memory proof",
+          expected: "build and maintenance resource observations must not require aggregate memory proof",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
-              "`mandatory end-to-end peak memory for the full build-through-publish interval`",
-              "`optional end-to-end peak memory for the full build-through-publish interval`",
-            ),
-        },
-        {
-          label: "roster-only peak",
-          expected: "full build and maintenance memory accounting must cover every major retained structure",
-          mutate: (boundedProposal) =>
-            boundedProposal.replace(
-              "roster bytesとRevision-ID overheadはcomponents onlyとして別に報告する",
-              "roster bytes only are reported",
-            ),
-        },
-        {
-          label: "missing major structure accounting",
-          expected: "full build and maintenance memory accounting must cover every major retained structure",
-          mutate: (boundedProposal) =>
-            boundedProposal.replace(
-              "snapshot roster＋dependency edges",
-              "snapshot roster",
+              "aggregate physical-memory proof、全major allocationの同時peak accounting、またはconservative upper boundは要求しない",
+              "aggregate physical-memory proof、全major allocationの同時peak accounting、またはconservative upper boundを要求する",
             ),
         },
         {
@@ -1682,7 +1653,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       for (const [pattern, label] of [
         [/三つのresource unit/, "three resource units"],
         [/512 records.*6 MiB.*validation contract/, "Revision bundle validation limits"],
-        [/read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*`6 MiB`.*Graph `100ms`.*reader／busy wait `0`/, "seed-local query limits"],
+        [/read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*Graph `100ms`.*reader／busy wait `0`.*aggregate physical-memory cap\/proof(?:なし|は要求しない)/, "seed-local query limits and removed aggregate proof"],
         [/whole-project B Index build.*現在の全候補.*qualified material.*atomic publish/, "whole-project build scope"],
         [/queryの合計値はbuildのcandidate count、compact roster count、cumulative bytes、cumulative SQLをcapしない/, "query totals must not cap build totals"],
         [/small／keyset pages.*一度に一つのA2 Revision/, "paged one-revision-at-a-time build"],
@@ -1692,9 +1663,9 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         [/pinした同一read transaction内.*page間でtransaction／mutexを解放しない/, "page statements stay inside the pinned read transaction"],
         [/page途中のretryは行わず.*snapshot全体を破棄/, "retry restarts from a fresh snapshot"],
         [/source／decision／scope drift at barriers.*cancellation recovery.*cold reopen.*atomic visibility.*query independence/is, "deterministic semantic gates"],
-        [/Capacity benchmark metricsは、compact full rosterとpublish-time complete rescanを含めて第1診断stage.*numeric build capacityの批准ではない.*mandatory end-to-end peak memory.*full-set maintenance path/is, "measurement precedes build capacity"],
-        [/roster bytesとRevision-ID overheadはcomponents only.*snapshot roster＋dependency edges.*method／coverage／uncertainty/, "capacity benchmark memory accounting"],
-        [/supported work size／build memory／SQL／deadlineはその結果から後で選ぶ/, "supported build values are selected after measurement"],
+        [/Capacity benchmark metricsは、compact full rosterとpublish-time complete rescanを含めて第1診断stage.*numeric build capacityの批准ではない.*workload／wall／CPU／SQL／I\/O／temporary storage.*aggregate physical-memory proof.*要求しない/is, "resource measurement without aggregate memory proof"],
+        [/aggregate physical-memory proof、全major allocationの同時peak accounting、またはconservative upper boundは要求しない/, "aggregate physical-memory proof remains deleted"],
+        [/supported work size\/build memory\/SQL\/deadlineはその結果から後で選ぶ/, "supported build values are selected after measurement"],
       ]) {
         assert.match(
           proposal,
