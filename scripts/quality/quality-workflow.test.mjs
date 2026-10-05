@@ -31,10 +31,7 @@ function sectionFromHeading(markdown, heading) {
     "m",
   );
   const headingMatch = markdown.match(headingPattern);
-  assert.ok(
-    headingMatch,
-    heading + " must exist as a level-two heading",
-  );
+  assert.ok(headingMatch, heading + " must exist as a level-two heading");
 
   const sectionStart = headingMatch.index + headingMatch[0].length;
   const remaining = markdown.slice(sectionStart);
@@ -68,7 +65,8 @@ async function assertLocalMarkdownLink(sourcePath, targetPath, anchor) {
     const [destination, fragment] = match[1].split("#");
     return (
       !/^[a-z]+:/i.test(destination) &&
-      path.resolve(repoRoot, path.dirname(sourcePath), destination) === expectedPath &&
+      path.resolve(repoRoot, path.dirname(sourcePath), destination) ===
+        expectedPath &&
       fragment === anchor
     );
   });
@@ -89,9 +87,7 @@ async function assertLocalMarkdownLink(sourcePath, targetPath, anchor) {
 
 function commandBindings(section, command, label) {
   const lines =
-    section.match(
-      new RegExp(`${escapeRegExp(command)}[^\\n]*`, "g"),
-    ) ?? [];
+    section.match(new RegExp(`${escapeRegExp(command)}[^\\n]*`, "g")) ?? [];
   assert.ok(lines.length > 0, `${label} command must be written`);
   return lines.map((line) => {
     const base = line.match(/--base\s+("[^"]+"|'[^']+'|\S+)/)?.[1];
@@ -125,7 +121,10 @@ function extractGraphProposalSections(executionPlan) {
     "##### Proposal/5 acceptance split (confirmed contract)",
   );
   assert.ok(lifecycleStart >= 0, "Graph lifecycle matrix must be present");
-  assert.ok(acceptanceStart > lifecycleStart, "Graph acceptance split must follow lifecycle");
+  assert.ok(
+    acceptanceStart > lifecycleStart,
+    "Graph acceptance split must follow lifecycle",
+  );
   const lifecycle = proposal.slice(lifecycleStart, acceptanceStart);
   const outsideValidationStart = lifecycle.indexOf(
     "##### Outside-initial-build full-roster validation (proposal/5 confirmed contract)",
@@ -156,16 +155,27 @@ function extractGraphProposalSections(executionPlan) {
   const resourceStart = l7Graph.indexOf("| resource unit | scope | contract |");
   const resourceEnd = l7Graph.indexOf("\n\nworkspace authority", resourceStart);
   assert.ok(resourceStart >= 0, "Graph resource-unit table must be present");
-  assert.ok(resourceEnd > resourceStart, "Graph resource-unit table must have a bounded end");
+  assert.ok(
+    resourceEnd > resourceStart,
+    "Graph resource-unit table must have a bounded end",
+  );
   const resourceRows = l7Graph.slice(resourceStart, resourceEnd).split("\n");
 
   const l9Start = executionPlan.indexOf("## L9: 受入れと完了判定\n");
   const completionStart = executionPlan.indexOf("\n### 完了区分", l9Start);
   assert.ok(l9Start >= 0, "L9 acceptance section must be present");
-  assert.ok(completionStart > l9Start, "L9 acceptance section must have a bounded end");
+  assert.ok(
+    completionStart > l9Start,
+    "L9 acceptance section must have a bounded end",
+  );
   const l9Acceptance = executionPlan.slice(l9Start, completionStart);
-  const l9GraphAcceptanceStart = l9Acceptance.indexOf("whole-project B buildは");
-  assert.ok(l9GraphAcceptanceStart >= 0, "Graph acceptance narrative must cover the whole-project build");
+  const l9GraphAcceptanceStart = l9Acceptance.indexOf(
+    "whole-project B buildは",
+  );
+  assert.ok(
+    l9GraphAcceptanceStart >= 0,
+    "Graph acceptance narrative must cover the whole-project build",
+  );
 
   return {
     proposal,
@@ -195,7 +205,10 @@ function validateGraphProposalContract(executionPlan) {
   };
   const revisionResourceRow = resourceRow("Entity／Relation Revision bundle");
   assert.match(revisionResourceRow, /512 records.*6 MiB.*validation contract/);
-  assert.doesNotMatch(revisionResourceRow, /whole-project|query totals|deadline/i);
+  assert.doesNotMatch(
+    revisionResourceRow,
+    /whole-project|query totals|deadline/i,
+  );
   const queryResourceRow = resourceRow("seed-local Graph query");
   for (const queryBound of [
     "read／admission `512`",
@@ -224,7 +237,10 @@ function validateGraphProposalContract(executionPlan) {
     /full-set maintenance validation.*Source re-resolution.*is_complete_registered.*restore／cold reopen/,
     "whole-project resource unit must include full-set maintenance validation",
   );
-  assert.match(buildResourceRow, /supported capacityの数値は第1診断stage後まで未批准/);
+  assert.match(
+    buildResourceRow,
+    /supported capacityの数値は第1診断stage後まで未批准/,
+  );
   assert.doesNotMatch(
     buildResourceRow,
     /(?:candidate count|compact roster count|cumulative bytes|cumulative SQL)[^|]*(?:512|100,000|6 MiB|100ms|deadline\s*[:=]|\d+ms)/i,
@@ -250,9 +266,15 @@ function validateGraphProposalContract(executionPlan) {
     /(?:新しいframework|new framework)(?:は|を)\s*(?:作る|追加する|create|add|introduce)/i,
     "Graph lifecycle must not create a new framework",
   );
-  assert.match(proposal, /新しいauthority、schema、consumer、persistent adjacencyは追加しない/);
+  assert.match(
+    proposal,
+    /新しいauthority、schema、consumer、persistent adjacencyは追加しない/,
+  );
   assert.match(lifecycle, /persistent stagingは作らない/);
-  assert.match(lifecycle, /新しいframework、authority、schema、consumer、persistent adjacencyを作らない/);
+  assert.match(
+    lifecycle,
+    /新しいframework、authority、schema、consumer、persistent adjacencyを作らない/,
+  );
 
   const maintenancePath = (label) => {
     const row = outsideValidation
@@ -365,11 +387,29 @@ function validateGraphProposalContract(executionPlan) {
     "Full maintenance journeys and effective review metadata must remain explicit",
   );
 
-  assert.match(
-    proposal,
-    /buildと各full-set maintenance pathのworkload／wall／CPU／SQL／I\/O／temporary storage／lock・connection occupation／cancellation等は個別に観測する.*aggregate physical-memory proof、全major allocationの同時peak accounting、またはconservative upper boundは要求しない/,
-    "build and maintenance resource observations must not require aggregate memory proof",
-  );
+  const requiredMemoryPatterns = [
+    /buildには`mandatory end-to-end peak memory for the full build-through-publish interval`.*prepare／A2 qualificationからpublish＋cleanupまで/,
+    /各full-set maintenance pathにも個別のend-to-end peak total memory/,
+    /roster bytesとRevision-ID overheadはcomponents onlyとして別に報告する/,
+    /snapshot roster＋dependency edges/,
+    /A2 row／JSON／parsed bundle／material/,
+    /rescan roster＋edges/,
+    /digest／serialization/,
+    /D1 prepared／digest／verification collections/,
+    /edge observations／states/,
+    /DB／statement／cache/,
+    /container capacity／temp copies/,
+    /simultaneous high-water mark.*documented conservative upper bound/,
+    /method／coverage／uncertainty/,
+    /unaccounted major structureがあればcapacity decisionをしてはならない/,
+  ];
+  for (const memoryPattern of requiredMemoryPatterns) {
+    assert.match(
+      proposal,
+      memoryPattern,
+      "full build and maintenance memory accounting must cover every major retained structure",
+    );
+  }
   assert.match(
     proposal,
     /supported work size\/build memory\/SQL\/deadlineはその結果から後で選ぶ/,
@@ -377,8 +417,8 @@ function validateGraphProposalContract(executionPlan) {
   );
   assert.match(
     graphAcceptanceNarrative,
-    /buildと各full-set maintenance validationのresource\/lifecycle observationsは別budgetとして扱い、aggregate physical-memory proof、mandatory total-peak accounting、または全major allocationのconservative upper boundを要求しない.*supported whole-project capacityは別途選択・確認されるまで未批准/,
-    "L9 capacity observations must retain separate budgets without restoring aggregate memory proof",
+    /buildの`mandatory end-to-end peak memory for the full build-through-publish interval`.*各full-set maintenance validation attemptの個別end-to-end peak total memory.*roster bytesとRevision-ID overheadはcomponents only/is,
+    "L9 capacity metrics must require end-to-end memory for build and maintenance",
   );
   assert.match(
     graphAcceptanceNarrative,
@@ -386,10 +426,18 @@ function validateGraphProposalContract(executionPlan) {
     "L9 acceptance must bind maintenance validation and query fallback to the same contract",
   );
 
-  const phaseTableStart = lifecycle.indexOf("| phase | statement / read transaction |");
+  const phaseTableStart = lifecycle.indexOf(
+    "| phase | statement / read transaction |",
+  );
   const phaseTableEnd = lifecycle.indexOf("\nこの表は有限", phaseTableStart);
-  assert.ok(phaseTableStart >= 0, "Graph phase lifecycle table must be present");
-  assert.ok(phaseTableEnd > phaseTableStart, "Graph phase lifecycle table must have a bounded end");
+  assert.ok(
+    phaseTableStart >= 0,
+    "Graph phase lifecycle table must be present",
+  );
+  assert.ok(
+    phaseTableEnd > phaseTableStart,
+    "Graph phase lifecycle table must have a bounded end",
+  );
   const phaseRows = lifecycle.slice(phaseTableStart, phaseTableEnd).split("\n");
   const phaseRow = (phase) => {
     const row = phaseRows.find(
@@ -401,7 +449,10 @@ function validateGraphProposalContract(executionPlan) {
   for (const [phase, statementPattern] of [
     ["prepare", /prepare statement/],
     ["page", /page.*statement/],
-    ["source/coverage", /Source re-resolution.*complete registration\/coverage verification/],
+    [
+      "source/coverage",
+      /Source re-resolution.*complete registration\/coverage verification/,
+    ],
     ["reopen/query", /restore／cold reopen.*full-roster verification.*query/],
     ["publish", /complete-rescan statement/],
   ]) {
@@ -429,16 +480,36 @@ function validateGraphProposalContract(executionPlan) {
   const materialRow = acceptanceRow(
     ">512 qualified material records across multiple individually valid Revisions",
   );
-  assert.match(materialRow, /entities\.len \+ relations\.len \+ material_basis\.evidence_set\.len/);
-  assert.match(materialRow, /各 Entity／Relation／Evidence entryを各1件として数える/);
+  assert.match(
+    materialRow,
+    /entities\.len \+ relations\.len \+ material_basis\.evidence_set\.len/,
+  );
+  assert.match(
+    materialRow,
+    /各 Entity／Relation／Evidence entryを各1件として数える/,
+  );
   assert.match(materialRow, /Entity-only bundleもvalid/);
-  assert.doesNotMatch(materialRow, /Entity \+ Relation \+ Evidence|record\s*=\s*|組|tuple/i);
-  assert.match(materialRow, /exact complete roster.*Entity／Relation／Evidenceの全record.*no missing／no duplicates/);
-  const decoyRow = acceptanceRow(">512 unrelated/ineligible candidate Revisions");
-  assert.match(decoyRow, /Source／Decision／Freshness／Scope不一致.*qualificationから除外/);
+  assert.doesNotMatch(
+    materialRow,
+    /Entity \+ Relation \+ Evidence|record\s*=\s*|組|tuple/i,
+  );
+  assert.match(
+    materialRow,
+    /exact complete roster.*Entity／Relation／Evidenceの全record.*no missing／no duplicates/,
+  );
+  const decoyRow = acceptanceRow(
+    ">512 unrelated/ineligible candidate Revisions",
+  );
+  assert.match(
+    decoyRow,
+    /Source／Decision／Freshness／Scope不一致.*qualificationから除外/,
+  );
   assert.match(decoyRow, /exact roster.*不変/);
   const rosterRow = acceptanceRow("exact roster invariance");
-  assert.match(rosterRow, /Entity／Relation／Evidenceの各recordを全件・同一順序.*missing／duplicateなし/);
+  assert.match(
+    rosterRow,
+    /Entity／Relation／Evidenceの各recordを全件・同一順序.*missing／duplicateなし/,
+  );
   assert.match(
     graphAcceptanceNarrative,
     /qualified material record count = `entities\.len \+ relations\.len \+ material_basis\.evidence_set\.len`.*各 Entity／Relation／Evidence entryを各1件.*Entity-only bundleもvalid.*exact complete roster.*no missing／no duplicates/,
@@ -559,15 +630,59 @@ test("repo routing points AI behavior authoring and diff evaluation to narrow sk
 test("entrypoints and scoped skills resolve canonical policy anchors before applicable work", async () => {
   const policyPath = "policies/quality/iron-laws.md";
   const routes = new Map([
-    ["AGENTS.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001", "immutable-identity"]],
-    [".agents/skills/debug-issue/SKILL.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001"]],
-    [".agents/skills/implement-feature/SKILL.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001", "immutable-identity"]],
-    [".agents/skills/review-code/SKILL.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001", "immutable-identity"]],
-    [".agents/skills/refactor-cross-boundaries/SKILL.md", ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001", "immutable-identity"]],
-    [".agents/skills/test-feature/SKILL.md", ["agent-validation", "immutable-identity"]],
+    [
+      "AGENTS.md",
+      [
+        "agent-validation",
+        "GDX-PRECHECK-001",
+        "GDX-TRACE-001",
+        "immutable-identity",
+      ],
+    ],
+    [
+      ".agents/skills/debug-issue/SKILL.md",
+      ["agent-validation", "GDX-PRECHECK-001", "GDX-TRACE-001"],
+    ],
+    [
+      ".agents/skills/implement-feature/SKILL.md",
+      [
+        "agent-validation",
+        "GDX-PRECHECK-001",
+        "GDX-TRACE-001",
+        "immutable-identity",
+      ],
+    ],
+    [
+      ".agents/skills/review-code/SKILL.md",
+      [
+        "agent-validation",
+        "GDX-PRECHECK-001",
+        "GDX-TRACE-001",
+        "immutable-identity",
+      ],
+    ],
+    [
+      ".agents/skills/refactor-cross-boundaries/SKILL.md",
+      [
+        "agent-validation",
+        "GDX-PRECHECK-001",
+        "GDX-TRACE-001",
+        "immutable-identity",
+      ],
+    ],
+    [
+      ".agents/skills/test-feature/SKILL.md",
+      ["agent-validation", "immutable-identity"],
+    ],
     [".agents/skills/explore-codebase/SKILL.md", ["agent-validation"]],
-    [".agents/skills/grimodex-author/SKILL.md", ["agent-validation", "GDX-PRECHECK-001"]],
-    [".agents/skills/grimodex-impact-gate/SKILL.md", ["agent-validation", "GDX-TRACE-001", "immutable-identity"]],
+    [
+      ".agents/skills/grimodex-author/SKILL.md",
+      ["agent-validation", "GDX-PRECHECK-001"],
+    ],
+    [
+      ".agents/skills/grimodex-impact-gate/SKILL.md",
+      ["agent-validation", "GDX-TRACE-001", "immutable-identity"],
+    ],
   ]);
   for (const [sourcePath, anchors] of routes) {
     for (const anchor of anchors) {
@@ -583,16 +698,29 @@ test("entrypoints and scoped skills resolve canonical policy anchors before appl
     [/証跡|PR|merge|release/, "GDX-TRACE-001"],
     [/immutable|child|revision|不変ID/, "immutable-identity"],
   ]) {
-    const route = agents.split("\n").find((line) => line.includes(`#${anchor}`));
+    const route = agents
+      .split("\n")
+      .find((line) => line.includes(`#${anchor}`));
     assert.match(route, scope, `${anchor} must declare when it applies`);
   }
 
   const claude = await read("CLAUDE.md");
-  assert.match(claude, /^@AGENTS\.md$/m, "Claude must import the shared instruction entrypoint");
+  assert.match(
+    claude,
+    /^@AGENTS\.md$/m,
+    "Claude must import the shared instruction entrypoint",
+  );
   await assertLocalMarkdownLink("README.md", "AGENTS.md");
   for (const skill of [
-    "add-electron-command", "bump-version", "debug-issue", "explore-codebase",
-    "implement-feature", "polish-motion", "review-code", "ship-branch", "test-feature",
+    "add-electron-command",
+    "bump-version",
+    "debug-issue",
+    "explore-codebase",
+    "implement-feature",
+    "polish-motion",
+    "review-code",
+    "ship-branch",
+    "test-feature",
   ]) {
     await assertLocalMarkdownLink(
       `.claude/skills/${skill}/SKILL.md`,
@@ -603,17 +731,46 @@ test("entrypoints and scoped skills resolve canonical policy anchors before appl
 
 test("validation scope preserves instruction gates and conditional CI without routine overtesting", async () => {
   const policy = await read("policies/quality/iron-laws.md");
-  const validation = normalizeSection(sectionFromAnchor(policy, "agent-validation"));
-  assert.match(validation, /Investigation.*review only.*Read-only.*no Quick\/Full/i);
+  const validation = normalizeSection(
+    sectionFromAnchor(policy, "agent-validation"),
+  );
+  assert.match(
+    validation,
+    /Investigation.*review only.*Read-only.*no Quick\/Full/i,
+  );
   assert.match(validation, /Ordinary prose.*formatting.*diff.*link checks/i);
-  assert.match(validation, /Implementation or bug fix.*Focused checks.*affected boundaries/i);
-  assert.match(validation, /AI instructions.*skills.*policy.*contract tests.*grimodex-impact-gate.*Light/i);
-  assert.match(validation, /Commit only.*requested candidate commit.*no Quick.*merge-readiness/i);
-  assert.match(validation, /PR\/release evidence with CI allowed.*Clean candidate Quick.*immediate verify/i);
-  assert.match(validation, /Merge or release tag with CI allowed.*Full and verify.*preflight/i);
-  assert.match(validation, /Instruction and policy changes are behavior changes.*Markdown/i);
-  assert.match(validation, /successful command result.*same candidate, environment, and command.*rerun when those inputs change/i);
-  assert.match(validation, /all-suite fallback.*empty, unavailable, or unclassified diffs.*required acceptance receipt/i);
+  assert.match(
+    validation,
+    /Implementation or bug fix.*Focused checks.*affected boundaries/i,
+  );
+  assert.match(
+    validation,
+    /AI instructions.*skills.*policy.*contract tests.*grimodex-impact-gate.*Light/i,
+  );
+  assert.match(
+    validation,
+    /Commit only.*requested candidate commit.*no Quick.*merge-readiness/i,
+  );
+  assert.match(
+    validation,
+    /PR\/release evidence with CI allowed.*Clean candidate Quick.*immediate verify/i,
+  );
+  assert.match(
+    validation,
+    /Merge or release tag with CI allowed.*Full and verify.*preflight/i,
+  );
+  assert.match(
+    validation,
+    /Instruction and policy changes are behavior changes.*Markdown/i,
+  );
+  assert.match(
+    validation,
+    /successful command result.*same candidate, environment, and command.*rerun when those inputs change/i,
+  );
+  assert.match(
+    validation,
+    /all-suite fallback.*empty, unavailable, or unclassified diffs.*required acceptance receipt/i,
+  );
 
   const agents = await read("AGENTS.md");
   assert.match(agents, /承認済み.*可逆.*修正・検証.*再承認を求めない/s);
@@ -623,9 +780,7 @@ test("validation scope preserves instruction gates and conditional CI without ro
 
 test("agent operation contracts keep candidate evidence and bounded identity checks aligned", async () => {
   const ironLaws = await read("policies/quality/iron-laws.md");
-  const trace = normalizeSection(
-    sectionFromAnchor(ironLaws, "GDX-TRACE-001"),
-  );
+  const trace = normalizeSection(sectionFromAnchor(ironLaws, "GDX-TRACE-001"));
   const identity = normalizeSection(
     sectionFromAnchor(ironLaws, "immutable-identity"),
   );
@@ -643,7 +798,10 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     for (const [label, pattern] of labels) {
       const index = text.search(pattern);
       assert.ok(index >= 0, `${label} must be present`);
-      assert.ok(index > previous, `${label} must follow the preceding operation`);
+      assert.ok(
+        index > previous,
+        `${label} must follow the preceding operation`,
+      );
       previous = index;
     }
   };
@@ -655,24 +813,66 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     ["Quick", /run local Quick/],
     ["immediate verify", /Quick is immediately verified/],
   ]);
-  assert.match(trace, /Quick is immediately verified with the same fixed base\/head values/i);
-  assert.match(trace, /Commit-only or CI-excluded work.*without starting Quick.*does not claim merge\/release readiness/i);
-  assert.match(trace, /without a requested commit or PR.*does not create a commit or start PR-bound CI solely for Quick/i);
-  assert.match(trace, /Normal PR and branch pushes do not start hosted GitHub Actions runners/i);
-  assert.match(trace, /absence of hosted PR checks is not evidence of a passing gate/i);
-  assert.match(trace, /Windows NSIS final compilation.*separate manual Full CI.*tag-release obligation.*unavailable release-only check is never passed/i);
+  assert.match(
+    trace,
+    /Quick is immediately verified with the same fixed base\/head values/i,
+  );
+  assert.match(
+    trace,
+    /Commit-only or CI-excluded work.*without starting Quick.*does not claim merge\/release readiness/i,
+  );
+  assert.match(
+    trace,
+    /without a requested commit or PR.*does not create a commit or start PR-bound CI solely for Quick/i,
+  );
+  assert.match(
+    trace,
+    /Normal PR and branch pushes do not start hosted GitHub Actions runners/i,
+  );
+  assert.match(
+    trace,
+    /absence of hosted PR checks is not evidence of a passing gate/i,
+  );
+  assert.match(
+    trace,
+    /Windows NSIS final compilation.*separate manual Full CI.*tag-release obligation.*unavailable release-only check is never passed/i,
+  );
 
   for (const contract of [identity, matrix]) {
-    assert.match(contract, /immutable child.*revision|immutable.*child.*revision/i);
-    assert.match(contract, /親`runId`だけ.*再選択|parent.*runId.*reselect|reselect.*parent.*runId.*alone/is);
-    assert.match(contract, /limit.*順序.*cursor.*N\/N\+1|limit.*order.*cursor.*N\/N\+1/i);
-    assert.match(contract, /(?:操作対象外|対象外)Decision.*不変|non-target.*Decision.*unchanged/i);
+    assert.match(
+      contract,
+      /immutable child.*revision|immutable.*child.*revision/i,
+    );
+    assert.match(
+      contract,
+      /親`runId`だけ.*再選択|parent.*runId.*reselect|reselect.*parent.*runId.*alone/is,
+    );
+    assert.match(
+      contract,
+      /limit.*順序.*cursor.*N\/N\+1|limit.*order.*cursor.*N\/N\+1/i,
+    );
+    assert.match(
+      contract,
+      /(?:操作対象外|対象外)Decision.*不変|non-target.*Decision.*unchanged/i,
+    );
   }
-  assert.match(identity, /restor.*Decision.*reread.*display.*receipt.*same.*(?:child|revision).*ID/i);
-  assert.match(identity, /(?:limit.*filter|filter.*limit|limit.*不存在|limit.*absence)/i);
-  assert.match(identity, /durable ID.*corresponding UI.*projection.*before editing/i);
+  assert.match(
+    identity,
+    /restor.*Decision.*reread.*display.*receipt.*same.*(?:child|revision).*ID/i,
+  );
+  assert.match(
+    identity,
+    /(?:limit.*filter|filter.*limit|limit.*不存在|limit.*absence)/i,
+  );
+  assert.match(
+    identity,
+    /durable ID.*corresponding UI.*projection.*before editing/i,
+  );
   assert.match(identity, /selector.*(?:ready|readiness)/i);
-  assert.match(runbook, /durable ID.*corresponding UI\s*projection before editing/is);
+  assert.match(
+    runbook,
+    /durable ID.*corresponding UI\s*projection before editing/is,
+  );
   assert.match(runbook, /selector.*ready signal/);
   assert.match(runbook, /33 catalog entries as 11\/11\/11 shards/);
   assert.match(
@@ -687,14 +887,32 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     bump,
     /commit／PRを依頼していない場合はQuickのためだけにcommitを作らず.*CIも開始しない/is,
   );
-  assert.match(bump, /上記のPR／release条件を満たす場合だけ.*Quickと直後のverifyを実行/is);
+  assert.match(
+    bump,
+    /上記のPR／release条件を満たす場合だけ.*Quickと直後のverifyを実行/is,
+  );
   assert.match(createBranch, /git worktree add -b/);
   assert.match(createBranch, /保存先とbranch名の衝突/);
-  assert.match(createBranch, /明示された新worktreeでは元checkoutのdirty状態は停止条件にせず/);
-  assert.match(ship, /依頼が push のみ、PR 作成まで、マージまで.*依頼文から確定/);
-  assert.match(ship, /push のみでは.*PR／merge 用 Quick／Full.*開始せず.*remote HEAD 確認で完了/);
-  assert.match(ship, /PR 作成までなら.*Quick gate.*完了し.*merge 用 gate へ進まない/);
-  assert.match(ship, /auto-merge が有効.*push のみまたは PR 作成だけ.*push せず停止/);
+  assert.match(
+    createBranch,
+    /明示された新worktreeでは元checkoutのdirty状態は停止条件にせず/,
+  );
+  assert.match(
+    ship,
+    /依頼が push のみ、PR 作成まで、マージまで.*依頼文から確定/,
+  );
+  assert.match(
+    ship,
+    /push のみでは.*PR／merge 用 Quick／Full.*開始せず.*remote HEAD 確認で完了/,
+  );
+  assert.match(
+    ship,
+    /PR 作成までなら.*Quick gate.*完了し.*merge 用 gate へ進まない/,
+  );
+  assert.match(
+    ship,
+    /auto-merge が有効.*push のみまたは PR 作成だけ.*push せず停止/,
+  );
   assert.match(ship, /candidate_base.*candidate_head.*Quick.*verify/is);
   assert.match(
     ship,
@@ -704,12 +922,21 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     ship,
     /CI明示除外の作業ではQuickを開始せず.*merge／release readiness/is,
   );
-  assert.match(ship, /上記のPR／release／CI条件を満たす場合だけ.*Quickと直後のverify/is);
+  assert.match(
+    ship,
+    /上記のPR／release／CI条件を満たす場合だけ.*Quickと直後のverify/is,
+  );
   assert.match(ship, /mergeまでがゴールでCIが許可されている場合.*Full/is);
   assert.match(ship, /CIが明示的に除外されている場合はFullとmergeを開始せず/);
-  assert.match(ship, /上記のmerge／CI条件を満たす場合だけ.*Fullと直後のverify/is);
+  assert.match(
+    ship,
+    /上記のmerge／CI条件を満たす場合だけ.*Fullと直後のverify/is,
+  );
   assert.match(bump, /release commit後.*cleanなHEAD.*Quick.*verify/is);
-  assert.match(bump, /release_base.*release_head.*ci:local:full.*ci:local:verify/is);
+  assert.match(
+    bump,
+    /release_base.*release_head.*ci:local:full.*ci:local:verify/is,
+  );
   assert.match(
     bump,
     /tag／Draft Releaseが依頼範囲に含まれ.*CIが許可され.*mergeが完了した場合だけ.*Full/is,
@@ -718,7 +945,10 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     bump,
     /local／commit-only／PR-only.*CI明示除外.*Step 9.*Full／verify／tag／Draft Releaseを開始せず.*release readiness/is,
   );
-  assert.match(bump, /上記のrelease／CI／merge条件を満たす場合だけ.*release Fullと直後のverify/is);
+  assert.match(
+    bump,
+    /上記のrelease／CI／merge条件を満たす場合だけ.*release Fullと直後のverify/is,
+  );
 
   const nirValidationSection = normalizeSection(
     sectionFromHeading(nirPlan, "## 実装時の検証手順"),
@@ -758,9 +988,7 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     ship,
     "## 2. ローカルCI gateを固定する",
   );
-  const shipCiSection = normalizeSection(
-    shipCiRawSection,
-  );
+  const shipCiSection = normalizeSection(shipCiRawSection);
   const shipMergePrecheckRawSection = sectionFromHeading(
     ship,
     "## 6. Merge 直前に再検証する",
@@ -774,7 +1002,11 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
 
   function assertPolicyContract(label, pattern) {
-    assert.match(policySection, pattern, label + " is missing from GDX-PRECHECK-001");
+    assert.match(
+      policySection,
+      pattern,
+      label + " is missing from GDX-PRECHECK-001",
+    );
   }
 
   for (const phrase of [
@@ -812,7 +1044,10 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     assertPolicyContract("candidate/reviewer contract", phrase);
   }
   assert.match(policySection, /roles do not overlap/i);
-  assert.match(policySection, /acceptance reviewer\(s\).*must not edit the candidate/i);
+  assert.match(
+    policySection,
+    /acceptance reviewer\(s\).*must not edit the candidate/i,
+  );
   assert.match(policySection, /focused gates.*candidate freezes/i);
   assert.match(
     policySection,
@@ -856,7 +1091,10 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     policySection,
     /any fixed capacity\/quota threshold.*percentage.*inode.*numeric.*host-specific cache deletion list.*deletion automation/i,
   );
-  assert.match(policySection, /thresholds.*risk, workload, and filesystem state.*hardcoding/i);
+  assert.match(
+    policySection,
+    /thresholds.*risk, workload, and filesystem state.*hardcoding/i,
+  );
   assert.match(
     shipCiSection,
     /any fixed capacity\/quota threshold.*percentage.*inode.*numeric.*host-specific cache deletion list.*deletion automation/i,
@@ -872,7 +1110,10 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   ]) {
     assertPolicyContract("runtime/debt contract", phrase);
   }
-  assert.match(policySection, /Do not infer environment or product status from touched paths/i);
+  assert.match(
+    policySection,
+    /Do not infer environment or product status from touched paths/i,
+  );
 
   for (const phrase of [
     /data categories.*permission/i,
@@ -882,7 +1123,10 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   ]) {
     assertPolicyContract("external-review model contract", phrase);
   }
-  assert.match(policySection, /external Claude review.*start-of-work precheck/i);
+  assert.match(
+    policySection,
+    /external Claude review.*start-of-work precheck/i,
+  );
   assert.match(policySection, /requested and effective model/i);
   assert.match(policySection, /never silently substitute/i);
   assert.match(policySection, /not blanket.*all repositories or logs/i);
@@ -937,7 +1181,10 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   const approvedMergeBase = shipMergePrecheckRawSection.indexOf(
     "approved_merge_base",
   );
-  assert.ok(fetchBeforeApproval >= 0, "merge precheck must fetch before approval");
+  assert.ok(
+    fetchBeforeApproval >= 0,
+    "merge precheck must fetch before approval",
+  );
   assert.ok(
     approvedMergeBase > fetchBeforeApproval,
     "merge precheck must fetch before base approval/classification",
@@ -954,7 +1201,10 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
       "one approved merge base must be recorded",
     );
   }
-  assert.match(policySection, /first parent.*<merge-sha>\^1.*approved.*merge-base/i);
+  assert.match(
+    policySection,
+    /first parent.*<merge-sha>\^1.*approved.*merge-base/i,
+  );
   for (const section of [policySection, traceSection, shipMergeSection]) {
     assert.match(
       section,
@@ -1040,12 +1290,22 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     assert.ok(trace.implementedBy.includes(entrypoint), entrypoint);
   }
   for (const skill of [
-    "add-electron-command", "bump-version", "debug-issue", "explore-codebase",
-    "implement-feature", "polish-motion", "review-code", "ship-branch", "test-feature",
+    "add-electron-command",
+    "bump-version",
+    "debug-issue",
+    "explore-codebase",
+    "implement-feature",
+    "polish-motion",
+    "review-code",
+    "ship-branch",
+    "test-feature",
     "update-licenses",
   ]) {
     const adapter = `.claude/skills/${skill}/SKILL.md`;
-    assert.ok(trace.implementedBy.includes(adapter), `${adapter} must preserve traceability`);
+    assert.ok(
+      trace.implementedBy.includes(adapter),
+      `${adapter} must preserve traceability`,
+    );
   }
   assert.ok(
     trace.implementedBy.includes(".agents/skills/ship-branch/SKILL.md"),
@@ -1080,10 +1340,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
 
   assert.match(executionPlan, /PR-R0.*履歴台帳と評価契約の固定/is);
-  assert.match(
-    executionPlan,
-    /基点:\s*master@9f6aba5f/,
-  );
+  assert.match(executionPlan, /基点:\s*master@9f6aba5f/);
   assert.match(
     executionPlan,
     /Tree:\s*b7f97fc7dbbb5243da090b41dbc884ecfdc0ec2b/,
@@ -1092,10 +1349,14 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     executionPlan,
     /2026-09-17現在.*#596\/\#597 foundations.*#598 A3 review remediation.*masterにある.*Graph.*Packing.*AI dispatch.*未activate.*B.*capacity-remediation-in-progress.*proposal\/5.*確認済み/is,
   );
-  assert.match(executionPlan, /Graph.*Packing.*未activate.*downstream threat model.*draft/is);
+  assert.match(
+    executionPlan,
+    /Graph.*Packing.*未activate.*downstream threat model.*draft/is,
+  );
   assert.match(executionPlan, /NIR-1全体.*未完了/);
   const a2Heavy = qualityManifest.heavyEvaluations.find(
-    (evaluation) => evaluation.id === "heavy-nir1-entity-relation-product-journey",
+    (evaluation) =>
+      evaluation.id === "heavy-nir1-entity-relation-product-journey",
   );
   assert.equal(
     a2Heavy?.command,
@@ -1249,7 +1510,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         assert.match(cells[7], /explicit user confirmation recorded/);
       }
       if (contractId !== "graph-limited-binding") {
-        assert.match(cells[8], new RegExp(escapeRegExp(confirmedRefFor(contractId))));
+        assert.match(
+          cells[8],
+          new RegExp(escapeRegExp(confirmedRefFor(contractId))),
+        );
       }
     } else {
       assert.fail(`${contractId} should be explicitly confirmed`);
@@ -1271,7 +1535,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     executionPlan,
     /R0でmerge済みのproposal\/3五つ.*PR #579.*Option B.*明示批准済み.*契約として有効/is,
   );
-  assert.match(executionPlan, /明示確認済み・契約として有効.*第六行.*A2はA1＋D2a/is);
+  assert.match(
+    executionPlan,
+    /明示確認済み・契約として有効.*第六行.*A2はA1＋D2a/is,
+  );
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/1/);
   assert.doesNotMatch(executionPlan, /nir1-l6-l9-contract-proposal\/2/);
 
@@ -1327,7 +1594,11 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   for (const contractId of contractIds) {
     const heading = `#### ${contractId}\n`;
     const headingOffset = proposalSection.indexOf(heading);
-    assert.notEqual(headingOffset, -1, `${contractId} proposal must be present`);
+    assert.notEqual(
+      headingOffset,
+      -1,
+      `${contractId} proposal must be present`,
+    );
     const bodyStart = headingOffset + heading.length;
     const nextHeadingOffset = proposalSection.indexOf("\n#### ", bodyStart);
     const proposal = proposalSection.slice(
@@ -1363,7 +1634,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         proposal,
         new RegExp(
           `${escapeRegExp(acceptanceField)}${
-            acceptanceField === "Lane unlocked only after exact proposal/5 confirmation"
+            acceptanceField ===
+            "Lane unlocked only after exact proposal/5 confirmation"
               ? ""
               : ":"
           }`,
@@ -1412,13 +1684,21 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       assert.match(proposal, /Threshold changes require reconfirmation/);
       validateGraphProposalContract(executionPlan);
       const mutateBoundedGraphProposal = (mutator) => {
-        const graphStart = executionPlan.indexOf("#### graph-limited-binding\n");
+        const graphStart = executionPlan.indexOf(
+          "#### graph-limited-binding\n",
+        );
         const graphEnd = executionPlan.indexOf(
           "\n#### native-generation-receipt",
           graphStart,
         );
-        assert.ok(graphStart >= 0, "mutation target Graph proposal must be present");
-        assert.ok(graphEnd > graphStart, "mutation target Graph proposal must be bounded");
+        assert.ok(
+          graphStart >= 0,
+          "mutation target Graph proposal must be present",
+        );
+        assert.ok(
+          graphEnd > graphStart,
+          "mutation target Graph proposal must be bounded",
+        );
         const boundedProposal = executionPlan.slice(graphStart, graphEnd);
         const mutatedProposal = mutator(boundedProposal);
         assert.notEqual(
@@ -1431,7 +1711,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       const graphMutationCases = [
         {
           label: "numeric supported capacity",
-          expected: "Graph proposal must not ratify a numeric whole-project build cap or deadline",
+          expected:
+            "Graph proposal must not ratify a numeric whole-project build cap or deadline",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "\n##### Proposal/5 acceptance split (confirmed contract)",
@@ -1440,7 +1721,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         },
         {
           label: "numeric whole-project deadline",
-          expected: "Graph proposal must not ratify a numeric whole-project build cap or deadline",
+          expected:
+            "Graph proposal must not ratify a numeric whole-project build cap or deadline",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "\n##### Proposal/5 acceptance split (confirmed contract)",
@@ -1451,17 +1733,25 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
           label: "persistent staging",
           expected: "Graph lifecycle must not create or use persistent staging",
           mutate: (boundedProposal) =>
-            boundedProposal.replace("persistent stagingは作らない", "persistent stagingを作る"),
+            boundedProposal.replace(
+              "persistent stagingは作らない",
+              "persistent stagingを作る",
+            ),
         },
         {
           label: "persistent adjacency",
-          expected: "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+          expected:
+            "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
           mutate: (boundedProposal) =>
-            boundedProposal.replace("persistent adjacencyは追加しない", "persistent adjacencyを追加する"),
+            boundedProposal.replace(
+              "persistent adjacencyは追加しない",
+              "persistent adjacencyを追加する",
+            ),
         },
         {
           label: "new authority",
-          expected: "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+          expected:
+            "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "新しいauthority、schema、consumer、persistent adjacencyは追加しない",
@@ -1470,7 +1760,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         },
         {
           label: "new schema",
-          expected: "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+          expected:
+            "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "新しいauthority、schema、consumer、persistent adjacencyは追加しない",
@@ -1479,7 +1770,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         },
         {
           label: "new consumer",
-          expected: "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
+          expected:
+            "Graph proposal must not add persistent adjacency, authority, schema, or consumer",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "新しいauthority、schema、consumer、persistent adjacencyは追加しない",
@@ -1497,7 +1789,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         },
         {
           label: "unowned Source full scan",
-          expected: "Source re-resolution must reject unowned or unbounded scanning",
+          expected:
+            "Source re-resolution must reject unowned or unbounded scanning",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "Source re-resolution: maintenance entryのowner／caller connection／read transaction／progress hookでcurrent Sourceを再解決し、unowned／unbounded full-roster scanを開始しない",
@@ -1506,7 +1799,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         },
         {
           label: "unowned coverage full scan",
-          expected: "complete registration/coverage verification must reject unowned or unbounded scanning",
+          expected:
+            "complete registration/coverage verification must reject unowned or unbounded scanning",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "complete registration/coverage verification (`is_complete_registered`): 同じowned validation attemptで全件registration／coverageを検証し、unowned／unbounded full-roster scanを開始しない",
@@ -1515,7 +1809,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         },
         {
           label: "unowned reopen full scan",
-          expected: "restore/cold reopen verification must reject unowned or unbounded scanning",
+          expected:
+            "restore/cold reopen verification must reject unowned or unbounded scanning",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "restore/cold reopen verification: 同じowned validation attemptでsealed generation、Source、D1、complete rosterを再検証し、unowned／unbounded full-roster scanを開始しない",
@@ -1524,7 +1819,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         },
         {
           label: "query synchronous full scan",
-          expected: "query-triggered validation must be deferred to an owned maintenance entry",
+          expected:
+            "query-triggered validation must be deferred to an owned maintenance entry",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
               "queryはvalidation read transactionへsynchronously入らない",
@@ -1532,12 +1828,33 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
             ),
         },
         {
-          label: "reintroduced aggregate physical-memory proof",
-          expected: "build and maintenance resource observations must not require aggregate memory proof",
+          label: "optional whole-build peak",
+          expected:
+            "full build and maintenance memory accounting must cover every major retained structure",
           mutate: (boundedProposal) =>
             boundedProposal.replace(
-              "aggregate physical-memory proof、全major allocationの同時peak accounting、またはconservative upper boundは要求しない",
-              "aggregate physical-memory proof、全major allocationの同時peak accounting、またはconservative upper boundを要求する",
+              "mandatory end-to-end peak memory for the full build-through-publish interval",
+              "optional end-to-end peak memory for the full build-through-publish interval",
+            ),
+        },
+        {
+          label: "roster-only peak",
+          expected:
+            "full build and maintenance memory accounting must cover every major retained structure",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "roster bytesとRevision-ID overheadはcomponents onlyとして別に報告する",
+              "roster bytes only are reported",
+            ),
+        },
+        {
+          label: "missing major structure accounting",
+          expected:
+            "full build and maintenance memory accounting must cover every major retained structure",
+          mutate: (boundedProposal) =>
+            boundedProposal.replace(
+              "snapshot roster＋dependency edges",
+              "snapshot roster",
             ),
         },
         {
@@ -1552,7 +1869,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       ];
       for (const { label, expected, mutate } of graphMutationCases) {
         assert.throws(
-          () => validateGraphProposalContract(mutateBoundedGraphProposal(mutate)),
+          () =>
+            validateGraphProposalContract(mutateBoundedGraphProposal(mutate)),
           (error) => {
             assert.match(error.message, new RegExp(escapeRegExp(expected)));
             return true;
@@ -1577,7 +1895,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         "##### Proposal/5 acceptance split (confirmed contract)",
       );
       assert.ok(lifecycleStart >= 0, "graph lifecycle matrix must be present");
-      assert.ok(acceptanceStart > lifecycleStart, "graph acceptance split must follow lifecycle");
+      assert.ok(
+        acceptanceStart > lifecycleStart,
+        "graph acceptance split must follow lifecycle",
+      );
       const lifecycle = proposal.slice(lifecycleStart, acceptanceStart);
       assert.match(
         lifecycle,
@@ -1623,9 +1944,8 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         /statement termination／error.*transaction rollback／close.*hook reset.*reader／handles／buffers release.*retry／reentrant admission/,
         "phase cleanup must finish before retry or reentrant admission",
       );
-      const acceptanceRows = acceptanceStart >= 0
-        ? proposal.slice(acceptanceStart).split("\n")
-        : [];
+      const acceptanceRows =
+        acceptanceStart >= 0 ? proposal.slice(acceptanceStart).split("\n") : [];
       const acceptanceRow = (label) => {
         const normalizedLabel = label.replaceAll("`", "");
         const row = acceptanceRows.find(
@@ -1642,9 +1962,15 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
         /statement termination／error.*transaction rollback／close.*hook reset.*reader／handles／buffers release.*retry／reentrant admission/,
       );
       const reopenRow = acceptanceRow("cold reopen");
-      assert.match(reopenRow, /完成したsealed generationだけ.*incomplete build state.*persisted restart state/);
+      assert.match(
+        reopenRow,
+        /完成したsealed generationだけ.*incomplete build state.*persisted restart state/,
+      );
       const atomicRow = acceptanceRow("atomic visibility");
-      assert.match(atomicRow, /旧sealed generationまたは全件qualified.*partial／mixed generation/);
+      assert.match(
+        atomicRow,
+        /旧sealed generationまたは全件qualified.*partial／mixed generation/,
+      );
       assert.doesNotMatch(
         proposal,
         />512` valid candidates across multiple revisions/,
@@ -1652,26 +1978,64 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       );
       for (const [pattern, label] of [
         [/三つのresource unit/, "three resource units"],
-        [/512 records.*6 MiB.*validation contract/, "Revision bundle validation limits"],
-        [/read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*Graph `100ms`.*reader／busy wait `0`.*aggregate physical-memory cap\/proof(?:なし|は要求しない)/, "seed-local query limits and removed aggregate proof"],
-        [/whole-project B Index build.*現在の全候補.*qualified material.*atomic publish/, "whole-project build scope"],
-        [/queryの合計値はbuildのcandidate count、compact roster count、cumulative bytes、cumulative SQLをcapしない/, "query totals must not cap build totals"],
-        [/small／keyset pages.*一度に一つのA2 Revision/, "paged one-revision-at-a-time build"],
-        [/allocation前にsizeを検査.*JSON／material processing中にもcancellation/, "pre-allocation and material cancellation guards"],
-        [/publish直前にexact complete roster、Source、D1を再検証.*partial generationを残さず/, "publish barrier and no partial generation"],
-        [/caller-ownedな単一read transaction.*pin/, "single caller-owned read transaction"],
-        [/pinした同一read transaction内.*page間でtransaction／mutexを解放しない/, "page statements stay inside the pinned read transaction"],
-        [/page途中のretryは行わず.*snapshot全体を破棄/, "retry restarts from a fresh snapshot"],
-        [/source／decision／scope drift at barriers.*cancellation recovery.*cold reopen.*atomic visibility.*query independence/is, "deterministic semantic gates"],
-        [/Capacity benchmark metricsは、compact full rosterとpublish-time complete rescanを含めて第1診断stage.*numeric build capacityの批准ではない.*workload／wall／CPU／SQL／I\/O／temporary storage.*aggregate physical-memory proof.*要求しない/is, "resource measurement without aggregate memory proof"],
-        [/aggregate physical-memory proof、全major allocationの同時peak accounting、またはconservative upper boundは要求しない/, "aggregate physical-memory proof remains deleted"],
-        [/supported work size\/build memory\/SQL\/deadlineはその結果から後で選ぶ/, "supported build values are selected after measurement"],
+        [
+          /512 records.*6 MiB.*validation contract/,
+          "Revision bundle validation limits",
+        ],
+        [
+          /read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*Graph `100ms`.*reader／busy wait `0`.*aggregate physical-memory cap\/proof(?:なし|は要求しない)/,
+          "seed-local query limits and removed aggregate proof",
+        ],
+        [
+          /whole-project B Index build.*現在の全候補.*qualified material.*atomic publish/,
+          "whole-project build scope",
+        ],
+        [
+          /queryの合計値はbuildのcandidate count、compact roster count、cumulative bytes、cumulative SQLをcapしない/,
+          "query totals must not cap build totals",
+        ],
+        [
+          /small／keyset pages.*一度に一つのA2 Revision/,
+          "paged one-revision-at-a-time build",
+        ],
+        [
+          /allocation前にsizeを検査.*JSON／material processing中にもcancellation/,
+          "pre-allocation and material cancellation guards",
+        ],
+        [
+          /publish直前にexact complete roster、Source、D1を再検証.*partial generationを残さず/,
+          "publish barrier and no partial generation",
+        ],
+        [
+          /caller-ownedな単一read transaction.*pin/,
+          "single caller-owned read transaction",
+        ],
+        [
+          /pinした同一read transaction内.*page間でtransaction／mutexを解放しない/,
+          "page statements stay inside the pinned read transaction",
+        ],
+        [
+          /page途中のretryは行わず.*snapshot全体を破棄/,
+          "retry restarts from a fresh snapshot",
+        ],
+        [
+          /source／decision／scope drift at barriers.*cancellation recovery.*cold reopen.*atomic visibility.*query independence/is,
+          "deterministic semantic gates",
+        ],
+        [
+          /Capacity benchmark metricsは、compact full rosterとpublish-time complete rescanを含めて第1診断stage.*numeric build capacityの批准ではない.*mandatory end-to-end peak memory.*full-set maintenance path/is,
+          "measurement precedes build capacity",
+        ],
+        [
+          /roster bytesとRevision-ID overheadはcomponents only.*snapshot roster＋dependency edges.*method／coverage／uncertainty/,
+          "capacity benchmark memory accounting",
+        ],
+        [
+          /supported work size\/build memory\/SQL\/deadlineはその結果から後で選ぶ/,
+          "supported build values are selected after measurement",
+        ],
       ]) {
-        assert.match(
-          proposal,
-          pattern,
-          `graph binding must define ${label}`,
-        );
+        assert.match(proposal, pattern, `graph binding must define ${label}`);
       }
     }
     if (contractId === "native-generation-receipt") {
@@ -1737,7 +2101,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     }
     if (contractId === "history-reauthorization") {
       const negativeMatch = proposal.match(/Negative:(.*?)(?=Recovery:)/is);
-      assert.ok(negativeMatch, "history reauthorization needs a negative clause");
+      assert.ok(
+        negativeMatch,
+        "history reauthorization needs a negative clause",
+      );
       const negative = negativeMatch[1];
       for (const historyField of [
         "`Source`",
@@ -1774,7 +2141,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     executionPlan,
     /transport-observed raw textとthinkingはdigest前に分離.*versioned stable chunk-order digest.*chunk-boundary invariant.*order-sensitive/is,
   );
-  assert.match(executionPlan, /trim、Unicode normalization、renderer加工はせず/);
+  assert.match(
+    executionPlan,
+    /trim、Unicode normalization、renderer加工はせず/,
+  );
   assert.doesNotMatch(
     executionPlan,
     /Native解析後のtextをtrim、Unicode正規化、renderer加工せずhashする/,
@@ -1844,7 +2214,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     /R0 lane開始判定と評価manifest \(historical\)[\s\S]*\| A2 \|[^|]*\| ready-after-A1＋D2a \|/,
     "R0's earlier A2 ready condition must remain historical",
   );
-  const implementationOrder = executionPlan.split("## 実装順序と公開条件\n", 2)[1];
+  const implementationOrder = executionPlan.split(
+    "## 実装順序と公開条件\n",
+    2,
+  )[1];
   assert.ok(implementationOrder, "implementation order must be present");
   const a2OrderRow = implementationOrder
     .split("\n")
@@ -1863,7 +2236,11 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     );
   }
   const mermaidStart = executionPlan.indexOf("```mermaid\nflowchart LR\n");
-  assert.notEqual(mermaidStart, -1, "canonical dependency graph must be present");
+  assert.notEqual(
+    mermaidStart,
+    -1,
+    "canonical dependency graph must be present",
+  );
   const mermaidEnd = executionPlan.indexOf("\n```", mermaidStart);
   assert.notEqual(mermaidEnd, -1, "canonical dependency graph must close");
   const dependencyGraph = executionPlan.slice(mermaidStart, mermaidEnd);
@@ -2061,12 +2438,12 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     "pnpm verify:quality",
     "candidate_base=\"$(git rev-parse 'origin/master^{commit}')\"",
     "candidate_head=\"$(git rev-parse 'HEAD^{commit}')\"",
-    "pnpm ci:local:quick -- --base \"$candidate_base\" --head \"$candidate_head\"",
-    "pnpm ci:local:verify -- quick --base \"$candidate_base\" --head \"$candidate_head\"",
+    'pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"',
+    'pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"',
     "full_base=\"$(git rev-parse 'origin/master^{commit}')\"",
     "full_head=\"$(git rev-parse 'HEAD^{commit}')\"",
-    "pnpm ci:local:full -- --base \"$full_base\" --head \"$full_head\"",
-    "pnpm ci:local:verify -- full --base \"$full_base\" --head \"$full_head\"",
+    'pnpm ci:local:full -- --base "$full_base" --head "$full_head"',
+    'pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"',
   ]) {
     assert.match(
       executionPlan,
@@ -2077,7 +2454,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   assert.match(roadmap, /PR-R0/);
   assert.match(roadmap, /81d0390fe7a935191753b41e5673503f99d51d16/);
   assert.match(roadmap, /0decaab5470c2408be81856ac2373b28e078b945/);
-  assert.match(roadmap, /PR #591.*A2.*Entity／Relation.*immutable Revision.*cold reopen/is);
+  assert.match(
+    roadmap,
+    /PR #591.*A2.*Entity／Relation.*immutable Revision.*cold reopen/is,
+  );
   assert.match(roadmap, /Graph.*Packing.*AI.*(?:inactive|未activate)/is);
   assert.match(roadmap, /downstream threat model.*draft/is);
   assert.match(roadmap, /NIR-1 overall acceptance remains incomplete/);
@@ -2086,8 +2466,14 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     integrationPlan,
     /proposal\/4.*Entity／Relation-only.*typed-revision-material.*(?:explicitly ratified|明示批准済み)/is,
   );
-  assert.match(integrationPlan, /PR #591.*A2.*Entity／Relation.*immutable Revision.*cold reopen/is);
-  assert.match(integrationPlan, /Graph.*Packing.*AI.*(?:inactive|未activate)/is);
+  assert.match(
+    integrationPlan,
+    /PR #591.*A2.*Entity／Relation.*immutable Revision.*cold reopen/is,
+  );
+  assert.match(
+    integrationPlan,
+    /Graph.*Packing.*AI.*(?:inactive|未activate)/is,
+  );
   assert.match(integrationPlan, /downstream threat model.*draft/is);
   assert.match(integrationPlan, /NIR-1 overall acceptance remains incomplete/);
   for (const [name, narrative] of [
@@ -2155,12 +2541,22 @@ test("AI authoring delegates once to the conditional canonical quality gate", as
     ".agents/skills/grimodex-author/SKILL.md",
     ".agents/skills/grimodex-impact-gate/SKILL.md",
   );
-  assert.match(author, /grimodex-impact-gate.*verify:quality.*Light.*まとめて/is);
+  assert.match(
+    author,
+    /grimodex-impact-gate.*verify:quality.*Light.*まとめて/is,
+  );
   assert.match(author, /成功済み command.*重ねて実行しない/);
   const authorCommands = [...author.matchAll(/```(?:bash|sh)\n([\s\S]*?)```/g)]
-    .map((match) => match[1]).join("\n");
-  assert.doesNotMatch(authorCommands, /pnpm (?:verify:quality|eval:impact|ci:local:quick)/);
-  assert.match(impact, /commit／PR.*依頼していない調査・レビュー.*gate.*CI.*自動起動しない/);
+    .map((match) => match[1])
+    .join("\n");
+  assert.doesNotMatch(
+    authorCommands,
+    /pnpm (?:verify:quality|eval:impact|ci:local:quick)/,
+  );
+  assert.match(
+    impact,
+    /commit／PR.*依頼していない調査・レビュー.*gate.*CI.*自動起動しない/,
+  );
   assert.match(impact, /pnpm verify:quality/);
   assert.match(impact, /verify:quality.*Light suite.*同一の検証範囲ではない/);
   assert.match(impact, /成功が確認済みなら再実行しない/);
@@ -2171,23 +2567,57 @@ test("AI authoring delegates once to the conditional canonical quality gate", as
   assert.match(diagnostic, /候補証跡を作らない変更.*Quick.*開始せず/);
   assert.match(diagnostic, /pnpm eval:impact -- --run/);
   assert.match(diagnostic, /branch.*staged.*unstaged.*untracked/);
-  assert.match(diagnostic, /ファイル集合を指定する場合だけ.*--changed-file.*対象外の既存差分/);
-  assert.match(diagnostic, /限定範囲.*診断証拠.*candidate 全体.*Quick／Full receipt.*しない/);
+  assert.match(
+    diagnostic,
+    /ファイル集合を指定する場合だけ.*--changed-file.*対象外の既存差分/,
+  );
+  assert.match(
+    diagnostic,
+    /限定範囲.*診断証拠.*candidate 全体.*Quick／Full receipt.*しない/,
+  );
   assert.match(diagnostic, /suite.*減らさず.*全 suite fallback.*変更しない/);
 
   const candidateRaw = sectionFromHeading(impact, "## PR／release の候補証跡");
   const candidate = normalizeSection(candidateRaw);
-  assert.match(candidate, /PR／release の証跡が依頼範囲に含まれ.*CI が許可されている場合だけ.*focused 検証.*clean な候補 commit/);
+  assert.match(
+    candidate,
+    /PR／release の証跡が依頼範囲に含まれ.*CI が許可されている場合だけ.*focused 検証.*clean な候補 commit/,
+  );
   assert.match(candidate, /commit-only.*CI 明示除外.*開始しない/);
-  assert.match(candidate, /base／head.*一度だけ解決.*Quick.*直後.*verify.*同じ値/);
-  assert.match(candidate, /wrapper.*Light suite.*eval:impact -- --run.*別途重ねない/);
+  assert.match(
+    candidate,
+    /base／head.*一度だけ解決.*Quick.*直後.*verify.*同じ値/,
+  );
+  assert.match(
+    candidate,
+    /wrapper.*Light suite.*eval:impact -- --run.*別途重ねない/,
+  );
   const quick = commandBindings(candidateRaw, "pnpm ci:local:quick", "Quick");
-  const verify = commandBindings(candidateRaw, "pnpm ci:local:verify -- quick", "Quick verify");
-  assert.deepEqual(quick, [{ base: '"$candidate_base"', head: '"$candidate_head"' }]);
+  const verify = commandBindings(
+    candidateRaw,
+    "pnpm ci:local:verify -- quick",
+    "Quick verify",
+  );
+  assert.deepEqual(quick, [
+    { base: '"$candidate_base"', head: '"$candidate_head"' },
+  ]);
   assert.deepEqual(verify, quick);
-  assert.deepEqual(commandBindings(impact, "pnpm ci:local:quick", "all Quick"), quick);
-  assert.deepEqual(commandBindings(impact, "pnpm ci:local:verify -- quick", "all Quick verify"), verify);
-  assert.ok(candidateRaw.indexOf("pnpm ci:local:quick") < candidateRaw.indexOf("pnpm ci:local:verify -- quick"));
+  assert.deepEqual(
+    commandBindings(impact, "pnpm ci:local:quick", "all Quick"),
+    quick,
+  );
+  assert.deepEqual(
+    commandBindings(
+      impact,
+      "pnpm ci:local:verify -- quick",
+      "all Quick verify",
+    ),
+    verify,
+  );
+  assert.ok(
+    candidateRaw.indexOf("pnpm ci:local:quick") <
+      candidateRaw.indexOf("pnpm ci:local:verify -- quick"),
+  );
   assert.match(impact, /deferred/i);
   assert.match(impact, /blocked/i);
   assert.match(impact, /どちらも passed に読み替えない/);
