@@ -325,6 +325,7 @@ function queryDbusNameOwner(address, { execFile, trackChild, signal }) {
         "dbus-send",
         [
           "--session",
+          "--dest=org.freedesktop.DBus",
           "--print-reply",
           `--reply-timeout=${DBUS_REPLY_TIMEOUT_MS}`,
           "/org/freedesktop/DBus",

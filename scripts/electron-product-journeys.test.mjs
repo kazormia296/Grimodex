@@ -249,6 +249,7 @@ test("D-Bus query uses a private local address and waits for the owned child clo
   assert.equal(command.executable, "dbus-send");
   assert.deepEqual(command.args, [
     "--session",
+    "--dest=org.freedesktop.DBus",
     "--print-reply",
     "--reply-timeout=1000",
     "/org/freedesktop/DBus",
