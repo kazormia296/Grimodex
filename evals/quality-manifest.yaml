@@ -26,6 +26,8 @@ requirements:
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/application/chat/chatTurnStoreActions.ts
+      - src/application/chat/chatAgentToolHandlers.ts
+      - src/features/chat/chatContentGeneration.ts
       - src/features/chat/turn/turnCoordinator.ts
       - src/features/chat/chatStore.ts
       - src/features/chat/semanticRerankerApply.ts
@@ -82,6 +84,8 @@ requirements:
       - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
       - src/features/chat/chatApi.ts
+      - src/features/chat/chatContentGeneration.ts
+      - src/application/chat/chatAgentToolHandlers.ts
       - src/features/chat/chatStreamTransport.ts
       - src/features/editor/inlineAi/inlineAiStreaming.ts
       - src/features/chat/cliApi.ts
