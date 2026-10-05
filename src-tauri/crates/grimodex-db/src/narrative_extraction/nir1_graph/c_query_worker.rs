@@ -646,6 +646,8 @@ pub struct CQueryWorkerOwner {
     suppress_exit_proof_for_test: bool,
     #[cfg(all(test, target_os = "linux"))]
     panic_reader_after_pipe_for_test: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    reader_completion_hold_for_test: Option<(Arc<AtomicBool>, Arc<AtomicBool>, Arc<AtomicBool>)>,
     #[cfg(test)]
     partial_terminal_commit_for_test: bool,
     #[cfg(test)]
@@ -688,6 +690,8 @@ pub struct CQueryWorkerOwner {
     test_exit_proof_suppressed: bool,
     #[cfg(all(test, target_os = "linux"))]
     test_reader_join_failed: bool,
+    #[cfg(all(test, target_os = "linux"))]
+    test_reader_join_unfinished_at_cleanup_timeout: bool,
     #[cfg(test)]
     test_abnormal_exit_observed: bool,
     #[cfg(test)]
@@ -754,6 +758,8 @@ impl CQueryWorkerOwner {
             suppress_exit_proof_for_test: false,
             #[cfg(all(test, target_os = "linux"))]
             panic_reader_after_pipe_for_test: false,
+            #[cfg(all(test, target_os = "linux"))]
+            reader_completion_hold_for_test: None,
             #[cfg(test)]
             partial_terminal_commit_for_test: false,
             #[cfg(test)]
@@ -796,6 +802,8 @@ impl CQueryWorkerOwner {
             test_exit_proof_suppressed: false,
             #[cfg(all(test, target_os = "linux"))]
             test_reader_join_failed: false,
+            #[cfg(all(test, target_os = "linux"))]
+            test_reader_join_unfinished_at_cleanup_timeout: false,
             #[cfg(test)]
             test_abnormal_exit_observed: false,
             #[cfg(test)]
@@ -1084,6 +1092,19 @@ impl CQueryWorkerOwner {
         self.panic_reader_after_pipe_for_test = true;
     }
 
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn hold_reader_after_eof_for_test(
+        &mut self,
+    ) -> (Arc<AtomicBool>, Arc<AtomicBool>, Arc<AtomicBool>) {
+        let hold = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        self.reader_completion_hold_for_test = Some(hold.clone());
+        hold
+    }
+
     #[cfg(test)]
     pub(super) fn rust_oom_for_test(&mut self) {
         self.rust_oom_for_test = true;
@@ -1261,6 +1282,14 @@ impl CQueryWorkerOwner {
             && self.test_quarantine_detached
             && !self.test_cleanup_proved
             && self.test_reader_join_failed
+    }
+
+    #[cfg(all(test, target_os = "linux"))]
+    pub(super) fn result_lease_reader_completion_quarantined_for_test(&self) -> bool {
+        self.region.quarantined
+            && self.test_quarantine_detached
+            && !self.test_cleanup_proved
+            && self.test_reader_join_unfinished_at_cleanup_timeout
     }
 
     /// Admit one request after READY and return only a validated, committed frame
@@ -1537,12 +1566,22 @@ impl CQueryWorkerOwner {
             .ok_or_else(|| anyhow!("NIR1_GRAPH_NATIVE_ARENA"))?;
         #[cfg(all(test, target_os = "linux"))]
         let panic_reader_after_pipe = self.panic_reader_after_pipe_for_test;
+        #[cfg(all(test, target_os = "linux"))]
+        let reader_completion_hold = self.reader_completion_hold_for_test.take();
         let reader = match thread::Builder::new().spawn(move || {
             // SAFETY: the owner pins the region until this reader is joined or quarantined.
             unsafe { region_address.read_pipe(stdout) };
             #[cfg(all(test, target_os = "linux"))]
             if panic_reader_after_pipe {
                 panic!("NIR1_GRAPH_TEST_READER_JOIN_FAILURE");
+            }
+            #[cfg(all(test, target_os = "linux"))]
+            if let Some((entered, release, finished)) = reader_completion_hold {
+                entered.store(true, Ordering::Release);
+                while !release.load(Ordering::Acquire) {
+                    thread::park_timeout(POLL_INTERVAL);
+                }
+                finished.store(true, Ordering::Release);
             }
         }) {
             Ok(reader) => reader,
@@ -2543,7 +2582,12 @@ impl CQueryWorkerOwner {
             let request_writer_joined = self.join_request_writer_if_finished();
             #[cfg(all(target_os = "linux", not(test)))]
             let request_writer_joined = true;
+            let reader_finished = self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.reader.as_ref().is_none_or(JoinHandle::is_finished));
             if request_writer_joined
+                && reader_finished
                 && self
                     .session
                     .as_ref()
@@ -2598,6 +2642,18 @@ impl CQueryWorkerOwner {
                 && self.session.as_ref().is_some_and(|session| {
                     session.exit.is_some() && session.eof && session.reader.is_some()
                 });
+            #[cfg(target_os = "linux")]
+            {
+                self.test_reader_join_unfinished_at_cleanup_timeout =
+                    self.session.as_ref().is_some_and(|session| {
+                        session.exit.is_some()
+                            && session.eof
+                            && session
+                                .reader
+                                .as_ref()
+                                .is_some_and(|reader| !reader.is_finished())
+                    });
+            }
         }
         anyhow::bail!("NIR1_GRAPH_WORKER_BOUNDED_JOIN_UNPROVED")
     }

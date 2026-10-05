@@ -48,6 +48,8 @@ enum Q2WorkerScenario {
     #[cfg(target_os = "linux")]
     ResultHeldReaderJoinFailure,
     #[cfg(target_os = "linux")]
+    ResultHeldReaderCompletionPending,
+    #[cfg(target_os = "linux")]
     CommittedFrameWithoutEof,
     PartialTerminalMarker,
     PartialFrame,
@@ -666,6 +668,14 @@ fn native_worker_quarantines_result_lease_when_exit_proof_transfer_is_unavailabl
 #[ignore = "isolated real-worker test; intentionally quarantines one ResultHeld owner until test-process exit"]
 fn native_worker_quarantines_result_lease_when_reader_join_fails() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::ResultHeldReaderJoinFailure)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "isolated real-worker test; intentionally quarantines one ResultHeld owner until test-process exit"]
+fn native_worker_quarantines_result_lease_when_reader_completion_exceeds_cleanup_deadline(
+) -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::ResultHeldReaderCompletionPending)
 }
 
 #[cfg(target_os = "linux")]
@@ -1956,6 +1966,8 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         let snapshot = active_workspace_snapshot(&native_state)?;
         let mut owner =
             super::c_query_worker::CQueryWorkerOwner::new(snapshot, worker_path.clone());
+        #[cfg(target_os = "linux")]
+        let mut reader_completion_hold = None;
         match scenario {
             Q2WorkerScenario::CallerCancellation => {
                 owner.hold_child_before_frame_for_test(
@@ -1980,6 +1992,11 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 if scenario == Q2WorkerScenario::ResultHeldReaderJoinFailure {
                     owner.panic_reader_after_pipe_for_test();
                 }
+            }
+            #[cfg(target_os = "linux")]
+            Q2WorkerScenario::ResultHeldReaderCompletionPending => {
+                owner.hold_after_commit_for_test();
+                reader_completion_hold = Some(owner.hold_reader_after_eof_for_test());
             }
             #[cfg(target_os = "linux")]
             Q2WorkerScenario::PostCommitNonzero => {
@@ -2874,6 +2891,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             Q2WorkerScenario::ResultHeldChildLive
                 | Q2WorkerScenario::ResultHeldExitProofUnobserved
                 | Q2WorkerScenario::ResultHeldReaderJoinFailure
+                | Q2WorkerScenario::ResultHeldReaderCompletionPending
         ) {
             ensure!(
                 returned_elapsed <= QUERY_DEADLINE
@@ -2944,6 +2962,74 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 );
                 eprintln!(
                     "Native ResultHeld reader-join failure: committed Q2 lease returned with real EOF/live child; cleanup observed child exit + EOF but the actual reader thread panicked on join; resources quarantined and no claim reloaned"
+                );
+                return Ok(());
+            }
+            #[cfg(target_os = "linux")]
+            if scenario == Q2WorkerScenario::ResultHeldReaderCompletionPending {
+                let (reader_entered, reader_release, reader_finished) = reader_completion_hold
+                    .take()
+                    .ok_or_else(|| anyhow::anyhow!("reader completion hold missing"))?;
+                let entry_deadline = Instant::now() + Duration::from_secs(5);
+                while !reader_entered.load(Ordering::Acquire) && Instant::now() < entry_deadline {
+                    thread::park_timeout(Duration::from_millis(1));
+                }
+                let entered_before_cleanup = reader_entered.load(Ordering::Acquire);
+                let cleanup_started = Instant::now();
+                drop(lease);
+                let cleanup_elapsed = cleanup_started.elapsed();
+                let reader_was_pending = !reader_finished.load(Ordering::Acquire);
+                let timeout_quarantine =
+                    owner.result_lease_reader_completion_quarantined_for_test();
+                let claim_retained = authority.claim_c_query_child().is_none();
+                reader_release.store(true, Ordering::Release);
+                let reader_finish_deadline = Instant::now() + Duration::from_secs(5);
+                while !reader_finished.load(Ordering::Acquire)
+                    && Instant::now() < reader_finish_deadline
+                {
+                    thread::park_timeout(Duration::from_millis(1));
+                }
+                ensure!(
+                    entered_before_cleanup && reader_was_pending,
+                    "reader did not remain unfinished after publishing EOF"
+                );
+                ensure!(
+                    timeout_quarantine && !owner.cleanup_proved_for_test(),
+                    "reader completion timeout did not retain owner resources in quarantine"
+                );
+                ensure!(
+                    claim_retained,
+                    "child claim was released before reader completion"
+                );
+                ensure!(
+                    reader_finished.load(Ordering::Acquire),
+                    "test-held reader did not finish after quarantine was asserted"
+                );
+                assert_eq!(
+                    native_state
+                        .switching
+                        .core()
+                        .workspace_participant_count()?,
+                    0,
+                    "reader-completion quarantine retained an active snapshot participant"
+                );
+                drop(owner);
+                ensure!(
+                    authority.claim_c_query_child().is_none(),
+                    "owner Drop released a claim after reader-completion timeout"
+                );
+                let reloan_error = match active_workspace_snapshot(&native_state) {
+                    Ok(_) => anyhow::bail!(
+                        "reader-completion quarantine permitted same-workspace reloan"
+                    ),
+                    Err(error) => error,
+                };
+                ensure!(
+                    reloan_error.to_string().contains("WORKSPACE_SWITCHING"),
+                    "same-workspace reloan was not rejected: {reloan_error:#}"
+                );
+                eprintln!(
+                    "Native ResultHeld EOF-before-reader-completion: cleanup returned after {cleanup_elapsed:?}; actual child exit + EOF observed but reader remained unfinished, so owner/claim/slot/workspace fence stayed quarantined"
                 );
                 return Ok(());
             }
