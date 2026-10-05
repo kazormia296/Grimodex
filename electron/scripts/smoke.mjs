@@ -1020,6 +1020,22 @@ async function waitForRuntimePostSaveDrain(page, requireAutoRevision) {
   );
 }
 
+async function readRendererClockEdge(page, label) {
+  try {
+    return await page.evaluate((edgeLabel) => {
+      const nowMs = performance.now();
+      return {
+        label: edgeLabel,
+        nowMs,
+        timeOriginMs: performance.timeOrigin,
+        epochMs: performance.timeOrigin + nowMs,
+      };
+    }, label);
+  } catch (error) {
+    return { label, error: String(error?.message ?? error) };
+  }
+}
+
 async function measureRuntimeAutosaveSample(
   page,
   {
@@ -1036,44 +1052,111 @@ async function measureRuntimeAutosaveSample(
   // measured under Chromium's occluded-window timer policy.
   await ensureBenchmarkPageForeground(page);
   const inputTarget = await focusRuntimeInputAnchor(page, anchorText);
-  await page.evaluate(() => globalThis.startPerfSession?.());
-  const cpuProfiler = cpuProfilePath
-    ? await page.context().newCDPSession(page)
+  const rendererClockEdges = cpuProfilePath ? [] : null;
+  const recordClockEdge = rendererClockEdges
+    ? async (label) => {
+        rendererClockEdges.push(await readRendererClockEdge(page, label));
+      }
     : null;
-  if (cpuProfiler) {
-    await cpuProfiler.send("Profiler.enable");
-    await cpuProfiler.send("Profiler.setSamplingInterval", {
-      interval: 1_000,
-    });
-    await cpuProfiler.send("Profiler.start");
-  }
+  let cpuProfiler = null;
+  let profilerStarted = false;
+  let session = null;
+  let operationError = null;
+  let profileCleanupError = null;
+
   try {
+    await page.evaluate(() => globalThis.startPerfSession?.());
+    if (recordClockEdge) await recordClockEdge("session-started");
+    if (cpuProfilePath) {
+      cpuProfiler = await page.context().newCDPSession(page);
+      await cpuProfiler.send("Profiler.enable");
+      await cpuProfiler.send("Profiler.setSamplingInterval", {
+        interval: 1_000,
+      });
+      await recordClockEdge("profiler-start-requested");
+      await cpuProfiler.send("Profiler.start");
+      profilerStarted = true;
+      await recordClockEdge("profiler-started");
+    }
+
+    if (recordClockEdge) await recordClockEdge("typing-started");
     await page.keyboard.type(inputText, { delay: 10 });
+    if (recordClockEdge) await recordClockEdge("typing-finished");
+    await assertRuntimeInputLandedInAnchor(page, anchorText, inputText);
+    await page.evaluate(() => globalThis.checkpointPerfSession?.("typing"));
+    await waitUntil(
+      () => sceneContainsTextInDb(page, sceneId, inputText),
+      `${sceneId} autosave reaches tree_nodes.content`,
+      30_000,
+    );
+    if (recordClockEdge) await recordClockEdge("durable-save-observed");
+    await waitForRuntimePostSaveDrain(page, requireAutoRevision);
+    await page.evaluate(() =>
+      globalThis.checkpointPerfSession?.("postSaveDrain"),
+    );
+    if (recordClockEdge) await recordClockEdge("post-save-drain-checkpoint");
+    session = await page.evaluate(() => globalThis.endPerfSession?.());
+    if (recordClockEdge) await recordClockEdge("session-ended");
+    if (!session?.segments?.durableSave || !session?.segments?.postSaveDrain) {
+      throw new Error(`${sceneId} performance segment evidence is incomplete`);
+    }
+    setRuntimeInteraction(null);
+  } catch (error) {
+    operationError = error;
   } finally {
-    if (cpuProfiler && cpuProfilePath) {
-      const { profile } = await cpuProfiler.send("Profiler.stop");
-      await mkdir(path.dirname(cpuProfilePath), { recursive: true });
-      await writeFile(cpuProfilePath, `${JSON.stringify(profile)}\n`);
-      await cpuProfiler.detach();
-      log(`  input CPU profile: ${cpuProfilePath}`);
+    if (cpuProfiler) {
+      try {
+        if (profilerStarted) {
+          await recordClockEdge("profiler-stop-requested");
+          const { profile } = await cpuProfiler.send("Profiler.stop");
+          profilerStarted = false;
+          await recordClockEdge("profiler-stopped");
+          if (!profile) {
+            profileCleanupError = new Error(
+              "Profiler.stop returned no profile",
+            );
+          } else {
+            const longTaskSession =
+              session ??
+              (await page
+                .evaluate(() => globalThis.snapshotPerfSession?.())
+                .catch((error) => ({
+                  unavailable: String(error?.message ?? error),
+                })));
+            await mkdir(path.dirname(cpuProfilePath), { recursive: true });
+            await writeFile(
+              cpuProfilePath,
+              `${JSON.stringify({
+                schemaVersion: 1,
+                profile,
+                rendererClockEdges,
+                longTaskSession,
+              })}\n`,
+            );
+            log(`  autosave CPU profile: ${cpuProfilePath}`);
+          }
+        }
+      } catch (error) {
+        profileCleanupError = error;
+      }
+      try {
+        await cpuProfiler.detach();
+      } catch (error) {
+        profileCleanupError ??= error;
+      }
     }
   }
-  await assertRuntimeInputLandedInAnchor(page, anchorText, inputText);
-  await page.evaluate(() => globalThis.checkpointPerfSession?.("typing"));
-  await waitUntil(
-    () => sceneContainsTextInDb(page, sceneId, inputText),
-    `${sceneId} autosave reaches tree_nodes.content`,
-    30_000,
-  );
-  await waitForRuntimePostSaveDrain(page, requireAutoRevision);
-  await page.evaluate(() =>
-    globalThis.checkpointPerfSession?.("postSaveDrain"),
-  );
-  const session = await page.evaluate(() => globalThis.endPerfSession?.());
-  if (!session?.segments?.durableSave || !session?.segments?.postSaveDrain) {
-    throw new Error(`${sceneId} performance segment evidence is incomplete`);
+
+  if (operationError) {
+    if (profileCleanupError) {
+      console.error(
+        `[electron:smoke] CPU profile finalization failed: ${profileCleanupError?.stack ?? profileCleanupError}`,
+      );
+    }
+    throw operationError;
   }
-  setRuntimeInteraction(null);
+  if (profileCleanupError) throw profileCleanupError;
+  if (rendererClockEdges) session.rendererClockEdges = rendererClockEdges;
   return { inputTarget, session };
 }
 

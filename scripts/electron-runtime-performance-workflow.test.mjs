@@ -333,6 +333,75 @@ test("smoke phase and failure cleanup wire bounded owned cleanup", async () => {
   );
 });
 
+test("opt-in CPU profiling spans only the first initial autosave and records renderer-clock edges", async () => {
+  const source = await read("electron/scripts/smoke.mjs");
+  const measureStart = source.indexOf(
+    "async function measureRuntimeAutosaveSample(",
+  );
+  const measureEnd = source.indexOf(
+    "function aggregateRuntimeLongTaskSamples(",
+    measureStart,
+  );
+  const measure = source.slice(measureStart, measureEnd);
+  const profileStop = measure.indexOf('cpuProfiler.send("Profiler.stop")');
+
+  assert.match(
+    source,
+    /process\.env\.GRIMODEX_PERF_CPU_PROFILE\s*\n\s*\?\s*path\.resolve/,
+  );
+  assert.match(
+    source,
+    /cpuProfilePath:\s*index === 0 \? performanceCpuProfilePath : null/,
+    "only the first initial autosave receives the optional profile path",
+  );
+  assert.match(
+    measure,
+    /if \(cpuProfilePath\) \{[\s\S]*?newCDPSession\(page\)[\s\S]*?Profiler\.start/,
+    "CDP profiling and renderer-clock collection require the explicit path",
+  );
+  assert.ok(profileStop > measure.indexOf("page.keyboard.type(inputText"));
+  assert.ok(profileStop > measure.indexOf("sceneContainsTextInDb(page"));
+  assert.ok(profileStop > measure.indexOf("waitForRuntimePostSaveDrain(page"));
+  assert.ok(profileStop > measure.indexOf('"postSaveDrain"'));
+  assert.ok(profileStop > measure.indexOf("globalThis.endPerfSession?.()"));
+  assert.match(measure, /"durable-save-observed"/);
+  assert.match(measure, /"post-save-drain-checkpoint"/);
+  assert.match(measure, /rendererClockEdges,\s*longTaskSession/);
+  assert.match(measure, /session\.rendererClockEdges = rendererClockEdges/);
+});
+
+test("opt-in CPU profiling detaches its CDP session after autosave failure", async () => {
+  const source = await read("electron/scripts/smoke.mjs");
+  const measureStart = source.indexOf(
+    "async function measureRuntimeAutosaveSample(",
+  );
+  const measureEnd = source.indexOf(
+    "function aggregateRuntimeLongTaskSamples(",
+    measureStart,
+  );
+  const measure = source.slice(measureStart, measureEnd);
+  const finallyStart = measure.indexOf("} finally {");
+  const detach = measure.indexOf("await cpuProfiler.detach()", finallyStart);
+  const stop = measure.indexOf(
+    'cpuProfiler.send("Profiler.stop")',
+    finallyStart,
+  );
+
+  assert.ok(finallyStart >= 0);
+  assert.ok(stop > finallyStart);
+  assert.ok(detach > stop, "CDP detach follows the attempted profiler stop");
+  assert.match(
+    measure.slice(finallyStart),
+    /try \{\s+await cpuProfiler\.detach\(\);\s+\} catch \(error\) \{\s+profileCleanupError \?\?= error;/,
+    "detach is attempted even when stopping or writing the profile fails",
+  );
+  assert.match(
+    measure.slice(finallyStart),
+    /if \(operationError\) \{\s+if \(profileCleanupError\) \{\s+console\.error\(/,
+    "profile cleanup failure does not replace the original autosave failure",
+  );
+});
+
 test("Linux runtime performance attempts always route through a fresh Xvfb", () => {
   for (const attempt of [1, 2]) {
     const invocation = buildRuntimePerformanceSmokeInvocation({
