@@ -160,12 +160,16 @@ fn install_test_workspace(state: &AppState, authority: PinnedWorkspaceDb) {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| authority_id.clone());
+    let database_file_identity = authority
+        .main_database_file_identity()
+        .expect("test workspace database file identity");
     let binding = grimodex_db::LiveBinding::new(
         authority.path().to_string_lossy(),
         workspace_id,
         authority.identity(),
         generation,
-    );
+    )
+    .with_main_database_file_identity(database_file_identity);
     *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
     state
         .ws
@@ -17795,6 +17799,41 @@ mod narrative_maintenance_admission_unwind_tests {
     #[tokio::test]
     async fn production_restore_error_reopens_admission_and_preserves_binding() {
         let (backend, root) = backend_with_active_workspace("restore-error");
+        let authority_before = active_database(&backend.state.ws).expect("active authority");
+        let database_file_identity_before = authority_before
+            .main_database_file_identity()
+            .expect("active database file identity");
+        authority_before
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title, language) VALUES ('restore-sentinel', 'before', 'ja')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("seed restore sentinel");
+        let lifecycle_before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("Ready lifecycle before restore");
+        let LifecycleState::Ready(lifecycle_binding_before) = lifecycle_before.state else {
+            panic!("active test workspace must be Ready before restore");
+        };
+        assert_eq!(
+            lifecycle_binding_before.authority_instance,
+            authority_before.identity()
+        );
+        assert!(lifecycle_binding_before
+            .matches_main_database_file_identity(&database_file_identity_before));
+        assert!(
+            !backend
+                .state
+                .narrative_maintenance_recovery_gate
+                .maintenance_admission_is_closed(),
+            "maintenance admission must be open before restore"
+        );
         let before = backend
             .get_narrative_maintenance_workspace_binding()
             .expect("read binding before restore")
@@ -17821,6 +17860,39 @@ mod narrative_maintenance_admission_unwind_tests {
             .expect("active binding after restore");
         assert_eq!(after, before, "failed restore must retain the old binding");
 
+        let authority_after = active_database(&backend.state.ws).expect("authority after restore");
+        assert_eq!(authority_after.identity(), authority_before.identity());
+        let database_file_identity_after = authority_after
+            .main_database_file_identity()
+            .expect("database file identity after restore");
+        assert_eq!(database_file_identity_after, database_file_identity_before);
+        let lifecycle_after = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("Ready lifecycle after restore");
+        let LifecycleState::Ready(lifecycle_binding_after) = lifecycle_after.state else {
+            panic!("failed restore must leave the workspace Ready");
+        };
+        assert_eq!(
+            lifecycle_binding_after.authority_instance,
+            lifecycle_binding_before.authority_instance
+        );
+        assert!(lifecycle_binding_after.same_main_database_file(&lifecycle_binding_before));
+        let sentinel_title_after = authority_after
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT title FROM projects WHERE id = 'restore-sentinel'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .expect("read restore sentinel after failure");
+        assert_eq!(sentinel_title_after, "before");
+
+        drop(authority_after);
+        drop(authority_before);
         drop(backend);
         let _ = std::fs::remove_dir_all(root);
     }
