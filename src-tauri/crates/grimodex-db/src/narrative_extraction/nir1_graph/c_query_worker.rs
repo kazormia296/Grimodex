@@ -2666,6 +2666,13 @@ pub struct CQueryResultLease<'a> {
 }
 
 impl CQueryResultLease<'_> {
+    #[cfg(test)]
+    pub(super) fn validated_frame_bytes_for_test(&self) -> Result<&[u8]> {
+        let bytes = self.owner.result_bytes(self.owner.region.result_len)?;
+        worker_frame::validate(bytes)?;
+        Ok(bytes)
+    }
+
     pub fn frame(&self) -> Result<FrameView<'_>> {
         let len = self.owner.region.result_len;
         worker_frame::validate(self.owner.result_bytes(len)?)
