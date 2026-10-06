@@ -40,7 +40,10 @@ test("LP imagetools builds real AVIF/WebP/PNG picture variants and rejects inval
         lib: { entry: path.join(root, "entry.js"), formats: ["es"] },
       },
     };
-    const result = await build(options);
+    const results = await build(options);
+    assert.ok(Array.isArray(results));
+    assert.equal(results.length, 1);
+    const [result] = results;
     const assets = result.output.filter(({ type }) => type === "asset");
     assert.equal(assets.length, 6);
     const dimensions = [];
