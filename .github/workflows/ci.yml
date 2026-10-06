@@ -29,6 +29,11 @@ on:
         required: false
         type: boolean
         default: false
+      source_canonical_contracts:
+        description: Canonical adapter source contracts only (requires source_focused; no gates or generation)
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       product_journey_mode:
@@ -43,7 +48,7 @@ permissions:
 jobs:
   quality:
     name: Quality (traceability / impact-selected light gates)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -105,7 +110,7 @@ jobs:
 
   frontend:
     name: Frontend (type-check / lint / test)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -149,7 +154,7 @@ jobs:
 
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -175,7 +180,7 @@ jobs:
 
   browser:
     name: Browser (Vitest browser)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -224,7 +229,7 @@ jobs:
 
   webgl:
     name: WebGL (deterministic SwiftShader)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -276,7 +281,7 @@ jobs:
 
   storybook:
     name: Storybook (Vitest browser)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -325,7 +330,7 @@ jobs:
 
   security:
     name: Security (audit)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -374,6 +379,18 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+
+      - name: Validate canonical contracts selection
+        if: inputs.source_canonical_contracts
+        env:
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_FOCUSED" = true
+          test "$SOURCE_RESOLVE_SHARP" != true
+          test "$SOURCE_AUDIT_COMPAT" != true
 
       - name: Validate audit compatibility selection
         if: inputs.source_audit_compat
@@ -444,9 +461,29 @@ jobs:
           printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" \
             > .artifacts/ci-source-focused/checkout-identity.json
 
+      - name: Canonical connection source contracts
+        id: source-canonical-contracts
+        if: inputs.source_focused && inputs.source_canonical_contracts
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/canonical-source
+          node --test scripts/ci-pause.test.mjs scripts/local-ci.test.mjs scripts/local-ci-runner.test.mjs scripts/local-ci-process-supervisor.test.mjs | tee .artifacts/canonical-source/contracts.tap
+
+      - name: Upload canonical connection source contracts
+        if: always() && inputs.source_focused && inputs.source_canonical_contracts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/ci-source-focused/checkout-identity.json
+            .artifacts/canonical-source/contracts.tap
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Source-focused contracts (before generation)
         id: source-focused-contracts
-        if: inputs.source_focused && !inputs.source_audit_compat
+        if: inputs.source_focused && !inputs.source_audit_compat && !inputs.source_canonical_contracts
         run: |
           set -euo pipefail
           node --test \
@@ -464,13 +501,13 @@ jobs:
       - name: Generate license repair source
         if: >-
           inputs.source_focused && !inputs.source_audit_compat && !cancelled() &&
-          steps.install.outcome == 'success' &&
+          !inputs.source_canonical_contracts && steps.install.outcome == 'success' &&
           (steps.source-focused-contracts.outcome == 'success' ||
            steps.source-focused-contracts.outcome == 'failure')
         run: pnpm generate:licenses
 
       - name: Upload source-focused repair evidence
-        if: always() && inputs.source_focused && !inputs.source_audit_compat
+        if: always() && inputs.source_focused && !inputs.source_audit_compat && !inputs.source_canonical_contracts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-source-focused-${{ github.run_id }}-${{ github.run_attempt }}
@@ -594,7 +631,7 @@ jobs:
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -676,7 +713,7 @@ jobs:
 
   electron-product-journeys:
     name: Electron product journeys (persistence / workspace authority)
-    if: ${{ !inputs.source_focused }}
+    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -867,7 +904,7 @@ jobs:
 
   electron-windows-installer-contract:
     name: Electron Windows (unit test / NSIS migration contract)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -976,7 +1013,7 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -1060,7 +1097,7 @@ jobs:
 
   rust:
     name: Shared Rust crates (check / clippy / test)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -1140,7 +1177,7 @@ jobs:
 
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     strategy:
       fail-fast: false
       matrix:
@@ -1164,7 +1201,7 @@ jobs:
 
   migration-recovery-gate:
     name: Migration recovery gate (Gate A2)
-    if: github.event_name != 'schedule' && !inputs.source_focused
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

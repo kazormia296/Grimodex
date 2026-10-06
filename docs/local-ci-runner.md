@@ -37,6 +37,45 @@ without a requested commit/PR does not create a commit or start PR-bound CI
 solely for Quick; an explicitly requested dirty working-tree run remains
 diagnostic evidence and cannot establish merge readiness.
 
+### Manual GitHub connection (source preparation)
+
+`.github/workflows/canonical-ci.yml` is a thin manual-only adapter to the same
+package scripts and registry. Its default `contracts` selection installs the
+frozen dependencies and runs the workflow/runner/supervisor source contracts;
+it does **not** run Quick or Full, generate notices, or produce a canonical
+receipt. The existing `ci.yml` default and reusable jobs remain separate.
+
+A branch-only new workflow is not assumed registered for manual dispatch. When
+`canonical-ci.yml` is unavailable, the already registered `ci.yml` offers the same
+four source-contract suites through explicit `source_focused=true` and
+`source_canonical_contracts=true`. Keep `source_resolve_sharp` and
+`source_audit_compat` false; mixed repair selections fail before resolver/install.
+This mode retains the frozen install and uploads only checkout identity and
+source TAP. It skips the earlier source-repair suites, license generation and
+consumer/audit execution. The new flag defaults to false and is absent from
+reusable calls, so normal/release jobs and their commands/timeouts are unchanged.
+It does not dispatch the new workflow or run a canonical gate. Verify actual
+registration, checkpoint identity and unique run ownership before dispatch.
+
+A later eligible `quick` dispatch requires explicit full `candidate_base` and
+`candidate_head` commit SHAs, with head equal to the dispatched ref's SHA. The
+adapter checks a clean checkout and base ancestry, resolves the pair once, and
+passes the same expanded values and `max_parallel_tasks` option to the profile
+and its immediate verifier. The scheduler default remains 12; a different limit
+requires the existing workload/resource admission decision. A failed profile
+never starts verify. Uploaded artifacts retain the existing receipt/log formats;
+a hosted job result is not a replacement for receipt verification or acceptance.
+
+`full` is deliberately stopped before setup/install. Its command connection is
+prepared, but must not be enabled until candidate acceptance/freeze, outstanding
+prerequisites, and a reviewed **actual-runner** resource-isolation preflight
+connection are complete. No dispatch input or source-contract pass attests those
+facts. That preflight must check the actual workspace/build-cache/temp, root/home
+pressure, temp quota and competing heavy work without fixed capacity thresholds,
+automatic deletion, foreign-process kills or temp-path rewriting. D-Bus capability
+and product acceptance remain independent pending prerequisites. This adapter
+preparation does not authorize a gate run or establish merge readiness.
+
 Product journeys wait for the created durable ID and its corresponding UI
 projection before editing. A visible selector alone is not a ready signal.
 

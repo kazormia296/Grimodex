@@ -1,0 +1,151 @@
+name: Canonical CI (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Contracts only by default; canonical gates require separate candidate admission
+        required: true
+        type: choice
+        default: contracts
+        options: [contracts, quick, full]
+      candidate_base:
+        description: Immutable 40-character base commit SHA (required for a canonical profile)
+        required: false
+        type: string
+      candidate_head:
+        description: Immutable 40-character candidate SHA, equal to the dispatched ref (required for a canonical profile)
+        required: false
+        type: string
+      max_parallel_tasks:
+        description: Existing scheduler admission limit (1 through 12; same option for profile and verify)
+        required: true
+        type: string
+        default: "12"
+
+permissions:
+  contents: read
+
+jobs:
+  canonical:
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.profile == 'contracts' && 20 || 360 }}
+    steps:
+      # Source preparation is not permission to run Full. Replace this stop only
+      # after candidate acceptance/freeze and a reviewed actual-runner preflight
+      # connection; an input boolean cannot prove resource isolation or D-Bus A.
+      - name: Full prerequisites remain unresolved
+        if: inputs.profile == 'full'
+        run: |
+          echo '[precheck] Full requires candidate acceptance/freeze, prerequisite closure and actual-runner resource-isolation admission' >&2
+          exit 1
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate canonical selection
+        if: inputs.profile != 'contracts'
+        env:
+          PROFILE: ${{ inputs.profile }}
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          [[ "$PROFILE" == quick || "$PROFILE" == full ]]
+          [[ "$REQUESTED_BASE" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_HEAD" == "$GITHUB_SHA" ]]
+          [[ "$MAX_PARALLEL_TASKS" =~ ^([1-9]|1[0-2])$ ]]
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Canonical system dependencies
+        if: inputs.profile != 'contracts'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev libdbus-1-dev libsecret-1-dev pkg-config xvfb
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        if: inputs.profile == 'full'
+        with:
+          version: 0.11.29
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Browser system dependencies
+        if: inputs.profile != 'contracts'
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Rust audit tool
+        if: inputs.profile == 'full'
+        run: cargo install cargo-audit --locked
+
+      - name: Canonical connection source contracts
+        id: contracts
+        if: inputs.profile == 'contracts'
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/canonical-source
+          node --test scripts/ci-pause.test.mjs scripts/local-ci.test.mjs scripts/local-ci-runner.test.mjs scripts/local-ci-process-supervisor.test.mjs | tee .artifacts/canonical-source/contracts.tap
+
+      - name: Canonical profile and immediate verify
+        id: canonical
+        if: inputs.profile != 'contracts'
+        env:
+          PROFILE: ${{ inputs.profile }}
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          readonly candidate_base="$(git rev-parse "${REQUESTED_BASE}^{commit}")"
+          readonly candidate_head="$(git rev-parse "${EXPECTED_HEAD}^{commit}")"
+          [[ "$candidate_head" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$candidate_head" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+          git merge-base --is-ancestor "$candidate_base" "$candidate_head"
+          pnpm "ci:local:$PROFILE" -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
+          pnpm ci:local:verify -- "$PROFILE" --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
+
+      - name: Upload canonical connection source contracts
+        if: always() && steps.contracts.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .artifacts/canonical-source/contracts.tap
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload existing canonical evidence
+        if: always() && steps.canonical.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/local-ci/
+            .artifacts/product-journeys/
+            .artifacts/browser-ci/
+            .artifacts/electron-runtime-performance/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

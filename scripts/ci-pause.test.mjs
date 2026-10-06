@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
-import { access, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import yaml from "js-yaml";
 
@@ -66,7 +69,7 @@ test("manual source-focused repair preserves failures and excludes unrelated pro
   );
   assert.ok(contractsIndex >= 0 && generationIndex > contractsIndex);
   const contracts = electron.steps[contractsIndex];
-  assert.equal(contracts.if, "inputs.source_focused && !inputs.source_audit_compat");
+  assert.equal(contracts.if, "inputs.source_focused && !inputs.source_audit_compat && !inputs.source_canonical_contracts");
   assert.equal(contracts["continue-on-error"], undefined);
   assert.match(contracts.run, /set -euo pipefail/u);
   for (const file of [
@@ -107,7 +110,7 @@ test("manual source-focused repair preserves failures and excludes unrelated pro
   const upload = electron.steps.find(
     ({ name }) => name === "Upload source-focused repair evidence",
   );
-  assert.equal(upload.if, "always() && inputs.source_focused && !inputs.source_audit_compat");
+  assert.equal(upload.if, "always() && inputs.source_focused && !inputs.source_audit_compat && !inputs.source_canonical_contracts");
   assert.equal(upload.with["if-no-files-found"], "error");
   assert.equal(upload.with["include-hidden-files"], true);
   assert.equal(
@@ -257,6 +260,166 @@ test("audit compatibility is manual, bounded, and separate from resolver/generat
     ".artifacts/ci-source-focused/checkout-identity.json",
     ".artifacts/ci-source-focused/audit-compat/",
   ]);
+});
+
+test("registered CI exposes only opt-in canonical source contracts without generation or gates", async () => {
+  const ci = await readWorkflow(".github/workflows/ci.yml");
+  const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
+  const input = ci.on.workflow_dispatch.inputs.source_canonical_contracts;
+  assert.equal(input.type, "boolean");
+  assert.equal(input.default, false);
+  assert.equal(ci.on.workflow_call.inputs.source_canonical_contracts, undefined);
+  // Invalid canonical=true/focused=false must not admit parallel ordinary jobs.
+  for (const [id, job] of Object.entries(ci.jobs)) {
+    if (id === "electron") continue;
+    assert.equal(job.if, id === "electron-product-journeys"
+      ? "${{ !inputs.source_focused && !inputs.source_canonical_contracts }}"
+      : "github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts", id);
+  }
+  const steps = ci.jobs.electron.steps;
+  const selectionIndex = steps.findIndex(({ name }) => name === "Validate canonical contracts selection");
+  const resolveIndex = steps.findIndex(({ name }) => name === "Resolve sharp lock repair source");
+  const installIndex = steps.findIndex(({ id }) => id === "install");
+  assert.ok(selectionIndex >= 0 && selectionIndex < resolveIndex && resolveIndex < installIndex);
+  const selection = steps[selectionIndex];
+  assert.equal(selection.if, "inputs.source_canonical_contracts");
+  assert.deepEqual(selection.env, {
+    SOURCE_FOCUSED: "${{ inputs.source_focused }}",
+    SOURCE_RESOLVE_SHARP: "${{ inputs.source_resolve_sharp }}",
+    SOURCE_AUDIT_COMPAT: "${{ inputs.source_audit_compat }}",
+  });
+  assert.doesNotMatch(selection.run, /\$\{\{ inputs\./u);
+  const execute = promisify(execFile);
+  const env = { ...process.env, SOURCE_FOCUSED: "true", SOURCE_RESOLVE_SHARP: "false", SOURCE_AUDIT_COMPAT: "false" };
+  const shell = (overrides = {}) => execute("bash", ["-c", selection.run], { env: { ...env, ...overrides }, timeout: 10000 });
+  await shell();
+  for (const overrides of [
+    { SOURCE_FOCUSED: "false" },
+    { SOURCE_FOCUSED: "$(exit 0)" },
+    { SOURCE_RESOLVE_SHARP: "true" },
+    { SOURCE_AUDIT_COMPAT: "true" },
+  ]) await assert.rejects(shell(overrides));
+  const contracts = steps.find(({ id }) => id === "source-canonical-contracts");
+  assert.equal(contracts.if, "inputs.source_focused && inputs.source_canonical_contracts");
+  assert.equal(contracts.run, workflow.jobs.canonical.steps.find(({ id }) => id === "contracts").run);
+  assert.equal(contracts["continue-on-error"], undefined);
+  for (const name of ["Source-focused contracts (before generation)", "Generate license repair source", "Upload source-focused repair evidence"]) {
+    assert.match(steps.find((step) => step.name === name).if, /!inputs\.source_canonical_contracts/u, name);
+  }
+  const upload = steps.find(({ name }) => name === "Upload canonical connection source contracts");
+  assert.equal(upload.if, "always() && inputs.source_focused && inputs.source_canonical_contracts");
+  assert.equal(upload.with.name, "canonical-source-${{ github.run_id }}-${{ github.run_attempt }}");
+  assert.equal(upload.with["include-hidden-files"], true);
+  assert.equal(upload.with["if-no-files-found"], "error");
+  assert.deepEqual(upload.with.path.trim().split("\n"), [
+    ".artifacts/ci-source-focused/checkout-identity.json",
+    ".artifacts/canonical-source/contracts.tap",
+  ]);
+});
+
+test("canonical hosted connection is manual and defaults to contracts, not gates", async () => {
+  const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
+  assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  const inputs = workflow.on.workflow_dispatch.inputs;
+  assert.equal(inputs.profile.default, "contracts");
+  assert.deepEqual(inputs.profile.options, ["contracts", "quick", "full"]);
+  assert.equal(inputs.max_parallel_tasks.default, "12");
+  const job = workflow.jobs.canonical;
+  assert.equal(job["runs-on"], "ubuntu-24.04");
+  const steps = job.steps;
+  const stop = steps[0];
+  assert.equal(stop.if, "inputs.profile == 'full'");
+  assert.match(stop.run, /\[precheck\][\s\S]*exit 1/u);
+  assert.doesNotMatch(stop.run, /df |quota|dbus|sudo|pnpm|ci:local:/u);
+  const checkout = steps.find(({ uses }) => uses?.startsWith("actions/checkout@"));
+  assert.equal(checkout.with.ref, "${{ github.sha }}");
+  assert.equal(checkout.with["fetch-depth"], 0);
+  assert.equal(checkout.with["persist-credentials"], false);
+  const dependencies = steps.find(({ name }) => name === "Canonical system dependencies");
+  assert.equal(dependencies.if, "inputs.profile != 'contracts'");
+  assert.deepEqual(dependencies.run.trim().split("\n").slice(0, 2), [
+    "sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*",
+    "sudo apt-get update",
+  ]);
+  const contracts = steps.find(({ id }) => id === "contracts");
+  assert.equal(contracts.if, "inputs.profile == 'contracts'");
+  assert.match(contracts.run, /set -euo pipefail/u);
+  for (const name of ["ci-pause", "local-ci", "local-ci-runner", "local-ci-process-supervisor"]) {
+    assert.ok(contracts.run.includes(`scripts/${name}.test.mjs`), name);
+  }
+  assert.doesNotMatch(contracts.run, /ci:local:|generate:licenses|sharp-consumers|pnpm-audit/u);
+  for (const step of steps) {
+    assert.equal(step["continue-on-error"], undefined);
+    if (step.run) assert.doesNotMatch(step.run, /\$\{\{ inputs\.|--dry-run|--from|--recover-lock|\|\|\s*true/u);
+  }
+  const upload = steps.find(({ name }) => name === "Upload existing canonical evidence");
+  assert.equal(upload.if, "always() && steps.canonical.outcome != 'skipped'");
+  assert.equal(upload.with["include-hidden-files"], true);
+  assert.equal(upload.with["if-no-files-found"], "error");
+  assert.ok(upload.with.path.includes(".artifacts/local-ci/"));
+});
+
+test("canonical shell uses one immutable tuple/options and verifies only profile success", async () => {
+  const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
+  const steps = workflow.jobs.canonical.steps;
+  const selection = steps.find(({ name }) => name === "Validate canonical selection");
+  const canonical = steps.find(({ id }) => id === "canonical");
+  assert.equal(selection.if, "inputs.profile != 'contracts'");
+  assert.equal(canonical.if, selection.if);
+  assert.deepEqual(canonical.env, selection.env);
+  assert.match(canonical.run, /readonly candidate_base=/u);
+  assert.match(canonical.run, /readonly candidate_head=/u);
+  assert.equal((canonical.run.match(/--base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/gu) ?? []).length, 2);
+  const execute = promisify(execFile);
+  const temporary = await mkdtemp(path.join(tmpdir(), "canonical-ci-contract-"));
+  const cwd = path.join(temporary, "checkout");
+  const bin = path.join(temporary, "bin");
+  const calls = path.join(temporary, "calls.jsonl");
+  try {
+    await mkdir(cwd);
+    await mkdir(bin);
+    await writeFile(path.join(bin, "pnpm"), `#!${process.execPath}\nconst { appendFileSync } = require('node:fs');\nconst args = process.argv.slice(2);\nappendFileSync(process.env.CALLS, JSON.stringify(args) + '\\n');\nif (process.env.FAIL_PROFILE === '1') process.exitCode = 7;\n`, { mode: 0o755 });
+    const git = (...args) => execute("git", args, { cwd, timeout: 10000 });
+    await git("init", "--initial-branch=contract");
+    await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
+    await git("add", "source.txt");
+    await git("-c", "user.name=Contract", "-c", "user.email=contract@example.invalid", "commit", "-m", "Synthetic workflow contract");
+    const sha = (await git("rev-parse", "HEAD")).stdout.trim();
+    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls, PROFILE: "quick", REQUESTED_BASE: sha, EXPECTED_HEAD: sha, GITHUB_SHA: sha, MAX_PARALLEL_TASKS: "3", FAIL_PROFILE: "0" };
+    const shell = (source, overrides = {}) => execute("bash", ["-c", source], { cwd, env: { ...env, ...overrides }, timeout: 10000 });
+    await assert.rejects(shell(steps[0].run));
+    await assert.rejects(access(calls));
+    await shell(selection.run);
+    await shell(canonical.run);
+    assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
+      ["ci:local:quick", "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
+      ["ci:local:verify", "--", "quick", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
+    ]);
+    await writeFile(calls, "");
+    await assert.rejects(shell(canonical.run, { FAIL_PROFILE: "1" }));
+    const failedCalls = (await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(failedCalls.length, 1);
+    assert.equal(failedCalls[0][0], "ci:local:quick");
+    for (const overrides of [
+      { REQUESTED_BASE: "$(touch injected)" },
+      { EXPECTED_HEAD: "0".repeat(40) },
+      { MAX_PARALLEL_TASKS: "13" },
+      { MAX_PARALLEL_TASKS: "0" },
+      { PROFILE: "contracts" },
+    ]) await assert.rejects(shell(selection.run, overrides));
+    await assert.rejects(access(path.join(cwd, "injected")));
+    await writeFile(calls, "");
+    await writeFile(path.join(cwd, "source.txt"), "dirty\n");
+    await assert.rejects(shell(canonical.run));
+    assert.equal(await readFile(calls, "utf8"), "");
+    await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
+    await assert.rejects(shell(canonical.run, { GITHUB_SHA: "0".repeat(40) }));
+    await assert.rejects(shell(canonical.run, { REQUESTED_BASE: "0".repeat(40) }));
+    assert.equal(await readFile(calls, "utf8"), "");
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test("tag releases still call the complete reusable CI workflow", async () => {
