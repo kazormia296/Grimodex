@@ -19,6 +19,11 @@ on:
         required: false
         type: boolean
         default: false
+      source_resolve_sharp:
+        description: Resolve sharp lock repair source (requires source_focused; not acceptance)
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       product_journey_mode:
@@ -365,8 +370,51 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Validate sharp repair selection
+        if: inputs.source_resolve_sharp
+        env:
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+        run: test "$SOURCE_FOCUSED" = true
+
+      - name: Resolve sharp lock repair source
+        if: inputs.source_focused && inputs.source_resolve_sharp
+        run: |
+          mkdir -p .artifacts/ci-source-focused
+          cp pnpm-lock.yaml .artifacts/ci-source-focused/sharp-before.yaml
+          pnpm update sharp --depth Infinity --lockfile-only --ignore-scripts --no-frozen-lockfile
+
       - id: install
         run: pnpm install --frozen-lockfile
+
+      - name: Verify sharp repair graph
+        if: inputs.source_focused && inputs.source_resolve_sharp
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import yaml from 'js-yaml';
+          function verify(lock) {
+            const sharp = Object.keys(lock.packages).filter((key) => key.startsWith('sharp@'));
+            assert.deepEqual(sharp, ['sharp@0.35.5']);
+            assert.equal(lock.packages[sharp[0]].resolution.integrity, 'sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g==');
+            const platforms = Object.keys(lock.packages).filter((key) => key.startsWith('@img/sharp-'));
+            assert.ok(platforms.length > 0);
+            for (const key of platforms) assert.ok(key.endsWith(key.startsWith('@img/sharp-libvips-') ? '@1.3.4' : '@0.35.5'), key);
+            const consumers = {};
+            for (const name of ['miniflare', 'vite-imagetools']) {
+              const snapshots = Object.entries(lock.snapshots).filter(([key]) => key.startsWith(`${name}@`));
+              assert.equal(snapshots.length, 1, name);
+              for (const [key, value] of snapshots) {
+                assert.equal(value.dependencies.sharp, '0.35.5', key);
+                consumers[key] = value.dependencies.sharp;
+              }
+            }
+            return { sharp, platforms, consumers };
+          }
+          assert.throws(() => verify(yaml.load(readFileSync('.artifacts/ci-source-focused/sharp-before.yaml', 'utf8'))));
+          const graph = verify(yaml.load(readFileSync('pnpm-lock.yaml', 'utf8')));
+          writeFileSync('.artifacts/ci-source-focused/sharp-graph.json', `${JSON.stringify(graph, null, 2)}\n`);
+          NODE
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         if: inputs.source_focused
@@ -416,6 +464,8 @@ jobs:
           path: |
             .artifacts/ci-source-focused/checkout-identity.json
             .artifacts/ci-source-focused/contracts.tap
+            .artifacts/ci-source-focused/sharp-graph.json
+            pnpm-lock.yaml
             THIRD_PARTY_LICENSES.md
             public/THIRD_PARTY_LICENSES.md
           if-no-files-found: error

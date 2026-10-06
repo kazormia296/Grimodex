@@ -117,9 +117,44 @@ test("manual source-focused repair preserves failures and excludes unrelated pro
   assert.deepEqual(upload.with.path.trim().split("\n"), [
     ".artifacts/ci-source-focused/checkout-identity.json",
     ".artifacts/ci-source-focused/contracts.tap",
+    ".artifacts/ci-source-focused/sharp-graph.json",
+    "pnpm-lock.yaml",
     "THIRD_PARTY_LICENSES.md",
     "public/THIRD_PARTY_LICENSES.md",
   ]);
+});
+
+test("sharp lock repair is fixed, opt-in, and verified before source contracts", async () => {
+  const ci = await readWorkflow(".github/workflows/ci.yml");
+  const input = ci.on.workflow_dispatch.inputs.source_resolve_sharp;
+  assert.equal(input.type, "boolean");
+  assert.equal(input.default, false);
+  assert.equal(ci.on.workflow_call.inputs.source_resolve_sharp, undefined);
+  const steps = ci.jobs.electron.steps;
+  const selection = steps.find(({ name }) => name === "Validate sharp repair selection");
+  assert.equal(selection.if, "inputs.source_resolve_sharp");
+  assert.equal(selection.env.SOURCE_FOCUSED, "${{ inputs.source_focused }}");
+  assert.equal(selection.run, 'test "$SOURCE_FOCUSED" = true');
+  const resolveIndex = steps.findIndex(({ name }) => name === "Resolve sharp lock repair source");
+  const installIndex = steps.findIndex(({ id }) => id === "install");
+  const verifyIndex = steps.findIndex(({ name }) => name === "Verify sharp repair graph");
+  const contractsIndex = steps.findIndex(({ id }) => id === "source-focused-contracts");
+  assert.ok(resolveIndex >= 0 && resolveIndex < installIndex);
+  assert.ok(installIndex < verifyIndex && verifyIndex < contractsIndex);
+  for (const step of [steps[resolveIndex], steps[verifyIndex]]) {
+    assert.equal(step.if, "inputs.source_focused && inputs.source_resolve_sharp");
+    assert.equal(step["continue-on-error"], undefined);
+  }
+  assert.match(steps[resolveIndex].run, /pnpm update sharp --depth Infinity --lockfile-only --ignore-scripts --no-frozen-lockfile/u);
+  assert.doesNotMatch(steps[resolveIndex].run, /--latest|\|\|\s*true/u);
+  assert.equal(steps[installIndex].run, "pnpm install --frozen-lockfile");
+  const verification = steps[verifyIndex].run;
+  assert.ok(verification.includes("['miniflare', 'vite-imagetools']"));
+  assert.ok(verification.includes("['sharp@0.35.5']"));
+  assert.ok(verification.includes("'@1.3.4' : '@0.35.5'"));
+  assert.match(verification, /assert\.throws/u);
+  assert.match(verification, /sharp-before\.yaml/u);
+  assert.match(verification, /sharp-graph\.json/u);
 });
 
 test("tag releases still call the complete reusable CI workflow", async () => {
