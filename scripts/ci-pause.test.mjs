@@ -145,7 +145,7 @@ test("sharp lock repair is fixed, opt-in, and verified before source contracts",
     assert.equal(step.if, "inputs.source_focused && inputs.source_resolve_sharp");
     assert.equal(step["continue-on-error"], undefined);
   }
-  assert.match(steps[resolveIndex].run, /pnpm update sharp --depth Infinity --lockfile-only --ignore-scripts --no-frozen-lockfile/u);
+  assert.match(steps[resolveIndex].run, /pnpm update sharp --depth Infinity --lockfile-only --ignore-scripts/u);
   assert.doesNotMatch(steps[resolveIndex].run, /--latest|\|\|\s*true/u);
   assert.equal(steps[installIndex].run, "pnpm install --frozen-lockfile");
   const verification = steps[verifyIndex].run;

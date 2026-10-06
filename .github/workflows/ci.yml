@@ -381,7 +381,7 @@ jobs:
         run: |
           mkdir -p .artifacts/ci-source-focused
           cp pnpm-lock.yaml .artifacts/ci-source-focused/sharp-before.yaml
-          pnpm update sharp --depth Infinity --lockfile-only --ignore-scripts --no-frozen-lockfile
+          pnpm update sharp --depth Infinity --lockfile-only --ignore-scripts
 
       - id: install
         run: pnpm install --frozen-lockfile
