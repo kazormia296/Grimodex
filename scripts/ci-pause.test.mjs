@@ -66,7 +66,7 @@ test("manual source-focused repair preserves failures and excludes unrelated pro
   );
   assert.ok(contractsIndex >= 0 && generationIndex > contractsIndex);
   const contracts = electron.steps[contractsIndex];
-  assert.equal(contracts.if, "inputs.source_focused");
+  assert.equal(contracts.if, "inputs.source_focused && !inputs.source_audit_compat");
   assert.equal(contracts["continue-on-error"], undefined);
   assert.match(contracts.run, /set -euo pipefail/u);
   for (const file of [
@@ -83,7 +83,7 @@ test("manual source-focused repair preserves failures and excludes unrelated pro
   assert.doesNotMatch(contracts.run, /generate:licenses|\|\|\s*true/u);
   const generation = electron.steps[generationIndex];
   assert.equal(generation.run, "pnpm generate:licenses");
-  assert.match(generation.if, /inputs\.source_focused && !cancelled\(\)/u);
+  assert.match(generation.if, /inputs\.source_focused && !inputs\.source_audit_compat && !cancelled\(\)/u);
   assert.match(generation.if, /steps\.install\.outcome == 'success'/u);
   assert.match(
     generation.if,
@@ -107,7 +107,7 @@ test("manual source-focused repair preserves failures and excludes unrelated pro
   const upload = electron.steps.find(
     ({ name }) => name === "Upload source-focused repair evidence",
   );
-  assert.equal(upload.if, "always() && inputs.source_focused");
+  assert.equal(upload.if, "always() && inputs.source_focused && !inputs.source_audit_compat");
   assert.equal(upload.with["if-no-files-found"], "error");
   assert.equal(upload.with["include-hidden-files"], true);
   assert.equal(
@@ -209,6 +209,54 @@ test("sharp graph verifier accepts peer-qualified exact versions and rejects bro
   const badPlatform = structuredClone(lock);
   badPlatform.packages["@img/sharp-linux-x64@0.35.4"] = {};
   assert.throws(() => verify(badPlatform));
+});
+
+test("audit compatibility is manual, bounded, and separate from resolver/generation/canonical execution", async () => {
+  const ci = await readWorkflow(".github/workflows/ci.yml");
+  const input = ci.on.workflow_dispatch.inputs.source_audit_compat;
+  assert.equal(input.type, "boolean");
+  assert.equal(input.default, false);
+  assert.equal(ci.on.workflow_call.inputs.source_audit_compat, undefined);
+  const steps = ci.jobs.electron.steps;
+  const selectionIndex = steps.findIndex(({ name }) => name === "Validate audit compatibility selection");
+  const installIndex = steps.findIndex(({ id }) => id === "install");
+  assert.ok(selectionIndex >= 0 && selectionIndex < installIndex);
+  const selection = steps[selectionIndex];
+  assert.equal(selection.if, "inputs.source_audit_compat");
+  assert.deepEqual(selection.env, {
+    SOURCE_FOCUSED: "${{ inputs.source_focused }}",
+    SOURCE_RESOLVE_SHARP: "${{ inputs.source_resolve_sharp }}",
+  });
+  assert.equal(selection.run, 'test "$SOURCE_FOCUSED" = true && test "$SOURCE_RESOLVE_SHARP" != true');
+  const execution = steps.find(({ name }) => name === "Audit and real sharp consumer compatibility");
+  assert.equal(execution.if, "inputs.source_focused && inputs.source_audit_compat");
+  assert.equal(execution["continue-on-error"], undefined);
+  assert.match(execution.run, /runLocalCiCommand/u);
+  assert.match(execution.run, /scripts\/ci-pause\.test\.mjs/u);
+  assert.match(execution.run, /scripts\/sharp-consumers\.test\.mjs/u);
+  assert.match(execution.run, /scripts\/pnpm-audit\.mjs/u);
+  assert.match(execution.run, /300000/u);
+  assert.match(execution.run, /600000/u);
+  assert.match(execution.run, /controller\.abort\(\)/u);
+  // Only bounded-close mode supplies the termination/closeObserved success contract.
+  assert.match(execution.run, /taskId, signal: controller\.signal, closeGraceMs: 2000,/u);
+  assert.match(execution.run, /JSON\.stringify\(error\.result, null, 2\)/u);
+  assert.match(execution.run, /finally\s*\{[\s\S]*await error\.lateClose/u);
+  assert.match(execution.run, /JSON\.stringify\(late, null, 2\)/u);
+  assert.match(execution.run, /throw error;/u);
+  for (const field of ["exitCode", "timedOut", "interrupted", "cleanup.complete", "closeObserved", "termination"]) {
+    assert.ok(execution.run.includes(`assert.equal(result.${field},`), field);
+  }
+  assert.doesNotMatch(execution.run, /ci:local:|generate:licenses|pnpm update|\|\|\s*true/u);
+  const upload = steps.find(({ name }) => name === "Upload audit compatibility evidence");
+  assert.equal(upload.if, "always() && inputs.source_focused && inputs.source_audit_compat");
+  assert.equal(upload.with["if-no-files-found"], "error");
+  assert.equal(upload.with["include-hidden-files"], true);
+  assert.equal(upload.with.name, "ci-audit-compat-${{ github.run_id }}-${{ github.run_attempt }}");
+  assert.deepEqual(upload.with.path.trim().split("\n"), [
+    ".artifacts/ci-source-focused/checkout-identity.json",
+    ".artifacts/ci-source-focused/audit-compat/",
+  ]);
 });
 
 test("tag releases still call the complete reusable CI workflow", async () => {

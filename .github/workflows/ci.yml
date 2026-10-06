@@ -24,6 +24,11 @@ on:
         required: false
         type: boolean
         default: false
+      source_audit_compat:
+        description: Audit patched dependencies and exercise sharp consumers (requires source_focused; not canonical CI)
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       product_journey_mode:
@@ -370,6 +375,13 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Validate audit compatibility selection
+        if: inputs.source_audit_compat
+        env:
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+        run: test "$SOURCE_FOCUSED" = true && test "$SOURCE_RESOLVE_SHARP" != true
+
       - name: Validate sharp repair selection
         if: inputs.source_resolve_sharp
         env:
@@ -419,7 +431,7 @@ jobs:
           NODE
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        if: inputs.source_focused
+        if: inputs.source_focused && !inputs.source_audit_compat
         with:
           toolchain: stable
 
@@ -434,7 +446,7 @@ jobs:
 
       - name: Source-focused contracts (before generation)
         id: source-focused-contracts
-        if: inputs.source_focused
+        if: inputs.source_focused && !inputs.source_audit_compat
         run: |
           set -euo pipefail
           node --test \
@@ -451,14 +463,14 @@ jobs:
       # not acceptance of this now-dirty checkout or a canonical Quick/Full pass.
       - name: Generate license repair source
         if: >-
-          inputs.source_focused && !cancelled() &&
+          inputs.source_focused && !inputs.source_audit_compat && !cancelled() &&
           steps.install.outcome == 'success' &&
           (steps.source-focused-contracts.outcome == 'success' ||
            steps.source-focused-contracts.outcome == 'failure')
         run: pnpm generate:licenses
 
       - name: Upload source-focused repair evidence
-        if: always() && inputs.source_focused
+        if: always() && inputs.source_focused && !inputs.source_audit_compat
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ci-source-focused-${{ github.run_id }}-${{ github.run_attempt }}
@@ -470,6 +482,67 @@ jobs:
             pnpm-lock.yaml
             THIRD_PARTY_LICENSES.md
             public/THIRD_PARTY_LICENSES.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Audit and real sharp consumer compatibility
+        if: inputs.source_focused && inputs.source_audit_compat
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { writeFile } from 'node:fs/promises';
+          import { runLocalCiCommand } from './scripts/local-ci-process-supervisor.mjs';
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          process.once('SIGINT', abort);
+          process.once('SIGTERM', abort);
+          try {
+            for (const [taskId, args, timeoutMs] of [
+              ['sharp-consumers', ['--test', 'scripts/ci-pause.test.mjs', 'scripts/sharp-consumers.test.mjs'], 300000],
+              ['pnpm-audit', ['scripts/pnpm-audit.mjs'], 600000],
+            ]) {
+              const result = await runLocalCiCommand({ command: 'node', args, timeoutMs }, {
+                root: process.cwd(),
+                logDirectory: '.artifacts/ci-source-focused/audit-compat',
+                taskId, signal: controller.signal, closeGraceMs: 2000,
+              }).catch(async (error) => {
+                try {
+                  if (error.result) {
+                    await writeFile(`.artifacts/ci-source-focused/audit-compat/${taskId}.json`, `${JSON.stringify(error.result, null, 2)}\n`);
+                  }
+                } finally {
+                  // Unknown close retains ownership; late cleanup never makes this task pass.
+                  if (error.lateClose) {
+                    const late = await error.lateClose;
+                    await writeFile(`.artifacts/ci-source-focused/audit-compat/${taskId}.late-close.json`, `${JSON.stringify(late, null, 2)}\n`);
+                  }
+                }
+                throw error;
+              });
+              await writeFile(`.artifacts/ci-source-focused/audit-compat/${taskId}.json`, `${JSON.stringify(result, null, 2)}\n`);
+              console.log(`${taskId}: exit=${result.exitCode} cleanup=${result.cleanup.complete} termination=${result.termination}`);
+              assert.equal(result.exitCode, 0, taskId);
+              assert.equal(result.timedOut, false, taskId);
+              assert.equal(result.interrupted, false, taskId);
+              assert.equal(result.cleanup.complete, true, taskId);
+              assert.equal(result.closeObserved, true, taskId);
+              assert.equal(result.termination, 'close-and-group-exit-observed', taskId);
+            }
+          } finally {
+            process.removeListener('SIGINT', abort);
+            process.removeListener('SIGTERM', abort);
+          }
+          NODE
+
+      - name: Upload audit compatibility evidence
+        if: always() && inputs.source_focused && inputs.source_audit_compat
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-audit-compat-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            .artifacts/ci-source-focused/checkout-identity.json
+            .artifacts/ci-source-focused/audit-compat/
           if-no-files-found: error
           retention-days: 14
 
