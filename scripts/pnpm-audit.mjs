@@ -16,9 +16,9 @@ for (const [path, expected] of Object.entries({
   "package.json":
     "21a2397c0da237019979a63cfef091c42540770175250e3e12cd385121c86065",
   "pnpm-lock.yaml":
-    "a95628046e43b70d64b2beb370688eff1c03d05c9e13ee7b8989b0e723333c28",
+    "5c4b776186746b635a43ced9c46bb3816360b0a7fe3946876d7e7224a57c3d04",
   "pnpm-workspace.yaml":
-    "9913bee7cbb1ad3804ca3cc9c4ebcac9fb15270c83903869a58b9325b447e32b",
+    "cbdebb7b8197976378a9ee47304ec3b91727ba940517a4a3943bf12018543952",
   "electron-builder.yml":
     "5c78bc304e01c550c03beabb422907ca86fcf8921f5136e87ae49676d60a1bf4",
 })) {
