@@ -72,9 +72,32 @@ prerequisites, and a reviewed **actual-runner** resource-isolation preflight
 connection are complete. No dispatch input or source-contract pass attests those
 facts. That preflight must check the actual workspace/build-cache/temp, root/home
 pressure, temp quota and competing heavy work without fixed capacity thresholds,
-automatic deletion, foreign-process kills or temp-path rewriting. D-Bus capability
-and product acceptance remain independent pending prerequisites. This adapter
-preparation does not authorize a gate run or establish merge readiness.
+automatic deletion, foreign-process kills or temp-path rewriting.
+
+The deeper canonical shell now contains a **Full-only, partial inspection** after
+candidate/ancestry validation and before profile invocation. The first-step Full
+rejection remains unchanged, so this inspection is not reachable in a Full
+dispatch today. It uses Node standard-library `realpath`, permission checks and
+`statfs` for the actual workspace, root, home, Node temp and `RUNNER_TEMP`, resolving
+missing directories through existing ancestors without creating them. Output is
+limited to labels and scalar filesystem facts; root/home remain separate
+observations even on a shared device. These are not allocation or quota proofs,
+and available capacity must not be added once per label on a shared filesystem.
+
+Effective native/shared Cargo targets and caches, pnpm/browser/Electron/uv
+storage, applicable quota authority, retained/peak workload demand including
+logs/artifacts, and competing-heavy-work exclusivity remain **unresolved**. No
+consumer cache defaults are guessed. Even successful inspection fails closed
+before Full and verify. Missing paths or unavailable facts also reject. The
+existing checkout lock excludes cooperating runs in one checkout, not heavy work
+across the host; the adapter does not acquire or recover it. An eventual assessment
+must remain in the same continuously owned job as invocation, without intervening
+setup, approval waits or a replacement runner. No admission/resume mechanism or
+new receipt format is introduced. Synthetic contracts shim the inspector and
+check both success-without-admission and missing-fact rejection; they do not probe
+actual runner resources. D-Bus capability and product acceptance remain independent
+pending prerequisites. This adapter preparation does not authorize a gate run or
+establish merge readiness.
 
 Product journeys wait for the created durable ID and its corresponding UI
 projection before editing. A visible selector alone is not a ready signal.

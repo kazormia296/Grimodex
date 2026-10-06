@@ -123,6 +123,52 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$candidate_head" ]]
           [[ -z "$(git status --porcelain --untracked-files=all)" ]]
           git merge-base --is-ancestor "$candidate_base" "$candidate_head"
+          if [[ "$PROFILE" == full ]]; then
+            # Partial read-only facts, NOT resource admission. The step0 stop stays.
+            node --input-type=module <<'NODE'
+          import { constants } from 'node:fs';
+          import { access, realpath, stat, statfs } from 'node:fs/promises';
+          import { tmpdir } from 'node:os';
+          import path from 'node:path';
+
+          const locations = [
+            ['workspace', process.cwd()],
+            ['root', '/'],
+            ['home', process.env.HOME],
+            ['node-temp', tmpdir()],
+            ['runner-temp', process.env.RUNNER_TEMP],
+          ];
+          for (const [label, requested] of locations) {
+            try {
+              if (!requested || !path.isAbsolute(requested)) throw new Error();
+              let ancestor = requested;
+              let resolved;
+              for (;;) {
+                try {
+                  resolved = await realpath(ancestor);
+                  break;
+                } catch (error) {
+                  const parent = path.dirname(ancestor);
+                  if (error.code !== 'ENOENT' || parent === ancestor) throw error;
+                  ancestor = parent;
+                }
+              }
+              const directory = await stat(resolved, { bigint: true });
+              if (!directory.isDirectory()) throw new Error();
+              // Root is a pressure observation, not an application output directory.
+              if (label !== 'root') await access(resolved, constants.W_OK | constants.X_OK);
+              const fs = await statfs(resolved, { bigint: true });
+              // Shared device IDs identify overlap, not independent capacity.
+              console.log(`[full-inspection] ${label} device=${directory.dev} existingAncestor=${ancestor !== requested} blockBytes=${fs.bsize} availableBlocks=${fs.bavail} freeInodes=${fs.ffree}`);
+            } catch {
+              console.error(`[precheck] Full filesystem inspection unavailable: ${label}`);
+              process.exit(1);
+            }
+          }
+          NODE
+            echo '[precheck] Full inspection is not admission: effective Cargo/pnpm/browser/Electron/uv storage, quota authority, workload demand and heavy-work exclusivity remain unresolved' >&2
+            exit 1
+          fi
           pnpm "ci:local:$PROFILE" -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
           pnpm ci:local:verify -- "$PROFILE" --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
 

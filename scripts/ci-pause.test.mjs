@@ -370,33 +370,64 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   assert.deepEqual(canonical.env, selection.env);
   assert.match(canonical.run, /readonly candidate_base=/u);
   assert.match(canonical.run, /readonly candidate_head=/u);
+  const inspectionStart = canonical.run.indexOf('if [[ "$PROFILE" == full ]]; then');
+  const profileStart = canonical.run.indexOf('pnpm "ci:local:$PROFILE"');
+  assert.ok(inspectionStart > canonical.run.indexOf('git merge-base --is-ancestor'));
+  assert.ok(inspectionStart < profileStart);
+  const inspection = canonical.run.slice(inspectionStart, profileStart);
+  for (const fact of ["realpath(ancestor)", "constants.W_OK | constants.X_OK", "statfs(resolved", "process.cwd()", "['root', '/']", "process.env.HOME", "tmpdir()", "process.env.RUNNER_TEMP"]) {
+    assert.ok(inspection.includes(fact), fact);
+  }
+  assert.match(inspection, /\[precheck\] Full inspection is not admission:[\s\S]*exit 1/u);
+  assert.doesNotMatch(inspection, /mkdir|writeFile|unlink|spawn|execFile|recover-lock|^\s*(?:sudo|quota|df|kill)\b/mu);
   assert.equal((canonical.run.match(/--base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/gu) ?? []).length, 2);
   const execute = promisify(execFile);
   const temporary = await mkdtemp(path.join(tmpdir(), "canonical-ci-contract-"));
   const cwd = path.join(temporary, "checkout");
   const bin = path.join(temporary, "bin");
   const calls = path.join(temporary, "calls.jsonl");
+  const inspectionCalls = path.join(temporary, "inspection.jsonl");
   try {
     await mkdir(cwd);
     await mkdir(bin);
     await writeFile(path.join(bin, "pnpm"), `#!${process.execPath}\nconst { appendFileSync } = require('node:fs');\nconst args = process.argv.slice(2);\nappendFileSync(process.env.CALLS, JSON.stringify(args) + '\\n');\nif (process.env.FAIL_PROFILE === '1') process.exitCode = 7;\n`, { mode: 0o755 });
+    // Synthetic inspection only: no statfs/quota/host-resource probe in contracts.
+    await writeFile(path.join(bin, "node"), `#!${process.execPath}\nconst fs = require('node:fs');\nfs.readFileSync(0);\nfs.appendFileSync(process.env.INSPECTION_CALLS, JSON.stringify(process.argv.slice(2)) + '\\n');\nif (process.env.INSPECTION_UNAVAILABLE === '1') { console.error('[precheck] Full filesystem inspection unavailable: runner-temp'); process.exitCode = 9; }\n`, { mode: 0o755 });
     const git = (...args) => execute("git", args, { cwd, timeout: 10000 });
     await git("init", "--initial-branch=contract");
     await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
     await git("add", "source.txt");
     await git("-c", "user.name=Contract", "-c", "user.email=contract@example.invalid", "commit", "-m", "Synthetic workflow contract");
     const sha = (await git("rev-parse", "HEAD")).stdout.trim();
-    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls, PROFILE: "quick", REQUESTED_BASE: sha, EXPECTED_HEAD: sha, GITHUB_SHA: sha, MAX_PARALLEL_TASKS: "3", FAIL_PROFILE: "0" };
+    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls, INSPECTION_CALLS: inspectionCalls, INSPECTION_UNAVAILABLE: "0", PROFILE: "quick", REQUESTED_BASE: sha, EXPECTED_HEAD: sha, GITHUB_SHA: sha, MAX_PARALLEL_TASKS: "3", FAIL_PROFILE: "0" };
     const shell = (source, overrides = {}) => execute("bash", ["-c", source], { cwd, env: { ...env, ...overrides }, timeout: 10000 });
     await assert.rejects(shell(steps[0].run));
     await assert.rejects(access(calls));
+    await assert.rejects(access(inspectionCalls));
     await shell(selection.run);
     await shell(canonical.run);
     assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
       ["ci:local:quick", "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
       ["ci:local:verify", "--", "quick", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
     ]);
+    await assert.rejects(access(inspectionCalls), "Quick must not inspect Full resources");
     await writeFile(calls, "");
+    await shell(selection.run, { PROFILE: "full" });
+    await assert.rejects(shell(canonical.run, { PROFILE: "full" }), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /\[precheck\] Full inspection is not admission/u);
+      return true;
+    });
+    assert.deepEqual((await readFile(inspectionCalls, "utf8")).trim().split("\n").map(JSON.parse), [["--input-type=module"]]);
+    assert.equal(await readFile(calls, "utf8"), "", "successful inspection must not start Full or verify");
+    await writeFile(inspectionCalls, "");
+    await assert.rejects(shell(canonical.run, { PROFILE: "full", INSPECTION_UNAVAILABLE: "1" }), (error) => {
+      assert.equal(error.code, 9);
+      assert.match(error.stderr, /\[precheck\] Full filesystem inspection unavailable: runner-temp/u);
+      return true;
+    });
+    assert.equal(await readFile(calls, "utf8"), "", "missing facts must not start Full or verify");
+    await writeFile(inspectionCalls, "");
     await assert.rejects(shell(canonical.run, { FAIL_PROFILE: "1" }));
     const failedCalls = (await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse);
     assert.equal(failedCalls.length, 1);
@@ -412,7 +443,9 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
     await writeFile(calls, "");
     await writeFile(path.join(cwd, "source.txt"), "dirty\n");
     await assert.rejects(shell(canonical.run));
+    await assert.rejects(shell(canonical.run, { PROFILE: "full" }));
     assert.equal(await readFile(calls, "utf8"), "");
+    assert.equal(await readFile(inspectionCalls, "utf8"), "", "dirty candidate must fail before inspection");
     await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
     await assert.rejects(shell(canonical.run, { GITHUB_SHA: "0".repeat(40) }));
     await assert.rejects(shell(canonical.run, { REQUESTED_BASE: "0".repeat(40) }));
