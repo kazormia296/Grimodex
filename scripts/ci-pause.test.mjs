@@ -157,6 +157,60 @@ test("sharp lock repair is fixed, opt-in, and verified before source contracts",
   assert.match(verification, /sharp-graph\.json/u);
 });
 
+test("sharp graph verifier accepts peer-qualified exact versions and rejects broken graphs", async () => {
+  const ci = await readWorkflow(".github/workflows/ci.yml");
+  const source = ci.jobs.electron.steps.find(
+    ({ name }) => name === "Verify sharp repair graph",
+  ).run;
+  const start = source.indexOf("function verify(lock)");
+  const end = source.indexOf("assert.throws(");
+  assert.ok(start >= 0 && end > start);
+  const verify = new Function("assert", `${source.slice(start, end)}\nreturn verify;`)(assert);
+  const dependency = "0.35.5(@types/node@24.13.3)";
+  const lock = {
+    packages: {
+      "sharp@0.35.5": {
+        resolution: {
+          integrity: "sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g==",
+        },
+      },
+      "@img/sharp-linux-x64@0.35.5": {},
+      "@img/sharp-libvips-linux-x64@1.3.4": {},
+    },
+    snapshots: {
+      [`sharp@${dependency}`]: {},
+      "miniflare@5.20260730.0-alpha": { dependencies: { sharp: dependency } },
+      "vite-imagetools@10.0.1": { dependencies: { sharp: dependency } },
+    },
+  };
+  assert.deepEqual(Object.values(verify(lock).consumers), [dependency, dependency]);
+  const bare = structuredClone(lock);
+  bare.snapshots["sharp@0.35.5"] = {};
+  for (const name of ["miniflare@5.20260730.0-alpha", "vite-imagetools@10.0.1"]) {
+    bare.snapshots[name].dependencies.sharp = "0.35.5";
+    for (const version of ["0.35.4", "0.35.50", "0.35.5-beta.1"]) {
+      const broken = structuredClone(lock);
+      broken.snapshots[name].dependencies.sharp = version;
+      broken.snapshots[`sharp@${version}`] = {};
+      assert.throws(() => verify(broken));
+    }
+    const missingConsumer = structuredClone(lock);
+    delete missingConsumer.snapshots[name];
+    assert.throws(() => verify(missingConsumer));
+  }
+  assert.deepEqual(Object.values(verify(bare).consumers), ["0.35.5", "0.35.5"]);
+  const missingSnapshot = structuredClone(lock);
+  delete missingSnapshot.snapshots[`sharp@${dependency}`];
+  missingSnapshot.snapshots["sharp@0.35.5"] = {};
+  assert.throws(() => verify(missingSnapshot));
+  const badIntegrity = structuredClone(lock);
+  badIntegrity.packages["sharp@0.35.5"].resolution.integrity = "wrong";
+  assert.throws(() => verify(badIntegrity));
+  const badPlatform = structuredClone(lock);
+  badPlatform.packages["@img/sharp-linux-x64@0.35.4"] = {};
+  assert.throws(() => verify(badPlatform));
+});
+
 test("tag releases still call the complete reusable CI workflow", async () => {
   const release = await readWorkflow(".github/workflows/release.yml");
   const ciJob = release.jobs.ci;

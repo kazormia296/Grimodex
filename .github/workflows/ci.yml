@@ -405,8 +405,10 @@ jobs:
               const snapshots = Object.entries(lock.snapshots).filter(([key]) => key.startsWith(`${name}@`));
               assert.equal(snapshots.length, 1, name);
               for (const [key, value] of snapshots) {
-                assert.equal(value.dependencies.sharp, '0.35.5', key);
-                consumers[key] = value.dependencies.sharp;
+                const dependency = value.dependencies.sharp;
+                assert.equal(dependency.split('(')[0], '0.35.5', key);
+                assert.ok(Object.hasOwn(lock.snapshots, `sharp@${dependency}`), key);
+                consumers[key] = dependency;
               }
             }
             return { sharp, platforms, consumers };
