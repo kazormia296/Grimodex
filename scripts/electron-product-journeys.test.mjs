@@ -4208,8 +4208,10 @@ test("paused CI keeps every product journey job definition available", async () 
     if (jobId === productJourneyJobId) continue;
     assert.equal(
       job.if,
-      "github.event_name != 'schedule'",
-      `${jobId} must retain its non-scheduled execution guard`,
+      jobId === "electron"
+        ? "github.event_name != 'schedule'"
+        : "github.event_name != 'schedule' && !inputs.source_focused",
+      `${jobId} must retain its schedule guard and default execution outside source-focused repair`,
     );
   }
 });
