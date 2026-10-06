@@ -1067,44 +1067,15 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
     launchTimeoutMs: 100,
     electronLauncher: {
       launch: async ({ env }) => {
-        const expected = expectedNarrativeMaintenanceCiReceipt(env);
-        const nonceDir = path.join(
-          env.GRIMODEX_USER_DATA_DIR,
-          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
-          expected.nonce,
-        );
-        await mkdir(nonceDir, { recursive: true });
-        await writeFile(
-          path.join(nonceDir, "receipt.json"),
-          canonicalReceiptText(expected),
-          { mode: 0o600 },
-        );
-        await writeFile(
+        const launchExpected = expectedNarrativeMaintenanceCiReceipt(env);
+        assert.deepEqual(launchExpected, expected);
+        await rename(
+          stagedNonceDir,
           path.join(
-            nonceDir,
-            NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            launchExpected.nonce,
           ),
-          canonicalValueText({
-            version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-            type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
-            nonce: expected.nonce,
-            requestNonce: HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
-            phase: "held-freshness-file",
-            workspaceBinding: { authorityId: "authority-1", generation: 1 },
-            requestedAt: "1970-01-01T00:00:00.000Z",
-          }),
-          { mode: 0o600 },
-        );
-        await writeFile(
-          path.join(nonceDir, "held-freshness-0000000001.json"),
-          canonicalValueText(
-            heldFreshnessReceipt(
-              1,
-              RECEIPT_NONCE,
-              HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
-            ),
-          ),
-          { mode: 0o600 },
         );
         return app;
       },
@@ -1126,6 +1097,47 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
       process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
     }
   });
+  // Prepare fixture I/O outside the launch budget, keeping the receipt root
+  // empty until the mock launcher atomically publishes the complete sequence.
+  const expected = expectedNarrativeMaintenanceCiReceipt(process.env);
+  const stagedNonceDir = path.join(
+    harness.tmpRoot,
+    "held-freshness-fixture",
+    expected.nonce,
+  );
+  await mkdir(stagedNonceDir, { recursive: true, mode: 0o700 });
+  await writeFile(
+    path.join(stagedNonceDir, "receipt.json"),
+    canonicalReceiptText(expected),
+    { mode: 0o600 },
+  );
+  await writeFile(
+    path.join(
+      stagedNonceDir,
+      NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+    ),
+    canonicalValueText({
+      version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+      type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
+      nonce: expected.nonce,
+      requestNonce: HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
+      phase: "held-freshness-file",
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+      requestedAt: "1970-01-01T00:00:00.000Z",
+    }),
+    { mode: 0o600 },
+  );
+  await writeFile(
+    path.join(stagedNonceDir, "held-freshness-0000000001.json"),
+    canonicalValueText(
+      heldFreshnessReceipt(
+        1,
+        RECEIPT_NONCE,
+        HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
+      ),
+    ),
+    { mode: 0o600 },
+  );
   const launched = await harness.launch("held-freshness-file");
   assert.equal(launched.heldFreshnessArtifact.receipt.sequence, 1);
   const firstHeldFreshnessPath = path.join(

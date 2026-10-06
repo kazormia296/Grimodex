@@ -14,6 +14,11 @@ on:
         options:
           - all
           - shadow
+      source_focused:
+        description: Run source repair contracts and generate license notices (not canonical CI)
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       product_journey_mode:
@@ -28,7 +33,7 @@ permissions:
 jobs:
   quality:
     name: Quality (traceability / impact-selected light gates)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -90,7 +95,7 @@ jobs:
 
   frontend:
     name: Frontend (type-check / lint / test)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -134,7 +139,7 @@ jobs:
 
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -160,7 +165,7 @@ jobs:
 
   browser:
     name: Browser (Vitest browser)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -209,7 +214,7 @@ jobs:
 
   webgl:
     name: WebGL (deterministic SwiftShader)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -261,7 +266,7 @@ jobs:
 
   storybook:
     name: Storybook (Vitest browser)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -310,7 +315,7 @@ jobs:
 
   security:
     name: Security (audit)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -360,9 +365,64 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - id: install
+        run: pnpm install --frozen-lockfile
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: inputs.source_focused
+        with:
+          toolchain: stable
+
+      - name: Record source-focused checkout identity
+        if: inputs.source_focused
+        run: |
+          mkdir -p .artifacts/ci-source-focused
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" \
+            > .artifacts/ci-source-focused/checkout-identity.json
+
+      - name: Source-focused contracts (before generation)
+        id: source-focused-contracts
+        if: inputs.source_focused
+        run: |
+          set -euo pipefail
+          node --test \
+            scripts/ci-pause.test.mjs \
+            scripts/local-ci.test.mjs \
+            scripts/local-ci-runner.test.mjs \
+            scripts/local-ci-process-supervisor.test.mjs \
+            scripts/electron-product-journeys.test.mjs \
+            scripts/generate-licenses.test.mjs \
+            scripts/license-policy.test.mjs \
+            | tee .artifacts/ci-source-focused/contracts.tap
+
+      # Keep a stale-copy test failure visible. Generated files are repair source,
+      # not acceptance of this now-dirty checkout or a canonical Quick/Full pass.
+      - name: Generate license repair source
+        if: >-
+          inputs.source_focused && !cancelled() &&
+          steps.install.outcome == 'success' &&
+          (steps.source-focused-contracts.outcome == 'success' ||
+           steps.source-focused-contracts.outcome == 'failure')
+        run: pnpm generate:licenses
+
+      - name: Upload source-focused repair evidence
+        if: always() && inputs.source_focused
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-source-focused-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            .artifacts/ci-source-focused/checkout-identity.json
+            .artifacts/ci-source-focused/contracts.tap
+            THIRD_PARTY_LICENSES.md
+            public/THIRD_PARTY_LICENSES.md
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Release workflow and manifest contract tests
+        if: ${{ !inputs.source_focused }}
         run: >-
           node --test
           scripts/validate-release-version.test.mjs
@@ -390,22 +450,26 @@ jobs:
           scripts/semantic-reranker-release.test.mjs
 
       - name: Electron type-check
+        if: ${{ !inputs.source_focused }}
         run: pnpm exec tsc -p electron/tsconfig.json --noEmit
 
       - name: Electron tests
+        if: ${{ !inputs.source_focused }}
         run: pnpm test:electron --run
 
       - name: Electron production build
+        if: ${{ !inputs.source_focused }}
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
       - name: Renderer performance budget
+        if: ${{ !inputs.source_focused }}
         run: pnpm perf:budget
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -487,6 +551,7 @@ jobs:
 
   electron-product-journeys:
     name: Electron product journeys (persistence / workspace authority)
+    if: ${{ !inputs.source_focused }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -677,7 +742,7 @@ jobs:
 
   electron-windows-installer-contract:
     name: Electron Windows (unit test / NSIS migration contract)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -786,7 +851,7 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -870,7 +935,7 @@ jobs:
 
   rust:
     name: Shared Rust crates (check / clippy / test)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -950,7 +1015,7 @@ jobs:
 
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     strategy:
       fail-fast: false
       matrix:
@@ -974,7 +1039,7 @@ jobs:
 
   migration-recovery-gate:
     name: Migration recovery gate (Gate A2)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
