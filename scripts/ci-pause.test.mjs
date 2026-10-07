@@ -57,7 +57,7 @@ test("manual source-focused repair preserves failures and excludes unrelated pro
   );
 
   for (const [id, job] of Object.entries(ci.jobs)) {
-    if (id !== "electron" && id !== "canonical") assert.match(job.if, /!inputs\.source_focused/u, id);
+    if (id !== "electron" && id !== "canonical" && id !== "existing-os-suitability") assert.match(job.if, /!inputs\.source_focused/u, id);
   }
   const electron = ci.jobs.electron;
   assert.equal(electron["timeout-minutes"], 20);
@@ -271,7 +271,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   assert.equal(ci.on.workflow_call.inputs.source_canonical_contracts, undefined);
   // Invalid canonical=true/focused=false must not admit parallel ordinary jobs.
   for (const [id, job] of Object.entries(ci.jobs)) {
-    if (id === "electron" || id === "canonical") continue;
+    if (id === "electron" || id === "canonical" || id === "existing-os-suitability") continue;
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
     const independentExclusion = ["electron-runtime-performance", "electron-product-journeys", "electron-native", "rust", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
@@ -342,18 +342,18 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
   assert.equal(owner.with.max_parallel_tasks, "${{ inputs.max_parallel_tasks || '12' }}");
   // Only this workflow's boolean/string-equality expression subset; GitHub
   // string equality is case-insensitive. Actual reusable dispatch is hosted proof.
-  const value = (expression, inputs, event = "workflow_dispatch") => new Function("inputs", "github", `return (${expression
+  const value = (expression, inputs, event = "workflow_dispatch") => new Function("inputs", "github", "startsWith", `return (${expression
     .replace(/^\$\{\{\s*|\s*\}\}$/gu, "")
-    .replace(/(inputs\.\w+|github\.\w+)\s*([!=]=)\s*('[^']*')/gu, "String($1 ?? '').toLowerCase() $2 $3")});`)(inputs, { event_name: event });
+    .replace(/(inputs\.\w+|github\.\w+)\s*([!=]=)\s*('[^']*')/gu, "String($1 ?? '').toLowerCase() $2 $3")});`)(inputs, { event_name: event }, (value, prefix) => String(value ?? "").toLowerCase().startsWith(prefix));
   const defaults = Object.fromEntries(Object.entries(dispatch).map(([name, input]) => [name, input.default ?? ""]));
-  const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical");
+  const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical" && id !== "existing-os-suitability");
   assert.equal(ordinary.length, 15);
   const admitted = (inputs, event) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);

@@ -40,7 +40,7 @@ on:
         type: boolean
         default: false
       canonical_profile:
-        description: Empty preserves ordinary CI; contracts, quick or full selects the separate canonical adapter
+        description: Empty preserves ordinary CI; contracts/quick/full selects canonical CI; os-contracts/os-check selects existing Linux helper source/check only
         required: false
         type: string
         default: ""
@@ -68,10 +68,96 @@ permissions:
   contents: read
 
 jobs:
+  existing-os-suitability:
+    if: ${{ startsWith(inputs.canonical_profile, 'os-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate existing OS suitability selection
+        id: os-selection
+        env:
+          OS_SUITABILITY: ${{ inputs.canonical_profile }}
+          PRODUCT_JOURNEY_MODE: ${{ inputs.product_journey_mode }}
+          INDEPENDENT_GATES: ${{ inputs.independent_gates }}
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+          SOURCE_CANONICAL_CONTRACTS: ${{ inputs.source_canonical_contracts }}
+          CANDIDATE_BASE: ${{ inputs.candidate_base }}
+          CANDIDATE_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          case "$OS_SUITABILITY" in os-contracts|os-check) ;; *) exit 1 ;; esac
+          test "$PRODUCT_JOURNEY_MODE" = all
+          for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
+            case "$flag" in false|"") ;; *) exit 1 ;; esac
+          done
+          test -z "$CANDIDATE_BASE$CANDIDATE_HEAD$MAX_PARALLEL_TASKS"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record existing OS suitability checkout identity
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .artifacts/ci
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          test "$COMMIT_SHA" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" > .artifacts/ci/checkout-identity.json
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        if: inputs.canonical_profile == 'os-contracts'
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: inputs.canonical_profile == 'os-contracts'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - if: inputs.canonical_profile == 'os-contracts'
+        run: pnpm install --frozen-lockfile
+
+      - name: Existing OS suitability source contracts
+        if: inputs.canonical_profile == 'os-contracts'
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .artifacts/ci-os-source
+          node --test --test-name-pattern='existing OS suitability|registered CI exposes only opt-in|registered canonical reuse|manual source-focused repair' scripts/ci-pause.test.mjs scripts/existing-os-suitability.test.mjs | tee .artifacts/ci-os-source/contracts.tap
+
+      - name: One existing namespace permission and harmless behavior check
+        if: inputs.canonical_profile == 'os-check'
+        run: node scripts/existing-os-suitability.mjs
+
+      - name: Upload existing OS suitability source-shaped evidence
+        if: always() && steps.os-selection.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-os-suitability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/ci/checkout-identity.json
+            .artifacts/ci-os-source/contracts.tap
+            .artifacts/ci-os-suitability/namespace-check-intent.json
+            .artifacts/ci-os-suitability/result.json
+            .artifacts/ci-os-suitability/late-close.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
   # Local reusable calls load the callee at this same commit, without requiring
   # the branch-only canonical adapter to be registered for manual dispatch.
   canonical:
-    if: ${{ inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks }}
+    if: ${{ !startsWith(inputs.canonical_profile, 'os-') && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}
     uses: ./.github/workflows/canonical-ci.yml
     with:
       # Mixed modes go to the sole owner for rejection before setup; ordinary

@@ -45,6 +45,38 @@ the frozen dependencies and runs the workflow/runner/supervisor source contracts
 it does **not** run Quick or Full, generate notices, or produce a canonical
 receipt. The existing `ci.yml` default and release-reusable jobs remain separate.
 
+Registered `ci.yml` reuses its existing `canonical_profile` input for two fixed
+OS-only modes (no eleventh dispatch input). `os-contracts` runs only changed
+OS-route source contracts and three affected existing selection contracts with
+frozen dependencies; helpers are synthetic in those tests. `os-check` uses only
+the runner's installed Node, `/usr/bin/env`, `/usr/bin/unshare` and
+`/usr/bin/python3`, with no setup or installation. The `os-` family selects only
+the bounded OS owner; exact malformed or mixed inputs reject before checkout/setup.
+Nonempty profiles still exclude all fifteen ordinary jobs. Keep product mode
+`all`, all booleans false and canonical tuple/options empty. Existing
+contracts/quick/full semantics are unchanged.
+
+The single Linux check inventories those fixed executable permissions, owner,
+mode and digest, then attempts user/mount/network/PID namespaces with the
+existing util-linux helper. Its clean-environment Python process observes
+namespace separation, PID1 and loopback-only interface names, then forks and
+reaps one immediate-exit synthetic child. No socket, bus/client, Electron or
+external service is started. Existing supervisor close/group-exit and log
+identities are retained; unknown close retains the same private evidence owner
+through late close and cannot become a pass or replacement. Missing, denied,
+unsupported or unknown facts fail the job without fallback/retry. The artifact
+contains the existing checkout identity, source TAP or shaped helper results,
+not raw helper logs/environment/argv/endpoints or a capability certificate.
+
+This is a bounded instance-specific permission observation, **not** filesystem
+bus-route masking, all-route/activation denial, authentication, native no-escape
+retirement, future-runner B authority, Full resource admission or a product gate.
+Before the separately authorized one `os-check` dispatch, bind registered workflow,
+ref/head/tree/base, exact inputs/purpose/data, unique owner and durable possible
+start. A later B instance still needs fresh applicable route/auth/ownership/
+lifetime/retirement proof before any bus/client/app start. Source preparation
+and source-contract success do not authorize that runtime stage.
+
 For independently safe normal jobs, registered `ci.yml` has an opt-in manual
 `independent_gates=true` boolean (default false; absent from release calls).
 With canonical inputs empty and all source-repair flags false, it selects ten
