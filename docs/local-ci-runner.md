@@ -162,6 +162,28 @@ is added. Actual library consumers and original risk-derived applicable prerequi
 must be reviewed before a distinct dispatch; source proof alone does not authorize
 Cargo, ignored real-worker/diagnostic cases, B or Full.
 
+For grouped remaining migration proof, `canonical_profile=migration-remaining`
+selects only four unchanged steps on the same existing `migration-recovery-gate`
+owner, in their original order:
+- `cargo test -p grimodex-db --test workspace_migration_supervisor` (in `src-tauri`)
+- `cargo test -p grimodex-db --test release_schema_migration` (in `src-tauri`)
+- `pnpm test:electron --run electron/shared/ipcContract.test.ts`
+- `pnpm test --run src/features/workspace/store.test.ts src/features/workspace/recovery/RecoveryShell.test.tsx`
+
+The failpoint supervisor, crash, Safe Mode and failpoint library commands are
+skipped, not replayed or passed by this selection. Their earlier results retain
+only their original candidate/command scopes. Broad workspace/frontend/Electron
+proof is not an exact receipt for these four named commands. Default/reusable
+callers retain all eight commands, bootstrap, frozen dependencies, cache, debug
+profiles and timeout. Keep product mode `all`, false booleans and empty canonical
+tuple/options; the literal guard rejects mixed inputs, case variants and wrong
+events before setup. Unknown profiles reach canonical rejection. No new input,
+job, executor, command filter or fixture is added. Review the actual DB/SQLite,
+pure IPC fake-backend and mocked renderer consumers and apply original risk-derived
+applicable prerequisites before dispatch. Source contracts and this partial
+selection are not complete/current Gate A2, resource admission, native lifecycle,
+B authority or Full proof; native/runtime/3OS lanes are not implicitly selected.
+
 The ten-job independent selection is negative job selection, not resource admission, complete normal CI,
 canonical Full, or merge evidence. It never waives the five remaining gates.
 Source-focused combinations remain source-only; canonical combinations are
