@@ -279,7 +279,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     assert.equal(job.if, id === "electron-product-journeys"
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
       : id === "electron-native"
-        ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
+        ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
         : id === "migration-recovery-gate"
@@ -349,7 +349,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -439,7 +439,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   ]);
   for (const step of rust.steps) assert.equal(step["continue-on-error"], undefined);
 
-  // Fixed original build, compile-only or licensed MCP steps on the existing owner.
+  // Fixed original build, build+complete public tests, compile-only or licensed MCP steps on the existing owner.
   // These source assertions do not execute or admit any consumer lane.
   const native = ci.jobs["electron-native"];
   const nativeStatic = { ...defaults, canonical_profile: "native-release-static" };
@@ -462,7 +462,8 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   };
   const nativeMcp = { ...defaults, canonical_profile: "native-licensed-mcp" };
   const nativeBuild = { ...defaults, canonical_profile: "native-development-build" };
-  for (const standalone of [nativeBuild, nativeStatic, nativeMcp]) {
+  const nativePublic = { ...defaults, canonical_profile: "native-development-tests" };
+  for (const standalone of [nativeBuild, nativePublic, nativeStatic, nativeMcp]) {
     await validateNative(standalone);
     for (const inputs of [
       ...["independent_gates", "source_focused", "source_resolve_sharp", "source_audit_compat", "source_canonical_contracts"].map((flag) => ({ ...standalone, [flag]: true })),
@@ -481,6 +482,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
       "native-release-static,native-licensed-mcp",
       "native-development-build,native-release-static",
       "native-development-build,native-licensed-mcp",
+      "native-development-tests,native-development-build",
+      "native-development-tests,native-release-static",
+      "native-development-tests,native-licensed-mcp",
     ]) {
       assert.deepEqual(admitted({ ...standalone, canonical_profile: malformed }), ["canonical"]);
     }
@@ -501,22 +505,29 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-mcp --features licensing",
   ]);
   const buildCommands = nativeCommands.slice(0, 1);
+  const publicCommands = nativeCommands.slice(0, 2);
+  // Adjacent unchanged commands use the same job/workspace; implicit success()
+  // prevents the unfiltered test command after build/setup failure or cancellation.
+  assert.equal(native.steps.indexOf(publicCommands[1]), native.steps.indexOf(publicCommands[0]) + 1);
   const staticCommands = nativeCommands.slice(2, 4);
   const mcpCommands = nativeCommands.slice(5);
   for (const step of native.steps.slice(1)) {
     assert.equal(step["continue-on-error"], undefined);
     assert.equal(step.if, buildCommands.includes(step)
-      ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-development-build'"
-      : staticCommands.includes(step)
-        ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-release-static'"
-        : mcpCommands.includes(step)
-          ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-licensed-mcp'"
-          : nativeCommands.includes(step) ? "!inputs.canonical_profile" : undefined);
+      ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests'"
+      : publicCommands.includes(step)
+        ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-development-tests'"
+        : staticCommands.includes(step)
+          ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-release-static'"
+          : mcpCommands.includes(step)
+            ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-licensed-mcp'"
+            : nativeCommands.includes(step) ? "!inputs.canonical_profile" : undefined);
   }
   const selectedNative = (inputs) => nativeCommands.filter((step) => !step.if || value(step.if, inputs));
   assert.deepEqual(selectedNative(defaults), nativeCommands);
   assert.deepEqual(selectedNative({ product_journey_mode: "all" }), nativeCommands);
   assert.deepEqual(selectedNative(nativeBuild), buildCommands);
+  assert.deepEqual(selectedNative(nativePublic), publicCommands);
   assert.deepEqual(selectedNative(nativeStatic), staticCommands);
   assert.deepEqual(selectedNative(nativeMcp), mcpCommands);
 
