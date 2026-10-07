@@ -125,6 +125,29 @@ build scripts/dependency downloads still execute and need their original approve
 build scope. Review current source and applicable prerequisites before a distinct
 ordinary dispatch; source contracts do not admit unsafe runtime consumers.
 
+For independently admitted licensed MCP proof, `canonical_profile=native-licensed-mcp`
+selects the same **existing `electron-native` owner** and only its unchanged
+`cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-mcp --features licensing`
+command. The development N-API build/public tests, release-feature check/clippy
+and native Rust tests are skipped, not passed or replayed. Default/reusable
+callers retain all original commands, setup, frozen dependencies, cache, profiles,
+runner and 90-minute timeout. Keep product mode `all`, false booleans and empty
+canonical tuple/options. The existing literal guard accepts only the two fixed
+native selections and rejects mixed, case-variant and wrong-event inputs before
+checkout/setup; unknown profiles still reach canonical rejection. No new
+input/job/executor or test filter is added.
+
+This is the original unfiltered licensed MCP test command, not a sidecar launch
+or permission to use a live MCP client/provider/keyring/service. Current tests
+use synthetic in-memory SQLite, injected license files and one in-process rmcp
+duplex; the binary test harness does not invoke its stdio `main`. Review actual
+consumers, cancellation/close ownership and applicable prerequisites before a
+distinct dispatch. Source contracts do not admit runtime effects. Enclosing
+Cargo/job results are not individual native maintenance joins, listener
+retirement, successful fixture deletion, Windows cleanup, Nativelease/noescape,
+complete native CI, B or Full evidence. Existing build scripts/dependency
+fetches remain real effects within the original ordinary frozen-build scope.
+
 For the preserved migration ownership regressions, `canonical_profile=migration-crash`
 selects the **existing `migration-recovery-gate` owner**, but only its unchanged
 `Subprocess crash recovery` step: `cargo test -p grimodex-db --features test-failpoints
