@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import yaml from "js-yaml";
 import { checkExistingOsSuitability } from "./existing-os-suitability.mjs";
+import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
 
 const ci = yaml.load(await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"));
 const owner = ci.jobs["existing-os-suitability"];
@@ -154,6 +155,49 @@ test("existing OS suitability cancellation closes admission before a pending inv
     }, runCommand: () => assert.fail("cancelled inventory must not start") }), false);
     assert.equal(JSON.parse(await readFile(path.join(output, "result.json"), "utf8")).status, "unknown");
   });
+});
+
+test("existing OS suitability supervisor cancellation during pending log setup never spawns and closes both handles", async () => {
+  for (const stream of ["stdout", "stderr"]) for (const closeGraceMs of [null, 2000]) {
+    await fixture(async ({ root }) => {
+      const controller = new AbortController();
+      const reason = new Error("cancelled during log setup");
+      const handles = [];
+      let entered, release;
+      const setupEntered = new Promise((resolve) => { entered = resolve; });
+      const setupReleased = new Promise((resolve) => { release = resolve; });
+      let spawnCalls = 0;
+      const context = {
+        root, logDirectory: ".logs", taskId: "pending-setup", closeGraceMs,
+        signal: controller.signal,
+        openFile: async (filePath, ...args) => {
+          const file = await open(filePath, ...args);
+          handles.push(file);
+          if (filePath.endsWith(`.${stream}.log`)) {
+            entered();
+            await setupReleased; // Cancellation while the actual setup await is pending.
+          }
+          return file;
+        },
+        spawnProcess: () => { spawnCalls++; assert.fail("cancelled setup must not spawn"); },
+      };
+      const entry = { command: "/usr/bin/env", args: [], timeoutMs: 10000 };
+      const rejected = assert.rejects(runLocalCiCommand(entry, context), (error) => error === reason);
+      await setupEntered;
+      assert.equal(spawnCalls, 0);
+      controller.abort(reason);
+      release();
+      await rejected;
+      assert.equal(spawnCalls, 0);
+      assert.equal(handles.length, 2);
+      for (const file of handles) await assert.rejects(file.stat(), { code: "EBADF" });
+      for (const name of ["stdout", "stderr"]) {
+        assert.equal(await readFile(path.join(root, ".logs", `pending-setup.${name}.log`), "utf8"), "");
+      }
+      await assert.rejects(runLocalCiCommand(entry, { ...context, signal: new AbortController().signal }), { code: "EEXIST" });
+      assert.equal(spawnCalls, 0);
+    });
+  }
 });
 
 test("existing OS suitability cancellation during the final result write persists unknown instead of success", async () => {
