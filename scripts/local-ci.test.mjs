@@ -282,12 +282,22 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
 
   validateLocalCiRegistry(registry);
-  // The adapter invokes these same profiles; it is not another hosted obligation.
+  // The adapter reuses these profiles; the OS owner is separately opt-in, not Full.
   assert.equal(workflow.jobs.canonical.uses, "./.github/workflows/canonical-ci.yml");
-  assert.deepEqual(
-    Object.keys(registry.hostedJobs).sort(),
-    Object.keys(workflow.jobs).filter((id) => id !== "canonical").sort(),
+  assert.equal(
+    workflow.jobs["existing-os-suitability"].if,
+    "${{ startsWith(inputs.canonical_profile, 'os-') }}",
   );
+  assert.equal(workflow.on.workflow_dispatch.inputs.canonical_profile.default, "");
+  assert.equal(workflow.on.workflow_call.inputs.canonical_profile, undefined);
+  assert.equal(Object.hasOwn(registry.hostedJobs, "existing-os-suitability"), false);
+  assert.equal(Object.hasOwn(registry.stages, "existing-os-suitability"), false);
+  assert.equal(registry.profiles.full.includes("existing-os-suitability"), false);
+  const ordinaryJobs = Object.keys(workflow.jobs).filter(
+    (id) => id !== "canonical" && id !== "existing-os-suitability",
+  );
+  assert.equal(ordinaryJobs.length, 15);
+  assert.deepEqual(Object.keys(registry.hostedJobs).sort(), ordinaryJobs.sort());
 
   const workerScript = "scripts/nir1-c-query-worker-ci.sh";
   const allocatorTest =
