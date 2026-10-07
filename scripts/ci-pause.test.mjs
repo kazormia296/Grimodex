@@ -281,7 +281,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
         : id === "migration-recovery-gate"
-          ? `\${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || (${ordinaryCondition}) }}`
+          ? `\${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || (${ordinaryCondition}) }}`
           : ordinaryCondition, id);
   }
   const steps = ci.jobs.electron.steps;
@@ -347,7 +347,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -458,7 +458,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
       ...process.env, ...env, GITHUB_EVENT_NAME: event,
     } });
   };
-  for (const profile of ["migration-crash", "migration-safe-mode"]) {
+  for (const profile of ["migration-crash", "migration-safe-mode", "migration-library"]) {
     const selected = { ...defaults, canonical_profile: profile };
     await validateCrash(selected);
     for (const inputs of [
@@ -486,7 +486,8 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   for (const step of migration.steps.slice(1)) {
     assert.equal(step["continue-on-error"], undefined);
     const profile = step.name === "Subprocess crash recovery" ? "migration-crash"
-      : step.name === "Safe Mode structured outcome + restore-by-id" ? "migration-safe-mode" : undefined;
+      : step.name === "Safe Mode structured outcome + restore-by-id" ? "migration-safe-mode"
+      : step.name === "Migration recovery failpoint library tests" ? "migration-library" : undefined;
     assert.equal(step.if, profile ? `!inputs.canonical_profile || inputs.canonical_profile == '${profile}'`
       : migrationTests.includes(step) ? "!inputs.canonical_profile" : undefined);
   }
@@ -502,13 +503,16 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   ]);
   const crashTest = migrationTests.find(({ name }) => name === "Subprocess crash recovery");
   const safeTest = migrationTests.find(({ name }) => name === "Safe Mode structured outcome + restore-by-id");
+  const libraryTest = migrationTests.find(({ name }) => name === "Migration recovery failpoint library tests");
   assert.equal(crashTest["working-directory"], "src-tauri");
   assert.equal(safeTest["working-directory"], "src-tauri");
+  assert.equal(libraryTest["working-directory"], "src-tauri");
   const selectedTests = (inputs) => migrationTests.filter((step) => !step.if || value(step.if, inputs));
   assert.deepEqual(selectedTests(defaults), migrationTests);
   assert.deepEqual(selectedTests({ product_journey_mode: "all" }), migrationTests);
   assert.deepEqual(selectedTests(crash), [crashTest]);
   assert.deepEqual(selectedTests({ ...defaults, canonical_profile: "migration-safe-mode" }), [safeTest]);
+  assert.deepEqual(selectedTests({ ...defaults, canonical_profile: "migration-library" }), [libraryTest]);
 
   const selection = workflow.jobs.canonical.steps.find(({ name }) => name === "Validate canonical selection");
   assert.equal(selection.if, undefined);

@@ -147,6 +147,21 @@ apply original risk-derived applicable prerequisites before a distinct dispatch;
 selector/source-contract success is not Cargo, complete Gate A2, resource admission,
 B authority or Full evidence.
 
+For the remaining failpoint-enabled library command, `canonical_profile=migration-library`
+selects the same existing `migration-recovery-gate` owner and only its unchanged
+`Migration recovery failpoint library tests` step: `cargo test -p grimodex-db
+--features test-failpoints --lib` in `src-tauri`. This is the original unfiltered
+library command, including restore/recovery failpoint units, not a complete Gate A2
+pass. The successful crash/Safe Mode steps and five other commands are skipped,
+not replayed or passed. Default/reusable callers retain all eight commands and
+the same bootstrap, frozen dependencies, cache, profiles and timeout. Keep product
+mode `all`, false booleans and empty canonical tuple/options; the first literal
+guard rejects mixed inputs, case variants and wrong events before checkout/setup.
+Unknown profiles reach canonical rejection. No input/job/executor or test suppression
+is added. Actual library consumers and original risk-derived applicable prerequisites
+must be reviewed before a distinct dispatch; source proof alone does not authorize
+Cargo, ignored real-worker/diagnostic cases, B or Full.
+
 The ten-job independent selection is negative job selection, not resource admission, complete normal CI,
 canonical Full, or merge evidence. It never waives the five remaining gates.
 Source-focused combinations remain source-only; canonical combinations are

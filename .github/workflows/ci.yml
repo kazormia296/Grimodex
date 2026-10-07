@@ -40,7 +40,7 @@ on:
         type: boolean
         default: false
       canonical_profile:
-        description: Empty preserves ordinary CI; contracts/quick/full selects canonical CI; shared-rust selects Rust; migration-crash/migration-safe-mode selects only the existing crash/Safe Mode test step; os-contracts/os-check selects existing Linux helper source/check only
+        description: Empty preserves ordinary CI; contracts/quick/full selects canonical CI; shared-rust selects Rust; migration-crash/migration-safe-mode/migration-library selects only the existing crash/Safe Mode/failpoint library step; os-contracts/os-check selects existing Linux helper source/check only
         required: false
         type: string
         default: ""
@@ -157,7 +157,7 @@ jobs:
   # Local reusable calls load the callee at this same commit, without requiring
   # the branch-only canonical adapter to be registered for manual dispatch.
   canonical:
-    if: ${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}
+    if: ${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}
     uses: ./.github/workflows/canonical-ci.yml
     with:
       # Mixed modes go to the sole owner for rejection before setup; ordinary
@@ -1333,7 +1333,7 @@ jobs:
 
   migration-recovery-gate:
     name: Migration recovery gate (Gate A2)
-    if: ${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
+    if: ${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -1356,7 +1356,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          case "$PROFILE" in migration-crash|migration-safe-mode) ;; *) exit 1 ;; esac
+          case "$PROFILE" in migration-crash|migration-safe-mode|migration-library) ;; *) exit 1 ;; esac
           test "$PRODUCT_JOURNEY_MODE" = all
           for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
             case "$flag" in false|"") ;; *) exit 1 ;; esac
@@ -1412,7 +1412,7 @@ jobs:
           --test workspace_migration_supervisor
 
       - name: Migration recovery failpoint library tests
-        if: "!inputs.canonical_profile"
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-library'"
         working-directory: src-tauri
         run: cargo test -p grimodex-db --features test-failpoints --lib
 
