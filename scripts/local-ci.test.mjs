@@ -401,6 +401,43 @@ test("native chat mock awaits listener and unfinished HTTP connection close", as
   }
 });
 
+test("native HTTP fixtures share startup and close ownership without losing stream failures", async () => {
+  for (const file of ["ai-batch3b", "post-effect-run"]) {
+    const source = await read(`electron/native/grimodex-node/test/${file}.test.mjs`);
+    assert.ok(source.includes('import { closeMockServer as closeServer, startMockServer } from "./mock-http.mjs";'));
+    assert.equal(source.includes("function startMockServer("), false);
+    assert.equal(source.includes("function closeServer("), false);
+    assert.equal(source.includes("createServer"), false);
+  }
+  const inline = await read("electron/native/grimodex-node/test/ai-batch3b.test.mjs");
+  assert.equal(inline.includes("bothStarted"), false);
+  assert.match(inline, /await waitForEvent\(events, "chat:stream-chunk"\);\s*await waitForEvent\(events, "inline-ai:stream-chunk"\);/);
+  assert.match(inline, /await closeServer\(server\);\s*} finally {\s*await Promise\.all\(streams\);\s*if \(streamFailure\) throw streamFailure\.error;/);
+  const paired = await read("electron/native/grimodex-node/test/post-effect-run.test.mjs");
+  assert.match(paired, /try {\s*\/\/[^\n]*\n\s*roleMock = await startMockServer/);
+  assert.match(paired, /if \(roleMock\) await closeServer\(roleMock\.server\);\s*} finally {\s*await closeServer\(defaultMock\.server\);/);
+});
+
+// Exercise the same sequential owner boundary without loading the native module.
+test("native paired mocks drain the first listener when the second startup fails", async () => {
+  const first = await startMockServer((_req, res) => res.end());
+  const { port } = first.server.address();
+  let second;
+  await assert.rejects(async () => {
+    try {
+      second = await startMockServer((_req, res) => res.end(), { port });
+    } finally {
+      try {
+        if (second) await closeMockServer(second.server);
+      } finally {
+        await closeMockServer(first.server);
+      }
+    }
+  }, { code: "EADDRINUSE" });
+  assert.equal(first.server.listening, false);
+});
+
+// Keep the intentionally pinned close-failure case last among real mock starts.
 test("native chat mock retains a failed close and refuses replacement startup", async () => {
   const error = new Error("synthetic close failure");
   const owner = {

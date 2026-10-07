@@ -10,7 +10,7 @@ import {
   realpathSync,
   rmSync,
 } from "node:fs";
-import { createServer } from "node:http";
+import { closeMockServer as closeServer, startMockServer } from "./mock-http.mjs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -126,22 +126,6 @@ async function auditedArgs(
     ...(stream ? { streamId: executionId } : {}),
     auditContext,
   };
-}
-
-function startMockServer(handler) {
-  return new Promise((resolve, reject) => {
-    const server = createServer(handler);
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      const { port } = server.address();
-      resolve({ server, baseUrl: `http://127.0.0.1:${port}` });
-    });
-  });
-}
-
-function closeServer(server) {
-  return new Promise((resolve) => server.close(resolve));
 }
 
 async function readJson(req) {
@@ -679,10 +663,8 @@ test("restricted Native inline/agent/model/connection families reject before loc
 
 test("inline abortはinlineだけを停止し、同時実行chatを止めない", async () => {
   const responses = new Map();
-  let markBothStarted;
-  const bothStarted = new Promise((resolve) => {
-    markBothStarted = resolve;
-  });
+  const streams = [];
+  let streamFailure;
   const { server, baseUrl } = await startMockServer(async (req, res) => {
     const body = await readJson(req);
     responses.set(body.model, res);
@@ -690,7 +672,6 @@ test("inline abortはinlineだけを停止し、同時実行chatを止めない"
     res.write(
       sseFrame({ choices: [{ delta: { content: `${body.model}-first` } }] }),
     );
-    if (responses.size === 2) markBothStarted();
   });
   try {
     const { backend, events, root } = makeBackend();
@@ -714,18 +695,17 @@ test("inline abortはinlineだけを停止し、同時実行chatを止めない"
       "napi_concurrent_inline_stream",
       { stream: true },
     );
-    const chat = backend.sendChatMessageStream(
-      chatArgs,
-      settings,
-      "",
-    );
-    const inline = backend.sendInlineAiStream(
-      inlineArgs,
-      settings,
-      "",
-    );
+    // Observe each rejection immediately, but rethrow it after both streams settle.
+    streams.push(backend.sendChatMessageStream(chatArgs, settings, "").then(
+      () => undefined,
+      (error) => { streamFailure ??= { error }; },
+    ));
+    streams.push(backend.sendInlineAiStream(inlineArgs, settings, "").then(
+      () => undefined,
+      (error) => { streamFailure ??= { error }; },
+    ));
 
-    await bothStarted;
+    // Initial chunks prove both requests started through the existing bounded waits.
     await waitForEvent(events, "chat:stream-chunk");
     await waitForEvent(events, "inline-ai:stream-chunk");
     assert.equal(await backend.abortInlineAiStream(inlineArgs.streamId), true);
@@ -740,7 +720,8 @@ test("inline abortはinlineだけを停止し、同時実行chatを止めない"
     chatResponse.write("data: [DONE]\n\n");
     chatResponse.end();
 
-    await Promise.all([chat, inline]);
+    await Promise.all(streams);
+    if (streamFailure) throw streamFailure.error;
     const inlineDone = JSON.parse(
       (await waitForEvent(events, "inline-ai:stream-done")).payload,
     );
@@ -762,7 +743,12 @@ test("inline abortはinlineだけを停止し、同時実行chatを止めない"
     assert.equal(chatText, "chat-model-first-second");
   } finally {
     for (const response of responses.values()) response.end();
-    await closeServer(server);
+    try {
+      await closeServer(server);
+    } finally {
+      await Promise.all(streams);
+      if (streamFailure) throw streamFailure.error;
+    }
   }
 });
 
