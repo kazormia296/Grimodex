@@ -106,6 +106,26 @@ No Electron/runtime journey, keyring/provider service, namespace probe, model
 installation, diagnostics or Full is added. Native and migration lanes remain
 separate deferred work, not implicitly cleared by this connection.
 
+For independently admitted development N-API compilation, `canonical_profile=native-development-build`
+selects the same **existing `electron-native` owner** and only the original
+`pnpm napi:build` command. The existing development build/test step is split into
+adjacent steps: empty/default and reusable callers still build then run the
+complete public test command in the original order. This manual build selection
+skips public tests, release-feature check/clippy/tests and licensed MCP tests,
+not passing or replaying them. Package `build` remains `napi build --release`
+with default features; no module is loaded or Backend constructed by this build.
+
+Keep product mode `all`, false booleans and empty canonical tuple/options. The
+literal guard rejects mixed inputs, case variants and wrong events before
+checkout/setup; unknown profiles reach canonical rejection. All original setup,
+frozen dependencies, cache, environment, runner and 90-minute timeout remain,
+with no new input/job/executor or test filter. Build scripts and dependency
+fetches are real effects within the original ordinary frozen-build scope.
+Review actual current consumers and applicable prerequisites before a distinct
+dispatch. Source contracts and a build result are not public-test/Native abort,
+release-feature runtime, maintenance/listener joins, Nativelease/reuse, Windows
+cleanup, complete native CI, B or Full evidence.
+
 For independently admitted release-feature compilation, `canonical_profile=native-release-static`
 selects the **existing `electron-native` owner** and only these unchanged commands:
 - `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml --features licensing,legacy-keyring-migration`
@@ -132,7 +152,7 @@ command. The development N-API build/public tests, release-feature check/clippy
 and native Rust tests are skipped, not passed or replayed. Default/reusable
 callers retain all original commands, setup, frozen dependencies, cache, profiles,
 runner and 90-minute timeout. Keep product mode `all`, false booleans and empty
-canonical tuple/options. The existing literal guard accepts only the two fixed
+canonical tuple/options. The existing literal guard accepts only the three fixed
 native selections and rejects mixed, case-variant and wrong-event inputs before
 checkout/setup; unknown profiles still reach canonical rejection. No new
 input/job/executor or test filter is added.

@@ -40,7 +40,7 @@ on:
         type: boolean
         default: false
       canonical_profile:
-        description: Empty preserves ordinary CI; contracts/quick/full selects canonical CI; shared-rust selects Rust; native-release-static selects existing release-feature check/clippy only; native-licensed-mcp selects existing licensed MCP tests only; migration-crash/migration-safe-mode/migration-library selects one existing step; migration-remaining groups four remaining migration steps; os-contracts/os-check selects existing Linux helper source/check only
+        description: Empty preserves ordinary CI; contracts/quick/full selects canonical CI; shared-rust selects Rust; native-development-build selects existing development N-API build only; native-release-static selects existing release-feature check/clippy only; native-licensed-mcp selects existing licensed MCP tests only; migration-crash/migration-safe-mode/migration-library selects one existing step; migration-remaining groups four remaining migration steps; os-contracts/os-check selects existing Linux helper source/check only
         required: false
         type: string
         default: ""
@@ -157,7 +157,7 @@ jobs:
   # Local reusable calls load the callee at this same commit, without requiring
   # the branch-only canonical adapter to be registered for manual dispatch.
   canonical:
-    if: ${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}
+    if: ${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}
     uses: ./.github/workflows/canonical-ci.yml
     with:
       # Mixed modes go to the sole owner for rejection before setup; ordinary
@@ -1134,7 +1134,7 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
-    if: ${{ inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-licensed-mcp' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
+    if: ${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-licensed-mcp' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -1157,7 +1157,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
-          case "$PROFILE" in native-release-static|native-licensed-mcp) ;; *) exit 1 ;; esac
+          case "$PROFILE" in native-development-build|native-release-static|native-licensed-mcp) ;; *) exit 1 ;; esac
           test "$PRODUCT_JOURNEY_MODE" = all
           for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
             case "$flag" in false|"") ;; *) exit 1 ;; esac
@@ -1201,11 +1201,13 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build and test the development N-API module
+      - name: Build the development N-API module
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-development-build'"
+        run: pnpm napi:build
+
+      - name: Test the development N-API module
         if: "!inputs.canonical_profile"
-        run: |
-          pnpm napi:build
-          pnpm --dir electron/native/grimodex-node test
+        run: pnpm --dir electron/native/grimodex-node test
 
       - name: Check both release-only native features
         if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-release-static'"
