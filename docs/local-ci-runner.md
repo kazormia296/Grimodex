@@ -132,6 +132,21 @@ be authored before target facts are held; this is not a requirement for preexist
 runner evidence or a separate preflight-only campaign. Source contracts exercise
 the new selection and adversarial guards, not the Rust tests or resources.
 
+For the remaining Safe Mode failpoint target, `canonical_profile=migration-safe-mode`
+selects the same existing `migration-recovery-gate` owner and only its unchanged
+`Safe Mode structured outcome + restore-by-id` step: `cargo test -p grimodex-db
+--features test-failpoints --test workspace_safe_mode_outcome` in `src-tauri`.
+The subprocess crash step and six other migration commands are skipped, not
+passed or replayed. Empty/default and reusable selection still run all eight
+commands; bootstrap, frozen dependencies, cache, profiles and timeout are unchanged.
+Use product mode `all`, false booleans and empty canonical tuple/options. The
+first literal guard rejects mixed inputs, case variants and wrong events before
+checkout/setup; unknown profiles reach canonical rejection. No input/job/executor,
+provider, Electron or service activation is added. Review actual consumers and
+apply original risk-derived applicable prerequisites before a distinct dispatch;
+selector/source-contract success is not Cargo, complete Gate A2, resource admission,
+B authority or Full evidence.
+
 The ten-job independent selection is negative job selection, not resource admission, complete normal CI,
 canonical Full, or merge evidence. It never waives the five remaining gates.
 Source-focused combinations remain source-only; canonical combinations are
