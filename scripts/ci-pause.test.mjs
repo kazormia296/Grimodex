@@ -57,7 +57,7 @@ test("manual source-focused repair preserves failures and excludes unrelated pro
   );
 
   for (const [id, job] of Object.entries(ci.jobs)) {
-    if (id !== "electron") assert.match(job.if, /!inputs\.source_focused/u, id);
+    if (id !== "electron" && id !== "canonical") assert.match(job.if, /!inputs\.source_focused/u, id);
   }
   const electron = ci.jobs.electron;
   assert.equal(electron["timeout-minutes"], 20);
@@ -271,10 +271,11 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   assert.equal(ci.on.workflow_call.inputs.source_canonical_contracts, undefined);
   // Invalid canonical=true/focused=false must not admit parallel ordinary jobs.
   for (const [id, job] of Object.entries(ci.jobs)) {
-    if (id === "electron") continue;
+    if (id === "electron" || id === "canonical") continue;
+    const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
     assert.equal(job.if, id === "electron-product-journeys"
-      ? "${{ !inputs.source_focused && !inputs.source_canonical_contracts }}"
-      : "github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts", id);
+      ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion} }}`
+      : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}`, id);
   }
   const steps = ci.jobs.electron.steps;
   const selectionIndex = steps.findIndex(({ name }) => name === "Validate canonical contracts selection");
@@ -317,9 +318,86 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   ]);
 });
 
-test("canonical hosted connection is manual and defaults to contracts, not gates", async () => {
+test("registered canonical reuse excludes ordinary jobs for every valid or malformed request", async () => {
+  const ci = await readWorkflow(".github/workflows/ci.yml");
   const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
-  assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch"]);
+  const dispatch = ci.on.workflow_dispatch.inputs;
+  for (const name of ["canonical_profile", "candidate_base", "candidate_head", "max_parallel_tasks"]) {
+    assert.equal(dispatch[name].type, "string", name);
+    assert.equal(dispatch[name].required, false, name);
+    assert.equal(dispatch[name].default ?? "", "", name);
+    assert.equal(ci.on.workflow_call.inputs[name], undefined, name);
+    assert.equal(workflow.on.workflow_call.inputs[name === "canonical_profile" ? "profile" : name].type, "string", name);
+  }
+  assert.deepEqual(Object.keys(ci.on.workflow_call.inputs), ["product_journey_mode"]);
+  assert.equal(workflow.on.workflow_call.inputs.profile.default, "contracts");
+  assert.equal(workflow.on.workflow_call.inputs.max_parallel_tasks.default, "12");
+  const owner = ci.jobs.canonical;
+  assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
+  for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
+  assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
+  assert.equal(owner.if, "${{ inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks }}");
+  assert.equal(owner.with.profile, "${{ !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
+  assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
+  assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
+  assert.equal(owner.with.max_parallel_tasks, "${{ inputs.max_parallel_tasks || '12' }}");
+  // Only this workflow's boolean/string-equality expression subset; GitHub
+  // string equality is case-insensitive. Actual reusable dispatch is hosted proof.
+  const value = (expression, inputs, event = "workflow_dispatch") => new Function("inputs", "github", `return (${expression
+    .replace(/^\$\{\{\s*|\s*\}\}$/gu, "")
+    .replace(/(inputs\.\w+|github\.\w+)\s*([!=]=)\s*('[^']*')/gu, "String($1 ?? '').toLowerCase() $2 $3")});`)(inputs, { event_name: event });
+  const defaults = Object.fromEntries(Object.entries(dispatch).map(([name, input]) => [name, input.default ?? ""]));
+  const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical");
+  assert.equal(ordinary.length, 15);
+  const admitted = (inputs, event) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event)).map(([id]) => id);
+  assert.deepEqual(admitted(defaults), ordinary);
+  assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);
+  assert.deepEqual(admitted({ ...defaults, source_focused: true }), ["electron"]);
+  assert.deepEqual(admitted({ ...defaults, source_canonical_contracts: true }), ["electron"]);
+  assert.deepEqual(admitted({ ...defaults, source_focused: true, source_canonical_contracts: true }), ["electron"]);
+  for (const field of ["canonical_profile", "candidate_base", "candidate_head", "max_parallel_tasks"]) {
+    for (const malformed of ["none", "NONE", " ", "0", "$(touch injected)"]) {
+      assert.deepEqual(admitted({ ...defaults, [field]: malformed }), ["canonical"], `${field}=${malformed}`);
+    }
+  }
+  const selection = workflow.jobs.canonical.steps.find(({ name }) => name === "Validate canonical selection");
+  assert.equal(selection.if, undefined);
+  assert.ok(workflow.jobs.canonical.steps.indexOf(selection) < workflow.jobs.canonical.steps.findIndex(({ uses }) => uses?.startsWith("actions/checkout@")));
+  const execute = promisify(execFile);
+  const head = "b".repeat(40);
+  const mapped = (inputs) => Object.fromEntries(Object.entries(owner.with).map(([key, expression]) => [key, value(expression, inputs)]));
+  const validate = (inputs) => {
+    assert.deepEqual(admitted(inputs), ["canonical"]);
+    const args = mapped(inputs);
+    return execute("bash", ["-c", selection.run], { timeout: 10000, env: {
+      ...process.env, PROFILE: args.profile, REQUESTED_BASE: args.candidate_base,
+      EXPECTED_HEAD: args.candidate_head, MAX_PARALLEL_TASKS: args.max_parallel_tasks, GITHUB_SHA: head,
+    } });
+  };
+  const contracts = { ...defaults, canonical_profile: "contracts" };
+  assert.equal(mapped(contracts).max_parallel_tasks, "12");
+  await validate(contracts);
+  const quick = { ...defaults, canonical_profile: "quick", candidate_base: "a".repeat(40), candidate_head: head, max_parallel_tasks: "3" };
+  await validate(quick); // Validation only; no canonical profile or resource probe.
+  await validate({ ...quick, canonical_profile: "full" }); // Step0 still denies Full.
+  for (const inputs of [
+    ...["none", "NONE", "CONTRACTS", "unknown", " ", "$(touch injected)"].map((canonical_profile) => ({ ...contracts, canonical_profile })),
+    ...["source_focused", "source_resolve_sharp", "source_audit_compat", "source_canonical_contracts"].map((flag) => ({ ...contracts, [flag]: true })),
+    { ...contracts, product_journey_mode: "shadow" },
+    { ...contracts, candidate_base: quick.candidate_base },
+    { ...contracts, candidate_head: head },
+    { ...quick, candidate_head: "c".repeat(40) },
+    { ...quick, candidate_base: "$(touch injected)" },
+    ...["0", "13", "$(touch injected)"].map((max_parallel_tasks) => ({ ...contracts, max_parallel_tasks })),
+    { ...defaults, candidate_base: quick.candidate_base },
+    { ...defaults, candidate_head: head },
+    { ...defaults, max_parallel_tasks: "3" },
+  ]) await assert.rejects(validate(inputs));
+});
+
+test("canonical hosted connection is manual/reusable and defaults to contracts, not gates", async () => {
+  const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
+  assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch", "workflow_call"]);
   assert.deepEqual(workflow.permissions, { contents: "read" });
   const inputs = workflow.on.workflow_dispatch.inputs;
   assert.equal(inputs.profile.default, "contracts");
@@ -349,6 +427,19 @@ test("canonical hosted connection is manual and defaults to contracts, not gates
     assert.ok(contracts.run.includes(`scripts/${name}.test.mjs`), name);
   }
   assert.doesNotMatch(contracts.run, /ci:local:|generate:licenses|sharp-consumers|pnpm-audit/u);
+  const identity = steps.find(({ name }) => name === "Record canonical source checkout identity");
+  assert.equal(identity.if, "inputs.profile == 'contracts'");
+  assert.ok(steps.indexOf(identity) < steps.indexOf(contracts));
+  for (const field of ["commitSha", "treeSha", "event", "ref", "sha"]) assert.ok(identity.run.includes(field), field);
+  const sourceUpload = steps.find(({ name }) => name === "Upload canonical connection source contracts");
+  assert.equal(sourceUpload.if, "always() && steps.contracts.outcome != 'skipped'");
+  assert.equal(sourceUpload.with.name, "canonical-source-${{ github.run_id }}-${{ github.run_attempt }}");
+  assert.equal(sourceUpload.with["include-hidden-files"], true);
+  assert.equal(sourceUpload.with["if-no-files-found"], "error");
+  assert.deepEqual(sourceUpload.with.path.trim().split("\n"), [
+    ".artifacts/canonical-source/checkout-identity.json",
+    ".artifacts/canonical-source/contracts.tap",
+  ]);
   for (const step of steps) {
     assert.equal(step["continue-on-error"], undefined);
     if (step.run) assert.doesNotMatch(step.run, /\$\{\{ inputs\.|--dry-run|--from|--recover-lock|\|\|\s*true/u);
@@ -365,8 +456,8 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   const steps = workflow.jobs.canonical.steps;
   const selection = steps.find(({ name }) => name === "Validate canonical selection");
   const canonical = steps.find(({ id }) => id === "canonical");
-  assert.equal(selection.if, "inputs.profile != 'contracts'");
-  assert.equal(canonical.if, selection.if);
+  assert.equal(selection.if, undefined);
+  assert.equal(canonical.if, "inputs.profile != 'contracts'");
   assert.deepEqual(canonical.env, selection.env);
   assert.match(canonical.run, /readonly candidate_base=/u);
   assert.match(canonical.run, /readonly candidate_head=/u);

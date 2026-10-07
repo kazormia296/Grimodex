@@ -282,9 +282,11 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
 
   validateLocalCiRegistry(registry);
+  // The adapter invokes these same profiles; it is not another hosted obligation.
+  assert.equal(workflow.jobs.canonical.uses, "./.github/workflows/canonical-ci.yml");
   assert.deepEqual(
     Object.keys(registry.hostedJobs).sort(),
-    Object.keys(workflow.jobs).sort(),
+    Object.keys(workflow.jobs).filter((id) => id !== "canonical").sort(),
   );
 
   const workerScript = "scripts/nir1-c-query-worker-ci.sh";

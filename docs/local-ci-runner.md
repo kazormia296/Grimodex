@@ -39,27 +39,44 @@ diagnostic evidence and cannot establish merge readiness.
 
 ### Manual GitHub connection (source preparation)
 
-`.github/workflows/canonical-ci.yml` is a thin manual-only adapter to the same
-package scripts and registry. Its default `contracts` selection installs the
-frozen dependencies and runs the workflow/runner/supervisor source contracts;
+`.github/workflows/canonical-ci.yml` is a thin manual/reusable adapter to the
+same package scripts and registry. Its default `contracts` selection installs
+the frozen dependencies and runs the workflow/runner/supervisor source contracts;
 it does **not** run Quick or Full, generate notices, or produce a canonical
-receipt. The existing `ci.yml` default and reusable jobs remain separate.
+receipt. The existing `ci.yml` default and release-reusable jobs remain separate.
 
-A branch-only new workflow is not assumed registered for manual dispatch. When
-`canonical-ci.yml` is unavailable, the already registered `ci.yml` offers the same
-four source-contract suites through explicit `source_focused=true` and
-`source_canonical_contracts=true`. Keep `source_resolve_sharp` and
-`source_audit_compat` false; mixed repair selections fail before resolver/install.
-This mode retains the frozen install and uploads only checkout identity and
-source TAP. It skips the earlier source-repair suites, license generation and
-consumer/audit execution. The new flag defaults to false and is absent from
-reusable calls, so normal/release jobs and their commands/timeouts are unchanged.
-It does not dispatch the new workflow or run a canonical gate. Verify actual
-registration, checkpoint identity and unique run ownership before dispatch.
+A branch-only new workflow is not assumed registered for manual dispatch. The
+already registered `ci.yml` now has an opt-in `canonical_profile` string input:
+empty preserves ordinary CI; `contracts`, `quick` or `full` calls the canonical
+adapter with GitHub's local reusable-workflow syntax at the **same commit** as
+the caller. The callee does not need independent manual registration. Verify
+current caller availability, checkpoint identity and unique run ownership before
+dispatch; source preparation alone is not permission to select a gate.
 
-A later eligible `quick` dispatch requires explicit full `candidate_base` and
-`candidate_head` commit SHAs, with head equal to the dispatched ref's SHA. The
-adapter checks a clean checkout and base ancestry, resolves the pair once, and
+For the new shared-entry source proof, select ONLY `canonical_profile=contracts`,
+leave `candidate_base`, `candidate_head` and `max_parallel_tasks` empty, keep ALL
+four source-repair booleans false and `product_journey_mode=all`. Any nonempty
+canonical selector, tuple or option excludes all fifteen ordinary jobs, even for
+malformed or mixed requests; the sole canonical owner rejects invalid selection
+before checkout/setup/install. There is no nonempty disabled sentinel: `none`,
+whitespace and unknown profiles are invalid. Contracts rejects candidate tuples;
+its artifact contains checkout identity and source TAP, not canonical receipts.
+The new manual inputs are absent from reusable release calls.
+
+The earlier `source_focused=true`/`source_canonical_contracts=true` fallback still
+runs the same four suites in the Electron source owner, with new canonical inputs
+empty and resolver/audit flags false. Its selection, frozen install and evidence
+are unchanged. Repeating that old fallback does **not** exercise the new reusable
+connection. New shared-entry validation must call the actual changed connection
+in contracts-only mode; neither mode establishes a canonical gate pass.
+
+A later eligible `quick` invocation through registered `ci.yml` selects
+`canonical_profile=quick` (or `profile=quick` for a separately registered direct
+adapter dispatch), with all source-repair flags false and product mode `all`.
+It requires explicit full `candidate_base` and `candidate_head` commit SHAs,
+with head equal to the dispatched ref's SHA. Empty `max_parallel_tasks` in the
+caller forwards the adapter's existing default12; an explicit option is forwarded
+unchanged. The adapter checks a clean checkout and base ancestry, resolves the pair once, and
 passes the same expanded values and `max_parallel_tasks` option to the profile
 and its immediate verifier. The scheduler default remains 12; a different limit
 requires the existing workload/resource admission decision. A failed profile

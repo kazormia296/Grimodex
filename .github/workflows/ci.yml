@@ -34,6 +34,23 @@ on:
         required: false
         type: boolean
         default: false
+      canonical_profile:
+        description: Empty preserves ordinary CI; contracts, quick or full selects the separate canonical adapter
+        required: false
+        type: string
+        default: ""
+      candidate_base:
+        description: Immutable base SHA for canonical quick/full only
+        required: false
+        type: string
+      candidate_head:
+        description: Immutable head SHA for canonical quick/full only, equal to dispatched ref
+        required: false
+        type: string
+      max_parallel_tasks:
+        description: Canonical scheduler option (empty uses existing default 12)
+        required: false
+        type: string
   workflow_call:
     inputs:
       product_journey_mode:
@@ -46,9 +63,22 @@ permissions:
   contents: read
 
 jobs:
+  # Local reusable calls load the callee at this same commit, without requiring
+  # the branch-only canonical adapter to be registered for manual dispatch.
+  canonical:
+    if: ${{ inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks }}
+    uses: ./.github/workflows/canonical-ci.yml
+    with:
+      # Mixed modes go to the sole owner for rejection before setup; ordinary
+      # jobs below exclude any canonical request even when that request is bad.
+      profile: ${{ !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}
+      candidate_base: ${{ inputs.candidate_base || '' }}
+      candidate_head: ${{ inputs.candidate_head || '' }}
+      max_parallel_tasks: ${{ inputs.max_parallel_tasks || '12' }}
+
   quality:
     name: Quality (traceability / impact-selected light gates)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -110,7 +140,7 @@ jobs:
 
   frontend:
     name: Frontend (type-check / lint / test)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -154,7 +184,7 @@ jobs:
 
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -180,7 +210,7 @@ jobs:
 
   browser:
     name: Browser (Vitest browser)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -229,7 +259,7 @@ jobs:
 
   webgl:
     name: WebGL (deterministic SwiftShader)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -281,7 +311,7 @@ jobs:
 
   storybook:
     name: Storybook (Vitest browser)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -330,7 +360,7 @@ jobs:
 
   security:
     name: Security (audit)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -365,7 +395,7 @@ jobs:
 
   electron:
     name: Electron (workflow contract / type-check / test / build)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -631,7 +661,7 @@ jobs:
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -713,7 +743,7 @@ jobs:
 
   electron-product-journeys:
     name: Electron product journeys (persistence / workspace authority)
-    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts }}
+    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -904,7 +934,7 @@ jobs:
 
   electron-windows-installer-contract:
     name: Electron Windows (unit test / NSIS migration contract)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -1013,7 +1043,7 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -1097,7 +1127,7 @@ jobs:
 
   rust:
     name: Shared Rust crates (check / clippy / test)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -1177,7 +1207,7 @@ jobs:
 
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     strategy:
       fail-fast: false
       matrix:
@@ -1201,7 +1231,7 @@ jobs:
 
   migration-recovery-gate:
     name: Migration recovery gate (Gate A2)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

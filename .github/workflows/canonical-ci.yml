@@ -22,6 +22,24 @@ on:
         required: true
         type: string
         default: "12"
+  # Same-commit reuse from registered ci.yml; no independent dispatch registration
+  # or new runner/registry is needed for this entry.
+  workflow_call:
+    inputs:
+      profile:
+        required: false
+        type: string
+        default: contracts
+      candidate_base:
+        required: false
+        type: string
+      candidate_head:
+        required: false
+        type: string
+      max_parallel_tasks:
+        required: false
+        type: string
+        default: "12"
 
 permissions:
   contents: read
@@ -40,14 +58,7 @@ jobs:
           echo '[precheck] Full requires candidate acceptance/freeze, prerequisite closure and actual-runner resource-isolation admission' >&2
           exit 1
 
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
       - name: Validate canonical selection
-        if: inputs.profile != 'contracts'
         env:
           PROFILE: ${{ inputs.profile }}
           REQUESTED_BASE: ${{ inputs.candidate_base }}
@@ -55,11 +66,21 @@ jobs:
           MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
         run: |
           set -euo pipefail
-          [[ "$PROFILE" == quick || "$PROFILE" == full ]]
-          [[ "$REQUESTED_BASE" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$EXPECTED_HEAD" == "$GITHUB_SHA" ]]
+          [[ "$PROFILE" == contracts || "$PROFILE" == quick || "$PROFILE" == full ]]
           [[ "$MAX_PARALLEL_TASKS" =~ ^([1-9]|1[0-2])$ ]]
+          if [[ "$PROFILE" == contracts ]]; then
+            [[ -z "$REQUESTED_BASE" && -z "$EXPECTED_HEAD" ]]
+          else
+            [[ "$REQUESTED_BASE" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$EXPECTED_HEAD" == "$GITHUB_SHA" ]]
+          fi
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
@@ -98,6 +119,15 @@ jobs:
       - name: Rust audit tool
         if: inputs.profile == 'full'
         run: cargo install cargo-audit --locked
+
+      - name: Record canonical source checkout identity
+        if: inputs.profile == 'contracts'
+        run: |
+          mkdir -p .artifacts/canonical-source
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" \
+            > .artifacts/canonical-source/checkout-identity.json
 
       - name: Canonical connection source contracts
         id: contracts
@@ -177,7 +207,9 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: canonical-source-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .artifacts/canonical-source/contracts.tap
+          path: |
+            .artifacts/canonical-source/checkout-identity.json
+            .artifacts/canonical-source/contracts.tap
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
