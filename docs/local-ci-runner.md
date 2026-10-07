@@ -106,6 +106,32 @@ No Electron/runtime journey, keyring/provider service, namespace probe, model
 installation, diagnostics or Full is added. Native and migration lanes remain
 separate deferred work, not implicitly cleared by this connection.
 
+For the preserved migration ownership regressions, `canonical_profile=migration-crash`
+selects the **existing `migration-recovery-gate` owner**, but only its unchanged
+`Subprocess crash recovery` step: `cargo test -p grimodex-db --features test-failpoints
+--test migration_subprocess_crash --test restore_subprocess_crash` in `src-tauri`.
+It is affected Cargo proof, **not a complete Gate A2 pass**. No new input or job is
+added. Keep product mode `all`, all booleans false and canonical tuple/options
+empty. The first literal guard rejects mixed inputs, case variants and wrong events
+before checkout/setup. Unknown profiles still reach the canonical rejecting owner.
+Default/reusable CI retains all eight migration test commands; bootstrap, frozen
+dependencies, cache, debug-free profiles and the 45-minute timeout are unchanged.
+
+This is selector preparation, not resource admission or permission to dispatch
+heavy Cargo. The same-job assessment connection remains to be implemented and
+reviewed before execution. It must resolve actual Cargo config/target/cache and
+SQLite fixture temp storage after the existing final setup/cache restore, then
+assess writable capacity, separate root/home pressure, applicable temp quota,
+competing heavy work and workload-derived retained/peak build/link/test/log demand
+at actual concurrency. A cache hit, small synthetic fixtures or debug-free profiles
+alone do not establish capacity. Real unknowns stop the heavy operation; no fixed
+threshold, default serialism, old-runner facts, deletion, foreign-process kill,
+temp rewriting, approval gap, replacement runner, Boolean attestation or new
+receipt/executor substitutes for this assessment. Necessary same-job wiring can
+be authored before target facts are held; this is not a requirement for preexisting
+runner evidence or a separate preflight-only campaign. Source contracts exercise
+the new selection and adversarial guards, not the Rust tests or resources.
+
 The ten-job independent selection is negative job selection, not resource admission, complete normal CI,
 canonical Full, or merge evidence. It never waives the five remaining gates.
 Source-focused combinations remain source-only; canonical combinations are

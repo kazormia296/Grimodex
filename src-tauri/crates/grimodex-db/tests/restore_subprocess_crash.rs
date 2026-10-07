@@ -11,8 +11,9 @@
 #![cfg(feature = "test-failpoints")]
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -54,9 +55,15 @@ fn subprocess_kill_after_live_seal_does_not_drop_wal_commits_silently() {
         "restore.after_live_seal",
         &ready_path,
     );
-    wait_for_ready(&mut child, &ready_path, "restore.after_live_seal");
-    child.kill().expect("kill restore harness");
-    let status = child.wait().expect("wait killed");
+    let guard = ReapOnDrop(&mut child);
+    wait_for_ready(
+        guard.0,
+        &ready_path,
+        "restore.after_live_seal",
+        READY_TIMEOUT,
+    );
+    guard.0.kill().expect("kill restore harness");
+    let status = wait_for_exit(guard.0).expect("wait killed");
     assert!(!status.success());
 
     // Sealed live must still expose the WAL-only commit (now in main).
@@ -122,10 +129,11 @@ fn interrupted_install_then_explicit_recovery_reaches_ready(phase: &str) {
 
     let ready_path = root.join("restore-journey-ready");
     let mut child = spawn_restore_harness(&workspace, &candidate, phase, &ready_path);
-    wait_for_ready(&mut child, &ready_path, phase);
+    let guard = ReapOnDrop(&mut child);
+    wait_for_ready(guard.0, &ready_path, phase, READY_TIMEOUT);
     let stopped_at = Instant::now();
-    child.kill().expect("kill");
-    let status = child.wait().expect("observe actual Restore worker exit");
+    guard.0.kill().expect("kill");
+    let status = wait_for_exit(guard.0).expect("observe actual Restore worker exit");
     assert!(!status.success());
     eprintln!(
         "BC-2 {phase} kill-to-exit: {:.3} ms (crash recovery, not cooperative cancellation)",
@@ -226,7 +234,54 @@ fn interrupted_install_then_explicit_recovery_reaches_ready(phase: &str) {
 /// checkpoint, or delete sidecars on the live image.
 #[test]
 fn concurrent_shared_writer_after_handoff_survives_restore_publish() {
-    let root = temp_ws("restore-handoff-writer");
+    let (root, ws_state) = handoff_workspace("restore-handoff-writer");
+    let workspace = root.join("workspace");
+    let live = workspace.join("grimodex.db");
+    let backup_name = "grimodex-20200101-000000.db";
+    let handoff_ready = root.join("handoff-ready");
+    let handoff_continue = root.join("handoff-continue");
+    let writer_ready = root.join("writer-ready");
+    let writer_exit = root.join("writer-exit");
+    let restore_result = thread::scope(|scope| {
+        let mut restore = Some(scope.spawn(|| {
+            grimodex_db::backup_restore::with_restore_handoff_for_test(
+                &handoff_ready,
+                &handoff_continue,
+                || grimodex_db::backup_restore::restore_backup_core(&ws_state, backup_name, || {}),
+            )
+        }));
+        let mut restore_guard = JoinRestoreOnDrop {
+            thread: &mut restore,
+            continue_path: &handoff_continue,
+        };
+        wait_for_handoff(&restore_guard, &handoff_ready, READY_TIMEOUT);
+
+        let mut writer = spawn_wal_writer(&workspace, &writer_ready, &writer_exit);
+        let guard = ReapOnDrop(&mut writer);
+        wait_for_ready(guard.0, &writer_ready, "writer-ready", READY_TIMEOUT);
+
+        fs::write(&handoff_continue, b"go").expect("signal restore continue");
+        let restore_result = restore_guard.join().expect("restore thread");
+
+        fs::write(&writer_exit, b"done").expect("signal writer exit");
+        let status = wait_for_exit(guard.0).expect("wait wal writer");
+        assert!(status.success(), "wal writer failed: {status}");
+        restore_result
+    });
+    restore_result.expect("restore with a concurrent shared writer must succeed");
+
+    // The writer's WAL-only commit is durable and visible; the restore result
+    // and its session marker are intact.
+    assert_eq!(wal_only_value(&live), "committed only in wal");
+    assert_eq!(recovery_marker(&live), "backup");
+    assert!(read_incomplete_restore_session(&workspace)
+        .expect("marker read")
+        .is_none());
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn handoff_workspace(label: &str) -> (PathBuf, WorkspaceState) {
+    let root = temp_ws(label);
     let workspace = root.join("workspace");
     fs::create_dir_all(workspace.join("backups")).expect("mkdir");
     let live = workspace.join("grimodex.db");
@@ -254,71 +309,227 @@ fn concurrent_shared_writer_after_handoff_survives_restore_publish() {
         .expect("open workspace");
     assert!(opened.is_authority_published(), "got {opened:?}");
 
-    let handoff_ready = root.join("handoff-ready");
-    let handoff_continue = root.join("handoff-continue");
-    std::env::set_var("GRIMODEX_RESTORE_HANDOFF_READY_PATH", &handoff_ready);
-    std::env::set_var("GRIMODEX_RESTORE_HANDOFF_CONTINUE_PATH", &handoff_continue);
+    (root, ws_state)
+}
 
-    let writer_ready = root.join("writer-ready");
-    let writer_exit = root.join("writer-exit");
-    let restore_result = thread::scope(|scope| {
-        let restore = scope.spawn(|| {
-            grimodex_db::backup_restore::restore_backup_core(&ws_state, backup_name, || {})
+// Keep actual join ownership even when readiness or writer work panics. Scoped
+// thread Drop alone can wait forever, and neither a signal nor is_finished is
+// join evidence. Unknown completion aborts before the scope can implicitly join.
+struct JoinRestoreOnDrop<'handle, 'scope> {
+    thread:
+        &'handle mut Option<thread::ScopedJoinHandle<'scope, grimodex_db::error::AppResult<()>>>,
+    continue_path: &'handle Path,
+}
+
+impl JoinRestoreOnDrop<'_, '_> {
+    fn join(&mut self) -> thread::Result<grimodex_db::error::AppResult<()>> {
+        // is_finished alone does not cover thread-local teardown. Bound the
+        // actual join with an owned watcher, and join that watcher as well.
+        let started = Instant::now();
+        thread::scope(|scope| {
+            let (joined, completion) = std::sync::mpsc::sync_channel::<Instant>(1);
+            let watcher = thread::Builder::new()
+                .spawn_scoped(scope, move || {
+                    let remaining = READY_TIMEOUT.saturating_sub(started.elapsed());
+                    match completion.recv_timeout(remaining) {
+                        Ok(finished) if finished.duration_since(started) <= READY_TIMEOUT => {}
+                        _ => abort_unknown_restore_join(),
+                    }
+                })
+                .unwrap_or_else(|_| abort_unknown_restore_join());
+            let result = self.thread.take().expect("restore handle").join();
+            joined
+                .send(Instant::now())
+                .unwrap_or_else(|_| abort_unknown_restore_join());
+            watcher
+                .join()
+                .unwrap_or_else(|_| abort_unknown_restore_join());
+            result
+        })
+    }
+}
+
+impl Drop for JoinRestoreOnDrop<'_, '_> {
+    fn drop(&mut self) {
+        if self.thread.is_some() {
+            let _ = fs::write(self.continue_path, b"go");
+            // Preserve the original panic if the restore thread also panicked.
+            let _ = self.join();
+        }
+    }
+}
+
+fn abort_unknown_restore_join() -> ! {
+    let _ = writeln!(std::io::stderr().lock(), "restore thread join UNKNOWN");
+    // The outer job retains this workspace; abort is not retirement.
+    std::process::abort();
+}
+
+fn wait_for_handoff(restore: &JoinRestoreOnDrop<'_, '_>, ready_path: &Path, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if fs::read_to_string(ready_path).is_ok_and(|value| value.trim() == "after-shared-handoff")
+        {
+            return;
+        }
+        assert!(
+            !restore
+                .thread
+                .as_ref()
+                .expect("restore handle")
+                .is_finished(),
+            "restore exited before the shared handoff rendezvous"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for shared handoff rendezvous"
+        );
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+#[test]
+fn handoff_timeout_and_writer_panic_join_the_restore_thread() {
+    for readiness_timeout in [true, false] {
+        let (root, ws_state) = handoff_workspace("handoff-unwind");
+        let workspace = root.join("workspace");
+        let ready_path = root.join("handoff-ready");
+        let continue_path = root.join("handoff-continue");
+        let mut writer = None;
+        thread::scope(|scope| {
+            let mut restore = Some(scope.spawn(|| {
+                grimodex_db::backup_restore::with_restore_handoff_for_test(
+                    &ready_path,
+                    &continue_path,
+                    || {
+                        grimodex_db::backup_restore::restore_backup_core(
+                            &ws_state,
+                            "grimodex-20200101-000000.db",
+                            || {},
+                        )
+                    },
+                )
+            }));
+            let mut ready_observed = false;
+            let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let guard = JoinRestoreOnDrop {
+                    thread: &mut restore,
+                    continue_path: &continue_path,
+                };
+                wait_for_handoff(&guard, &ready_path, READY_TIMEOUT);
+                ready_observed = true;
+                if readiness_timeout {
+                    wait_for_handoff(&guard, &root.join("missing-ready"), Duration::ZERO);
+                }
+                let writer_ready = root.join("writer-ready");
+                writer = Some(spawn_wal_writer(
+                    &workspace,
+                    &writer_ready,
+                    &root.join("writer-exit"),
+                ));
+                let writer_guard = ReapOnDrop(writer.as_mut().expect("writer"));
+                wait_for_ready(writer_guard.0, &writer_ready, "writer-ready", READY_TIMEOUT);
+                assert_eq!(
+                    wal_only_value(&workspace.join("grimodex.db")),
+                    "committed only in wal"
+                );
+                panic!("injected assertion after handoff writer readiness");
+            }));
+            assert!(ready_observed, "regression must reach the real handoff");
+            let failure = failure.expect_err("failure path must be exercised");
+            assert_eq!(
+                failure.downcast_ref::<&str>().copied(),
+                Some(if readiness_timeout {
+                    "timed out waiting for shared handoff rendezvous"
+                } else {
+                    "injected assertion after handoff writer readiness"
+                })
+            );
+            assert!(
+                restore.is_none(),
+                "guard must actually join before returning"
+            );
         });
-
-        let deadline = Instant::now() + READY_TIMEOUT;
-        while !handoff_ready.exists() {
-            assert!(
-                Instant::now() < deadline,
-                "restore never reached the shared handoff rendezvous"
-            );
-            thread::sleep(POLL_INTERVAL);
+        if let Some(mut writer) = writer {
+            let status = writer
+                .try_wait()
+                .expect("poll writer")
+                .expect("actual writer exit");
+            assert!(!status.success(), "writer must have been terminated");
         }
+        fs::remove_dir_all(&root).expect("remove fixture after actual joins/exit");
+    }
+}
 
-        let mut writer = Command::new(restore_harness_exe())
-            .arg("--workspace")
-            .arg(&workspace)
-            .arg("--wal-writer-ready")
-            .arg(&writer_ready)
-            .arg("--wal-writer-exit")
-            .arg(&writer_exit)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("spawn wal writer");
-        let deadline = Instant::now() + READY_TIMEOUT;
-        while !writer_ready.exists() {
-            if let Ok(Some(status)) = writer.try_wait() {
-                panic!("wal writer exited early: {status}");
-            }
-            assert!(
-                Instant::now() < deadline,
-                "wal writer never became ready after the handoff"
+#[test]
+fn handoff_hook_is_thread_local_rejects_nesting_and_clears_after_panic() {
+    use grimodex_db::backup_restore::{restore_backup_core, with_restore_handoff_for_test};
+
+    let (root, ws_state) = handoff_workspace("handoff-hook");
+    let (other_root, other_state) = handoff_workspace("handoff-unrelated");
+    let ready_path = root.join("handoff-ready");
+    let continue_path = root.join("handoff-continue");
+    let backup_name = "grimodex-20200101-000000.db";
+    with_restore_handoff_for_test(&ready_path, &continue_path, || {
+        let nested = std::panic::catch_unwind(|| {
+            with_restore_handoff_for_test(
+                &root.join("wrong-ready"),
+                &root.join("wrong-continue"),
+                || {
+                    panic!("nested operation must not start");
+                },
             );
-            thread::sleep(POLL_INTERVAL);
-        }
-
-        fs::write(&handoff_continue, b"go").expect("signal restore continue");
-        let restore_result = restore.join().expect("restore thread");
-
-        fs::write(&writer_exit, b"done").expect("signal writer exit");
-        let status = writer.wait().expect("wait wal writer");
-        assert!(status.success(), "wal writer failed: {status}");
-        restore_result
+        });
+        assert_eq!(
+            nested
+                .expect_err("nesting must reject")
+                .downcast_ref::<&str>()
+                .copied(),
+            Some("restore handoff already bound")
+        );
+        // This actual concurrent restore must not use the caller's rendezvous.
+        thread::scope(|scope| {
+            let mut restore =
+                Some(scope.spawn(|| restore_backup_core(&other_state, backup_name, || {})));
+            let mut guard = JoinRestoreOnDrop {
+                thread: &mut restore,
+                continue_path: &continue_path,
+            };
+            guard
+                .join()
+                .expect("unrelated restore thread")
+                .expect("unrelated restore");
+        });
+        assert!(
+            !ready_path.exists(),
+            "unrelated thread must not inherit the hook"
+        );
+        fs::write(&continue_path, b"go").expect("signal own restore");
+        restore_backup_core(&ws_state, backup_name, || {})
+            .expect("own restore after nested rejection");
+        assert_eq!(
+            fs::read_to_string(&ready_path).expect("own ready"),
+            "after-shared-handoff\n"
+        );
     });
-    std::env::remove_var("GRIMODEX_RESTORE_HANDOFF_READY_PATH");
-    std::env::remove_var("GRIMODEX_RESTORE_HANDOFF_CONTINUE_PATH");
-    restore_result.expect("restore with a concurrent shared writer must succeed");
-
-    // The writer's WAL-only commit is durable and visible; the restore result
-    // and its session marker are intact.
-    assert_eq!(wal_only_value(&live), "committed only in wal");
-    assert_eq!(recovery_marker(&live), "backup");
-    assert!(read_incomplete_restore_session(&workspace)
-        .expect("marker read")
-        .is_none());
-    let _ = fs::remove_dir_all(&root);
+    fs::remove_file(&ready_path).expect("remove old ready");
+    fs::remove_file(&continue_path).expect("remove old continue");
+    let failure = std::panic::catch_unwind(|| {
+        with_restore_handoff_for_test(&ready_path, &continue_path, || {
+            panic!("injected hook panic");
+        });
+    });
+    assert_eq!(
+        failure
+            .expect_err("hook panic")
+            .downcast_ref::<&str>()
+            .copied(),
+        Some("injected hook panic")
+    );
+    restore_backup_core(&ws_state, backup_name, || {}).expect("restore after hook unwind");
+    assert!(!ready_path.exists(), "unwound hook must not run again");
+    fs::remove_dir_all(&root).expect("remove own fixture");
+    fs::remove_dir_all(&other_root).expect("remove unrelated fixture after actual join");
 }
 
 fn temp_ws(label: &str) -> PathBuf {
@@ -400,6 +611,21 @@ fn spawn_restore_harness(
         .expect("spawn restore crash harness")
 }
 
+fn spawn_wal_writer(workspace: &Path, ready_path: &Path, exit_path: &Path) -> Child {
+    Command::new(restore_harness_exe())
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--wal-writer-ready")
+        .arg(ready_path)
+        .arg("--wal-writer-exit")
+        .arg(exit_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn wal writer")
+}
+
 fn restore_harness_exe() -> PathBuf {
     let Some(path) = option_env!("CARGO_BIN_EXE_restore-crash-harness") else {
         panic!("restore-crash-harness binary should be registered for test-failpoints");
@@ -407,19 +633,166 @@ fn restore_harness_exe() -> PathBuf {
     PathBuf::from(path)
 }
 
-fn wait_for_ready(child: &mut Child, ready_path: &Path, expected: &str) {
+// Child's Drop does not terminate or reap it. Keep this borrow across readiness,
+// handoff writes, restore-thread joins and assertions, including unwinding.
+struct ReapOnDrop<'a>(&'a mut Child);
+
+impl Drop for ReapOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Ok(Some(_)) = self.0.try_wait() {
+            return;
+        }
+        let _ = self.0.kill();
+        if let Err(error) = wait_for_exit(self.0) {
+            // Bypass libtest capture, which abort would discard.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "restore child {} exit UNKNOWN: {error}",
+                self.0.id()
+            );
+            // The outer job retains this PID/workspace until actual cleanup.
+            std::process::abort();
+        }
+    }
+}
+
+fn wait_for_exit(child: &mut Child) -> std::io::Result<ExitStatus> {
     let deadline = Instant::now() + READY_TIMEOUT;
-    while Instant::now() < deadline {
-        if let Ok(Some(status)) = child.try_wait() {
-            panic!("restore harness exited early: {status}");
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "restore child exit was not observed",
+            ));
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+#[test]
+fn restore_readiness_timeout_and_assertion_panic_reap_the_parked_child() {
+    for readiness_timeout in [true, false] {
+        let workspace = temp_ws("restore-child-unwind");
+        create_migrated_db(&workspace.join("grimodex.db"), "live");
+        let candidate = workspace.join("backups/grimodex-auto.db");
+        create_migrated_db(&candidate, "backup");
+        let ready_path = workspace.join("child-ready");
+        let mut child = spawn_restore_harness(
+            &workspace,
+            &candidate,
+            "restore.after_live_seal",
+            &ready_path,
+        );
+        let mut ready_observed = false;
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let guard = ReapOnDrop(&mut child);
+            wait_for_ready(
+                guard.0,
+                &ready_path,
+                "restore.after_live_seal",
+                READY_TIMEOUT,
+            );
+            ready_observed = true;
+            if readiness_timeout {
+                wait_for_ready(
+                    guard.0,
+                    &workspace.join("missing-ready"),
+                    "restore.after_live_seal",
+                    Duration::ZERO,
+                );
+            }
+            panic!("injected assertion after restore readiness");
+        }));
+        assert!(
+            ready_observed,
+            "regression must reach the real parked child"
+        );
+        let failure = failure.expect_err("failure path must be exercised");
+        if readiness_timeout {
+            assert_eq!(
+                failure.downcast_ref::<String>().map(String::as_str),
+                Some("timed out waiting for restore harness ready marker restore.after_live_seal")
+            );
+        } else {
+            assert_eq!(
+                failure.downcast_ref::<&str>().copied(),
+                Some("injected assertion after restore readiness")
+            );
+        }
+        let status = child
+            .try_wait()
+            .expect("poll child after unwind")
+            .expect("guard must reap the actual restore child before returning");
+        assert!(!status.success(), "parked child must have been terminated");
+        fs::remove_dir_all(&workspace).expect("remove fixture after child exit");
+    }
+}
+
+#[test]
+fn writer_readiness_timeout_and_assertion_panic_reap_the_live_child() {
+    for readiness_timeout in [true, false] {
+        let workspace = temp_ws("writer-child-unwind");
+        let live = workspace.join("grimodex.db");
+        create_migrated_db(&live, "live");
+        let ready_path = workspace.join("writer-ready");
+        let exit_path = workspace.join("writer-exit");
+        let mut writer = spawn_wal_writer(&workspace, &ready_path, &exit_path);
+        let mut ready_observed = false;
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let guard = ReapOnDrop(&mut writer);
+            wait_for_ready(guard.0, &ready_path, "writer-ready", READY_TIMEOUT);
+            assert_eq!(wal_only_value(&live), "committed only in wal");
+            ready_observed = true;
+            if readiness_timeout {
+                wait_for_ready(
+                    guard.0,
+                    &workspace.join("missing-ready"),
+                    "writer-ready",
+                    Duration::ZERO,
+                );
+            }
+            panic!("injected assertion after writer readiness");
+        }));
+        assert!(ready_observed, "regression must reach the real WAL writer");
+        let failure = failure.expect_err("failure path must be exercised");
+        if readiness_timeout {
+            assert_eq!(
+                failure.downcast_ref::<String>().map(String::as_str),
+                Some("timed out waiting for restore harness ready marker writer-ready")
+            );
+        } else {
+            assert_eq!(
+                failure.downcast_ref::<&str>().copied(),
+                Some("injected assertion after writer readiness")
+            );
+        }
+        let status = writer
+            .try_wait()
+            .expect("poll writer after unwind")
+            .expect("guard must reap the actual WAL writer before returning");
+        assert!(!status.success(), "live writer must have been terminated");
+        fs::remove_dir_all(&workspace).expect("remove fixture after writer exit");
+    }
+}
+
+fn wait_for_ready(child: &mut Child, ready_path: &Path, expected: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait().expect("poll restore harness") {
+            panic!("restore harness exited before {expected}: {status}");
         }
         if let Ok(contents) = fs::read_to_string(ready_path) {
             if contents.trim() == expected {
                 return;
             }
         }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for restore harness ready marker {expected}"
+        );
         thread::sleep(POLL_INTERVAL);
     }
-    let _ = child.kill();
-    panic!("timed out waiting for restore failpoint ready marker");
 }

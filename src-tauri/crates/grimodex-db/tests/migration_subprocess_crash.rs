@@ -10,8 +10,9 @@
 mod release_schema_fixture;
 
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -63,9 +64,10 @@ fn subprocess_crash_at_migration_stages_recovers_on_next_open() {
         let ready_path = workspace.join(format!("{}-ready", stage.label));
 
         let mut child = spawn_crash_harness(&workspace, stage.failpoint, &ready_path);
-        wait_for_failpoint_ready(&mut child, &ready_path, stage.failpoint);
-        child.kill().expect("kill crash harness process by PID");
-        let status = child.wait().expect("wait for killed crash harness");
+        let guard = ReapOnDrop(&mut child);
+        wait_for_failpoint_ready(guard.0, &ready_path, stage.failpoint, READY_TIMEOUT);
+        guard.0.kill().expect("kill crash harness process by PID");
+        let status = wait_for_exit(guard.0).expect("wait for killed crash harness");
         assert!(
             !status.success(),
             "killed crash harness should not exit successfully"
@@ -151,8 +153,94 @@ fn crash_harness_exe() -> PathBuf {
     PathBuf::from(path)
 }
 
-fn wait_for_failpoint_ready(child: &mut Child, ready_path: &Path, expected: &str) {
+// Child's own Drop does not terminate or reap it. Keep this borrow across all
+// readiness/assertion paths, including unwinding after a parked failpoint.
+struct ReapOnDrop<'a>(&'a mut Child);
+
+impl Drop for ReapOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Ok(Some(_)) = self.0.try_wait() {
+            return;
+        }
+        let _ = self.0.kill();
+        if let Err(error) = wait_for_exit(self.0) {
+            // Bypass libtest capture, which abort would discard.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "migration child {} exit UNKNOWN: {error}",
+                self.0.id()
+            );
+            // No test may pass or start a replacement after unknown retirement.
+            // The outer job still owns this PID/workspace until actual cleanup.
+            std::process::abort();
+        }
+    }
+}
+
+fn wait_for_exit(child: &mut Child) -> std::io::Result<ExitStatus> {
     let deadline = Instant::now() + READY_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(status);
+        }
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "migration child exit was not observed",
+            ));
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+#[test]
+fn readiness_timeout_and_assertion_panic_reap_the_parked_child() {
+    for readiness_timeout in [true, false] {
+        let workspace = temp_workspace("child-unwind");
+        seed_previous_release_workspace(&workspace);
+        let ready_path = workspace.join("child-ready");
+        let mut child = spawn_crash_harness(&workspace, "migration.after_snapshot", &ready_path);
+        let mut ready_observed = false;
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let guard = ReapOnDrop(&mut child);
+            wait_for_failpoint_ready(
+                guard.0,
+                &ready_path,
+                "migration.after_snapshot",
+                READY_TIMEOUT,
+            );
+            ready_observed = true;
+            if readiness_timeout {
+                wait_for_failpoint_ready(
+                    guard.0,
+                    &workspace.join("missing-ready"),
+                    "migration.after_snapshot",
+                    Duration::ZERO,
+                );
+            }
+            panic!("injected assertion after readiness");
+        }));
+        assert!(
+            ready_observed,
+            "regression must reach the real parked child"
+        );
+        assert!(failure.is_err(), "failure path must be exercised");
+        let status = child
+            .try_wait()
+            .expect("poll child after unwind")
+            .expect("guard must observe and reap the actual child before returning");
+        assert!(!status.success(), "parked child must have been terminated");
+        fs::remove_dir_all(&workspace).expect("remove fixture after child exit");
+    }
+}
+
+fn wait_for_failpoint_ready(
+    child: &mut Child,
+    ready_path: &Path,
+    expected: &str,
+    timeout: Duration,
+) {
+    let deadline = Instant::now() + timeout;
     loop {
         if let Some(status) = child.try_wait().expect("poll crash harness") {
             panic!("crash harness exited before failpoint {expected}: {status}");

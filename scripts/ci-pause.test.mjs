@@ -280,7 +280,9 @@ test("registered CI exposes only opt-in canonical source contracts without gener
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
-        : ordinaryCondition, id);
+        : id === "migration-recovery-gate"
+          ? `\${{ inputs.canonical_profile == 'migration-crash' || (${ordinaryCondition}) }}`
+          : ordinaryCondition, id);
   }
   const steps = ci.jobs.electron.steps;
   const selectionIndex = steps.findIndex(({ name }) => name === "Validate canonical contracts selection");
@@ -345,7 +347,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -434,6 +436,56 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     "cargo test -p grimodex-license --features licensing",
   ]);
   for (const step of rust.steps) assert.equal(step["continue-on-error"], undefined);
+
+  // One existing Cargo step, not a partial Gate A2 pass. Default/reusable callers
+  // still execute all eight tests and the original bootstrap/cache.
+  const migration = ci.jobs["migration-recovery-gate"];
+  const crash = { ...defaults, canonical_profile: "migration-crash" };
+  assert.deepEqual(admitted(crash), ["migration-recovery-gate"]);
+  assert.equal(migration["runs-on"], "ubuntu-latest");
+  assert.equal(migration["timeout-minutes"], 45);
+  assert.deepEqual(migration.env, rust.env);
+  const crashSelection = migration.steps[0];
+  assert.equal(crashSelection.name, "Validate standalone migration crash selection");
+  assert.equal(crashSelection.if, "inputs.canonical_profile");
+  assert.deepEqual(crashSelection.env, sharedSelection.env);
+  assert.ok(migration.steps[1].uses.startsWith("actions/checkout@"));
+  assert.doesNotMatch(crashSelection.run, /\$\{\{ inputs\.|pnpm|cargo|sudo|\|\|\s*true/u);
+  const validateCrash = (inputs, event = "workflow_dispatch") => {
+    assert.deepEqual(admitted(inputs, event), ["migration-recovery-gate"]);
+    const env = Object.fromEntries(Object.entries(crashSelection.env).map(([key, expression]) => [key, String(value(expression, inputs))]));
+    return executeShared("bash", ["-c", crashSelection.run], { timeout: 10000, env: {
+      ...process.env, ...env, GITHUB_EVENT_NAME: event,
+    } });
+  };
+  await validateCrash(crash);
+  for (const inputs of [
+    ...["independent_gates", "source_focused", "source_resolve_sharp", "source_audit_compat", "source_canonical_contracts"].map((flag) => ({ ...crash, [flag]: true })),
+    ...["candidate_base", "candidate_head", "max_parallel_tasks"].map((field) => ({ ...crash, [field]: "not-empty" })),
+    { ...crash, product_journey_mode: "shadow" },
+    { ...crash, product_journey_mode: "ALL" },
+    { ...crash, canonical_profile: "MIGRATION-CRASH" },
+    { ...crash, source_focused: "$(exit 0)" },
+    { ...crash, source_focused: true, source_canonical_contracts: true, candidate_head: "b".repeat(40) },
+  ]) await assert.rejects(validateCrash(inputs));
+  await assert.rejects(validateCrash(crash, "workflow_call"));
+  for (const malformed of ["migration-crash ", " migration-crash", "migration-crash$(exit 0)", "migration-crash-unknown"]) {
+    assert.deepEqual(admitted({ ...crash, canonical_profile: malformed }), ["canonical"]);
+  }
+  const migrationTests = migration.steps.filter(({ name }) => [
+    "Migration supervisor unit/integration", "Migration supervisor failpoint suite",
+    "Migration recovery failpoint library tests", "Safe Mode structured outcome + restore-by-id",
+    "Real release-schema fixture + WAL preservation", "Subprocess crash recovery",
+    "Safe Mode IPC contract", "Recovery Shell frontend tests",
+  ].includes(name));
+  assert.equal(migrationTests.length, 8);
+  for (const step of migration.steps.slice(1)) {
+    assert.equal(step["continue-on-error"], undefined);
+    assert.equal(step.if, migrationTests.includes(step) && step.name !== "Subprocess crash recovery" ? "!inputs.canonical_profile" : undefined);
+  }
+  const crashTest = migrationTests.find(({ name }) => name === "Subprocess crash recovery");
+  assert.equal(crashTest["working-directory"], "src-tauri");
+  assert.equal(crashTest.run.trim(), "cargo test -p grimodex-db --features test-failpoints --test migration_subprocess_crash --test restore_subprocess_crash");
 
   const selection = workflow.jobs.canonical.steps.find(({ name }) => name === "Validate canonical selection");
   assert.equal(selection.if, undefined);
