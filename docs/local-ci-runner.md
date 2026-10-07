@@ -106,6 +106,25 @@ No Electron/runtime journey, keyring/provider service, namespace probe, model
 installation, diagnostics or Full is added. Native and migration lanes remain
 separate deferred work, not implicitly cleared by this connection.
 
+For independently admitted release-feature compilation, `canonical_profile=native-release-static`
+selects the **existing `electron-native` owner** and only these unchanged commands:
+- `cargo check --manifest-path electron/native/grimodex-node/Cargo.toml --features licensing,legacy-keyring-migration`
+- `cargo clippy --manifest-path electron/native/grimodex-node/Cargo.toml --all-targets --features licensing,legacy-keyring-migration -- -D warnings`
+
+The development N-API build/public tests, release-feature Rust tests and licensed
+MCP tests are skipped, not passed. Clippy compiles test targets but does not run
+them. Empty/default and reusable callers retain every original command, setup,
+frozen dependencies, cache, debug profiles, runner and 90-minute timeout. No new
+input/job/executor or per-file filter is added. Use product mode `all`, false
+booleans and empty canonical tuple/options; the first literal guard rejects
+mixed inputs, case variants and wrong events before checkout/setup. Unknown
+profiles still reach canonical rejection. A successful run proves only those
+original compile commands, not native runtime/maintenance/disposal/listener retirement, keyring/provider
+activation permission, Windows cleanup, complete native CI, B or Full. Existing
+build scripts/dependency downloads still execute and need their original approved
+build scope. Review current source and applicable prerequisites before a distinct
+ordinary dispatch; source contracts do not admit unsafe runtime consumers.
+
 For the preserved migration ownership regressions, `canonical_profile=migration-crash`
 selects the **existing `migration-recovery-gate` owner**, but only its unchanged
 `Subprocess crash recovery` step: `cargo test -p grimodex-db --features test-failpoints
