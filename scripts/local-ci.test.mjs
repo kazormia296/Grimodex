@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import childProcess, { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import fs, { existsSync, readFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
   access,
   chmod,
@@ -276,6 +277,59 @@ function passedStagesForPlan(plan) {
     })),
   }));
 }
+
+test("native test bootstrap keeps exhausted cleanup strict without spawning a worker", async () => {
+  const originalRmSync = fs.rmSync;
+  const originalMkdtempSync = fs.mkdtempSync;
+  const originalSpawn = childProcess.spawn;
+  const calls = [];
+  let removalError;
+  let spawnCalls = 0;
+  let root;
+  fs.rmSync = (...args) => {
+    calls.push(args);
+    if (removalError) throw removalError;
+    return "removed";
+  };
+  childProcess.spawn = () => {
+    spawnCalls += 1;
+    assert.fail("fixture cleanup must not start a child");
+  };
+  syncBuiltinESMExports();
+  try {
+    await import("../electron/native/grimodex-node/test/test-bootstrap.mjs");
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "grimodex-bootstrap-"));
+    const { rmSync } = await import("node:fs");
+    const recursive = { recursive: true, force: true };
+    assert.equal(rmSync(root, recursive), "removed");
+    assert.deepEqual(calls.at(-1), [root, {
+      maxRetries: 20, retryDelay: 50, ...recursive,
+    }]);
+    for (const code of ["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM", "EACCES"]) {
+      removalError = Object.assign(new Error("synthetic removal failure"), { code });
+      for (const target of [root, path.join(root, "nested"), "unregistered-root"]) {
+        assert.throws(() => rmSync(target, recursive), (error) => error === removalError);
+      }
+    }
+    removalError = undefined;
+    const override = { ...recursive, maxRetries: 0, retryDelay: 1 };
+    assert.equal(rmSync(root, override), "removed");
+    assert.deepEqual(calls.at(-1), [root, override]);
+    const nonrecursive = { force: true };
+    assert.equal(rmSync(root, nonrecursive), "removed");
+    assert.equal(calls.at(-1)[1], nonrecursive);
+    removalError = new Error("synthetic nonrecursive failure");
+    assert.throws(() => rmSync(root), (error) => error === removalError);
+    assert.equal(calls.at(-1)[1], undefined);
+    assert.equal(spawnCalls, 0);
+  } finally {
+    fs.rmSync = originalRmSync;
+    fs.mkdtempSync = originalMkdtempSync;
+    childProcess.spawn = originalSpawn;
+    syncBuiltinESMExports();
+    if (root) originalRmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("local CI registry accounts for every hosted Full CI job", async () => {
   const registry = await readRegistry();
