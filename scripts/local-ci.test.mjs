@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import childProcess, { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs, { existsSync, readFileSync } from "node:fs";
+import { once } from "node:events";
+import { get } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
 import {
   access,
@@ -25,6 +27,10 @@ import { promisify } from "node:util";
 import yaml from "js-yaml";
 
 import { runLocalCiTasks } from "./local-ci-runner.mjs";
+import {
+  closeMockServer,
+  startMockServer,
+} from "../electron/native/grimodex-node/test/mock-http.mjs";
 
 import {
   PRODUCT_JOURNEY_CATALOG,
@@ -329,6 +335,80 @@ test("native test bootstrap keeps exhausted cleanup strict without spawning a wo
     syncBuiltinESMExports();
     if (root) originalRmSync(root, { recursive: true, force: true });
   }
+});
+
+test("native chat mock reports bind failure without closing its existing owner", async () => {
+  const controller = new AbortController();
+  const { server } = await startMockServer((_req, res) => res.end(), {
+    signal: controller.signal,
+  });
+  try {
+    const { port } = server.address();
+    await assert.rejects(startMockServer((_req, res) => res.end(), { port }), {
+      code: "EADDRINUSE",
+    });
+    controller.abort();
+    assert.equal(server.listening, true, "startup cancellation detaches after readiness");
+  } finally {
+    await closeMockServer(server);
+  }
+  assert.equal(server.listening, false);
+});
+
+test("native chat mock drains pre-aborted and pending startup before port reuse", async () => {
+  const handler = (_req, res) => res.end();
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(startMockServer(handler, { signal: preAborted.signal }), {
+    name: "AbortError",
+  });
+  const { server } = await startMockServer(handler);
+  const { port } = server.address();
+  await closeMockServer(server);
+  const pendingAbort = new AbortController();
+  const pending = startMockServer(handler, { port, signal: pendingAbort.signal });
+  pendingAbort.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  const replacement = await startMockServer(handler, { port });
+  await closeMockServer(replacement.server);
+  assert.equal(replacement.server.listening, false);
+});
+
+test("native chat mock awaits listener and unfinished HTTP connection close", async () => {
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("data: first\n\n");
+    // Deliberately leave the response unfinished, as in the Native abort fixture.
+  });
+  let request;
+  try {
+    request = get(baseUrl);
+    const [response] = await once(request, "response", {
+      signal: AbortSignal.timeout(5000),
+    });
+    let responseError;
+    response.on("error", (error) => { responseError = error; });
+    const closed = new Promise((resolve) => response.once("close", resolve));
+    await closeMockServer(server);
+    await closed;
+    assert.equal(server.listening, false);
+    assert.equal(response.destroyed, true);
+    assert.equal(response.complete, false);
+    if (responseError) assert.equal(responseError.code, "ECONNRESET");
+  } finally {
+    request?.destroy();
+    await closeMockServer(server);
+  }
+});
+
+test("native chat mock retains a failed close and refuses replacement startup", async () => {
+  const error = new Error("synthetic close failure");
+  const owner = {
+    close: (callback) => queueMicrotask(() => callback(error)),
+    closeAllConnections: () => {},
+  };
+  await assert.rejects(closeMockServer(owner), (actual) => actual === error);
+  await assert.rejects(startMockServer(() => {}), (actual) => actual === error);
 });
 
 test("local CI registry accounts for every hosted Full CI job", async () => {

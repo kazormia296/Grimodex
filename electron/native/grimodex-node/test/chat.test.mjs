@@ -11,7 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { createServer } from "node:http";
+import { closeMockServer, startMockServer } from "./mock-http.mjs";
 import {
   mkdirSync,
   mkdtempSync,
@@ -31,17 +31,6 @@ const root = mkdtempSync(join(tmpdir(), "grimodex-node-chat-"));
 const appDataDir = join(root, "app-data");
 mkdirSync(appDataDir, { recursive: true }); // Backend より先に ai-settings.json を書くため
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));
-
-/** OpenAI 互換 /chat/completions を模す HTTP サーバを起動し base URL を返す。 */
-function startMockServer(handler) {
-  return new Promise((resolve) => {
-    const server = createServer(handler);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address();
-      resolve({ server, baseUrl: `http://127.0.0.1:${port}` });
-    });
-  });
-}
 
 /** OpenAI 互換 SSE を書き出す（chunk 群 + finish + [DONE]）。 */
 function writeSseStream(res) {
@@ -231,7 +220,7 @@ test("native AI dispatchはdurable lifecycleの欠落・identity偽装をHTTP前
     );
     assert.equal(requestCount, 0, "precondition failure must precede HTTP send");
   } finally {
-    server.close();
+    await closeMockServer(server);
   }
 });
 
@@ -300,7 +289,7 @@ test("restricted Native chat families reject a forged caller before local HTTP",
     );
     assert.equal(requestCount, 0, "Native gate must precede the local HTTP transport");
   } finally {
-    await new Promise((resolve) => server.close(resolve));
+    await closeMockServer(server);
     rmSync(isolatedRoot, { recursive: true, force: true });
   }
 });
@@ -359,7 +348,7 @@ test("sendChatMessage がキー注入 + provider/endpoint/model override を保�
     assert.equal(result.inputTokens, 4);
     assert.equal(result.outputTokens, 3);
   } finally {
-    server.close();
+    await closeMockServer(server);
   }
 });
 
@@ -395,7 +384,7 @@ test("sendChatMessageStream が SSE を chat:stream-chunk/done へ橋渡しす�
     assert.equal(donePayload.stop_reason, "end_turn");
     assert.equal(donePayload.output_tokens, 2);
   } finally {
-    server.close();
+    await closeMockServer(server);
   }
 });
 
@@ -425,23 +414,20 @@ test("HTTP エラーは chat:stream-error を emit し reject する", async () 
     const errEvent = await waitForEvent(events, "chat:stream-error");
     assert.ok(JSON.parse(errEvent.payload).message.length > 0);
   } finally {
-    server.close();
+    await closeMockServer(server);
   }
 });
 
 test("abortChatStream が進行中 SSE を止め stopped done を emit する", async () => {
   let response;
-  let markStarted;
-  const started = new Promise((resolve) => {
-    markStarted = resolve;
-  });
+  let streamSettled;
+  let streamError;
   const { server, baseUrl } = await startMockServer((_req, res) => {
     response = res;
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.write(
       `data: ${JSON.stringify({ choices: [{ delta: { content: "first" } }] })}\n\n`,
     );
-    markStarted();
   });
   try {
     writeAiSettings(baseUrl);
@@ -453,23 +439,29 @@ test("abortChatStream が進行中 SSE を止め stopped done を emit する", 
       "napi_chat_stream_abort",
       { stream: true },
     );
-    const stream = backend.sendChatMessageStream(
+    // Observe rejection immediately, but always rethrow it after awaited cleanup.
+    streamSettled = backend.sendChatMessageStream(
       args,
       settings,
       "sk-injected",
+    ).then(
+      () => undefined,
+      (error) => { streamError = error; },
     );
 
-    await started;
+    // This bounded event wait also proves HTTP startup; no separate unbounded wait.
     await waitForEvent(events, "chat:stream-chunk");
+    // Abort now waits for local quiescence even while the HTTP response is stalled.
     assert.equal(await backend.abortChatStream(args.streamId), true);
-    // bytes_stream.next() を起こす。abort 判定はこの第2チャンクを処理する前に走る。
+    // Preserve the late-byte fixture: no delta may arrive after awaited abort.
     response.write(
       `data: ${JSON.stringify({
         choices: [{ delta: { content: "must-not-arrive" } }],
       })}\n\n`,
     );
     response.end();
-    await stream;
+    await streamSettled;
+    if (streamError) throw streamError;
 
     const done = await waitForEvent(events, "chat:stream-done");
     assert.equal(JSON.parse(done.payload).stop_reason, "stopped");
@@ -480,7 +472,12 @@ test("abortChatStream が進行中 SSE を止め stopped done を emit する", 
     assert.equal(text, "first", "abort 後の delta は emit しない");
   } finally {
     response?.end();
-    server.close();
+    try {
+      await closeMockServer(server);
+    } finally {
+      await streamSettled;
+      if (streamError) throw streamError;
+    }
   }
 });
 
