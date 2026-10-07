@@ -15,7 +15,7 @@ on:
           - all
           - shadow
       independent_gates:
-        description: Run 10 independent normal jobs including 3OS workers; defer runtime/journeys and native/shared/migration cache-deleting jobs (not complete CI)
+        description: Run 10 independent normal jobs including 3OS workers; defer runtime/journeys and native/shared/migration jobs (not complete CI)
         required: false
         type: boolean
         default: false
@@ -1057,12 +1057,6 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Free runner disk space
-        run: |
-          sudo rm -rf /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
-          df -h /
-
       - name: Native build dependencies
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -1140,12 +1134,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: ランナーのディスク容量を確保
-        run: |
-          sudo rm -rf /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
-          df -h /
 
       - name: Native build dependencies
         run: |
@@ -1244,12 +1232,6 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: ランナーのディスク容量を確保
-        run: |
-          sudo rm -rf /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
-          df -h /
 
       - name: Native build dependencies
         run: |

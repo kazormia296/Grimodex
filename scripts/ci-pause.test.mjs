@@ -369,9 +369,10 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     "security", "electron", "electron-windows-installer-contract",
     "nir1-c-query-worker",
   ]);
-  for (const id of independent) {
+  // Default/reusable callers also reach the deferred jobs: protect all owners.
+  for (const id of ordinary) {
     for (const step of ci.jobs[id].steps) {
-      assert.doesNotMatch(step.run ?? "", /sudo\s+rm\s+-rf\b/u, `${id} must not delete host caches`);
+      assert.doesNotMatch(step.run ?? "", /sudo\s+rm\s+-(?:rf|fr)\b/u, `${id} must not delete host caches`);
     }
   }
   assert.deepEqual(ci.jobs["nir1-c-query-worker"].strategy, {

@@ -52,10 +52,12 @@ complete ordinary job definitions, including the unchanged Linux/macOS/Windows
 C-query real-worker matrix. It excludes only `electron-runtime-performance`,
 `electron-product-journeys`, `electron-native`, `rust`, and `migration-recovery-gate`:
 the first two need independent runtime/D-Bus prerequisites; the latter three
-currently contain host-cache deletion steps. These five jobs remain **deferred /
-SKIPPED, not passed**. Their source, default/reusable selection and full commands
-are retained. This is negative job selection, not resource admission, complete
-normal CI, canonical Full, or merge evidence. It never waives the five remaining gates.
+remain deferred pending reviewed admission and affected proof after removal of
+host-cache reclamation. Removing those deletion steps does not establish resource
+admission or a job pass. These five jobs remain **deferred / SKIPPED, not passed**.
+Their default/reusable selection and complete product commands are retained.
+This is negative job selection, not resource admission, complete normal CI,
+canonical Full, or merge evidence. It never waives the five remaining gates.
 Source-focused combinations remain source-only; canonical combinations are
 rejected by the sole canonical owner before setup. Before dispatch, record the
 exact ordinary inputs, immutable candidate, registration and unique run owner.
