@@ -4211,14 +4211,16 @@ test("paused CI keeps every product journey job definition available", async () 
       assert.equal(job.uses, "./.github/workflows/canonical-ci.yml");
       continue;
     }
+    const independentExclusion = ["electron-runtime-performance", productJourneyJobId, "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
+      ? " && !inputs.independent_gates" : "";
     assert.equal(
       job.if,
       jobId === productJourneyJobId
-        ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion} }}`
+        ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
         : jobId === "electron"
           ? `github.event_name != 'schedule'${canonicalExclusion}`
-          : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}`,
-      `${jobId} must retain its ordinary execution guard and exclude canonical requests`,
+          : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
+      `${jobId} must retain its ordinary execution guard and exact canonical/independent exclusions`,
     );
   }
 });

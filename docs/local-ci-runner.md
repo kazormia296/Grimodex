@@ -45,6 +45,23 @@ the frozen dependencies and runs the workflow/runner/supervisor source contracts
 it does **not** run Quick or Full, generate notices, or produce a canonical
 receipt. The existing `ci.yml` default and release-reusable jobs remain separate.
 
+For independently safe normal jobs, registered `ci.yml` has an opt-in manual
+`independent_gates=true` boolean (default false; absent from release calls).
+With canonical inputs empty and all source-repair flags false, it selects ten
+complete ordinary job definitions, including the unchanged Linux/macOS/Windows
+C-query real-worker matrix. It excludes only `electron-runtime-performance`,
+`electron-product-journeys`, `electron-native`, `rust`, and `migration-recovery-gate`:
+the first two need independent runtime/D-Bus prerequisites; the latter three
+currently contain host-cache deletion steps. These five jobs remain **deferred /
+SKIPPED, not passed**. Their source, default/reusable selection and full commands
+are retained. This is negative job selection, not resource admission, complete
+normal CI, canonical Full, or merge evidence. It never waives the five remaining gates.
+Source-focused combinations remain source-only; canonical combinations are
+rejected by the sole canonical owner before setup. Before dispatch, record the
+exact ordinary inputs, immutable candidate, registration and unique run owner.
+Any source change requires affected review and proof on the new checkpoint;
+old candidate Quick/worker receipts are not transferred.
+
 A branch-only new workflow is not assumed registered for manual dispatch. The
 already registered `ci.yml` now has an opt-in `canonical_profile` string input:
 empty preserves ordinary CI; `contracts`, `quick` or `full` calls the canonical

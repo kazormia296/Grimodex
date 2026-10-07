@@ -273,9 +273,11 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   for (const [id, job] of Object.entries(ci.jobs)) {
     if (id === "electron" || id === "canonical") continue;
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
+    const independentExclusion = ["electron-runtime-performance", "electron-product-journeys", "electron-native", "rust", "migration-recovery-gate"].includes(id)
+      ? " && !inputs.independent_gates" : "";
     assert.equal(job.if, id === "electron-product-journeys"
-      ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion} }}`
-      : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}`, id);
+      ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
+      : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`, id);
   }
   const steps = ci.jobs.electron.steps;
   const selectionIndex = steps.findIndex(({ name }) => name === "Validate canonical contracts selection");
@@ -329,6 +331,10 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     assert.equal(ci.on.workflow_call.inputs[name], undefined, name);
     assert.equal(workflow.on.workflow_call.inputs[name === "canonical_profile" ? "profile" : name].type, "string", name);
   }
+  assert.equal(dispatch.independent_gates.type, "boolean");
+  assert.equal(dispatch.independent_gates.default, false);
+  assert.equal(dispatch.independent_gates.required, false);
+  assert.equal(ci.on.workflow_call.inputs.independent_gates, undefined);
   assert.deepEqual(Object.keys(ci.on.workflow_call.inputs), ["product_journey_mode"]);
   assert.equal(workflow.on.workflow_call.inputs.profile.default, "contracts");
   assert.equal(workflow.on.workflow_call.inputs.max_parallel_tasks.default, "12");
@@ -337,7 +343,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
   assert.equal(owner.if, "${{ inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks }}");
-  assert.equal(owner.with.profile, "${{ !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
+  assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
   assert.equal(owner.with.max_parallel_tasks, "${{ inputs.max_parallel_tasks || '12' }}");
@@ -355,9 +361,29 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(admitted({ ...defaults, source_focused: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_canonical_contracts: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, source_focused: true, source_canonical_contracts: true }), ["electron"]);
+  // Negative selection only: five unresolved jobs are deferred, never passed.
+  // Every remaining job keeps its complete commands; the worker matrix is not a new executor.
+  const independent = admitted({ ...defaults, independent_gates: true });
+  assert.deepEqual(independent, [
+    "quality", "frontend", "lfm-encoder-phase0", "browser", "webgl", "storybook",
+    "security", "electron", "electron-windows-installer-contract",
+    "nir1-c-query-worker",
+  ]);
+  for (const id of independent) {
+    for (const step of ci.jobs[id].steps) {
+      assert.doesNotMatch(step.run ?? "", /sudo\s+rm\s+-rf\b/u, `${id} must not delete host caches`);
+    }
+  }
+  assert.deepEqual(ci.jobs["nir1-c-query-worker"].strategy, {
+    "fail-fast": false, matrix: { os: ["ubuntu-latest", "macos-latest", "windows-latest"] },
+  });
+  assert.equal(ci.jobs["nir1-c-query-worker"].steps.at(-1).run, "bash scripts/nir1-c-query-worker-ci.sh");
+  assert.deepEqual(admitted({ ...defaults, independent_gates: true, source_focused: true }), ["electron"]);
+  assert.deepEqual(admitted({ ...defaults, independent_gates: true, source_canonical_contracts: true }), ["electron"]);
   for (const field of ["canonical_profile", "candidate_base", "candidate_head", "max_parallel_tasks"]) {
     for (const malformed of ["none", "NONE", " ", "0", "$(touch injected)"]) {
       assert.deepEqual(admitted({ ...defaults, [field]: malformed }), ["canonical"], `${field}=${malformed}`);
+      assert.deepEqual(admitted({ ...defaults, independent_gates: true, [field]: malformed }), ["canonical"], `independent ${field}=${malformed}`);
     }
   }
   const selection = workflow.jobs.canonical.steps.find(({ name }) => name === "Validate canonical selection");
@@ -382,7 +408,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   await validate({ ...quick, canonical_profile: "full" }); // Step0 still denies Full.
   for (const inputs of [
     ...["none", "NONE", "CONTRACTS", "unknown", " ", "$(touch injected)"].map((canonical_profile) => ({ ...contracts, canonical_profile })),
-    ...["source_focused", "source_resolve_sharp", "source_audit_compat", "source_canonical_contracts"].map((flag) => ({ ...contracts, [flag]: true })),
+    ...["independent_gates", "source_focused", "source_resolve_sharp", "source_audit_compat", "source_canonical_contracts"].map((flag) => ({ ...contracts, [flag]: true })),
+    { ...quick, independent_gates: true },
+    { ...quick, canonical_profile: "full", independent_gates: true },
     { ...contracts, product_journey_mode: "shadow" },
     { ...contracts, candidate_base: quick.candidate_base },
     { ...contracts, candidate_head: head },

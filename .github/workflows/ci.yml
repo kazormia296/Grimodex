@@ -14,6 +14,11 @@ on:
         options:
           - all
           - shadow
+      independent_gates:
+        description: Run 10 independent normal jobs including 3OS workers; defer runtime/journeys and native/shared/migration cache-deleting jobs (not complete CI)
+        required: false
+        type: boolean
+        default: false
       source_focused:
         description: Run source repair contracts and generate license notices (not canonical CI)
         required: false
@@ -71,7 +76,7 @@ jobs:
     with:
       # Mixed modes go to the sole owner for rejection before setup; ordinary
       # jobs below exclude any canonical request even when that request is bad.
-      profile: ${{ !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}
+      profile: ${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}
       candidate_base: ${{ inputs.candidate_base || '' }}
       candidate_head: ${{ inputs.candidate_head || '' }}
       max_parallel_tasks: ${{ inputs.max_parallel_tasks || '12' }}
@@ -661,7 +666,7 @@ jobs:
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -743,7 +748,7 @@ jobs:
 
   electron-product-journeys:
     name: Electron product journeys (persistence / workspace authority)
-    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks }}
+    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -1043,7 +1048,7 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -1127,7 +1132,7 @@ jobs:
 
   rust:
     name: Shared Rust crates (check / clippy / test)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -1231,7 +1236,7 @@ jobs:
 
   migration-recovery-gate:
     name: Migration recovery gate (Gate A2)
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
