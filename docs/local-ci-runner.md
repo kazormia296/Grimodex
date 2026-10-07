@@ -88,7 +88,25 @@ remain deferred pending reviewed admission and affected proof after removal of
 host-cache reclamation. Removing those deletion steps does not establish resource
 admission or a job pass. These five jobs remain **deferred / SKIPPED, not passed**.
 Their default/reusable selection and complete product commands are retained.
-This is negative job selection, not resource admission, complete normal CI,
+
+For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
+selects **only the complete existing `rust` job**. This reuses the registered
+workflow and its existing string input; it adds no dispatch input or executor.
+Keep product mode `all`, all booleans false, and candidate tuple/options empty.
+The job's first literal shell guard rejects mixed inputs and nonliteral case
+before checkout/setup. Other malformed profiles still go to the canonical
+owner for rejection. Default/reusable CI, the ten-job independent selection,
+all six Cargo invocations, features, dependencies, environment, cache and
+30-minute timeout are unchanged. Source proof uses the existing canonical
+`contracts` route, including affected selection and adversarial shell contracts.
+Neither the selector nor source proof attests consumer safety, actual-runner
+resources or a Rust pass: reviewed current consumers/prerequisites and applicable
+workload-derived resource checks still precede the distinct ordinary dispatch.
+No Electron/runtime journey, keyring/provider service, namespace probe, model
+installation, diagnostics or Full is added. Native and migration lanes remain
+separate deferred work, not implicitly cleared by this connection.
+
+The ten-job independent selection is negative job selection, not resource admission, complete normal CI,
 canonical Full, or merge evidence. It never waives the five remaining gates.
 Source-focused combinations remain source-only; canonical combinations are
 rejected by the sole canonical owner before setup. Before dispatch, record the

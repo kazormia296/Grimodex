@@ -275,9 +275,12 @@ test("registered CI exposes only opt-in canonical source contracts without gener
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
     const independentExclusion = ["electron-runtime-performance", "electron-product-journeys", "electron-native", "rust", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
+    const ordinaryCondition = `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
     assert.equal(job.if, id === "electron-product-journeys"
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
-      : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`, id);
+      : id === "rust"
+        ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
+        : ordinaryCondition, id);
   }
   const steps = ci.jobs.electron.steps;
   const selectionIndex = steps.findIndex(({ name }) => name === "Validate canonical contracts selection");
@@ -342,7 +345,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -387,6 +390,51 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
       assert.deepEqual(admitted({ ...defaults, independent_gates: true, [field]: malformed }), ["canonical"], `independent ${field}=${malformed}`);
     }
   }
+  // Standalone selection reuses the complete ordinary Rust owner. Even mixed
+  // inputs select only that owner, whose literal guard runs BEFORE any setup.
+  const rust = ci.jobs.rust;
+  const shared = { ...defaults, canonical_profile: "shared-rust" };
+  assert.deepEqual(admitted(shared), ["rust"]);
+  assert.equal(rust["runs-on"], "ubuntu-latest");
+  assert.equal(rust["timeout-minutes"], 30);
+  assert.deepEqual(rust.env, { CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0" });
+  const sharedSelection = rust.steps[0];
+  assert.equal(sharedSelection.name, "Validate standalone shared Rust selection");
+  assert.equal(sharedSelection.if, "inputs.canonical_profile");
+  assert.ok(rust.steps[1].uses.startsWith("actions/checkout@"));
+  assert.doesNotMatch(sharedSelection.run, /\$\{\{ inputs\.|pnpm|cargo|sudo|\|\|\s*true/u);
+  const executeShared = promisify(execFile);
+  const validateShared = (inputs, event = "workflow_dispatch") => {
+    assert.deepEqual(admitted(inputs, event), ["rust"]);
+    const env = Object.fromEntries(Object.entries(sharedSelection.env).map(([key, expression]) => [key, String(value(expression, inputs))]));
+    return executeShared("bash", ["-c", sharedSelection.run], { timeout: 10000, env: {
+      ...process.env, ...env, GITHUB_EVENT_NAME: event,
+    } });
+  };
+  await validateShared(shared);
+  const mixedShared = [
+    ...["independent_gates", "source_focused", "source_resolve_sharp", "source_audit_compat", "source_canonical_contracts"].map((flag) => ({ ...shared, [flag]: true })),
+    ...["candidate_base", "candidate_head", "max_parallel_tasks"].map((field) => ({ ...shared, [field]: "not-empty" })),
+    { ...shared, product_journey_mode: "shadow" },
+    { ...shared, product_journey_mode: "ALL" },
+    { ...shared, canonical_profile: "SHARED-RUST" },
+    { ...shared, source_focused: true, source_canonical_contracts: true, candidate_head: "b".repeat(40) },
+  ];
+  for (const inputs of mixedShared) await assert.rejects(validateShared(inputs));
+  await assert.rejects(validateShared(shared, "workflow_call"));
+  for (const malformed of ["shared-rust ", " shared-rust", "shared-rust$(exit 0)", "shared-rust-unknown"]) {
+    assert.deepEqual(admitted({ ...shared, canonical_profile: malformed }), ["canonical"]);
+  }
+  assert.deepEqual(rust.steps.filter((step) => step["working-directory"] === "src-tauri").map((step) => step.run.trim()), [
+    "cargo check --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
+    "cargo clippy --workspace --exclude grimodex --all-targets --features grimodex-semantic/semantic-embedding -- -D warnings",
+    "cargo test --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
+    "cargo test -p grimodex-db --features test-failpoints --test workspace_migration_supervisor",
+    "cargo test -p grimodex-db --test narrative_runtime_authority",
+    "cargo test -p grimodex-license --features licensing",
+  ]);
+  for (const step of rust.steps) assert.equal(step["continue-on-error"], undefined);
+
   const selection = workflow.jobs.canonical.steps.find(({ name }) => name === "Validate canonical selection");
   assert.equal(selection.if, undefined);
   assert.ok(workflow.jobs.canonical.steps.indexOf(selection) < workflow.jobs.canonical.steps.findIndex(({ uses }) => uses?.startsWith("actions/checkout@")));
