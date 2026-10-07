@@ -167,6 +167,28 @@ build scripts/dependency downloads still execute and need their original approve
 build scope. Review current source and applicable prerequisites before a distinct
 ordinary dispatch; source contracts do not admit unsafe runtime consumers.
 
+For separately admitted release-feature runtime tests, `canonical_profile=native-release-tests`
+selects the same **existing `electron-native` owner** and only the original complete,
+unfiltered `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features licensing,legacy-keyring-migration`.
+Cargo builds its own test target in that new job; no development `.node` or earlier
+compile receipt is transferred. Development build/public tests, release-feature
+check/clippy and licensed MCP are skipped, not passed or replayed. Empty/default
+and reusable callers keep all six original commands in order, setup, frozen
+dependencies, cache, environment, features, runner and 90-minute timeout.
+
+Keep product mode `all`, false booleans and empty canonical tuple/options. The
+first literal guard accepts this fifth fixed native selection; mixed inputs,
+case variants and wrong events reject before checkout/setup, and malformed
+profiles still reach canonical rejection. No new input/job/executor, per-file
+filter, fixture or timeout is added. Actual source review and affected coherent
+contracts proof precede separate fresh recovery/maintenance, loopback, license/
+keyring-consumer and cancellation/egress admission. Feature presence is not
+permission to call a real keyring, provider or service. Existing Rust tests use
+injected credential lookups and synthetic workspaces; their detached recovery
+status/Drop and an ordinary Cargo/job result are not individual maintenance/
+Native lease joins, Windows cleanup, B/Editor or Full evidence. The hosted job's
+90-minute bound is not Full's separate `native.tests` 900-second process bound.
+
 For independently admitted licensed MCP proof, `canonical_profile=native-licensed-mcp`
 selects the same **existing `electron-native` owner** and only its unchanged
 `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-mcp --features licensing`
@@ -174,7 +196,7 @@ command. The development N-API build/public tests, release-feature check/clippy
 and native Rust tests are skipped, not passed or replayed. Default/reusable
 callers retain all original commands, setup, frozen dependencies, cache, profiles,
 runner and 90-minute timeout. Keep product mode `all`, false booleans and empty
-canonical tuple/options. The existing literal guard accepts only the four fixed
+canonical tuple/options. The existing literal guard accepts only the five fixed
 native selections and rejects mixed, case-variant and wrong-event inputs before
 checkout/setup; unknown profiles still reach canonical rejection. No new
 input/job/executor or test filter is added.
