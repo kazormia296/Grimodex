@@ -4204,14 +4204,21 @@ test("paused CI keeps every product journey job definition available", async () 
     jobEntries.some(([jobId]) => jobId === productJourneyJobId),
     "electron-product-journeys job is required",
   );
+  const canonicalExclusion =
+    " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
   for (const [jobId, job] of jobEntries) {
-    if (jobId === productJourneyJobId) continue;
+    if (jobId === "canonical") {
+      assert.equal(job.uses, "./.github/workflows/canonical-ci.yml");
+      continue;
+    }
     assert.equal(
       job.if,
-      jobId === "electron"
-        ? "github.event_name != 'schedule'"
-        : "github.event_name != 'schedule' && !inputs.source_focused",
-      `${jobId} must retain its schedule guard and default execution outside source-focused repair`,
+      jobId === productJourneyJobId
+        ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion} }}`
+        : jobId === "electron"
+          ? `github.event_name != 'schedule'${canonicalExclusion}`
+          : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}`,
+      `${jobId} must retain its ordinary execution guard and exclude canonical requests`,
     );
   }
 });
