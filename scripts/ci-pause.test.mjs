@@ -281,7 +281,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
       : id === "nir1-c-query-worker"
-        ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || (${ordinaryCondition}) }}`
+        ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-practical' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
         : id === "migration-recovery-gate"
@@ -351,7 +351,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'c-query-startup-refusal' && inputs.canonical_profile != 'c-query-trailing-data' && inputs.canonical_profile != 'c-query-partial-terminal' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'c-query-startup-refusal' && inputs.canonical_profile != 'c-query-trailing-data' && inputs.canonical_profile != 'c-query-partial-terminal' && inputs.canonical_profile != 'c-query-practical' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -384,9 +384,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
       assert.doesNotMatch(step.run ?? "", /sudo\s+rm\s+-(?:rf|fr)\b/u, `${id} must not delete host caches`);
     }
   }
-  assert.deepEqual(ci.jobs["nir1-c-query-worker"].strategy, {
-    "fail-fast": false, matrix: { os: ["ubuntu-latest", "macos-latest", "windows-latest"] },
-  });
+  assert.equal(ci.jobs["nir1-c-query-worker"].strategy["fail-fast"], false);
   assert.equal(ci.jobs["nir1-c-query-worker"].steps.at(-1).run, "bash scripts/nir1-c-query-worker-ci.sh");
   assert.deepEqual(admitted({ ...defaults, independent_gates: true, source_focused: true }), ["electron"]);
   assert.deepEqual(admitted({ ...defaults, independent_gates: true, source_canonical_contracts: true }), ["electron"]);
@@ -434,7 +432,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const startupOnly = { ...defaults, canonical_profile: "c-query-startup-refusal" };
   const trailingOnly = { ...defaults, canonical_profile: "c-query-trailing-data" };
   const partialTerminalOnly = { ...defaults, canonical_profile: "c-query-partial-terminal" };
-  const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly];
+  const practicalOnly = { ...defaults, canonical_profile: "c-query-practical" };
+  const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly, practicalOnly];
+  assert.equal(workers.strategy.matrix.os, "${{ fromJSON(inputs.canonical_profile == 'c-query-practical' && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}");
   for (const standalone of workerProfiles) {
     await validateWorkers(standalone);
     await validateWorkers({ ...standalone, source_focused: "" });
@@ -456,7 +456,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
         [`${standalone.canonical_profile},${other}`, `${other},${standalone.canonical_profile}`]),
     ]) assert.deepEqual(admitted({ ...standalone, canonical_profile: profile }), ["canonical"]);
   }
-  assert.equal(workers.steps.length, 9);
+  assert.equal(workers.steps.length, 10);
   assert.deepEqual(workers.steps.slice(2, 4).map((step) => step.uses), [
     "dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8",
     "Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae",
@@ -484,6 +484,11 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker",
   });
   assert.deepEqual(workers.steps[8], {
+    name: "Run finite Q512 retention and maximum-fixture worker tests",
+    if: "inputs.canonical_profile == 'c-query-practical'",
+    shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh practical-retention",
+  });
+  assert.deepEqual(workers.steps[9], {
     name: "Build private Q2/Q512 fixtures and run focused real-worker tests",
     if: "!inputs.canonical_profile || inputs.canonical_profile == 'c-query-workers'",
     shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh",
@@ -498,6 +503,8 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(workerCommands(trailingOnly), ["bash scripts/nir1-c-query-worker-ci.sh trailing-data"]);
   assert.deepEqual(workerCommands(partialTerminalOnly), ["bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker"]);
   const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  assert.deepEqual(workerCommands(practicalOnly), ["bash scripts/nir1-c-query-worker-ci.sh practical-retention"]);
+  assert.equal(Object.hasOwn(registry.profiles, "c-query-practical"), false);
   assert.equal(Object.hasOwn(registry.profiles, "c-query-cancellation"), false);
   assert.equal(Object.hasOwn(registry.profiles, "c-query-startup-refusal"), false);
   assert.equal(Object.hasOwn(registry.profiles, "c-query-trailing-data"), false);
@@ -778,7 +785,8 @@ test("C-query opt-in scripts fail closed and preserve the original default comma
   const trailing = "native_worker_rejects_committed_q2_frame_with_trailing_data";
   const partialTerminal = "native_worker_rejects_complete_q2_frame_with_partial_terminal_marker";
   const optInCases = { "caller-cancellation": cancellation, "startup-registration-refusal": startup, "trailing-data": trailing, "partial-terminal-marker": partialTerminal };
-  const optInArgs = Object.keys(optInCases);
+  const practicalCases = ["native_worker_practical_retention_q512_30x", "native_worker_returns_canonical_512_a3_eligible_seed_local_graph"];
+  const optInArgs = [...Object.keys(optInCases), "practical-retention"];
   const tests = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs"), "utf8");
   for (const name of Object.values(optInCases)) assert.match(tests, new RegExp(`fn ${name}\\(\\)`));
   const temporary = await mkdtemp(path.join(tmpdir(), "c-query-script-contract-"));
@@ -815,13 +823,17 @@ else if (args[0] === 'run') {
   fs.mkdirSync('src-tauri/target/release', { recursive: true });
   fs.writeFileSync('src-tauri/target/release/nir1-c-query-worker' + (process.env.MOCK_WINDOWS === '1' ? '.exe' : ''), 'not an executable');
 } else if (args[0] === 'test') {
-  if (args.includes('${cancellation}') || args.includes('${startup}') || args.includes('${trailing}') || args.includes('${partialTerminal}')) {
+  const practical = process.env.NIR1_C_QUERY_PRACTICAL_OBSERVE === '1';
+  if (practical || args.includes('${cancellation}') || args.includes('${startup}') || args.includes('${trailing}') || args.includes('${partialTerminal}')) {
     const file = process.env.NIR1_Q2_FIXTURE_PATH;
-    if (!file?.endsWith('q2-worker-input.db') || !fs.existsSync(process.env.NIR1_C_QUERY_WORKER_BIN)) process.exit(8);
-    if (process.env.FAIL_PHASE === 'test') process.exit(9);
-    if (process.env.FAIL_PHASE === 'input') fs.appendFileSync(file, 'mutation');
-    if (process.env.FAIL_PHASE === 'source') fs.appendFileSync(path.join(path.dirname(file), 'q2-preseed.db'), 'mutation');
-    if (process.env.FAIL_PHASE === 'sidecar') fs.writeFileSync(file + '-wal', 'sidecar');
+    const expected = practical ? (args.includes('${practicalCases[0]}') ? 'q512-worker-input.db' : 'q512-maximum-worker-input.db') : 'q2-worker-input.db';
+    if (!file?.endsWith(expected) || !fs.existsSync(process.env.NIR1_C_QUERY_WORKER_BIN)) process.exit(8);
+    if (process.env.FAIL_CASE !== 'maximum' || expected === 'q512-maximum-worker-input.db') {
+      if (process.env.FAIL_PHASE === 'test') process.exit(9);
+      if (process.env.FAIL_PHASE === 'input') fs.appendFileSync(file, 'mutation');
+      if (process.env.FAIL_PHASE === 'source') fs.appendFileSync(path.join(path.dirname(file), practical ? 'q512-preseed.db' : 'q2-preseed.db'), 'mutation');
+      if (process.env.FAIL_PHASE === 'sidecar') fs.writeFileSync(file + '-wal', 'sidecar');
+    }
   }
 } else process.exit(96);
 `;
@@ -830,7 +842,7 @@ else if (args[0] === 'run') {
     }
     const shell = (args, overrides = {}) => execute("bash", [script, ...args], { timeout: 10000, env: {
       ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls,
-      RUNNER_TEMP: fixtureRoot, RUNNER_OS: "Linux", MOCK_WINDOWS: "0", FAIL_PHASE: "", DENY_CONSUMER: "0", ...overrides,
+      RUNNER_TEMP: fixtureRoot, RUNNER_OS: "Linux", MOCK_WINDOWS: "0", FAIL_PHASE: "", FAIL_CASE: "", DENY_CONSUMER: "0", ...overrides,
     } });
     const recorded = async () => (await readFile(calls, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
     for (const args of [[""], ["--help"], ["$(touch injected)"],
@@ -848,20 +860,27 @@ else if (args[0] === 'run') {
       const platform = { MOCK_WINDOWS: windows ? "1" : "0", RUNNER_OS: windows ? "Windows" : "Linux" };
       for (const args of [[], ...optInArgs.map((arg) => [arg])]) {
         await writeFile(calls, "");
+        if (windows && args[0] === "practical-retention") {
+          await assert.rejects(shell(args, platform), (error) => error.code === 2);
+          assert.deepEqual((await recorded()).map(({ command }) => command), ["uname"]);
+          assert.deepEqual(await readdir(fixtureRoot), []);
+          continue;
+        }
         await shell(args, platform);
         const commands = (await recorded()).filter(({ command }) => command === "cargo").map(({ args }) => args);
         assert.ok(commands.every((args) => ["--locked", "--release", "--manifest-path"].every((flag) => args.includes(flag))));
         assert.ok(commands.every((args) => args[args.indexOf("--manifest-path") + 1] === "src-tauri/Cargo.toml"));
         const selectedCases = commands.filter((args) => args[0] === "test").map((args) => args[args.indexOf("--") - 1]);
-        assert.deepEqual(selectedCases, args.length ? [optInCases[args[0]]] : originalCases);
-        assert.deepEqual(commands.filter((args) => args[0] === "run").map((args) => args.at(-2)), args.length ? ["Q2/R1/D0-local"] : ["Q2/R1/D0-local", "Q512/R2/A3-eligible-shared"]);
-        assert.deepEqual(commands.filter((args) => args[0] === "build").map((args) => args.includes("--features") ? args[args.indexOf("--features") + 1] : "default"), args.length ? [args[0] === "startup-registration-refusal" ? "default" : "nir1-c-query-test-seam"] : ["default", "nir1-c-query-test-seam"]);
+        const practical = args[0] === "practical-retention";
+        assert.deepEqual(selectedCases, practical ? practicalCases : args.length ? [optInCases[args[0]]] : originalCases);
+        assert.deepEqual(commands.filter((args) => args[0] === "run").map((args) => args.at(-2)), practical ? ["Q512/R2/A3-eligible-shared"] : args.length ? ["Q2/R1/D0-local"] : ["Q2/R1/D0-local", "Q512/R2/A3-eligible-shared"]);
+        assert.deepEqual(commands.filter((args) => args[0] === "build").map((args) => args.includes("--features") ? args[args.indexOf("--features") + 1] : "default"), args.length ? [practical || args[0] === "startup-registration-refusal" ? "default" : "nir1-c-query-test-seam"] : ["default", "nir1-c-query-test-seam"]);
         if (args.length) assert.deepEqual(commands.at(-1).slice(-4), ["--", "--ignored", "--nocapture", "--test-threads=1"]);
         assert.deepEqual(await readdir(fixtureRoot), [], "owned trap must remove only its private fixture directory");
       }
     }
     for (const arg of optInArgs) {
-      for (const phase of ["report", "build", "test", "input", "source", "sidecar"]) {
+      for (const phase of ["report", "build", "test", "input", "source", ...(arg === "practical-retention" ? [] : ["sidecar"])]) {
         await writeFile(calls, "");
         await assert.rejects(shell([arg], { FAIL_PHASE: phase }));
         const commands = (await recorded()).filter(({ command }) => command === "cargo").map(({ args }) => args);
@@ -869,6 +888,20 @@ else if (args[0] === 'run') {
         assert.deepEqual(await readdir(fixtureRoot), []);
       }
     }
+    for (const phase of ["test", "input", "source"]) {
+      await writeFile(calls, "");
+      await assert.rejects(shell(["practical-retention"], { FAIL_CASE: "maximum", FAIL_PHASE: phase }));
+      const commands = (await recorded()).filter(({ command }) => command === "cargo").map(({ args }) => args);
+      assert.deepEqual(commands.map((args) => args[0]), ["run", "build", "test", "test"]);
+      assert.deepEqual(await readdir(fixtureRoot), []);
+    }
+    // Read-only SQLite inspection may leave owned input WAL/SHM; fresh maximum
+    // input and the immutable builder source must not borrow those sidecars.
+    await writeFile(calls, "");
+    const withSidecars = await shell(["practical-retention"], { FAIL_PHASE: "sidecar" });
+    assert.equal((withSidecars.stdout.match(/Native practical input resources:/gu) ?? []).length, 6);
+    for (const role of ["retention", "maximum"]) assert.ok(withSidecars.stdout.includes(`role=${role}; suffix=-wal; bytes=7`));
+    assert.deepEqual(await readdir(fixtureRoot), []);
     await assert.rejects(access(path.join(temporary, "injected")));
   } finally {
     await rm(temporary, { recursive: true, force: true });

@@ -116,7 +116,7 @@ For a separately reviewed caller-cancellation lane, `canonical_profile=c-query-c
 selects that **same three-OS matrix**, but runs only
 `bash scripts/nir1-c-query-worker-ci.sh caller-cancellation`. Keep product mode
 `all`, all booleans false and canonical tuple/options empty; the same first
-literal guard accepts only the five exact worker profiles and rejects mixed or
+literal guard accepts only the six exact worker profiles and rejects mixed or
 wrong-event inputs before checkout/setup. Malformed/unknown profiles still reach
 canonical rejection. No new input, job, registry profile or arbitrary test filter
 is introduced; default/reusable/independent and `c-query-workers` commands remain
@@ -228,6 +228,48 @@ and durable possible-start before ONE three-OS dispatch. Script mocks are routin
 contracts, not Rust/SQLite/Native Windows acceptance. Exposing this selection
 does not authorize dispatch, replay successful lanes, renew diagnostics or waive
 B/Full, final acceptance or canonical gates.
+
+For a separately reviewed finite practical confirmation,
+`canonical_profile=c-query-practical` reuses the existing worker job with only
+`ubuntu-latest` and `bash scripts/nir1-c-query-worker-ci.sh practical-retention`.
+All other worker selections retain the original three OSes. Keep product mode
+`all`, false booleans and empty canonical tuple/options; the same first guard
+rejects mixed/case-variant/wrong-event inputs before checkout/setup. There is no
+new input, job, registry profile, executor, dependency, timeout or default command.
+The script also rejects non-Linux practical observation before fixture creation.
+
+This branch builds only the original closed synthetic Q512/R2/A3-eligible-shared
+fixture and the separate default-feature worker. It runs the existing
+`native_worker_practical_retention_q512_30x`, then the existing maximum accepted
+512-charged-row Q512 case once, on **distinct fresh copies**. This is the C-query
+maximum fixture, not the whole-project Q2044 capacity diagnostic. Each repeat
+checks full independent canonical Gold and a valid lease within 100 ms, releases
+that lease and requires actual exit, necessary EOF and all successful joins
+before claim reloan, owner drop and zero participants, before the next owner.
+Pristine-source checksum/sidecar checks, fresh input-copy checksums and the
+original owned cleanup trap remain fail-closed; no Q2 or original eleven-case
+suite is replayed. SQLite preflight may leave WAL/SHM on its own disposable input;
+these are recorded by role/suffix/byte count, never reused by the separate maximum
+case, and removed only by the original owned fixture cleanup trap.
+
+The exact opt-in `NIR1_C_QUERY_PRACTICAL_OBSERVE=1` records fixture bytes/work scale,
+OS/architecture and numeric VmRSS/VmHWM KiB snapshots of only the test parent and
+its exact owned READY worker. Parent snapshots also occur while holding the
+validated lease and after proved retirement. No sampler child/thread, PID scan,
+allocator hook or raw status/environment/argv is added. Sampling is outside
+admission-to-lease measurement and missing usage fails the opted-in purpose.
+Worker READY snapshots are **not full-query peaks**, and observed values are not
+thresholds, physical-total bounds, RSS-baseline requirements or leak-free claims.
+Concrete retention/growth/OOM/stall requires causal work, not rerun-to-green.
+
+Source review, reviewed checkpoint, affected hosted routing contracts and their
+actual results review precede separately admitted practical execution. Runtime
+requires fresh exact candidate/TEN inputs, scoped availability, unique owner and
+file/directory-fsynced possible-start before one send. Script mocks establish
+routing only, not Rust/SQLite/31-query/usage/retirement acceptance. This maintained
+finite functional confirmation neither renews consumed diagnostic purposes nor
+waives B/Full, final acceptance or canonical gates. The removed aggregate physical
+6 MiB and substitute Native 1.5 MiB proofs stay deleted.
 
 For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
 selects **only the complete existing `rust` job**. This reuses the registered

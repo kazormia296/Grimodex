@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal && "${1:-}" != trailing-data && "${1:-}" != partial-terminal-marker ) ]]; then
-  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal|trailing-data|partial-terminal-marker]\n' >&2
+if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal && "${1:-}" != trailing-data && "${1:-}" != partial-terminal-marker && "${1:-}" != practical-retention ) ]]; then
+  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal|trailing-data|partial-terminal-marker|practical-retention]\n' >&2
   exit 2
 fi
 
@@ -13,6 +13,12 @@ os_name="$(uname -s)"
 is_windows=false
 if [[ "${RUNNER_OS:-}" == "Windows" || "$os_name" == MINGW* || "$os_name" == MSYS* || "$os_name" == CYGWIN* ]]; then
   is_windows=true
+fi
+
+# This finite observation reads only its own Linux parent/owned worker status.
+if [[ "${1:-}" == practical-retention && "$os_name" != Linux ]]; then
+  printf '[precheck] practical-retention requires Linux process usage observation\n' >&2
+  exit 2
 fi
 
 temp_root="${RUNNER_TEMP:-${TMPDIR:-${TMP:-${TEMP:-/tmp}}}}"
@@ -87,6 +93,7 @@ else
   worker_path="$worker_file"
 fi
 
+if [[ "${1:-}" != practical-retention ]]; then
 cargo run --locked --release --manifest-path src-tauri/Cargo.toml \
   -p grimodex-db --features nir1-material-diagnostics \
   --bin nir1-material-capacity -- \
@@ -101,6 +108,7 @@ grep -Fq '"walBytes": 0' "$fixture_dir/q2-fixture-report.json"
 grep -Fq '"shmBytes": 0' "$fixture_dir/q2-fixture-report.json"
 grep -Fq '"reopenedReadOnly": true' "$fixture_dir/q2-fixture-report.json"
 assert_closed_fixture "$q2_fixture_file"
+fi
 
 # These opt-in lanes never replay Q512 or the original eleven cases.
 if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusal || "${1:-}" == trailing-data || "${1:-}" == partial-terminal-marker ]]; then
@@ -168,6 +176,50 @@ grep -Fq '"walBytes": 0' "$fixture_dir/q512-fixture-report.json"
 grep -Fq '"shmBytes": 0' "$fixture_dir/q512-fixture-report.json"
 grep -Fq '"reopenedReadOnly": true' "$fixture_dir/q512-fixture-report.json"
 assert_closed_fixture "$q512_fixture_file"
+
+# One admitted finite purpose, not the original normal suite or a capacity probe.
+if [[ "${1:-}" == practical-retention ]]; then
+  q512_fixture_checksum="$(cksum < "$q512_fixture_file")"
+  q512_max_test_fixture_file="$fixture_dir/q512-maximum-worker-input.db"
+  for input in "$q512_test_fixture_file" "$q512_max_test_fixture_file"; do
+    cp -- "$q512_fixture_file" "$input"
+    test "$(cksum < "$input")" = "$q512_fixture_checksum"
+    assert_closed_fixture "$input"
+  done
+  cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --bin nir1-c-query-worker
+  test -f "$worker_file"
+  # Distinct fresh copies avoid reopening the repetition test's SQLite sidecars.
+  NIR1_Q2_FIXTURE_PATH="$q512_test_fixture_file" \
+  NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+  NIR1_C_QUERY_PRACTICAL_OBSERVE=1 \
+    cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+      -p grimodex-db --lib native_worker_practical_retention_q512_30x \
+      -- --ignored --nocapture --test-threads=1
+  test "$(cksum < "$q512_test_fixture_file")" = "$q512_fixture_checksum"
+  test "$(cksum < "$q512_fixture_file")" = "$q512_fixture_checksum"
+  assert_closed_fixture "$q512_fixture_file"
+  NIR1_Q2_FIXTURE_PATH="$q512_max_test_fixture_file" \
+  NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+  NIR1_C_QUERY_PRACTICAL_OBSERVE=1 \
+    cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+      -p grimodex-db --lib native_worker_returns_canonical_512_a3_eligible_seed_local_graph \
+      -- --ignored --nocapture --test-threads=1
+  test "$(cksum < "$q512_max_test_fixture_file")" = "$q512_fixture_checksum"
+  test "$(cksum < "$q512_fixture_file")" = "$q512_fixture_checksum"
+  assert_closed_fixture "$q512_fixture_file"
+  # SQLite source inspection may leave owned sidecars; neither input is reused.
+  for role in retention maximum; do
+    input="$q512_test_fixture_file"
+    if [[ "$role" == maximum ]]; then input="$q512_max_test_fixture_file"; fi
+    for suffix in -wal -shm -journal; do
+      bytes=0
+      if [[ -e "$input$suffix" ]]; then bytes="$(wc -c < "$input$suffix")"; fi
+      printf 'Native practical input resources: role=%s; suffix=%s; bytes=%s\n' "$role" "$suffix" "$bytes"
+    done
+  done
+  exit 0
+fi
 
 q2_fixture_checksum="$(cksum < "$q2_fixture_file")"
 q512_fixture_checksum="$(cksum < "$q512_fixture_file")"

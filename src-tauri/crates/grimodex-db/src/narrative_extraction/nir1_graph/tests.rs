@@ -3822,6 +3822,30 @@ struct Canonical512FixtureCase {
     native_runs: usize,
 }
 
+// Descriptive Linux snapshots only: not a query peak or physical-memory bound.
+// Call outside the admission-to-lease timing interval and never scan other PIDs.
+#[cfg(target_os = "linux")]
+fn practical_process_rss_kib(pid: u32) -> Result<(u64, u64)> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+    let field = |key: &str| -> Result<u64> {
+        let value = status
+            .lines()
+            .find_map(|line| line.strip_prefix(key))
+            .ok_or_else(|| anyhow::anyhow!("practical process usage field missing"))?;
+        let mut fields = value.split_whitespace();
+        let kib = fields
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("practical process usage value missing"))?
+            .parse::<u64>()?;
+        ensure!(
+            fields.next() == Some("kB") && fields.next().is_none(),
+            "process usage unit changed"
+        );
+        Ok(kib)
+    };
+    Ok((field("VmRSS:")?, field("VmHWM:")?))
+}
+
 fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     case: Canonical512FixtureCase,
 ) -> Result<()> {
@@ -3839,6 +3863,18 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     const PROJECT: &str = "nir1-capacity-fixture-project";
     const QUERY_SCENE: &str = "nir1-capacity-scope-drift-scene";
     const SEED: &str = "nir1-capacity-shared-entity-2";
+
+    let observe_practical = match std::env::var("NIR1_C_QUERY_PRACTICAL_OBSERVE") {
+        Ok(value) if value == "1" => true,
+        Err(std::env::VarError::NotPresent) => false,
+        _ => anyhow::bail!("invalid practical observation selection"),
+    };
+    ensure!(
+        !observe_practical
+            || (cfg!(target_os = "linux")
+                && matches!(case.label, "Q512" | "Q512-retention-30x")),
+        "practical observation requires Linux and the original Q512 fixture"
+    );
 
     let source = PathBuf::from(
         std::env::var_os("NIR1_Q2_FIXTURE_PATH")
@@ -3935,6 +3971,13 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     assert_eq!(QUERY_SQL_STEPS, 100_000);
     assert_eq!(QUERY_DEADLINE, Duration::from_millis(100));
     drop(source_db);
+    if observe_practical {
+        eprintln!(
+            "Native practical fixture: label={}; os={}; arch={}; source_bytes={}; materials={}; revisions=1; registry_rows={}; charged_rows=512; runs={}; usage_unit=KiB; snapshots_not_peak=true",
+            case.label, std::env::consts::OS, std::env::consts::ARCH,
+            std::fs::metadata(&source)?.len(), material_rows, registry_rows, case.native_runs
+        );
+    }
 
     let directory = TestDirectory(std::env::temp_dir().join(format!(
         "nir1-c-{}-{}",
@@ -4034,10 +4077,10 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     .ok_or_else(|| anyhow::anyhow!("Q512 index publish was deferred"))?
     .into_result()?;
 
-    let canonical_gold_frame = if case.label == "Q512" {
+    let canonical_gold_frame = if matches!(case.label, "Q512" | "Q512-retention-30x") {
         ensure!(
-            case.native_runs == 1 && !case.add_unrelated_seed_edge,
-            "Q512 Gold applies only to the official single-run positive case"
+            case.native_runs > 0 && !case.add_unrelated_seed_edge,
+            "Q512 Gold applies only to the official positive fixture"
         );
         let entity = canonical_gold_bundle
             .entities
@@ -4306,6 +4349,17 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                 owner
             }
         };
+        #[cfg(target_os = "linux")]
+        let usage_before = if observe_practical {
+            let pid = owner.child_pid_for_test()?;
+            Some((
+                pid,
+                practical_process_rss_kib(std::process::id())?,
+                practical_process_rss_kib(pid)?,
+            ))
+        } else {
+            None
+        };
         let started = Instant::now();
         let lease = owner.query_once(&request)?;
         let returned_elapsed = started.elapsed();
@@ -4372,6 +4426,12 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             authority.claim_c_query_child().is_none(),
             "Native capacity must stay leased while the result is held"
         );
+        #[cfg(target_os = "linux")]
+        let parent_lease_usage = if observe_practical {
+            Some(practical_process_rss_kib(std::process::id())?)
+        } else {
+            None
+        };
         drop(lease);
         ensure!(
             owner.cleanup_proved_for_test(),
@@ -4392,6 +4452,14 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             "Q512 iteration {} retained a workspace participant after retirement",
             iteration + 1
         );
+        #[cfg(target_os = "linux")]
+        if let Some((pid, parent_ready, worker_ready)) = usage_before {
+            let parent_retired = practical_process_rss_kib(std::process::id())?;
+            eprintln!(
+                "Native practical retirement: label={}; run={}/{}; parent_pid={}; worker_pid={pid}; parent_ready_rss_hwm_kib={parent_ready:?}; worker_ready_rss_hwm_kib={worker_ready:?}; parent_lease_rss_hwm_kib={parent_lease_usage:?}; parent_retired_rss_hwm_kib={parent_retired:?}; lease_released=true; exit_eof_all_joins=true; claim_reloan=true; participants=0",
+                case.label, iteration + 1, case.native_runs, std::process::id()
+            );
+        }
     }
     Ok(())
 }
