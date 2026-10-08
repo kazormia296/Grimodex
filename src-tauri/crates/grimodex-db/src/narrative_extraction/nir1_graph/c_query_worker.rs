@@ -3120,7 +3120,7 @@ mod tests {
             )))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         };
         let core = state.lifecycle_core();
         core.set_ready(binding)?;

@@ -1047,7 +1047,7 @@ impl PreparedWorkspace {
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         state.lifecycle_core().set_ready(LiveBinding::new(
             path.to_string_lossy(),

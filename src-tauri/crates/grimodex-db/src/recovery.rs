@@ -874,7 +874,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let session = SafeModeSession::from_workspace(
             ws.to_path_buf(),

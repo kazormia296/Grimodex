@@ -224,15 +224,22 @@ test("native AI dispatchはdurable lifecycleの欠落・identity偽装をHTTP前
   }
 });
 
+// Keep failed cleanup fenced until this test process ends; GC is not teardown.
+let restrictedChatCleanupOwner;
+
 test("restricted Native chat families reject a forged caller before local HTTP", async () => {
+  if (restrictedChatCleanupOwner) throw new Error("previous chat cleanup owner is unresolved");
   let requestCount = 0;
   const { server, baseUrl } = await startMockServer((_req, res) => {
     requestCount += 1;
     res.writeHead(500).end();
   });
-  const isolatedRoot = mkdtempSync(join(tmpdir(), "grimodex-node-d2a-chat-"));
-  const isolatedAppDataDir = join(isolatedRoot, "app-data");
+  const owner = { backend: undefined, server, isolatedRoot: undefined };
+  restrictedChatCleanupOwner = owner;
   try {
+    const isolatedRoot = mkdtempSync(join(tmpdir(), "grimodex-node-d2a-chat-"));
+    owner.isolatedRoot = isolatedRoot;
+    const isolatedAppDataDir = join(isolatedRoot, "app-data");
     mkdirSync(isolatedAppDataDir, { recursive: true });
     writeFileSync(
       join(isolatedAppDataDir, "ai-settings.json"),
@@ -245,6 +252,7 @@ test("restricted Native chat families reject a forged caller before local HTTP",
       }),
     );
     const backend = new Backend(isolatedAppDataDir);
+    owner.backend = backend;
     await backend.initializeProfileEgress();
     const status = JSON.parse(await backend.activateProfileEgress());
     const workspace = join(isolatedRoot, "d2a-restricted-chat");
@@ -289,8 +297,20 @@ test("restricted Native chat families reject a forged caller before local HTTP",
     );
     assert.equal(requestCount, 0, "Native gate must precede the local HTTP transport");
   } finally {
-    await closeMockServer(server);
-    rmSync(isolatedRoot, { recursive: true, force: true });
+    const cleanup = await Promise.allSettled([
+      Promise.resolve().then(async () => {
+        if (!owner.backend) return;
+        const wire = await owner.backend.shutdownWorkspaceLifecycle();
+        assert.equal(JSON.parse(wire).status, "closed", "Native cleanup must prove Closed");
+      }),
+      closeMockServer(server),
+    ]);
+    const failures = cleanup.filter((result) => result.status === "rejected");
+    if (failures.length) {
+      throw new AggregateError(failures.map((result) => result.reason), "owned chat cleanup failed");
+    }
+    if (owner.isolatedRoot) rmSync(owner.isolatedRoot, { recursive: true, force: true });
+    restrictedChatCleanupOwner = undefined;
   }
 });
 

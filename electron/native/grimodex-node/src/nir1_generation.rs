@@ -3902,9 +3902,9 @@ mod tests {
         let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("fixture DB");
         assert!(storage::read_terminal(&db, &attempts[0].id).expect("no stale recovery").is_none());
         drop(db);
+        std::fs::remove_dir_all(root).expect("cleanup while shutdown path fence is retained");
         drop(backend);
         drop(state);
-        std::fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

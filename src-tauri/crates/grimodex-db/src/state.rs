@@ -207,7 +207,8 @@ pub struct WorkspaceState {
     /// 併走 migrate (add_column_if_missing の check-then-act) と二重
     /// VACUUM INTO を防ぐ。ガードは絶対に await を跨がないこと
     /// (std::sync::MutexGuard は !Send)。
-    pub open_lock: Mutex<()>,
+    /// Also owns scheduled maintenance workers and retained shutdown fences.
+    pub open_lock: Mutex<crate::open::WorkspaceMaintenanceOwner>,
 }
 
 impl WorkspaceState {
@@ -718,7 +719,7 @@ mod tests {
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let authority = state
             .inner
@@ -821,7 +822,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let err = with_db_state(&state, |_db| Ok(())).expect_err("未オープンはエラー");
         assert!(err.to_string().contains("No workspace is open"));
@@ -833,7 +834,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let err = active_database(&state)
             .err()

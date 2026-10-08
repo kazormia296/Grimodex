@@ -1086,7 +1086,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: grimodex_db::recovery::SafeModeState::default(),
             switching: grimodex_db::WorkspaceLifecycleCompatibilityView::default(),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         }
     }
 

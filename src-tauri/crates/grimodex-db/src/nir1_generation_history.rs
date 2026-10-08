@@ -1503,7 +1503,7 @@ mod generation_storage_adapter {
                 inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
                 safe_mode: SafeModeState::default(),
                 switching: WorkspaceLifecycleCompatibilityView::new(false),
-                open_lock: Mutex::new(()),
+                open_lock: Mutex::new(Default::default()),
             };
             state
                 .switching

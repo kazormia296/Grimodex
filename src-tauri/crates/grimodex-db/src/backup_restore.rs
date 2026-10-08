@@ -219,10 +219,11 @@ pub fn restore_backup_core(
 /// replacement without recursively locking `restore_backup_core`.
 pub fn restore_backup_core_with_open_lock(
     ws_state: &WorkspaceState,
-    _open_guard: &std::sync::MutexGuard<'_, ()>,
+    open_guard: &std::sync::MutexGuard<'_, crate::open::WorkspaceMaintenanceOwner>,
     file_name: &str,
     on_reopened: impl FnOnce(),
 ) -> AppResult<()> {
+    open_guard.check_admission()?;
     let ws_path = {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         inner
@@ -1916,7 +1917,7 @@ mod tests {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         };
         (dir, state)
     }
@@ -1964,7 +1965,7 @@ mod tests {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         }
     }
 
@@ -2082,7 +2083,7 @@ mod tests {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         };
         assert!(list_backups(&state)
             .expect_err("list without workspace")
@@ -2173,7 +2174,7 @@ mod tests {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(mismatch_authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         };
         set_marker(&mismatch_state, "mismatch-live");
         let mismatch_source = mismatch_dir.join("backups/mismatch-source.db");

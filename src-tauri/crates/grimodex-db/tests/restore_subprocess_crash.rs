@@ -144,7 +144,7 @@ fn interrupted_install_then_explicit_recovery_reaches_ready(phase: &str) {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
         switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
-        open_lock: Mutex::new(()),
+        open_lock: Mutex::new(Default::default()),
     };
     let gs_path = GlobalSettingsPath {
         path: root.join("global-settings.json"),
@@ -293,7 +293,7 @@ fn handoff_workspace(label: &str) -> (PathBuf, WorkspaceState) {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
         switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
-        open_lock: Mutex::new(()),
+        open_lock: Mutex::new(Default::default()),
     };
     let gs_path = GlobalSettingsPath {
         path: root.join("global-settings.json"),

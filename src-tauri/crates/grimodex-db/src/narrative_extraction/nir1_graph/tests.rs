@@ -1132,7 +1132,7 @@ fn owner_death_helper(authority: &Arc<WorkspaceAuthority>) -> Result<()> {
         inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(authority)))),
         safe_mode: crate::recovery::SafeModeState::default(),
         switching,
-        open_lock: Mutex::new(()),
+        open_lock: Mutex::new(Default::default()),
     };
     let binding = LiveBinding::new(
         authority.path().to_string_lossy(),
@@ -1849,7 +1849,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching,
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let binding = LiveBinding::new(
             authority.path().to_string_lossy(),
@@ -2112,7 +2112,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&other_authority)))),
                 safe_mode: crate::recovery::SafeModeState::default(),
                 switching: WorkspaceLifecycleCompatibilityView::new(false),
-                open_lock: Mutex::new(()),
+                open_lock: Mutex::new(Default::default()),
             };
             other_state.switching.core().set_ready(LiveBinding::new(
                 other_authority.path().to_string_lossy(),
@@ -2561,7 +2561,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&other_authority)))),
                 safe_mode: crate::recovery::SafeModeState::default(),
                 switching: WorkspaceLifecycleCompatibilityView::new(false),
-                open_lock: Mutex::new(()),
+                open_lock: Mutex::new(Default::default()),
             };
             other_state.switching.core().set_ready(LiveBinding::new(
                 other_authority.path().to_string_lossy(),
@@ -4107,7 +4107,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
         safe_mode: crate::recovery::SafeModeState::default(),
         switching,
-        open_lock: Mutex::new(()),
+        open_lock: Mutex::new(Default::default()),
     };
     let original_binding = LiveBinding::new(
         authority.path().to_string_lossy(),

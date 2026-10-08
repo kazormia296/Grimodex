@@ -2598,6 +2598,9 @@ pub struct AppState {
     pub workspace_operation_active: Arc<AtomicUsize>,
     pub workspace_operation_notify: Arc<Notify>,
     pub workspace_shutdown_requested: Arc<AtomicBool>,
+    /// One retained shutdown task; cancelling a response only drops its borrowed
+    /// waiter, never the task or its DB path fences.
+    pub(crate) workspace_shutdown: OnceLock<tokio::sync::Mutex<WorkspaceShutdownTask>>,
     /// Exact-binding single-flight keys for unpublished NIR-1 cold recovery.
     pub(crate) nir1_generation_recovery_bindings: Mutex<Vec<LiveBinding>>,
     /// Monotonic, single-binding ledger for best-effort post-Ready recovery.
@@ -2654,6 +2657,13 @@ pub(crate) struct GenerationRecoveryLaunchObservation {
     pub(crate) open_lock_available: bool,
     pub(crate) active_operation_count: usize,
     pub(crate) participant_count: usize,
+}
+
+pub(crate) enum WorkspaceShutdownTask {
+    Pending(tokio::task::JoinHandle<std::result::Result<(), String>>),
+    /// Actual cleanup Join is sticky; a later ACK may unblock only publication.
+    Joined(std::result::Result<(), String>),
+    Closed(String),
 }
 
 #[derive(Default)]
@@ -2733,7 +2743,7 @@ impl AppState {
                 inner: Mutex::new(None),
                 safe_mode: grimodex_db::recovery::SafeModeState::default(),
                 switching,
-                open_lock: Mutex::new(()),
+                open_lock: Mutex::new(Default::default()),
             },
             workspace_lifecycle:
                 crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter::new(lifecycle_core),
@@ -2771,6 +2781,7 @@ impl AppState {
             workspace_operation_active: Arc::new(AtomicUsize::new(0)),
             workspace_operation_notify: Arc::new(Notify::new()),
             workspace_shutdown_requested: Arc::new(AtomicBool::new(false)),
+            workspace_shutdown: OnceLock::new(),
             nir1_generation_recovery_bindings: Mutex::new(Vec::new()),
             nir1_generation_recovery_statuses: Mutex::new(GenerationRecoveryHookLedger::default()),
             #[cfg(test)]

@@ -3119,6 +3119,26 @@ pub(crate) fn publish_workspace_lifecycle_closed(
     Ok(view)
 }
 
+async fn finish_workspace_shutdown(state: Arc<AppState>) -> Result<()> {
+    state.post_effect_abort.abort_all();
+    state.semantic.semantic_cancel_background();
+    let _ = state.related_scenes.stop_for_workspace_transition();
+    // Keep the existing main-owned 30-second observation budget. Native retains
+    // the owner until actual retirement; it does not release fences on timeout.
+    state.wait_workspace_operations().await;
+    loop {
+        let participants = state
+            .workspace_lifecycle
+            .workspace_participant_count()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        if participants == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    run_blocking(move || grimodex_db::open::shutdown_workspace_storage(&state.ws)).await
+}
+
 /// Execute a manual maintenance operation through the shared lifecycle
 /// owner. The public command still returns the adapter's typed outcome, but
 /// the operation is admitted into the same core execution membership as the
@@ -5676,7 +5696,7 @@ fn caller_identity_from_wire(
 }
 
 struct RevalidatedNarrativeWorkspace<'a> {
-    _open_guard: std::sync::MutexGuard<'a, ()>,
+    _open_guard: std::sync::MutexGuard<'a, grimodex_db::open::WorkspaceMaintenanceOwner>,
     authority: PinnedWorkspaceDb,
 }
 
@@ -9979,43 +9999,42 @@ impl Backend {
     /// or an interrupted worker cannot be mistaken for terminal proof.
     #[napi]
     pub async fn shutdown_workspace_lifecycle(&self) -> Result<String> {
-        // The shared core closes new lifecycle admission before the Native
-        // observation wait.  The AppState flag below remains the fast
-        // foreground guard, while `publish_closed` is the terminal proof.
         let _ = self.state.workspace_lifecycle.request_shutdown();
         self.state.request_workspace_shutdown();
-        // Cancellation is independent of the Native lifecycle observation
-        // budget.  These registries are not represented by AppState's short
-        // operation counter, but their pinned participants must still drain
-        // before the core can publish Closed.
-        self.state.post_effect_abort.abort_all();
-        self.state.semantic.semantic_cancel_background();
-        let _ = self.state.related_scenes.stop_for_workspace_transition();
-
-        // Native owns the lifecycle proof and therefore waits idempotently
-        // until its participants actually leave. The 30-second observation
-        // budget belongs to Electron main's shutdown coordinator; applying a
-        // second deadline here would turn an unfinished Native owner into a
-        // misleading operation error and change the terminal proof contract.
-        self.state.wait_workspace_operations().await;
-        loop {
-            let participants = self
-                .state
-                .workspace_lifecycle
-                .workspace_participant_count()
-                .map_err(|error| Error::from_reason(error.to_string()))?;
-            if participants == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        let owner = self.state.workspace_shutdown.get_or_init(|| {
+            let state = Arc::clone(&self.state);
+            tokio::sync::Mutex::new(crate::state::WorkspaceShutdownTask::Pending(tokio::spawn(
+                async move {
+                    finish_workspace_shutdown(state)
+                        .await
+                        .map_err(|error| error.to_string())
+                },
+            )))
+        });
+        let mut task = owner.lock().await;
+        if let crate::state::WorkspaceShutdownTask::Pending(worker) = &mut *task {
+            // Borrow the retained handle: dropping this response releases only
+            // the mutex waiter, so the next caller can observe the SAME Join.
+            let result = worker.await.unwrap_or_else(|error| Err(error.to_string()));
+            *task = crate::state::WorkspaceShutdownTask::Joined(result);
         }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let view = publish_workspace_lifecycle_closed(&state)
-                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
-            WorkspaceLifecycleViewAdapter::serialize(&view)
-        })
-        .await
+        match &*task {
+            crate::state::WorkspaceShutdownTask::Joined(result) => {
+                result.clone().map_err(Error::from_reason)?;
+                // An outstanding ACK may still veto Closed after cleanup has
+                // joined. Reobserve only publication, never retry failed joins.
+                // No await here: publication and caching are one serialized,
+                // cancellation-safe observation with the same retained fences.
+                let view = publish_workspace_lifecycle_closed(&self.state)
+                    .map_err(app_err_to_napi)?;
+                let wire = WorkspaceLifecycleViewAdapter::serialize(&view)
+                    .map_err(app_err_to_napi)?;
+                *task = crate::state::WorkspaceShutdownTask::Closed(wire.clone());
+                Ok(wire)
+            }
+            crate::state::WorkspaceShutdownTask::Closed(wire) => Ok(wire.clone()),
+            crate::state::WorkspaceShutdownTask::Pending(_) => unreachable!(),
+        }
     }
 
     /// 既存 workspace 判定 (commands/workspace.rs の同名コマンドと同一実装)。
@@ -17292,8 +17311,81 @@ mod narrative_maintenance_admission_unwind_tests {
             &backend.shutdown_workspace_lifecycle().await.unwrap(),
         ).unwrap();
         assert_eq!(closed["status"], "closed");
-        drop(backend);
         std::fs::remove_dir_all(root).unwrap();
+        drop(backend);
+    }
+
+    #[tokio::test]
+    async fn shutdown_reobserves_closed_after_pending_delivery_ack_without_restarting_cleanup() {
+        let (backend, root) = backend_with_active_workspace("shutdown-pending-ack");
+        let sequence = DeliverySequence::new(1);
+        assert!(matches!(
+            backend.state.workspace_lifecycle
+                .admit_delivery_at(sequence, "shutdown-pending-ack".into())
+                .expect("delivery admission"),
+            DeliveryAdmissionOutcome::Accepted { .. }
+        ));
+        assert!(backend.state.workspace_lifecycle
+            .mark_delivery_terminal(sequence).expect("terminal delivery"));
+        for _ in 0..2 {
+            let error = tokio::time::timeout(
+                Duration::from_secs(30), backend.shutdown_workspace_lifecycle(),
+            ).await.expect("bounded shutdown observation").expect_err("ACK still pending");
+            assert!(error.to_string().contains("unacknowledged work"));
+            let owner = backend.state.workspace_shutdown.get().expect("same cleanup owner");
+            assert!(matches!(&*owner.lock().await, crate::state::WorkspaceShutdownTask::Joined(Ok(()))));
+            assert!(backend.state.ws.inner.lock().expect("authority lock").is_none());
+            let view: serde_json::Value = serde_json::from_str(
+                &backend.get_workspace_lifecycle_view().await.expect("lifecycle view"),
+            ).expect("view JSON");
+            assert_eq!(view["status"], "transition", "ACK refusal is not Closed");
+        }
+        // Cleanup has joined, but Backend retains the path fences while the
+        // exact transport receipt remains unacknowledged. ACK does not rerun it.
+        let ack: serde_json::Value = serde_json::from_str(
+            &backend.ack_narrative_maintenance_delivery(1).await.expect("exact ACK"),
+        ).expect("ACK JSON");
+        assert_eq!(ack["status"], "retired");
+        let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(backend.shutdown_workspace_lifecycle(), backend.shutdown_workspace_lifecycle())
+        }).await.expect("serialized reobservation");
+        let closed = first.expect("Closed after ACK");
+        assert_eq!(second.expect("same Closed"), closed);
+        let view: serde_json::Value = serde_json::from_str(&closed).expect("Closed JSON");
+        assert_eq!(view["status"], "closed");
+        std::fs::remove_dir_all(&root).expect("strict cleanup while Backend retains fences");
+        assert_eq!(backend.shutdown_workspace_lifecycle().await.expect("cached Closed"), closed);
+        assert!(!root.exists(), "reobservation must not recreate the path");
+        drop(backend);
+    }
+
+    #[tokio::test]
+    async fn shutdown_cleanup_join_failure_remains_sticky_without_closed_publication() {
+        let (backend, root) = backend_with_active_workspace("shutdown-join-failure");
+        // A failed cleanup Join must never be replaced by another cleanup task
+        // or treated as permission to publish Closed on a later observation.
+        let worker = tokio::spawn(async {
+            panic!("synthetic cleanup join failure");
+            #[allow(unreachable_code)]
+            Ok(())
+        });
+        assert!(backend.state.workspace_shutdown.set(tokio::sync::Mutex::new(
+            crate::state::WorkspaceShutdownTask::Pending(worker),
+        )).is_ok());
+        let first = backend.shutdown_workspace_lifecycle().await.expect_err("failed Join");
+        let second = backend.shutdown_workspace_lifecycle().await.expect_err("sticky Join failure");
+        assert_eq!(first.to_string(), second.to_string());
+        let owner = backend.state.workspace_shutdown.get().expect("retained owner");
+        assert!(matches!(&*owner.lock().await, crate::state::WorkspaceShutdownTask::Joined(Err(_))));
+        assert!(backend.state.ws.inner.lock().expect("authority lock").is_some());
+        let view: serde_json::Value = serde_json::from_str(
+            &backend.get_workspace_lifecycle_view().await.expect("lifecycle view"),
+        ).expect("view JSON");
+        assert_eq!(view["status"], "transition");
+        // This fixture installed no DB maintenance worker; drop its authority
+        // before strict removal, without claiming failed shutdown succeeded.
+        drop(backend);
+        std::fs::remove_dir_all(root).expect("fixture cleanup");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -17365,7 +17457,7 @@ mod narrative_maintenance_admission_unwind_tests {
         }
         let requested_at = std::time::Instant::now();
         let shutdown_backend = Arc::clone(&backend);
-        let shutdown =
+        let mut shutdown =
             tokio::spawn(async move { shutdown_backend.shutdown_workspace_lifecycle().await });
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !backend
@@ -17379,6 +17471,24 @@ mod narrative_maintenance_admission_unwind_tests {
         })
         .await
         .expect("shutdown admission closure");
+        if drop_response {
+            // Losing the first shutdown response must not lose its cleanup task.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while backend.state.workspace_shutdown.get().is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("retained shutdown owner admission");
+            shutdown.abort();
+            let cancelled = tokio::time::timeout(Duration::from_secs(5), shutdown)
+                .await
+                .expect("shutdown response cancellation");
+            assert!(cancelled.expect_err("dropped shutdown response").is_cancelled());
+            let same_backend = Arc::clone(&backend);
+            shutdown =
+                tokio::spawn(async move { same_backend.shutdown_workspace_lifecycle().await });
+        }
         assert_eq!(restore.is_finished(), drop_response);
         assert!(
             !shutdown.is_finished(),
@@ -17419,14 +17529,26 @@ mod narrative_maintenance_admission_unwind_tests {
             0
         );
         assert!(backend.state.ws.open_lock.try_lock().is_ok());
-        // Native Closed joins its own workers, not the detached DB maintenance
-        // worker; retain the DB path drain until the fixture is removed.
-        let maintenance_drain =
-            grimodex_db::open::drain_workspace_maintenance_for_test(&root.join("workspace"), || {})
-                .expect("bounded DB workspace-maintenance drain");
+        assert!(backend
+            .state
+            .ws
+            .inner
+            .lock()
+            .expect("authority released")
+            .is_none());
+        // Shutdown owns the DB joins and retains path exclusion inside Backend.
+        // Reacquiring the old test-only drain here would block on our own fence.
+        std::fs::remove_dir_all(&root).expect("fixture cleanup while Backend retains fences");
+        let repeated: serde_json::Value = serde_json::from_str(
+            &backend
+                .shutdown_workspace_lifecycle()
+                .await
+                .expect("same shutdown"),
+        )
+        .expect("repeated Closed JSON");
+        assert_eq!(repeated, closed);
+        assert!(!root.exists(), "reentry must not recreate the deleted path");
         drop(backend);
-        std::fs::remove_dir_all(root).expect("fixture cleanup");
-        drop(maintenance_drain);
         eprintln!(
             "BC-2 {operation} Native stop-to-Join + DB path drain: {:.3} ms",
             requested_at.elapsed().as_secs_f64() * 1000.0
