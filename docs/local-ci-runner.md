@@ -89,6 +89,29 @@ host-cache reclamation. Removing those deletion steps does not establish resourc
 admission or a job pass. These five jobs remain **deferred / SKIPPED, not passed**.
 Their default/reusable selection and complete product commands are retained.
 
+For a separately reviewed real-worker lane, `canonical_profile=c-query-workers`
+selects **only the existing Linux/macOS/Windows `nir1-c-query-worker` matrix**.
+Use product mode `all`, false booleans and empty canonical tuple/options. The
+first literal Bash guard rejects mixed inputs, case variants and wrong events
+before checkout/setup on every OS; unknown profiles reach canonical rejection.
+Empty/default, reusable and independent selections keep the original matrix,
+`fail-fast: false`, pinned setup/cache, 45-minute timeout and complete unchanged
+`bash scripts/nir1-c-query-worker-ci.sh` command. No input/job/executor, registry
+profile, per-file filter, fixture or acceptance change is added.
+
+That script builds its own closed synthetic Q2/Q512 sources using the existing
+opt-in fixture branch and real schema/A2/Human Decision writers. Its integral
+in-process disposable-copy shape validation is not a separate capacity or
+memory diagnostic campaign. The normal worker is built separately with default
+features; seam-enabled crash, overflow and postcommit tests use the existing
+isolated invocations. Source review and affected canonical `contracts` proof
+precede a fresh admission of these actual consumers, subprocess ownership and
+egress. No Electron, Editor, bus/client, provider/keyring service, namespace
+probe, model installation or extra diagnostic is introduced. A matrix/job pass
+proves only the executed cases at that candidate: it does not replace individual
+lease/exit/EOF/join/quarantine evidence, all lifecycle coverage, B or Full
+prerequisites, final candidate-untouched acceptance or canonical Quick/Full.
+
 For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
 selects **only the complete existing `rust` job**. This reuses the registered
 workflow and its existing string input; it adds no dispatch input or executor.

@@ -40,7 +40,7 @@ on:
         type: boolean
         default: false
       canonical_profile:
-        description: Empty preserves ordinary CI; contracts/quick/full selects canonical CI; shared-rust selects Rust; native-development-build selects existing development N-API build only; native-development-tests selects that build then complete public tests in the same job; native-release-static selects existing release-feature check/clippy only; native-licensed-mcp selects existing licensed MCP tests only; migration-crash/migration-safe-mode/migration-library selects one existing step; migration-remaining groups four remaining migration steps; os-contracts/os-check selects existing Linux helper source/check only
+        description: Empty preserves ordinary CI; contracts/quick/full selects canonical CI; shared-rust selects Rust; native-development-build selects existing development N-API build only; native-development-tests selects that build then complete public tests in the same job; native-release-static selects existing release-feature check/clippy only; native-licensed-mcp selects existing licensed MCP tests only; c-query-workers selects the existing three-OS real-worker matrix only; migration-crash/migration-safe-mode/migration-library selects one existing step; migration-remaining groups four remaining migration steps; os-contracts/os-check selects existing Linux helper source/check only
         required: false
         type: string
         default: ""
@@ -157,7 +157,7 @@ jobs:
   # Local reusable calls load the callee at this same commit, without requiring
   # the branch-only canonical adapter to be registered for manual dispatch.
   canonical:
-    if: ${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}
+    if: ${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}
     uses: ./.github/workflows/canonical-ci.yml
     with:
       # Mixed modes go to the sole owner for rejection before setup; ordinary
@@ -1339,7 +1339,7 @@ jobs:
 
   nir1-c-query-worker:
     name: C-query worker (${{ matrix.os }})
-    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
+    if: ${{ inputs.canonical_profile == 'c-query-workers' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1347,6 +1347,30 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     steps:
+      - name: Validate standalone C-query worker selection
+        if: inputs.canonical_profile
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.canonical_profile }}
+          PRODUCT_JOURNEY_MODE: ${{ inputs.product_journey_mode }}
+          INDEPENDENT_GATES: ${{ inputs.independent_gates }}
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+          SOURCE_CANONICAL_CONTRACTS: ${{ inputs.source_canonical_contracts }}
+          CANDIDATE_BASE: ${{ inputs.candidate_base }}
+          CANDIDATE_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$PROFILE" = c-query-workers
+          test "$PRODUCT_JOURNEY_MODE" = all
+          for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
+            case "$flag" in false|"") ;; *) exit 1 ;; esac
+          done
+          test -z "$CANDIDATE_BASE$CANDIDATE_HEAD$MAX_PARALLEL_TASKS"
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable

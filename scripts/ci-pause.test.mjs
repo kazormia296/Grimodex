@@ -280,6 +280,8 @@ test("registered CI exposes only opt-in canonical source contracts without gener
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
+      : id === "nir1-c-query-worker"
+        ? `\${{ inputs.canonical_profile == 'c-query-workers' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
         : id === "migration-recovery-gate"
@@ -349,7 +351,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -408,6 +410,54 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.ok(rust.steps[1].uses.startsWith("actions/checkout@"));
   assert.doesNotMatch(sharedSelection.run, /\$\{\{ inputs\.|pnpm|cargo|sudo|\|\|\s*true/u);
   const executeShared = promisify(execFile);
+  // Select the existing complete three-OS worker job without replaying other jobs.
+  const workers = ci.jobs["nir1-c-query-worker"];
+  const workerOnly = { ...defaults, canonical_profile: "c-query-workers" };
+  assert.deepEqual(admitted(workerOnly), ["nir1-c-query-worker"]);
+  assert.equal(workers["runs-on"], "${{ matrix.os }}");
+  assert.equal(workers["timeout-minutes"], 45);
+  const workerSelection = workers.steps[0];
+  assert.equal(workerSelection.name, "Validate standalone C-query worker selection");
+  assert.equal(workerSelection.if, "inputs.canonical_profile");
+  assert.equal(workerSelection.shell, "bash");
+  assert.deepEqual(workerSelection.env, sharedSelection.env);
+  assert.ok(workers.steps[1].uses.startsWith("actions/checkout@"));
+  assert.doesNotMatch(workerSelection.run, /\$\{\{ inputs\.|pnpm|cargo|sudo|\|\|\s*true/u);
+  const validateWorkers = (inputs, event = "workflow_dispatch") => {
+    assert.deepEqual(admitted(inputs, event), ["nir1-c-query-worker"]);
+    const env = Object.fromEntries(Object.entries(workerSelection.env).map(([key, expression]) => [key, String(value(expression, inputs))]));
+    return executeShared("bash", ["-c", workerSelection.run], { timeout: 10000, env: {
+      ...process.env, ...env, GITHUB_EVENT_NAME: event,
+    } });
+  };
+  await validateWorkers(workerOnly);
+  for (const inputs of [
+    ...["independent_gates", "source_focused", "source_resolve_sharp", "source_audit_compat", "source_canonical_contracts"].map((flag) => ({ ...workerOnly, [flag]: true })),
+    ...["candidate_base", "candidate_head", "max_parallel_tasks"].map((field) => ({ ...workerOnly, [field]: "not-empty" })),
+    { ...workerOnly, product_journey_mode: "shadow" },
+    { ...workerOnly, product_journey_mode: "ALL" },
+    { ...workerOnly, canonical_profile: "C-QUERY-WORKERS" },
+    { ...workerOnly, source_focused: "$(exit 0)" },
+    { ...workerOnly, source_focused: true, source_canonical_contracts: true, candidate_head: "b".repeat(40) },
+  ]) await assert.rejects(validateWorkers(inputs));
+  for (const event of ["workflow_call", "schedule"]) await assert.rejects(validateWorkers(workerOnly, event));
+  for (const profile of [
+    "c-query-workers ", " c-query-workers", "c-query-workers$(exit 0)", "c-query-workers-unknown",
+    "c-query-workers,native-release-tests", "native-release-tests,c-query-workers",
+    "c-query-workers,shared-rust", "shared-rust,c-query-workers",
+  ]) assert.deepEqual(admitted({ ...workerOnly, canonical_profile: profile }), ["canonical"]);
+  assert.equal(workers.steps.length, 5);
+  assert.deepEqual(workers.steps.slice(2, 4).map((step) => step.uses), [
+    "dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8",
+    "Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae",
+  ]);
+  assert.deepEqual(workers.steps[2].with, { toolchain: "stable" });
+  assert.deepEqual(workers.steps[3].with, { workspaces: "src-tauri" });
+  assert.deepEqual(workers.steps[4], {
+    name: "Build private Q2/Q512 fixtures and run focused real-worker tests",
+    shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh",
+  });
+  for (const step of workers.steps) assert.equal(step["continue-on-error"], undefined);
   const validateShared = (inputs, event = "workflow_dispatch") => {
     assert.deepEqual(admitted(inputs, event), ["rust"]);
     const env = Object.fromEntries(Object.entries(sharedSelection.env).map(([key, expression]) => [key, String(value(expression, inputs))]));
