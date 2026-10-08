@@ -112,6 +112,36 @@ proves only the executed cases at that candidate: it does not replace individual
 lease/exit/EOF/join/quarantine evidence, all lifecycle coverage, B or Full
 prerequisites, final candidate-untouched acceptance or canonical Quick/Full.
 
+For a separately reviewed caller-cancellation lane, `canonical_profile=c-query-cancellation`
+selects that **same three-OS matrix**, but runs only
+`bash scripts/nir1-c-query-worker-ci.sh caller-cancellation`. Keep product mode
+`all`, all booleans false and canonical tuple/options empty; the same first
+literal guard accepts only the two exact worker profiles and rejects mixed or
+wrong-event inputs before checkout/setup. Malformed/unknown profiles still reach
+canonical rejection. No new input, job, registry profile or arbitrary test filter
+is introduced; default/reusable/independent and `c-query-workers` commands remain
+unchanged, with the same pinned setup/cache, `fail-fast: false` and 45-minute limit.
+
+The script rejects wrong/extra arguments before filesystem or build work. The
+opt-in branch reuses the original closed Q2 fixture validation and a disposable
+copy, builds the existing seam-enabled worker, then runs only the existing ignored
+`native_worker_cancels_after_request_admission_and_retires_before_reloan` test.
+It checks input/source checksums and absence of sidecars, then exits through the
+original owned cleanup trap **before Q512 or the original eleven cases**. The
+case requires real nonempty Q2 work at the pre-frame barrier, distinct caller
+refusal without a lease, and actual exit/necessary EOF/writer completion/reader
+join before claim reloan, plus coordinator join and participant release. It
+returns no successful Native frame, so it cannot claim a Native Gold pass or
+universal lifecycle coverage. Source-contract mocks exercise only script routing
+and failure propagation, not Rust/SQLite/worker acceptance.
+
+Independent source review and affected hosted guard proof precede a separately
+admitted runtime purpose with fresh workflow/ref/head/tree/base, exact inputs,
+unique owner and durable possible-start. Merely exposing this profile does not
+authorize dispatch, replay successful cases, renew diagnostics or waive B/Full,
+final acceptance or canonical gates. Actual cancellation outcomes on each OS
+remain distinct from source contracts and from previous original-matrix results.
+
 For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
 selects **only the complete existing `rust` job**. This reuses the registered
 workflow and its existing string input; it adds no dispatch input or executor.
