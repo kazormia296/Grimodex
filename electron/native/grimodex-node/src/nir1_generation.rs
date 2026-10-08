@@ -26,7 +26,8 @@ use crate::profile_egress::{CallerIdentity, ProfileDispatchPermit};
 #[cfg(test)]
 use crate::state::GenerationRecoveryLaunchObservation;
 use crate::state::{
-    AppState, GenerationRecoveryHookEntry, GenerationRecoveryHookState, WorkspaceOperationGuard,
+    AppState, GenerationRecoveryHookEntry, GenerationRecoveryHookLedger, GenerationRecoveryHookState,
+    WorkspaceOperationGuard,
 };
 
 // No production entry constructs an owner until all D2b publication gates
@@ -459,21 +460,40 @@ impl GenerationRecoveryCoordinator {
     }
 }
 
-fn detach_generation_recovery(worker: impl FnOnce() + Send + 'static) {
-    drop(napi::tokio::task::spawn_blocking(worker));
+fn spawn_generation_recovery(
+    worker: impl FnOnce() + Send + 'static,
+) -> napi::tokio::task::JoinHandle<()> {
+    napi::tokio::task::spawn_blocking(worker)
 }
 
-fn schedule_generation_recovery(
-    state: &AppState,
+fn schedule_generation_recovery<'a>(
+    state: &'a AppState,
     binding: &LiveBinding,
     ready_revision: u64,
-) -> bool {
+) -> Option<std::sync::MutexGuard<'a, GenerationRecoveryHookLedger>> {
     let mut ledger = state
         .nir1_generation_recovery_statuses
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if ready_revision < ledger.latest_ready_revision {
-        return false;
+    // Status/revision rotation cannot retire a queued or still-running task.
+    // Holding this guard through reservation closes the pre-spawn/reentry gap.
+    if state
+        .workspace_shutdown_requested
+        .load(std::sync::atomic::Ordering::Acquire)
+        || state.ws.lifecycle_core().shutdown_requested().unwrap_or(true)
+        || ready_revision < ledger.latest_ready_revision
+    {
+        return None;
+    }
+    if ledger.worker_active {
+        if ready_revision > ledger.latest_ready_revision {
+            ledger.pending_ready_revision = Some(
+                ledger
+                    .pending_ready_revision
+                    .map_or(ready_revision, |pending| pending.max(ready_revision)),
+            );
+        }
+        return None;
     }
     if ready_revision > ledger.latest_ready_revision {
         ledger.latest_ready_revision = ready_revision;
@@ -491,7 +511,7 @@ fn schedule_generation_recovery(
         }
     }
 
-    match ledger.entry.as_mut() {
+    let scheduled = match ledger.entry.as_mut() {
         Some(entry) if &entry.binding == binding => match entry.state {
             GenerationRecoveryHookState::Complete
             | GenerationRecoveryHookState::Scheduled
@@ -512,7 +532,8 @@ fn schedule_generation_recovery(
             });
             true
         }
-    }
+    };
+    scheduled.then_some(ledger)
 }
 
 fn set_generation_recovery_status(
@@ -651,6 +672,21 @@ fn observe_generation_recovery_worker_probe(state: &AppState) {
     }
 }
 
+#[cfg(test)]
+fn observe_generation_recovery_completion_probe(state: &AppState) {
+    let probe = state
+        .nir1_generation_recovery_completion_probe
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take();
+    if let Some((reached, release)) = probe {
+        reached.send(()).expect("recovery completion observer");
+        release
+            .recv_timeout(Duration::from_secs(5))
+            .expect("release recovery before actual task completion");
+    }
+}
+
 fn run_generation_recovery_after_ready(
     state: Arc<AppState>,
     binding: LiveBinding,
@@ -711,9 +747,9 @@ fn observe_generation_recovery_launch(
     }
 }
 
-/// Start a best-effort detached recovery only from the exact Ready publication
-/// named by `ready_revision`. No workspace participant or operation owner is
-/// captured until the blocking worker actually starts.
+/// Start best-effort recovery only from the exact Ready publication named by
+/// `ready_revision`. One supervisor retains its blocking JoinHandle through
+/// completion; no workspace participant is captured before the worker starts.
 pub(crate) fn start_generation_recovery_after_ready(
     state: Arc<AppState>,
     ready_revision: u64,
@@ -740,14 +776,55 @@ pub(crate) fn start_generation_recovery_after_ready(
         LifecycleState::Ready(binding) => binding,
         _ => return false,
     };
-    if !schedule_generation_recovery(&state, &binding, ready_revision) {
+    let Some(mut ledger) = schedule_generation_recovery(&state, &binding, ready_revision) else {
         return false;
-    }
+    };
+    ledger.worker_active = true;
+    drop(ledger);
     #[cfg(test)]
     observe_generation_recovery_launch(&state, &binding, ready_revision);
-    detach_generation_recovery(move || {
-        run_generation_recovery_after_ready(state, binding, ready_revision)
+    let worker_state = Arc::clone(&state);
+    let worker_binding = binding.clone();
+    let worker = spawn_generation_recovery(move || {
+        run_generation_recovery_after_ready(
+            Arc::clone(&worker_state),
+            worker_binding,
+            ready_revision,
+        );
+        #[cfg(test)]
+        observe_generation_recovery_completion_probe(&worker_state);
     });
+    // Dropping this supervisor's handle cannot abort the blocking task. Its
+    // exclusive JoinHandle stays here; a lost supervisor leaves the slot pinned.
+    drop(napi::tokio::spawn(async move {
+        let joined = worker.await;
+        let pending_revision = {
+            let mut ledger = state
+                .nir1_generation_recovery_statuses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Err(error) = joined {
+                tracing::debug!(
+                    cancelled = error.is_cancelled(),
+                    panicked = error.is_panic(),
+                    "NIR-1 generation recovery join failed"
+                );
+                if let Some(entry) = ledger.entry.as_mut().filter(|entry| {
+                    entry.binding == binding && entry.ready_revision == ready_revision
+                }) {
+                    entry.state = GenerationRecoveryHookState::Incomplete;
+                }
+            }
+            ledger.worker_active = false;
+            ledger.pending_ready_revision.take()
+        };
+        state.workspace_operation_notify.notify_waiters();
+        // Coalesce only an actual Ready hook callback, not a revision published
+        // by failed Restore. The same entry revalidates currentness/shutdown.
+        if let Some(revision) = pending_revision {
+            start_generation_recovery_after_ready(Arc::clone(&state), revision);
+        }
+    }));
     true
 }
 
@@ -3112,7 +3189,8 @@ mod tests {
             &state,
             &binding_a,
             ready_revision_a,
-        ));
+        )
+        .is_some());
         assert_eq!(state.workspace_operation_active.load(Ordering::Acquire), 0);
         assert_eq!(core.workspace_participant_count().expect("participants"), 0);
         let worker_a = GenerationRecoveryHookWorker::start(
@@ -3141,14 +3219,16 @@ mod tests {
             &state,
             &binding_b,
             ready_revision_b,
-        ));
+        )
+        .is_some());
         // Model an A launcher paused after observing Ready A but before status
         // scheduling. It may not prune the already-scheduled Ready B entry.
-        assert!(!schedule_generation_recovery(
+        assert!(schedule_generation_recovery(
             &state,
             &binding_a,
             ready_revision_a,
-        ));
+        )
+        .is_none());
         assert!(GenerationRecoveryCoordinator::capture_for_binding(
             Arc::clone(&state),
             Some(&binding_a),
@@ -3742,12 +3822,134 @@ mod tests {
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovery_join_slot_survives_restore_reentry_and_shutdown_with_zero_counters() {
+        let (root, attempts) = recovery_workspace(1);
+        let state = reopened_recovery_state(&root);
+        let backend = crate::Backend {
+            state: Arc::clone(&state),
+        };
+        let ready = state.ws.lifecycle_core().snapshot().expect("Ready");
+        let binding = match ready.state {
+            LifecycleState::Ready(binding) => binding,
+            state => panic!("expected Ready, got {state:?}"),
+        };
+        let (capture_tx, capture_rx) = mpsc::channel();
+        let (capture_release_tx, capture_release_rx) = mpsc::channel();
+        let (tail_tx, tail_rx) = mpsc::channel();
+        let (tail_release_tx, tail_release_rx) = mpsc::channel();
+        *state.nir1_generation_recovery_worker_probe.lock().expect("capture probe") =
+            Some((capture_tx, capture_release_rx));
+        *state.nir1_generation_recovery_completion_probe.lock().expect("tail probe") =
+            Some((tail_tx, tail_release_rx));
+        assert!(start_generation_recovery_after_ready(Arc::clone(&state), ready.revision));
+        capture_rx.recv_timeout(Duration::from_secs(2)).expect("pre-capture worker");
+
+        let restored = backend.restore_backup("grimodex-missing-backup.db".into())
+            .await.expect("strict failed Restore outcome");
+        let restored: Value = serde_json::from_str(&restored).expect("Restore JSON");
+        assert_eq!(restored["status"], "unchanged");
+        let later = state.ws.lifecycle_core().snapshot().expect("later Ready");
+        assert!(later.revision > ready.revision);
+        assert!(!start_generation_recovery_after_ready(Arc::clone(&state), later.revision));
+        capture_release_tx.send(()).expect("release stale capture");
+        tail_rx.recv_timeout(Duration::from_secs(2)).expect("status retired before task return");
+        assert_eq!(recovery_hook_state(&state, &binding), Some(GenerationRecoveryHookState::Incomplete));
+        assert_eq!(state.workspace_operation_active.load(Ordering::Acquire), 0);
+        assert_eq!(state.ws.lifecycle_core().workspace_participant_count().expect("participants"), 0);
+        assert!(!start_generation_recovery_after_ready(Arc::clone(&state), later.revision));
+        assert!(state.nir1_generation_recovery_statuses.lock().expect("ledger").worker_active);
+
+        let shutdown_state = Arc::clone(&state);
+        let shutdown = tokio::spawn(async move {
+            crate::Backend { state: shutdown_state }.shutdown_workspace_lifecycle().await
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !state.workspace_shutdown_requested.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "shutdown admission closed");
+            tokio::task::yield_now().await;
+        }
+        // Poll the actual drain while the blocking worker is still at its tail.
+        assert!(tokio::time::timeout(Duration::from_millis(20), state.wait_workspace_operations())
+            .await.is_err(), "zero counters/status must not prove the worker joined");
+        assert!(!shutdown.is_finished());
+        tail_release_tx.send(()).expect("allow actual blocking task return");
+        let closed = tokio::time::timeout(Duration::from_secs(2), shutdown)
+            .await.expect("bounded shutdown observation").expect("shutdown task")
+            .expect("shutdown outcome");
+        let closed: Value = serde_json::from_str(&closed).expect("Closed JSON");
+        assert_eq!(closed["status"], "closed");
+        assert!(!state.nir1_generation_recovery_statuses.lock().expect("ledger").worker_active);
+        assert!(!start_generation_recovery_after_ready(Arc::clone(&state), later.revision));
+        let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("fixture DB");
+        assert!(storage::read_terminal(&db, &attempts[0].id).expect("no stale recovery").is_none());
+        drop(db);
+        drop(backend);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovery_join_coalesces_latest_real_open_only_after_old_worker_completion() {
+        let (root_a, attempts_a) = recovery_workspace(1);
+        let (root_b, attempts_b) = recovery_workspace(1);
+        let state = reopened_recovery_state(&root_a);
+        let backend = crate::Backend { state: Arc::clone(&state) };
+        let ready_a = state.ws.lifecycle_core().snapshot().expect("A Ready");
+        let (capture_tx, capture_rx) = mpsc::channel();
+        let (capture_release_tx, capture_release_rx) = mpsc::channel();
+        let (tail_tx, tail_rx) = mpsc::channel();
+        let (tail_release_tx, tail_release_rx) = mpsc::channel();
+        *state.nir1_generation_recovery_worker_probe.lock().expect("A capture probe") =
+            Some((capture_tx, capture_release_rx));
+        *state.nir1_generation_recovery_completion_probe.lock().expect("A tail probe") =
+            Some((tail_tx, tail_release_rx));
+        assert!(start_generation_recovery_after_ready(Arc::clone(&state), ready_a.revision));
+        capture_rx.recv_timeout(Duration::from_secs(2)).expect("A worker before capture");
+        let (launch_tx, launch_rx) = mpsc::channel();
+        *state.nir1_generation_recovery_launch_probe.lock().expect("B launch probe") = Some(launch_tx);
+        let opened = backend.open_workspace(root_b.to_string_lossy().into_owned())
+            .await.expect("real B Open does not await A task");
+        let opened: Value = serde_json::from_str(&opened).expect("B Open JSON");
+        assert!(matches!(opened["status"].as_str(), Some("ready" | "migrated")));
+        let ready_b = state.ws.lifecycle_core().snapshot().expect("B Ready");
+        assert!(ready_b.revision > ready_a.revision);
+        assert!(launch_rx.try_recv().is_err(), "B cannot replace the live A worker");
+        capture_release_tx.send(()).expect("release stale A capture");
+        tail_rx.recv_timeout(Duration::from_secs(2)).expect("A before actual task completion");
+        assert!(!start_generation_recovery_after_ready(Arc::clone(&state), ready_b.revision));
+        let (b_capture_tx, b_capture_rx) = mpsc::channel();
+        let (b_release_tx, b_release_rx) = mpsc::channel();
+        *state.nir1_generation_recovery_worker_probe.lock().expect("B capture probe") =
+            Some((b_capture_tx, b_release_rx));
+        tail_release_tx.send(()).expect("allow A actual join");
+        let launch = launch_rx.recv_timeout(Duration::from_secs(2)).expect("coalesced B launch");
+        assert_eq!(launch.ready_revision, ready_b.revision);
+        assert!(matches!(ready_b.state, LifecycleState::Ready(ref binding) if binding == &launch.binding));
+        b_capture_rx.recv_timeout(Duration::from_secs(2)).expect("B actual worker");
+        assert!(!start_generation_recovery_after_ready(Arc::clone(&state), ready_b.revision));
+        b_release_tx.send(()).expect("release B capture");
+        tokio::time::timeout(Duration::from_secs(2), state.wait_workspace_operations())
+            .await.expect("B blocking task joined, not just status/zero counters");
+        let db_b = active_workspace_snapshot(&state.ws).expect("B workspace");
+        assert!(storage::read_terminal(db_b.db(), &attempts_b[0].id).expect("B recovered").is_some());
+        assert_eq!(recovery_hook_state(&state, &launch.binding), Some(GenerationRecoveryHookState::Complete));
+        let db_a = grimodex_db::Database::new(&root_a.join("grimodex.db")).expect("A DB");
+        assert!(storage::read_terminal(&db_a, &attempts_a[0].id).expect("no stale A recovery").is_none());
+        drop(db_b);
+        drop(db_a);
+        drop(backend);
+        drop(state);
+        std::fs::remove_dir_all(root_a).expect("A cleanup");
+        std::fs::remove_dir_all(root_b).expect("B cleanup");
+    }
+
     #[tokio::test]
     async fn detached_recovery_call_returns_before_worker_finishes() {
         let (started_tx, started_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::channel();
-        detach_generation_recovery(move || {
+        let worker = spawn_generation_recovery(move || {
             started_tx.send(()).expect("worker started");
             release_rx
                 .recv_timeout(Duration::from_secs(2))
@@ -3762,5 +3964,6 @@ mod tests {
         finished_rx
             .recv_timeout(Duration::from_secs(2))
             .expect("detached worker completed");
+        worker.await.expect("actual blocking worker join");
     }
 }

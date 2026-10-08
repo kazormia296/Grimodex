@@ -2606,6 +2606,9 @@ pub struct AppState {
     pub(crate) nir1_generation_recovery_worker_probe:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     #[cfg(test)]
+    pub(crate) nir1_generation_recovery_completion_probe:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    #[cfg(test)]
     pub(crate) nir1_generation_recovery_launch_probe:
         Mutex<Option<std::sync::mpsc::Sender<GenerationRecoveryLaunchObservation>>>,
     /// Lease-only baton for a retired maintenance authority. The SQLite
@@ -2655,6 +2658,11 @@ pub(crate) struct GenerationRecoveryLaunchObservation {
 
 #[derive(Default)]
 pub(crate) struct GenerationRecoveryHookLedger {
+    /// Reserved before spawn and released only by the blocking-task join owner.
+    /// Hook status, revision changes and zero participant counts are not joins.
+    pub(crate) worker_active: bool,
+    /// Latest admitted Ready callback deferred while the actual worker lives.
+    pub(crate) pending_ready_revision: Option<u64>,
     pub(crate) latest_ready_revision: u64,
     pub(crate) entry: Option<GenerationRecoveryHookEntry>,
 }
@@ -2768,6 +2776,8 @@ impl AppState {
             #[cfg(test)]
             nir1_generation_recovery_worker_probe: Mutex::new(None),
             #[cfg(test)]
+            nir1_generation_recovery_completion_probe: Mutex::new(None),
+            #[cfg(test)]
             nir1_generation_recovery_launch_probe: Mutex::new(None),
             narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_bindings: Mutex::new(HashMap::new()),
@@ -2809,7 +2819,12 @@ impl AppState {
             // guard can decrement to zero and notify between the read and
             // `notified()`, leaving shutdown asleep until its outer deadline.
             let notified = self.workspace_operation_notify.notified();
-            if self.workspace_operation_active.load(Ordering::Acquire) == 0 {
+            let recovery_active = self
+                .nir1_generation_recovery_statuses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .worker_active;
+            if self.workspace_operation_active.load(Ordering::Acquire) == 0 && !recovery_active {
                 return;
             }
             notified.await;
