@@ -495,22 +495,33 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
     "native_worker_returns_canonical_512_a3_eligible_seed_local_graph";
   const q513Test =
     "native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge";
+  // Practical invokes Q512 earlier on a different copy; check DEFAULT ordering.
+  const defaultWorkerScriptBody = workerScriptBody.match(
+    /^q2_fixture_checksum=[\s\S]*$/m,
+  )?.[0];
+  assert.ok(defaultWorkerScriptBody, "worker gate omits the default branch");
   for (const testName of [q512Test, q513Test]) {
     assert.ok(
-      workerScriptBody.includes(testName),
+      defaultWorkerScriptBody.includes(testName),
       `worker gate omits ${testName}`,
     );
   }
   assert.ok(
-    workerScriptBody.indexOf(
+    defaultWorkerScriptBody.includes(
       'NIR1_Q2_FIXTURE_PATH="$q512_worker_fixture_path"',
-    ) < workerScriptBody.indexOf(q512Test),
+    ) &&
+      defaultWorkerScriptBody.indexOf(
+        'NIR1_Q2_FIXTURE_PATH="$q512_worker_fixture_path"',
+      ) < defaultWorkerScriptBody.indexOf(q512Test),
     "Q512 Gold test must use its private copy of the canonical fixture",
   );
   assert.ok(
-    workerScriptBody.indexOf(
+    defaultWorkerScriptBody.includes(
       'NIR1_Q2_FIXTURE_PATH="$q513_worker_fixture_path"',
-    ) < workerScriptBody.indexOf(q513Test),
+    ) &&
+      defaultWorkerScriptBody.indexOf(
+        'NIR1_Q2_FIXTURE_PATH="$q513_worker_fixture_path"',
+      ) < defaultWorkerScriptBody.indexOf(q513Test),
     "Q513 test must use a separate disposable copy",
   );
   assert.ok(
