@@ -581,7 +581,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(admitted(nativeStatic), ["electron-native"]);
   assert.equal(native["runs-on"], "ubuntu-24.04");
   assert.equal(native["timeout-minutes"], 90);
-  assert.deepEqual(native.env, rust.env);
+  assert.deepEqual(native.env, {
+    CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0",
+  });
   const nativeSelection = native.steps[0];
   assert.equal(nativeSelection.name, "Validate standalone native selection");
   assert.equal(nativeSelection.if, "inputs.canonical_profile");
@@ -681,7 +683,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(admitted(crash), ["migration-recovery-gate"]);
   assert.equal(migration["runs-on"], "ubuntu-latest");
   assert.equal(migration["timeout-minutes"], 45);
-  assert.deepEqual(migration.env, rust.env);
+  assert.deepEqual(migration.env, {
+    CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0",
+  });
   const crashSelection = migration.steps[0];
   assert.equal(crashSelection.name, "Validate standalone migration selection");
   assert.equal(crashSelection.if, "inputs.canonical_profile");
