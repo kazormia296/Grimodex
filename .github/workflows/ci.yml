@@ -1248,6 +1248,13 @@ jobs:
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
+      # Unfiltered tests include credential-gated live bodies. Never activate
+      # providers through inherited keys; early-return OK is not qualification.
+      OPENAI_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      OPEN_ROUTER_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      SAKANA_API_KEY: ""
     steps:
       - name: Validate standalone shared Rust selection
         if: inputs.canonical_profile

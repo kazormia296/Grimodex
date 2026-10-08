@@ -19,6 +19,26 @@ async function readWorkflow(relativePath) {
   return yaml.load(source);
 }
 
+test("shared Rust masks inherited live-provider credentials without step overrides", async () => {
+  const ci = await readWorkflow(".github/workflows/ci.yml");
+  const rust = ci.jobs.rust;
+  const keys = ["OPENAI_API_KEY", "OPENROUTER_API_KEY", "OPEN_ROUTER_API_KEY", "ANTHROPIC_API_KEY", "SAKANA_API_KEY"];
+  for (const key of keys) {
+    assert.equal(rust.env[key], "", `${key} must be explicitly empty`);
+    for (const step of rust.steps) {
+      assert.equal(Object.hasOwn(step.env ?? {}, key), false, `${step.name}: ${key} override`);
+    }
+  }
+  for (const step of rust.steps) assert.doesNotMatch(step.run ?? "", /GITHUB_ENV/u);
+  // Synthetic nonempty inherited keys, including OpenRouter's alternate spelling.
+  // Only test emptiness; never print environment values or call a provider.
+  const inherited = Object.fromEntries(keys.map((key) => [key, "synthetic-not-a-credential"]));
+  await promisify(execFile)("bash", ["-c", 'set -euo pipefail; for key in OPENAI_API_KEY OPENROUTER_API_KEY OPEN_ROUTER_API_KEY ANTHROPIC_API_KEY SAKANA_API_KEY; do test -z "${!key}"; done'], {
+    timeout: 10000,
+    env: { ...process.env, ...inherited, ...ci.env, ...rust.env },
+  });
+});
+
 test("automatic hosted CI triggers are paused for the private source repo", async () => {
   const ci = await readWorkflow(".github/workflows/ci.yml");
 
@@ -401,7 +421,11 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(admitted(shared), ["rust"]);
   assert.equal(rust["runs-on"], "ubuntu-latest");
   assert.equal(rust["timeout-minutes"], 30);
-  assert.deepEqual(rust.env, { CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0" });
+  assert.deepEqual(rust.env, {
+    CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0",
+    OPENAI_API_KEY: "", OPENROUTER_API_KEY: "", OPEN_ROUTER_API_KEY: "",
+    ANTHROPIC_API_KEY: "", SAKANA_API_KEY: "",
+  });
   const sharedSelection = rust.steps[0];
   assert.equal(sharedSelection.name, "Validate standalone shared Rust selection");
   assert.equal(sharedSelection.if, "inputs.canonical_profile");

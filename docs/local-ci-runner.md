@@ -309,8 +309,16 @@ Keep product mode `all`, all booleans false, and candidate tuple/options empty.
 The job's first literal shell guard rejects mixed inputs and nonliteral case
 before checkout/setup. Other malformed profiles still go to the canonical
 owner for rejection. Default/reusable CI, the ten-job independent selection,
-all six Cargo invocations, features, dependencies, environment, cache and
-30-minute timeout are unchanged. Source proof uses the existing canonical
+all six Cargo invocations, features, dependencies, build-profile environment,
+cache and 30-minute timeout are unchanged. The shared Rust job explicitly empties
+`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `OPEN_ROUTER_API_KEY`,
+`ANTHROPIC_API_KEY` and `SAKANA_API_KEY`, overriding inherited credentials for
+both standalone and default/reusable callers. The unfiltered suite includes
+16 credential-gated live-provider bodies; their no-key early-return libtest OK
+is **not** live-provider qualification. Model-dependent early returns likewise
+prove no model/performance qualification. Credentialed maintainer-local
+qualification remains separate. No provider credentials are read or logged by
+CI admission. Source proof uses the existing canonical
 `contracts` route, including affected selection and adversarial shell contracts.
 Neither the selector nor source proof attests consumer safety, actual-runner
 resources or a Rust pass: reviewed current consumers/prerequisites and applicable
