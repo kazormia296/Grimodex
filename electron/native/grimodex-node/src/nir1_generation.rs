@@ -3825,14 +3825,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn recovery_join_slot_survives_restore_reentry_and_shutdown_with_zero_counters() {
         let (root, attempts) = recovery_workspace(1);
-        let state = reopened_recovery_state(&root);
+        let state = Arc::new(
+            AppState::new(
+                root.join("native-app").to_str().expect("app path"),
+                root.join("resources").to_str().expect("resources path"),
+            )
+            .expect("native state"),
+        );
         let backend = crate::Backend {
             state: Arc::clone(&state),
-        };
-        let ready = state.ws.lifecycle_core().snapshot().expect("Ready");
-        let binding = match ready.state {
-            LifecycleState::Ready(binding) => binding,
-            state => panic!("expected Ready, got {state:?}"),
         };
         let (capture_tx, capture_rx) = mpsc::channel();
         let (capture_release_tx, capture_release_rx) = mpsc::channel();
@@ -3842,8 +3843,18 @@ mod tests {
             Some((capture_tx, capture_release_rx));
         *state.nir1_generation_recovery_completion_probe.lock().expect("tail probe") =
             Some((tail_tx, tail_release_rx));
-        assert!(start_generation_recovery_after_ready(Arc::clone(&state), ready.revision));
+        // Real Open supplies the main-DB identity required for unchanged Restore.
+        let opened = backend.open_workspace(root.to_string_lossy().into_owned())
+            .await.expect("real Open succeeds");
+        let opened: Value = serde_json::from_str(&opened).expect("Open JSON");
+        assert!(matches!(opened["status"].as_str(), Some("ready" | "migrated")));
         capture_rx.recv_timeout(Duration::from_secs(2)).expect("pre-capture worker");
+        assert!(state.nir1_generation_recovery_statuses.lock().expect("ledger").worker_active);
+        let ready = state.ws.lifecycle_core().snapshot().expect("Ready");
+        let binding = match ready.state {
+            LifecycleState::Ready(binding) => binding,
+            state => panic!("expected Ready, got {state:?}"),
+        };
 
         let restored = backend.restore_backup("grimodex-missing-backup.db".into())
             .await.expect("strict failed Restore outcome");
