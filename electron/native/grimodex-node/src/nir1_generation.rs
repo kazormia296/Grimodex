@@ -3533,6 +3533,9 @@ mod tests {
         );
         assert!(state.ws.open_lock.try_lock().is_ok());
         assert_eq!(state.workspace_operation_active.load(Ordering::Acquire), 0);
+        tokio::time::timeout(Duration::from_secs(2), state.wait_workspace_operations())
+            .await
+            .expect("recovery worker joined before fixture cleanup");
         drop(backend);
         drop(state);
         std::fs::remove_dir_all(root).expect("cleanup");
