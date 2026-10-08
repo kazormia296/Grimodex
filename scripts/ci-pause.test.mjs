@@ -281,7 +281,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
       : id === "nir1-c-query-worker"
-        ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || (${ordinaryCondition}) }}`
+        ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
         : id === "migration-recovery-gate"
@@ -351,7 +351,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'c-query-startup-refusal' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -431,7 +431,8 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     } });
   };
   const cancellationOnly = { ...defaults, canonical_profile: "c-query-cancellation" };
-  for (const standalone of [workerOnly, cancellationOnly]) {
+  const startupOnly = { ...defaults, canonical_profile: "c-query-startup-refusal" };
+  for (const standalone of [workerOnly, cancellationOnly, startupOnly]) {
     await validateWorkers(standalone);
     await validateWorkers({ ...standalone, source_focused: "" });
     for (const inputs of [
@@ -447,11 +448,12 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     for (const profile of [
       `${standalone.canonical_profile} `, ` ${standalone.canonical_profile}`,
       `${standalone.canonical_profile}$(exit 0)`, `${standalone.canonical_profile}-unknown`,
-      ...["native-release-tests", "shared-rust", standalone === workerOnly ? "c-query-cancellation" : "c-query-workers"].flatMap((other) =>
+      ...["native-release-tests", "shared-rust", ...[workerOnly, cancellationOnly, startupOnly]
+        .filter((other) => other !== standalone).map((other) => other.canonical_profile)].flatMap((other) =>
         [`${standalone.canonical_profile},${other}`, `${other},${standalone.canonical_profile}`]),
     ]) assert.deepEqual(admitted({ ...standalone, canonical_profile: profile }), ["canonical"]);
   }
-  assert.equal(workers.steps.length, 6);
+  assert.equal(workers.steps.length, 7);
   assert.deepEqual(workers.steps.slice(2, 4).map((step) => step.uses), [
     "dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8",
     "Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae",
@@ -464,6 +466,11 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh caller-cancellation",
   });
   assert.deepEqual(workers.steps[5], {
+    name: "Build private Q2 fixture and run startup-registration-refusal worker test",
+    if: "inputs.canonical_profile == 'c-query-startup-refusal'",
+    shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh startup-registration-refusal",
+  });
+  assert.deepEqual(workers.steps[6], {
     name: "Build private Q2/Q512 fixtures and run focused real-worker tests",
     if: "!inputs.canonical_profile || inputs.canonical_profile == 'c-query-workers'",
     shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh",
@@ -474,8 +481,10 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     assert.deepEqual(workerCommands(inputs), ["bash scripts/nir1-c-query-worker-ci.sh"]);
   }
   assert.deepEqual(workerCommands(cancellationOnly), ["bash scripts/nir1-c-query-worker-ci.sh caller-cancellation"]);
+  assert.deepEqual(workerCommands(startupOnly), ["bash scripts/nir1-c-query-worker-ci.sh startup-registration-refusal"]);
   const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
   assert.equal(Object.hasOwn(registry.profiles, "c-query-cancellation"), false);
+  assert.equal(Object.hasOwn(registry.profiles, "c-query-startup-refusal"), false);
   assert.deepEqual(registry.stages.rust.commands.find(({ id }) => id === "rust.c-query-worker").args, ["scripts/nir1-c-query-worker-ci.sh"]);
   for (const step of workers.steps) assert.equal(step["continue-on-error"], undefined);
   const validateShared = (inputs, event = "workflow_dispatch") => {
@@ -731,7 +740,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   ]) await assert.rejects(validate(inputs));
 });
 
-test("C-query caller-cancellation script fails closed and preserves the original default commands", async () => {
+test("C-query opt-in scripts fail closed and preserve the original default commands", async () => {
   const source = await readFile(path.join(repoRoot, "scripts/nir1-c-query-worker-ci.sh"), "utf8");
   assert.ok(source.indexOf('exit 2') < source.indexOf('repo_root='));
   const originalCases = [
@@ -748,8 +757,9 @@ test("C-query caller-cancellation script fails closed and preserves the original
     "q_s_origins_no_fallback_failed_realloc_and_zero_live_seal",
   ];
   const cancellation = "native_worker_cancels_after_request_admission_and_retires_before_reloan";
+  const startup = "native_worker_reports_canonical_registration_refusal_before_ready";
   const tests = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs"), "utf8");
-  assert.match(tests, new RegExp(`fn ${cancellation}\\(\\)`));
+  for (const name of [cancellation, startup]) assert.match(tests, new RegExp(`fn ${name}\\(\\)`));
   const temporary = await mkdtemp(path.join(tmpdir(), "c-query-script-contract-"));
   const bin = path.join(temporary, "bin");
   const fixtureRoot = path.join(temporary, "fixtures");
@@ -784,7 +794,7 @@ else if (args[0] === 'run') {
   fs.mkdirSync('src-tauri/target/release', { recursive: true });
   fs.writeFileSync('src-tauri/target/release/nir1-c-query-worker' + (process.env.MOCK_WINDOWS === '1' ? '.exe' : ''), 'not an executable');
 } else if (args[0] === 'test') {
-  if (args.includes('${cancellation}')) {
+  if (args.includes('${cancellation}') || args.includes('${startup}')) {
     const file = process.env.NIR1_Q2_FIXTURE_PATH;
     if (!file?.endsWith('q2-worker-input.db') || !fs.existsSync(process.env.NIR1_C_QUERY_WORKER_BIN)) process.exit(8);
     if (process.env.FAIL_PHASE === 'test') process.exit(9);
@@ -802,33 +812,41 @@ else if (args[0] === 'run') {
       RUNNER_TEMP: fixtureRoot, RUNNER_OS: "Linux", MOCK_WINDOWS: "0", FAIL_PHASE: "", DENY_CONSUMER: "0", ...overrides,
     } });
     const recorded = async () => (await readFile(calls, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
-    for (const args of [[""], ["CALLER-CANCELLATION"], ["caller-cancellation "], ["--help"], ["$(touch injected)"], ["caller-cancellation", ""], ["caller-cancellation", "caller-cancellation"]]) {
+    for (const args of [[""], ["--help"], ["$(touch injected)"],
+      ...["caller-cancellation", "startup-registration-refusal"].flatMap((arg) => [
+        [arg.toUpperCase()], [`${arg} `], [` ${arg}`], [`${arg}$(touch injected)`],
+        [`${arg}-unknown`], [arg, ""], [arg, arg],
+      ]), ["caller-cancellation", "startup-registration-refusal"], ["startup-registration-refusal", "caller-cancellation"],
+      ["caller-cancellation,startup-registration-refusal"], ["startup-registration-refusal,caller-cancellation"],
+    ]) {
       await assert.rejects(shell(args, { DENY_CONSUMER: "1" }), (error) => error.code === 2);
       await assert.rejects(access(calls));
       assert.deepEqual(await readdir(fixtureRoot), []);
     }
     for (const windows of [false, true]) {
       const platform = { MOCK_WINDOWS: windows ? "1" : "0", RUNNER_OS: windows ? "Windows" : "Linux" };
-      for (const args of [[], ["caller-cancellation"]]) {
+      for (const args of [[], ["caller-cancellation"], ["startup-registration-refusal"]]) {
         await writeFile(calls, "");
         await shell(args, platform);
         const commands = (await recorded()).filter(({ command }) => command === "cargo").map(({ args }) => args);
         assert.ok(commands.every((args) => ["--locked", "--release", "--manifest-path"].every((flag) => args.includes(flag))));
         assert.ok(commands.every((args) => args[args.indexOf("--manifest-path") + 1] === "src-tauri/Cargo.toml"));
         const selectedCases = commands.filter((args) => args[0] === "test").map((args) => args[args.indexOf("--") - 1]);
-        assert.deepEqual(selectedCases, args.length ? [cancellation] : originalCases);
+        assert.deepEqual(selectedCases, args.length ? [args[0] === "caller-cancellation" ? cancellation : startup] : originalCases);
         assert.deepEqual(commands.filter((args) => args[0] === "run").map((args) => args.at(-2)), args.length ? ["Q2/R1/D0-local"] : ["Q2/R1/D0-local", "Q512/R2/A3-eligible-shared"]);
-        assert.deepEqual(commands.filter((args) => args[0] === "build").map((args) => args.includes("--features") ? args[args.indexOf("--features") + 1] : "default"), args.length ? ["nir1-c-query-test-seam"] : ["default", "nir1-c-query-test-seam"]);
+        assert.deepEqual(commands.filter((args) => args[0] === "build").map((args) => args.includes("--features") ? args[args.indexOf("--features") + 1] : "default"), args.length ? [args[0] === "caller-cancellation" ? "nir1-c-query-test-seam" : "default"] : ["default", "nir1-c-query-test-seam"]);
         if (args.length) assert.deepEqual(commands.at(-1).slice(-4), ["--", "--ignored", "--nocapture", "--test-threads=1"]);
         assert.deepEqual(await readdir(fixtureRoot), [], "owned trap must remove only its private fixture directory");
       }
     }
-    for (const phase of ["report", "build", "test", "input", "source", "sidecar"]) {
-      await writeFile(calls, "");
-      await assert.rejects(shell(["caller-cancellation"], { FAIL_PHASE: phase }));
-      const commands = (await recorded()).filter(({ command }) => command === "cargo").map(({ args }) => args);
-      assert.deepEqual(commands.map((args) => args[0]), phase === "report" ? ["run"] : phase === "build" ? ["run", "build"] : ["run", "build", "test"]);
-      assert.deepEqual(await readdir(fixtureRoot), []);
+    for (const arg of ["caller-cancellation", "startup-registration-refusal"]) {
+      for (const phase of ["report", "build", "test", "input", "source", "sidecar"]) {
+        await writeFile(calls, "");
+        await assert.rejects(shell([arg], { FAIL_PHASE: phase }));
+        const commands = (await recorded()).filter(({ command }) => command === "cargo").map(({ args }) => args);
+        assert.deepEqual(commands.map((args) => args[0]), phase === "report" ? ["run"] : phase === "build" ? ["run", "build"] : ["run", "build", "test"]);
+        assert.deepEqual(await readdir(fixtureRoot), []);
+      }
     }
     await assert.rejects(access(path.join(temporary, "injected")));
   } finally {

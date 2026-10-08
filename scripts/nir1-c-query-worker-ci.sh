@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation ) ]]; then
-  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation]\n' >&2
+if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal ) ]]; then
+  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal]\n' >&2
   exit 2
 fi
 
@@ -102,21 +102,32 @@ grep -Fq '"shmBytes": 0' "$fixture_dir/q2-fixture-report.json"
 grep -Fq '"reopenedReadOnly": true' "$fixture_dir/q2-fixture-report.json"
 assert_closed_fixture "$q2_fixture_file"
 
-# This opt-in lane never replays Q512 or the original eleven cases.
-if [[ "${1:-}" == caller-cancellation ]]; then
+# These opt-in lanes never replay Q512 or the original eleven cases.
+if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusal ]]; then
   q2_fixture_checksum="$(cksum < "$q2_fixture_file")"
   cp -- "$q2_fixture_file" "$q2_test_fixture_file"
   test "$(cksum < "$q2_test_fixture_file")" = "$q2_fixture_checksum"
   assert_closed_fixture "$q2_test_fixture_file"
 
-  cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
-    -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
-  test -f "$worker_file"
-  NIR1_Q2_FIXTURE_PATH="$q2_worker_fixture_path" \
-  NIR1_C_QUERY_WORKER_BIN="$worker_path" \
-    cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
-      -p grimodex-db --lib native_worker_cancels_after_request_admission_and_retires_before_reloan \
-      -- --ignored --nocapture --test-threads=1
+  if [[ "${1:-}" == caller-cancellation ]]; then
+    cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+      -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
+    test -f "$worker_file"
+    NIR1_Q2_FIXTURE_PATH="$q2_worker_fixture_path" \
+    NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+      cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+        -p grimodex-db --lib native_worker_cancels_after_request_admission_and_retires_before_reloan \
+        -- --ignored --nocapture --test-threads=1
+  else
+    cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+      -p grimodex-db --bin nir1-c-query-worker
+    test -f "$worker_file"
+    NIR1_Q2_FIXTURE_PATH="$q2_worker_fixture_path" \
+    NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+      cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+        -p grimodex-db --lib native_worker_reports_canonical_registration_refusal_before_ready \
+        -- --ignored --nocapture --test-threads=1
+  fi
 
   test "$(cksum < "$q2_test_fixture_file")" = "$q2_fixture_checksum"
   assert_closed_fixture "$q2_test_fixture_file"

@@ -116,7 +116,7 @@ For a separately reviewed caller-cancellation lane, `canonical_profile=c-query-c
 selects that **same three-OS matrix**, but runs only
 `bash scripts/nir1-c-query-worker-ci.sh caller-cancellation`. Keep product mode
 `all`, all booleans false and canonical tuple/options empty; the same first
-literal guard accepts only the two exact worker profiles and rejects mixed or
+literal guard accepts only the three exact worker profiles and rejects mixed or
 wrong-event inputs before checkout/setup. Malformed/unknown profiles still reach
 canonical rejection. No new input, job, registry profile or arbitrary test filter
 is introduced; default/reusable/independent and `c-query-workers` commands remain
@@ -141,6 +141,33 @@ unique owner and durable possible-start. Merely exposing this profile does not
 authorize dispatch, replay successful cases, renew diagnostics or waive B/Full,
 final acceptance or canonical gates. Actual cancellation outcomes on each OS
 remain distinct from source contracts and from previous original-matrix results.
+
+For a separately reviewed startup-registration-refusal lane,
+`canonical_profile=c-query-startup-refusal` selects that same three-OS matrix,
+but runs only `bash scripts/nir1-c-query-worker-ci.sh startup-registration-refusal`.
+The same literal guard rejects mixed/case-variant/wrong-event inputs before
+checkout/setup; malformed profiles reach canonical rejection. Use product mode
+`all`, false booleans and empty canonical tuple/options. No new input, job,
+registry profile or arbitrary test filter is added; both existing standalone
+selections and default/reusable/independent commands remain unchanged.
+
+The exact optional argument shares the original Q2-only closed fixture, disposable
+copy, checksum/sidecar assertions and owned cleanup trap, exiting before Q512 or
+the original eleven cases. It builds the worker with **default features**, then
+runs only the existing ignored
+`native_worker_reports_canonical_registration_refusal_before_ready` test. That
+case supplies an unregistered project to the real Native owner, requires the
+fixed canonical-registration refusal before READY, and proves actual exit,
+necessary EOF and successful reader join before claim reloan and participant
+release. It admits no query and returns no successful frame or lease, so it is
+not Gold, admission-to-lease timing or universal lifecycle acceptance.
+
+Source review, reviewed checkpoint and affected hosted contracts must precede
+any separately admitted runtime purpose with fresh exact candidate/inputs,
+unique ownership and durable possible-start. Prepared script mocks are routing
+contracts only, not Rust/SQLite/Native Windows evidence. Exposing the selection
+does not authorize dispatch, replay either successful lane, renew diagnostics
+or waive B/Full, final acceptance or canonical gates.
 
 For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
 selects **only the complete existing `rust` job**. This reuses the registered
