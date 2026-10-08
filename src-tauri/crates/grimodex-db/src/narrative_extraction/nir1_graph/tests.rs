@@ -1181,14 +1181,20 @@ struct CanonicalGoldBinding {
     reveal_state_token: String,
 }
 
-fn q2_canonical_gold_binding(
+// These fixtures have one Codex source per Entity plus Scope authority, no
+// Relations, POV, phases or foreshadows. Derive tokens from their saved inputs
+// and canonical DB rows, never from the production A3 disclosure result.
+fn fixture_canonical_gold_binding(
     authority: &crate::state::WorkspaceAuthority,
     project: &str,
     query_scene: &str,
-    entity: &grimodex_core::narrative_nir1::EntityInput,
+    entities: &[grimodex_core::narrative_nir1::EntityInput],
     revision_id: &str,
     proposal_id: &str,
 ) -> Result<CanonicalGoldBinding> {
+    let entity = entities
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("canonical Gold fixture has no Entities"))?;
     authority.with_read_transaction(|conn| {
         let mut statement = conn.prepare(
             "SELECT id, decision, decision_json, created_at, created_by,
@@ -1214,11 +1220,11 @@ fn q2_canonical_gold_binding(
             .collect::<rusqlite::Result<Vec<_>>>()?;
         ensure!(
             decisions.len() == 1 && decisions[0]["decision"] == "approved",
-            "Q2 canonical Gold requires its one approved Human Decision"
+            "canonical Gold requires its one approved Human Decision"
         );
         let decision_id = decisions[0]["id"]
             .as_str()
-            .ok_or_else(|| anyhow::anyhow!("Q2 canonical Decision ID missing"))?
+            .ok_or_else(|| anyhow::anyhow!("canonical Gold Decision ID missing"))?
             .to_owned();
         let decision_token =
             grimodex_core::canonical_json::canonical_json_digest(&serde_json::json!({
@@ -1256,7 +1262,7 @@ fn q2_canonical_gold_binding(
                 project,
                 revision_id,
                 crate::narrative_extraction::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID,
-                2_i64,
+                i64::try_from(entities.len() + 1)?,
             ],
             |row| row.get(0),
         )?;
@@ -1290,28 +1296,46 @@ fn q2_canonical_gold_binding(
         )?;
         ensure!(
             phase_resolution_mode == "auto" && query_viewpoint.is_none(),
-            "Q2 canonical Gold fixture phase mode or viewpoint changed"
+            "canonical Gold fixture phase mode or viewpoint changed"
         );
-        let (base_context_mode, phase_count): (String, i64) = conn.query_row(
-            "SELECT entry.context_mode, COUNT(phase.id)
-               FROM codex_entries entry
-               LEFT JOIN codex_entry_phases phase ON phase.entry_id=entry.id
-              WHERE entry.project_id=?1 AND entry.id=?2
-              GROUP BY entry.context_mode",
-            rusqlite::params![project, entity.entity_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        let foreshadow_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM foreshadow_codex_links link
-               JOIN foreshadows foreshadow ON foreshadow.id=link.foreshadow_id
-              WHERE link.codex_entry_id=?1 AND foreshadow.project_id=?2",
-            rusqlite::params![entity.entity_id, project],
-            |row| row.get(0),
-        )?;
-        ensure!(
-            base_context_mode == "mentioned" && phase_count == 0 && foreshadow_count == 0,
-            "Q2 canonical Gold fixture phase or reveal inputs changed"
-        );
+        let mut phase_state = Vec::with_capacity(entities.len());
+        let mut reveal_entities = Vec::with_capacity(entities.len());
+        for fixture_entity in entities {
+            ensure!(
+                fixture_entity.scope.authority_revision == entity.scope.authority_revision,
+                "canonical Gold fixture mixes Scope authority revisions"
+            );
+            let (base_context_mode, phase_count): (String, i64) = conn.query_row(
+                "SELECT entry.context_mode, COUNT(phase.id)
+                   FROM codex_entries entry
+                   LEFT JOIN codex_entry_phases phase ON phase.entry_id=entry.id
+                  WHERE entry.project_id=?1 AND entry.id=?2
+                  GROUP BY entry.context_mode",
+                rusqlite::params![project, fixture_entity.entity_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let foreshadow_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM foreshadow_codex_links link
+                   JOIN foreshadows foreshadow ON foreshadow.id=link.foreshadow_id
+                  WHERE link.codex_entry_id=?1 AND foreshadow.project_id=?2",
+                rusqlite::params![fixture_entity.entity_id, project],
+                |row| row.get(0),
+            )?;
+            ensure!(
+                base_context_mode == "mentioned" && phase_count == 0 && foreshadow_count == 0,
+                "canonical Gold fixture phase or reveal inputs changed"
+            );
+            phase_state.push(serde_json::json!({
+                "entityId": fixture_entity.entity_id,
+                "baseContextMode": base_context_mode,
+                "phases": [],
+                "applicablePhaseIds": [],
+                "effectiveContextMode": "mentioned",
+            }));
+            reveal_entities.push(serde_json::json!({
+                "entityId": fixture_entity.entity_id, "foreshadows": [],
+            }));
+        }
         let reveal_state = serde_json::json!({
             "projectId": project,
             "querySceneId": query_scene,
@@ -1319,14 +1343,8 @@ fn q2_canonical_gold_binding(
             "effectiveAxis": "reading",
             "scopeAuthorityRevision": entity.scope.authority_revision,
             "queryViewpoint": query_viewpoint,
-            "phaseState": [{
-                "entityId": entity.entity_id,
-                "baseContextMode": base_context_mode,
-                "phases": [],
-                "applicablePhaseIds": [],
-                "effectiveContextMode": "mentioned",
-            }],
-            "entities": [{ "entityId": entity.entity_id, "foreshadows": [] }],
+            "phaseState": phase_state,
+            "entities": reveal_entities,
         });
         let reveal_state_token =
             grimodex_core::canonical_json::canonical_json_digest(&reveal_state)?;
@@ -1715,11 +1733,11 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         Ok(published)
     })?;
     let canonical_gold_frame = if scenario == Q2WorkerScenario::NativeOwner {
-        let binding = q2_canonical_gold_binding(
+        let binding = fixture_canonical_gold_binding(
             &authority,
             PROJECT,
             QUERY_SCENE,
-            &canonical_gold_entity,
+            std::slice::from_ref(&canonical_gold_entity),
             &revision,
             proposal_id,
         )?;
@@ -3949,15 +3967,38 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     let disclosure = authority.with_read_transaction(|conn| {
         evaluate_nir1_entity_relation_disclosure(conn, PROJECT, revision_id, QUERY_SCENE)
     })?;
-    let Nir1EntityRelationDisclosureRead::Eligible(proof) = disclosure else {
-        anyhow::bail!("Q512 Revision {revision_id} is not A3 eligible: {disclosure:?}");
-    };
-    let decision_id = proof
-        .revision
-        .decision
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("A3-eligible {} lacks its Human Decision", case.label))?
-        .id();
+    ensure!(
+        matches!(disclosure, Nir1EntityRelationDisclosureRead::Eligible(_)),
+        "Q512 Revision {revision_id} is not A3 eligible: {disclosure:?}"
+    );
+    let (proposal_id, canonical_gold_bundle) = authority.with_read_transaction(|conn| {
+        let (proposal_id, payload): (String, String) = conn.query_row(
+            "SELECT proposal_id, payload_json FROM narrative_proposal_revisions WHERE id=?1",
+            [revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let payload: serde_json::Value = serde_json::from_str(&payload)?;
+        ensure!(
+            payload["revisionId"] == revision_id.as_str() && payload["projectId"] == PROJECT,
+            "Q512 canonical Gold immutable Revision identity changed"
+        );
+        let bundle: grimodex_core::narrative_nir1::EntityRelationBundle =
+            serde_json::from_value(payload["bundle"].clone())?;
+        ensure!(
+            bundle.entities.len() == case.entity_count && bundle.relations.is_empty(),
+            "Q512 canonical Gold source shape changed"
+        );
+        Ok((proposal_id, bundle))
+    })?;
+    let canonical_binding = fixture_canonical_gold_binding(
+        &authority,
+        PROJECT,
+        QUERY_SCENE,
+        &canonical_gold_bundle.entities,
+        revision_id,
+        &proposal_id,
+    )?;
+    let decision_id = canonical_binding.decision_id.as_str();
 
     let runtime = authority.nir_chronicle_index_runtime();
     let snapshot = with_narrative_maintenance_graph_control(
@@ -3998,37 +4039,17 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             case.native_runs == 1 && !case.add_unrelated_seed_edge,
             "Q512 Gold applies only to the official single-run positive case"
         );
-        ensure!(
-            proof.revision.revision_id == revision_id.as_str()
-                && proof.query_scene_id == QUERY_SCENE
-                && proof.revision.bundle.entities.len() == case.entity_count
-                && proof.revision.bundle.relations.is_empty(),
-            "Q512 canonical Gold source shape changed"
-        );
-        let entity = proof
-            .revision
-            .bundle
+        let entity = canonical_gold_bundle
             .entities
             .iter()
             .find(|entity| entity.entity_id == SEED)
             .ok_or_else(|| anyhow::anyhow!("Q512 canonical Gold seed Entity missing"))?;
-        let binding = CanonicalGoldBinding {
-            revision_id: proof.revision.revision_id.clone(),
-            decision_id: decision_id.to_owned(),
-            decision_token: proof.decision_token.clone(),
-            freshness_token: proof.freshness_token.clone(),
-            scope_authority_revision: proof.scope_authority_revision.clone(),
-            query_scene_source_token: proof.query_scene_source_token.clone(),
-            query_scene_scope_token: proof.query_scene_scope_token.clone(),
-            query_scene_incarnation_id: proof.query_scene_incarnation_id.clone(),
-            reveal_state_token: proof.reveal_state_token.clone(),
-        };
         Some(canonical_single_node_gold_frame(
             PROJECT,
             QUERY_SCENE,
             entity,
             published.generation,
-            &binding,
+            &canonical_binding,
         )?)
     } else {
         None
