@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal && "${1:-}" != trailing-data ) ]]; then
-  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal|trailing-data]\n' >&2
+if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal && "${1:-}" != trailing-data && "${1:-}" != partial-terminal-marker ) ]]; then
+  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal|trailing-data|partial-terminal-marker]\n' >&2
   exit 2
 fi
 
@@ -103,7 +103,7 @@ grep -Fq '"reopenedReadOnly": true' "$fixture_dir/q2-fixture-report.json"
 assert_closed_fixture "$q2_fixture_file"
 
 # These opt-in lanes never replay Q512 or the original eleven cases.
-if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusal || "${1:-}" == trailing-data ]]; then
+if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusal || "${1:-}" == trailing-data || "${1:-}" == partial-terminal-marker ]]; then
   q2_fixture_checksum="$(cksum < "$q2_fixture_file")"
   cp -- "$q2_fixture_file" "$q2_test_fixture_file"
   test "$(cksum < "$q2_test_fixture_file")" = "$q2_fixture_checksum"
@@ -126,6 +126,15 @@ if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusa
     NIR1_C_QUERY_WORKER_BIN="$worker_path" \
       cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
         -p grimodex-db --lib native_worker_rejects_committed_q2_frame_with_trailing_data \
+        -- --ignored --nocapture --test-threads=1
+  elif [[ "${1:-}" == partial-terminal-marker ]]; then
+    cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+      -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
+    test -f "$worker_file"
+    NIR1_Q2_FIXTURE_PATH="$q2_worker_fixture_path" \
+    NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+      cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+        -p grimodex-db --lib native_worker_rejects_complete_q2_frame_with_partial_terminal_marker \
         -- --ignored --nocapture --test-threads=1
   else
     cargo build --locked --release --manifest-path src-tauri/Cargo.toml \

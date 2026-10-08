@@ -116,7 +116,7 @@ For a separately reviewed caller-cancellation lane, `canonical_profile=c-query-c
 selects that **same three-OS matrix**, but runs only
 `bash scripts/nir1-c-query-worker-ci.sh caller-cancellation`. Keep product mode
 `all`, all booleans false and canonical tuple/options empty; the same first
-literal guard accepts only the four exact worker profiles and rejects mixed or
+literal guard accepts only the five exact worker profiles and rejects mixed or
 wrong-event inputs before checkout/setup. Malformed/unknown profiles still reach
 canonical rejection. No new input, job, registry profile or arbitrary test filter
 is introduced; default/reusable/independent and `c-query-workers` commands remain
@@ -194,6 +194,38 @@ Source review, reviewed checkpoint and affected hosted contracts plus results
 review precede a separately admitted runtime purpose with fresh exact candidate,
 TEN inputs, unique ownership and durable possible-start. Script mocks verify
 routing only, not Rust/SQLite/Native Windows acceptance. Exposing this selection
+does not authorize dispatch, replay successful lanes, renew diagnostics or waive
+B/Full, final acceptance or canonical gates.
+
+For a separately reviewed partial-terminal-marker lane,
+`canonical_profile=c-query-partial-terminal` selects the same three-OS matrix
+and only `bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker`.
+Keep product mode `all`, false booleans and empty canonical tuple/options. The
+literal guard rejects mixed/case-variant/wrong-event inputs before checkout/setup;
+malformed profiles reach canonical rejection and wrong/extra script arguments
+reject before files/build. TEN inputs, all existing selections and commands,
+default/reusable/independent behavior, registry, pinned setup/cache,
+`fail-fast: false` and 45-minute limit remain unchanged.
+
+The Q2-only branch reuses the original closed synthetic fixture, disposable copy,
+checksum/sidecar assertions and owned cleanup trap, exiting before Q512 and the
+original eleven cases. It builds the existing seam-enabled worker and runs only
+`native_worker_rejects_complete_q2_frame_with_partial_terminal_marker`. The real
+worker performs same-connection canonical registration and nonempty Q2 work,
+sends a complete request-bound frame, then only the first two terminal-success
+marker bytes and exits. Native must observe that available bound frame while
+holding the claim and refuse specifically for a truncated pipe without a lease.
+Actual exit, necessary EOF, writer completion **if started**, and all successful
+reader joins must precede claim reloan, owner drop and participant release;
+unproved cleanup quarantines rather than stacking another worker. This is
+specific partial-terminal rejection/retirement evidence, not Gold, a 100 ms
+successful lease, universal lifecycle or Windows stalled-request-writing proof.
+
+Independent source review precedes a reviewed checkpoint and affected hosted
+contracts plus complete results review; runtime still requires separate fresh
+exact candidate/TEN-input admission, exhaustive scoped availability, unique owner
+and durable possible-start before ONE three-OS dispatch. Script mocks are routing
+contracts, not Rust/SQLite/Native Windows acceptance. Exposing this selection
 does not authorize dispatch, replay successful lanes, renew diagnostics or waive
 B/Full, final acceptance or canonical gates.
 

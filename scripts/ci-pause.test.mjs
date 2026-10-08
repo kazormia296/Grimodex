@@ -281,7 +281,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
       : id === "nir1-c-query-worker"
-        ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || (${ordinaryCondition}) }}`
+        ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
         : id === "migration-recovery-gate"
@@ -351,7 +351,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'c-query-startup-refusal' && inputs.canonical_profile != 'c-query-trailing-data' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'c-query-startup-refusal' && inputs.canonical_profile != 'c-query-trailing-data' && inputs.canonical_profile != 'c-query-partial-terminal' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -433,7 +433,8 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const cancellationOnly = { ...defaults, canonical_profile: "c-query-cancellation" };
   const startupOnly = { ...defaults, canonical_profile: "c-query-startup-refusal" };
   const trailingOnly = { ...defaults, canonical_profile: "c-query-trailing-data" };
-  const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly];
+  const partialTerminalOnly = { ...defaults, canonical_profile: "c-query-partial-terminal" };
+  const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly];
   for (const standalone of workerProfiles) {
     await validateWorkers(standalone);
     await validateWorkers({ ...standalone, source_focused: "" });
@@ -455,7 +456,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
         [`${standalone.canonical_profile},${other}`, `${other},${standalone.canonical_profile}`]),
     ]) assert.deepEqual(admitted({ ...standalone, canonical_profile: profile }), ["canonical"]);
   }
-  assert.equal(workers.steps.length, 8);
+  assert.equal(workers.steps.length, 9);
   assert.deepEqual(workers.steps.slice(2, 4).map((step) => step.uses), [
     "dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8",
     "Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae",
@@ -478,6 +479,11 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh trailing-data",
   });
   assert.deepEqual(workers.steps[7], {
+    name: "Build private Q2 fixture and run partial-terminal-marker worker test",
+    if: "inputs.canonical_profile == 'c-query-partial-terminal'",
+    shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker",
+  });
+  assert.deepEqual(workers.steps[8], {
     name: "Build private Q2/Q512 fixtures and run focused real-worker tests",
     if: "!inputs.canonical_profile || inputs.canonical_profile == 'c-query-workers'",
     shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh",
@@ -490,10 +496,12 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(workerCommands(cancellationOnly), ["bash scripts/nir1-c-query-worker-ci.sh caller-cancellation"]);
   assert.deepEqual(workerCommands(startupOnly), ["bash scripts/nir1-c-query-worker-ci.sh startup-registration-refusal"]);
   assert.deepEqual(workerCommands(trailingOnly), ["bash scripts/nir1-c-query-worker-ci.sh trailing-data"]);
+  assert.deepEqual(workerCommands(partialTerminalOnly), ["bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker"]);
   const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
   assert.equal(Object.hasOwn(registry.profiles, "c-query-cancellation"), false);
   assert.equal(Object.hasOwn(registry.profiles, "c-query-startup-refusal"), false);
   assert.equal(Object.hasOwn(registry.profiles, "c-query-trailing-data"), false);
+  assert.equal(Object.hasOwn(registry.profiles, "c-query-partial-terminal"), false);
   assert.deepEqual(registry.stages.rust.commands.find(({ id }) => id === "rust.c-query-worker").args, ["scripts/nir1-c-query-worker-ci.sh"]);
   for (const step of workers.steps) assert.equal(step["continue-on-error"], undefined);
   const validateShared = (inputs, event = "workflow_dispatch") => {
@@ -768,7 +776,8 @@ test("C-query opt-in scripts fail closed and preserve the original default comma
   const cancellation = "native_worker_cancels_after_request_admission_and_retires_before_reloan";
   const startup = "native_worker_reports_canonical_registration_refusal_before_ready";
   const trailing = "native_worker_rejects_committed_q2_frame_with_trailing_data";
-  const optInCases = { "caller-cancellation": cancellation, "startup-registration-refusal": startup, "trailing-data": trailing };
+  const partialTerminal = "native_worker_rejects_complete_q2_frame_with_partial_terminal_marker";
+  const optInCases = { "caller-cancellation": cancellation, "startup-registration-refusal": startup, "trailing-data": trailing, "partial-terminal-marker": partialTerminal };
   const optInArgs = Object.keys(optInCases);
   const tests = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs"), "utf8");
   for (const name of Object.values(optInCases)) assert.match(tests, new RegExp(`fn ${name}\\(\\)`));
@@ -806,7 +815,7 @@ else if (args[0] === 'run') {
   fs.mkdirSync('src-tauri/target/release', { recursive: true });
   fs.writeFileSync('src-tauri/target/release/nir1-c-query-worker' + (process.env.MOCK_WINDOWS === '1' ? '.exe' : ''), 'not an executable');
 } else if (args[0] === 'test') {
-  if (args.includes('${cancellation}') || args.includes('${startup}') || args.includes('${trailing}')) {
+  if (args.includes('${cancellation}') || args.includes('${startup}') || args.includes('${trailing}') || args.includes('${partialTerminal}')) {
     const file = process.env.NIR1_Q2_FIXTURE_PATH;
     if (!file?.endsWith('q2-worker-input.db') || !fs.existsSync(process.env.NIR1_C_QUERY_WORKER_BIN)) process.exit(8);
     if (process.env.FAIL_PHASE === 'test') process.exit(9);
