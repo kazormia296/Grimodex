@@ -229,6 +229,37 @@ contracts, not Rust/SQLite/Native Windows acceptance. Exposing this selection
 does not authorize dispatch, replay successful lanes, renew diagnostics or waive
 B/Full, final acceptance or canonical gates.
 
+For a separately reviewed grouped frame-lifecycle lane,
+`canonical_profile=c-query-frame-lifecycle` reuses the same three-OS worker job
+and only `bash scripts/nir1-c-query-worker-ci.sh frame-lifecycle`. The existing
+literal guard and TEN inputs remain: product mode `all`, false booleans, empty
+canonical tuple/options; malformed/mixed/wrong-event inputs fail before setup.
+No input, job, registry profile, dependency, timeout or default command is added.
+
+Only the original closed synthetic Q2 fixture and seam-enabled worker are built.
+`native_worker_rejects_declared_q2_frame_with_partial_body` runs on each OS on its
+own disposable copy. Only on Linux, the existing
+`native_worker_refuses_committed_q2_frame_without_eof` runs next, in a separate
+test process on a distinct fresh copy. Each copy and the pristine source retain
+checksum/closed-sidecar checks; the original owned cleanup trap remains. This
+branch exits before Q512/default eleven cases; no Gold or practical31 replay.
+
+Partial body must produce no lease, retain the claim through truncated-pipe
+refusal and prove actual exit, necessary EOF and all successful joins before
+reloan. Missing EOF must observe a timely request-bound FRAME+NQGC1 with a live
+child but no lease, refuse at the 100 ms boundary, then prove SIGKILL, actual
+exit, EOF and successful joins before reloan. Writer completion is required if
+started; owner drop and zero participants follow. Unproved cleanup quarantines,
+never starts a replacement. Refusal/cleanup duration is not successful-lease
+timing; Linux missing-EOF results are not macOS/Windows or universal coverage.
+
+Candidate-untouched source review, reviewed checkpoint and affected hosted
+contracts plus complete results review precede separately admitted runtime.
+Fresh exact candidate/TEN/availability/unique owner and durable possible-start
+are required before ONE send. Synthetic script mocks test routing/failure and
+copy ownership only, not Rust/worker acceptance. This exposes no B/Editor/Full
+permission, diagnostic renewal, gate waiver or physical-total memory proof.
+
 For a separately reviewed finite practical confirmation,
 `canonical_profile=c-query-practical` reuses the existing worker job with only
 `ubuntu-latest` and `bash scripts/nir1-c-query-worker-ci.sh practical-retention`.

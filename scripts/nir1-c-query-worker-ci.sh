@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal && "${1:-}" != trailing-data && "${1:-}" != partial-terminal-marker && "${1:-}" != practical-retention ) ]]; then
-  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal|trailing-data|partial-terminal-marker|practical-retention]\n' >&2
+if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal && "${1:-}" != trailing-data && "${1:-}" != partial-terminal-marker && "${1:-}" != practical-retention && "${1:-}" != frame-lifecycle ) ]]; then
+  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal|trailing-data|partial-terminal-marker|practical-retention|frame-lifecycle]\n' >&2
   exit 2
 fi
 
@@ -108,6 +108,44 @@ grep -Fq '"walBytes": 0' "$fixture_dir/q2-fixture-report.json"
 grep -Fq '"shmBytes": 0' "$fixture_dir/q2-fixture-report.json"
 grep -Fq '"reopenedReadOnly": true' "$fixture_dir/q2-fixture-report.json"
 assert_closed_fixture "$q2_fixture_file"
+fi
+
+# Group existing refusal cases without replaying Q512 or the original eleven cases.
+if [[ "${1:-}" == frame-lifecycle ]]; then
+  q2_fixture_checksum="$(cksum < "$q2_fixture_file")"
+  cp -- "$q2_fixture_file" "$q2_test_fixture_file"
+  test "$(cksum < "$q2_test_fixture_file")" = "$q2_fixture_checksum"
+  assert_closed_fixture "$q2_test_fixture_file"
+  if [[ "$os_name" == Linux ]]; then
+    q2_missing_eof_test_fixture_file="$fixture_dir/q2-missing-eof-worker-input.db"
+    cp -- "$q2_fixture_file" "$q2_missing_eof_test_fixture_file"
+    test "$(cksum < "$q2_missing_eof_test_fixture_file")" = "$q2_fixture_checksum"
+    assert_closed_fixture "$q2_missing_eof_test_fixture_file"
+  fi
+  cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
+  test -f "$worker_file"
+  NIR1_Q2_FIXTURE_PATH="$q2_worker_fixture_path" \
+  NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+    cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+      -p grimodex-db --lib native_worker_rejects_declared_q2_frame_with_partial_body \
+      -- --ignored --nocapture --test-threads=1
+  test "$(cksum < "$q2_test_fixture_file")" = "$q2_fixture_checksum"
+  assert_closed_fixture "$q2_test_fixture_file"
+  test "$(cksum < "$q2_fixture_file")" = "$q2_fixture_checksum"
+  assert_closed_fixture "$q2_fixture_file"
+  if [[ "$os_name" == Linux ]]; then
+    NIR1_Q2_FIXTURE_PATH="$q2_missing_eof_test_fixture_file" \
+    NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+      cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+        -p grimodex-db --lib native_worker_refuses_committed_q2_frame_without_eof \
+        -- --ignored --nocapture --test-threads=1
+    test "$(cksum < "$q2_missing_eof_test_fixture_file")" = "$q2_fixture_checksum"
+    assert_closed_fixture "$q2_missing_eof_test_fixture_file"
+    test "$(cksum < "$q2_fixture_file")" = "$q2_fixture_checksum"
+    assert_closed_fixture "$q2_fixture_file"
+  fi
+  exit 0
 fi
 
 # These opt-in lanes never replay Q512 or the original eleven cases.
