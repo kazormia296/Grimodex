@@ -628,10 +628,14 @@ rejected line's position, byte length, hash and fixed syntax labels, bound to th
 successful solver's complete log sizes/hashes. No solver text, package/version,
 origin or trailing annotation is copied into that diagnostic. It is not accepted
 tuples or a size reference; a rejection still stops before the metadata query and
-`setup-reference.json`. Unknown syntax stays rejected, rather than silently
-accepting a guessed explanation for a previous hosted failure. Even successful
-acquisition is immediately followed by the unchanged Full refusal, before every
-installer.
+`setup-reference.json`. Hosted acquisition37999618595/1 observed exactly one
+rejected literal empty-bracket ending; the strict parser now accepts only optional
+` []` after the existing cold tuple. Both forms normalize to the same exact
+package/version/architecture, with unchanged distinctness and cached size-field
+validation. Nonempty annotations, extra whitespace/text and malformed tuples stay
+rejected. The actual rejected tuple text remains unobserved; this narrow grammar
+correction is not a successful size acquisition. Even successful acquisition is
+immediately followed by the unchanged Full refusal, before every installer.
 Candidate-untouched changed-unit P2 review is required before checkpoint/hosted
 execution; future actual installer/build sizing and applicable quotas/capacity/
 exclusion remain independently necessary before those heavy operations.

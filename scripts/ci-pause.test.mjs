@@ -1282,16 +1282,38 @@ test("cold canonical system reference derives exact source requests and rejects 
   }
 });
 
-test("cold solver rejection projects syntax without exposing text or accepting guessed grammar", () => {
+test("cold solver accepts only the observed literal empty suffix without changing tuple or size validation", () => {
+  // Synthetic tuple text; only the suffix shape was observed in37999618595/1.
+  const line = "Inst sample:amd64 (1:2.3-4 Ubuntu:24.04/noble [amd64])";
+  const packages = [{ package: "sample:amd64", version: "1:2.3-4", architecture: "amd64" }];
+  assert.deepEqual(coldSystemPackages(line), packages);
+  assert.deepEqual(coldSystemPackages(`${line} []`), packages);
+  assert.deepEqual(coldSystemSolverFormat(`${line}\n${line} []\n`), { installLines: 2, rejectedLines: 0, firstRejected: null });
+  assert.throws(() => coldSystemPackages(`${line}\n${line} []`), /distinct cold APT/u);
+  for (const suffix of ["[]", " [ ]", " [annotation]", " [] extra", " [] []", " []\r", " [] ", "  []", " []\t"]) {
+    assert.throws(() => coldSystemPackages(line + suffix), /recognized cold APT/u, suffix);
+    assert.equal(coldSystemSolverFormat(line + suffix).rejectedLines, 1, suffix);
+  }
+  for (const malformed of [line.replace("sample:amd64", "../sample"), line.replace("1:2.3-4", "1/2"), line.replace("[amd64]", "[AMD64]")]) {
+    assert.throws(() => coldSystemPackages(`${malformed} []`), /recognized cold APT/u);
+  }
+  // Synthetic size values are test inputs, not real acquisition quantities.
+  const metadata = "Package: sample\nVersion: 1:2.3-4\nArchitecture: amd64\nSize: 123\nInstalled-Size: 456\n";
+  assert.deepEqual(systemPackageSizes(coldSystemPackages(`${line} []`), metadata), [{ ...packages[0], archiveBytes: "123", installedKiB: "456" }]);
+  for (const malformed of [metadata.replace("1:2.3-4", "1:2.3-5"), metadata.replace("amd64", "arm64"), metadata.replace("Size: 123\n", ""), metadata.replace("Installed-Size: 456\n", ""), metadata + "\n" + metadata]) {
+    assert.throws(() => systemPackageSizes(coldSystemPackages(`${line} []`), malformed), /\[precheck\]/u);
+  }
+});
+
+test("cold solver rejection projects syntax without exposing text or accepting arbitrary annotations", () => {
   const valid = "Inst sample (1:2.3-4 Ubuntu:24.04/noble [amd64])";
   assert.deepEqual(coldSystemSolverFormat(`${valid}\nConf sample\n`), { installLines: 1, rejectedLines: 0, firstRejected: null });
-  // Synthetic hypothesis, NOT the unobserved hosted rejection. Observe it but
-  // keep refusing it until the actual runner's safe format evidence is acquired.
-  const rejected = "Inst sample (1:2.3-4 PRIVATE_ORIGIN https://private.invalid/token [amd64]) []";
+  // Unknown nonempty annotations remain rejected and content-free.
+  const rejected = "Inst sample (1:2.3-4 PRIVATE_ORIGIN https://private.invalid/token [amd64]) [PRIVATE_SUFFIX]";
   const projection = coldSystemSolverFormat(`Reading package lists...\n${valid}\n${rejected}\nInst ../PRIVATE_PATH unexpected\n`);
   assert.deepEqual(projection, { installLines: 3, rejectedLines: 2, firstRejected: {
     lineNumber: 3, bytes: Buffer.byteLength(rejected), sha256: createHash("sha256").update(rejected).digest("hex"),
-    coldPrefix: true, ending: "architecture-close-empty-brackets",
+    coldPrefix: true, ending: "unrecognized",
   } });
   assert.doesNotMatch(JSON.stringify(projection), /sample|1:2\.3-4|PRIVATE|https:|amd64/u);
   for (const line of [rejected, "Inst ../PRIVATE_PATH unexpected", `${valid} [PRIVATE_SUFFIX]`, "Inst sample (1 origin [amd64])\r", "Inst sample (1 origin [amd64]) https://private.invalid"]) {
@@ -1300,6 +1322,14 @@ test("cold solver rejection projects syntax without exposing text or accepting g
     assert.doesNotMatch(JSON.stringify(format), /PRIVATE|https:|private\.invalid/u);
     assert.throws(() => coldSystemPackages(line), /recognized cold APT/u);
   }
+  // A recognized suffix cannot make an invalid package prefix acceptable.
+  const invalidPrefix = "Inst ../PRIVATE_PATH (1 origin [amd64]) []";
+  const format = coldSystemSolverFormat(invalidPrefix);
+  assert.equal(format.rejectedLines, 1);
+  assert.equal(format.firstRejected.coldPrefix, false);
+  assert.equal(format.firstRejected.ending, "architecture-close-empty-brackets");
+  assert.doesNotMatch(JSON.stringify(format), /PRIVATE|origin|amd64/u);
+  assert.throws(() => coldSystemPackages(invalidPrefix), /recognized cold APT/u);
   assert.deepEqual(coldSystemSolverFormat("PRIVATE_NOT_AN_INSTALL\n"), { installLines: 0, rejectedLines: 0, firstRejected: null });
   assert.deepEqual(coldSystemPackages(valid), [{ package: "sample", version: "1:2.3-4", architecture: "amd64" }]);
 });

@@ -91,7 +91,9 @@ export function canonicalSystemPackages(workflow) {
   return packages;
 }
 
-const coldSystemTuple = /^Inst ([a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?) \(([a-zA-Z0-9.+:~_-]+) .*\[([a-z0-9]+)\]\)$/u;
+// Hosted solver evidence includes a literal empty annotation after the tuple.
+// Accept only that suffix; never discard arbitrary trailing text.
+const coldSystemTuple = /^Inst ([a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?) \(([a-zA-Z0-9.+:~_-]+) .*\[([a-z0-9]+)\]\)(?: \[\])?$/u;
 
 // Observe the failing grammar without publishing a solver line or relaxing it.
 // All syntax labels are fixed; no captured package/version/origin/tail is emitted.
