@@ -2668,8 +2668,8 @@ pub(crate) enum WorkspaceShutdownTask {
 
 #[derive(Default)]
 pub(crate) struct GenerationRecoveryHookLedger {
-    /// Reserved before spawn and released only by the blocking-task join owner.
-    /// Hook status, revision changes and zero participant counts are not joins.
+    /// Reserved before spawn and released only after a successful blocking-task
+    /// Join. Failed/lost Join keeps this fence sticky, even with zero counters.
     pub(crate) worker_active: bool,
     /// Latest admitted Ready callback deferred while the actual worker lives.
     pub(crate) pending_ready_revision: Option<u64>,

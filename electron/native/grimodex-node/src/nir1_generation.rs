@@ -796,36 +796,51 @@ pub(crate) fn start_generation_recovery_after_ready(
     });
     // Dropping this supervisor's handle cannot abort the blocking task. Its
     // exclusive JoinHandle stays here; a lost supervisor leaves the slot pinned.
-    drop(napi::tokio::spawn(async move {
-        let joined = worker.await;
-        let pending_revision = {
-            let mut ledger = state
-                .nir1_generation_recovery_statuses
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Err(error) = joined {
-                tracing::debug!(
-                    cancelled = error.is_cancelled(),
-                    panicked = error.is_panic(),
-                    "NIR-1 generation recovery join failed"
-                );
-                if let Some(entry) = ledger.entry.as_mut().filter(|entry| {
-                    entry.binding == binding && entry.ready_revision == ready_revision
-                }) {
-                    entry.state = GenerationRecoveryHookState::Incomplete;
-                }
-            }
-            ledger.worker_active = false;
-            ledger.pending_ready_revision.take()
-        };
-        state.workspace_operation_notify.notify_waiters();
-        // Coalesce only an actual Ready hook callback, not a revision published
-        // by failed Restore. The same entry revalidates currentness/shutdown.
-        if let Some(revision) = pending_revision {
-            start_generation_recovery_after_ready(Arc::clone(&state), revision);
-        }
-    }));
+    drop(napi::tokio::spawn(supervise_generation_recovery(
+        state,
+        binding,
+        ready_revision,
+        worker,
+    )));
     true
+}
+
+async fn supervise_generation_recovery(
+    state: Arc<AppState>,
+    binding: LiveBinding,
+    ready_revision: u64,
+    worker: napi::tokio::task::JoinHandle<()>,
+) {
+    let joined = worker.await;
+    let pending_revision = {
+        let mut ledger = state
+            .nir1_generation_recovery_statuses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Err(error) = joined {
+            tracing::debug!(
+                cancelled = error.is_cancelled(),
+                panicked = error.is_panic(),
+                "NIR-1 generation recovery join failed"
+            );
+            if let Some(entry) = ledger.entry.as_mut().filter(|entry| {
+                entry.binding == binding && entry.ready_revision == ready_revision
+            }) {
+                entry.state = GenerationRecoveryHookState::Incomplete;
+            }
+            // Failed Join is sticky: status/zero counters cannot release the
+            // recovery slot, admit its pending replacement or unblock Closed.
+            return;
+        }
+        ledger.worker_active = false;
+        ledger.pending_ready_revision.take()
+    };
+    state.workspace_operation_notify.notify_waiters();
+    // Coalesce only an actual Ready hook callback, not a revision published
+    // by failed Restore. The same entry revalidates currentness/shutdown.
+    if let Some(revision) = pending_revision {
+        start_generation_recovery_after_ready(Arc::clone(&state), revision);
+    }
 }
 
 pub(crate) fn final_payload_digest(payload: &Value) -> Result<String> {
@@ -3960,6 +3975,142 @@ mod tests {
         drop(state);
         std::fs::remove_dir_all(root_a).expect("A cleanup");
         std::fs::remove_dir_all(root_b).expect("B cleanup");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn recovery_join_failure_keeps_pending_ready_and_shutdown_fenced() {
+        let (root_a, attempts_a) = recovery_workspace(1);
+        let (root_b, attempts_b) = recovery_workspace(1);
+        let state = reopened_recovery_state(&root_a);
+        let backend = crate::Backend {
+            state: Arc::clone(&state),
+        };
+        let ready_a = state.ws.lifecycle_core().snapshot().expect("A Ready");
+        let binding_a = ready_a.binding().expect("A binding").clone();
+        let revision_a = ready_a.revision;
+        let mut ledger = schedule_generation_recovery(&state, &binding_a, revision_a)
+            .expect("reserve the same production slot");
+        ledger.worker_active = true;
+        drop(ledger);
+        let (tail_tx, tail_rx) = mpsc::channel();
+        let (tail_release_tx, tail_release_rx) = mpsc::channel();
+        *state
+            .nir1_generation_recovery_completion_probe
+            .lock()
+            .expect("tail probe") = Some((tail_tx, tail_release_rx));
+        let worker_state = Arc::clone(&state);
+        let worker_binding = binding_a.clone();
+        let worker = spawn_generation_recovery(move || {
+            run_generation_recovery_after_ready(
+                Arc::clone(&worker_state),
+                worker_binding,
+                revision_a,
+            );
+            observe_generation_recovery_completion_probe(&worker_state);
+        });
+        tail_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("recovery completed before task return");
+        assert_eq!(
+            recovery_hook_state(&state, &binding_a),
+            Some(GenerationRecoveryHookState::Complete)
+        );
+        let db_a = active_workspace_snapshot(&state.ws).expect("A workspace");
+        assert!(storage::read_terminal(db_a.db(), &attempts_a[0].id)
+            .expect("A recovered")
+            .is_some());
+        drop(db_a);
+
+        let (launch_tx, launch_rx) = mpsc::channel();
+        *state
+            .nir1_generation_recovery_launch_probe
+            .lock()
+            .expect("B launch probe") = Some(launch_tx);
+        let opened = backend
+            .open_workspace(root_b.to_string_lossy().into_owned())
+            .await
+            .expect("real B Open");
+        let opened: Value = serde_json::from_str(&opened).expect("B Open JSON");
+        assert!(matches!(opened["status"].as_str(), Some("ready" | "migrated")));
+        let ready_b = state.ws.lifecycle_core().snapshot().expect("B Ready");
+        assert!(ready_b.revision > revision_a);
+        assert!(launch_rx.try_recv().is_err(), "B is deferred while A is held");
+
+        // Disconnect the existing tail rendezvous: the actual blocking worker
+        // panics AFTER recovery status/operation/participant cleanup.
+        drop(tail_release_tx);
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            supervise_generation_recovery(Arc::clone(&state), binding_a.clone(), revision_a, worker),
+        )
+        .await
+        .expect("actual failed Join supervisor completed");
+        {
+            let ledger = state
+                .nir1_generation_recovery_statuses
+                .lock()
+                .expect("sticky ledger");
+            assert!(ledger.worker_active, "failed Join must retain the slot");
+            assert_eq!(ledger.pending_ready_revision, Some(ready_b.revision));
+        }
+        assert_eq!(
+            recovery_hook_state(&state, &binding_a),
+            Some(GenerationRecoveryHookState::Incomplete)
+        );
+        assert_eq!(state.workspace_operation_active.load(Ordering::Acquire), 0);
+        assert_eq!(
+            state.ws.lifecycle_core().workspace_participant_count().expect("participants"),
+            0
+        );
+        assert!(!start_generation_recovery_after_ready(Arc::clone(&state), ready_b.revision));
+        assert!(launch_rx.try_recv().is_err(), "failed Join cannot launch pending B");
+        let db_b = active_workspace_snapshot(&state.ws).expect("B workspace");
+        assert!(storage::read_terminal(db_b.db(), &attempts_b[0].id)
+            .expect("B stays pending")
+            .is_none());
+        drop(db_b);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), state.wait_workspace_operations())
+                .await
+                .is_err(),
+            "zero counters cannot retire failed Join"
+        );
+        for _ in 0..2 {
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(20),
+                    backend.shutdown_workspace_lifecycle(),
+                )
+                .await
+                .is_err(),
+                "shutdown response/reentry must not publish Closed"
+            );
+        }
+        let view: Value = serde_json::from_str(
+            &backend.get_workspace_lifecycle_view().await.expect("lifecycle view"),
+        )
+        .expect("view JSON");
+        assert_ne!(view["status"], "closed");
+        assert!(state.nir1_generation_recovery_statuses.lock().expect("retained slot").worker_active);
+
+        // Test teardown only: cancel and join the retained idle shutdown drain,
+        // never clear the failed recovery slot or claim successful shutdown.
+        let owner = state.workspace_shutdown.get().expect("same shutdown owner");
+        let mut shutdown = owner.lock().await;
+        let crate::state::WorkspaceShutdownTask::Pending(worker) = &mut *shutdown else {
+            panic!("failed recovery Join must leave shutdown pending");
+        };
+        worker.abort();
+        assert!(tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .expect("test drain task terminated")
+            .expect_err("test-only cancellation")
+            .is_cancelled());
+        drop(shutdown);
+        drop(backend);
+        drop(state);
+        std::fs::remove_dir_all(root_a).expect("A strict cleanup");
+        std::fs::remove_dir_all(root_b).expect("B strict cleanup");
     }
 
     #[tokio::test]
