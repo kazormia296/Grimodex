@@ -17,6 +17,9 @@ import {
   assessFullDemand,
   assessFullSetupDemand,
   collectFullLocations,
+  canonicalSystemPackages,
+  coldSystemPackages,
+  systemPackageSizes,
   fullPreparation,
   fullSetupLocations,
   produceWorkloadEstimate,
@@ -1202,14 +1205,21 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
   const job = workflow.jobs.canonical;
   assert.equal(job["runs-on"], "ubuntu-24.04");
   const steps = job.steps;
-  const stop = steps[0];
+  const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
   assert.equal(stop.if, "inputs.profile == 'full'");
+  const reference = steps.find(({ id }) => id === "full_reference");
+  assert.equal(reference.if, "inputs.profile == 'full'");
+  assert.ok(steps.indexOf(reference) < steps.indexOf(stop));
+  assert.ok(steps.indexOf(stop) < steps.findIndex(({ id }) => id === "full_setup"));
   assert.match(stop.run, /\[precheck\][\s\S]*exit 1/u);
   assert.doesNotMatch(stop.run, /df |quota|dbus|sudo|pnpm|ci:local:/u);
   const checkout = steps.find(({ uses }) => uses?.startsWith("actions/checkout@"));
   assert.equal(checkout.with.ref, "${{ github.sha }}");
   assert.equal(checkout.with["fetch-depth"], 0);
   assert.equal(checkout.with["persist-credentials"], false);
+  assert.ok(steps.indexOf(reference) > steps.indexOf(checkout));
+  assert.match(reference.run, /node scripts\/local-ci-full-admission\.mjs --setup-reference "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
+  assert.doesNotMatch(reference.run, /pnpm|cargo|sudo|ci:local:|\|\|\s*true/u);
   const dependencies = steps.find(({ name }) => name === "Canonical system dependencies");
   assert.equal(dependencies.if, "inputs.profile != 'contracts'");
   assert.deepEqual(dependencies.run.trim().split("\n").slice(0, 2), [
@@ -1242,10 +1252,55 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
     if (step.run) assert.doesNotMatch(step.run, /\$\{\{ inputs\.|--dry-run|--from|--recover-lock|\|\|\s*true/u);
   }
   const upload = steps.find(({ name }) => name === "Upload existing canonical evidence");
-  assert.equal(upload.if, "always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped')");
+  assert.equal(upload.if, "always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped' || steps.full_reference.outcome != 'skipped')");
+  assert.match(upload.with.path, /steps\.full_setup\.outcome == 'skipped' && '\.artifacts\/local-ci\/full-admission\/\*-setup-reference\/\*\.json'/u);
   assert.equal(upload.with["include-hidden-files"], true);
   assert.equal(upload.with["if-no-files-found"], "error");
   assert.ok(upload.with.path.includes(".artifacts/local-ci/"));
+});
+
+test("cold canonical system reference derives exact source requests and rejects invented size facts", async () => {
+  const source = await readFile(path.join(repoRoot, ".github/workflows/canonical-ci.yml"), "utf8");
+  assert.deepEqual(canonicalSystemPackages(source), ["build-essential", "libssl-dev", "libdbus-1-dev", "libsecret-1-dev", "pkg-config", "xvfb"]);
+  for (const malformed of ["", "sudo apt-get install -y --no-install-recommends a a\n", "sudo apt-get install -y --no-install-recommends a; evil\n", `${source}\nsudo apt-get install -y --no-install-recommends extra\n`]) {
+    assert.throws(() => canonicalSystemPackages(malformed), /\[precheck\]/u);
+  }
+  const solution = "Inst sample (1:2.3-4 Ubuntu:24.04/noble [amd64])\nConf sample (1:2.3-4 Ubuntu:24.04/noble [amd64])\n";
+  const packages = coldSystemPackages(solution);
+  assert.deepEqual(packages, [{ package: "sample", version: "1:2.3-4", architecture: "amd64" }]);
+  for (const malformed of ["", solution + solution, "Inst sample unexpected\n", "Inst ../sample (1 origin [amd64])\n"]) {
+    assert.throws(() => coldSystemPackages(malformed), /\[precheck\]/u);
+  }
+  // Synthetic test numbers only; never written into a real Full forecast.
+  const metadata = "Package: sample\nVersion: 1:2.3-4\nArchitecture: amd64\nSize: 123\nInstalled-Size: 456\nDescription: test only\n continuation\n";
+  assert.deepEqual(systemPackageSizes(packages, metadata), [{ ...packages[0], archiveBytes: "123", installedKiB: "456" }]);
+  // An explicit zero from a file-less package is data, not a missing-value default.
+  assert.equal(systemPackageSizes(packages, metadata.replace("Installed-Size: 456", "Installed-Size: 0"))[0].installedKiB, "0");
+  for (const malformed of ["", metadata + "\n" + metadata, metadata.replace("Size: 123\n", ""), metadata.replace("Size: 123", "Size: 0"), metadata.replace("Installed-Size: 456", "Installed-Size: unknown"), metadata.replace("amd64", "arm64"), metadata.replace("1:2.3-4", "1:2.3-5"), `${metadata}Size: 789\n`]) {
+    assert.throws(() => systemPackageSizes(packages, malformed), /\[precheck\]/u);
+  }
+});
+
+test("canonical prerequisite reference is isolated from Full ingestion and heavy effects", async () => {
+  const helper = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
+  const reference = helper.slice(helper.indexOf("export async function stageFullSystemReference"), helper.indexOf("// Installed components"));
+  for (const required of ["--simulate", "Debug::NoLocking=1", "Dir::State::status=/dev/null", "Dir::Cache::pkgcache=", "Dir::Cache::srcpkgcache=", "--no-install-recommends", "--no-all-versions", "setup-reference.json", "logJoins", "error.lateClose"]) assert.ok(reference.includes(required), required);
+  assert.doesNotMatch(reference, /admitted:|acquireWorkloadInput|produceWorkloadEstimate|admitFullResources|admitFullSetup|sudo|apt-get update/u);
+  assert.ok(helper.indexOf('if (phase === "setup-reference") return') < helper.indexOf("({ input, estimate } = await acquireWorkloadInput"));
+  const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
+  const stage = steps.find(({ id }) => id === "full_reference");
+  const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
+  // Real shell adversary: failed staging cannot be ignored; successful staging
+  // still stops before any setup/installation or gate. Run only in hosted tests.
+  const bin = await mkdtemp(path.join(tmpdir(), "full-reference-shell-contract-"));
+  try {
+    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" };
+    await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 9\n", { mode: 0o755 });
+    await assert.rejects(promisify(execFile)("bash", ["-c", stage.run], { env, timeout: 10000 }), (error) => error.code === 9);
+    await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await promisify(execFile)("bash", ["-c", stage.run], { env, timeout: 10000 });
+    await assert.rejects(promisify(execFile)("bash", ["-c", stop.run], { env, timeout: 10000 }), (error) => error.code === 1 && /\[precheck\]/u.test(error.stderr));
+  } finally { await rm(bin, { recursive: true, force: true }); }
 });
 
 test("Full preparation preserves actual compilation tuples without executing tests or journeys", async () => {

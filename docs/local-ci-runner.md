@@ -592,8 +592,43 @@ requires the existing workload/resource admission decision. A failed profile
 never starts verify. Uploaded artifacts retain the existing receipt/log formats;
 a hosted job result is not a replacement for receipt verification or acceptance.
 
-`full` is deliberately stopped before setup/install. Its command connection is
-prepared, but must not be enabled until candidate acceptance/freeze, outstanding
+`full` is deliberately stopped before setup/install, but now checks out the exact
+validated candidate and stages a smaller **read-only canonical system dependency
+reference** before that refusal. The existing admission helper's internal
+`--setup-reference` phase does not consume the missing complete
+`full-workload-allocation/1` data. Requiring that completed forecast before the
+necessary acquisition would be circular; this focused prerequisite is not Full,
+setup admission or a gate pass. No new profile/job/dispatch input is added.
+
+The request is extracted from the canonical workflow's existing literal
+`apt-get install --no-install-recommends` package list. Preinstalled APT simulates
+that request with an empty installed-status view, no locking, no on-disk cache
+generation and no index refresh/network/download/install. This avoids a warm
+runner's already-installed packages hiding cold dependency demand. An exact
+package/version/architecture metadata query against the same cached public
+indexes supplies archive byte lengths and Debian `Installed-Size` KiB estimates.
+Those values are **not physical allocation/inode observations or an upper bound**;
+index/version drift, extraction/transient coexistence, complete installer logs,
+additive uncertainty and the other setup/compiler/synthetic DB/backup/failure
+classes remain missing. They are quantitative source inputs for the next specific
+cold-operation assessment, not a populated complete `/1` dataset.
+
+This finite metadata-only operation requires the actual standard hosted VM,
+clean candidate/ancestry and a separate exclusive fsynced `setup-reference` owner
+inside the existing admission tree. Each sequential APT child has a 30-second
+timeout and must exit successfully with actual close, all log joins and group
+retirement. Cancellation, errors, unknown retirement, malformed/duplicate tuples
+or missing size fields retain the fence, with no retry/reentry/recovery. The
+structured reference binds source hashes and exact current run/attempt/candidate,
+and records complete child log size/hash metadata. Only structured phase JSON is
+uploaded under the existing canonical artifact name; private command log bodies
+are retained locally on that runner, not published. Even successful acquisition
+is immediately followed by the unchanged Full refusal, before every installer.
+Candidate-untouched changed-unit P2 review is required before checkpoint/hosted
+execution; future actual installer/build sizing and applicable quotas/capacity/
+exclusion remain independently necessary before those heavy operations.
+
+The command connection for actual Full is prepared, but must not be enabled until candidate acceptance/freeze, outstanding
 prerequisites, and a reviewed **actual-runner** resource-isolation preflight
 connection are complete. No dispatch input or source-contract pass attests those
 facts. That preflight must check the actual workspace/build-cache/temp, root/home
@@ -736,7 +771,9 @@ review. This source connection does **not** supply missing numerical inventories
 no dataset is manufactured from the synthetic contract numbers, source lengths or
 compressed artifact sizes. No new profile, job, dispatch input, external download
 or configuration fallback is added. Both Full fences and separate B/Editor
-prerequisites remain until their actual gates close.
+prerequisites remain until their actual gates close. The smaller prerequisite
+reference above does not relax this ingestion contract or assert that the
+remaining numerical acquisition is complete.
 
 ### Grouped contracts setup observations
 

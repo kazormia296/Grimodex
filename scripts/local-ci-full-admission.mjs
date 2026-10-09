@@ -79,6 +79,83 @@ const workloadEstimatePath = ".artifacts/local-ci/full-workload-estimate.json";
 // Reviewable data in the candidate, never an ignored pre-bound run record or an
 // external URL/configuration option. Actual numerical acquisition is required.
 const workloadAllocationPath = "scripts/local-ci-full-workload-allocation.json";
+
+// First, smaller prerequisite: resolve the existing canonical system install
+// against the runner's public cached indexes, WITHOUT installed-state shortcuts,
+// downloads, installs or cache writes. Package size metadata is not allocation.
+export function canonicalSystemPackages(workflow) {
+  const requests = [...workflow.matchAll(/^\s*sudo apt-get install -y --no-install-recommends ([^\n]+)$/gmu)];
+  if (requests.length !== 1) fail("one source-bound canonical system installation request");
+  const packages = requests[0][1].trim().split(/\s+/u);
+  if (!packages.length || new Set(packages).size !== packages.length || packages.some((name) => !/^[a-z0-9][a-z0-9+.-]*$/u.test(name))) fail("literal distinct canonical system packages");
+  return packages;
+}
+
+export function coldSystemPackages(solution) {
+  const packages = [];
+  for (const line of solution.split("\n").filter((line) => /^Inst\b/u.test(line))) {
+    const match = line.match(/^Inst ([a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?) \(([a-zA-Z0-9.+:~_-]+) .*\[([a-z0-9]+)\]\)$/u);
+    if (!match) fail("recognized cold APT package/version/architecture tuples");
+    packages.push({ package: match[1], version: match[2], architecture: match[3] });
+  }
+  if (!packages.length || new Set(packages.map((entry) => entry.package)).size !== packages.length) fail("a nonempty distinct cold APT dependency solution");
+  return packages;
+}
+
+export function systemPackageSizes(packages, metadata) {
+  const stanzas = metadata.trim().split(/\n\s*\n/u).map((stanza) => {
+    const fields = {};
+    for (const line of stanza.split("\n")) {
+      const field = line.match(/^(Package|Version|Architecture|Size|Installed-Size): (.+)$/u);
+      if (field) {
+        if (fields[field[1]] !== undefined) fail("unambiguous APT size metadata fields");
+        fields[field[1]] = field[2];
+      }
+    }
+    return fields;
+  });
+  const selected = packages.map((entry) => {
+    const matches = stanzas.filter((fields) => fields.Package === entry.package.split(":")[0] && fields.Version === entry.version && fields.Architecture === entry.architecture);
+    if (matches.length !== 1) fail("exact cold-solver versions/architectures in cached APT metadata");
+    const fields = matches[0];
+    if (!/^[1-9][0-9]*$/u.test(fields.Size ?? "") || !/^(0|[1-9][0-9]*)$/u.test(fields["Installed-Size"] ?? "")) fail("explicit archive length and Debian installed-size metadata (not guessed physical allocation)");
+    return { ...entry, archiveBytes: fields.Size, installedKiB: fields["Installed-Size"] };
+  });
+  if (stanzas.length !== selected.length) fail("no extra or duplicate APT metadata stanzas");
+  return selected;
+}
+
+export async function stageFullSystemReference(options) {
+  const { root, signal } = options;
+  const { directory, run, binding } = await openAdmission(options, "setup-reference");
+  try {
+    const workflow = await readFile(path.join(root, ".github/workflows/canonical-ci.yml"), "utf8");
+    const requested = canonicalSystemPackages(workflow);
+    const sources = [];
+    for (const file of [".github/workflows/canonical-ci.yml", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-process-supervisor.mjs"]) {
+      sources.push({ path: file, sha256: createHash("sha256").update(await readFile(path.join(root, file))).digest("hex") });
+    }
+    // No root cache generation/lock or network activity, even on an empty cache.
+    const cacheOptions = ["-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache="];
+    const solve = await run("system-cold-solution", { command: "apt-get", args: [...cacheOptions, "-o", "Debug::NoLocking=1", "-o", "Dir::State::status=/dev/null", "--simulate", "--no-install-recommends", "install", ...requested], env: { LC_ALL: "C" } }, 30_000, signal, false);
+    const packages = coldSystemPackages(await readFile(path.resolve(root, solve.logs.stdout.path), "utf8"));
+    const sizes = await run("system-cold-sizes", { command: "apt-cache", args: [...cacheOptions, "--no-all-versions", "show", ...packages.map((entry) => `${entry.package}=${entry.version}`)], env: { LC_ALL: "C" } }, 30_000, signal, false);
+    const reference = systemPackageSizes(packages, await readFile(path.resolve(root, sizes.logs.stdout.path), "utf8"));
+    signal?.throwIfAborted();
+    await durableJson(path.join(directory, "setup-reference.json"), {
+      binding, sources, requested, packages: reference,
+      children: [solve, sizes].map((result) => ({ exitCode: result.exitCode, closeObserved: result.closeObserved, cleanup: result.cleanup,
+        logJoins: Object.fromEntries(Object.entries(result.logs).map(([stream, log]) => [stream, { size: log.size, sha256: log.sha256 }])) })),
+      scope: "Cold canonical system dependency solution from current cached public APT indexes. Archive lengths and Debian installed-size estimates only; no installation, physical allocation estimate or Full admission.",
+      unobserved: ["refreshed index/version drift", "physical bytes/inodes, extraction and transient coexistence", "installer complete-log growth and additive uncertainty", "other setup, compilation/materialization and synthetic DB/backup/failure consumers", "future runner capacity/quota/exclusion and all Full/B gates"],
+    });
+    signal?.throwIfAborted();
+  } catch (error) {
+    if (error.lateClose) await error.lateClose;
+    throw error;
+  }
+}
+
 // Installed components have finite destinations fixed by canonical action inputs
 // and consumer settings. Download/extraction may additionally use observed temp
 // roots; complete local logs belong to the workspace evidence tree.
@@ -573,7 +650,7 @@ async function openAdmission({ root, base, head, maxParallelTasks, signal }, pha
   await hostedJobIsolation();
   if (![base, head].every((id) => /^[0-9a-f]{40}$/u.test(id)) || head !== process.env.GITHUB_SHA) fail("the expanded immutable candidate tuple");
   if (!Number.isSafeInteger(maxParallelTasks) || maxParallelTasks < 1 || maxParallelTasks > 12) fail("the existing scheduler option from 1 through 12");
-  const directory = path.join(root, ".artifacts/local-ci/full-admission", `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}${phase === "setup" ? "-setup" : ""}`);
+  const directory = path.join(root, ".artifacts/local-ci/full-admission", `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}${phase === "preparation" ? "" : `-${phase}`}`);
   await mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
   // No stale-owner recovery. A failed/uncertain attempt retains this fence.
   await mkdir(directory, { mode: 0o700 });
@@ -591,6 +668,8 @@ async function openAdmission({ root, base, head, maxParallelTasks, signal }, pha
     const binding = { base, head, tree, registryDigest: `sha256:${digest(registry)}`, maxParallelTasks, runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT };
     await durableJson(path.join(directory, "owner.json"), { binding, state: `possible-${phase}` });
     signal?.throwIfAborted();
+    // This read-only prerequisite never creates/consumes an admission decision.
+    if (phase === "setup-reference") return { directory, registry, run, binding };
     let input, estimate;
     if (phase === "setup") {
       ({ input, estimate } = await acquireWorkloadInput({ root, binding, directory, run, signal }));
@@ -735,11 +814,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   try {
     const args = process.argv.slice(2);
     const setup = args[0] === "--setup";
-    if (setup) args.shift();
+    const reference = args[0] === "--setup-reference";
+    if (setup || reference) args.shift();
     const [base, head, slots] = args;
     if (args.length !== 3 || !/^([1-9]|1[0-2])$/u.test(slots ?? "")) fail("the existing exact base/head/scheduler option arguments");
-    await (setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal });
-    console.log(`Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
+    await (reference ? stageFullSystemReference : setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal });
+    console.log(reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
   } catch (error) {
     console.error(error.message.startsWith("[precheck]") ? error.message : "[precheck] Full conditional resource acquisition failed; owner retained");
     process.exitCode = 1;

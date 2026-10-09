@@ -49,15 +49,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.profile == 'contracts' && 20 || 360 }}
     steps:
-      # Source preparation is not permission to run Full. Replace this stop only
-      # after candidate acceptance/freeze and a reviewed actual-runner preflight
-      # connection; an input boolean cannot prove resource isolation or D-Bus A.
-      - name: Full prerequisites remain unresolved
-        if: inputs.profile == 'full'
-        run: |
-          echo '[precheck] Full requires candidate acceptance/freeze, prerequisite closure and actual-runner resource-isolation admission' >&2
-          exit 1
-
       - name: Validate canonical selection
         env:
           PROFILE: ${{ inputs.profile }}
@@ -81,6 +72,27 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      # A smaller read-only prerequisite must not require the complete Full
+      # estimate it helps acquire. No installation or Full/B acceptance here.
+      - name: Stage canonical system cold size reference
+        id: full_reference
+        if: inputs.profile == 'full'
+        env:
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          node scripts/local-ci-full-admission.mjs --setup-reference "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
+
+      # Source preparation is not permission to run Full. This refusal remains
+      # before every installer; candidate/Full/B/resource gates are unchanged.
+      - name: Full prerequisites remain unresolved
+        if: inputs.profile == 'full'
+        run: |
+          echo '[precheck] Full requires candidate acceptance/freeze, prerequisite closure and actual-runner resource-isolation admission' >&2
+          exit 1
 
       # Use only the runner's preinstalled Node/Python/git here. Full's setup
       # downloads, caches, extraction and logs must be assessed BEFORE they start.
@@ -229,12 +241,14 @@ jobs:
           retention-days: 14
 
       - name: Upload existing canonical evidence
-        if: always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped')
+        if: always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped' || steps.full_reference.outcome != 'skipped')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: canonical-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          # A prerequisite-only attempt publishes structured size metadata, not
+          # whole private APT/identity logs. Ordinary canonical receipts unchanged.
           path: |
-            .artifacts/local-ci/
+            ${{ steps.full_reference.outcome != 'skipped' && steps.full_setup.outcome == 'skipped' && '.artifacts/local-ci/full-admission/*-setup-reference/*.json' || '.artifacts/local-ci/' }}
             .artifacts/product-journeys/
             .artifacts/browser-ci/
             .artifacts/electron-runtime-performance/
