@@ -116,7 +116,7 @@ For a separately reviewed caller-cancellation lane, `canonical_profile=c-query-c
 selects that **same three-OS matrix**, but runs only
 `bash scripts/nir1-c-query-worker-ci.sh caller-cancellation`. Keep product mode
 `all`, all booleans false and canonical tuple/options empty; the same first
-literal guard accepts only the six exact worker profiles and rejects mixed or
+literal guard accepts only the allowlisted exact worker profiles and rejects mixed or
 wrong-event inputs before checkout/setup. Malformed/unknown profiles still reach
 canonical rejection. No new input, job, registry profile or arbitrary test filter
 is introduced; default/reusable/independent and `c-query-workers` commands remain
@@ -228,6 +228,31 @@ and durable possible-start before ONE three-OS dispatch. Script mocks are routin
 contracts, not Rust/SQLite/Native Windows acceptance. Exposing this selection
 does not authorize dispatch, replay successful lanes, renew diagnostics or waive
 B/Full, final acceptance or canonical gates.
+
+For a separately reviewed grouped terminal-refusal lane,
+`canonical_profile=c-query-terminal-refusals` selects the same three-OS matrix
+and **both existing steps**, in order: `bash scripts/nir1-c-query-worker-ci.sh trailing-data`
+then `bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker`. Each complete
+original command independently builds its closed Q2 fixture and seam-enabled worker,
+runs its one original ignored case, checks source/input checksums and sidecars,
+and exits through owned cleanup before Q512 or the original eleven cases.
+The second build uses the same job/cache; no script argument, test filter, fixture,
+assertion, job, input, executor or registry profile is added. Failure propagation
+is unchanged: the first failed step prevents the second from running on that OS;
+`fail-fast: false` preserves independent results from the other OSes. Skipped
+cases are NOT passes, and six outcomes are required for complete lane acceptance.
+
+Use product mode `all`, false booleans and empty canonical tuple/options. The
+first literal guard rejects mixed/case-variant/wrong-event inputs before setup.
+All existing standalone/default/reusable/independent selections, complete commands,
+pinned setup/cache and 45-minute limit are retained. Source review, a reviewed
+checkpoint and changed hosted contracts plus results review precede a separate
+fresh exact-candidate/TEN-input runtime admission with exhaustive scoped availability,
+unique ownership and durable possible-start. Capture all named outcomes and actual
+local close/EOF/joins separately from independent remote attempt termination.
+This proves only the two original refusal/retirement cases on each OS, not Gold,
+a successful 100 ms lease, universal lifecycle coverage, B, Full or merge readiness.
+Exposing the group does not authorize dispatch or replay accepted other lanes.
 
 For a separately reviewed grouped frame-lifecycle lane,
 `canonical_profile=c-query-frame-lifecycle` reuses the same three-OS worker job

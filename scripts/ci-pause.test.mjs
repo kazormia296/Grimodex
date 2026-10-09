@@ -301,7 +301,7 @@ test("registered CI exposes only opt-in canonical source contracts without gener
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
       : id === "nir1-c-query-worker"
-        ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || (${ordinaryCondition}) }}`
+        ? `\${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || (${ordinaryCondition}) }}`
       : id === "rust"
         ? `\${{ inputs.canonical_profile == 'shared-rust' || (${ordinaryCondition}) }}`
         : id === "migration-recovery-gate"
@@ -371,7 +371,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
   assert.deepEqual(Object.keys(owner.with), ["profile", "candidate_base", "candidate_head", "max_parallel_tasks"]);
-  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'c-query-startup-refusal' && inputs.canonical_profile != 'c-query-trailing-data' && inputs.canonical_profile != 'c-query-partial-terminal' && inputs.canonical_profile != 'c-query-practical' && inputs.canonical_profile != 'c-query-frame-lifecycle' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
+  assert.equal(owner.if, "${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'c-query-startup-refusal' && inputs.canonical_profile != 'c-query-trailing-data' && inputs.canonical_profile != 'c-query-partial-terminal' && inputs.canonical_profile != 'c-query-terminal-refusals' && inputs.canonical_profile != 'c-query-practical' && inputs.canonical_profile != 'c-query-frame-lifecycle' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}");
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
@@ -458,7 +458,8 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   const partialTerminalOnly = { ...defaults, canonical_profile: "c-query-partial-terminal" };
   const practicalOnly = { ...defaults, canonical_profile: "c-query-practical" };
   const frameLifecycleOnly = { ...defaults, canonical_profile: "c-query-frame-lifecycle" };
-  const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly, practicalOnly, frameLifecycleOnly];
+  const terminalRefusalsOnly = { ...defaults, canonical_profile: "c-query-terminal-refusals" };
+  const workerProfiles = [workerOnly, cancellationOnly, startupOnly, trailingOnly, partialTerminalOnly, terminalRefusalsOnly, practicalOnly, frameLifecycleOnly];
   assert.equal(workers.strategy.matrix.os, "${{ fromJSON(inputs.canonical_profile == 'c-query-practical' && '[\"ubuntu-latest\"]' || '[\"ubuntu-latest\",\"macos-latest\",\"windows-latest\"]') }}");
   for (const standalone of workerProfiles) {
     await validateWorkers(standalone);
@@ -500,12 +501,12 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   });
   assert.deepEqual(workers.steps[6], {
     name: "Build private Q2 fixture and run committed-frame trailing-data worker test",
-    if: "inputs.canonical_profile == 'c-query-trailing-data'",
+    if: "inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-terminal-refusals'",
     shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh trailing-data",
   });
   assert.deepEqual(workers.steps[7], {
     name: "Build private Q2 fixture and run partial-terminal-marker worker test",
-    if: "inputs.canonical_profile == 'c-query-partial-terminal'",
+    if: "inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals'",
     shell: "bash", run: "bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker",
   });
   assert.deepEqual(workers.steps[8], {
@@ -532,6 +533,10 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.deepEqual(workerCommands(startupOnly), ["bash scripts/nir1-c-query-worker-ci.sh startup-registration-refusal"]);
   assert.deepEqual(workerCommands(trailingOnly), ["bash scripts/nir1-c-query-worker-ci.sh trailing-data"]);
   assert.deepEqual(workerCommands(partialTerminalOnly), ["bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker"]);
+  assert.deepEqual(workerCommands(terminalRefusalsOnly), [
+    "bash scripts/nir1-c-query-worker-ci.sh trailing-data",
+    "bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker",
+  ]);
   const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
   assert.deepEqual(workerCommands(practicalOnly), ["bash scripts/nir1-c-query-worker-ci.sh practical-retention"]);
   assert.equal(Object.hasOwn(registry.profiles, "c-query-practical"), false);
@@ -541,6 +546,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(Object.hasOwn(registry.profiles, "c-query-startup-refusal"), false);
   assert.equal(Object.hasOwn(registry.profiles, "c-query-trailing-data"), false);
   assert.equal(Object.hasOwn(registry.profiles, "c-query-partial-terminal"), false);
+  assert.equal(Object.hasOwn(registry.profiles, "c-query-terminal-refusals"), false);
   assert.deepEqual(registry.stages.rust.commands.find(({ id }) => id === "rust.c-query-worker").args, ["scripts/nir1-c-query-worker-ci.sh"]);
   for (const step of workers.steps) assert.equal(step["continue-on-error"], undefined);
   const validateShared = (inputs, event = "workflow_dispatch") => {
