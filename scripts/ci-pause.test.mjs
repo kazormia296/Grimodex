@@ -823,6 +823,9 @@ test("C-query opt-in scripts fail closed and preserve the original default comma
   const optInCases = { "caller-cancellation": cancellation, "startup-registration-refusal": startup, "trailing-data": trailing, "partial-terminal-marker": partialTerminal };
   const practicalCases = ["native_worker_practical_retention_q512_30x", "native_worker_returns_canonical_512_a3_eligible_seed_local_graph"];
   const frameLifecycleCases = ["native_worker_rejects_declared_q2_frame_with_partial_body", "native_worker_refuses_committed_q2_frame_without_eof"];
+  const requestWriterPanic = "request_writer_panic_keeps_claim_quarantined_after_handle_consumption";
+  const owner = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs"), "utf8");
+  assert.match(owner, /#\[ignore = "isolated panic-join regression; intentionally retains quarantined workspace claims"\]\s*fn request_writer_panic_keeps_claim_quarantined_after_handle_consumption\(\)/u);
   const optInArgs = [...Object.keys(optInCases), "practical-retention", "frame-lifecycle"];
   const tests = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs"), "utf8");
   for (const name of [...Object.values(optInCases), ...frameLifecycleCases]) assert.match(tests, new RegExp(`fn ${name}\\(\\)`));
@@ -862,12 +865,15 @@ else if (args[0] === 'run') {
 } else if (args[0] === 'test') {
   const practical = process.env.NIR1_C_QUERY_PRACTICAL_OBSERVE === '1';
   const frameLifecycle = args.includes('${frameLifecycleCases[0]}') || args.includes('${frameLifecycleCases[1]}');
-  if (practical || frameLifecycle || args.includes('${cancellation}') || args.includes('${startup}') || args.includes('${trailing}') || args.includes('${partialTerminal}')) {
+  if (args.includes('${requestWriterPanic}')) {
+    if (practical || process.env.NIR1_Q2_FIXTURE_PATH || process.env.NIR1_C_QUERY_WORKER_BIN) process.exit(8);
+    if (process.env.FAIL_CASE === 'writer-panic' && process.env.FAIL_PHASE === 'test') process.exit(9);
+  } else if (practical || frameLifecycle || args.includes('${cancellation}') || args.includes('${startup}') || args.includes('${trailing}') || args.includes('${partialTerminal}')) {
     const file = process.env.NIR1_Q2_FIXTURE_PATH;
     const expected = practical ? (args.includes('${practicalCases[0]}') ? 'q512-worker-input.db' : 'q512-maximum-worker-input.db') : args.includes('${frameLifecycleCases[1]}') ? 'q2-missing-eof-worker-input.db' : 'q2-worker-input.db';
     if (!file?.endsWith(expected) || !fs.existsSync(process.env.NIR1_C_QUERY_WORKER_BIN)) process.exit(8);
     if (frameLifecycle && (fs.readFileSync(file, 'utf8') !== 'synthetic closed script-contract source' || ['-wal', '-shm', '-journal'].some(suffix => fs.existsSync(file + suffix)))) process.exit(8);
-    if ((process.env.FAIL_CASE !== 'maximum' || expected === 'q512-maximum-worker-input.db') && (process.env.FAIL_CASE !== 'missing-eof' || expected === 'q2-missing-eof-worker-input.db')) {
+    if (process.env.FAIL_CASE !== 'writer-panic' && (process.env.FAIL_CASE !== 'maximum' || expected === 'q512-maximum-worker-input.db') && (process.env.FAIL_CASE !== 'missing-eof' || expected === 'q2-missing-eof-worker-input.db')) {
       if (process.env.FAIL_PHASE === 'test') process.exit(9);
       if (process.env.FAIL_PHASE === 'input') fs.appendFileSync(file, 'mutation');
       if (process.env.FAIL_PHASE === 'source') fs.appendFileSync(path.join(path.dirname(file), practical ? 'q512-preseed.db' : 'q2-preseed.db'), 'mutation');
@@ -913,12 +919,18 @@ else if (args[0] === 'run') {
         const selectedCases = commands.filter((args) => args[0] === "test").map((args) => args[args.indexOf("--") - 1]);
         const practical = args[0] === "practical-retention";
         const frameLifecycle = args[0] === "frame-lifecycle";
-        assert.deepEqual(selectedCases, practical ? practicalCases : frameLifecycle ? frameLifecycleCases.slice(0, runnerOS === "Linux" ? 2 : 1) : args.length ? [optInCases[args[0]]] : originalCases);
+        assert.deepEqual(selectedCases, practical ? practicalCases : frameLifecycle ? [...frameLifecycleCases.slice(0, runnerOS === "Linux" ? 2 : 1), requestWriterPanic] : args.length ? [optInCases[args[0]]] : originalCases);
+        if (frameLifecycle) assert.deepEqual(commands.at(-1), ["test", "--locked", "--release", "--manifest-path", "src-tauri/Cargo.toml", "-p", "grimodex-db", "--lib", requestWriterPanic, "--", "--ignored", "--nocapture", "--test-threads=1"]);
         assert.deepEqual(commands.filter((args) => args[0] === "run").map((args) => args.at(-2)), practical ? ["Q512/R2/A3-eligible-shared"] : args.length ? ["Q2/R1/D0-local"] : ["Q2/R1/D0-local", "Q512/R2/A3-eligible-shared"]);
         assert.deepEqual(commands.filter((args) => args[0] === "build").map((args) => args.includes("--features") ? args[args.indexOf("--features") + 1] : "default"), args.length ? [practical || args[0] === "startup-registration-refusal" ? "default" : "nir1-c-query-test-seam"] : ["default", "nir1-c-query-test-seam"]);
         if (args.length) assert.deepEqual(commands.at(-1).slice(-4), ["--", "--ignored", "--nocapture", "--test-threads=1"]);
         assert.deepEqual(await readdir(fixtureRoot), [], "owned trap must remove only its private fixture directory");
       }
+      await writeFile(calls, "");
+      await assert.rejects(shell(["frame-lifecycle"], { ...platform, FAIL_CASE: "writer-panic", FAIL_PHASE: "test" }), (error) => error.code === 9);
+      const failedTests = (await recorded()).filter(({ command, args }) => command === "cargo" && args[0] === "test");
+      assert.deepEqual(failedTests.map(({ args }) => args[args.indexOf("--") - 1]), [...frameLifecycleCases.slice(0, runnerOS === "Linux" ? 2 : 1), requestWriterPanic]);
+      assert.deepEqual(await readdir(fixtureRoot), [], "final panic-test failure must retain owned EXIT cleanup");
     }
     for (const arg of optInArgs) {
       for (const phase of ["report", "build", "test", "input", "source", ...(arg === "practical-retention" ? [] : ["sidecar"])]) {

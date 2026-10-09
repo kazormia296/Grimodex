@@ -244,6 +244,16 @@ test process on a distinct fresh copy. Each copy and the pristine source retain
 checksum/closed-sidecar checks; the original owned cleanup trap remains. This
 branch exits before Q512/default eleven cases; no Gold or practical31 replay.
 
+Finally on every OS, a separate default-feature library test process runs the
+ignored `request_writer_panic_keeps_claim_quarantined_after_handle_consumption`
+regression with the same locked/release/nocapture/single-thread flags, without
+worker or fixture environment assignments. It uses real panic joins and in-memory
+workspace claims to cover both join paths, consumed handles, repeated refusal and
+claim/participant retention after Drop. It deliberately quarantines claims until
+process exit, so it runs last and never shares a test process with the frame cases.
+Failure propagates through the existing script and owned EXIT cleanup. This is
+not external-worker, Native-region, Gold or universal lifecycle evidence.
+
 Partial body must produce no lease, retain the claim through truncated-pipe
 refusal and prove actual exit, necessary EOF and all successful joins before
 reloan. Missing EOF must observe a timely request-bound FRAME+NQGC1 with a live

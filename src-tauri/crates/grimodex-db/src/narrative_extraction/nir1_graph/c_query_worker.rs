@@ -614,6 +614,8 @@ pub struct CQueryWorkerOwner {
     session: Option<ChildSession>,
     #[cfg(any(not(target_os = "linux"), test))]
     request_writer: Option<JoinHandle<RequestWriteCompletion>>,
+    #[cfg(any(not(target_os = "linux"), test))]
+    request_writer_join_failed: bool,
     #[cfg(all(test, target_os = "linux"))]
     threaded_request_writer_for_test: bool,
     #[cfg(test)]
@@ -726,6 +728,8 @@ impl CQueryWorkerOwner {
             session: None,
             #[cfg(any(not(target_os = "linux"), test))]
             request_writer: None,
+            #[cfg(any(not(target_os = "linux"), test))]
+            request_writer_join_failed: false,
             #[cfg(all(test, target_os = "linux"))]
             threaded_request_writer_for_test: false,
             #[cfg(test)]
@@ -822,7 +826,7 @@ impl CQueryWorkerOwner {
     fn request_writer_present(&self) -> bool {
         #[cfg(any(not(target_os = "linux"), test))]
         {
-            self.request_writer.is_some()
+            self.request_writer.is_some() || self.request_writer_join_failed
         }
         #[cfg(all(target_os = "linux", not(test)))]
         {
@@ -2159,6 +2163,10 @@ impl CQueryWorkerOwner {
     #[cfg(any(not(target_os = "linux"), test))]
     fn join_request_writer(&mut self) -> Result<RequestWriteCompletion> {
         ensure!(
+            !self.request_writer_join_failed,
+            "NIR1_GRAPH_WORKER_STDIN_WRITER_PANIC"
+        );
+        ensure!(
             self.request_writer
                 .as_ref()
                 .is_some_and(JoinHandle::is_finished),
@@ -2168,35 +2176,34 @@ impl CQueryWorkerOwner {
             .request_writer
             .take()
             .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_STDIN_WRITER"))?;
-        let result = writer
-            .join()
-            .map_err(|_| anyhow!("NIR1_GRAPH_WORKER_STDIN_WRITER_PANIC"));
+        let result = writer.join().map_err(|_| {
+            // Taking the handle is not successful retirement; retain this
+            // failure through request-path errors and subsequent cleanup.
+            self.request_writer_join_failed = true;
+            anyhow!("NIR1_GRAPH_WORKER_STDIN_WRITER_PANIC")
+        });
         #[cfg(test)]
         {
-            self.test_request_writer_joined = true;
+            self.test_request_writer_joined = result.is_ok();
         }
         result
     }
 
     #[cfg(any(not(target_os = "linux"), test))]
-    fn join_request_writer_if_finished(&mut self) -> bool {
+    fn join_request_writer_if_finished(&mut self) -> Result<bool> {
+        ensure!(
+            !self.request_writer_join_failed,
+            "NIR1_GRAPH_WORKER_STDIN_WRITER_PANIC"
+        );
         let Some(writer) = self.request_writer.as_ref() else {
-            return true;
+            return Ok(true);
         };
         if !writer.is_finished() {
-            return false;
+            return Ok(false);
         }
-        let Some(writer) = self.request_writer.take() else {
-            return true;
-        };
-        if let Ok(completion) = writer.join() {
-            drop(completion.stdin);
-        }
-        #[cfg(test)]
-        {
-            self.test_request_writer_joined = true;
-        }
-        true
+        let completion = self.join_request_writer()?;
+        drop(completion.stdin);
+        Ok(true)
     }
 
     #[cfg(target_os = "linux")]
@@ -2579,7 +2586,7 @@ impl CQueryWorkerOwner {
                 }
             }
             #[cfg(any(not(target_os = "linux"), test))]
-            let request_writer_joined = self.join_request_writer_if_finished();
+            let request_writer_joined = self.join_request_writer_if_finished()?;
             #[cfg(all(target_os = "linux", not(test)))]
             let request_writer_joined = true;
             let reader_finished = self
@@ -3181,6 +3188,78 @@ mod tests {
                 .expect("retired claim releases its exact file lease"),
         );
         std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "isolated panic-join regression; intentionally retains quarantined workspace claims"]
+    fn request_writer_panic_keeps_claim_quarantined_after_handle_consumption() -> Result<()> {
+        use crate::state::{ActiveWorkspace, WorkspaceState};
+        use crate::workspace_lifecycle::{LiveBinding, WorkspaceLifecycleCompatibilityView};
+
+        // Cover both the request-path join and the cleanup-path join. These
+        // are real failed thread joins, not injected successful completions.
+        for join_during_request in [true, false] {
+            let path = std::env::temp_dir().join(format!(
+                "grimodex-c-query-writer-panic-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let authority = WorkspaceAuthority::from_database_for_test(
+                crate::Database::new(std::path::Path::new(":memory:"))?,
+                path.clone(),
+            )?;
+            let state = WorkspaceState {
+                inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
+                safe_mode: crate::recovery::SafeModeState::default(),
+                switching: WorkspaceLifecycleCompatibilityView::new(false),
+                open_lock: std::sync::Mutex::new(Default::default()),
+            };
+            state.lifecycle_core().set_ready(LiveBinding::new(
+                authority.path().to_string_lossy().into_owned(),
+                format!("test-workspace:{}", authority.identity()),
+                authority.identity(),
+                0,
+            ))?;
+            let mut owner = CQueryWorkerOwner::new(
+                crate::state::active_workspace_snapshot(&state)?,
+                PathBuf::new(),
+            );
+            owner.region.claim = Some(
+                authority
+                    .claim_c_query_child()
+                    .ok_or_else(|| anyhow!("test child claim unavailable"))?,
+            );
+            owner.request_writer = Some(thread::Builder::new().spawn(|| {
+                panic!("request writer panic regression");
+            })?);
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !owner.request_writer.as_ref().unwrap().is_finished() {
+                ensure!(Instant::now() < deadline, "panic writer did not finish");
+                thread::park_timeout(POLL_INTERVAL);
+            }
+            let error = if join_during_request {
+                owner.join_request_writer().map(|_| ())
+            } else {
+                owner.join_request_writer_if_finished().map(|_| ())
+            }
+            .expect_err("a failed writer join must not prove cleanup");
+            assert!(error.to_string().contains("NIR1_GRAPH_WORKER_STDIN_WRITER_PANIC"));
+            assert!(owner.request_writer.is_none());
+            assert!(owner.request_writer_present());
+            assert!(!owner.request_writer_joined_for_test());
+            assert!(owner.join_request_writer_if_finished().is_err());
+            assert!(owner.join_request_writer().is_err());
+            let error = owner.cleanup_error(error);
+            assert!(error.to_string().contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"));
+            assert!(owner.region.quarantined);
+            assert!(!owner.cleanup_proved_for_test());
+            assert!(authority.claim_c_query_child().is_none());
+            drop(owner);
+            assert!(authority.claim_c_query_child().is_none());
+            assert_eq!(state.lifecycle_core().workspace_participant_count()?, 1);
+            // The process owns the intentionally retained claim/participant;
+            // no external child, fixture deletion, reloan or replacement here.
+        }
         Ok(())
     }
 

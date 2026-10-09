@@ -145,6 +145,11 @@ if [[ "${1:-}" == frame-lifecycle ]]; then
     test "$(cksum < "$q2_fixture_file")" = "$q2_fixture_checksum"
     assert_closed_fixture "$q2_fixture_file"
   fi
+  # This regression intentionally retains quarantined claims until process exit.
+  # Keep it last and in its own test process on every OS.
+  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --lib request_writer_panic_keeps_claim_quarantined_after_handle_consumption \
+    -- --ignored --nocapture --test-threads=1
   exit 0
 fi
 
