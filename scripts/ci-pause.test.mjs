@@ -19,6 +19,7 @@ import {
   collectFullLocations,
   canonicalSystemPackages,
   coldSystemPackages,
+  coldSystemSolverFormat,
   systemPackageSizes,
   fullPreparation,
   fullSetupLocations,
@@ -1281,10 +1282,36 @@ test("cold canonical system reference derives exact source requests and rejects 
   }
 });
 
+test("cold solver rejection projects syntax without exposing text or accepting guessed grammar", () => {
+  const valid = "Inst sample (1:2.3-4 Ubuntu:24.04/noble [amd64])";
+  assert.deepEqual(coldSystemSolverFormat(`${valid}\nConf sample\n`), { installLines: 1, rejectedLines: 0, firstRejected: null });
+  // Synthetic hypothesis, NOT the unobserved hosted rejection. Observe it but
+  // keep refusing it until the actual runner's safe format evidence is acquired.
+  const rejected = "Inst sample (1:2.3-4 PRIVATE_ORIGIN https://private.invalid/token [amd64]) []";
+  const projection = coldSystemSolverFormat(`Reading package lists...\n${valid}\n${rejected}\nInst ../PRIVATE_PATH unexpected\n`);
+  assert.deepEqual(projection, { installLines: 3, rejectedLines: 2, firstRejected: {
+    lineNumber: 3, bytes: Buffer.byteLength(rejected), sha256: createHash("sha256").update(rejected).digest("hex"),
+    coldPrefix: true, ending: "architecture-close-empty-brackets",
+  } });
+  assert.doesNotMatch(JSON.stringify(projection), /sample|1:2\.3-4|PRIVATE|https:|amd64/u);
+  for (const line of [rejected, "Inst ../PRIVATE_PATH unexpected", `${valid} [PRIVATE_SUFFIX]`, "Inst sample (1 origin [amd64])\r", "Inst sample (1 origin [amd64]) https://private.invalid"]) {
+    const format = coldSystemSolverFormat(line);
+    assert.equal(format.rejectedLines, 1);
+    assert.doesNotMatch(JSON.stringify(format), /PRIVATE|https:|private\.invalid/u);
+    assert.throws(() => coldSystemPackages(line), /recognized cold APT/u);
+  }
+  assert.deepEqual(coldSystemSolverFormat("PRIVATE_NOT_AN_INSTALL\n"), { installLines: 0, rejectedLines: 0, firstRejected: null });
+  assert.deepEqual(coldSystemPackages(valid), [{ package: "sample", version: "1:2.3-4", architecture: "amd64" }]);
+});
+
 test("canonical prerequisite reference is isolated from Full ingestion and heavy effects", async () => {
   const helper = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
   const reference = helper.slice(helper.indexOf("export async function stageFullSystemReference"), helper.indexOf("// Installed components"));
-  for (const required of ["--simulate", "Debug::NoLocking=1", "Dir::State::status=/dev/null", "Dir::Cache::pkgcache=", "Dir::Cache::srcpkgcache=", "--no-install-recommends", "--no-all-versions", "setup-reference.json", "logJoins", "error.lateClose"]) assert.ok(reference.includes(required), required);
+  for (const required of ["--simulate", "Debug::NoLocking=1", "Dir::State::status=/dev/null", "Dir::Cache::pkgcache=", "Dir::Cache::srcpkgcache=", "--no-install-recommends", "--no-all-versions", "setup-reference.json", "setup-solver-format.json", "logJoins", "error.lateClose"]) assert.ok(reference.includes(required), required);
+  const projection = reference.indexOf('await durableJson(path.join(directory, "setup-solver-format.json")');
+  const parsing = reference.indexOf("const packages = coldSystemPackages(solution)");
+  assert.ok(projection < parsing && parsing < reference.indexOf('await run("system-cold-sizes"'));
+  assert.match(reference.slice(projection, parsing), /signal\?\.throwIfAborted\(\)/u);
   assert.doesNotMatch(reference, /admitted:|acquireWorkloadInput|produceWorkloadEstimate|admitFullResources|admitFullSetup|sudo|apt-get update/u);
   assert.ok(helper.indexOf('if (phase === "setup-reference") return') < helper.indexOf("({ input, estimate } = await acquireWorkloadInput"));
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");

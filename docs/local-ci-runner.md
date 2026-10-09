@@ -622,8 +622,16 @@ or missing size fields retain the fence, with no retry/reentry/recovery. The
 structured reference binds source hashes and exact current run/attempt/candidate,
 and records complete child log size/hash metadata. Only structured phase JSON is
 uploaded under the existing canonical artifact name; private command log bodies
-are retained locally on that runner, not published. Even successful acquisition
-is immediately followed by the unchanged Full refusal, before every installer.
+are retained locally on that runner, not published. Before strict tuple parsing,
+`setup-solver-format.json` preserves actual install/rejection counts and the first
+rejected line's position, byte length, hash and fixed syntax labels, bound to the
+successful solver's complete log sizes/hashes. No solver text, package/version,
+origin or trailing annotation is copied into that diagnostic. It is not accepted
+tuples or a size reference; a rejection still stops before the metadata query and
+`setup-reference.json`. Unknown syntax stays rejected, rather than silently
+accepting a guessed explanation for a previous hosted failure. Even successful
+acquisition is immediately followed by the unchanged Full refusal, before every
+installer.
 Candidate-untouched changed-unit P2 review is required before checkpoint/hosted
 execution; future actual installer/build sizing and applicable quotas/capacity/
 exclusion remain independently necessary before those heavy operations.

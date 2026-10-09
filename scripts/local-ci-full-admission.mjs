@@ -91,10 +91,31 @@ export function canonicalSystemPackages(workflow) {
   return packages;
 }
 
+const coldSystemTuple = /^Inst ([a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?) \(([a-zA-Z0-9.+:~_-]+) .*\[([a-z0-9]+)\]\)$/u;
+
+// Observe the failing grammar without publishing a solver line or relaxing it.
+// All syntax labels are fixed; no captured package/version/origin/tail is emitted.
+export function coldSystemSolverFormat(solution) {
+  let installLines = 0, rejectedLines = 0, firstRejected = null;
+  for (const [index, line] of solution.split("\n").entries()) {
+    if (!/^Inst\b/u.test(line)) continue;
+    installLines++;
+    if (coldSystemTuple.test(line)) continue;
+    rejectedLines++;
+    if (firstRejected) continue;
+    const coldPrefix = /^Inst [a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)? \([a-zA-Z0-9.+:~_-]+ /u.test(line);
+    const tail = line.match(/ \[[a-z0-9]+\]\)(.*)$/u);
+    const ending = !tail ? "unrecognized" : tail[1] === "" ? "architecture-close"
+      : tail[1] === " []" ? "architecture-close-empty-brackets" : "unrecognized";
+    firstRejected = { lineNumber: index + 1, bytes: Buffer.byteLength(line), sha256: createHash("sha256").update(line).digest("hex"), coldPrefix, ending };
+  }
+  return { installLines, rejectedLines, firstRejected };
+}
+
 export function coldSystemPackages(solution) {
   const packages = [];
   for (const line of solution.split("\n").filter((line) => /^Inst\b/u.test(line))) {
-    const match = line.match(/^Inst ([a-z0-9][a-z0-9+.-]*(?::[a-z0-9]+)?) \(([a-zA-Z0-9.+:~_-]+) .*\[([a-z0-9]+)\]\)$/u);
+    const match = line.match(coldSystemTuple);
     if (!match) fail("recognized cold APT package/version/architecture tuples");
     packages.push({ package: match[1], version: match[2], architecture: match[3] });
   }
@@ -138,7 +159,16 @@ export async function stageFullSystemReference(options) {
     // No root cache generation/lock or network activity, even on an empty cache.
     const cacheOptions = ["-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache="];
     const solve = await run("system-cold-solution", { command: "apt-get", args: [...cacheOptions, "-o", "Debug::NoLocking=1", "-o", "Dir::State::status=/dev/null", "--simulate", "--no-install-recommends", "install", ...requested], env: { LC_ALL: "C" } }, 30_000, signal, false);
-    const packages = coldSystemPackages(await readFile(path.resolve(root, solve.logs.stdout.path), "utf8"));
+    const solution = await readFile(path.resolve(root, solve.logs.stdout.path), "utf8");
+    signal?.throwIfAborted();
+    await durableJson(path.join(directory, "setup-solver-format.json"), {
+      binding, sources, requested, format: coldSystemSolverFormat(solution),
+      child: { exitCode: solve.exitCode, closeObserved: solve.closeObserved, cleanup: solve.cleanup,
+        logJoins: Object.fromEntries(Object.entries(solve.logs).map(([stream, log]) => [stream, { size: log.size, sha256: log.sha256 }])) },
+      scope: "Redacted cold solver syntax only, before strict parsing. Not accepted tuples, a size reference or Full/B admission; complete private log bodies are not published.",
+    });
+    signal?.throwIfAborted();
+    const packages = coldSystemPackages(solution);
     const sizes = await run("system-cold-sizes", { command: "apt-cache", args: [...cacheOptions, "--no-all-versions", "show", ...packages.map((entry) => `${entry.package}=${entry.version}`)], env: { LC_ALL: "C" } }, 30_000, signal, false);
     const reference = systemPackageSizes(packages, await readFile(path.resolve(root, sizes.logs.stdout.path), "utf8"));
     signal?.throwIfAborted();
