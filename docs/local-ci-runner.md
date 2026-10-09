@@ -672,12 +672,16 @@ while root/home pressure remains separately observed. All retained, transient,
 failure-copy and uncertainty terms are summed conservatively per device; no
 fixed GB/percentage/inode threshold or serial-execution assumption is used.
 
-Before setup, the existing helper constructs
-`.artifacts/local-ci/full-workload-estimate.json` from reviewed physical allocation
-inventories in `.artifacts/local-ci/full-workload-input.json`. Both are **internal
-risk data**, not canonical receipts or admission Booleans. The producer is connected
-inside the existing durable setup owner; missing necessary numerical facts name the
-required inventory/acquisition operation and stop before installations. No nominal
+Before setup, the existing helper ingests the fixed Git-tracked dataset
+`scripts/local-ci-full-workload-allocation.json`, validates its reviewed physical
+allocation inventories, and exclusively creates
+`.artifacts/local-ci/full-workload-input.json` and `full-workload-estimate.json`
+inside the existing durable setup owner. These are **internal risk data**, not
+canonical receipts or admission Booleans. The canonical pre-install `--setup`
+invocation performs this ingestion itself; a fresh checkout does not need an
+ignored input already bound to an unknowable future run. Missing necessary
+numerical facts name the required dataset/inventory acquisition operation and
+stop before installations. No nominal
 estimate, old local capacity, zero residual or default coefficient is supplied.
 The generated estimate contains:
 
@@ -698,12 +702,48 @@ The generated estimate contains:
   logs/reports. Build terms connect to actual same-job preparation observations
   through `measurement: { preparationId, mode: retained | peak, location }`.
 
+### Reviewed allocation ingestion
+
+The fixed dataset uses `full-workload-allocation/1` and exactly these keys:
+`version`, `registryDigest`, `maxParallelTasks`, `sources`, `inventories`, `setup`,
+`preparation`, `tasks`. The final five fields have the input structure below;
+registry digest and scheduler option must match the current invocation. It has
+**no** supplied base/head/tree/run/attempt binding, executable command, URL,
+admission flag or copy multiplier. The existing setup owner constructs the exact
+current binding after its supervised clean-candidate/ancestry checks.
+
+Dataset bytes must equal `git show <current-head>:<fixed-path>` and its tracked
+mode must be a regular file. All sizing sources must be distinct, Git-tracked,
+non-symlink regular files inside the checkout, with current SHA-256 digests. In
+addition to workflow/registry/fixture/journey sources, ingestion requires the
+admission/filesystem/supervisor/plan/runner source, package manifest/pnpm lock and
+both shared/native Cargo manifests/locks. The dataset is excluded from its own
+source list to avoid a self-referential hash; its exact byte digest is recorded
+separately in the private setup `workload-acquisition.json`.
+
+The complete producer validates all required allocation quantities/roles/recipes
+**before** creating run input. Input, estimate and acquisition record use exclusive
+`wx`, mode0600, file and directory fsync, and cancellation checks before success.
+The acquisition record binds dataset/input/estimate digests and the current run.
+Preparation re-ingests the same committed dataset and verifies this record and
+byte-identical input/estimate before imports or heavy work. Missing/partial/stale
+records reject; failed or cancelled writes retain the phase owner and outputs.
+There is no overwrite, retry, reentry or stale-owner/restart recovery path.
+
+The dataset must be populated through actual public/synthetic physical allocation
+observations or justified source-grounded cold-operation forecasts and independent
+review. This source connection does **not** supply missing numerical inventories:
+no dataset is manufactured from the synthetic contract numbers, source lengths or
+compressed artifact sizes. No new profile, job, dispatch input, external download
+or configuration fallback is added. Both Full fences and separate B/Editor
+prerequisites remain until their actual gates close.
+
 ### Constructive workload-risk producer
 
 `produceWorkloadEstimate` in the existing admission helper uses only Node stdlib
 and the existing dependency-free product-journey catalog before installations.
-The reviewed `full-workload-input/1` input has the same exact `binding` and current
-`sources` as the generated estimate, plus:
+The exclusively generated `full-workload-input/1` input has the same exact
+current-run `binding` and reviewed current `sources` as the estimate, plus:
 
 - `inventories`: distinct `{ id, sources, basis, operation, items }` records.
   Each item names a distinct physical allocation `role` and decimal-string

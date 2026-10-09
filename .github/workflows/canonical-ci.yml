@@ -84,6 +84,10 @@ jobs:
 
       # Use only the runner's preinstalled Node/Python/git here. Full's setup
       # downloads, caches, extraction and logs must be assessed BEFORE they start.
+      # The setup helper ingests the fixed Git-tracked reviewed allocation dataset
+      # scripts/local-ci-full-workload-allocation.json and exclusively creates
+      # current-run input/estimate under its existing durable setup owner. Missing
+      # numerical acquisition rejects here; no external data/config or fallback.
       - name: Assess Full setup risk before installations
         id: full_setup
         if: inputs.profile == 'full'

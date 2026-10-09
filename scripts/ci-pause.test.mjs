@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 import yaml from "js-yaml";
 import { buildLocalCiPlan } from "./local-ci.mjs";
 import {
+  acquireWorkloadInput,
   assertPreparationEnvelope,
   assessFullDemand,
   assessFullSetupDemand,
@@ -20,6 +21,7 @@ import {
   produceWorkloadEstimate,
   resolveObservedResidual,
   validateWorkloadEstimate,
+  validateWorkloadAcquisition,
   validateFullSetupDecision,
   validateFullSetupEstimate,
   validateFullSetupLocations,
@@ -1273,7 +1275,7 @@ test("Full workload-risk ledger rejects missing consumers, sizing, source freshn
   } finally { await rm(temporary, { recursive: true, force: true }); }
 });
 
-test("Full producer constructs complete source-derived coexistence demand and rejects missing numerical facts", async () => {
+test("Full producer acquires reviewed tracked data exclusively and constructs complete coexistence demand without missing-fact defaults", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), "full-producer-contract-"));
   try {
     const paths = [
@@ -1283,6 +1285,9 @@ test("Full producer constructs complete source-derived coexistence demand and re
       "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",
       "electron/scripts/product-journey-harness.mjs", "electron/scripts/product-journey-catalog.mjs",
       "src/features/chat/chatScopeRegistry.json",
+      "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-process-supervisor.mjs",
+      "scripts/local-ci.mjs", "scripts/local-ci-runner.mjs", "package.json", "pnpm-lock.yaml",
+      "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "electron/native/grimodex-node/Cargo.toml", "electron/native/grimodex-node/Cargo.lock",
     ];
     const sources = [];
     for (const relative of paths) {
@@ -1294,7 +1299,7 @@ test("Full producer constructs complete source-derived coexistence demand and re
     const registry = JSON.parse(await readFile(path.join(temporary, "scripts/local-ci-registry.json"), "utf8"));
     const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
     const preparation = fullPreparation(plan);
-    const binding = { head: "b".repeat(40), runId: "1", attempt: "1" };
+    const binding = { head: "b".repeat(40), registryDigest: plan.registryDigest, maxParallelTasks: 12, runId: "1", attempt: "1" };
     const { PRODUCT_JOURNEY_CATALOG } = await import("../electron/scripts/product-journey-catalog.mjs");
     // Invented small numbers are EXCLUSIVELY synthetic tests, never admission
     // defaults. No fixture construction, build, quota probe or app is executed.
@@ -1407,6 +1412,112 @@ test("Full producer constructs complete source-derived coexistence demand and re
       mutate(malformed);
       await assert.rejects(produce(malformed), /\[precheck\]/u);
     }
+    // Exercise the actual dependency-free ingestion/filesystem writer with a
+    // real disposable Git candidate. All numerical values remain synthetic.
+    const allocationPath = "scripts/local-ci-full-workload-allocation.json";
+    const allocationFile = path.join(temporary, allocationPath);
+    const data = {
+      version: "full-workload-allocation/1", registryDigest: binding.registryDigest, maxParallelTasks: binding.maxParallelTasks,
+      sources: input.sources, inventories: input.inventories, setup: input.setup, preparation: input.preparation, tasks: input.tasks,
+    };
+    const directory = path.join(temporary, ".artifacts/local-ci/full-admission/1-1-setup");
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const git = async (...args) => (await promisify(execFile)("git", args, { cwd: temporary, timeout: 10000 })).stdout;
+    await git("init", "--initial-branch=contract");
+    await git("config", "user.name", "Synthetic contract");
+    await git("config", "user.email", "synthetic@example.invalid");
+    const run = async (_id, command) => {
+      assert.equal(command.command, "git");
+      return git(...command.args);
+    };
+    const acquire = (signal, runner = run) => acquireWorkloadInput({ root: temporary, binding, directory, run: runner, signal, setupLocations: locations });
+    const persistedInput = path.join(temporary, ".artifacts/local-ci/full-workload-input.json");
+    const persistedEstimate = path.join(temporary, ".artifacts/local-ci/full-workload-estimate.json");
+    await assert.rejects(acquire(), /acquire and independently review physical/u);
+    await writeFile(allocationFile, JSON.stringify(data));
+    await assert.rejects(acquire(), /tracked by this clean candidate/u);
+    await git("add", "--", ...paths, allocationPath);
+    await git("commit", "-m", "synthetic reviewed allocation dataset");
+    binding.head = (await git("rev-parse", "HEAD")).trim();
+    await writeFile(allocationFile, `${JSON.stringify(data)}\n`);
+    await assert.rejects(acquire(), /byte-identical/u);
+    await rm(allocationFile);
+    await symlink(path.join(temporary, paths[0]), allocationFile);
+    await assert.rejects(acquire(), /without symlink placement/u);
+    await rm(allocationFile);
+    // Even committed malformed/stale data must fail BEFORE creating run input.
+    for (const mutate of [
+      (value) => { value.binding = binding; },
+      (value) => { value.admitted = true; },
+      (value) => { value.registryDigest = "sha256:stale"; },
+      (value) => { value.maxParallelTasks = 1; },
+      (value) => { value.sources = value.sources.filter(({ path: name }) => name !== "pnpm-lock.yaml"); },
+      (value) => { value.sources.push(value.sources[0]); },
+      (value) => { value.sources[0].sha256 = "0".repeat(64); },
+      (value) => { value.inventories = value.inventories.filter(({ id }) => id !== "worker.q2"); },
+    ]) {
+      const malformed = structuredClone(data);
+      mutate(malformed);
+      await writeFile(allocationFile, JSON.stringify(malformed));
+      await git("add", "--", allocationPath);
+      await git("commit", "-m", "synthetic malformed allocation adversary");
+      binding.head = (await git("rev-parse", "HEAD")).trim();
+      await assert.rejects(acquire(), /\[precheck\]/u);
+      await assert.rejects(access(persistedInput), { code: "ENOENT" });
+    }
+    await writeFile(allocationFile, JSON.stringify(data));
+    await git("add", "--", allocationPath);
+    await git("commit", "-m", "synthetic valid allocation restoration");
+    binding.head = (await git("rev-parse", "HEAD")).trim();
+    const cancelled = new AbortController();
+    cancelled.abort();
+    await assert.rejects(acquire(cancelled.signal), { name: "AbortError" });
+    const pending = new AbortController();
+    await assert.rejects(acquire(pending.signal, async (id, command) => {
+      const result = await run(id, command);
+      if (id === "allocation-committed") pending.abort();
+      return result;
+    }), { name: "AbortError" });
+    await assert.rejects(access(persistedInput), { code: "ENOENT" });
+    // A partial/ambiguous write cannot overwrite an earlier estimate or revive.
+    await writeFile(persistedEstimate, "retained previous owner", { flag: "wx" });
+    await assert.rejects(acquire(), { code: "EEXIST" });
+    assert.equal(await readFile(persistedEstimate, "utf8"), "retained previous owner");
+    const retainedInput = await readFile(persistedInput, "utf8");
+    await assert.rejects(acquire(), { code: "EEXIST" });
+    assert.equal(await readFile(persistedInput, "utf8"), retainedInput);
+    await assert.rejects(access(path.join(directory, "workload-acquisition.json")), { code: "ENOENT" });
+    // Isolated synthetic next owner only: production has NO recovery/removal.
+    const nextRoot = await mkdtemp(path.join(tmpdir(), "full-acquisition-owner-contract-"));
+    try {
+      await git("clone", "--no-hardlinks", temporary, nextRoot);
+      const nextDirectory = path.join(nextRoot, ".artifacts/local-ci/full-admission/1-1-setup");
+      await mkdir(nextDirectory, { recursive: true, mode: 0o700 });
+      const nextRun = async (_id, command) => (await promisify(execFile)(command.command, command.args, { cwd: nextRoot, timeout: 10000 })).stdout;
+      const next = () => acquireWorkloadInput({ root: nextRoot, binding, directory: nextDirectory, run: nextRun, setupLocations: locations });
+      const result = await next();
+      const receipt = JSON.parse(await readFile(path.join(nextDirectory, "workload-acquisition.json"), "utf8"));
+      const current = { input: result.input, allocation: { path: allocationPath, sha256: createHash("sha256").update(await readFile(allocationFile)).digest("hex") } };
+      validateWorkloadAcquisition(receipt, current, result.input, result.estimate, binding);
+      for (const file of ["full-workload-input.json", "full-workload-estimate.json", "full-admission/1-1-setup/workload-acquisition.json"]) assert.equal((await stat(path.join(nextRoot, ".artifacts/local-ci", file))).mode & 0o777, 0o600);
+      assert.deepEqual(result.input.binding, binding);
+      assert.equal(result.input.version, "full-workload-input/1");
+      await assert.rejects(next(), { code: "EEXIST" });
+      for (const mutate of [
+        (value) => { value.state = "pending"; },
+        (value) => { value.binding.attempt = "2"; },
+        (value) => { value.allocation.sha256 = "0".repeat(64); },
+        (value) => { value.inputDigest = "0".repeat(64); },
+        (value) => { value.estimateDigest = "0".repeat(64); },
+      ]) {
+        const stale = structuredClone(receipt);
+        mutate(stale);
+        assert.throws(() => validateWorkloadAcquisition(stale, current, result.input, result.estimate, binding), /unchanged reviewed allocation/u);
+      }
+      const changedInput = structuredClone(result.input);
+      changedInput.tasks.pop();
+      assert.throws(() => validateWorkloadAcquisition(receipt, { ...current, input: changedInput }, result.input, result.estimate, binding), /unchanged reviewed allocation/u);
+    } finally { await rm(nextRoot, { recursive: true, force: true }); }
     // Different source copy topology must change sizing, not a fixed multiplier.
     const workerPath = path.join(temporary, "scripts/nir1-c-query-worker-ci.sh");
     await writeFile(workerPath, `${await readFile(workerPath, "utf8")}\ncp -- "$q2_fixture_file" "$synthetic_extra_input"\n`);

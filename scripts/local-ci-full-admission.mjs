@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, open, readFile, realpath, statfs } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, realpath, statfs } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -76,6 +76,9 @@ const domains = ["build-link-doctest", "fixtures-db-wal-backup", "failure-tmproo
 
 const workloadInputPath = ".artifacts/local-ci/full-workload-input.json";
 const workloadEstimatePath = ".artifacts/local-ci/full-workload-estimate.json";
+// Reviewable data in the candidate, never an ignored pre-bound run record or an
+// external URL/configuration option. Actual numerical acquisition is required.
+const workloadAllocationPath = "scripts/local-ci-full-workload-allocation.json";
 // Installed components have finite destinations fixed by canonical action inputs
 // and consumer settings. Download/extraction may additionally use observed temp
 // roots; complete local logs belong to the workspace evidence tree.
@@ -512,6 +515,59 @@ async function durableJson(file, data) {
   try { await directory.sync(); } finally { await directory.close(); }
 }
 
+async function readWorkloadAllocation(root, binding, run) {
+  let bytes;
+  try {
+    const file = path.join(root, workloadAllocationPath);
+    if (!(await lstat(file)).isFile() || await realpath(file) !== path.join(await realpath(root), workloadAllocationPath)) fail("a regular allocation dataset inside this checkout, without symlink placement");
+    bytes = await readFile(file);
+  } catch (error) {
+    if (error.message?.startsWith("[precheck]")) throw error;
+    fail(`acquire and independently review physical installer/build/fixture/failure/log byte/inode inventories and justified additive uncertainty in the tracked ${workloadAllocationPath} before Full setup`);
+  }
+  const tracked = (await run("allocation-tracked", { command: "git", args: ["ls-files", "--stage", "--", workloadAllocationPath] })).trim();
+  if (!/^100(644|755) [0-9a-f]{40} 0\tscripts\/local-ci-full-workload-allocation\.json$/u.test(tracked)) fail("the regular reviewed allocation dataset tracked by this clean candidate");
+  const committed = await run("allocation-committed", { command: "git", args: ["show", `${binding.head}:${workloadAllocationPath}`] });
+  if (!bytes.equals(Buffer.from(committed))) fail("allocation data byte-identical to the current candidate, not an untracked or changed inventory");
+  let data;
+  try { data = JSON.parse(bytes.toString("utf8")); }
+  catch { fail(`valid reviewed physical allocation JSON in ${workloadAllocationPath}`); }
+  const keys = ["version", "registryDigest", "maxParallelTasks", "sources", "inventories", "setup", "preparation", "tasks"];
+  if (!data || Array.isArray(data) || digest(Object.keys(data).sort()) !== digest(keys.sort()) || data.version !== "full-workload-allocation/1") fail("the finite reviewed allocation schema, without a supplied candidate/run binding, command or admission flag");
+  if (data.registryDigest !== binding.registryDigest || data.maxParallelTasks !== binding.maxParallelTasks) fail("allocation recipes for the current registry and exact scheduler option");
+  const input = { version: "full-workload-input/1", binding, sources: data.sources, inventories: data.inventories, setup: data.setup, preparation: data.preparation, tasks: data.tasks };
+  await validateEstimateIdentity(input, binding, root);
+  const required = ["scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-process-supervisor.mjs", "scripts/local-ci.mjs", "scripts/local-ci-runner.mjs", "package.json", "pnpm-lock.yaml", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "electron/native/grimodex-node/Cargo.toml", "electron/native/grimodex-node/Cargo.lock"];
+  if (new Set(input.sources.map(({ path: name }) => name)).size !== input.sources.length || input.sources.some(({ path: name }) => name === workloadAllocationPath)) fail("distinct sizing sources without a self-referential dataset digest");
+  for (const name of required) if (!input.sources.some((entry) => entry.path === name)) fail(`current acquisition/build/dependency sizing source ${name}`);
+  for (const [index, source] of input.sources.entries()) {
+    const file = path.resolve(root, source.path);
+    if (!(await lstat(file)).isFile() || await realpath(file) !== path.join(await realpath(root), source.path)) fail(`regular sizing source without symlink placement: ${source.path}`);
+    await run(`allocation-source-${index}`, { command: "git", args: ["ls-files", "--error-unmatch", "--", source.path] });
+  }
+  return { input, allocation: { path: workloadAllocationPath, sha256: createHash("sha256").update(bytes).digest("hex") } };
+}
+
+export function validateWorkloadAcquisition(acquired, current, input, estimate, binding) {
+  if (acquired?.state !== "created" || digest(acquired.binding) !== digest(binding) || digest(acquired.allocation) !== digest(current.allocation) || acquired.inputDigest !== digest(input) || digest(current.input) !== digest(input) || acquired.estimateDigest !== digest(estimate) || estimate.inputDigest !== digest(input)) fail("unchanged reviewed allocation dataset, current-run input and estimate after setup");
+}
+
+// Same durable setup owner calls this once. All quantities and sources are
+// validated before input creation; partial writes retain the owner's fence.
+export async function acquireWorkloadInput({ root, binding, directory, run, signal, setupLocations }) {
+  signal?.throwIfAborted();
+  const { input, allocation } = await readWorkloadAllocation(root, binding, run);
+  const estimate = await produceWorkloadEstimate(input, binding, root, setupLocations);
+  signal?.throwIfAborted();
+  await durableJson(path.join(root, workloadInputPath), input);
+  signal?.throwIfAborted();
+  await durableJson(path.join(root, workloadEstimatePath), estimate);
+  signal?.throwIfAborted();
+  await durableJson(path.join(directory, "workload-acquisition.json"), { binding, allocation, inputDigest: digest(input), estimateDigest: digest(estimate), state: "created" });
+  signal?.throwIfAborted();
+  return { input, estimate };
+}
+
 async function openAdmission({ root, base, head, maxParallelTasks, signal }, phase) {
   await hostedJobIsolation();
   if (![base, head].every((id) => /^[0-9a-f]{40}$/u.test(id)) || head !== process.env.GITHUB_SHA) fail("the expanded immutable candidate tuple");
@@ -533,26 +589,22 @@ async function openAdmission({ root, base, head, maxParallelTasks, signal }, pha
     await run("identity-ancestry", { command: "git", args: ["merge-base", "--is-ancestor", base, head] });
     const binding = { base, head, tree, registryDigest: `sha256:${digest(registry)}`, maxParallelTasks, runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT };
     await durableJson(path.join(directory, "owner.json"), { binding, state: `possible-${phase}` });
-    let input;
-    try { input = JSON.parse(await readFile(path.join(root, workloadInputPath), "utf8")); }
-    catch { fail(`reviewed physical materialization/build/link/fixture/failure-copy/log inventories at ${workloadInputPath}; acquire payload/extraction allocation, synthetic DB/WAL/backup coexistence and justified additive uncertainty before setup`); }
     signal?.throwIfAborted();
-    let estimate;
+    let input, estimate;
     if (phase === "setup") {
-      estimate = await produceWorkloadEstimate(input, binding, root);
-      signal?.throwIfAborted();
-      // wx+file/directory fsync; a failed/uncertain generation never overwrites
-      // an earlier record or permits repeated setup on this same run/attempt.
-      await durableJson(path.join(root, workloadEstimatePath), estimate);
+      ({ input, estimate } = await acquireWorkloadInput({ root, binding, directory, run, signal }));
     } else {
-      try { estimate = JSON.parse(await readFile(path.join(root, workloadEstimatePath), "utf8")); }
-      catch { fail("the actual initial-setup generated workload estimate, without regeneration or stale transfer"); }
-      if (estimate.inputDigest !== digest(input)) fail("unchanged reviewed workload inventories after setup");
+      let acquired;
+      try {
+        input = JSON.parse(await readFile(path.join(root, workloadInputPath), "utf8"));
+        estimate = JSON.parse(await readFile(path.join(root, workloadEstimatePath), "utf8"));
+        acquired = JSON.parse(await readFile(path.join(`${directory}-setup`, "workload-acquisition.json"), "utf8"));
+      } catch { fail("the exclusively created same-job input/estimate/acquisition receipt, without regeneration or stale transfer"); }
+      const current = await readWorkloadAllocation(root, binding, run);
+      validateWorkloadAcquisition(acquired, current, input, estimate, binding);
     }
+    signal?.throwIfAborted();
     await validateEstimateIdentity(estimate, binding, root);
-    for (const [index, source] of estimate.sources.entries()) {
-      await run(`sizing-source-${index}`, { command: "git", args: ["ls-files", "--error-unmatch", "--", source.path] });
-    }
     return { directory, registry, run, binding, estimate };
   } catch (error) {
     if (error.lateClose) await error.lateClose;
