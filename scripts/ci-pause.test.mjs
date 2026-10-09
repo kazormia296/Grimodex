@@ -1985,8 +1985,10 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
   const steps = workflow.jobs.canonical.steps;
   const selection = steps.find(({ name }) => name === "Validate canonical selection");
+  const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
   const canonical = steps.find(({ id }) => id === "canonical");
   assert.equal(selection.if, undefined);
+  assert.equal(stop.if, "inputs.profile == 'full'");
   assert.equal(canonical.if, "inputs.profile != 'contracts'");
   assert.deepEqual(canonical.env, selection.env);
   assert.match(canonical.run, /readonly candidate_base=/u);
@@ -2020,7 +2022,11 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
     const sha = (await git("rev-parse", "HEAD")).stdout.trim();
     const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls, INSPECTION_CALLS: inspectionCalls, INSPECTION_UNAVAILABLE: "0", PROFILE: "quick", REQUESTED_BASE: sha, EXPECTED_HEAD: sha, GITHUB_SHA: sha, MAX_PARALLEL_TASKS: "3", FAIL_PROFILE: "0" };
     const shell = (source, overrides = {}) => execute("bash", ["-c", source], { cwd, env: { ...env, ...overrides }, timeout: 10000 });
-    await assert.rejects(shell(steps[0].run));
+    await assert.rejects(shell(stop.run), (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /\[precheck\] Full requires candidate acceptance\/freeze, prerequisite closure and actual-runner resource-isolation admission/u);
+      return true;
+    });
     await assert.rejects(access(calls));
     await assert.rejects(access(inspectionCalls));
     await shell(selection.run);
