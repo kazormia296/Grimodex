@@ -110,6 +110,7 @@ jobs:
           done
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        id: pnpm_setup
         with:
           version: 10.33.0
           dest: ${{ env.FULL_PNPM_DEST || '~/setup-pnpm' }}
@@ -158,6 +159,19 @@ jobs:
           printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" \
             > .artifacts/canonical-source/checkout-identity.json
 
+      # Only metadata of public payloads already installed above; no cold Full,
+      # extra installation, broad HOME/temp scan, fixture, bus or Editor run.
+      - name: Observe grouped canonical setup allocation
+        id: setup_observation
+        if: inputs.profile == 'contracts'
+        env:
+          SETUP_OBSERVATION_PROFILE: ${{ inputs.profile }}
+          PNPM_OBSERVATION_DEST: ${{ steps.pnpm_setup.outputs.dest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/local-ci-setup-observation.mjs installed
+
       - name: Canonical connection source contracts
         id: contracts
         if: inputs.profile == 'contracts'
@@ -192,14 +206,24 @@ jobs:
           pnpm "ci:local:$PROFILE" -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
           pnpm ci:local:verify -- "$PROFILE" --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
 
+      - name: Observe canonical local report allocation
+        if: always() && inputs.profile == 'contracts' && steps.contracts.outcome != 'skipped'
+        env:
+          SETUP_OBSERVATION_PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/local-ci-setup-observation.mjs reports
+
       - name: Upload canonical connection source contracts
-        if: always() && steps.contracts.outcome != 'skipped'
+        if: always() && inputs.profile == 'contracts' && (steps.setup_observation.outcome != 'skipped' || steps.contracts.outcome != 'skipped')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: canonical-source-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .artifacts/canonical-source/checkout-identity.json
             .artifacts/canonical-source/contracts.tap
+            .artifacts/canonical-source/allocation-*.json
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

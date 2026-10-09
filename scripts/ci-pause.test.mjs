@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 
 import yaml from "js-yaml";
 import { buildLocalCiPlan } from "./local-ci.mjs";
+import { normalizedDestination } from "./local-ci-setup-observation.mjs";
 import {
   acquireWorkloadInput,
   assertPreparationEnvelope,
@@ -992,6 +993,100 @@ else if (args[0] === 'run') {
   }
 });
 
+test("grouped setup observations preserve contracts/defaults and exclude other profiles", async () => {
+  const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
+  const observation = steps.find(({ id }) => id === "setup_observation");
+  assert.equal(observation.if, "inputs.profile == 'contracts'");
+  assert.equal(observation.env.PNPM_OBSERVATION_DEST, "${{ steps.pnpm_setup.outputs.dest }}");
+  const pnpm = steps.find(({ id }) => id === "pnpm_setup");
+  assert.equal(pnpm.with.version, "10.33.0");
+  assert.ok(steps.indexOf(observation) > steps.findIndex(({ run }) => run === "pnpm install --frozen-lockfile"));
+  assert.ok(steps.indexOf(observation) < steps.findIndex(({ id }) => id === "contracts"));
+  assert.match(observation.run, /umask 077[\s\S]*local-ci-setup-observation\.mjs installed/u);
+  const reports = steps.find(({ name }) => name === "Observe canonical local report allocation");
+  assert.equal(reports.if, "always() && inputs.profile == 'contracts' && steps.contracts.outcome != 'skipped'");
+  assert.match(reports.run, /local-ci-setup-observation\.mjs reports/u);
+  const prefixes = [["home", "/synthetic/home"], ["workspace", "/synthetic/home/work"]];
+  assert.equal(normalizedDestination("/synthetic/home/work/node_modules", prefixes), "workspace/node_modules");
+  assert.throws(() => normalizedDestination("/synthetic/home-other/private", prefixes));
+  assert.throws(() => normalizedDestination("relative", prefixes));
+  assert.throws(() => normalizedDestination("/synthetic/home/\nsecret", prefixes));
+});
+
+test("setup allocation counts blocks/unique hardlinks without following links or inventing incomplete totals", async () => {
+  const source = `
+import importlib.util, json, os, pathlib, tempfile
+spec = importlib.util.spec_from_file_location('allocation', 'scripts/local-ci-setup-allocation.py')
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as temporary:
+    root = pathlib.Path(temporary)
+    a = root / 'a'; b = root / 'b'; a.mkdir(); b.mkdir()
+    payload = a / 'public'; payload.write_bytes(b'synthetic' * 4096)
+    os.link(payload, b / 'same')
+    outside = root / 'outside'; outside.mkdir(); (outside / 'never-read').write_bytes(b'x' * 100000)
+    os.symlink(outside, a / 'link')
+    result = m.observe([('first', str(a)), ('second', str(b))])
+    assert all(c['status'] == 'observed' for c in result['components'])
+    assert result['components'][0]['uniqueInodes'] == '3'  # directory, file, link
+    expected = sum(os.lstat(p).st_blocks * 512 for p in [a, b, payload, a / 'link'])
+    assert result['coexistence'][0]['allocatedBytes'] == str(expected)
+    assert result['coexistence'][0]['uniqueInodes'] == '4'  # hardlink counted only once
+    limited = m.observe([('bounded', str(a))], max_entries=1)
+    assert limited['components'][0]['allocatedBytes'] is None
+    assert limited['components'][0]['uniqueInodes'] is None
+    assert limited['components'][0]['status'] == 'bounded-walk-incomplete'
+    missing = m.observe([('absent', str(root / 'absent'))])
+    assert missing['components'][0]['allocatedBytes'] is None
+    os.symlink(a, root / 'redirect')
+    redirected = m.observe([('redirected', str(root / 'redirect' / 'public'))])
+    assert redirected['components'][0]['allocatedBytes'] is None
+    assert m.observe([('deadline', str(a))], seconds=0)['components'][0]['allocatedBytes'] is None
+print('synthetic allocation adversaries passed')
+`;
+  await promisify(execFile)("python3", ["-c", source], { cwd: repoRoot, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }, timeout: 10000 });
+});
+
+test("setup observation writes current bound reports once and retains pending ownership on reentry/stale identity", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "canonical-observation-"));
+  try {
+    const evidence = path.join(temporary, ".artifacts/canonical-source");
+    await mkdir(evidence, { recursive: true });
+    const identity = { commitSha: "a".repeat(40), treeSha: "b".repeat(40), event: "workflow_dispatch", ref: "refs/heads/synthetic", sha: "a".repeat(40) };
+    await writeFile(path.join(evidence, "checkout-identity.json"), JSON.stringify(identity));
+    await writeFile(path.join(evidence, "contracts.tap"), "synthetic report only\n");
+    for (const file of [".github/workflows/canonical-ci.yml", "scripts/local-ci-setup-observation.mjs", "scripts/local-ci-setup-allocation.py", "pnpm-lock.yaml", "package.json"]) {
+      await mkdir(path.dirname(path.join(temporary, file)), { recursive: true });
+      await writeFile(path.join(temporary, file), await readFile(path.join(repoRoot, file)));
+    }
+    const env = { ...process.env, SETUP_OBSERVATION_PROFILE: "contracts", GITHUB_SHA: identity.commitSha, GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "1", PYTHONDONTWRITEBYTECODE: "1" };
+    const invoke = (overrides = {}) => promisify(execFile)(process.execPath, [path.join(repoRoot, "scripts/local-ci-setup-observation.mjs"), "reports"], { cwd: temporary, env: { ...env, ...overrides }, timeout: 10000 });
+    await assert.rejects(invoke({ SETUP_OBSERVATION_PROFILE: "full" }));
+    await assert.rejects(invoke({ GITHUB_SHA: "c".repeat(40) }));
+    await invoke();
+    const file = path.join(evidence, "allocation-reports.json");
+    const before = await readFile(file, "utf8");
+    const result = JSON.parse(before);
+    assert.equal(result.binding.runId, "1");
+    assert.equal(result.snapshot.components.length, 2);
+    assert.ok(result.snapshot.components.every(({ status, uniqueInodes }) => status === "observed" && uniqueInodes === "1"));
+    assert.ok(result.children.every(({ exitCode, cleanup }) => exitCode === 0 && cleanup.complete && !cleanup.groupAlive));
+    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    await assert.rejects(invoke());
+    assert.equal(await readFile(file, "utf8"), before);
+    await access(path.join(evidence, "allocation-reports-pending.json"));
+    assert.doesNotMatch(before, new RegExp(temporary));
+    // A failing owned child leaves the start marker, never a success record.
+    await rm(file);
+    await rm(path.join(evidence, "allocation-reports-pending.json"));
+    await rm(path.join(temporary, ".artifacts/local-ci/setup-observation-reports"), { recursive: true });
+    await writeFile(path.join(temporary, "scripts/local-ci-setup-allocation.py"), "raise SystemExit(1)\n");
+    await assert.rejects(invoke());
+    await access(path.join(evidence, "allocation-reports-pending.json"));
+    await assert.rejects(access(file));
+    await assert.rejects(invoke());
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
 test("canonical hosted connection is manual/reusable and defaults to contracts, not gates", async () => {
   const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
   assert.deepEqual(Object.keys(workflow.on), ["workflow_dispatch", "workflow_call"]);
@@ -1029,13 +1124,14 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
   assert.ok(steps.indexOf(identity) < steps.indexOf(contracts));
   for (const field of ["commitSha", "treeSha", "event", "ref", "sha"]) assert.ok(identity.run.includes(field), field);
   const sourceUpload = steps.find(({ name }) => name === "Upload canonical connection source contracts");
-  assert.equal(sourceUpload.if, "always() && steps.contracts.outcome != 'skipped'");
+  assert.equal(sourceUpload.if, "always() && inputs.profile == 'contracts' && (steps.setup_observation.outcome != 'skipped' || steps.contracts.outcome != 'skipped')");
   assert.equal(sourceUpload.with.name, "canonical-source-${{ github.run_id }}-${{ github.run_attempt }}");
   assert.equal(sourceUpload.with["include-hidden-files"], true);
   assert.equal(sourceUpload.with["if-no-files-found"], "error");
   assert.deepEqual(sourceUpload.with.path.trim().split("\n"), [
     ".artifacts/canonical-source/checkout-identity.json",
     ".artifacts/canonical-source/contracts.tap",
+    ".artifacts/canonical-source/allocation-*.json",
   ]);
   for (const step of steps) {
     assert.equal(step["continue-on-error"], undefined);

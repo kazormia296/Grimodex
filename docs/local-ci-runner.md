@@ -738,6 +738,41 @@ compressed artifact sizes. No new profile, job, dispatch input, external downloa
 or configuration fallback is added. Both Full fences and separate B/Editor
 prerequisites remain until their actual gates close.
 
+### Grouped contracts setup observations
+
+The existing canonical `contracts` job observes metadata after its ordinary
+pnpm/Node/Rust/package installation, before the unchanged grouped contracts command.
+`local-ci-setup-observation.mjs` uses the existing process supervisor for finite
+pnpm-version/store and active Rust toolchain/version queries and a bounded
+`local-ci-setup-allocation.py` walk. Roots come from the pnpm action's actual `dest`
+output, current Node executable, active Rust toolchain, Cargo shims, Rust
+cache/extraction directories, installed public `node_modules`, effective pnpm
+store and the observer's own query logs. No additional installation or
+profile/job/input is added; Quick/Full do not execute this observation path.
+
+The walker reads only stat metadata through no-follow directory descriptors:
+allocated `st_blocks * 512`, unique device/inode counts and per-device deduplicated
+coexistence across observed roots. It does not read payload contents, follow
+symlinks, scan arbitrary HOME/temp directories or probe quota/capacity. Traversal
+has finite entry/deadline/depth limits; missing, unreadable, changing, cross-device
+or capped roots retain an incomplete status with null quantities, not guessed
+zeros or extrapolated totals. Sequential snapshots are not an atomic peak.
+Known report allocation is observed separately after the existing contracts,
+including on failure, without treating the local TAP as complete hosted logs.
+
+Structured `allocation-installed.json` and `allocation-reports.json` join the
+existing identity/TAP artifact. They bind checkout/tree/run/attempt, current
+source hashes, observed versions and normalized source-shaped destinations. Own
+query logs are private and are not uploaded by this path. Exclusive mode0600,
+file/directory-fsynced pending markers and results refuse retry/reentry/overwrite;
+errors/cancellation retain the owner/output, and success requires actual child
+close, required log joins and process-group retirement. These are historical
+public/synthetic risk inputs, not an admission Boolean or mathematical certificate
+for all future Full consumers. Historical download/extraction peaks, complete
+hosted action logs, other installers and explicit future-growth/uncertainty
+forecasts remain unobserved; actual future owned-runner resource/quota/exclusion
+and B/Editor prerequisites remain independent. Both Full fences are unchanged.
+
 ### Constructive workload-risk producer
 
 `produceWorkloadEstimate` in the existing admission helper uses only Node stdlib
