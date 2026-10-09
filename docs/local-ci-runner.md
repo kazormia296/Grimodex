@@ -600,30 +600,223 @@ facts. That preflight must check the actual workspace/build-cache/temp, root/hom
 pressure, temp quota and competing heavy work without fixed capacity thresholds,
 automatic deletion, foreign-process kills or temp-path rewriting.
 
-The deeper canonical shell now contains a **Full-only, partial inspection** after
-candidate/ancestry validation and before profile invocation. The first-step Full
-rejection remains unchanged, so this inspection is not reachable in a Full
-dispatch today. It uses Node standard-library `realpath`, permission checks and
-`statfs` for the actual workspace, root, home, Node temp and `RUNNER_TEMP`, resolving
-missing directories through existing ancestors without creating them. Output is
-limited to labels and scalar filesystem facts; root/home remain separate
-observations even on a shared device. These are not allocation or quota proofs,
-and available capacity must not be added once per label on a shared filesystem.
+Before **any** pnpm/Node/Rust/uv setup action or system/package/browser/audit
+installation, Full now calls `scripts/local-ci-full-admission.mjs --setup` using
+only preinstalled Node/Python/git. This initial decision assesses the reviewed
+setup envelope (toolchains, download caches, extraction, environments, system
+writes and complete logs), actual workspace/root/home/tool-cache/Cargo/rustup/temp
+capacity and caller quotas under same-job hosted exclusion. Full's setup step
+explicitly supplies the pnpm action destination (`FULL_PNPM_DEST`), pnpm store
+(`npm_config_store_dir`), Playwright cache (`PLAYWRIGHT_BROWSERS_PATH`) and uv cache
+(`UV_CACHE_DIR`) from the actual runner tool-cache root. These are existing
+installer/consumer settings, not temp-path rewrites. The dependency-free helper
+rejects absent, relative or multiline settings rather than guessing defaults.
+It assesses the pnpm installer, store root and pinned pnpm 10's `v10` store,
+browser cache and uv cache **before installations**, including disjoint mounts.
+Only successful setup exports those same settings through `GITHUB_ENV`; the pnpm
+action's `dest` uses the assessed setting. Quick/contracts keep their default
+placement and never run this Full-only export. The helper has no
+static product-plan/package imports. Missing sizing, capacity or quota rejects
+before the installations; Quick/contracts retain their existing setup path.
+Installer-created project placement is not inferred from an ancestor: enabled
+project quotas require an actual destination-placement acquisition and currently
+reject. User/group quotas and disabled project domains are acquired, not guessed.
 
-Effective native/shared Cargo targets and caches, pnpm/browser/Electron/uv
-storage, applicable quota authority, retained/peak workload demand including
-logs/artifacts, and competing-heavy-work exclusivity remain **unresolved**. No
-consumer cache defaults are guessed. Even successful inspection fails closed
-before Full and verify. Missing paths or unavailable facts also reject. The
-existing checkout lock excludes cooperating runs in one checkout, not heavy work
-across the host; the adapter does not acquire or recover it. An eventual assessment
-must remain in the same continuously owned job as invocation, without intervening
-setup, approval waits or a replacement runner. No admission/resume mechanism or
-new receipt format is introduced. Synthetic contracts shim the inspector and
-check both success-without-admission and missing-fact rejection; they do not probe
-actual runner resources. D-Bus capability and product acceptance remain independent
-pending prerequisites. This adapter preparation does not authorize a gate run or
-establish merge readiness.
+The deeper shell connects the same helper after candidate/ancestry validation.
+It consumes the successful initial decision bound to the **unchanged entire
+estimate**, candidate, registry, option and run/attempt before importing the
+product plan or starting preparation. Initial setup and deeper preparation have
+separate non-recoverable phase owners; no stale retry or runner transfer. Failed
+setup logs are included in the existing canonical evidence upload even when the
+profile step is skipped. Setup admission is not a measured Full pass. **Both source refusals remain**: source review,
+affected hosted contracts, the reviewed workload-sizing producer and remaining
+candidate/B prerequisites must close before enabling Full. Even a successful
+helper is currently followed by the second refusal. This is a conditional
+mechanism source milestone, not completed admission or a Full pass.
+
+The helper uses the existing registry and process supervisor. It derives required
+materialization/build-only preparation from the actual Full commands, adds the
+existing C-query release compilation tuples, and converts Cargo tests to
+`--no-run` without changing features, profile or environment. Clippy consumers
+become equivalent Cargo `check` tuples: compilation target/features/profile/env
+are preserved and the Clippy-only trailing rustc lint arguments are removed.
+It never runs tests, lint gates, fixtures, a bus or Editor. Doctest execution/compilation remains residual risk.
+Effective storage comes from Cargo metadata in both package/root caller contexts,
+pnpm and uv cache queries, and Playwright's executable path. These queries must
+agree with their already-assessed initial destinations before product-plan
+imports or preparation; a different store format/config/cache path rejects rather
+than silently assessing it only after its writes. On this Linux lane the actual
+Chromium path identifies its cache root, not just the revision directory.
+Cargo/rustup home,
+Electron's existing installer cache, uv environment, workspace, root/home and both
+temp destinations are included. Existing ancestors are observed without creating
+or rewriting consumer directories. Caller writability is checked separately from
+privileged quota visibility.
+
+`local-ci-full-filesystems.py` reads the actual mounts/statvfs and invokes Linux
+`quotactl` for the current caller's user, all applicable groups and effective
+project. Applicable groups include the resolved destination's group even outside
+caller membership when the directory is SGID or its actual ext4 mount uses
+`grpid`/`bsdgroups` (including non-SGID directories). Both mount and superblock
+option tokens are read from mountinfo for that destination's mount. A missing
+destination uses its nearest existing ancestor's inherited group under either
+mode. An unreadable enabled group record rejects.
+`sudo -n` supplies only quota visibility, not installation or mutation.
+The initial implementation supports ext4's generic quota interface: other actual
+filesystem types fail with a missing quota-acquisition operation. Only kernel
+`ESRCH` establishes a disabled domain; permission/unsupported/unknown responses
+reject. Enabled limits include soft ceilings even during grace, expired grace,
+current usage and inode limits; zero kernel limits are unbounded, not guessed
+empty-quota attestations. Labels on a shared device share capacity exactly once,
+while root/home pressure remains separately observed. All retained, transient,
+failure-copy and uncertainty terms are summed conservatively per device; no
+fixed GB/percentage/inode threshold or serial-execution assumption is used.
+
+Before setup, the existing helper constructs
+`.artifacts/local-ci/full-workload-estimate.json` from reviewed physical allocation
+inventories in `.artifacts/local-ci/full-workload-input.json`. Both are **internal
+risk data**, not canonical receipts or admission Booleans. The producer is connected
+inside the existing durable setup owner; missing necessary numerical facts name the
+required inventory/acquisition operation and stop before installations. No nominal
+estimate, old local capacity, zero residual or default coefficient is supplied.
+The generated estimate contains:
+
+- `binding`: exact expanded base/head/tree, registry digest, scheduler option,
+  current hosted run ID and attempt; old-run/candidate evidence is rejected.
+- `sources`: repository-relative sizing-source paths and current SHA-256 digests.
+- `tasks`: every actual Full task exactly once, not a partial profile.
+- `setup`: `workflowSha256` binds all current canonical setup/install actions;
+  explicit source-grounded retained/transient/uncertainty terms cover **every**
+  observed setup location, including tool-cache and root/home/temp. These are
+  conservative coexisting demands, not installed-action success booleans.
+- `preparation`: each derived tuple ID/command digest, finite timeout and explicit
+  retained/transient/uncertainty byte/inode risk terms **before** that operation.
+- `residual`: named positive byte/inode terms with effective location, kind,
+  source references, sizing basis and concrete observation/construction operation.
+  Required domains include build/link/doctest, simultaneous fixture DB/WAL/backup,
+  failure tmpRoot/artifact-copy coexistence, cache/environment and complete
+  logs/reports. Build terms connect to actual same-job preparation observations
+  through `measurement: { preparationId, mode: retained | peak, location }`.
+
+### Constructive workload-risk producer
+
+`produceWorkloadEstimate` in the existing admission helper uses only Node stdlib
+and the existing dependency-free product-journey catalog before installations.
+The reviewed `full-workload-input/1` input has the same exact `binding` and current
+`sources` as the generated estimate, plus:
+
+- `inventories`: distinct `{ id, sources, basis, operation, items }` records.
+  Each item names a distinct physical allocation `role` and decimal-string
+  `bytes`/`inodes`. Installer components additionally require an effective
+  `location` label; `(role, location)` is unique and each component has positive
+  allocation. Other inventories retain distinct roles. Members are summed, not inferred from source length, lockfile
+  counts, compressed download size or an arbitrary multiplier. `basis` records
+  the observation/constructive forecast, applicable assumptions and uncertainty;
+  `operation` names the concrete payload inventory, build/link observation or
+  synthetic fixture/failure sizing acquisition. Reviewed forecasts are necessary
+  before cold operations, not certificates of all future allocations. Inventories
+  must be public/synthetic and source-grounded; never inspect a private work or
+  production DB, publish raw environment/endpoints, or rehearse Editor/fixtures
+  under this producer. Numeric examples in source contracts are synthetic ONLY.
+- `setup`: recipes `{ kind, domain, location, inventories }` covering retained,
+  transient and explicit additive uncertainty at every actual initial destination.
+  All eight `install.pnpm/node/rust/system/uv/packages/browser/audit` inventories
+  must be consumed; each covers `installed`, `download-cache`, `extraction`, and
+  `logs`. Installed components must cover their finite actual destinations:
+  pnpm → `pnpm-installer`; Node/uv → `tool-cache`; Rust → `cargo-home` and
+  `rustup-home`; system/browser install-deps → `root`; packages → `workspace`,
+  `pnpm-store-root` and `pnpm-store`; audit → `cargo-home`. Chromium binary
+  materialization remains preparation demand at the already-assessed browser
+  cache. Download/extraction components may occupy those installer destinations
+  or the observed temporary roots; local complete logs occupy `workspace`.
+  Unknown/unsupported component placement requires its concrete acquisition
+  operation, not an arbitrary location with available space. Each component
+  must be consumed by a setup recipe at **its own location**; recipes sum only
+  that location's components. Merely naming an installer inventory somewhere
+  else is rejected, even if unrelated workspace/root capacity would fit. Include
+  system writes, Cargo audit compilation and cache placement, not just final
+  binaries.
+- `preparation`: actual tuple `{ id, commandDigest, timeoutMs, terms }` records.
+  `terms` are the same recipes. Every tuple has finite timeout and all three kinds;
+  forecasts cover materialization, build/link temporary outputs and complete logs
+  before starting it. The later real plan validates every tuple/feature/env digest.
+- `tasks`: every Full task `{ id, terms }`, including explicit retained/transient/
+  uncertainty and complete log/report demand per task. Build/link/doctest residuals
+  include a recipe's `measurement: { preparationId, mode: retained | peak,
+  location }`, tied to the same effective destination. Observed same-job growth
+  raises that positive forecast; no-growth cached builds cannot erase it.
+
+The producer adds mandatory constructive fixture/failure coexistence terms rather
+than leaving them to a nominal residual:
+
+- `worker.q2` and `worker.q512` inventories contain `db`, `wal`, `shm`, `journal`
+  and `construction` allocation risks. The current default script supplies its
+  actual pristine-plus-input counts (seven Q2 and three Q512), without counting
+  opt-in lanes or assuming query completion releases files. The script's actual
+  `RUNNER_TEMP`-first precedence determines the charged temporary location.
+- `c2zc.fixture` covers simultaneous `db`, `wal`, `shm`, official `backup`,
+  `standalone` materialization and `manifest` allocations. Mandatory `backup`
+  roles in this inventory and every journey failure inventory require positive
+  bytes **and** inodes independently of other roles' positive totals; zero backup
+  allocation rejects with that inventory's concrete acquisition operation.
+  Logical manifest file lengths alone do not substitute for this physical forecast.
+- Every actual catalog case has `journey.<id>.runtime` (`db`, `wal`, `shm`,
+  `user-data`, `cache`, `logs`, `receipts`, `other`) and `.failure` (`backup`,
+  `receipt-snapshot`, `diagnostics`, `screenshot`) inventories. Each must cover
+  **all** its owned workspaces/restarts and failure observations. For every case,
+  runtime plus failure snapshots/diagnostics are charged once to retained Node
+  tmpRoot and once to the workspace artifact copy; the separate `renderer.png`
+  copy is additional. All cases coexist conservatively, with no serial/fail-fast
+  saving and no screenshot/log/upload suppression.
+- `fixtures.uncertainty` explicitly includes `sqlite-allocation`, `failure-copy`
+  and `unsampled-transient` risks with a justified additive basis, not a default
+  percentage. It is reserved independently at worker temp, Node temp and artifact
+  destinations to avoid borrowing headroom across devices. Every supplied inventory
+  is consumed; duplicates, omitted roles or silently unused demand reject.
+
+The setup producer writes the estimate using exclusive creation plus file/directory
+fsync. It never overwrites/regenerates a failed or uncertain record. Preparation
+consumes the same entire estimate and unchanged input digest, and rejects changed
+initial destination/environment placement. Source digests and actual deeper Full
+coverage are revalidated, with existing process/phase ownership unchanged. The
+actual runner's applicable quotas/capacity and exclusion are still independently
+acquired; reviewed numerical input is not proof that they fit. Necessary target
+inventories remain to be acquired/reviewed; source implementation and synthetic
+contracts are not an executed resource admission or Full pass. Both Full fences
+and independent B/Editor prerequisites remain.
+
+These are defensible estimates with explicit uncertainty, not mathematical
+all-future allocation certificates. A cached/no-growth preparation does not zero
+a reviewed residual. Sampling records retained changes and observed high-water
+allocation; envelope overruns cancel only the owned preparation and reject without
+retry. Preparation children must really close, complete log-file joins and retire
+their groups, and the sampler must join before subsequent admission. Complete logs
+are retained, never truncated. Capacity/quota and candidate identity are reacquired
+after preparation; sampled growth raises relevant residuals before comparison.
+
+Heavy-work exclusion relies on the fixed standard `ubuntu-24.04` hosted job's
+[fresh single-job VM contract](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners),
+corroborated by actual hosted-run metadata and Linux VM identity, plus sequential
+owned preparation with all required joins. Neither a Boolean, checkout lock nor
+scheduler limit proves exclusion. Self-hosted/container/unknown targets reject.
+One private run/attempt owner refuses reentry; errors and uncertain retirement
+retain it with the existing supervisor. Nothing deletes caches, kills foreign
+processes, scans foreign `/proc` or acquires/recovers the CLI's checkout lock.
+The fixed canonical caller must retain the same job through Full and adjacent
+identical-tuple verify, with no approval wait, intervening heavy work or replacement
+runner. Internal records/logs use the existing `.artifacts/local-ci/` upload; the
+canonical receipt format and gate commands are unchanged.
+
+Source contracts exercise synthetic setup/preparation demand/quota/owner/observation
+adversaries (including disjoint pnpm/browser filesystems, misplaced installer
+components, missing explicit settings and post-install query disagreement),
+verify that the initial helper imports without installed packages,
+assert that no Clippy gate runs and that all eight setup/install steps follow the
+initial decision, and shim the hosted call. They do not prepare dependencies or
+probe host quotas.
+Real reviewed preparation and actual resource/B acceptance remain pending.
+D-Bus capability, candidate acceptance and Full/merge readiness are independent;
+this connection does not authorize them.
 
 Product journeys wait for the created durable ID and its corresponding UI
 projection before editing. A visible selector alone is not a ready signal.

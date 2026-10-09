@@ -82,9 +82,33 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Use only the runner's preinstalled Node/Python/git here. Full's setup
+      # downloads, caches, extraction and logs must be assessed BEFORE they start.
+      - name: Assess Full setup risk before installations
+        id: full_setup
+        if: inputs.profile == 'full'
+        env:
+          # Explicit existing installer/consumer settings, not inferred defaults.
+          FULL_PNPM_DEST: ${{ format('{0}/setup-pnpm', runner.tool_cache) }}
+          npm_config_store_dir: ${{ format('{0}/pnpm-store', runner.tool_cache) }}
+          PLAYWRIGHT_BROWSERS_PATH: ${{ format('{0}/ms-playwright', runner.tool_cache) }}
+          UV_CACHE_DIR: ${{ format('{0}/uv-cache', runner.tool_cache) }}
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          node scripts/local-ci-full-admission.mjs --setup "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
+          # Only successful setup carries the exact assessed settings forward.
+          # Quick/contracts never run this step and keep their default placement.
+          for key in FULL_PNPM_DEST npm_config_store_dir PLAYWRIGHT_BROWSERS_PATH UV_CACHE_DIR; do
+            printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_ENV"
+          done
+
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.33.0
+          dest: ${{ env.FULL_PNPM_DEST || '~/setup-pnpm' }}
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -109,6 +133,7 @@ jobs:
         if: inputs.profile == 'full'
         with:
           version: 0.11.29
+          cache-local-path: ${{ env.UV_CACHE_DIR }}
 
       - run: pnpm install --frozen-lockfile
 
@@ -154,49 +179,10 @@ jobs:
           [[ -z "$(git status --porcelain --untracked-files=all)" ]]
           git merge-base --is-ancestor "$candidate_base" "$candidate_head"
           if [[ "$PROFILE" == full ]]; then
-            # Partial read-only facts, NOT resource admission. The step0 stop stays.
-            node --input-type=module <<'NODE'
-          import { constants } from 'node:fs';
-          import { access, realpath, stat, statfs } from 'node:fs/promises';
-          import { tmpdir } from 'node:os';
-          import path from 'node:path';
-
-          const locations = [
-            ['workspace', process.cwd()],
-            ['root', '/'],
-            ['home', process.env.HOME],
-            ['node-temp', tmpdir()],
-            ['runner-temp', process.env.RUNNER_TEMP],
-          ];
-          for (const [label, requested] of locations) {
-            try {
-              if (!requested || !path.isAbsolute(requested)) throw new Error();
-              let ancestor = requested;
-              let resolved;
-              for (;;) {
-                try {
-                  resolved = await realpath(ancestor);
-                  break;
-                } catch (error) {
-                  const parent = path.dirname(ancestor);
-                  if (error.code !== 'ENOENT' || parent === ancestor) throw error;
-                  ancestor = parent;
-                }
-              }
-              const directory = await stat(resolved, { bigint: true });
-              if (!directory.isDirectory()) throw new Error();
-              // Root is a pressure observation, not an application output directory.
-              if (label !== 'root') await access(resolved, constants.W_OK | constants.X_OK);
-              const fs = await statfs(resolved, { bigint: true });
-              // Shared device IDs identify overlap, not independent capacity.
-              console.log(`[full-inspection] ${label} device=${directory.dev} existingAncestor=${ancestor !== requested} blockBytes=${fs.bsize} availableBlocks=${fs.bavail} freeInodes=${fs.ffree}`);
-            } catch {
-              console.error(`[precheck] Full filesystem inspection unavailable: ${label}`);
-              process.exit(1);
-            }
-          }
-          NODE
-            echo '[precheck] Full inspection is not admission: effective Cargo/pnpm/browser/Electron/uv storage, quota authority, workload demand and heavy-work exclusivity remain unresolved' >&2
+            # Actual conditional same-job acquisition/decision. Both source fences
+            # remain pending independent review, hosted contracts and risk sizing.
+            node scripts/local-ci-full-admission.mjs "$candidate_base" "$candidate_head" "$MAX_PARALLEL_TASKS"
+            echo '[precheck] Full conditional admission is not yet enabled: reviewed workload sizing and remaining candidate/B prerequisites must close' >&2
             exit 1
           fi
           pnpm "ci:local:$PROFILE" -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
@@ -215,7 +201,7 @@ jobs:
           retention-days: 14
 
       - name: Upload existing canonical evidence
-        if: always() && steps.canonical.outcome != 'skipped'
+        if: always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: canonical-ci-${{ github.run_id }}-${{ github.run_attempt }}

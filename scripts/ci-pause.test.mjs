@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +9,21 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import yaml from "js-yaml";
+import { buildLocalCiPlan } from "./local-ci.mjs";
+import {
+  assertPreparationEnvelope,
+  assessFullDemand,
+  assessFullSetupDemand,
+  collectFullLocations,
+  fullPreparation,
+  fullSetupLocations,
+  produceWorkloadEstimate,
+  resolveObservedResidual,
+  validateWorkloadEstimate,
+  validateFullSetupDecision,
+  validateFullSetupEstimate,
+  validateFullSetupLocations,
+} from "./local-ci-full-admission.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1024,10 +1040,500 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
     if (step.run) assert.doesNotMatch(step.run, /\$\{\{ inputs\.|--dry-run|--from|--recover-lock|\|\|\s*true/u);
   }
   const upload = steps.find(({ name }) => name === "Upload existing canonical evidence");
-  assert.equal(upload.if, "always() && steps.canonical.outcome != 'skipped'");
+  assert.equal(upload.if, "always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped')");
   assert.equal(upload.with["include-hidden-files"], true);
   assert.equal(upload.with["if-no-files-found"], "error");
   assert.ok(upload.with.path.includes(".artifacts/local-ci/"));
+});
+
+test("Full preparation preserves actual compilation tuples without executing tests or journeys", async () => {
+  const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
+  const steps = fullPreparation(plan);
+  for (const step of steps) {
+    if (step.command.command === "cargo" && step.command.args[0] === "test") {
+      assert.ok(step.command.args.includes("--no-run"), step.id);
+      assert.ok(!step.command.args.includes("--doc"), step.id);
+      assert.ok(!step.command.args.includes("--"), step.id);
+    }
+    assert.ok(!step.id.startsWith("journeys.shard") && step.id !== "rust.c-query-worker");
+    if (step.command.command === "cargo") {
+      assert.notEqual(step.command.args[0], "run");
+      assert.notEqual(step.command.args[0], "clippy", `${step.id}: preparation must not execute lint gates`);
+    }
+  }
+  assert.equal(steps.find((step) => step.id === "c2zc.fixture-build").command.args[0], "build");
+  for (const id of ["bootstrap.install", "native.build", "native.tests", "lfm.setup", "electron.build", "rust.c-query-build-worker-seam", "rust.c-query-build-worker-tests", "c2zc.fixture-build"]) assert.ok(steps.some((step) => step.id === id), id);
+  assert.ok(steps.find((step) => step.id === "native.tests").command.args.includes("licensing,legacy-keyring-migration"));
+  const compiled = steps.find((step) => step.id === "migration.supervisor");
+  const original = plan.tasks.find((task) => task.id === compiled.id).command;
+  assert.deepEqual(compiled.command.args.slice(0, -1), original.args);
+  assert.deepEqual(compiled.command.env, original.env);
+  for (const task of plan.tasks.filter((entry) => entry.command.command === "cargo" && entry.command.args[0] === "clippy")) {
+    const separator = task.command.args.indexOf("--");
+    const args = task.command.args.slice(0, separator === -1 ? undefined : separator);
+    args[0] = "check";
+    // Deduplication may select the already-existing check with this same tuple.
+    assert.ok(steps.some((step) => JSON.stringify(step.command) === JSON.stringify({ command: task.command.command, args, cwd: task.command.cwd, env: { ...task.command.env } })), `${task.id}: equivalent compile-only tuple`);
+  }
+  const adversarial = structuredClone(plan);
+  const lint = adversarial.tasks.find((task) => task.command.command === "cargo" && task.command.args[0] === "clippy");
+  lint.command.args = ["clippy", "--release", "--all-targets", "--no-default-features", "--features", "synthetic-feature", "--target", "synthetic-target", "--", "-D", "warnings", "-W", "clippy::all"];
+  lint.command.env = { RUSTFLAGS: "synthetic-build-flag" };
+  const compile = fullPreparation(adversarial).find((step) => step.id === lint.id);
+  assert.deepEqual(compile.command, { command: "cargo", args: ["check", ...lint.command.args.slice(1, lint.command.args.indexOf("--"))], cwd: lint.command.cwd, env: lint.command.env });
+});
+
+const disabledQuotas = () => [0, 1, 2].map((type) => ({ type, state: "kernel-disabled" }));
+const syntheticFilesystem = (label, device = "1", bytes = "1000", inodes = "100") => ({ label, device, bytes, inodes, quotas: disabledQuotas() });
+const syntheticTerm = (location = "workspace", bytes = "200", inodes = "10") => ({ location, bytes, inodes });
+
+test("Full demand aggregates aliases, applicable quotas, failure coexistence and inode demand", () => {
+  const fs = [syntheticFilesystem("workspace"), syntheticFilesystem("home"), syntheticFilesystem("root")];
+  assert.deepEqual(assessFullDemand(fs, [syntheticTerm(), syntheticTerm("home")])[0], { device: "1", bytes: "1000", inodes: "100", demandBytes: "400", demandInodes: "20" });
+  assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "600"), syntheticTerm("home", "600")]), /capacity\/quota/u);
+  assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "1", "100")]), /capacity\/quota/u);
+  assert.throws(() => assessFullDemand(fs, [syntheticTerm("missing")]), /effective storage/u);
+  assert.throws(() => assessFullDemand([{ ...fs[0], quotas: [] }], []), /quota/u);
+  assert.throws(() => assessFullDemand([{ ...fs[0], quotas: [{ type: 0, state: "unknown" }] }], []), /kernel quota/u);
+  const quota = { type: 0, state: "kernel-enabled", bytes: "300", inodes: "50" };
+  const limited = [{ ...fs[0], quotas: [quota, ...disabledQuotas().slice(1)] }];
+  assert.throws(() => assessFullDemand(limited, [syntheticTerm("workspace", "301")]), /capacity\/quota/u);
+  assert.throws(() => assessFullDemand([{ ...fs[0], quotas: disabledQuotas().slice(1) }], []), /quota domains/u);
+  assert.throws(() => assessFullDemand([fs[0], fs[0]], []), /unique/u);
+  assert.throws(() => assessFullDemand([syntheticFilesystem("root", "2", "0")], []), /root\/home pressure/u);
+  assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "1e6")]), /decimal/u);
+});
+
+test("Full setup risk covers every observed destination and fails closed for quotas and capacity", () => {
+  const fs = [syntheticFilesystem("workspace"), syntheticFilesystem("root"), syntheticFilesystem("home"), syntheticFilesystem("tool-cache")];
+  const terms = fs.flatMap(({ label }) => ["retained", "transient", "uncertainty"].map((kind) => ({ ...syntheticTerm(label, "10", "1"), kind })));
+  assert.equal(assessFullSetupDemand(fs, terms)[0].demandBytes, "120");
+  assert.throws(() => assessFullSetupDemand(fs, terms.filter((term) => term.location !== "tool-cache")), /setup retained risk for tool-cache/u);
+  assert.throws(() => assessFullSetupDemand(fs, terms.map((term) => ({ ...term, bytes: "100" }))), /capacity\/quota/u);
+  const enabledProject = { ...fs[0], quotas: [disabledQuotas()[0], disabledQuotas()[1], { type: 2, state: "kernel-enabled", bytes: null, inodes: null }] };
+  assert.throws(() => assessFullSetupDemand([enabledProject], terms), /installer destination\/project-quota placement/u);
+  assert.throws(() => assessFullSetupDemand([{ ...fs[0], quotas: [] }], terms), /project-quota/u);
+});
+
+test("Full resolves installer caches before setup and rejects unknown or changed effective placement before build queries", async () => {
+  const env = {
+    FULL_PNPM_DEST: "/synthetic/installer", npm_config_store_dir: "/synthetic/separate-store",
+    PLAYWRIGHT_BROWSERS_PATH: "/synthetic/separate-browser", UV_CACHE_DIR: "/synthetic/separate-uv",
+  };
+  const locations = fullSetupLocations(repoRoot, env);
+  assert.equal(locations.find(([label]) => label === "pnpm-store")[1], "/synthetic/separate-store/v10");
+  assert.equal(locations.find(([label]) => label === "browser-cache")[1], env.PLAYWRIGHT_BROWSERS_PATH);
+  for (const key of Object.keys(env)) {
+    for (const value of [undefined, "", "relative", "0", "/synthetic/injected\nOTHER=value"]) {
+      assert.throws(() => fullSetupLocations(repoRoot, { ...env, [key]: value }), /explicit absolute/u);
+    }
+  }
+  const estimate = { setup: { destinations: locations } };
+  validateFullSetupLocations(estimate, locations);
+  assert.throws(() => validateFullSetupLocations(estimate, fullSetupLocations(repoRoot, { ...env, npm_config_store_dir: "/synthetic/changed-store" })), /unchanged resolved installer destinations/u);
+  for (const wrong of ["pnpm", "browser", "uv"]) {
+    const queried = [];
+    const run = async (id) => {
+      queried.push(id);
+      assert.ok(["storage-pnpm", "storage-browser", "storage-uv"].includes(id), "placement must reject before Cargo/build/writability work");
+      if (id === "storage-pnpm") return wrong === "pnpm" ? "/unassessed/store/v10" : "/synthetic/separate-store/v10";
+      if (id === "storage-browser") return JSON.stringify(`${wrong === "browser" ? "/unassessed/browser" : env.PLAYWRIGHT_BROWSERS_PATH}/chromium-123/chrome-linux64/chrome`);
+      return wrong === "uv" ? "/unassessed/uv" : env.UV_CACHE_DIR;
+    };
+    await assert.rejects(collectFullLocations(repoRoot, run, env), /query agreeing with its pre-installation destination assessment/u);
+    assert.equal(queried.at(-1), `storage-${wrong}`);
+  }
+});
+
+test("Full setup is dependency-free and binds workflow, estimate and same-job phase before later preparation", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "full-setup-contract-"));
+  try {
+    // Deliberately omit local-ci.mjs and node_modules. Even with packages present
+    // in the test checkout, the initial helper cannot depend on their imports.
+    for (const name of ["local-ci-full-admission.mjs", "local-ci-process-supervisor.mjs"]) {
+      await writeFile(path.join(temporary, name), await readFile(path.join(repoRoot, "scripts", name)));
+    }
+    await promisify(execFile)(process.execPath, ["--input-type=module", "-e", "await import('./local-ci-full-admission.mjs')"], { cwd: temporary, timeout: 10000 });
+    const workflow = "public synthetic setup source\n";
+    await mkdir(path.join(temporary, ".github/workflows"), { recursive: true });
+    await writeFile(path.join(temporary, ".github/workflows/canonical-ci.yml"), workflow);
+    const hash = createHash("sha256").update(workflow).digest("hex");
+    const binding = { head: "b".repeat(40), runId: "1", attempt: "1" };
+    const estimate = {
+      binding, sources: [{ path: ".github/workflows/canonical-ci.yml", sha256: hash }],
+      setup: { workflowSha256: hash, terms: ["retained", "transient", "uncertainty"].map((kind) => ({ ...syntheticTerm(), id: kind, kind, domain: "cache-environment", basis: "synthetic contract only", operation: "synthetic setup", sources: [0] })) },
+    };
+    await validateFullSetupEstimate(estimate, binding, temporary);
+    const jsonDigest = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    const decision = { binding, phase: "setup", admitted: true, estimateDigest: jsonDigest(estimate) };
+    validateFullSetupDecision(decision, binding, estimate);
+    for (const change of [
+      { ...decision, admitted: false }, { ...decision, phase: "preparation" },
+      { ...decision, binding: { ...binding, attempt: "2" } },
+      { ...decision, binding: { ...binding, head: "c".repeat(40) } },
+      { ...decision, estimateDigest: "0".repeat(64) }, null,
+    ]) assert.throws(() => validateFullSetupDecision(change, binding, estimate), /\[precheck\]/u);
+    for (const mutate of [
+      (value) => { delete value.setup; },
+      (value) => { value.setup.workflowSha256 = "0".repeat(64); },
+      (value) => { value.setup.terms.pop(); },
+      (value) => { value.setup.terms[0].bytes = "0"; },
+      (value) => { value.binding.attempt = "2"; },
+    ]) {
+      const malformed = structuredClone(estimate);
+      mutate(malformed);
+      await assert.rejects(validateFullSetupEstimate(malformed, binding, temporary), /\[precheck\]/u);
+    }
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("canonical Full setup assessment precedes every heavy action/install and cannot run profile gates", async () => {
+  const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
+  const setupIndex = steps.findIndex(({ id }) => id === "full_setup");
+  assert.ok(setupIndex > steps.findIndex(({ uses }) => uses?.startsWith("actions/checkout@")));
+  const setup = steps[setupIndex];
+  assert.equal(setup.if, "inputs.profile == 'full'");
+  for (const [key, directory] of [["FULL_PNPM_DEST", "setup-pnpm"], ["npm_config_store_dir", "pnpm-store"], ["PLAYWRIGHT_BROWSERS_PATH", "ms-playwright"], ["UV_CACHE_DIR", "uv-cache"]]) {
+    assert.equal(setup.env[key], `\${{ format('{0}/${directory}', runner.tool_cache) }}`);
+    assert.ok(setup.run.includes(key));
+  }
+  assert.ok(setup.run.indexOf('>> "$GITHUB_ENV"') > setup.run.indexOf("node scripts/local-ci-full-admission.mjs --setup"));
+  assert.equal(steps.find(({ uses }) => uses?.startsWith("pnpm/action-setup@")).with.dest, "${{ env.FULL_PNPM_DEST || '~/setup-pnpm' }}");
+  assert.equal(steps.find(({ uses }) => uses?.startsWith("astral-sh/setup-uv@")).with["cache-local-path"], "${{ env.UV_CACHE_DIR }}");
+  assert.match(setup.run, /node scripts\/local-ci-full-admission\.mjs --setup "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
+  assert.doesNotMatch(setup.run, /ci:local:|pnpm|cargo|apt-get|\|\|\s*true/u);
+  const heavy = steps.filter(({ uses, run }) => /pnpm\/action-setup@|actions\/setup-node@|dtolnay\/rust-toolchain@|astral-sh\/setup-uv@/u.test(uses ?? "") || /apt-get|pnpm install|playwright install-deps|cargo install/u.test(run ?? ""));
+  assert.equal(heavy.length, 8);
+  for (const step of heavy) {
+    assert.ok(steps.indexOf(step) > setupIndex, step.name ?? step.uses ?? step.run);
+    assert.doesNotMatch(step.if ?? "", /always\(|failure\(|cancelled\(/u);
+    assert.equal(step["continue-on-error"], undefined);
+  }
+  // A failed/missing setup decision must stop the shell; no installer fallback.
+  const bin = await mkdtemp(path.join(tmpdir(), "full-setup-shell-contract-"));
+  try {
+    await writeFile(path.join(bin, "node"), "#!/bin/sh\nprintf '[precheck] missing setup risk\\n' >&2\nexit 9\n", { mode: 0o755 });
+    await assert.rejects(promisify(execFile)("bash", ["-c", setup.run], { env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" }, timeout: 10000 }), (error) => error.code === 9 && /missing setup risk/u.test(error.stderr));
+  } finally { await rm(bin, { recursive: true, force: true }); }
+});
+
+test("Full preparation observations reject overruns and influence residual estimates without cache-zero admission", () => {
+  const before = [syntheticFilesystem("workspace")];
+  const low = new Map([["workspace", { bytes: 700n, inodes: 80n }]]);
+  assert.throws(() => assertPreparationEnvelope(before, low, assessFullDemand(before, [syntheticTerm()])), /overrun/u);
+  assertPreparationEnvelope(before, low, assessFullDemand(before, [syntheticTerm("workspace", "400", "30")]));
+  const term = { ...syntheticTerm(), id: "build", measurement: { preparationId: "native.build", mode: "peak", location: "workspace" } };
+  const samples = [{ id: "native.build", before, after: [syntheticFilesystem("workspace", "1", "1000", "100")], lowWater: [syntheticFilesystem("workspace", "1", "700", "80")] }];
+  assert.deepEqual(resolveObservedResidual([term], samples)[0], { ...term, bytes: "300", inodes: "20" });
+  assert.deepEqual(resolveObservedResidual([{ ...term, measurement: { ...term.measurement, mode: "retained" } }], samples)[0].bytes, "200");
+  assert.throws(() => resolveObservedResidual([term], []), /actual same-job/u);
+});
+
+test("Full workload-risk ledger rejects missing consumers, sizing, source freshness and stale owner", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "full-risk-contract-"));
+  try {
+    const source = "public synthetic sizing source\n";
+    await writeFile(path.join(temporary, "source.txt"), source);
+    const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+    const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
+    const preparation = fullPreparation(plan);
+    const binding = { head: "b".repeat(40), registryDigest: plan.registryDigest, runId: "1", attempt: "1" };
+    const term = (id, kind, domain) => ({ id, kind, domain, location: "workspace", bytes: "200", inodes: "10", basis: "synthetic contract only, not an actual risk estimate", operation: "construct synthetic fixture", sources: [0] });
+    const estimate = {
+      binding, sources: [{ path: "source.txt", sha256: createHash("sha256").update(source).digest("hex") }],
+      tasks: plan.tasks.map((task) => task.id),
+      preparation: preparation.map((step) => ({ id: step.id, commandDigest: createHash("sha256").update(JSON.stringify(step.command)).digest("hex"), timeoutMs: 1000, terms: [term("retained", "retained", "cache-environment"), term("transient", "transient", "build-link-doctest"), term("uncertainty", "uncertainty", "logs-reports")] })),
+      residual: [
+        { ...term("build", "transient", "build-link-doctest"), measurement: { preparationId: "native.build", mode: "peak", location: "workspace" } },
+        term("fixtures", "retained", "fixtures-db-wal-backup"), term("copies", "retained", "failure-tmproot-artifact-copy"),
+        term("environment", "retained", "cache-environment"), term("logs", "uncertainty", "logs-reports"),
+      ],
+    };
+    const validate = (value) => validateWorkloadEstimate(value, binding, plan, preparation, temporary);
+    await validate(estimate);
+    for (const mutate of [
+      (value) => { value.binding.attempt = "2"; },
+      (value) => { value.tasks.pop(); },
+      (value) => { value.tasks[0] = value.tasks[1]; },
+      (value) => { value.sources[0].sha256 = "0".repeat(64); },
+      (value) => { value.sources[0].path = "../escape"; },
+      (value) => { value.preparation[0].commandDigest = "0".repeat(64); },
+      (value) => { value.preparation[0].timeoutMs = 0; },
+      (value) => { value.residual.pop(); },
+      (value) => { value.residual[1].bytes = "0"; },
+      (value) => { value.residual[1].basis = ""; },
+      (value) => { delete value.residual[0].measurement; },
+      (value) => { value.residual[0].measurement.preparationId = "foreign"; },
+    ]) {
+      const malformed = structuredClone(estimate);
+      mutate(malformed);
+      await assert.rejects(validate(malformed), /\[precheck\]/u);
+    }
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("Full producer constructs complete source-derived coexistence demand and rejects missing numerical facts", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "full-producer-contract-"));
+  try {
+    const paths = [
+      ".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json",
+      "scripts/nir1-c-query-worker-ci.sh",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",
+      "electron/scripts/product-journey-harness.mjs", "electron/scripts/product-journey-catalog.mjs",
+      "src/features/chat/chatScopeRegistry.json",
+    ];
+    const sources = [];
+    for (const relative of paths) {
+      const contents = await readFile(path.join(repoRoot, relative));
+      await mkdir(path.dirname(path.join(temporary, relative)), { recursive: true });
+      await writeFile(path.join(temporary, relative), contents);
+      sources.push({ path: relative, sha256: createHash("sha256").update(contents).digest("hex") });
+    }
+    const registry = JSON.parse(await readFile(path.join(temporary, "scripts/local-ci-registry.json"), "utf8"));
+    const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
+    const preparation = fullPreparation(plan);
+    const binding = { head: "b".repeat(40), runId: "1", attempt: "1" };
+    const { PRODUCT_JOURNEY_CATALOG } = await import("../electron/scripts/product-journey-catalog.mjs");
+    // Invented small numbers are EXCLUSIVELY synthetic tests, never admission
+    // defaults. No fixture construction, build, quota probe or app is executed.
+    const inventory = (id, roles) => ({
+      id, sources: sources.map((_, index) => index), basis: "synthetic physical allocation arithmetic, not runner evidence",
+      operation: `synthetic inventory ${id}`, items: roles.map((role) => ({ ...(typeof role === "string" ? { role } : role), bytes: "10", inodes: "1" })),
+    });
+    const recipe = (kind, domain, inventories = ["risk.build"], location = "workspace") => ({ kind, domain, location, inventories });
+    const terms = () => [recipe("retained", "cache-environment"), recipe("transient", "build-link-doctest"), recipe("uncertainty", "logs-reports", ["risk.uncertainty"])];
+    const installedPlaces = {
+      pnpm: ["pnpm-installer"], node: ["tool-cache"], rust: ["cargo-home", "rustup-home"], system: ["root"],
+      uv: ["tool-cache"], packages: ["workspace", "pnpm-store-root", "pnpm-store"], browser: ["root"], audit: ["cargo-home"],
+    };
+    const installInventories = Object.entries(installedPlaces).map(([name, places]) => inventory(`install.${name}`, [
+      ...places.map((location) => ({ role: "installed", location })),
+      ...["download-cache", "extraction"].map((role) => ({ role, location: places[0] })),
+      { role: "logs", location: "workspace" },
+    ]));
+    const locations = fullSetupLocations(temporary, {
+      FULL_PNPM_DEST: "/synthetic/installer", npm_config_store_dir: "/synthetic/disjoint-store",
+      PLAYWRIGHT_BROWSERS_PATH: "/synthetic/disjoint-browser", UV_CACHE_DIR: "/synthetic/disjoint-uv",
+    });
+    const input = {
+      version: "full-workload-input/1", binding, sources,
+      inventories: [
+        inventory("risk.build", ["synthetic-build"]), inventory("risk.uncertainty", ["synthetic-additive-uncertainty"]),
+        ...installInventories,
+        ...["q2", "q512"].map((name) => inventory(`worker.${name}`, ["db", "wal", "shm", "journal", "construction"])),
+        inventory("c2zc.fixture", ["db", "wal", "shm", "backup", "standalone", "manifest"]),
+        inventory("fixtures.uncertainty", ["sqlite-allocation", "failure-copy", "unsampled-transient"]),
+        ...PRODUCT_JOURNEY_CATALOG.flatMap(({ id }) => [
+          inventory(`journey.${id}.runtime`, ["db", "wal", "shm", "user-data", "cache", "logs", "receipts", "other"]),
+          inventory(`journey.${id}.failure`, ["backup", "receipt-snapshot", "diagnostics", "screenshot"]),
+        ]),
+      ],
+      setup: [
+        ...locations.flatMap(([label]) => ["retained", "transient", "uncertainty"].map((kind) => recipe(kind, "cache-environment", [kind === "uncertainty" ? "risk.uncertainty" : "risk.build"], label))),
+        ...installInventories.flatMap(({ id, items }) => [...new Set(items.map(({ location }) => location))].map((location) => recipe("retained", "cache-environment", [id], location))),
+      ],
+      preparation: preparation.map((step) => ({ id: step.id, commandDigest: createHash("sha256").update(JSON.stringify(step.command)).digest("hex"), timeoutMs: 1000, terms: terms() })),
+      tasks: plan.tasks.map(({ id }) => ({ id, terms: terms().map((entry) => entry.domain === "build-link-doctest" ? { ...entry, measurement: { preparationId: "native.build", mode: "peak", location: "workspace" } } : entry) })),
+    };
+    const produce = (value) => produceWorkloadEstimate(value, binding, temporary, locations);
+    const estimate = await produce(input);
+    await validateFullSetupEstimate(estimate, binding, temporary);
+    await validateWorkloadEstimate(estimate, binding, plan, preparation, temporary);
+    const find = (id) => estimate.residual.find((entry) => entry.id === id);
+    assert.equal(find("worker.q2").bytes, "350"); // pristine plus SIX default copies
+    assert.equal(find("worker.q512").bytes, "150"); // pristine plus TWO default copies
+    assert.equal(find("worker.q2").inodes, "35");
+    assert.equal(find("worker.q2").location, process.env.RUNNER_TEMP ? "runner-temp" : process.env.TMPDIR ? "unix-temp" : process.env.TMP ? "tmp-temp" : process.env.TEMP ? "temp-temp" : "unix-temp");
+    assert.equal(find("c2zc.fixture").bytes, "60");
+    assert.equal(find("journey.0.tmp").bytes, "120");
+    assert.equal(find("journey.0.copy").bytes, "120");
+    assert.equal(find("journey.0.screenshot").bytes, "10");
+    assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, PRODUCT_JOURNEY_CATALOG.length);
+    assert.deepEqual(estimate.setup.destinations, locations);
+    // Positive totals in other roles must not hide omitted mandatory backups.
+    for (const id of ["c2zc.fixture", ...PRODUCT_JOURNEY_CATALOG.map(({ id }) => `journey.${id}.failure`)]) {
+      for (const metrics of [["bytes"], ["inodes"], ["bytes", "inodes"]]) {
+        const zeroBackup = structuredClone(input);
+        const backup = zeroBackup.inventories.find((entry) => entry.id === id).items.find(({ role }) => role === "backup");
+        for (const metric of metrics) backup[metric] = "0";
+        await assert.rejects(produce(zeroBackup), (error) => error.message.includes(`positive physical byte/inode allocation for ${id}/backup; synthetic inventory ${id}`));
+      }
+    }
+    // Workspace has ample room, but cache writes are on independent mounts.
+    // These are synthetic observations ONLY, not a probe of the test host.
+    const disjoint = locations.map(([label]) => syntheticFilesystem(label, label === "pnpm-store" ? "store" : label === "browser-cache" ? "browser" : "main", "100000", "10000"));
+    const report = assessFullSetupDemand(disjoint, estimate.setup.terms);
+    assert.equal(report.find(({ device }) => device === "store").demandBytes, "40"); // three risk terms plus placed package-store component
+    assert.equal(report.find(({ device }) => device === "browser").demandBytes, "30");
+    for (const label of ["pnpm-store", "browser-cache"]) {
+      for (const metric of ["bytes", "inodes"]) {
+        const limited = structuredClone(disjoint);
+        const device = limited.find((fs) => fs.label === label).device;
+        const demand = report.find((fs) => fs.device === device);
+        limited.find((fs) => fs.label === label)[metric] = demand[metric === "bytes" ? "demandBytes" : "demandInodes"];
+        assert.throws(() => assessFullSetupDemand(limited, estimate.setup.terms), /capacity\/quota/u);
+      }
+    }
+    const before = [syntheticFilesystem("workspace", "1", "1000", "100")];
+    const quiet = [{ id: "native.build", before, after: before, lowWater: before }];
+    assert.equal(resolveObservedResidual(estimate.residual.filter((entry) => entry.measurement), quiet)[0].bytes, "10");
+    const growing = [{ id: "native.build", before, after: [syntheticFilesystem("workspace", "1", "900", "90")], lowWater: [syntheticFilesystem("workspace", "1", "800", "80")] }];
+    assert.equal(resolveObservedResidual(estimate.residual.filter((entry) => entry.measurement), growing)[0].bytes, "200");
+    for (const mutate of [
+      (value) => { value.binding.attempt = "2"; },
+      (value) => { value.sources[0].sha256 = "0".repeat(64); },
+      (value) => { value.inventories = value.inventories.filter(({ id }) => id !== "install.rust"); },
+      (value) => { value.inventories.find(({ id }) => id === "worker.q2").items.pop(); },
+      (value) => { value.inventories.find(({ id }) => id === "journey.editor-persistence.failure").items.pop(); },
+      (value) => { value.inventories.find(({ id }) => id === "fixtures.uncertainty").items[0].bytes = "1e9"; },
+      (value) => { value.inventories.find(({ id }) => id === "risk.uncertainty").items[0].bytes = "0"; },
+      (value) => { value.inventories.push(value.inventories[0]); },
+      (value) => { value.inventories.push(inventory("silently-unused", ["extra"])); },
+      (value) => { value.setup[0].copies = 2; },
+      (value) => { value.inventories.find(({ id }) => id === "install.pnpm").items[0].location = "workspace"; },
+      (value) => { delete value.inventories.find(({ id }) => id === "install.packages").items[0].location; },
+      (value) => { value.inventories.find(({ id }) => id === "install.packages").items.find(({ location }) => location === "pnpm-store").bytes = "0"; },
+      (value) => { value.setup.find((entry) => entry.location === "pnpm-store" && entry.inventories.includes("install.packages")).location = "workspace"; },
+      (value) => { value.setup.find((entry) => entry.inventories.includes("install.node")).location = "browser-cache"; },
+      (value) => { value.setup = value.setup.filter((entry) => entry.location !== "tool-cache"); },
+      (value) => { value.preparation[0].timeoutMs = 0; },
+      (value) => { value.tasks[0].id = value.tasks[1].id; },
+      (value) => { value.tasks[0].terms[1].measurement.preparationId = "foreign"; },
+      (value) => { value.tasks[0].terms[1].measurement.location = "node-temp"; },
+    ]) {
+      const malformed = structuredClone(input);
+      mutate(malformed);
+      await assert.rejects(produce(malformed), /\[precheck\]/u);
+    }
+    // Different source copy topology must change sizing, not a fixed multiplier.
+    const workerPath = path.join(temporary, "scripts/nir1-c-query-worker-ci.sh");
+    await writeFile(workerPath, `${await readFile(workerPath, "utf8")}\ncp -- "$q2_fixture_file" "$synthetic_extra_input"\n`);
+    await assert.rejects(produce(input), /current sizing source digest/u);
+    const changed = structuredClone(input);
+    changed.sources.find(({ path: name }) => name === "scripts/nir1-c-query-worker-ci.sh").sha256 = createHash("sha256").update(await readFile(workerPath)).digest("hex");
+    assert.equal((await produce(changed)).residual.find(({ id }) => id === "worker.q2").bytes, "400");
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("Full quota adapter treats kernel disabled, unknown and soft-grace limits distinctly without probing host quotas", async () => {
+  const source = `
+import ctypes, errno, importlib.util, os
+spec = importlib.util.spec_from_file_location('quota', 'scripts/local-ci-full-filesystems.py')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+assert m.remaining(1000, 500, 400, 0, 100) == 100
+assert m.remaining(1000, 500, 600, 200, 100) == 0
+assert m.remaining(0, 0, 400, 0, 100) is None
+class Query:
+    def __init__(self, error): self.error = error
+    def __call__(self, *args): ctypes.set_errno(self.error); return -1
+class Lib:
+    def __init__(self, error): self.quotactl = Query(error)
+# Only the quota syscall is shimmed. This harmless read concerns the repository
+# directory; it never invokes quotactl or examines a foreign process.
+mounts = '1 0 8:1 / / rw - ext4 /dev/synthetic rw'
+result = m.inspect([['workspace', os.getcwd()]], os.getuid(), [os.getgid()], libc=Lib(errno.ESRCH), mountinfo=mounts)
+assert [q['state'] for q in result[0]['quotas']] == ['kernel-disabled'] * 3
+for error in (errno.EACCES, errno.EINVAL, errno.ENOSYS):
+    try: m.inspect([['workspace', os.getcwd()]], os.getuid(), [os.getgid()], libc=Lib(error), mountinfo=mounts)
+    except ValueError: pass
+    else: raise AssertionError('unknown quota must reject')
+try: m.inspect([['workspace', os.getcwd()]], os.getuid(), [os.getgid()], libc=Lib(errno.ESRCH), mountinfo=mounts.replace('ext4', 'overlay'))
+except ValueError: pass
+else: raise AssertionError('unsupported quota acquisition must reject')
+`;
+  await promisify(execFile)("python3", ["-c", source], { cwd: repoRoot, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }, timeout: 10000 });
+});
+
+test("Full setup enforces SGID and non-SGID grpid destination quotas outside caller groups and rejects unreadable records", async () => {
+  const source = `
+import ctypes, errno, importlib.util, json, stat
+from types import SimpleNamespace
+from unittest.mock import patch
+spec = importlib.util.spec_from_file_location('quota', 'scripts/local-ci-full-filesystems.py')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+class Query:
+    def __init__(self): self.groups = []; self.denied = False
+    def __call__(self, command, special, identity, pointer):
+        domain, operation = command & 0xff, command >> 8
+        if domain != 1:
+            ctypes.set_errno(errno.ESRCH); return -1
+        if operation == 0x800005: return 0
+        assert operation == 0x800007
+        self.groups.append(identity)
+        if identity == 77 and self.denied:
+            ctypes.set_errno(errno.EACCES); return -1
+        block = pointer._obj
+        block.valid = 0x3f
+        if identity == 77: block.bhard = 1; block.ihard = 4
+        return 0
+query = Query()
+lib = SimpleNamespace(quotactl=query)
+destination = SimpleNamespace(st_mode=stat.S_IFDIR | stat.S_ISGID | 0o770, st_gid=77, st_dev=1)
+capacity = SimpleNamespace(f_flag=0, f_bavail=65536, f_frsize=1, f_favail=1000)
+mounts = '1 0 8:1 / / rw - ext4 /dev/synthetic rw'
+# All storage and quota observations are synthetic: no chmod/chown, foreign
+# group lookup, real quota syscall or host filesystem capacity acquisition.
+with patch.object(m.os, 'stat', return_value=destination), patch.object(m.os, 'statvfs', return_value=capacity), patch.object(m.os.path, 'realpath', side_effect=lambda value: value), patch.object(m.os.path, 'exists', side_effect=lambda value: value == '/synthetic/sgid'):
+    def inspect(requested='/synthetic/sgid', groups=(11, 12), mountinfo=mounts):
+        query.groups.clear()
+        return m.inspect([['workspace', requested]], 10, groups, libc=lib, mountinfo=mountinfo)
+    sgid = inspect()
+    assert query.groups == [11, 12, 77], query.groups
+    assert inspect('/synthetic/sgid/pending/cache') == sgid
+    assert query.groups == [11, 12, 77], query.groups
+    assert inspect(groups=(11, 12, 77)) == sgid
+    assert query.groups == [11, 12, 77], query.groups
+    query.denied = True
+    try: inspect()
+    except ValueError as error: assert 'current-identity quota unavailable' in str(error)
+    else: raise AssertionError('unreadable enabled SGID group quota must reject')
+    query.denied = False
+    destination.st_mode &= ~stat.S_ISGID
+    ordinary = inspect()
+    assert query.groups == [11, 12], query.groups
+    inherited = []
+    for option in ('grpid', 'bsdgroups'):
+        for mountinfo in (mounts.replace(' / rw - ', ' / rw,' + option + ' - '), mounts + ',' + option):
+            inherited.append(inspect(mountinfo=mountinfo))
+            assert inherited[-1] == sgid
+            assert query.groups == [11, 12, 77], query.groups
+            assert inspect('/synthetic/sgid/pending/cache', mountinfo=mountinfo) == sgid
+            assert query.groups == [11, 12, 77], query.groups
+            assert inspect(groups=(11, 12, 77), mountinfo=mountinfo) == sgid
+            assert query.groups == [11, 12, 77], query.groups
+            query.denied = True
+            try: inspect(mountinfo=mountinfo)
+            except ValueError as error: assert 'current-identity quota unavailable' in str(error)
+            else: raise AssertionError('unreadable enabled non-SGID parent group quota must reject')
+            query.denied = False
+    for option in ('nogrpid', 'sysvgroups'):
+        assert inspect(mountinfo=mounts + ',' + option) == ordinary
+        assert query.groups == [11, 12], query.groups
+    # Group inheritance must use the actual destination mount, not an ancestor
+    # mount's policy or a mode on another filesystem.
+    nested = '2 1 8:2 / /synthetic/sgid rw - ext4 /dev/nested rw'
+    assert inspect(mountinfo=mounts + ',grpid\\n' + nested) == ordinary
+    assert query.groups == [11, 12], query.groups
+    assert inspect(mountinfo=mounts + '\\n' + nested + ',grpid') == sgid
+    assert query.groups == [11, 12, 77], query.groups
+print(json.dumps({'sgid': sgid, 'ordinary': ordinary, 'inherited': inherited}))
+`;
+  const { stdout } = await promisify(execFile)("python3", ["-c", source], { cwd: repoRoot, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }, timeout: 10000 });
+  const { sgid, ordinary, inherited } = JSON.parse(stdout);
+  const terms = (bytes, inodes) => ["retained", "transient", "uncertainty"].map((kind) => ({ ...syntheticTerm("workspace", bytes, inodes), kind }));
+  assert.equal(assessFullSetupDemand(sgid, terms("100", "1"))[0].bytes, "1024");
+  assert.throws(() => assessFullSetupDemand(sgid, terms("400", "1")), /capacity\/quota/u);
+  assert.throws(() => assessFullSetupDemand(sgid, terms("100", "2")), /capacity\/quota/u);
+  assert.doesNotThrow(() => assessFullSetupDemand(ordinary, terms("400", "2")));
+  for (const filesystem of inherited) {
+    assert.equal(assessFullSetupDemand(filesystem, terms("100", "1"))[0].bytes, "1024");
+    assert.throws(() => assessFullSetupDemand(filesystem, terms("400", "1")), /capacity\/quota/u);
+    assert.throws(() => assessFullSetupDemand(filesystem, terms("100", "2")), /capacity\/quota/u);
+  }
 });
 
 test("canonical shell uses one immutable tuple/options and verifies only profile success", async () => {
@@ -1045,11 +1551,9 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   assert.ok(inspectionStart > canonical.run.indexOf('git merge-base --is-ancestor'));
   assert.ok(inspectionStart < profileStart);
   const inspection = canonical.run.slice(inspectionStart, profileStart);
-  for (const fact of ["realpath(ancestor)", "constants.W_OK | constants.X_OK", "statfs(resolved", "process.cwd()", "['root', '/']", "process.env.HOME", "tmpdir()", "process.env.RUNNER_TEMP"]) {
-    assert.ok(inspection.includes(fact), fact);
-  }
-  assert.match(inspection, /\[precheck\] Full inspection is not admission:[\s\S]*exit 1/u);
-  assert.doesNotMatch(inspection, /mkdir|writeFile|unlink|spawn|execFile|recover-lock|^\s*(?:sudo|quota|df|kill)\b/mu);
+  assert.ok(inspection.includes('node scripts/local-ci-full-admission.mjs "$candidate_base" "$candidate_head" "$MAX_PARALLEL_TASKS"'));
+  assert.match(inspection, /\[precheck\] Full conditional admission is not yet enabled:[\s\S]*exit 1/u);
+  assert.doesNotMatch(inspection, /recover-lock|unlink|^\s*(?:sudo|kill)\b/mu);
   assert.equal((canonical.run.match(/--base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/gu) ?? []).length, 2);
   const execute = promisify(execFile);
   const temporary = await mkdtemp(path.join(tmpdir(), "canonical-ci-contract-"));
@@ -1061,8 +1565,8 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
     await mkdir(cwd);
     await mkdir(bin);
     await writeFile(path.join(bin, "pnpm"), `#!${process.execPath}\nconst { appendFileSync } = require('node:fs');\nconst args = process.argv.slice(2);\nappendFileSync(process.env.CALLS, JSON.stringify(args) + '\\n');\nif (process.env.FAIL_PROFILE === '1') process.exitCode = 7;\n`, { mode: 0o755 });
-    // Synthetic inspection only: no statfs/quota/host-resource probe in contracts.
-    await writeFile(path.join(bin, "node"), `#!${process.execPath}\nconst fs = require('node:fs');\nfs.readFileSync(0);\nfs.appendFileSync(process.env.INSPECTION_CALLS, JSON.stringify(process.argv.slice(2)) + '\\n');\nif (process.env.INSPECTION_UNAVAILABLE === '1') { console.error('[precheck] Full filesystem inspection unavailable: runner-temp'); process.exitCode = 9; }\n`, { mode: 0o755 });
+    // Synthetic admission only: no real preparation/quota/host probe in contracts.
+    await writeFile(path.join(bin, "node"), `#!${process.execPath}\nconst fs = require('node:fs');\nfs.appendFileSync(process.env.INSPECTION_CALLS, JSON.stringify(process.argv.slice(2)) + '\\n');\nif (process.env.INSPECTION_UNAVAILABLE === '1') { console.error('[precheck] Full scoped filesystem/quota acquisition unavailable'); process.exitCode = 9; }\n`, { mode: 0o755 });
     const git = (...args) => execute("git", args, { cwd, timeout: 10000 });
     await git("init", "--initial-branch=contract");
     await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
@@ -1085,15 +1589,15 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
     await shell(selection.run, { PROFILE: "full" });
     await assert.rejects(shell(canonical.run, { PROFILE: "full" }), (error) => {
       assert.equal(error.code, 1);
-      assert.match(error.stderr, /\[precheck\] Full inspection is not admission/u);
+      assert.match(error.stderr, /\[precheck\] Full conditional admission is not yet enabled/u);
       return true;
     });
-    assert.deepEqual((await readFile(inspectionCalls, "utf8")).trim().split("\n").map(JSON.parse), [["--input-type=module"]]);
-    assert.equal(await readFile(calls, "utf8"), "", "successful inspection must not start Full or verify");
+    assert.deepEqual((await readFile(inspectionCalls, "utf8")).trim().split("\n").map(JSON.parse), [["scripts/local-ci-full-admission.mjs", sha, sha, "3"]]);
+    assert.equal(await readFile(calls, "utf8"), "", "even successful conditional admission remains fenced until review and prerequisites");
     await writeFile(inspectionCalls, "");
     await assert.rejects(shell(canonical.run, { PROFILE: "full", INSPECTION_UNAVAILABLE: "1" }), (error) => {
       assert.equal(error.code, 9);
-      assert.match(error.stderr, /\[precheck\] Full filesystem inspection unavailable: runner-temp/u);
+      assert.match(error.stderr, /\[precheck\] Full scoped filesystem\/quota acquisition unavailable/u);
       return true;
     });
     assert.equal(await readFile(calls, "utf8"), "", "missing facts must not start Full or verify");
