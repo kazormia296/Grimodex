@@ -59,6 +59,7 @@ export async function recordSetupObservation(phase) {
       sources[file] = createHash("sha256").update(await readFile(path.join(root, file))).digest("hex");
     }
     let versions = null;
+    let provenance = null;
     let selected;
     if (phase === "installed") {
       const pnpm = await query("pnpm-version", "pnpm", ["--version"]);
@@ -70,8 +71,30 @@ export async function recordSetupObservation(phase) {
       versions = { pnpm, node: process.version, rust, toolchain };
       const cargo = process.env.CARGO_HOME || path.join(homedir(), ".cargo");
       const rustup = process.env.RUSTUP_HOME || path.join(homedir(), ".rustup");
+      // Pinned action installs pnpm (standalone defaults false) in its dest cwd.
+      // Resolve only this exact public package link, not an arbitrary tree scan.
+      const installer = process.env.PNPM_OBSERVATION_DEST;
+      normalizedDestination(installer, prefixes);
+      const canonicalInstaller = await realpath(installer);
+      normalizedDestination(canonicalInstaller, prefixes);
+      const payload = path.join(canonicalInstaller, "node_modules", "pnpm");
+      let payloadRoot;
+      try { payloadRoot = await realpath(payload); }
+      catch (error) { if (error.code !== "ENOENT") throw error; payloadRoot = payload; }
+      const payloadRelative = path.relative(canonicalInstaller, payloadRoot);
+      if (!payloadRelative || payloadRelative === ".." || payloadRelative.startsWith(`..${path.sep}`) || path.isAbsolute(payloadRelative)) {
+        throw new Error("pnpm package must remain inside its canonical installer");
+      }
+      provenance = {
+        pnpmInstaller: { destination: normalizedDestination(installer, prefixes), basis: "pinned action dest output / bootstrap install cwd" },
+        pnpmPayload: { destination: normalizedDestination(payloadRoot, prefixes), basis: "pinned action default non-standalone pnpm package; exact package link resolution" },
+        installedStore: { destination: normalizedDestination(store, prefixes), basis: "installed pnpm 10.33.0 store path query in workspace" },
+        currentHome: { destination: normalizedDestination(homedir(), prefixes), basis: "observer OS home, not historical bootstrap config/home attestation" },
+        bootstrapStore: { status: "unobserved", destination: null, basis: "bootstrap bundled pnpm/config/home were not captured during action setup; installed v10 query and current PNPM_HOME do not attest bootstrap v3 location" },
+      };
       selected = [
-        ["pnpm-installed", process.env.PNPM_OBSERVATION_DEST],
+        ["pnpm-installed", installer],
+        ["pnpm-payload", payloadRoot],
         ["node-installed", path.dirname(path.dirname(await realpath(process.execPath)))],
         ["rust-installed", path.join(rustup, "toolchains", toolchain)],
         ["cargo-shims", path.join(cargo, "bin")],
@@ -91,12 +114,12 @@ export async function recordSetupObservation(phase) {
     const snapshot = JSON.parse(await query("allocation", "python3", ["scripts/local-ci-setup-allocation.py", JSON.stringify(selected)], 75000));
     controller.signal.throwIfAborted();
     await exclusiveJson(path.join(directory, `allocation-${phase}.json`), {
-      version: "canonical-setup-observation/1", phase, binding, sources, versions, destinations, snapshot,
+      version: "canonical-setup-observation/1", phase, binding, sources, versions, provenance, destinations, snapshot,
       children: children.map(({ id, exitCode, cleanup, logs }) => ({ id, exitCode, cleanup,
         logJoins: Object.fromEntries(Object.entries(logs).map(([stream, log]) => [stream, { size: log.size, sha256: log.sha256 }])),
       })),
       scope: "Sequential metadata snapshots; no file contents. Coexistence deduplicates observed roots only, not an atomic peak or cold Full forecast.",
-      unobserved: ["pnpm/node/package historical download and extraction peaks", "complete hosted action logs and observer output growth after snapshot", "other Full installers/preparation/fixtures/journeys", "future growth and additive uncertainty", "future runner capacity/quota/exclusion"],
+      unobserved: ["bundled bootstrap pnpm effective config/home/store location and allocation", "pnpm/node/package historical download and extraction peaks", "complete hosted action logs and observer output growth after snapshot", "other Full installers/preparation/fixtures/journeys", "future growth and additive uncertainty", "future runner capacity/quota/exclusion"],
     });
     controller.signal.throwIfAborted();
   } finally {

@@ -747,16 +747,39 @@ pnpm-version/store and active Rust toolchain/version queries and a bounded
 `local-ci-setup-allocation.py` walk. Roots come from the pnpm action's actual `dest`
 output, current Node executable, active Rust toolchain, Cargo shims, Rust
 cache/extraction directories, installed public `node_modules`, effective pnpm
-store and the observer's own query logs. No additional installation or
-profile/job/input is added; Quick/Full do not execute this observation path.
+store and the observer's own query logs. The pinned action's default non-standalone
+`pnpm` package is also selected via the exact `dest/node_modules/pnpm` link,
+separately from the installer umbrella. Its resolved package root must be a strict
+descendant of the canonical installer before provenance is recorded or allocation
+starts; a link into another recognized workspace/home directory (or the installer
+itself) rejects, retaining the pending marker without a success observation. Only
+that source-selected package link and installer are resolved; the walker itself
+still follows no links. No additional installation or
+profile/job/input/query is added; Quick/Full do not execute this observation path.
+
+Normalized provenance binds the actual action `dest`/bootstrap install cwd, selected
+package, installed-manager store query and current observer OS home. The action's
+historical bundled-bootstrap config/home/store was not captured at setup and is
+explicitly **unobserved**, with a null destination: current `PNPM_HOME`, observer
+home and installed pnpm v10 cannot attest the bundled pnpm v3 location. No guessed
+`_actions` path, default HOME/XDG scan or v10-to-v3 substitution is used.
 
 The walker reads only stat metadata through no-follow directory descriptors:
 allocated `st_blocks * 512`, unique device/inode counts and per-device deduplicated
-coexistence across observed roots. It does not read payload contents, follow
-symlinks, scan arbitrary HOME/temp directories or probe quota/capacity. Traversal
-has finite entry/deadline/depth limits; missing, unreadable, changing, cross-device
-or capped roots retain an incomplete status with null quantities, not guessed
-zeros or extrapolated totals. Sequential snapshots are not an atomic peak.
+coexistence across observed roots. Per-root aggregates additionally record regular
+logical bytes once per inode and once per enumerated path, regular/directory/symlink
+path and unique-inode counts, enumerated regular hardlink aliases, and regular
+inodes with `st_nlink > 1`. Link counts expose possible aliases outside a root,
+not a complete alias inventory; overlapping roots must not be added or subtracted
+as exclusive payloads. Sparse logical lengths are not physical allocations.
+Repeated inode size/link/time/block changes invalidate the component or cross-root
+coexistence even if blocks alone are unchanged. Old block/device-dedup totals retain
+their meaning. No payload contents are read, no symlinks are followed, and no
+arbitrary HOME/temp directories or quota/capacity are probed. The root-list cap is
+17 (one additional exact package root); the shared 500,000-entry/60-second/64-depth
+traversal bounds are unchanged. Missing, unreadable, changing, cross-device or
+capped roots null **all** aggregate quantities, not guessed zeros or extrapolated
+totals. Sequential snapshots are not an atomic peak.
 Known report allocation is observed separately after the existing contracts,
 including on failure, without treating the local TAP as complete hosted logs.
 

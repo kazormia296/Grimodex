@@ -1013,27 +1013,41 @@ test("grouped setup observations preserve contracts/defaults and exclude other p
   assert.throws(() => normalizedDestination("/synthetic/home/\nsecret", prefixes));
 });
 
-test("setup allocation counts blocks/unique hardlinks without following links or inventing incomplete totals", async () => {
+test("setup allocation counts physical/logical/kind/hardlink metadata without following links or inventing incomplete totals", async () => {
   const source = `
-import importlib.util, json, os, pathlib, tempfile
+import importlib.util, json, os, pathlib, subprocess, sys, tempfile, types
+from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('allocation', 'scripts/local-ci-setup-allocation.py')
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 with tempfile.TemporaryDirectory() as temporary:
     root = pathlib.Path(temporary)
     a = root / 'a'; b = root / 'b'; a.mkdir(); b.mkdir()
     payload = a / 'public'; payload.write_bytes(b'synthetic' * 4096)
-    os.link(payload, b / 'same')
+    os.link(payload, b / 'same'); os.link(payload, a / 'alias')
+    sparse = a / 'sparse'
+    with sparse.open('wb') as file: file.truncate(1024 * 1024)
     outside = root / 'outside'; outside.mkdir(); (outside / 'never-read').write_bytes(b'x' * 100000)
     os.symlink(outside, a / 'link')
     result = m.observe([('first', str(a)), ('second', str(b))])
     assert all(c['status'] == 'observed' for c in result['components'])
-    assert result['components'][0]['uniqueInodes'] == '3'  # directory, file, link
-    expected = sum(os.lstat(p).st_blocks * 512 for p in [a, b, payload, a / 'link'])
+    first = result['components'][0]
+    assert first['uniqueInodes'] == '4'  # directory, two files, link
+    expected = sum(os.lstat(p).st_blocks * 512 for p in [a, b, payload, sparse, a / 'link'])
     assert result['coexistence'][0]['allocatedBytes'] == str(expected)
-    assert result['coexistence'][0]['uniqueInodes'] == '4'  # hardlink counted only once
+    assert result['coexistence'][0]['uniqueInodes'] == '5'  # hardlink counted only once
+    assert first['regularLogicalBytes'] == str(payload.stat().st_size + sparse.stat().st_size)
+    assert first['regularPathLogicalBytes'] == str(2 * payload.stat().st_size + sparse.stat().st_size)
+    assert first['kinds'] == {'regular': {'paths': '3', 'uniqueInodes': '2'}, 'directory': {'paths': '1', 'uniqueInodes': '1'}, 'symlink': {'paths': '1', 'uniqueInodes': '1'}}
+    assert first['hardlinkAliases'] == '1'
+    assert first['regularInodesWithMultipleLinks'] == '1'
+    assert result['components'][1]['hardlinkAliases'] == '0'  # other aliases are not enumerated here
+    assert result['components'][1]['regularInodesWithMultipleLinks'] == '1'
+    assert str(root) not in json.dumps(result)  # no raw member paths
     limited = m.observe([('bounded', str(a))], max_entries=1)
     assert limited['components'][0]['allocatedBytes'] is None
     assert limited['components'][0]['uniqueInodes'] is None
+    for field in ['regularLogicalBytes', 'regularPathLogicalBytes', 'kinds', 'hardlinkAliases', 'regularInodesWithMultipleLinks']:
+        assert limited['components'][0][field] is None
     assert limited['components'][0]['status'] == 'bounded-walk-incomplete'
     missing = m.observe([('absent', str(root / 'absent'))])
     assert missing['components'][0]['allocatedBytes'] is None
@@ -1041,9 +1055,98 @@ with tempfile.TemporaryDirectory() as temporary:
     redirected = m.observe([('redirected', str(root / 'redirect' / 'public'))])
     assert redirected['components'][0]['allocatedBytes'] is None
     assert m.observe([('deadline', str(a))], seconds=0)['components'][0]['allocatedBytes'] is None
+    for count, expected_code in [(17, 0), (18, 1)]:
+        bounded_roots = [[f'root-{index}', str(payload)] for index in range(count)]
+        cli = subprocess.run([sys.executable, 'scripts/local-ci-setup-allocation.py', json.dumps(bounded_roots)], capture_output=True, text=True, timeout=5)
+        assert cli.returncode == expected_code
+        if count == 17: assert len(json.loads(cli.stdout)['components']) == 17
+    fifo = root / 'fifo'; os.mkfifo(fifo)
+    assert m.observe([('special', str(root))])['components'][0]['regularLogicalBytes'] is None
+    original_stat = os.stat
+    def changed_stat(name, **kwargs):
+        info = original_stat(name, **kwargs)
+        if name not in ['alias', 'same']: return info
+        changed = types.SimpleNamespace(**{key: getattr(info, key) for key in dir(info) if key.startswith('st_')})
+        changed.st_size += 1  # same inode/blocks, different logical length
+        return changed
+    with patch.object(m.os, 'stat', changed_stat):
+        changed = m.observe([('changed', str(a))])['components'][0]
+        assert changed['status'] == 'changed-shared-inode-incomplete' and changed['kinds'] is None
+        cross = m.observe([('first', str(payload)), ('second', str(b / 'same'))])
+        assert cross['status'] == 'changed-shared-inode' and cross['coexistence'] is None
 print('synthetic allocation adversaries passed')
 `;
   await promisify(execFile)("python3", ["-c", source], { cwd: repoRoot, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" }, timeout: 10000 });
+});
+
+for (const payloadCase of ["internal", "workspace-sibling", "installer-root"]) test(`installed observation confines the exact pnpm package without inferring bootstrap v3: ${payloadCase}`, async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "canonical-installed-observation-"));
+  try {
+    const evidence = path.join(temporary, ".artifacts/canonical-source");
+    const installer = path.join(temporary, "setup-pnpm");
+    const packageRoot = payloadCase === "internal"
+      ? path.join(installer, "node_modules/.pnpm/pnpm@10.33.0/node_modules/pnpm")
+      : payloadCase === "installer-root" ? installer : path.join(temporary, "setup-pnpm-other/node_modules/pnpm");
+    const store = path.join(temporary, "store/v10");
+    const bin = path.join(temporary, "bin");
+    for (const directory of [evidence, path.join(installer, "node_modules"), packageRoot, store, bin]) await mkdir(directory, { recursive: true });
+    await symlink(packageRoot, path.join(installer, "node_modules/pnpm"));
+    const identity = { commitSha: "a".repeat(40), treeSha: "b".repeat(40) };
+    await writeFile(path.join(evidence, "checkout-identity.json"), JSON.stringify(identity));
+    for (const file of [".github/workflows/canonical-ci.yml", "scripts/local-ci-setup-observation.mjs", "scripts/local-ci-setup-allocation.py", "pnpm-lock.yaml", "package.json"]) {
+      await mkdir(path.dirname(path.join(temporary, file)), { recursive: true });
+      await writeFile(path.join(temporary, file), await readFile(path.join(repoRoot, file)));
+    }
+    // Routing-only children: no installer, real toolchain scan or bootstrap query.
+    for (const [name, body] of Object.entries({
+      pnpm: 'if [ "$1" = "--version" ]; then printf "10.33.0\\n"; else printf "%s\\n" "$SYNTHETIC_STORE"; fi',
+      rustup: 'printf "stable-x86_64-unknown-linux-gnu (default)\\n"',
+      rustc: 'printf "rustc 1.90.0 (synthetic)\\n"',
+    })) await writeFile(path.join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o700 });
+    await writeFile(path.join(temporary, "scripts/local-ci-setup-allocation.py"), `import json, os, sys
+open('.allocation-invoked', 'x').close()
+roots = json.loads(sys.argv[1]); selected = dict(roots)
+assert len(roots) == 17
+assert selected['pnpm-payload'] == os.path.realpath(os.path.join(selected['pnpm-installed'], 'node_modules/pnpm'))
+assert selected['pnpm-store'].endswith('/v10')
+assert not any('bootstrap' in key for key in selected)
+print(json.dumps({'components': [{'id': key} for key in selected]}))
+`);
+    const invoke = () => promisify(execFile)(process.execPath, [path.join(repoRoot, "scripts/local-ci-setup-observation.mjs"), "installed"], {
+      cwd: temporary, timeout: 20000,
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, SYNTHETIC_STORE: store,
+        SETUP_OBSERVATION_PROFILE: "contracts", PNPM_OBSERVATION_DEST: installer,
+        RUNNER_TOOL_CACHE: path.dirname(path.dirname(process.execPath)), CARGO_HOME: path.join(temporary, ".cargo"), RUSTUP_HOME: path.join(temporary, ".rustup"),
+        GITHUB_SHA: identity.commitSha, GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "1" },
+    });
+    if (payloadCase !== "internal") {
+      // Recognized workspace and a shared lexical prefix are not installer scope.
+      await assert.rejects(invoke(), (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /grouped setup allocation observation failed/u);
+        assert.ok(!error.stderr.includes(temporary));
+        return true;
+      });
+      const pending = path.join(evidence, "allocation-installed-pending.json");
+      assert.equal(JSON.parse(await readFile(pending, "utf8")).runId, "1");
+      assert.equal((await stat(pending)).mode & 0o777, 0o600);
+      await assert.rejects(access(path.join(evidence, "allocation-installed.json")));
+      await assert.rejects(access(path.join(temporary, ".allocation-invoked")));
+      await assert.rejects(access(path.join(temporary, ".artifacts/local-ci/setup-observation-installed/allocation.stdout.log")));
+      return;
+    }
+    await invoke();
+    const output = await readFile(path.join(evidence, "allocation-installed.json"), "utf8");
+    const result = JSON.parse(output);
+    assert.equal(result.destinations["pnpm-payload"], "workspace/setup-pnpm/node_modules/.pnpm/pnpm@10.33.0/node_modules/pnpm");
+    assert.equal(result.provenance.installedStore.destination, "workspace/store/v10");
+    assert.equal(result.provenance.pnpmInstaller.destination, "workspace/setup-pnpm");
+    assert.equal(result.provenance.bootstrapStore.status, "unobserved");
+    assert.equal(result.provenance.bootstrapStore.destination, null);
+    assert.ok(result.children.every(({ cleanup }) => cleanup.complete && !cleanup.groupAlive));
+    assert.ok(result.unobserved.some((entry) => entry.includes("bootstrap")));
+    assert.ok(!output.includes(temporary));
+  } finally { await rm(temporary, { recursive: true, force: true }); }
 });
 
 test("setup observation writes current bound reports once and retains pending ownership on reentry/stale identity", async () => {
@@ -1068,6 +1171,7 @@ test("setup observation writes current bound reports once and retains pending ow
     const result = JSON.parse(before);
     assert.equal(result.binding.runId, "1");
     assert.equal(result.snapshot.components.length, 2);
+    assert.equal(result.provenance, null, "reports do not invent installer provenance");
     assert.ok(result.snapshot.components.every(({ status, uniqueInodes }) => status === "observed" && uniqueInodes === "1"));
     assert.ok(result.children.every(({ exitCode, cleanup }) => exitCode === 0 && cleanup.complete && !cleanup.groupAlive));
     assert.equal((await stat(file)).mode & 0o777, 0o600);
