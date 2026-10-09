@@ -794,7 +794,13 @@ current-run `binding` and reviewed current `sources` as the estimate, plus:
   production DB, publish raw environment/endpoints, or rehearse Editor/fixtures
   under this producer. Numeric examples in source contracts are synthetic ONLY.
 - `setup`: recipes `{ kind, domain, location, inventories }` covering retained,
-  transient and explicit additive uncertainty at every actual initial destination.
+  transient and explicit additive uncertainty for the actual setup workload.
+  Charge each component at its real writing destination. Observation-only root/home,
+  container directories and path aliases do not each require invented positive
+  terms of all three kinds. Every location is still probed for actual capacity and
+  quotas; alias observations constrain the same aggregate device demand, and a full
+  or quota-unknown separate root/home still rejects. Global coverage of all three
+  risk kinds and actual installer component placement/consumption remain required.
   All eight `install.pnpm/node/rust/system/uv/packages/browser/audit` inventories
   must be consumed; each covers `installed`, `download-cache`, `extraction`, and
   `logs`. Installed components must cover their finite actual destinations:

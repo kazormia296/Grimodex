@@ -1203,11 +1203,24 @@ test("Full demand aggregates aliases, applicable quotas, failure coexistence and
   assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "1e6")]), /decimal/u);
 });
 
-test("Full setup risk covers every observed destination and fails closed for quotas and capacity", () => {
+test("Full setup risk charges workload destinations, observes aliases and fails closed for quotas and pressure", () => {
   const fs = [syntheticFilesystem("workspace"), syntheticFilesystem("root"), syntheticFilesystem("home"), syntheticFilesystem("tool-cache")];
   const terms = fs.flatMap(({ label }) => ["retained", "transient", "uncertainty"].map((kind) => ({ ...syntheticTerm(label, "10", "1"), kind })));
   assert.equal(assessFullSetupDemand(fs, terms)[0].demandBytes, "120");
-  assert.throws(() => assessFullSetupDemand(fs, terms.filter((term) => term.location !== "tool-cache")), /setup retained risk for tool-cache/u);
+  const workload = terms.filter((term) => term.location === "workspace");
+  assert.equal(assessFullSetupDemand(fs, workload)[0].demandBytes, "30");
+  // Root/home may be separate observation-only devices. No fabricated positive
+  // retained/transient/uncertainty charges or default-zero inventory is needed.
+  const separate = [fs[0], syntheticFilesystem("root", "root", "1", "1"), syntheticFilesystem("home", "home", "1", "1")];
+  assert.deepEqual(assessFullSetupDemand(separate, workload).map(({ device, demandBytes }) => [device, demandBytes]), [["1", "30"], ["root", "0"], ["home", "0"]]);
+  // Alias pressure still constrains all writes on that device; a separate full
+  // root/home or unknown quota still fails even with no term at its label.
+  assert.throws(() => assessFullSetupDemand([fs[0], syntheticFilesystem("home", "1", "30")], workload), /capacity\/quota/u);
+  for (const label of ["root", "home"]) {
+    assert.throws(() => assessFullSetupDemand([fs[0], syntheticFilesystem(label, label, "0")], workload), /root\/home pressure/u);
+    assert.throws(() => assessFullSetupDemand([fs[0], { ...syntheticFilesystem(label, label), quotas: [] }], workload), /project-quota/u);
+  }
+  assert.throws(() => assessFullSetupDemand(fs, workload.filter((term) => term.kind !== "uncertainty")), /setup uncertainty workload risk/u);
   assert.throws(() => assessFullSetupDemand(fs, terms.map((term) => ({ ...term, bytes: "100" }))), /capacity\/quota/u);
   const enabledProject = { ...fs[0], quotas: [disabledQuotas()[0], disabledQuotas()[1], { type: 2, state: "kernel-enabled", bytes: null, inodes: null }] };
   assert.throws(() => assessFullSetupDemand([enabledProject], terms), /installer destination\/project-quota placement/u);
@@ -1453,6 +1466,15 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
     assert.equal(find("journey.0.screenshot").bytes, "10");
     assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, PRODUCT_JOURNEY_CATALOG.length);
     assert.deepEqual(estimate.setup.destinations, locations);
+    // Actual installer component recipes already cover their real destinations.
+    // Observation-only root/home/alias labels must not force duplicate payloads.
+    const noProbeCharges = structuredClone(input);
+    noProbeCharges.setup = noProbeCharges.setup.filter((entry) => !["risk.build", "risk.uncertainty"].includes(entry.inventories[0]));
+    noProbeCharges.setup.push(recipe("transient", "build-link-doctest"), recipe("uncertainty", "cache-environment", ["risk.uncertainty"]));
+    const sourceDirected = await produce(noProbeCharges);
+    assert.ok(sourceDirected.setup.terms.every((entry) => !["home", "root"].includes(entry.location) || entry.operation.includes("install.")));
+    assert.ok(sourceDirected.setup.terms.every((entry) => entry.location !== "pnpm-store-root" || entry.operation.includes("install.packages")));
+    await validateFullSetupEstimate(sourceDirected, binding, temporary);
     // Positive totals in other roles must not hide omitted mandatory backups.
     for (const id of ["c2zc.fixture", ...PRODUCT_JOURNEY_CATALOG.map(({ id }) => `journey.${id}.failure`)]) {
       for (const metrics of [["bytes"], ["inodes"], ["bytes", "inodes"]]) {

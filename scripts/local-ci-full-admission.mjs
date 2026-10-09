@@ -183,9 +183,8 @@ export async function produceWorkloadEstimate(input, binding, root, setupLocatio
   }
   const setupTerms = recipes("setup", input.setup);
   validateTerms(setupTerms, input.sources, residualKinds);
-  for (const [label] of setupLocations) {
-    for (const kind of residualKinds) if (!setupTerms.some((entry) => entry.location === label && entry.kind === kind)) fail(`setup ${kind} inventory for actual ${label} installer destination`);
-  }
+  // Probe labels include observation-only root/home and aliases. Charge actual
+  // workload destinations, not invented allocations for every observed label.
   if (!Array.isArray(input.preparation) || !input.preparation.length || !Array.isArray(input.tasks) || !input.tasks.length) fail("every actual Full preparation tuple and residual task inventory");
   const preparationIds = new Set();
   const preparation = input.preparation.map((step, index) => {
@@ -425,13 +424,15 @@ export function validateFullSetupLocations(estimate, locations) {
 }
 
 export function assessFullSetupDemand(filesystems, terms) {
+  for (const kind of residualKinds) {
+    if (!terms.some((term) => term.kind === kind)) fail(`source-grounded setup ${kind} workload risk`);
+  }
   for (const fs of filesystems) {
     // Installer-created descendants can select a different project. Until their
     // exact placements are resolved, a root ancestor project is not authority.
     if (!fs.quotas?.some((quota) => quota.type === 2 && quota.state === "kernel-disabled") || fs.quotas.some((quota) => quota.type === 2 && quota.state !== "kernel-disabled")) fail("actual installer destination/project-quota placement before setup on a project-quota-enabled mount");
-    for (const kind of residualKinds) {
-      if (!terms.some((term) => term.location === fs.label && term.kind === kind)) fail(`source-grounded setup ${kind} risk for ${fs.label}, including toolchains, caches, system/package downloads, extraction and logs`);
-    }
+    // Every probe still contributes quota/capacity pressure to its real device,
+    // even when writes are charged at another label or there are no writes here.
   }
   return assessFullDemand(filesystems, terms);
 }
