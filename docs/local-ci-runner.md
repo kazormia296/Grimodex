@@ -593,16 +593,61 @@ never starts verify. Uploaded artifacts retain the existing receipt/log formats;
 a hosted job result is not a replacement for receipt verification or acceptance.
 
 `full` remains stopped before actual Full setup/install and gate execution. The
-accepted pure-DB acquisition38007676893/1 is retained, not replayed. The existing
-prerequisite now selects the remaining connected **normal dependency,
-materialization and JavaScript compilation** group before the same refusal.
-No new profile/job/dispatch input, executor or receipt schema is added. The group
-reuses the exclusive `setup-reference` owner, supervisor, allocation walker and
-structured-only artifact path. It never consumes the missing complete
-`full-workload-allocation/1`, produces a Full admission decision, or enables either
-Full fence. Requiring complete Full input before acquiring it would be circular.
+accepted normal38011068810/1, pure-DB38007676893/1 and APT38000600715/1 references
+are retained, not replayed. The current focused prerequisite selects the minimum
+remaining **locked CPU Python environment/cache materialization** needed by
+`lfm.setup`; pnpm/DB/APT quantities cannot honestly determine its expanded native
+wheel/environment allocations. No new profile/job/dispatch input, executor or
+receipt schema is added. It reuses the exclusive `setup-reference` owner,
+supervisor, allocation walker and shaped-JSON upload. It neither consumes the
+missing complete `full-workload-allocation/1` nor enables either Full fence.
+Requiring complete Full input before acquiring it would be circular.
 
-`--normal-preflight` uses preinstalled Node/Python/git, current clean candidate,
+`--cpu-preflight` uses existing Node/Python/git and the same clean current
+candidate/source/registry/default12/run/attempt/VM checks as the retained normal
+helper. Before the pinned ordinary uv0.11.29 action it assesses real writable
+workspace/tool-cache/uv-cache/environment/temp/root/home capacity and applicable
+quotas, rejecting unknown project placement. The existing Python3.12 must already
+be present. The five-minute pinned action uses the assessed cache location and
+retains its ordinary cache behavior; no upload/cache suppression is added. Its
+post-action remains owned by the same job, whose independent exact remote
+terminal is required for retirement. Failure skips continuation, preserving the
+exact owner. The ordinary canonical Full action and uploads are unchanged.
+
+`--cpu-reference` consumes that same purpose/source/location/deadline binding and
+exclusive start marker. It requires uv0.11.29, the existing Python3.12 and the
+selected uv payload inside the assessed tool cache. It executes only the existing
+`uv sync --frozen --extra cpu` tuple in `experiments/lfm25-encoder-phase0`, with
+`UV_PYTHON=/usr/bin/python3.12` and `UV_PYTHON_DOWNLOADS=never`. These explicit
+focused constraints prevent Python installation; inherited environment/cache/index
+redirects reject. No lfm test/dataset, model download/inference, GPU extras,
+bus/app/Editor or accepted normal/DB/APT acquisition runs. Ordinary CPU dependency
+installation is not a new isolation capability or permission for Full.
+
+The same thirty-minute overall/fifteen-minute child bounds, joined200ms sampling,
+actual close/requiredEOF/complete log joins/group absence, cancellation and
+unknown-owner retention apply. Snapshots observe uv's selected tool payload,
+unpacked cache, project tree (including editable-build metadata) and environment,
+with alias/hardlink-deduplicated coexistence. The environment is nested in the
+project tree: never add those component rows independently. All four final roots
+must have positive observed allocation, with walk status `observed-roots-only`
+and positive deduplicated coexistence covering every observed device exactly once.
+Positive component rows alone cannot establish the union: changed-shared-inode,
+missing/empty/duplicate/foreign-device or zero unions reject publication of
+`setup-reference.json`, retaining the closed preparation evidence and exclusive
+start marker without retry. Missing/capped roots remain unknown and reject
+success, never become zero. Private complete child logs
+are retained by size/hash/allocation, not uploaded as bodies. These observations
+feed the existing allocation producer with separately reviewed retained/transient/
+failure/log/uncertainty assumptions. Historical action extraction/logs, unsampled
+transients, future bytecode/test writes, other Full workloads and future capacity
+remain unobserved, not fabricated. Neither compressed wheels nor snapshots are
+physical peak bounds. Independent changed-unit source review, normal reviewed-path
+checkpoint/live-expected-remote FF and ONE affected hosted contracts proof precede
+separate actual CPU acquisition admission. Full/B/final gates remain mandatory.
+
+The accepted normal helpers remain at their original scope, but are not selected
+by the current workflow. `--normal-preflight` uses preinstalled Node/Python/git, current clean candidate,
 source/registry/option/run binding and the actual hosted single-job VM. It checks
 unredirected writable normal destinations and usable capacity/all applicable
 quotas (unknown or enabled project placement rejects), and records scoped baseline

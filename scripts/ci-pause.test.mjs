@@ -25,6 +25,7 @@ import {
   fullSetupLocations,
   groupedDbPrerequisites,
   normalPrerequisites,
+  cpuPrerequisites,
   produceWorkloadEstimate,
   resolveObservedResidual,
   validateWorkloadEstimate,
@@ -1221,7 +1222,7 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
   assert.equal(checkout.with["fetch-depth"], 0);
   assert.equal(checkout.with["persist-credentials"], false);
   assert.ok(steps.indexOf(reference) > steps.indexOf(checkout));
-  assert.match(reference.run, /node scripts\/local-ci-full-admission\.mjs --normal-reference "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
+  assert.match(reference.run, /node scripts\/local-ci-full-admission\.mjs --cpu-reference "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
   assert.doesNotMatch(reference.run, /pnpm|cargo|sudo|ci:local:|\|\|\s*true/u);
   const dependencies = steps.find(({ name }) => name === "Canonical system dependencies");
   assert.equal(dependencies.if, "inputs.profile != 'contracts'");
@@ -1384,24 +1385,46 @@ test("normal prerequisite is the existing frozen materialization and compile-onl
   }
 });
 
-test("normal focused setup owns both pinned actions before one continuation and preserves both Full fences and metadata-only uploads", async () => {
+test("CPU prerequisite preserves the one locked Full consumer and excludes Python download, GPU and tests", async () => {
+  const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  const [step] = cpuPrerequisites(registry);
+  const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
+  const actual = plan.tasks.find(({ id }) => id === "lfm.setup").command;
+  assert.equal(step.id, "lfm.setup");
+  assert.deepEqual(step.command.args, actual.args);
+  assert.equal(step.command.command, actual.command);
+  assert.equal(step.command.cwd, actual.cwd);
+  assert.deepEqual(step.command.env, { UV_PYTHON: "/usr/bin/python3.12", UV_PYTHON_DOWNLOADS: "never" });
+  for (const change of [
+    (group) => { group.commands[0].args[3] = "cu130"; },
+    (group) => { group.commands[0].args.push("--no-sync"); },
+    (group) => { group.commands[0].cwd = "foreign"; },
+    (group) => { group.env = { UV_PROJECT_ENVIRONMENT: "/foreign" }; },
+    (group) => { group.commands.push(group.commands[0]); },
+  ]) {
+    const changed = structuredClone(registry); change(changed.stages["lfm-encoder-phase0"]);
+    assert.throws(() => cpuPrerequisites(changed), /\[precheck\]/u);
+  }
+});
+
+test("CPU focused setup owns the pinned tool before one continuation without normal replay or Full admission", async () => {
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
   const preflight = steps.find(({ id }) => id === "full_normal_preflight");
   const reference = steps.find(({ id }) => id === "full_reference");
   const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
   const actions = steps.slice(steps.indexOf(preflight) + 1, steps.indexOf(reference));
   assert.equal(preflight.if, "inputs.profile == 'full'");
-  assert.deepEqual(actions.map(({ uses }) => uses), ["pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1", "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"]);
+  assert.deepEqual(actions.map(({ uses }) => uses), ["astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b"]);
   for (const step of actions) {
     assert.equal(step.if, "inputs.profile == 'full'"); assert.equal(step["timeout-minutes"], 5);
     assert.equal(step["continue-on-error"], undefined);
   }
-  assert.equal(actions[0].with.version, "10.33.0");
-  assert.equal(actions[0].with.dest, "${{ env.FULL_PNPM_DEST }}");
-  assert.equal(actions[1].with["node-version"], 22);
-  assert.equal(actions[1].with.cache, "pnpm");
-  assert.ok(preflight.run.indexOf('>> "$GITHUB_ENV"') > preflight.run.indexOf("--normal-preflight"));
-  assert.match(reference.run, /--normal-reference/u);
+  assert.equal(actions[0].with.version, "0.11.29");
+  assert.equal(actions[0].with["cache-local-path"], "${{ env.UV_CACHE_DIR }}");
+  assert.equal(actions[0].with["enable-cache"], undefined); // Ordinary canonical action behavior is not suppressed.
+  assert.ok(preflight.run.indexOf('>> "$GITHUB_ENV"') > preflight.run.indexOf("--cpu-preflight"));
+  assert.match(reference.run, /--cpu-reference/u);
+  assert.doesNotMatch(reference.run, /--normal-reference/u);
   assert.doesNotMatch(reference.run, /--grouped-reference|--setup-reference|ci:local:/u);
   assert.ok(steps.indexOf(reference) < steps.indexOf(stop));
   assert.ok(steps.indexOf(stop) < steps.findIndex(({ id }) => id === "full_setup"));
@@ -1417,38 +1440,54 @@ test("normal focused setup owns both pinned actions before one continuation and 
   } finally { await rm(bin, { recursive: true, force: true }); }
 });
 
-test("normal acquisition consumes one current focused owner and joins synthetic failure/cancel without replay or successors", async () => {
+test("normal and CPU acquisition consume one current focused owner and join synthetic failure/cancel without successors", async () => {
   const original = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
   const keys = ["PATH", "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_TOOLCHAIN", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_TEMP", "RUNNER_TOOL_CACHE", "FULL_PNPM_DEST", "npm_config_store_dir", "PLAYWRIGHT_BROWSERS_PATH", "UV_CACHE_DIR"];
   const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
   const roots = [];
   try {
-    for (const mode of ["success", "failure", "cancel", "expired", "stale", "location-drift", "digest-missing", "digest-invalid", "quota-zero", "project-unknown", "redirected", "node-outside"]) {
+    const modes = ["success", "failure", "cancel", "expired", "stale", "location-drift", "digest-missing", "digest-invalid", "quota-zero", "project-unknown", "redirected", "node-outside"];
+    for (const [cpu, mode] of [...modes.map((mode) => [false, mode]), ...["success", "failure", "cancel", "expired", "stale", "purpose-drift", "uv-version", "uv-outside", "allocation-missing", "allocation-changed", "allocation-empty-union", "allocation-foreign-device", "allocation-duplicate-device", "allocation-zero-union", "quota-zero", "project-unknown", "redirected"].map((mode) => [true, mode])]) {
       const root = await mkdtemp(path.join(tmpdir(), `normal-reference-${mode}-`)); roots.push(root);
       const bin = path.join(root, "bin"); await mkdir(bin);
-      const sources = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/ensure-electron-binary.mjs", "electron/scripts/build.mjs", "vite.config.ts"];
+      const sources = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/ensure-electron-binary.mjs", "electron/scripts/build.mjs", "vite.config.ts", "experiments/lfm25-encoder-phase0/pyproject.toml", "experiments/lfm25-encoder-phase0/uv.lock"];
       for (const file of sources) { await mkdir(path.dirname(path.join(root, file)), { recursive: true }); await writeFile(path.join(root, file), await readFile(path.join(repoRoot, file))); }
       const helper = path.join(root, "scripts/local-ci-full-admission.mjs");
       // Synthetic host isolation/version ONLY; real supervisor/streams/fsync.
-      await writeFile(helper, original.replaceAll("await hostedJobIsolation();", "/* synthetic only */").replace("node: process.version, pnpm:", 'node: "v22.0.0", pnpm:').replace("const nodeRoot = normal ? path.dirname(path.dirname(await realpath(process.execPath))) : null;", `const nodeRoot = normal ? path.join(root, ${JSON.stringify(mode === "node-outside" ? "../foreign-node" : "synthetic-node")}) : null;`));
+      await writeFile(helper, original.replaceAll("await hostedJobIsolation();", "/* synthetic only */").replaceAll('"/usr/bin/python3.12"', '"python3"').replace("node: process.version, pnpm:", 'node: "v22.0.0", pnpm:').replace("const nodeRoot = normal ? path.dirname(path.dirname(await realpath(process.execPath))) : null;", `const nodeRoot = normal ? path.join(root, ${JSON.stringify(mode === "node-outside" ? "../foreign-node" : "synthetic-node")}) : null;`));
       const script = `#!${process.execPath}
 import fs from 'node:fs';
 import path from 'node:path';
-const tool = path.basename(process.argv[1]), args = process.argv.slice(2), root = process.cwd(), mode = ${JSON.stringify(mode)};
+const tool = path.basename(process.argv[1]), args = process.argv.slice(2), root = ${JSON.stringify(root)}, mode = ${JSON.stringify(mode)};
 if (tool === 'git') { if (args[0] === 'rev-parse') console.log(args[1].includes('tree') ? 'b'.repeat(40) : 'a'.repeat(40)); }
 else if (tool === 'sudo') {
   fs.writeFileSync(path.join(root, 'quota-checked'), 'observed');
   const request = JSON.parse(args.at(-1));
   console.log(JSON.stringify(request.locations.map(([label]) => ({ label, device: '1', bytes: mode === 'quota-zero' ? '0' : '1000000', inodes: '10000', quotas: [0,1,2].map(type => ({ type, state: mode === 'project-unknown' && type === 2 ? 'unknown' : 'kernel-disabled' })) }))));
-} else if (tool === 'python3') { console.log(JSON.stringify({ status: 'synthetic', components: [], coexistence: [] })); }
-else if (tool === 'pnpm') {
+} else if (tool === 'python3') {
+  if (args[0] === '--version') console.log('Python 3.12.0');
+  else if (args.includes('-I')) console.log(args.at(-1).includes('shutil') ? path.join(mode === 'uv-outside' ? root + '/../foreign' : root, 'uv-tool', 'uv') : '3.12');
+  else {
+    const components = ${JSON.stringify(cpu)} ? JSON.parse(args.at(-1)).map(([id]) => ({ id, status: mode === 'allocation-missing' ? 'missing-or-disappeared' : 'observed', device: '1', allocatedBytes: mode === 'allocation-missing' ? null : '4096', uniqueInodes: mode === 'allocation-missing' ? null : '1' })) : [];
+    // CPU project/environment alias one inode in this synthetic shape only.
+    const coexistence = components.length ? [{ device: '1', allocatedBytes: '12288', uniqueInodes: '3' }] : [];
+    if (mode === 'allocation-empty-union') coexistence.length = 0;
+    if (mode === 'allocation-foreign-device') coexistence[0].device = '2';
+    if (mode === 'allocation-duplicate-device') coexistence.push({ ...coexistence[0] });
+    if (mode === 'allocation-zero-union') coexistence[0].allocatedBytes = '0';
+    console.log(JSON.stringify({ status: mode === 'allocation-changed' ? 'changed-shared-inode' : 'observed-roots-only', components, coexistence: mode === 'allocation-changed' ? null : coexistence }));
+  }
+} else if (tool === 'uv') {
+  if (args[0] === '--version') console.log(mode === 'uv-version' ? 'uv 0.11.28' : 'uv 0.11.29 (0123456789 2026-10-01)');
+  else { if (process.env.UV_PYTHON_DOWNLOADS !== 'never' || process.env.UV_PYTHON !== 'python3') process.exit(8); fs.appendFileSync(path.join(root, 'started'), args.join(' ') + '\\n'); console.log('complete synthetic stdout'); console.error('complete synthetic stderr'); if (mode === 'failure') process.exit(9); if (mode === 'cancel') setInterval(() => {}, 1000); }
+} else if (tool === 'pnpm') {
   if (!fs.existsSync(path.join(root, 'quota-checked'))) process.exit(8);
   if (args[0] === '--version') console.log('10.33.0');
   else if (args[0] === 'store') console.log(path.join(process.env.npm_config_store_dir, 'v10'));
   else { fs.appendFileSync(path.join(root, 'started'), args.join(' ') + '\\n'); console.log('complete synthetic stdout'); console.error('complete synthetic stderr'); if (mode === 'failure') process.exit(9); if (mode === 'cancel') setInterval(() => {}, 1000); }
 } else { fs.appendFileSync(path.join(root, 'started'), 'node materialization\\n'); }
 `;
-      for (const tool of ["git", "sudo", "python3", "pnpm", "node"]) await writeFile(path.join(bin, tool), script, { mode: 0o755 });
+      for (const tool of ["git", "sudo", "python3", "pnpm", "node", "uv"]) await writeFile(path.join(bin, tool), script, { mode: 0o755 });
       process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
       process.env.CARGO_HOME = path.join(process.env.HOME, `synthetic-unused-cargo-${path.basename(root)}`);
       delete process.env.CARGO_TARGET_DIR; delete process.env.RUSTUP_TOOLCHAIN;
@@ -1456,7 +1495,7 @@ else if (tool === 'pnpm') {
       if (mode === "redirected") await symlink(bin, process.env.npm_config_store_dir);
       const { stageFullGroupedReference } = await import(pathToFileURL(helper).href);
       const controller = new AbortController();
-      const options = { root, base: "c".repeat(40), head: process.env.GITHUB_SHA, maxParallelTasks: 12, signal: controller.signal, normal: true };
+      const options = { root, base: "c".repeat(40), head: process.env.GITHUB_SHA, maxParallelTasks: 12, signal: controller.signal, normal: true, cpu };
       const directory = path.join(root, ".artifacts/local-ci/full-admission/1-1-setup-reference");
       if (["quota-zero", "project-unknown", "redirected"].includes(mode)) {
         await assert.rejects(stageFullGroupedReference({ ...options, preflight: true }), /\[precheck\]/u);
@@ -1471,13 +1510,16 @@ else if (tool === 'pnpm') {
       const preflightBytes = await readFile(preflightPath, "utf8");
       const value = JSON.parse(preflightBytes);
       assert.equal(value.locations, undefined);
-      assert.equal(value.locationsDigest, createHash("sha256").update(JSON.stringify(fullSetupLocations(root))).digest("hex"));
-      for (const [, destination] of fullSetupLocations(root)) {
+      const locations = [...fullSetupLocations(root), ...(cpu ? [["uv-project", path.join(root, "experiments/lfm25-encoder-phase0")], ["uv-environment", path.join(root, "experiments/lfm25-encoder-phase0/.venv")]] : [])];
+      assert.equal(value.locationsDigest, createHash("sha256").update(JSON.stringify(locations)).digest("hex"));
+      assert.equal(value.purpose, cpu ? "cpu" : "normal");
+      for (const [, destination] of locations) {
         if (destination !== "/") assert.equal(preflightBytes.includes(destination), false, "uploaded preflight excludes actual filesystem paths");
       }
-      if (["expired", "stale", "location-drift", "digest-missing", "digest-invalid"].includes(mode)) {
+      if (["expired", "stale", "location-drift", "digest-missing", "digest-invalid", "purpose-drift"].includes(mode)) {
         if (mode === "expired") value.deadline = Date.now() - 1;
         else if (mode === "stale") value.binding.attempt = "2";
+        else if (mode === "purpose-drift") value.purpose = "normal";
         else if (mode === "location-drift") process.env.npm_config_store_dir = path.join(root, "moved-store");
         else if (mode === "digest-missing") delete value.locationsDigest;
         else value.locationsDigest = "not-a-digest";
@@ -1488,8 +1530,8 @@ else if (tool === 'pnpm') {
         await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
         continue;
       }
-      if (mode === "node-outside") {
-        await assert.rejects(stageFullGroupedReference(options), /Node payload inside the assessed tool cache/u);
+      if (["node-outside", "uv-outside", "uv-version"].includes(mode)) {
+        await assert.rejects(stageFullGroupedReference(options), /Node payload inside the assessed tool cache|uv executable inside its assessed tool cache|pinned uv0\.11\.29/u);
         await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
         await assert.rejects(stageFullGroupedReference(options));
         continue;
@@ -1502,20 +1544,32 @@ else if (tool === 'pnpm') {
         } finally { controller.abort(new Error("synthetic cancellation")); }
       }
       const error = await pending;
-      const closed = JSON.parse(await readFile(path.join(directory, "bootstrap.install-close.json"), "utf8"));
+      const closed = JSON.parse(await readFile(path.join(directory, `${cpu ? "lfm.setup" : "bootstrap.install"}-close.json`), "utf8"));
       assert.equal(closed.closeObserved, true); assert.equal(closed.cleanup.complete, true); assert.equal(closed.cleanup.groupAlive, false);
       for (const [stream, log] of Object.entries(closed.logJoins)) {
-        const bytes = await readFile(path.join(directory, `bootstrap.install.${stream}.log`));
+        const bytes = await readFile(path.join(directory, `${cpu ? "lfm.setup" : "bootstrap.install"}.${stream}.log`));
         assert.equal(bytes.length, log.size); assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, log.sha256);
       }
       if (mode === "success") {
         assert.equal(error, null);
         const reference = JSON.parse(await readFile(path.join(directory, "setup-reference.json"), "utf8"));
-        assert.equal(reference.samples.length, 5); assert.equal(reference.admitted, undefined);
+        assert.equal(reference.samples.length, cpu ? 1 : 5); assert.equal(reference.admitted, undefined);
         assert.ok(reference.unobserved.some((fact) => fact.includes("sub-200ms")));
+        if (cpu) {
+          const allocation = reference.samples[0].allocation;
+          assert.equal(allocation.status, "observed-roots-only");
+          assert.equal(allocation.components.length, 4);
+          assert.deepEqual(allocation.coexistence, [{ device: "1", allocatedBytes: "12288", uniqueInodes: "3" }]);
+        }
       } else {
         assert.match(error.message, /\[precheck\]/u);
-        assert.equal(await readFile(path.join(root, "started"), "utf8"), "install --frozen-lockfile\n");
+        if (mode.startsWith("allocation-") && mode !== "allocation-missing") {
+          const { allocation } = JSON.parse(await readFile(path.join(directory, "preparation-0.json"), "utf8"));
+          assert.equal(allocation.components.length, 4);
+          assert.ok(allocation.components.every((entry) => entry.status === "observed" && BigInt(entry.allocatedBytes) > 0n && BigInt(entry.uniqueInodes) > 0n));
+          assert.match(error.message, /complete .*CPU/u);
+        }
+        assert.equal(await readFile(path.join(root, "started"), "utf8"), cpu ? "sync --frozen --extra cpu\n" : "install --frozen-lockfile\n");
         await assert.rejects(access(path.join(directory, "setup-reference.json")), { code: "ENOENT" });
         await assert.rejects(access(path.join(directory, "bootstrap.electron-binary-pending.json")), { code: "ENOENT" });
       }
@@ -1712,8 +1766,8 @@ test("grouped acquisition retains Full fences, bounded ownership and scoped obse
   assert.ok(grouped.indexOf("result.exitCode !== 0") < grouped.indexOf("samples.push"));
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
   const reference = steps.find(({ id }) => id === "full_reference");
-  assert.match(reference.run, /--normal-reference/u);
-  assert.doesNotMatch(reference.run, /--grouped-reference|--setup-reference/u);
+  assert.match(reference.run, /--cpu-reference/u);
+  assert.doesNotMatch(reference.run, /--grouped-reference|--setup-reference|--normal-reference/u);
   assert.ok(steps.indexOf(reference) < steps.findIndex(({ name }) => name === "Full prerequisites remain unresolved"));
   assert.ok(steps.find(({ id }) => id === "canonical").run.includes("Full conditional admission is not yet enabled"));
 });

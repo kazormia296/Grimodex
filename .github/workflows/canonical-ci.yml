@@ -73,10 +73,10 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Remaining connected normal prerequisite, not Full or a DB/APT replay.
-      # Observe actual focused destinations/quotas before the first setup action;
-      # no complete Full /1 estimate is required to acquire its prerequisites.
-      - name: Assess focused normal prerequisite setup
+      # Minimum remaining CPU environment/cache acquisition; accepted normal,
+      # DB and APT groups are not replayed. Not Full or model/GPU execution.
+      # Observe applicable focused destinations/quotas before the pinned action.
+      - name: Assess focused CPU prerequisite setup
         id: full_normal_preflight
         if: inputs.profile == 'full'
         env:
@@ -89,28 +89,21 @@ jobs:
           MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
         run: |
           set -euo pipefail
-          node scripts/local-ci-full-admission.mjs --normal-preflight "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
+          node scripts/local-ci-full-admission.mjs --cpu-preflight "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
           for key in FULL_PNPM_DEST npm_config_store_dir PLAYWRIGHT_BROWSERS_PATH UV_CACHE_DIR; do
             printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_ENV"
           done
 
-      # Same pinned ordinary installers as normal Full; no Rust/uv/system/audit
-      # setup or app launch. Action failure skips the sole continuation.
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+      # Ordinary canonical pinned tool only; no Python/model/GPU installation.
+      # Action failure skips the sole same-owner CPU continuation.
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         if: inputs.profile == 'full'
         timeout-minutes: 5
         with:
-          version: 10.33.0
-          dest: ${{ env.FULL_PNPM_DEST }}
+          version: 0.11.29
+          cache-local-path: ${{ env.UV_CACHE_DIR }}
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: inputs.profile == 'full'
-        timeout-minutes: 5
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - name: Acquire connected normal prerequisite demand
+      - name: Acquire connected CPU prerequisite demand
         id: full_reference
         if: inputs.profile == 'full'
         env:
@@ -119,7 +112,7 @@ jobs:
           MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
         run: |
           set -euo pipefail
-          node scripts/local-ci-full-admission.mjs --normal-reference "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
+          node scripts/local-ci-full-admission.mjs --cpu-reference "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
 
       # Focused acquisition is not permission to run Full. This refusal remains
       # before all actual Full setup/installers; candidate/Full/B gates unchanged.
