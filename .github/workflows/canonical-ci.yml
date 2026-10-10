@@ -73,9 +73,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # A smaller read-only prerequisite must not require the complete Full
-      # estimate it helps acquire. No installation or Full/B acceptance here.
-      - name: Stage canonical system cold size reference
+      # One focused pure-DB group, not Full: ordinary locked dependencies,
+      # compile-only, official synthetic backup/failure and joined complete logs.
+      # Reuse the acquired system logical reference; do not replay its APT query.
+      # This finite prerequisite never consumes the complete Full /1 estimate.
+      - name: Acquire grouped pure-DB prerequisite demand
         id: full_reference
         if: inputs.profile == 'full'
         env:
@@ -84,10 +86,10 @@ jobs:
           MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
         run: |
           set -euo pipefail
-          node scripts/local-ci-full-admission.mjs --setup-reference "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
+          node scripts/local-ci-full-admission.mjs --grouped-reference "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
 
-      # Source preparation is not permission to run Full. This refusal remains
-      # before every installer; candidate/Full/B/resource gates are unchanged.
+      # Focused acquisition is not permission to run Full. This refusal remains
+      # before all actual Full setup/installers; candidate/Full/B gates unchanged.
       - name: Full prerequisites remain unresolved
         if: inputs.profile == 'full'
         run: |

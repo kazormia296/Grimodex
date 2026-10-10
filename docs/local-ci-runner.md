@@ -592,13 +592,57 @@ requires the existing workload/resource admission decision. A failed profile
 never starts verify. Uploaded artifacts retain the existing receipt/log formats;
 a hosted job result is not a replacement for receipt verification or acceptance.
 
-`full` is deliberately stopped before setup/install, but now checks out the exact
-validated candidate and stages a smaller **read-only canonical system dependency
-reference** before that refusal. The existing admission helper's internal
-`--setup-reference` phase does not consume the missing complete
-`full-workload-allocation/1` data. Requiring that completed forecast before the
-necessary acquisition would be circular; this focused prerequisite is not Full,
-setup admission or a gate pass. No new profile/job/dispatch input is added.
+`full` remains stopped before actual Full setup/install and gate execution. Its
+existing prerequisite step now selects the smaller **grouped pure-DB demand
+acquisition**, `local-ci-full-admission.mjs --grouped-reference`, before that
+refusal. No new profile/job/dispatch input, executor or receipt schema is added.
+It reuses the exclusive `setup-reference` owner and structured-only artifact path;
+it never consumes the missing complete `full-workload-allocation/1`, produces an
+admission decision, or enables either Full fence. Requiring a complete Full
+forecast before acquiring its prerequisites would be circular.
+
+The focused group uses only the standard hosted VM's preinstalled Cargo/Rust,
+Node/Python/git and ordinary locked Cargo dependency recipients. All Cargo/Rust
+calls set `RUSTUP_AUTO_INSTALL=0`; absent toolchains fail without installation. It derives the
+current registry's exact official C2-ZC fixture command and two-job/zero-debug
+environment, compiles the existing `c2zc_restore_fixture` integration target with
+`--no-run`, then uses the same tuple offline for the actual fixture/official backup
+and complete existing pure-Rust failure suite. No workspace-wide fetch, toolchain
+install, model/GPU, app/bus/Editor, new fixture, arbitrary filter or gate is run.
+The official output uses the existing external temporary-directory convention;
+TMP/Cargo paths are not rewritten and evidence/outputs are not deleted.
+
+Before each owned child, the existing read-only filesystem/quota helper observes
+actual workspace/target/cache/temp/root/home locations, after writability and
+unredirected Cargo destination checks. Unknown quota/location rejects. The
+focused pre-start risk is this bounded ordinary pure-DB group, not an invented
+compiler upper bound or capacity-as-demand. Each child has a15-minute deadline;
+the outer30-minute deadline closes admission and requests owned shutdown. Actual
+exit/EOF/joins remain separate retirement requirements, never inferred from a
+cancel request; uncertain ownership remains retained.
+One child at a time, a joined200ms storage sampler, and actual exit/EOF/complete
+log joins/group retirement precede every successor. Failure, cancellation,
+unknown retirement or changed candidate retains the same owner/outputs; no
+retry, reentry, replacement or cleanup-to-green.
+
+Before/after snapshots reuse the no-follow allocation walker for only the actual
+Cargo registry cache, target, owned official fixture and its exact DB/backup/
+manifest files (overlaps are deduplicated, not added as independent trees). Complete private child
+logs are retained and recorded by size/digest/physical allocation, not published.
+`preparation-plan.json`, possible-start/close records, `preparation-*.json` and
+`setup-reference.json` bind current source/candidate/run-attempt. These are
+observations, not a complete Full forecast or canonical receipts. Warm toolchain
+or Cargo cache state, sub200ms transients, the failure suite's ephemeral trees,
+other Full installers/compilers/doctests, app/journey failure copies, complete
+hosted action logs and justified additive uncertainty remain explicitly
+unobserved. Do not assign zero, extrapolate every future consumer, or treat a
+snapshot/low-water sample as an exact peak or capacity budget.
+
+The earlier read-only **canonical system dependency reference** remains available
+as `--setup-reference` for its original scoped purpose, but is not replayed by the
+grouped step. Accepted38000600715/1's201 tuples/archive169859242B and
+DebianInstalled661245KiB are logical reference inputs only, not physical demand,
+current capacity, Full success or authority to install. Its original mechanism:
 
 The request is extracted from the canonical workflow's existing literal
 `apt-get install --no-install-recommends` package list. Preinstalled APT simulates
@@ -634,8 +678,8 @@ rejected literal empty-bracket ending; the strict parser now accepts only option
 package/version/architecture, with unchanged distinctness and cached size-field
 validation. Nonempty annotations, extra whitespace/text and malformed tuples stay
 rejected. The actual rejected tuple text remains unobserved; this narrow grammar
-correction is not a successful size acquisition. Even successful acquisition is
-immediately followed by the unchanged Full refusal, before every installer.
+correction is not a successful size acquisition. Either focused prerequisite's successful acquisition is
+immediately followed by the unchanged Full refusal, before actual Full installers.
 Candidate-untouched changed-unit P2 review is required before checkpoint/hosted
 execution; future actual installer/build sizing and applicable quotas/capacity/
 exclusion remain independently necessary before those heavy operations.

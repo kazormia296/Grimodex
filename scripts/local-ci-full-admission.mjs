@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { access, lstat, mkdir, open, readFile, realpath, statfs } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { access, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, statfs } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
+import { finished } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
 
@@ -185,6 +186,162 @@ export async function stageFullSystemReference(options) {
   } catch (error) {
     if (error.lateClose) await error.lateClose;
     throw error;
+  }
+}
+
+// Focused grouped acquisition, not the complete Full preparation list. Derive
+// the actual official fixture command; never accept an arbitrary consumer/filter.
+export function groupedDbPrerequisites(registry, binding, output) {
+  const group = registry?.stages?.["c2-zc-restore-fixture-builder"];
+  const fixture = Array.isArray(group?.commands) ? group.commands.find(({ id }) => id === "c2zc.fixture-build") : null;
+  const expected = ["run", "-p", "grimodex-db", "--manifest-path", "src-tauri/Cargo.toml", "--features", "c2zc-fixture-builder", "--bin", "c2zc-restore-fixture", "--", "build", "--repo-root", ".", "--output-dir", "__C2ZC_RESTORE_FIXTURE_OUTPUT_DIR__", "--candidate", "HEAD", "--expected-head", "__C2ZC_RESTORE_FIXTURE_EXPECTED_HEAD__", "--expected-tree", "__C2ZC_RESTORE_FIXTURE_EXPECTED_TREE__"];
+  if (!fixture || !Array.isArray(fixture.args) || !group.env || !fixture.env || fixture.command !== "cargo" || fixture.cwd !== "." || digest(fixture.args) !== digest(expected) ||
+      digest(group.env) !== digest({ CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0" }) ||
+      digest(fixture.env) !== digest({ CARGO_BUILD_JOBS: "2" }) ||
+      ![binding?.head, binding?.tree].every((id) => /^[a-f0-9]{40}$/u.test(id)) || typeof output !== "string" || !path.isAbsolute(output)) fail("the unchanged pure-DB official fixture tuple and current candidate");
+  // Missing preinstalled toolchains must fail, not invoke rustup installation.
+  const env = { ...group.env, ...fixture.env, RUSTUP_AUTO_INSTALL: "0" };
+  const tuple = fixture.args.slice(1, fixture.args.indexOf("--"));
+  const suite = ["test", "--locked", ...tuple.filter((_, i) => i < tuple.indexOf("--bin")), "--test", "c2zc_restore_fixture"];
+  const replacements = { __C2ZC_RESTORE_FIXTURE_OUTPUT_DIR__: output, __C2ZC_RESTORE_FIXTURE_EXPECTED_HEAD__: binding.head, __C2ZC_RESTORE_FIXTURE_EXPECTED_TREE__: binding.tree };
+  return [
+    { id: "db-cold-compile", command: { command: "cargo", args: [...suite, "--no-run"], cwd: ".", env } },
+    { id: "db-official-backup", command: { command: "cargo", args: ["run", "--locked", "--offline", ...fixture.args.slice(1).map((arg) => replacements[arg] ?? arg)], cwd: ".", env } },
+    { id: "db-fixture-failures", command: { command: "cargo", args: [...suite, "--offline"], cwd: ".", env } },
+  ];
+}
+
+export async function stageFullGroupedReference(options) {
+  const { root, signal: parentSignal } = options;
+  const deadlineController = new AbortController();
+  const cancel = () => deadlineController.abort(parentSignal.reason);
+  parentSignal?.addEventListener("abort", cancel, { once: true });
+  if (parentSignal?.aborted) cancel();
+  const signal = deadlineController.signal;
+  const started = Date.now();
+  const deadline = setTimeout(() => deadlineController.abort(new Error("grouped prerequisite deadline")), 1_800_000);
+  try {
+    // Reuse the existing prerequisite owner/artifact shape, not Full /1 ingestion.
+    const { directory, registry, run, binding } = await openAdmission({ ...options, signal }, "setup-reference");
+    const sources = [];
+    for (const file of [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs"]) {
+      sources.push({ path: file, sha256: createHash("sha256").update(await readFile(path.join(root, file))).digest("hex") });
+    }
+    if (process.env.CARGO_TARGET_DIR || process.env.RUSTUP_TOOLCHAIN) fail("the existing unoverridden pure-DB target/toolchain");
+    // Even metadata can write a cold cache. Assess source-selected destinations
+    // and applicable quotas before the first Cargo child, then verify its target.
+    const target = path.join(root, "src-tauri/target");
+    const cargo = process.env.CARGO_HOME || path.join(homedir(), ".cargo");
+    const relativeCargo = path.relative(homedir(), cargo);
+    if (!path.isAbsolute(cargo) || !relativeCargo || relativeCargo === ".." || relativeCargo.startsWith(`..${path.sep}`) || path.isAbsolute(relativeCargo)) fail("the actual Cargo cache inside the owned home");
+    for (const destination of [cargo, target]) {
+      let ancestor = destination;
+      for (;;) {
+        try { if (await realpath(ancestor) !== ancestor) fail("unredirected focused Cargo destinations"); break; }
+        catch (error) { if (error.code !== "ENOENT") throw error; ancestor = path.dirname(ancestor); }
+      }
+    }
+    const locations = [["workspace", root], ["cargo-target", target], ["cargo-home", cargo], ["node-temp", tmpdir()], ["runner-temp", process.env.RUNNER_TEMP], ["root", "/"], ["home", homedir()]];
+    if (locations.some(([, destination]) => typeof destination !== "string" || !path.isAbsolute(destination) || /[\r\n\0]/u.test(destination))) fail("actual source-selected focused destinations");
+    await assertWritableLocations(locations);
+    let sequence = 0;
+    const probe = async () => {
+      const filesystems = JSON.parse(await run(`db-filesystems-${sequence++}`, { command: "sudo", args: ["-n", "python3", "scripts/local-ci-full-filesystems.py", JSON.stringify({ locations, uid: process.getuid(), gids: [...new Set([process.getgid(), ...process.getgroups()])] })] }));
+      // Usable observed capacity/quotas only, not a zero-demand Full forecast.
+      assessFullDemand(filesystems, []);
+      return filesystems;
+    };
+    const initial = await probe();
+    signal?.throwIfAborted();
+    const metadata = JSON.parse(await run("db-target", { command: "cargo", args: ["metadata", "--locked", "--no-deps", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"], env: { RUSTUP_AUTO_INSTALL: "0" } }));
+    if (metadata.target_directory !== target) fail("the source-bound pure-DB Cargo target");
+    // Same existing fixture-output convention; no TMP/Cargo path rewriting.
+    const output = await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));
+    const preparation = groupedDbPrerequisites(registry, binding, output);
+    const version = async (id, command) => {
+      await probe();
+      return (await run(id, { command, args: ["--version"], env: { RUSTUP_AUTO_INSTALL: "0" } })).trim();
+    };
+    const versions = { cargo: await version("db-cargo-version", "cargo"), rust: await version("db-rust-version", "rustc") };
+    await durableJson(path.join(directory, "preparation-plan.json"), { binding, sources, versions, initial,
+      preparation: preparation.map(({ id, command }) => ({ id, commandDigest: digest(command), timeoutMs: 900_000 })),
+      scope: "Bounded ordinary locked pure Rust/SQLite prerequisites on the actual single-job hosted VM. No Full input, numerical compiler upper-bound, capacity-as-demand or Full/B admission. No model, app, bus or tool installation.",
+    });
+    const snapshot = async (id) => JSON.parse(await run(id, { command: "python3", args: ["scripts/local-ci-setup-allocation.py", JSON.stringify([["cargo-registry", path.join(cargo, "registry")], ["cargo-target", target], ["official-fixture", output], ["fixture-db", path.join(output, "c2zc-restore-fixture.db")], ["fixture-backup", path.join(output, "c2zc-restore-fixture.backup.db")], ["fixture-manifest", path.join(output, "c2zc-restore-fixture.manifest.json")]])] }, 75_000));
+    const baseline = await snapshot("db-allocation-before");
+    const samples = [];
+    for (const step of preparation) {
+      signal?.throwIfAborted();
+      const remaining = 1_800_000 - (Date.now() - started);
+      if (remaining <= 0) fail("the finite grouped prerequisite deadline, without replacement");
+      const before = await probe();
+      const controller = new AbortController();
+      const abort = () => controller.abort(signal.reason);
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+      let stopped = false, samplingError = null;
+      const lowWater = new Map(before.map((fs) => [fs.label, { bytes: amount(fs.bytes), inodes: amount(fs.inodes) }]));
+      const sample = async () => {
+        for (const [label, destination] of locations) {
+          let ancestor = destination;
+          for (;;) {
+            try {
+              const fs = await statfs(ancestor, { bigint: true });
+              const values = lowWater.get(label);
+              values.bytes = minimum(values.bytes, fs.bavail * fs.bsize);
+              values.inodes = minimum(values.inodes, fs.ffree);
+              break;
+            } catch (error) {
+              const parent = path.dirname(ancestor);
+              if (error.code !== "ENOENT" || parent === ancestor) throw error;
+              ancestor = parent;
+            }
+          }
+        }
+      };
+      const sampler = (async () => {
+        try { while (!stopped) { await sample(); await new Promise((resolve) => setTimeout(resolve, 200)); } }
+        catch (error) { samplingError = error; controller.abort(error); }
+      })();
+      let result;
+      try {
+        await durableJson(path.join(directory, `${step.id}-pending.json`), { binding, commandDigest: digest(step.command), state: "possible-start", timeoutMs: Math.min(900_000, remaining) });
+        controller.signal.throwIfAborted();
+        result = await runLocalCiCommand(step.command, { root, taskId: step.id, logDirectory: path.relative(root, directory), signal: controller.signal, timeoutMs: Math.min(900_000, remaining), closeGraceMs: 2_000 });
+      } finally { stopped = true; await sampler; signal?.removeEventListener("abort", abort); }
+      await durableJson(path.join(directory, `${step.id}-close.json`), { binding, exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut, interrupted: result.interrupted, closeObserved: result.closeObserved, cleanup: result.cleanup,
+        logJoins: Object.fromEntries(Object.entries(result.logs).map(([stream, log]) => [stream, { size: log.size, sha256: log.sha256 }])) });
+      if (samplingError || result.exitCode !== 0 || result.signal || result.timedOut || result.interrupted || result.error || !result.closeObserved || !result.cleanup?.complete || result.cleanup.groupAlive) fail(`joined successful focused prerequisite ${step.id}, with no retry`);
+      await sample();
+      const after = await probe();
+      const allocation = await snapshot(`db-allocation-${step.id}`);
+      samples.push({ id: step.id, before, after, lowWater: [...lowWater].map(([label, values]) => ({ label, bytes: String(values.bytes), inodes: String(values.inodes) })), allocation });
+      await durableJson(path.join(directory, `preparation-${samples.length - 1}.json`), { binding, ...samples.at(-1) });
+    }
+    if ((await run("db-final-head", { command: "git", args: ["rev-parse", "HEAD"] })).trim() !== binding.head || (await run("db-final-clean", { command: "git", args: ["status", "--porcelain", "--untracked-files=all"] })).trim()) fail("an unchanged clean grouped prerequisite candidate");
+    const logs = [];
+    for (const file of (await readdir(directory)).filter((name) => /\.(stdout|stderr)\.log$/u.test(name)).sort()) {
+      const info = await lstat(path.join(directory, file));
+      if (!info.isFile()) fail("regular owned complete prerequisite logs");
+      const hash = createHash("sha256");
+      let size = 0;
+      const reader = createReadStream(path.join(directory, file), { signal });
+      try { for await (const bytes of reader) { size += bytes.length; hash.update(bytes); } }
+      finally { reader.destroy(); await finished(reader, { cleanup: true }); }
+      if (size !== info.size) fail("unchanged closed complete prerequisite logs");
+      logs.push({ id: file, size, sha256: hash.digest("hex"), allocatedBytes: String(info.blocks * 512), inodes: "1" });
+    }
+    signal?.throwIfAborted();
+    await durableJson(path.join(directory, "setup-reference.json"), { binding, sources, versions, baseline, samples, logs,
+      scope: "Actual grouped pure-DB cold dependency/compiler/official-backup/failure and complete private-log observations only. Not a complete Full forecast, admission, gate receipt or all-future physical certificate.",
+      unobserved: ["warm preinstalled toolchains and Cargo cache cannot attest historical cold peaks", "other normal Full installers/materialization/compilation/doctests and app/bus/Editor journeys", "sub-200ms transients, fixture-suite temporary trees and filesystem/quota activity attribution", "complete hosted action/job logs outside these owned children", "additive version/materialization/failure uncertainty and future-runner capacity/quota/exclusion"],
+    });
+  } catch (error) {
+    if (error.lateClose) await error.lateClose;
+    throw error;
+  } finally {
+    clearTimeout(deadline);
+    parentSignal?.removeEventListener("abort", cancel);
   }
 }
 
@@ -847,11 +1004,12 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const args = process.argv.slice(2);
     const setup = args[0] === "--setup";
     const reference = args[0] === "--setup-reference";
-    if (setup || reference) args.shift();
+    const grouped = args[0] === "--grouped-reference";
+    if (setup || reference || grouped) args.shift();
     const [base, head, slots] = args;
     if (args.length !== 3 || !/^([1-9]|1[0-2])$/u.test(slots ?? "")) fail("the existing exact base/head/scheduler option arguments");
-    await (reference ? stageFullSystemReference : setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal });
-    console.log(reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
+    await (grouped ? stageFullGroupedReference : reference ? stageFullSystemReference : setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal });
+    console.log(grouped ? "Grouped pure-DB prerequisite observations recorded; Full remains unadmitted" : reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
   } catch (error) {
     console.error(error.message.startsWith("[precheck]") ? error.message : "[precheck] Full conditional resource acquisition failed; owner retained");
     process.exitCode = 1;

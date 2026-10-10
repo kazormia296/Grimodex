@@ -5,7 +5,7 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import yaml from "js-yaml";
@@ -23,6 +23,7 @@ import {
   systemPackageSizes,
   fullPreparation,
   fullSetupLocations,
+  groupedDbPrerequisites,
   produceWorkloadEstimate,
   resolveObservedResidual,
   validateWorkloadEstimate,
@@ -1219,7 +1220,7 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
   assert.equal(checkout.with["fetch-depth"], 0);
   assert.equal(checkout.with["persist-credentials"], false);
   assert.ok(steps.indexOf(reference) > steps.indexOf(checkout));
-  assert.match(reference.run, /node scripts\/local-ci-full-admission\.mjs --setup-reference "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
+  assert.match(reference.run, /node scripts\/local-ci-full-admission\.mjs --grouped-reference "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
   assert.doesNotMatch(reference.run, /pnpm|cargo|sudo|ci:local:|\|\|\s*true/u);
   const dependencies = steps.find(({ name }) => name === "Canonical system dependencies");
   assert.equal(dependencies.if, "inputs.profile != 'contracts'");
@@ -1336,7 +1337,7 @@ test("cold solver rejection projects syntax without exposing text or accepting a
 
 test("canonical prerequisite reference is isolated from Full ingestion and heavy effects", async () => {
   const helper = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
-  const reference = helper.slice(helper.indexOf("export async function stageFullSystemReference"), helper.indexOf("// Installed components"));
+  const reference = helper.slice(helper.indexOf("export async function stageFullSystemReference"), helper.indexOf("// Focused grouped acquisition"));
   for (const required of ["--simulate", "Debug::NoLocking=1", "Dir::State::status=/dev/null", "Dir::Cache::pkgcache=", "Dir::Cache::srcpkgcache=", "--no-install-recommends", "--no-all-versions", "setup-reference.json", "setup-solver-format.json", "logJoins", "error.lateClose"]) assert.ok(reference.includes(required), required);
   const projection = reference.indexOf('await durableJson(path.join(directory, "setup-solver-format.json")');
   const parsing = reference.indexOf("const packages = coldSystemPackages(solution)");
@@ -1358,6 +1359,195 @@ test("canonical prerequisite reference is isolated from Full ingestion and heavy
     await promisify(execFile)("bash", ["-c", stage.run], { env, timeout: 10000 });
     await assert.rejects(promisify(execFile)("bash", ["-c", stop.run], { env, timeout: 10000 }), (error) => error.code === 1 && /\[precheck\]/u.test(error.stderr));
   } finally { await rm(bin, { recursive: true, force: true }); }
+});
+
+test("grouped pure-DB acquisition preserves the official tuple and complete failure target", async () => {
+  const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  const binding = { head: "a".repeat(40), tree: "b".repeat(40) };
+  const output = path.join(tmpdir(), "synthetic-grouped-fixture");
+  const steps = groupedDbPrerequisites(registry, binding, output);
+  assert.deepEqual(steps.map(({ id }) => id), ["db-cold-compile", "db-official-backup", "db-fixture-failures"]);
+  for (const { command } of steps) {
+    assert.equal(command.command, "cargo");
+    assert.equal(command.cwd, ".");
+    assert.equal(command.env.CARGO_BUILD_JOBS, "2");
+    assert.equal(command.env.RUSTUP_AUTO_INSTALL, "0");
+    assert.ok(command.args.includes("--locked"));
+    assert.doesNotMatch(command.args.join(" "), /semantic-embedding|native|Editor|dbus|nir1-material/u);
+  }
+  assert.deepEqual(steps[0].command.args, ["test", "--locked", "-p", "grimodex-db", "--manifest-path", "src-tauri/Cargo.toml", "--features", "c2zc-fixture-builder", "--test", "c2zc_restore_fixture", "--no-run"]);
+  assert.deepEqual(steps[2].command.args, [...steps[0].command.args.slice(0, -1), "--offline"]);
+  const fixture = registry.stages["c2-zc-restore-fixture-builder"].commands[0];
+  const replacements = { __C2ZC_RESTORE_FIXTURE_OUTPUT_DIR__: output, __C2ZC_RESTORE_FIXTURE_EXPECTED_HEAD__: binding.head, __C2ZC_RESTORE_FIXTURE_EXPECTED_TREE__: binding.tree };
+  assert.deepEqual(steps[1].command.args, ["run", "--locked", "--offline", ...fixture.args.slice(1).map((arg) => replacements[arg] ?? arg)]);
+  for (const change of [
+    (r) => { r.stages["c2-zc-restore-fixture-builder"].commands[0].args[6] = "semantic-embedding"; },
+    (r) => { r.stages["c2-zc-restore-fixture-builder"].commands[0].args.push("extra"); },
+    (r) => { r.stages["c2-zc-restore-fixture-builder"].commands[0].env.CARGO_BUILD_JOBS = "3"; },
+    (r) => { r.stages["c2-zc-restore-fixture-builder"].env.INJECTED = "1"; },
+    (r) => { r.stages["c2-zc-restore-fixture-builder"].commands[0].cwd = ".."; },
+  ]) {
+    const modified = structuredClone(registry); change(modified);
+    assert.throws(() => groupedDbPrerequisites(modified, binding, output), /\[precheck\]/u);
+  }
+  assert.throws(() => groupedDbPrerequisites(registry, { ...binding, head: "bad" }, output), /\[precheck\]/u);
+  assert.throws(() => groupedDbPrerequisites(registry, binding, "relative"), /\[precheck\]/u);
+});
+
+test("grouped acquisition joins real synthetic children and retains failure/cancellation owners", async () => {
+  const original = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
+  const saved = Object.fromEntries(["PATH", "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_TOOLCHAIN", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_TEMP"].map((key) => [key, process.env[key]]));
+  const roots = [], outputs = [];
+  try {
+    for (const mode of ["success", "failure", "cancel", "cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "quota-inodes-zero", "quota-before-compile", "quota-before-backup"]) {
+      const root = await mkdtemp(path.join(tmpdir(), `grouped-db-${mode}-`)); roots.push(root);
+      const bin = path.join(root, "bin"); await mkdir(bin);
+      const files = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs"];
+      for (const file of files) { await mkdir(path.dirname(path.join(root, file)), { recursive: true }); await writeFile(path.join(root, file), await readFile(path.join(repoRoot, file))); }
+      if (mode === "target-redirect") await symlink(bin, path.join(root, "src-tauri/target"));
+      // Synthetic source shim ONLY: do not probe this contract host's isolation.
+      // Production keeps its actual hosted VM check. Supervisor remains real.
+      const helper = path.join(root, "scripts/local-ci-full-admission.mjs");
+      await writeFile(helper, original.replaceAll("await hostedJobIsolation();", "/* synthetic test only */").replace(
+        'const output = await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));',
+        'const output = await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-")); await durableJson(path.join(root, "synthetic-output.json"), { output });',
+      ));
+      const script = `#!/usr/bin/env node
+const fs = require("node:fs"), path = require("node:path");
+const tool = path.basename(process.argv[1]), args = process.argv.slice(2), root = process.cwd();
+const head = "a".repeat(40), tree = "b".repeat(40);
+if (tool === "git") {
+  if (args[0] === "rev-parse") console.log(args[1].includes("tree") ? tree : head);
+} else if (tool === "cargo" || tool === "rustc") {
+  fs.appendFileSync(path.join(root, "cargo-called"), tool + " " + args[0] + "\\n");
+  if (!fs.existsSync(path.join(root, "quota-checked"))) { console.error("synthetic Cargo started before quota check"); process.exit(8); }
+  if (args[0] === "metadata") console.log(JSON.stringify({ target_directory: path.join(root, ${JSON.stringify(mode)} === "metadata-mismatch" ? "unassessed-target" : "src-tauri/target") }));
+  else if (args[0] === "--version") console.log(tool + " 1.0.0 (synthetic)");
+  else {
+    fs.appendFileSync(path.join(root, "started"), args[0] + " " + args.includes("--no-run") + "\\n");
+    if (args.includes("--no-run") && ${JSON.stringify(mode)} === "failure") process.exit(9);
+    if (args.includes("--no-run") && ${JSON.stringify(mode)} === "cancel") setInterval(() => {}, 1000);
+    if (args[0] === "run") {
+      const output = args[args.indexOf("--output-dir") + 1];
+      fs.writeFileSync(path.join(root, "owned-output"), output);
+      fs.writeFileSync(path.join(output, "synthetic-backup.db"), "synthetic only");
+    }
+    console.log("complete synthetic stdout"); console.error("complete synthetic stderr");
+  }
+} else if (tool === "sudo") {
+  const request = JSON.parse(args.at(-1));
+  if (request.locations.find(([label]) => label === "cargo-target")[1] !== path.join(root, "src-tauri/target") || request.locations.find(([label]) => label === "cargo-home")[1] !== process.env.CARGO_HOME) process.exit(8);
+  if (${JSON.stringify(mode)} === "quota-unknown") { console.error("[precheck] synthetic applicable quota state unavailable"); process.exit(9); }
+  const marker = path.join(root, "quota-checked");
+  const sequence = fs.existsSync(marker) ? Number(fs.readFileSync(marker, "utf8")) : 0;
+  fs.writeFileSync(marker, String(sequence + 1));
+  const mode = ${JSON.stringify(mode)};
+  console.log(JSON.stringify(request.locations.map(([label]) => {
+    const observation = { label, device: "1", bytes: "100000", inodes: "1000", quotas: [0, 1, 2].map((type) => ({ type, state: "kernel-disabled" })) };
+    if (mode === "capacity-bytes-zero" && label === "cargo-home") observation.bytes = "0";
+    if (mode === "capacity-inodes-zero" && label === "cargo-target") observation.inodes = "0";
+    if ((mode === "quota-bytes-zero" || mode === "quota-before-compile" && sequence === 3) && label === "cargo-home") observation.quotas[0] = { type: 0, state: "kernel-enabled", bytes: "0", inodes: null };
+    if ((mode === "quota-inodes-zero" || mode === "quota-before-backup" && sequence === 5) && label === "cargo-target") observation.quotas[1] = { type: 1, state: "kernel-enabled", bytes: null, inodes: "0" };
+    return observation;
+  })));
+
+} else {
+  const roots = JSON.parse(args.at(-1));
+  console.log(JSON.stringify({ status: "synthetic", components: roots.map(([id]) => ({ id, status: "observed", allocatedBytes: "123", uniqueInodes: "2" })), coexistence: [] }));
+}
+`;
+      for (const tool of ["git", "cargo", "rustc", "sudo", "python3"]) await writeFile(path.join(bin, tool), script, { mode: 0o755 });
+      process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
+      process.env.CARGO_HOME = mode === "cache-outside" ? root : path.join(process.env.HOME, `synthetic-unused-cargo-${path.basename(root)}`);
+      delete process.env.CARGO_TARGET_DIR; delete process.env.RUSTUP_TOOLCHAIN;
+      process.env.GITHUB_SHA = "a".repeat(40); process.env.GITHUB_RUN_ID = "1"; process.env.GITHUB_RUN_ATTEMPT = "1"; process.env.RUNNER_TEMP = root;
+      const { stageFullGroupedReference } = await import(pathToFileURL(helper).href);
+      const controller = new AbortController();
+      const options = { root, base: "c".repeat(40), head: process.env.GITHUB_SHA, maxParallelTasks: 12, signal: controller.signal };
+      const operation = stageFullGroupedReference(options);
+      // Attach rejection handling immediately while waiting for the cancel seam.
+      const observed = operation.then(() => null, (error) => error);
+      if (mode === "cancel") {
+        try {
+          const deadline = Date.now() + 5000;
+          for (;;) {
+            try { await access(path.join(root, "started")); break; } catch (error) { if (error.code !== "ENOENT" || Date.now() >= deadline) throw error; }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+        } finally { controller.abort(new Error("synthetic cancellation")); }
+      }
+      const error = await observed;
+      const directory = path.join(root, ".artifacts/local-ci/full-admission/1-1-setup-reference");
+      if (mode === "quota-before-compile") outputs.push(JSON.parse(await readFile(path.join(root, "synthetic-output.json"), "utf8")).output);
+      if (["cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "quota-inodes-zero", "quota-before-compile"].includes(mode)) {
+        const refusal = { "cache-outside": /Cargo cache inside the owned home/u, "target-redirect": /unredirected focused Cargo destinations/u, "quota-unknown": /db-filesystems-0/u, "metadata-mismatch": /source-bound pure-DB Cargo target/u }[mode] ?? /capacity\/quota/u;
+        assert.match(error.message, refusal);
+        await access(path.join(directory, "owner.json"));
+        if (mode === "metadata-mismatch") assert.equal(await readFile(path.join(root, "cargo-called"), "utf8"), "cargo metadata\n");
+        else if (mode === "quota-before-compile") assert.equal(await readFile(path.join(root, "cargo-called"), "utf8"), "cargo metadata\ncargo --version\nrustc --version\n");
+        else await assert.rejects(access(path.join(root, "cargo-called")), { code: "ENOENT" });
+        const absent = [path.join(root, "started"), path.join(directory, "db-cold-compile-pending.json"), path.join(directory, "setup-reference.json")];
+        if (mode !== "quota-before-compile") absent.push(path.join(root, "synthetic-output.json"));
+        for (const file of absent) await assert.rejects(access(file), { code: "ENOENT" });
+        await assert.rejects(stageFullGroupedReference(options)); // retain rejected owner
+        continue;
+      }
+      outputs.push(JSON.parse(await readFile(path.join(root, "synthetic-output.json"), "utf8")).output);
+      if (mode === "success") {
+        assert.equal(error, null);
+        const reference = JSON.parse(await readFile(path.join(directory, "setup-reference.json"), "utf8"));
+        assert.equal(reference.samples.length, 3); assert.ok(reference.logs.length > 6);
+        assert.ok(reference.unobserved.some((fact) => fact.includes("sub-200ms")));
+        assert.equal(reference.admitted, undefined);
+      } else {
+        assert.match(error.message, /\[precheck\]/u);
+        assert.deepEqual((await readFile(path.join(root, "started"), "utf8")).trim().split("\n"), ["test true"]);
+        await assert.rejects(access(path.join(directory, "setup-reference.json")), { code: "ENOENT" });
+      }
+      const closed = JSON.parse(await readFile(path.join(directory, "db-cold-compile-close.json"), "utf8"));
+      if (mode === "quota-before-backup") {
+        assert.match(error.message, /capacity\/quota/u);
+        assert.equal(closed.exitCode, 0);
+        for (const file of ["db-official-backup-pending.json", "db-fixture-failures-pending.json"]) await assert.rejects(access(path.join(directory, file)), { code: "ENOENT" });
+        await assert.rejects(access(path.join(root, "owned-output")), { code: "ENOENT" });
+      }
+      assert.equal(closed.closeObserved, true); assert.equal(closed.cleanup.complete, true); assert.equal(closed.cleanup.groupAlive, false);
+      for (const [stream, log] of Object.entries(closed.logJoins)) {
+        const bytes = await readFile(path.join(directory, `db-cold-compile.${stream}.log`));
+        assert.equal(bytes.length, log.size); assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, log.sha256);
+      }
+      await access(path.join(directory, "db-cold-compile-pending.json"));
+      await assert.rejects(stageFullGroupedReference(options)); // owner cannot be replaced
+    }
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    for (const root of [...outputs, ...roots]) await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("grouped acquisition retains Full fences, bounded ownership and scoped observations", async () => {
+  const helper = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
+  const grouped = helper.slice(helper.indexOf("export async function stageFullGroupedReference"), helper.indexOf("// Installed components"));
+  assert.doesNotMatch(grouped, /stageFullSystemReference|apt-get|admitted:|acquireWorkloadInput|produceWorkloadEstimate|admitFullSetup|admitFullResources|buildLocalCiPlan|\brm\(/u);
+  for (const required of ["900_000", "1_800_000", "--locked", "--no-deps", "assertWritableLocations", "local-ci-full-filesystems.py", "local-ci-setup-allocation.py", "groupedDbPrerequisites", "commandDigest", "possible-start", "await sampler", "error.lateClose", "closeObserved", "cleanup.groupAlive", "logJoins", "setup-reference.json", "sub-200ms", "db-final-clean"]) assert.ok(grouped.includes(required), required);
+  assert.ok(grouped.indexOf("const cargo =") < grouped.indexOf("const initial = await probe()"));
+  assert.ok(grouped.indexOf("for (const destination of [cargo, target])") < grouped.indexOf("const initial = await probe()"));
+  assert.ok(grouped.indexOf("await assertWritableLocations(locations)") < grouped.indexOf("const initial = await probe()"));
+  assert.ok(grouped.indexOf("assessFullDemand(filesystems, [])") < grouped.indexOf("return filesystems"));
+  assert.ok(grouped.indexOf("const initial = await probe()") < grouped.indexOf('run("db-target"'));
+  const version = grouped.slice(grouped.indexOf("const version ="), grouped.indexOf("const versions ="));
+  assert.ok(version.indexOf("await probe()") < version.indexOf("await run(id"));
+  assert.ok(grouped.indexOf("const before = await probe()") < grouped.indexOf("result = await runLocalCiCommand"));
+  assert.ok(grouped.indexOf("metadata.target_directory !== target") < grouped.indexOf("const output = await mkdtemp"));
+  assert.ok(grouped.indexOf("possible-start") < grouped.indexOf("result = await runLocalCiCommand"));
+  assert.ok(grouped.indexOf("await sampler") < grouped.indexOf('`${step.id}-close.json`'));
+  assert.ok(grouped.indexOf("result.exitCode !== 0") < grouped.indexOf("samples.push"));
+  const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
+  const reference = steps.find(({ id }) => id === "full_reference");
+  assert.match(reference.run, /--grouped-reference/u);
+  assert.doesNotMatch(reference.run, /--setup-reference/u);
+  assert.ok(steps.indexOf(reference) < steps.findIndex(({ name }) => name === "Full prerequisites remain unresolved"));
+  assert.ok(steps.find(({ id }) => id === "canonical").run.includes("Full conditional admission is not yet enabled"));
 });
 
 test("Full preparation preserves actual compilation tuples without executing tests or journeys", async () => {
