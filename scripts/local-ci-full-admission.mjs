@@ -211,20 +211,47 @@ export function groupedDbPrerequisites(registry, binding, output) {
   ];
 }
 
+// This allowlist is the actual normal Full materialization/compiler subset, not
+// an arbitrary task selector. No executable app, native binding or model runs.
+export function normalPrerequisites(registry) {
+  const selected = [
+    ["bootstrap", "bootstrap.install", "pnpm", ["install", "--frozen-lockfile"]],
+    ["bootstrap", "bootstrap.electron-binary", "node", ["scripts/ensure-electron-binary.mjs"]],
+    ["bootstrap", "bootstrap.workspace-build", "pnpm", ["build:workspace:dependencies"]],
+    ["bootstrap", "bootstrap.chromium", "pnpm", ["exec", "playwright", "install", "chromium"]],
+    ["electron", "electron.build", "pnpm", ["ci:build:desktop"]],
+  ];
+  return selected.map(([stage, id, executable, args]) => {
+    const group = registry?.stages?.[stage];
+    const matches = Array.isArray(group?.commands) ? group.commands.filter((entry) => entry.id === id) : [];
+    const entry = matches?.[0];
+    if (matches?.length !== 1 || entry.command !== executable || digest(entry.args) !== digest(args) ||
+        (entry.cwd ?? ".") !== "." || Object.keys(group.env ?? {}).length || Object.keys(entry.env ?? {}).length) fail(`the unchanged normal Full prerequisite ${id}`);
+    return { id, command: { command: entry.command, args: [...entry.args], cwd: ".", env: {} } };
+  });
+}
+
+const normalSources = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/ensure-electron-binary.mjs", "electron/scripts/build.mjs", "vite.config.ts"];
+
 export async function stageFullGroupedReference(options) {
-  const { root, signal: parentSignal } = options;
+  const { root, signal: parentSignal, normal = false, preflight = false } = options;
   const deadlineController = new AbortController();
   const cancel = () => deadlineController.abort(parentSignal.reason);
   parentSignal?.addEventListener("abort", cancel, { once: true });
   if (parentSignal?.aborted) cancel();
   const signal = deadlineController.signal;
   const started = Date.now();
-  const deadline = setTimeout(() => deadlineController.abort(new Error("grouped prerequisite deadline")), 1_800_000);
+  let deadline = setTimeout(() => deadlineController.abort(new Error("grouped prerequisite deadline")), 1_800_000);
   try {
     // Reuse the existing prerequisite owner/artifact shape, not Full /1 ingestion.
-    const { directory, registry, run, binding } = await openAdmission({ ...options, signal }, "setup-reference");
+    const admitted = normal && !preflight ? await resumeNormalReference({ ...options, signal }) : await openAdmission({ ...options, signal }, "setup-reference");
+    const { directory, registry, run, binding } = admitted;
+    if (normal && !preflight) {
+      clearTimeout(deadline);
+      deadline = setTimeout(() => deadlineController.abort(new Error("normal prerequisite deadline")), Math.max(1, admitted.deadline - Date.now()));
+    }
     const sources = [];
-    for (const file of [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs"]) {
+    for (const file of normal ? normalSources : [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs"]) {
       sources.push({ path: file, sha256: createHash("sha256").update(await readFile(path.join(root, file))).digest("hex") });
     }
     if (process.env.CARGO_TARGET_DIR || process.env.RUSTUP_TOOLCHAIN) fail("the existing unoverridden pure-DB target/toolchain");
@@ -241,38 +268,71 @@ export async function stageFullGroupedReference(options) {
         catch (error) { if (error.code !== "ENOENT") throw error; ancestor = path.dirname(ancestor); }
       }
     }
-    const locations = [["workspace", root], ["cargo-target", target], ["cargo-home", cargo], ["node-temp", tmpdir()], ["runner-temp", process.env.RUNNER_TEMP], ["root", "/"], ["home", homedir()]];
+    const locations = normal ? fullSetupLocations(root) : [["workspace", root], ["cargo-target", target], ["cargo-home", cargo], ["node-temp", tmpdir()], ["runner-temp", process.env.RUNNER_TEMP], ["root", "/"], ["home", homedir()]];
     if (locations.some(([, destination]) => typeof destination !== "string" || !path.isAbsolute(destination) || /[\r\n\0]/u.test(destination))) fail("actual source-selected focused destinations");
+    if (normal) for (const [, requested] of locations) {
+      let ancestor = requested;
+      for (;;) {
+        try { if (await realpath(ancestor) !== ancestor) fail("unredirected normal setup destinations"); break; }
+        catch (error) { if (error.code !== "ENOENT") throw error; ancestor = path.dirname(ancestor); }
+      }
+    }
     await assertWritableLocations(locations);
     let sequence = 0;
     const probe = async () => {
-      const filesystems = JSON.parse(await run(`db-filesystems-${sequence++}`, { command: "sudo", args: ["-n", "python3", "scripts/local-ci-full-filesystems.py", JSON.stringify({ locations, uid: process.getuid(), gids: [...new Set([process.getgid(), ...process.getgroups()])] })] }));
+      const filesystems = JSON.parse(await run(`${normal ? preflight ? "normal-preflight" : "normal" : "db"}-filesystems-${sequence++}`, { command: "sudo", args: ["-n", "python3", "scripts/local-ci-full-filesystems.py", JSON.stringify({ locations, uid: process.getuid(), gids: [...new Set([process.getgid(), ...process.getgroups()])] })] }));
       // Usable observed capacity/quotas only, not a zero-demand Full forecast.
       assessFullDemand(filesystems, []);
+      if (normal && filesystems.some((fs) => !fs.quotas?.some((quota) => quota.type === 2 && quota.state === "kernel-disabled") || fs.quotas.some((quota) => quota.type === 2 && quota.state !== "kernel-disabled"))) fail("known installer project-quota placement before normal setup");
       return filesystems;
     };
     const initial = await probe();
     signal?.throwIfAborted();
-    const metadata = JSON.parse(await run("db-target", { command: "cargo", args: ["metadata", "--locked", "--no-deps", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"], env: { RUSTUP_AUTO_INSTALL: "0" } }));
-    if (metadata.target_directory !== target) fail("the source-bound pure-DB Cargo target");
-    // Same existing fixture-output convention; no TMP/Cargo path rewriting.
-    const output = await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));
-    const preparation = groupedDbPrerequisites(registry, binding, output);
+    if (normal && preflight) {
+      normalPrerequisites(registry);
+      const baseline = JSON.parse(await run("normal-preflight-allocation", { command: "python3", args: ["scripts/local-ci-setup-allocation.py", JSON.stringify(locations.filter(([label]) => ["pnpm-installer", "pnpm-store-root", "browser-cache", "electron-cache"].includes(label)).concat([["packages-installed", path.join(root, "node_modules")]]))] }, 75_000));
+      await durableJson(path.join(directory, "normal-preflight.json"), { binding, sources, locationsDigest: digest(locations), initial, baseline, deadline: started + 1_800_000,
+        scope: "Focused pinned pnpm/Node setup, frozen ordinary packages, binary materialization and JavaScript compilation only. No Full input/admission, system/uv/audit/native/model installation, app/bus/Editor or numerical upper-bound claim." });
+      return;
+    }
+    if (!normal) {
+      const metadata = JSON.parse(await run("db-target", { command: "cargo", args: ["metadata", "--locked", "--no-deps", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"], env: { RUSTUP_AUTO_INSTALL: "0" } }));
+      if (metadata.target_directory !== target) fail("the source-bound pure-DB Cargo target");
+    }
+    // Same existing fixture-output convention; normal compilation creates none.
+    const output = normal ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));
+    const preparation = normal ? normalPrerequisites(registry) : groupedDbPrerequisites(registry, binding, output);
     const version = async (id, command) => {
       await probe();
       return (await run(id, { command, args: ["--version"], env: { RUSTUP_AUTO_INSTALL: "0" } })).trim();
     };
-    const versions = { cargo: await version("db-cargo-version", "cargo"), rust: await version("db-rust-version", "rustc") };
+    const versions = normal ? { node: process.version, pnpm: await version("normal-pnpm-version", "pnpm") } : { cargo: await version("db-cargo-version", "cargo"), rust: await version("db-rust-version", "rustc") };
+    if (normal) {
+      if (!/^v22\./u.test(versions.node) || versions.pnpm !== "10.33.0") fail("the pinned normal Node22/pnpm10.33.0 tuple");
+      await probe();
+      if ((await run("normal-store", { command: "pnpm", args: ["store", "path", "--silent"] })).trim() !== locations.find(([label]) => label === "pnpm-store")[1]) fail("normal pnpm store matching the assessed destination");
+    }
     await durableJson(path.join(directory, "preparation-plan.json"), { binding, sources, versions, initial,
       preparation: preparation.map(({ id, command }) => ({ id, commandDigest: digest(command), timeoutMs: 900_000 })),
-      scope: "Bounded ordinary locked pure Rust/SQLite prerequisites on the actual single-job hosted VM. No Full input, numerical compiler upper-bound, capacity-as-demand or Full/B admission. No model, app, bus or tool installation.",
+      scope: normal ? "Focused normal dependency/materialization/JavaScript compiler observations, not Full/B admission or a numerical upper bound." : "Bounded ordinary locked pure Rust/SQLite prerequisites on the actual single-job hosted VM. No Full input, numerical compiler upper-bound, capacity-as-demand or Full/B admission. No model, app, bus or tool installation.",
     });
-    const snapshot = async (id) => JSON.parse(await run(id, { command: "python3", args: ["scripts/local-ci-setup-allocation.py", JSON.stringify([["cargo-registry", path.join(cargo, "registry")], ["cargo-target", target], ["official-fixture", output], ["fixture-db", path.join(output, "c2zc-restore-fixture.db")], ["fixture-backup", path.join(output, "c2zc-restore-fixture.backup.db")], ["fixture-manifest", path.join(output, "c2zc-restore-fixture.manifest.json")]])] }, 75_000));
+    const nodeRoot = normal ? path.dirname(path.dirname(await realpath(process.execPath))) : null;
+    if (normal) {
+      const relative = path.relative(locations.find(([label]) => label === "tool-cache")[1], nodeRoot);
+      if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) fail("the pinned selected Node payload inside the assessed tool cache");
+    }
+    const roots = normal ? [
+      ...locations.filter(([label]) => ["pnpm-installer", "pnpm-store-root", "browser-cache", "electron-cache"].includes(label)),
+      ["packages-installed", path.join(root, "node_modules")], ["workspace-packages", path.join(root, "packages")],
+      ["desktop-build", path.join(root, "dist-electron")], ["renderer-build", path.join(root, "dist")],
+      ["node-selected", nodeRoot],
+    ] : [["cargo-registry", path.join(cargo, "registry")], ["cargo-target", target], ["official-fixture", output], ["fixture-db", path.join(output, "c2zc-restore-fixture.db")], ["fixture-backup", path.join(output, "c2zc-restore-fixture.backup.db")], ["fixture-manifest", path.join(output, "c2zc-restore-fixture.manifest.json")]];
+    const snapshot = async (id) => JSON.parse(await run(id, { command: "python3", args: ["scripts/local-ci-setup-allocation.py", JSON.stringify(roots)] }, 75_000));
     const baseline = await snapshot("db-allocation-before");
     const samples = [];
     for (const step of preparation) {
       signal?.throwIfAborted();
-      const remaining = 1_800_000 - (Date.now() - started);
+      const remaining = (normal ? admitted.deadline : started + 1_800_000) - Date.now();
       if (remaining <= 0) fail("the finite grouped prerequisite deadline, without replacement");
       const before = await probe();
       const controller = new AbortController();
@@ -333,8 +393,8 @@ export async function stageFullGroupedReference(options) {
     }
     signal?.throwIfAborted();
     await durableJson(path.join(directory, "setup-reference.json"), { binding, sources, versions, baseline, samples, logs,
-      scope: "Actual grouped pure-DB cold dependency/compiler/official-backup/failure and complete private-log observations only. Not a complete Full forecast, admission, gate receipt or all-future physical certificate.",
-      unobserved: ["warm preinstalled toolchains and Cargo cache cannot attest historical cold peaks", "other normal Full installers/materialization/compilation/doctests and app/bus/Editor journeys", "sub-200ms transients, fixture-suite temporary trees and filesystem/quota activity attribution", "complete hosted action/job logs outside these owned children", "additive version/materialization/failure uncertainty and future-runner capacity/quota/exclusion"],
+      scope: normal ? "Actual normal setup/materialization/JavaScript compiler and complete private-child-log observations only. Not a complete Full forecast/admission or all-future physical certificate." : "Actual grouped pure-DB cold dependency/compiler/official-backup/failure and complete private-log observations only. Not a complete Full forecast, admission, gate receipt or all-future physical certificate.",
+      unobserved: normal ? ["pnpm/Node action historical download/extraction peaks and complete action logs", "system/uv/audit/native-Rust/doctest and app/bus/Editor workloads", "sub-200ms transients, failure copies and filesystem activity attribution", "additive version/materialization/failure uncertainty and future-runner capacity/quota/exclusion"] : ["warm preinstalled toolchains and Cargo cache cannot attest historical cold peaks", "other normal Full installers/materialization/compilation/doctests and app/bus/Editor journeys", "sub-200ms transients, fixture-suite temporary trees and filesystem/quota activity attribution", "complete hosted action/job logs outside these owned children", "additive version/materialization/failure uncertainty and future-runner capacity/quota/exclusion"],
     });
   } catch (error) {
     if (error.lateClose) await error.lateClose;
@@ -835,6 +895,35 @@ export async function acquireWorkloadInput({ root, binding, directory, run, sign
   return { input, estimate };
 }
 
+function admissionRunner(root, directory, signal) {
+  return async (id, command, timeoutMs = 30_000, commandSignal = signal, capture = true) => {
+    const result = await runLocalCiCommand(command, { root, taskId: id, logDirectory: path.relative(root, directory), signal: commandSignal, timeoutMs, closeGraceMs: 2_000 });
+    if (result.exitCode !== 0 || result.signal || result.interrupted || result.timedOut || !result.closeObserved || result.cleanup?.complete !== true || result.cleanup?.groupAlive || result.error) fail(`successful actual close/EOF/file joins/group absence for ${id}`);
+    return capture ? readFile(path.resolve(root, result.logs.stdout.path), "utf8") : result;
+  };
+}
+
+// Exactly one same-job continuation after the two existing pinned setup actions.
+// Missing/failed/stale/consumed preflight never recovers or creates another owner.
+async function resumeNormalReference({ root, base, head, maxParallelTasks, signal }) {
+  await hostedJobIsolation();
+  const directory = path.join(root, ".artifacts/local-ci/full-admission", `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}-setup-reference`);
+  const preflight = JSON.parse(await readFile(path.join(directory, "normal-preflight.json"), "utf8"));
+  const registry = JSON.parse(await readFile(path.join(root, "scripts/local-ci-registry.json"), "utf8"));
+  const binding = { base, head, tree: preflight.binding?.tree, registryDigest: `sha256:${digest(registry)}`, maxParallelTasks, runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT };
+  if (head !== process.env.GITHUB_SHA || digest(binding) !== digest(preflight.binding) || digest(fullSetupLocations(root)) !== preflight.locationsDigest || !Number.isSafeInteger(preflight.deadline) || Date.now() >= preflight.deadline) fail("unchanged current normal preflight binding/destinations/deadline");
+  if (!Array.isArray(preflight.sources) || digest(preflight.sources.map(({ path: file }) => file)) !== digest(normalSources)) fail("the exact normal prerequisite sizing sources");
+  for (const { path: file, sha256 } of preflight.sources) if (createHash("sha256").update(await readFile(path.join(root, file))).digest("hex") !== sha256) fail("unchanged normal preparation sources");
+  signal?.throwIfAborted();
+  // Claim before any resumed child/log write. EEXIST fences all reentry.
+  await durableJson(path.join(directory, "normal-start.json"), { binding, state: "possible-start", deadline: preflight.deadline });
+  signal?.throwIfAborted();
+  const run = admissionRunner(root, directory, signal);
+  const tree = (await run("normal-resume-tree", { command: "git", args: ["rev-parse", "HEAD^{tree}"] })).trim();
+  if (tree !== binding.tree || (await run("normal-resume-head", { command: "git", args: ["rev-parse", "HEAD"] })).trim() !== head || (await run("normal-resume-clean", { command: "git", args: ["status", "--porcelain", "--untracked-files=all"] })).trim()) fail("a clean unchanged normal preparation candidate");
+  return { directory, registry, run, binding, deadline: preflight.deadline };
+}
+
 async function openAdmission({ root, base, head, maxParallelTasks, signal }, phase) {
   await hostedJobIsolation();
   if (![base, head].every((id) => /^[0-9a-f]{40}$/u.test(id)) || head !== process.env.GITHUB_SHA) fail("the expanded immutable candidate tuple");
@@ -844,11 +933,7 @@ async function openAdmission({ root, base, head, maxParallelTasks, signal }, pha
   // No stale-owner recovery. A failed/uncertain attempt retains this fence.
   await mkdir(directory, { mode: 0o700 });
   const registry = JSON.parse(await readFile(path.join(root, "scripts/local-ci-registry.json"), "utf8"));
-  const run = async (id, command, timeoutMs = 30_000, commandSignal = signal, capture = true) => {
-    const result = await runLocalCiCommand(command, { root, taskId: id, logDirectory: path.relative(root, directory), signal: commandSignal, timeoutMs, closeGraceMs: 2_000 });
-    if (result.exitCode !== 0 || result.signal || result.interrupted || result.timedOut || !result.closeObserved || result.cleanup?.complete !== true || result.cleanup?.groupAlive || result.error) fail(`successful actual close/EOF/file joins/group absence for ${id}`);
-    return capture ? readFile(path.resolve(root, result.logs.stdout.path), "utf8") : result;
-  };
+  const run = admissionRunner(root, directory, signal);
   try {
     await durableJson(path.join(directory, "acquisition-owner.json"), { base, head, maxParallelTasks, runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT, state: `possible-${phase}-acquisition` });
     const tree = (await run("identity-tree", { command: "git", args: ["rev-parse", "HEAD^{tree}"] })).trim();
@@ -1005,11 +1090,13 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const setup = args[0] === "--setup";
     const reference = args[0] === "--setup-reference";
     const grouped = args[0] === "--grouped-reference";
-    if (setup || reference || grouped) args.shift();
+    const normal = args[0] === "--normal-preflight" || args[0] === "--normal-reference";
+    const preflight = args[0] === "--normal-preflight";
+    if (setup || reference || grouped || normal) args.shift();
     const [base, head, slots] = args;
     if (args.length !== 3 || !/^([1-9]|1[0-2])$/u.test(slots ?? "")) fail("the existing exact base/head/scheduler option arguments");
-    await (grouped ? stageFullGroupedReference : reference ? stageFullSystemReference : setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal });
-    console.log(grouped ? "Grouped pure-DB prerequisite observations recorded; Full remains unadmitted" : reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
+    await (grouped || normal ? stageFullGroupedReference : reference ? stageFullSystemReference : setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal, normal, preflight });
+    console.log(normal ? `Normal prerequisite ${preflight ? "focused preflight" : "observations"} recorded; Full remains unadmitted` : grouped ? "Grouped pure-DB prerequisite observations recorded; Full remains unadmitted" : reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
   } catch (error) {
     console.error(error.message.startsWith("[precheck]") ? error.message : "[precheck] Full conditional resource acquisition failed; owner retained");
     process.exitCode = 1;

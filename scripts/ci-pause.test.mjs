@@ -24,6 +24,7 @@ import {
   fullPreparation,
   fullSetupLocations,
   groupedDbPrerequisites,
+  normalPrerequisites,
   produceWorkloadEstimate,
   resolveObservedResidual,
   validateWorkloadEstimate,
@@ -1220,7 +1221,7 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
   assert.equal(checkout.with["fetch-depth"], 0);
   assert.equal(checkout.with["persist-credentials"], false);
   assert.ok(steps.indexOf(reference) > steps.indexOf(checkout));
-  assert.match(reference.run, /node scripts\/local-ci-full-admission\.mjs --grouped-reference "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
+  assert.match(reference.run, /node scripts\/local-ci-full-admission\.mjs --normal-reference "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
   assert.doesNotMatch(reference.run, /pnpm|cargo|sudo|ci:local:|\|\|\s*true/u);
   const dependencies = steps.find(({ name }) => name === "Canonical system dependencies");
   assert.equal(dependencies.if, "inputs.profile != 'contracts'");
@@ -1254,7 +1255,7 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
     if (step.run) assert.doesNotMatch(step.run, /\$\{\{ inputs\.|--dry-run|--from|--recover-lock|\|\|\s*true/u);
   }
   const upload = steps.find(({ name }) => name === "Upload existing canonical evidence");
-  assert.equal(upload.if, "always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped' || steps.full_reference.outcome != 'skipped')");
+  assert.equal(upload.if, "always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped' || steps.full_reference.outcome != 'skipped' || steps.full_normal_preflight.outcome != 'skipped')");
   assert.match(upload.with.path, /steps\.full_setup\.outcome == 'skipped' && '\.artifacts\/local-ci\/full-admission\/\*-setup-reference\/\*\.json'/u);
   assert.equal(upload.with["include-hidden-files"], true);
   assert.equal(upload.with["if-no-files-found"], "error");
@@ -1361,6 +1362,168 @@ test("canonical prerequisite reference is isolated from Full ingestion and heavy
   } finally { await rm(bin, { recursive: true, force: true }); }
 });
 
+test("normal prerequisite is the existing frozen materialization and compile-only subset, with no arbitrary consumers", async () => {
+  const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  const selected = normalPrerequisites(registry);
+  assert.deepEqual(selected.map(({ id }) => id), ["bootstrap.install", "bootstrap.electron-binary", "bootstrap.workspace-build", "bootstrap.chromium", "electron.build"]);
+  const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
+  for (const step of selected) assert.deepEqual(step.command, plan.tasks.find(({ id }) => id === step.id).command);
+  for (const change of [
+    (value) => { value.stages.bootstrap.commands[0].args.push("--ignore-scripts"); },
+    (value) => { value.stages.bootstrap.env = { PRIVATE_OVERRIDE: "1" }; },
+    (value) => { value.stages.bootstrap.commands[1].command = "electron"; },
+    (value) => { value.stages.electron.commands.find(({ id }) => id === "electron.build").cwd = "foreign"; },
+    (value) => { value.stages.bootstrap.commands.push(value.stages.bootstrap.commands[0]); },
+  ]) {
+    const changed = structuredClone(registry); change(changed);
+    assert.throws(() => normalPrerequisites(changed), /\[precheck\]/u);
+  }
+});
+
+test("normal focused setup owns both pinned actions before one continuation and preserves both Full fences and metadata-only uploads", async () => {
+  const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
+  const preflight = steps.find(({ id }) => id === "full_normal_preflight");
+  const reference = steps.find(({ id }) => id === "full_reference");
+  const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
+  const actions = steps.slice(steps.indexOf(preflight) + 1, steps.indexOf(reference));
+  assert.equal(preflight.if, "inputs.profile == 'full'");
+  assert.deepEqual(actions.map(({ uses }) => uses), ["pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1", "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"]);
+  for (const step of actions) {
+    assert.equal(step.if, "inputs.profile == 'full'"); assert.equal(step["timeout-minutes"], 5);
+    assert.equal(step["continue-on-error"], undefined);
+  }
+  assert.equal(actions[0].with.version, "10.33.0");
+  assert.equal(actions[0].with.dest, "${{ env.FULL_PNPM_DEST }}");
+  assert.equal(actions[1].with["node-version"], 22);
+  assert.equal(actions[1].with.cache, "pnpm");
+  assert.ok(preflight.run.indexOf('>> "$GITHUB_ENV"') > preflight.run.indexOf("--normal-preflight"));
+  assert.match(reference.run, /--normal-reference/u);
+  assert.doesNotMatch(reference.run, /--grouped-reference|--setup-reference|ci:local:/u);
+  assert.ok(steps.indexOf(reference) < steps.indexOf(stop));
+  assert.ok(steps.indexOf(stop) < steps.findIndex(({ id }) => id === "full_setup"));
+  const upload = steps.find(({ name }) => name === "Upload existing canonical evidence");
+  assert.ok(upload.with.path.includes("steps.full_normal_preflight.outcome != 'skipped'"));
+  assert.ok(upload.with.path.includes("*-setup-reference/*.json"));
+  const bin = await mkdtemp(path.join(tmpdir(), "normal-preflight-shell-"));
+  try {
+    const exported = path.join(bin, "exports");
+    await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 9\n", { mode: 0o755 });
+    await assert.rejects(promisify(execFile)("bash", ["-c", preflight.run], { env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, GITHUB_ENV: exported, REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" }, timeout: 10000 }), (error) => error.code === 9);
+    await assert.rejects(access(exported), { code: "ENOENT" });
+  } finally { await rm(bin, { recursive: true, force: true }); }
+});
+
+test("normal acquisition consumes one current focused owner and joins synthetic failure/cancel without replay or successors", async () => {
+  const original = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
+  const keys = ["PATH", "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_TOOLCHAIN", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_TEMP", "RUNNER_TOOL_CACHE", "FULL_PNPM_DEST", "npm_config_store_dir", "PLAYWRIGHT_BROWSERS_PATH", "UV_CACHE_DIR"];
+  const saved = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const roots = [];
+  try {
+    for (const mode of ["success", "failure", "cancel", "expired", "stale", "location-drift", "digest-missing", "digest-invalid", "quota-zero", "project-unknown", "redirected", "node-outside"]) {
+      const root = await mkdtemp(path.join(tmpdir(), `normal-reference-${mode}-`)); roots.push(root);
+      const bin = path.join(root, "bin"); await mkdir(bin);
+      const sources = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/ensure-electron-binary.mjs", "electron/scripts/build.mjs", "vite.config.ts"];
+      for (const file of sources) { await mkdir(path.dirname(path.join(root, file)), { recursive: true }); await writeFile(path.join(root, file), await readFile(path.join(repoRoot, file))); }
+      const helper = path.join(root, "scripts/local-ci-full-admission.mjs");
+      // Synthetic host isolation/version ONLY; real supervisor/streams/fsync.
+      await writeFile(helper, original.replaceAll("await hostedJobIsolation();", "/* synthetic only */").replace("node: process.version, pnpm:", 'node: "v22.0.0", pnpm:').replace("const nodeRoot = normal ? path.dirname(path.dirname(await realpath(process.execPath))) : null;", `const nodeRoot = normal ? path.join(root, ${JSON.stringify(mode === "node-outside" ? "../foreign-node" : "synthetic-node")}) : null;`));
+      const script = `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path');
+const tool = path.basename(process.argv[1]), args = process.argv.slice(2), root = process.cwd(), mode = ${JSON.stringify(mode)};
+if (tool === 'git') { if (args[0] === 'rev-parse') console.log(args[1].includes('tree') ? 'b'.repeat(40) : 'a'.repeat(40)); }
+else if (tool === 'sudo') {
+  fs.writeFileSync(path.join(root, 'quota-checked'), 'observed');
+  const request = JSON.parse(args.at(-1));
+  console.log(JSON.stringify(request.locations.map(([label]) => ({ label, device: '1', bytes: mode === 'quota-zero' ? '0' : '1000000', inodes: '10000', quotas: [0,1,2].map(type => ({ type, state: mode === 'project-unknown' && type === 2 ? 'unknown' : 'kernel-disabled' })) }))));
+} else if (tool === 'python3') { console.log(JSON.stringify({ status: 'synthetic', components: [], coexistence: [] })); }
+else if (tool === 'pnpm') {
+  if (!fs.existsSync(path.join(root, 'quota-checked'))) process.exit(8);
+  if (args[0] === '--version') console.log('10.33.0');
+  else if (args[0] === 'store') console.log(path.join(process.env.npm_config_store_dir, 'v10'));
+  else { fs.appendFileSync(path.join(root, 'started'), args.join(' ') + '\\n'); console.log('complete synthetic stdout'); console.error('complete synthetic stderr'); if (mode === 'failure') process.exit(9); if (mode === 'cancel') setInterval(() => {}, 1000); }
+} else { fs.appendFileSync(path.join(root, 'started'), 'node materialization\\n'); }
+`;
+      for (const tool of ["git", "sudo", "python3", "pnpm", "node"]) await writeFile(path.join(bin, tool), script, { mode: 0o755 });
+      process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
+      process.env.CARGO_HOME = path.join(process.env.HOME, `synthetic-unused-cargo-${path.basename(root)}`);
+      delete process.env.CARGO_TARGET_DIR; delete process.env.RUSTUP_TOOLCHAIN;
+      Object.assign(process.env, { GITHUB_SHA: "a".repeat(40), GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "1", RUNNER_TEMP: root, RUNNER_TOOL_CACHE: root, FULL_PNPM_DEST: path.join(root, "installer"), npm_config_store_dir: path.join(root, "store"), PLAYWRIGHT_BROWSERS_PATH: path.join(root, "browser"), UV_CACHE_DIR: path.join(root, "uv") });
+      if (mode === "redirected") await symlink(bin, process.env.npm_config_store_dir);
+      const { stageFullGroupedReference } = await import(pathToFileURL(helper).href);
+      const controller = new AbortController();
+      const options = { root, base: "c".repeat(40), head: process.env.GITHUB_SHA, maxParallelTasks: 12, signal: controller.signal, normal: true };
+      const directory = path.join(root, ".artifacts/local-ci/full-admission/1-1-setup-reference");
+      if (["quota-zero", "project-unknown", "redirected"].includes(mode)) {
+        await assert.rejects(stageFullGroupedReference({ ...options, preflight: true }), /\[precheck\]/u);
+        await assert.rejects(access(path.join(directory, "normal-preflight.json")), { code: "ENOENT" });
+        await assert.rejects(stageFullGroupedReference(options));
+        await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
+        continue;
+      }
+      await stageFullGroupedReference({ ...options, preflight: true });
+      await assert.rejects(stageFullGroupedReference({ ...options, preflight: true }));
+      const preflightPath = path.join(directory, "normal-preflight.json");
+      const preflightBytes = await readFile(preflightPath, "utf8");
+      const value = JSON.parse(preflightBytes);
+      assert.equal(value.locations, undefined);
+      assert.equal(value.locationsDigest, createHash("sha256").update(JSON.stringify(fullSetupLocations(root))).digest("hex"));
+      for (const [, destination] of fullSetupLocations(root)) {
+        if (destination !== "/") assert.equal(preflightBytes.includes(destination), false, "uploaded preflight excludes actual filesystem paths");
+      }
+      if (["expired", "stale", "location-drift", "digest-missing", "digest-invalid"].includes(mode)) {
+        if (mode === "expired") value.deadline = Date.now() - 1;
+        else if (mode === "stale") value.binding.attempt = "2";
+        else if (mode === "location-drift") process.env.npm_config_store_dir = path.join(root, "moved-store");
+        else if (mode === "digest-missing") delete value.locationsDigest;
+        else value.locationsDigest = "not-a-digest";
+        await writeFile(preflightPath, JSON.stringify(value));
+        await assert.rejects(stageFullGroupedReference(options), /normal preflight binding/u);
+        await assert.rejects(access(path.join(directory, "normal-start.json")), { code: "ENOENT" });
+        await assert.rejects(access(path.join(directory, "normal-resume-tree-pending.json")), { code: "ENOENT" });
+        await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
+        continue;
+      }
+      if (mode === "node-outside") {
+        await assert.rejects(stageFullGroupedReference(options), /Node payload inside the assessed tool cache/u);
+        await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
+        await assert.rejects(stageFullGroupedReference(options));
+        continue;
+      }
+      const pending = stageFullGroupedReference(options).then(() => null, (error) => error);
+      if (mode === "cancel") {
+        try {
+          const deadline = Date.now() + 5000;
+          for (;;) { try { await access(path.join(root, "started")); break; } catch (error) { if (error.code !== "ENOENT" || Date.now() >= deadline) throw error; } await new Promise((resolve) => setTimeout(resolve, 10)); }
+        } finally { controller.abort(new Error("synthetic cancellation")); }
+      }
+      const error = await pending;
+      const closed = JSON.parse(await readFile(path.join(directory, "bootstrap.install-close.json"), "utf8"));
+      assert.equal(closed.closeObserved, true); assert.equal(closed.cleanup.complete, true); assert.equal(closed.cleanup.groupAlive, false);
+      for (const [stream, log] of Object.entries(closed.logJoins)) {
+        const bytes = await readFile(path.join(directory, `bootstrap.install.${stream}.log`));
+        assert.equal(bytes.length, log.size); assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, log.sha256);
+      }
+      if (mode === "success") {
+        assert.equal(error, null);
+        const reference = JSON.parse(await readFile(path.join(directory, "setup-reference.json"), "utf8"));
+        assert.equal(reference.samples.length, 5); assert.equal(reference.admitted, undefined);
+        assert.ok(reference.unobserved.some((fact) => fact.includes("sub-200ms")));
+      } else {
+        assert.match(error.message, /\[precheck\]/u);
+        assert.equal(await readFile(path.join(root, "started"), "utf8"), "install --frozen-lockfile\n");
+        await assert.rejects(access(path.join(directory, "setup-reference.json")), { code: "ENOENT" });
+        await assert.rejects(access(path.join(directory, "bootstrap.electron-binary-pending.json")), { code: "ENOENT" });
+      }
+      const marker = await readFile(path.join(directory, "normal-start.json"), "utf8");
+      await assert.rejects(stageFullGroupedReference(options));
+      assert.equal(await readFile(path.join(directory, "normal-start.json"), "utf8"), marker);
+    }
+  } finally {
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    for (const root of roots) await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("grouped pure-DB acquisition preserves the official tuple and complete failure target", async () => {
   const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
   const binding = { head: "a".repeat(40), tree: "b".repeat(40) };
@@ -1409,8 +1572,8 @@ test("grouped acquisition joins real synthetic children and retains failure/canc
       // Production keeps its actual hosted VM check. Supervisor remains real.
       const helper = path.join(root, "scripts/local-ci-full-admission.mjs");
       await writeFile(helper, original.replaceAll("await hostedJobIsolation();", "/* synthetic test only */").replace(
-        'const output = await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));',
-        'const output = await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-")); await durableJson(path.join(root, "synthetic-output.json"), { output });',
+        'const output = normal ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));',
+        'const output = normal ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-")); await durableJson(path.join(root, "synthetic-output.json"), { output });',
       ));
       const script = `#!/usr/bin/env node
 const fs = require("node:fs"), path = require("node:path");
@@ -1538,14 +1701,14 @@ test("grouped acquisition retains Full fences, bounded ownership and scoped obse
   const version = grouped.slice(grouped.indexOf("const version ="), grouped.indexOf("const versions ="));
   assert.ok(version.indexOf("await probe()") < version.indexOf("await run(id"));
   assert.ok(grouped.indexOf("const before = await probe()") < grouped.indexOf("result = await runLocalCiCommand"));
-  assert.ok(grouped.indexOf("metadata.target_directory !== target") < grouped.indexOf("const output = await mkdtemp"));
+  assert.ok(grouped.indexOf("metadata.target_directory !== target") < grouped.indexOf("const output = normal ? null : await mkdtemp"));
   assert.ok(grouped.indexOf("possible-start") < grouped.indexOf("result = await runLocalCiCommand"));
   assert.ok(grouped.indexOf("await sampler") < grouped.indexOf('`${step.id}-close.json`'));
   assert.ok(grouped.indexOf("result.exitCode !== 0") < grouped.indexOf("samples.push"));
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
   const reference = steps.find(({ id }) => id === "full_reference");
-  assert.match(reference.run, /--grouped-reference/u);
-  assert.doesNotMatch(reference.run, /--setup-reference/u);
+  assert.match(reference.run, /--normal-reference/u);
+  assert.doesNotMatch(reference.run, /--grouped-reference|--setup-reference/u);
   assert.ok(steps.indexOf(reference) < steps.findIndex(({ name }) => name === "Full prerequisites remain unresolved"));
   assert.ok(steps.find(({ id }) => id === "canonical").run.includes("Full conditional admission is not yet enabled"));
 });
@@ -1716,11 +1879,13 @@ test("canonical Full setup assessment precedes every heavy action/install and ca
     assert.ok(setup.run.includes(key));
   }
   assert.ok(setup.run.indexOf('>> "$GITHUB_ENV"') > setup.run.indexOf("node scripts/local-ci-full-admission.mjs --setup"));
-  assert.equal(steps.find(({ uses }) => uses?.startsWith("pnpm/action-setup@")).with.dest, "${{ env.FULL_PNPM_DEST || '~/setup-pnpm' }}");
+  assert.equal(steps.find(({ id }) => id === "pnpm_setup").with.dest, "${{ env.FULL_PNPM_DEST || '~/setup-pnpm' }}");
   assert.equal(steps.find(({ uses }) => uses?.startsWith("astral-sh/setup-uv@")).with["cache-local-path"], "${{ env.UV_CACHE_DIR }}");
   assert.match(setup.run, /node scripts\/local-ci-full-admission\.mjs --setup "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
   assert.doesNotMatch(setup.run, /ci:local:|pnpm|cargo|apt-get|\|\|\s*true/u);
-  const heavy = steps.filter(({ uses, run }) => /pnpm\/action-setup@|actions\/setup-node@|dtolnay\/rust-toolchain@|astral-sh\/setup-uv@/u.test(uses ?? "") || /apt-get|pnpm install|playwright install-deps|cargo install/u.test(run ?? ""));
+  // The separately admitted two-action focused prerequisite is tested below;
+  // all eight actual Full installers still follow their complete Full decision.
+  const heavy = steps.slice(setupIndex + 1).filter(({ uses, run }) => /pnpm\/action-setup@|actions\/setup-node@|dtolnay\/rust-toolchain@|astral-sh\/setup-uv@/u.test(uses ?? "") || /apt-get|pnpm install|playwright install-deps|cargo install/u.test(run ?? ""));
   assert.equal(heavy.length, 8);
   for (const step of heavy) {
     assert.ok(steps.indexOf(step) > setupIndex, step.name ?? step.uses ?? step.run);

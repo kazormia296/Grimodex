@@ -592,16 +592,60 @@ requires the existing workload/resource admission decision. A failed profile
 never starts verify. Uploaded artifacts retain the existing receipt/log formats;
 a hosted job result is not a replacement for receipt verification or acceptance.
 
-`full` remains stopped before actual Full setup/install and gate execution. Its
-existing prerequisite step now selects the smaller **grouped pure-DB demand
-acquisition**, `local-ci-full-admission.mjs --grouped-reference`, before that
-refusal. No new profile/job/dispatch input, executor or receipt schema is added.
-It reuses the exclusive `setup-reference` owner and structured-only artifact path;
-it never consumes the missing complete `full-workload-allocation/1`, produces an
-admission decision, or enables either Full fence. Requiring a complete Full
-forecast before acquiring its prerequisites would be circular.
+`full` remains stopped before actual Full setup/install and gate execution. The
+accepted pure-DB acquisition38007676893/1 is retained, not replayed. The existing
+prerequisite now selects the remaining connected **normal dependency,
+materialization and JavaScript compilation** group before the same refusal.
+No new profile/job/dispatch input, executor or receipt schema is added. The group
+reuses the exclusive `setup-reference` owner, supervisor, allocation walker and
+structured-only artifact path. It never consumes the missing complete
+`full-workload-allocation/1`, produces a Full admission decision, or enables either
+Full fence. Requiring complete Full input before acquiring it would be circular.
 
-The focused group uses only the standard hosted VM's preinstalled Cargo/Rust,
+`--normal-preflight` uses preinstalled Node/Python/git, current clean candidate,
+source/registry/option/run binding and the actual hosted single-job VM. It checks
+unredirected writable normal destinations and usable capacity/all applicable
+quotas (unknown or enabled project placement rejects), and records scoped baseline
+allocation before setup. Its uploaded metadata stores only a digest of the actual
+locations, never the environment-derived paths; continuation compares recomputed
+locations against that digest and rejects missing/invalid or changed bindings.
+Successful preflight alone exports the already-defined installer/cache settings. The same pinned normal pnpm10.33.0 and Node22 actions,
+each bounded to five minutes, then run on that continuously owned job. Failure
+skips continuation and retains the original owner; it cannot select real Full.
+
+`--normal-reference` exclusively consumes that same current preflight before its
+thirty-minute expiry, with source/location/currentness checks and a fsynced
+possible-start marker **before any resumed child**. A consumed marker rejects
+reentry without overwriting logs or starting replacement children. The existing
+registry fixes five sequential consumers: frozen package install, pinned Electron
+binary materialization, shared workspace compilation, pinned Playwright Chromium
+materialization, and desktop JavaScript production compilation. The helper rejects
+changed commands, cwd, environments, missing or duplicate consumer identities;
+it checks the actual Node/pnpm versions and pnpm store placement before the first
+package child. No Electron/Chromium app is launched, and no native binding,
+Rust/uv/audit/system/model/GPU install, test/filter, bus or Editor is selected.
+
+The existing fifteen-minute child bounds, joined200ms sampler and actual
+exit/requiredEOF/all-log-joins/group-retirement checks remain. The continuation's
+remaining deadline includes time spent on setup; cancellation/error/unknown close
+retains ownership and never becomes retry/replacement authority. Scoped snapshots
+cover the actual installer/store, packages, Electron/Chromium caches and workspace/
+desktop/renderer outputs, plus the selected Node tree, with alias/hardlink
+deduplication. Complete private child logs are recorded by size/hash/allocation,
+not published. Even preflight or action failure uploads only shaped JSON, not
+whole private logs. Historical setup/extraction peaks, complete action logs,
+sub200ms transients, other system/uv/audit/native-Rust/doctest workloads, journey
+failure copies and additive uncertainty remain explicitly unobserved, not zero.
+These finite observations support later conservative source-grounded forecasts;
+they do not assert upper bounds, future capacity or a complete Full forecast.
+Independent changed-unit review, normal reviewed-path checkpoint, one affected
+hosted proof and separate actual acquisition admission precede execution. Both
+Full fences, B/ONEEditor and all actual final resource/candidate/acceptance gates
+remain mandatory.
+
+The retained `--grouped-reference` helper is available only at its original
+pure-DB scope; it is not called by the current workflow. That focused group uses
+only the standard hosted VM's preinstalled Cargo/Rust,
 Node/Python/git and ordinary locked Cargo dependency recipients. All Cargo/Rust
 calls set `RUSTUP_AUTO_INSTALL=0`; absent toolchains fail without installation. It derives the
 current registry's exact official C2-ZC fixture command and two-job/zero-debug
