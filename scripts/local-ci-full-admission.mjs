@@ -806,10 +806,11 @@ export function assessFullDemand(filesystems, terms) {
     const prior = devices.get(fs.device);
     devices.set(fs.device, { bytes: prior ? minimum(prior.bytes, bytes) : bytes, inodes: prior ? minimum(prior.inodes, inodes) : inodes, demandBytes: prior?.demandBytes ?? 0n, demandInodes: prior?.demandInodes ?? 0n });
   }
-  // Reviewed shared/native compilation is charged to workspace. Metadata may
-  // not silently move those writes to an observation-only, disjoint device.
+  // Reviewed compilation and the CPU environment are charged to workspace.
+  // Neither may move writes to an observation-only, disjoint device.
   for (const [label, device] of locations) {
     if (/^cargo-(shared|native)(-package)?$/u.test(label) && device !== locations.get("workspace")) fail("source-bound Cargo targets on the charged workspace device before preparation");
+    if (label === "uv-environment" && device !== locations.get("workspace")) fail("source-bound UV environment on the charged workspace device before preparation");
   }
   for (const term of terms) {
     const device = locations.get(term.location);
@@ -860,8 +861,14 @@ async function assertWritableLocations(locations) {
     let ancestor = requested;
     for (;;) {
       try {
+        // realpath reports ENOENT for dangling links; reject before walking up.
+        if ((await lstat(ancestor)).isSymbolicLink()) {
+          if (/^cargo-(shared|native)(-package)?$/u.test(label)) fail("unredirected source-bound workspace Cargo target ancestors");
+          if (label === "uv-environment") fail("unredirected source-bound workspace UV environment ancestors");
+        }
         const resolved = await realpath(ancestor);
         if (/^cargo-(shared|native)(-package)?$/u.test(label) && resolved !== ancestor) fail("unredirected source-bound workspace Cargo target ancestors");
+        if (label === "uv-environment" && resolved !== ancestor) fail("unredirected source-bound workspace UV environment ancestors");
         break;
       }
       catch (error) {
@@ -929,7 +936,9 @@ export async function collectFullLocations(root, run, env = process.env) {
     if (metadata.target_directory !== target) fail(`the source-bound workspace Cargo target for ${label}`);
     locations.push([label, target]);
   }
-  locations.push(["uv-environment", process.env.UV_PROJECT_ENVIRONMENT ? path.resolve(root, "experiments/lfm25-encoder-phase0", process.env.UV_PROJECT_ENVIRONMENT) : path.join(root, "experiments/lfm25-encoder-phase0/.venv")]);
+  const uvEnvironment = path.join(root, "experiments/lfm25-encoder-phase0/.venv");
+  if (env.UV_PROJECT_ENVIRONMENT && path.resolve(root, "experiments/lfm25-encoder-phase0", env.UV_PROJECT_ENVIRONMENT) !== uvEnvironment) fail("the source-bound workspace UV environment before preparation");
+  locations.push(["uv-environment", uvEnvironment]);
   await assertWritableLocations(locations);
   return locations;
 }

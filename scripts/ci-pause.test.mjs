@@ -2111,12 +2111,14 @@ test("Full resolves installer caches before setup and rejects unknown or changed
   }
 });
 
-test("Full Cargo collection rejects unaccounted targets in every caller context and symlink ancestors", async () => {
-  const temporary = await mkdtemp(path.join(tmpdir(), "full-cargo-placement-contract-"));
-  const prior = Object.fromEntries(["RUNNER_TEMP", "RUNNER_TOOL_CACHE"].map((key) => [key, process.env[key]]));
+test("Full collection binds Cargo targets and the UV environment to unredirected workspace paths", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "full-build-placement-contract-"));
+  const prior = Object.fromEntries(["RUNNER_TEMP", "RUNNER_TOOL_CACHE", "UV_PROJECT_ENVIRONMENT"].map((key) => [key, process.env[key]]));
   try {
     process.env.RUNNER_TEMP = temporary;
     process.env.RUNNER_TOOL_CACHE = temporary;
+    // The explicit environment argument, not ambient state, determines placement.
+    process.env.UV_PROJECT_ENVIRONMENT = path.join(temporary, "unaccounted-ambient-env");
     const env = {
       FULL_PNPM_DEST: path.join(temporary, "installer"), npm_config_store_dir: path.join(temporary, "store"),
       PLAYWRIGHT_BROWSERS_PATH: path.join(temporary, "browser"), UV_CACHE_DIR: path.join(temporary, "uv"),
@@ -2138,6 +2140,15 @@ test("Full Cargo collection rejects unaccounted targets in every caller context 
     const locations = await collectFullLocations(temporary, runner(queries), env);
     assert.deepEqual(locations.filter(([label]) => targets.includes(label)), targets.map((label) => [label, expected(label)]));
     assert.equal(queries.length, 7);
+    const uvEnvironment = path.join(temporary, "experiments/lfm25-encoder-phase0/.venv");
+    assert.deepEqual(locations.find(([label]) => label === "uv-environment"), ["uv-environment", uvEnvironment]);
+    for (const placement of [undefined, "", ".venv", uvEnvironment]) {
+      const canonical = await collectFullLocations(temporary, runner([]), { ...env, UV_PROJECT_ENVIRONMENT: placement });
+      assert.equal(canonical.find(([label]) => label === "uv-environment")[1], uvEnvironment);
+    }
+    for (const placement of ["other-env", "../other-env", path.join(temporary, "elsewhere-env"), path.join(temporary, "../disjoint-env")]) {
+      await assert.rejects(collectFullLocations(temporary, runner([]), { ...env, UV_PROJECT_ENVIRONMENT: placement }), /source-bound workspace UV environment before preparation/u);
+    }
     for (const label of targets) {
       for (const target of [undefined, null, "relative-target", path.join(temporary, "unaccounted-target"), path.join(temporary, "../disjoint-target")]) {
         const rejectedQueries = [];
@@ -2150,6 +2161,22 @@ test("Full Cargo collection rejects unaccounted targets in every caller context 
     await mkdir(path.join(temporary, "elsewhere"));
     await symlink(path.join(temporary, "elsewhere"), path.join(temporary, "src-tauri"));
     await assert.rejects(collectFullLocations(temporary, runner([]), env), /unredirected source-bound workspace Cargo target ancestors/u);
+    await rm(path.join(temporary, "src-tauri"));
+    await symlink(path.join(temporary, "missing"), path.join(temporary, "src-tauri"));
+    await assert.rejects(collectFullLocations(temporary, runner([]), env), /unredirected source-bound workspace Cargo target ancestors/u);
+    await rm(path.join(temporary, "src-tauri"));
+    await mkdir(path.dirname(uvEnvironment), { recursive: true });
+    await symlink(path.join(temporary, "elsewhere"), uvEnvironment);
+    await assert.rejects(collectFullLocations(temporary, runner([]), env), /unredirected source-bound workspace UV environment ancestors/u);
+    await rm(uvEnvironment);
+    // A dangling leaf must reject, not fall through ENOENT to its parent.
+    await symlink(path.join(temporary, "missing"), uvEnvironment);
+    await assert.rejects(collectFullLocations(temporary, runner([]), env), /unredirected source-bound workspace UV environment ancestors/u);
+    await assert.rejects(access(path.join(temporary, "missing")), { code: "ENOENT" });
+    await rm(uvEnvironment);
+    await rm(path.dirname(uvEnvironment), { recursive: true });
+    await symlink(path.join(temporary, "elsewhere"), path.dirname(uvEnvironment));
+    await assert.rejects(collectFullLocations(temporary, runner([]), env), /unredirected source-bound workspace UV environment ancestors/u);
   } finally {
     for (const [key, value] of Object.entries(prior)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
@@ -2320,19 +2347,21 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   await validateFullSetupEstimate(estimate, binding, repoRoot);
   await validateWorkloadEstimate(estimate, binding, plan, preparation, repoRoot);
   assert.equal(estimate.tasks.length, 68);
-  // The tracked recipes charge Cargo compilation to workspace. Canonical paths
-  // alone are insufficient: a target may be a disjoint mounted descendant.
-  const cargoLabels = ["cargo-shared", "cargo-shared-package", "cargo-native", "cargo-native-package"];
+  // The tracked recipes charge compilation and the CPU environment to workspace.
+  // Canonical paths alone do not exclude disjoint mounted descendants.
+  const buildLabels = ["cargo-shared", "cargo-shared-package", "cargo-native", "cargo-native-package", "uv-environment"];
   const compileTerms = [...estimate.preparation.flatMap(({ terms }) => terms), ...estimate.residual];
   const compileSum = (metric) => compileTerms.reduce((sum, term) => sum + BigInt(term[metric]), 0n);
   const compileSpace = locations.map(([label]) => syntheticFilesystem(label, "workspace-device", String(compileSum("bytes") + 1n), String(compileSum("inodes") + 1n)));
-  const observedTargets = cargoLabels.map((label) => ({ ...compileSpace[0], label }));
+  const observedTargets = buildLabels.map((label) => ({ ...compileSpace[0], label }));
   const compileReport = assessFullDemand(compileSpace, compileTerms);
-  assert.deepEqual(assessFullDemand([...compileSpace, ...observedTargets], compileTerms), compileReport, "observation aliases do not add another compilation allocation");
-  for (const label of cargoLabels) {
+  assert.deepEqual(assessFullDemand([...compileSpace, ...observedTargets], compileTerms), compileReport, "observation aliases do not add another build/environment allocation");
+  const cpuEnvironment = data.inventories.find(({ id }) => id === "build.cpu-environment");
+  for (const metric of ["bytes", "inodes"]) assert.ok(cpuEnvironment.items.reduce((sum, item) => sum + BigInt(item[metric]), 0n) > 1n, "positive CPU environment demand exceeds the disjoint observation's capacity");
+  for (const label of buildLabels) {
     for (const metric of ["bytes", "inodes"]) {
-      const disjoint = observedTargets.map((fs) => fs.label === label ? { ...fs, device: "disjoint-cargo", [metric]: "1" } : fs);
-      assert.throws(() => assessFullDemand([...compileSpace, ...disjoint], compileTerms), /Cargo targets on the charged workspace device before preparation/u);
+      const disjoint = observedTargets.map((fs) => fs.label === label ? { ...fs, device: "disjoint-build", [metric]: "1" } : fs);
+      assert.throws(() => assessFullDemand([...compileSpace, ...disjoint], compileTerms), label === "uv-environment" ? /UV environment on the charged workspace device before preparation/u : /Cargo targets on the charged workspace device before preparation/u);
       // Same-device enabled target quotas constrain the aggregate workspace
       // demand, despite abundant workspace capacity and no term at that alias.
       const quotas = disabledQuotas();

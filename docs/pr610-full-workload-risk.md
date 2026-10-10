@@ -82,6 +82,17 @@ Current source hashes and every actual preparation tuple are bound at ingestion.
   has positive output/link/log/growth terms. The producer sums all simultaneous
   transient terms without serial/fail-fast cleanup savings. Real same-job observations can
   only raise residuals; overruns reject/cancel owned preparation, never retry.
+- Locked CPU environment recipes charge the workspace device, separately from
+  the configured uv cache. The effective `UV_PROJECT_ENVIRONMENT`, resolved from
+  the existing `experiments/lfm25-encoder-phase0` consumer cwd, must identify this
+  checkout's `.venv` (default, relative `.venv` or identical absolute path).
+  Other relative/absolute destinations and symlinked existing environment
+  ancestors reject without rewriting paths. A canonical `.venv` on a disjoint
+  mounted device rejects at the first demand assessment before preparation;
+  later sampling cannot supply its missing pre-spawn allocation. Same-device
+  environment quota minima constrain the aggregate workspace demand without
+  double-charging the observation alias. Numerical CPU inventory and recipes
+  are unchanged; disjoint environment placement is unsupported, not zero demand.
 - Fixture DB scenario starts from the acquired official schema DB. Each of
   the literal2/140 materials reserves one4KiB leaf page for each of
   21 Source/Codex table-index/proposal-payload surfaces; a revision
