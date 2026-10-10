@@ -26,6 +26,7 @@ import {
   groupedDbPrerequisites,
   normalPrerequisites,
   cpuPrerequisites,
+  cpuVersionFormat,
   produceWorkloadEstimate,
   resolveObservedResidual,
   validateWorkloadEstimate,
@@ -1385,6 +1386,31 @@ test("normal prerequisite is the existing frozen materialization and compile-onl
   }
 });
 
+test("CPU version diagnostics keep the pin and reject unknown text without publishing it", () => {
+  for (const text of ["uv 0.11.29", "uv 0.11.29 (0123456789 2026-10-01)\n"]) {
+    assert.deepEqual(cpuVersionFormat("uv", text), { expected: "0.11.29", observedVersion: "0.11.29", format: "recognized", accepted: true });
+  }
+  assert.equal(cpuVersionFormat("python", "Python 3.12.10\n").accepted, true);
+  for (const [tool, text, observed, format] of [
+    ["uv", "uv 0.11.28", "0.11.28", "recognized"],
+    ["python", "Python 3.13.0", "3.13.0", "recognized"],
+    ["uv", "uv 0.11.29 (2026-10-01)", "0.11.29", "unsupported"],
+    ["uv", "uv 0.11.290", "0.11.290", "recognized"],
+    ["uv", "uv 0.11.29 https://private.invalid/secret", "0.11.29", "unsupported"],
+    ["python", "Python 3.12.0\nPRIVATE_PAYLOAD", null, "unsupported"],
+    ["uv", "PRIVATE_PAYLOAD", null, "unsupported"],
+    ["uv", "", null, "unsupported"],
+    ["uv", "uv 0.11.29 " + "PRIVATE_PAYLOAD".repeat(30), null, "oversized"],
+    ["python", null, null, "oversized"],
+  ]) {
+    const diagnostic = cpuVersionFormat(tool, text);
+    assert.equal(diagnostic.observedVersion, observed);
+    assert.equal(diagnostic.format, format);
+    assert.equal(diagnostic.accepted, false);
+    assert.doesNotMatch(JSON.stringify(diagnostic), /PRIVATE_PAYLOAD|private\.invalid/u);
+  }
+});
+
 test("CPU prerequisite preserves the one locked Full consumer and excludes Python download, GPU and tests", async () => {
   const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
   const [step] = cpuPrerequisites(registry);
@@ -1447,7 +1473,7 @@ test("normal and CPU acquisition consume one current focused owner and join synt
   const roots = [];
   try {
     const modes = ["success", "failure", "cancel", "expired", "stale", "location-drift", "digest-missing", "digest-invalid", "quota-zero", "project-unknown", "redirected", "node-outside"];
-    for (const [cpu, mode] of [...modes.map((mode) => [false, mode]), ...["success", "failure", "cancel", "expired", "stale", "purpose-drift", "uv-version", "uv-outside", "allocation-missing", "allocation-changed", "allocation-empty-union", "allocation-foreign-device", "allocation-duplicate-device", "allocation-zero-union", "quota-zero", "project-unknown", "redirected"].map((mode) => [true, mode])]) {
+    for (const [cpu, mode] of [...modes.map((mode) => [false, mode]), ...["success", "failure", "cancel", "expired", "stale", "purpose-drift", "uv-version", "python-version", "uv-format", "uv-private", "python-private", "uv-oversized", "uv-outside", "allocation-missing", "allocation-changed", "allocation-empty-union", "allocation-foreign-device", "allocation-duplicate-device", "allocation-zero-union", "quota-zero", "project-unknown", "redirected"].map((mode) => [true, mode])]) {
       const root = await mkdtemp(path.join(tmpdir(), `normal-reference-${mode}-`)); roots.push(root);
       const bin = path.join(root, "bin"); await mkdir(bin);
       const sources = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/ensure-electron-binary.mjs", "electron/scripts/build.mjs", "vite.config.ts", "experiments/lfm25-encoder-phase0/pyproject.toml", "experiments/lfm25-encoder-phase0/uv.lock"];
@@ -1465,7 +1491,7 @@ else if (tool === 'sudo') {
   const request = JSON.parse(args.at(-1));
   console.log(JSON.stringify(request.locations.map(([label]) => ({ label, device: '1', bytes: mode === 'quota-zero' ? '0' : '1000000', inodes: '10000', quotas: [0,1,2].map(type => ({ type, state: mode === 'project-unknown' && type === 2 ? 'unknown' : 'kernel-disabled' })) }))));
 } else if (tool === 'python3') {
-  if (args[0] === '--version') console.log('Python 3.12.0');
+  if (args[0] === '--version') console.log(mode === 'python-version' ? 'Python 3.13.0' : mode === 'python-private' ? 'Python 3.12.0\\nPRIVATE_PAYLOAD' : 'Python 3.12.0');
   else if (args.includes('-I')) console.log(args.at(-1).includes('shutil') ? path.join(mode === 'uv-outside' ? root + '/../foreign' : root, 'uv-tool', 'uv') : '3.12');
   else {
     const components = ${JSON.stringify(cpu)} ? JSON.parse(args.at(-1)).map(([id]) => ({ id, status: mode === 'allocation-missing' ? 'missing-or-disappeared' : 'observed', device: '1', allocatedBytes: mode === 'allocation-missing' ? null : '4096', uniqueInodes: mode === 'allocation-missing' ? null : '1' })) : [];
@@ -1478,7 +1504,7 @@ else if (tool === 'sudo') {
     console.log(JSON.stringify({ status: mode === 'allocation-changed' ? 'changed-shared-inode' : 'observed-roots-only', components, coexistence: mode === 'allocation-changed' ? null : coexistence }));
   }
 } else if (tool === 'uv') {
-  if (args[0] === '--version') console.log(mode === 'uv-version' ? 'uv 0.11.28' : 'uv 0.11.29 (0123456789 2026-10-01)');
+  if (args[0] === '--version') console.log(mode === 'uv-version' ? 'uv 0.11.28' : mode === 'uv-format' ? 'uv 0.11.29 (2026-10-01)' : mode === 'uv-private' ? 'uv 0.11.29 https://private.invalid/secret' : mode === 'uv-oversized' ? 'uv 0.11.29 ' + 'PRIVATE_PAYLOAD'.repeat(30) : 'uv 0.11.29 (0123456789 2026-10-01)');
   else { if (process.env.UV_PYTHON_DOWNLOADS !== 'never' || process.env.UV_PYTHON !== 'python3') process.exit(8); fs.appendFileSync(path.join(root, 'started'), args.join(' ') + '\\n'); console.log('complete synthetic stdout'); console.error('complete synthetic stderr'); if (mode === 'failure') process.exit(9); if (mode === 'cancel') setInterval(() => {}, 1000); }
 } else if (tool === 'pnpm') {
   if (!fs.existsSync(path.join(root, 'quota-checked'))) process.exit(8);
@@ -1530,10 +1556,32 @@ else if (tool === 'sudo') {
         await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
         continue;
       }
-      if (["node-outside", "uv-outside", "uv-version"].includes(mode)) {
+      if (["node-outside", "uv-outside", "uv-version", "python-version", "uv-format", "uv-private", "python-private", "uv-oversized"].includes(mode)) {
         await assert.rejects(stageFullGroupedReference(options), /Node payload inside the assessed tool cache|uv executable inside its assessed tool cache|pinned uv0\.11\.29/u);
         await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
-        await assert.rejects(stageFullGroupedReference(options));
+        if (cpu) {
+          const bytes = await readFile(path.join(directory, "cpu-versions.json"), "utf8");
+          const diagnostic = JSON.parse(bytes);
+          assert.deepEqual(diagnostic.binding, value.binding);
+          assert.deepEqual(diagnostic.sources, value.sources);
+          assert.equal(diagnostic.observed.uv.accepted, mode === "uv-outside" || mode.startsWith("python-"));
+          assert.equal(diagnostic.observed.python.accepted, !mode.startsWith("python-"));
+          assert.doesNotMatch(bytes, /PRIVATE_PAYLOAD|private\.invalid/u);
+          for (const [tool, { child }] of Object.entries(diagnostic.observed)) {
+            assert.equal(child.exitCode, 0); assert.equal(child.closeObserved, true); assert.equal(child.cleanup.complete, true); assert.equal(child.cleanup.groupAlive, false);
+            for (const [stream, log] of Object.entries(child.logJoins)) {
+              const raw = await readFile(path.join(directory, `cpu-${tool}-version.${stream}.log`));
+              assert.equal(raw.length, log.size); assert.equal(`sha256:${createHash("sha256").update(raw).digest("hex")}`, log.sha256);
+            }
+          }
+          if (mode !== "uv-outside") await assert.rejects(access(path.join(directory, "preparation-plan.json")), { code: "ENOENT" });
+          await assert.rejects(access(path.join(directory, "lfm.setup-pending.json")), { code: "ENOENT" });
+          await assert.rejects(access(path.join(directory, "setup-reference.json")), { code: "ENOENT" });
+          const marker = await readFile(path.join(directory, "normal-start.json"), "utf8");
+          await assert.rejects(stageFullGroupedReference(options));
+          assert.equal(await readFile(path.join(directory, "cpu-versions.json"), "utf8"), bytes);
+          assert.equal(await readFile(path.join(directory, "normal-start.json"), "utf8"), marker);
+        } else await assert.rejects(stageFullGroupedReference(options));
         continue;
       }
       const pending = stageFullGroupedReference(options).then(() => null, (error) => error);
@@ -1556,6 +1604,9 @@ else if (tool === 'sudo') {
         assert.equal(reference.samples.length, cpu ? 1 : 5); assert.equal(reference.admitted, undefined);
         assert.ok(reference.unobserved.some((fact) => fact.includes("sub-200ms")));
         if (cpu) {
+          const versions = JSON.parse(await readFile(path.join(directory, "cpu-versions.json"), "utf8"));
+          assert.equal(versions.observed.python.accepted, true); assert.equal(versions.observed.uv.accepted, true);
+          assert.deepEqual(reference.versions, { python: "Python 3.12.0", uv: "uv 0.11.29" });
           const allocation = reference.samples[0].allocation;
           assert.equal(allocation.status, "observed-roots-only");
           assert.equal(allocation.components.length, 4);

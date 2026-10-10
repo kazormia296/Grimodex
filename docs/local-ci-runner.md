@@ -678,7 +678,18 @@ cover the actual installer/store, packages, Electron/Chromium caches and workspa
 desktop/renderer outputs, plus the selected Node tree, with alias/hardlink
 deduplication. Complete private child logs are recorded by size/hash/allocation,
 not published. Even preflight or action failure uploads only shaped JSON, not
-whole private logs. Historical setup/extraction peaks, complete action logs,
+whole private logs. Before the CPU continuation's version guard can refuse,
+`cpu-versions.json` exclusively retains current source/run bindings, safe numeric
+version tokens, recognized/unsupported/oversized syntax labels, and the already
+joined version children's complete private log sizes/hashes and retirement.
+Only at most 160 stdout bytes are parsed; unknown suffixes/text are never uploaded.
+uv must still be exactly 0.11.29 with the existing bare or hex-revision/date format;
+Python must be an exact 3.12 patch version from the existing interpreter. An
+unsupported format or wrong version stops before the preparation plan or
+`lfm.setup` pending record, retaining the same non-reentrant start fence. Accepted
+preparation/reference versions use normalized safe labels. These diagnostics are
+not installed CPU demand, a format waiver, retry authority or Full admission.
+Historical setup/extraction peaks, complete action logs,
 sub200ms transients, other system/uv/audit/native-Rust/doctest workloads, journey
 failure copies and additive uncertainty remain explicitly unobserved, not zero.
 These finite observations support later conservative source-grounded forecasts;

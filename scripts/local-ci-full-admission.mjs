@@ -246,6 +246,20 @@ export function cpuPrerequisites(registry) {
   return [{ id: entry.id, command: { command: entry.command, args: [...entry.args], cwd: entry.cwd, env: { UV_PYTHON: "/usr/bin/python3.12", UV_PYTHON_DOWNLOADS: "never" } } }];
 }
 
+// Unknown command text stays in private logs, never uploaded as a version.
+// This is a diagnostic grammar bound, not a workload/capacity threshold.
+export function cpuVersionFormat(tool, output) {
+  const expected = tool === "python" ? "3.12" : "0.11.29";
+  if (output === null || Buffer.byteLength(output) > 160) return { expected, observedVersion: null, format: "oversized", accepted: false };
+  const text = output.trim();
+  const prefix = tool === "python" ? "Python" : "uv";
+  const observedVersion = text.match(new RegExp(`^${prefix} ([0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5})(?= |$)`, "u"))?.[1] ?? null;
+  const recognized = tool === "python" ? /^Python [0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$/u.test(text)
+    : /^uv [0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$/u.test(text);
+  const matchesExpected = observedVersion !== null && (tool === "python" ? /^3\.12\./u.test(observedVersion) : observedVersion === expected);
+  return { expected, observedVersion, format: recognized ? "recognized" : "unsupported", accepted: recognized && matchesExpected };
+}
+
 export async function stageFullGroupedReference(options) {
   const { root, signal: parentSignal, normal = false, preflight = false, cpu = false } = options;
   if (cpu && !normal) fail("the existing focused preflight/continuation owner for CPU materialization");
@@ -322,8 +336,31 @@ export async function stageFullGroupedReference(options) {
       await probe();
       return (await run(id, { command, args: ["--version"], env: { RUSTUP_AUTO_INSTALL: "0" } })).trim();
     };
-    const versions = cpu ? { python: (await run("cpu-python-version", { command: "/usr/bin/python3.12", args: ["--version"] })).trim(), uv: await version("cpu-uv-version", "uv") } : normal ? { node: process.version, pnpm: await version("normal-pnpm-version", "pnpm") } : { cargo: await version("db-cargo-version", "cargo"), rust: await version("db-rust-version", "rustc") };
-    if (cpu && (!/^Python 3\.12\./u.test(versions.python) || !/^uv 0\.11\.29(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$/u.test(versions.uv))) fail("pinned uv0.11.29 and existing Python3.12 before CPU materialization");
+    let versions;
+    if (cpu) {
+      const observed = {};
+      for (const [tool, executable] of [["python", "/usr/bin/python3.12"], ["uv", "uv"]]) {
+        await probe();
+        const result = await run(`cpu-${tool}-version`, { command: executable, args: ["--version"] }, 30_000, signal, false);
+        let output = null;
+        if (result.logs.stdout.size <= 160) {
+          const file = await open(path.resolve(root, result.logs.stdout.path), "r");
+          try {
+            const buffer = Buffer.alloc(161);
+            const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+            output = buffer.subarray(0, bytesRead).toString("utf8");
+          } finally { await file.close(); }
+        }
+        observed[tool] = { ...cpuVersionFormat(tool, output), child: { exitCode: result.exitCode, closeObserved: result.closeObserved, cleanup: result.cleanup,
+          logJoins: Object.fromEntries(Object.entries(result.logs).map(([stream, log]) => [stream, { size: log.size, sha256: log.sha256 }])) } };
+      }
+      signal?.throwIfAborted();
+      await durableJson(path.join(directory, "cpu-versions.json"), { binding, sources, observed,
+        scope: "Bounded source-shaped CPU version diagnostics before refusal; private command text is not published. Not materialization or Full admission." });
+      signal?.throwIfAborted();
+      if (!observed.python.accepted || !observed.uv.accepted) fail("pinned uv0.11.29 and existing Python3.12 before CPU materialization");
+      versions = { python: `Python ${observed.python.observedVersion}`, uv: `uv ${observed.uv.observedVersion}` };
+    } else versions = normal ? { node: process.version, pnpm: await version("normal-pnpm-version", "pnpm") } : { cargo: await version("db-cargo-version", "cargo"), rust: await version("db-rust-version", "rustc") };
     if (normal && !cpu) {
       if (!/^v22\./u.test(versions.node) || versions.pnpm !== "10.33.0") fail("the pinned normal Node22/pnpm10.33.0 tuple");
       await probe();
