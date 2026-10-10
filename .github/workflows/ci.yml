@@ -1200,6 +1200,8 @@ jobs:
             src-tauri
             electron/native/grimodex-node
           key: electron-native
+          # Keep ORT's external binaries with restored targets for allocation acquisition.
+          cache-directories: ${{ inputs.canonical_profile == 'native-development-build' && '~/.cache/ort.pyke.io' || '' }}
 
       - run: pnpm install --frozen-lockfile
 

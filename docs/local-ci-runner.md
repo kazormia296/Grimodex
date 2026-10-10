@@ -396,7 +396,12 @@ Metadata must agree with napi's native-package target. Native dictionary/ORT/
 target/toolchain/cache overrides reject rather than redirecting the build.
 Snapshots cover the native target (including UniDic OUT_DIR archive/extracted/
 generated dictionary), default locked ORT cache, Cargo registry/git and published
-`.node`; the optional absent git cache stays null, never zero. Mandatory roots
+`.node`; the optional absent git cache stays null, never zero. Only this allocation
+selection adds `~/.cache/ort.pyke.io` to the existing pinned Rust cache's directory
+list, retaining its original key and Cargo targets. Warm Cargo artifacts alone do
+not establish that the external ORT binaries exist. Default/reusable and other
+native selections keep their original cache inputs; no cache deletion, forced
+rebuild or absent-root waiver is used. Mandatory roots
 and the device-deduplicated union must be complete and positive before reference
 publication. Aliases/shared target/output must not be added twice. The existing
 artifact action uploads shaped setup-reference JSON only, never private log

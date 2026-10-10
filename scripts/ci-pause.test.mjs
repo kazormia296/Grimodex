@@ -1706,6 +1706,12 @@ test("native allocation connects only the existing compile consumer and preserve
     (r) => { r.stages["electron-native"].commands.push(r.stages["electron-native"].commands[0]); },
   ]) { const changed = structuredClone(registry); change(changed); assert.throws(() => nativePrerequisites(changed), /unchanged compile-only native Full tuple/u); }
   const ci = await readWorkflow(".github/workflows/ci.yml"), job = ci.jobs["electron-native"];
+  const cache = job.steps.find(({ uses }) => uses === "Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae");
+  assert.deepEqual(cache.with, {
+    workspaces: "src-tauri\nelectron/native/grimodex-node\n",
+    key: "electron-native",
+    "cache-directories": "${{ inputs.canonical_profile == 'native-development-build' && '~/.cache/ort.pyke.io' || '' }}",
+  });
   const build = job.steps.find(({ name }) => name === "Build the development N-API module");
   assert.deepEqual(build.env, { PROFILE: "${{ inputs.canonical_profile }}" });
   assert.equal(job.steps[1].with["fetch-depth"], "${{ inputs.canonical_profile == 'native-development-build' && '0' || '1' }}");
@@ -1749,7 +1755,7 @@ test("grouped acquisition joins real synthetic children and retains failure/canc
   try {
     for (const [native, mode] of [
       ...["success", "failure", "cancel", "cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "quota-inodes-zero", "quota-before-compile", "quota-before-backup"].map((mode) => [false, mode]),
-      ...["success", "failure", "cancel", "cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "project-unknown", "script-drift", "tuple-drift", "allocation-missing", "allocation-changed", "allocation-duplicate-device", "allocation-foreign-device"].map((mode) => [true, mode]),
+      ...["success", "failure", "cancel", "cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "project-unknown", "script-drift", "tuple-drift", "allocation-missing", "allocation-ort-missing", "allocation-changed", "allocation-duplicate-device", "allocation-foreign-device"].map((mode) => [true, mode]),
     ]) {
       const root = await mkdtemp(path.join(tmpdir(), `grouped-db-${mode}-`)); roots.push(root);
       const bin = path.join(root, "bin"); await mkdir(bin);
@@ -1827,7 +1833,7 @@ if (tool === "git") {
 
 } else {
   const roots = JSON.parse(args.at(-1));
-  const components = roots.map(([id]) => native && (id === 'cargo-git' || mode === 'allocation-missing' && id === 'native-output') ? { id, status: 'missing-or-disappeared', device: null, allocatedBytes: null, uniqueInodes: null } : { id, status: 'observed', device: '1', allocatedBytes: '4096', uniqueInodes: '1' });
+  const components = roots.map(([id]) => native && (id === 'cargo-git' || mode === 'allocation-missing' && id === 'native-output' || mode === 'allocation-ort-missing' && id === 'ort-cache') ? { id, status: 'missing-or-disappeared', device: null, allocatedBytes: null, uniqueInodes: null } : { id, status: 'observed', device: '1', allocatedBytes: '4096', uniqueInodes: '1' });
   const coexistence = native ? [{ device: mode === 'allocation-foreign-device' ? '2' : '1', allocatedBytes: '12288', uniqueInodes: '3' }] : [];
   if (mode === 'allocation-duplicate-device') coexistence.push({ ...coexistence[0] });
   console.log(JSON.stringify({ status: native ? mode === 'allocation-changed' ? 'changed-shared-inode' : 'observed-roots-only' : 'synthetic', components, coexistence: mode === 'allocation-changed' ? null : coexistence }));
@@ -1860,7 +1866,7 @@ if (tool === "git") {
       const directory = path.join(root, ".artifacts/local-ci/full-admission/1-1-setup-reference");
       if (native) {
         const owner = await readFile(path.join(directory, "owner.json"), "utf8");
-        if (["success", "failure", "cancel", "allocation-missing", "allocation-changed", "allocation-duplicate-device", "allocation-foreign-device"].includes(mode)) {
+        if (["success", "failure", "cancel", "allocation-missing", "allocation-ort-missing", "allocation-changed", "allocation-duplicate-device", "allocation-foreign-device"].includes(mode)) {
           assert.equal(await readFile(path.join(root, "started"), "utf8"), "napi:build\n");
           const closed = JSON.parse(await readFile(path.join(directory, "native.build-close.json"), "utf8"));
           assert.equal(closed.closeObserved, true); assert.equal(closed.cleanup.complete, true); assert.equal(closed.cleanup.groupAlive, false);
@@ -1869,6 +1875,13 @@ if (tool === "git") {
             assert.equal(bytes.length, log.size); assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, log.sha256);
           }
           await access(path.join(directory, "native.build-pending.json"));
+          if (mode === "allocation-ort-missing") {
+            assert.equal(closed.exitCode, 0);
+            assert.match(error.message, /complete positive native registry\/target\/ORT\/output allocation observations/u);
+            const preparation = JSON.parse(await readFile(path.join(directory, "preparation-0.json"), "utf8"));
+            assert.equal(preparation.allocation.components.find(({ id }) => id === "ort-cache").allocatedBytes, null);
+            assert.equal(preparation.allocation.components.find(({ id }) => id === "native-output").status, "observed");
+          }
         } else await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
         if (mode === "success") {
           const reference = JSON.parse(await readFile(path.join(directory, "setup-reference.json"), "utf8"));
