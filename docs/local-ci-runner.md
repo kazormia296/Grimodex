@@ -378,7 +378,40 @@ frozen dependencies, cache, environment, runner and 90-minute timeout remain,
 with no new input/job/executor or test filter. Build scripts and dependency
 fetches are real effects within the original ordinary frozen-build scope.
 Review actual current consumers and applicable prerequisites before a distinct
-dispatch. Source contracts and a build result are not public-test/Native abort,
+dispatch. This build-only selection now wraps the one exact Full `native.build`
+consumer in `--native-reference`, using the existing grouped observation owner,
+filesystem/quota probe, bounded allocation walker and process supervisor. After
+ordinary pinned setup/cache/frozen install, it resolves fetched `origin/master`
+and current HEAD once, requires clean current ancestry/source/registry/default12
+bindings, assesses unredirected writable workspace/native-target/Cargo/ORT/temp/
+root/home destinations and applicable quotas, and rejects unknown project-quota
+placement. It preserves four Cargo jobs, zero DEV/TEST debug and the package's
+`napi build --release`/default features. Required setup is not a replay of the
+accepted normal five-consumer observations; no native test or module load runs.
+
+One thirty-minute overall/fifteen-minute compiler bound, joined200ms sampler,
+exclusive fsynced possible-start, actual close/requiredEOF/complete private log
+joins/group absence and retained failed/unknown owner prevent retry/reentry.
+Metadata must agree with napi's native-package target. Native dictionary/ORT/
+target/toolchain/cache overrides reject rather than redirecting the build.
+Snapshots cover the native target (including UniDic OUT_DIR archive/extracted/
+generated dictionary), default locked ORT cache, Cargo registry/git and published
+`.node`; the optional absent git cache stays null, never zero. Mandatory roots
+and the device-deduplicated union must be complete and positive before reference
+publication. Aliases/shared target/output must not be added twice. The existing
+artifact action uploads shaped setup-reference JSON only, never private log
+bodies, payloads or raw paths/environment/argv. Historical action extraction,
+sub200ms compiler/linker transients, additional check/test/doctest/failure targets,
+full hosted logs and future capacity remain explicitly unobserved—not peaks or
+zero demand. Compatible observations feed the existing workload-risk producer
+with separately reviewed conservative assumptions; no new receipt schema or
+complete Full input is required merely to acquire this missing magnitude.
+
+Default/reusable and other native selections keep the original commands. Source
+P2 review, normal reviewed-path checkpoint/liveexpected FF and one affected
+existing hosted contracts proof precede separate native acquisition admission.
+This wiring does not authorize dispatch or either Full fence, B/Editor, freeze,
+Quick/Full, readiness or merge. Source contracts and a build result are not public-test/Native abort,
 release-feature runtime, maintenance/listener joins, Nativelease/reuse, Windows
 cleanup, complete native CI, B or Full evidence.
 

@@ -233,6 +233,7 @@ export function normalPrerequisites(registry) {
 
 const normalSources = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/ensure-electron-binary.mjs", "electron/scripts/build.mjs", "vite.config.ts"];
 const cpuSources = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "experiments/lfm25-encoder-phase0/pyproject.toml", "experiments/lfm25-encoder-phase0/uv.lock"];
+const nativeSources = [".github/workflows/ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "package.json", "pnpm-lock.yaml", "electron/native/grimodex-node/package.json", "electron/native/grimodex-node/Cargo.toml", "electron/native/grimodex-node/Cargo.lock", "src-tauri/crates/grimodex-lint/Cargo.toml", "src-tauri/crates/grimodex-semantic/Cargo.toml"];
 const referenceLocations = (root, cpu) => [...fullSetupLocations(root), ...(cpu ? [["uv-project", path.join(root, "experiments/lfm25-encoder-phase0")], ["uv-environment", path.join(root, "experiments/lfm25-encoder-phase0/.venv")]] : [])];
 
 // One ordinary CPU dependency materialization, never tests/model/GPU execution.
@@ -244,6 +245,17 @@ export function cpuPrerequisites(registry) {
   if (matches?.length !== 1 || entry.command !== "uv" || digest(entry.args) !== digest(["sync", "--frozen", "--extra", "cpu"]) ||
       entry.cwd !== "experiments/lfm25-encoder-phase0" || Object.keys(group.env ?? {}).length || Object.keys(entry.env ?? {}).length) fail("the unchanged locked CPU Full materialization tuple");
   return [{ id: entry.id, command: { command: entry.command, args: [...entry.args], cwd: entry.cwd, env: { UV_PYTHON: "/usr/bin/python3.12", UV_PYTHON_DOWNLOADS: "never" } } }];
+}
+
+// The existing Full build consumer, not a test or arbitrary native command.
+export function nativePrerequisites(registry) {
+  const group = registry?.stages?.["electron-native"];
+  const matches = group?.commands?.filter((entry) => entry.id === "native.build");
+  const entry = matches?.[0];
+  if (matches?.length !== 1 || entry.command !== "pnpm" || digest(entry.args) !== digest(["napi:build"]) ||
+      (entry.cwd ?? ".") !== "." || digest(group.env) !== digest({ CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0" }) ||
+      digest(entry.env) !== digest({ CARGO_BUILD_JOBS: "4" })) fail("the unchanged compile-only native Full tuple");
+  return [{ id: entry.id, command: { command: entry.command, args: [...entry.args], cwd: ".", env: { ...group.env, ...entry.env, RUSTUP_AUTO_INSTALL: "0" } } }];
 }
 
 // Unknown command text stays in private logs, never uploaded as a version.
@@ -261,7 +273,10 @@ export function cpuVersionFormat(tool, output) {
 }
 
 export async function stageFullGroupedReference(options) {
-  const { root, signal: parentSignal, normal = false, preflight = false, cpu = false } = options;
+  const { root, signal: parentSignal, normal = false, preflight = false, cpu = false, native = false } = options;
+  if (native) parentSignal?.throwIfAborted();
+  if (native && (normal || cpu || preflight)) fail("one compile-only native acquisition, without mixed purposes");
+  if (native && Object.keys(process.env).some((key) => process.env[key] && (/^(ORT_|CARGO_TARGET_|CARGO_BUILD_TARGET|CARGO_ENCODED_RUSTFLAGS|CARGO_NET_|LINDERA_|RUSTFLAGS$|DOCS_RS$|XDG_CACHE_HOME$)/u.test(key)))) fail("unoverridden native dictionary/ORT/target/cache/build placement");
   if (cpu && !normal) fail("the existing focused preflight/continuation owner for CPU materialization");
   if (cpu && ["UV_PROJECT_ENVIRONMENT", "UV_NO_CACHE", "UV_NO_SYNC", "UV_LINK_MODE", "UV_PYTHON", "UV_PYTHON_DOWNLOADS", "UV_INDEX", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_EXTRA_INDEX_URL", "VIRTUAL_ENV"].some((key) => process.env[key])) fail("unoverridden locked CPU environment/cache/index/Python placement before setup");
   const deadlineController = new AbortController();
@@ -280,26 +295,28 @@ export async function stageFullGroupedReference(options) {
       deadline = setTimeout(() => deadlineController.abort(new Error("normal prerequisite deadline")), Math.max(1, admitted.deadline - Date.now()));
     }
     const sources = [];
-    for (const file of normal ? cpu ? cpuSources : normalSources : [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs"]) {
+    for (const file of native ? nativeSources : normal ? cpu ? cpuSources : normalSources : [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs"]) {
       sources.push({ path: file, sha256: createHash("sha256").update(await readFile(path.join(root, file))).digest("hex") });
     }
     if (process.env.CARGO_TARGET_DIR || process.env.RUSTUP_TOOLCHAIN) fail("the existing unoverridden pure-DB target/toolchain");
     // Even metadata can write a cold cache. Assess source-selected destinations
     // and applicable quotas before the first Cargo child, then verify its target.
-    const target = path.join(root, "src-tauri/target");
+    const target = path.join(root, native ? "electron/native/grimodex-node/target" : "src-tauri/target");
+    // Locked ort-sys rc.12 default; UniDic archive/extraction/generation is OUT_DIR.
+    const ortCache = path.join(homedir(), ".cache/ort.pyke.io");
     const cargo = process.env.CARGO_HOME || path.join(homedir(), ".cargo");
     const relativeCargo = path.relative(homedir(), cargo);
     if (!path.isAbsolute(cargo) || !relativeCargo || relativeCargo === ".." || relativeCargo.startsWith(`..${path.sep}`) || path.isAbsolute(relativeCargo)) fail("the actual Cargo cache inside the owned home");
-    for (const destination of [cargo, target]) {
+    for (const destination of [cargo, target, ...(native ? [ortCache] : [])]) {
       let ancestor = destination;
       for (;;) {
         try { if (await realpath(ancestor) !== ancestor) fail("unredirected focused Cargo destinations"); break; }
         catch (error) { if (error.code !== "ENOENT") throw error; ancestor = path.dirname(ancestor); }
       }
     }
-    const locations = normal ? referenceLocations(root, cpu) : [["workspace", root], ["cargo-target", target], ["cargo-home", cargo], ["node-temp", tmpdir()], ["runner-temp", process.env.RUNNER_TEMP], ["root", "/"], ["home", homedir()]];
+    const locations = normal ? referenceLocations(root, cpu) : [["workspace", root], ["cargo-target", target], ["cargo-home", cargo], ["node-temp", tmpdir()], ["runner-temp", process.env.RUNNER_TEMP], ["root", "/"], ["home", homedir()], ...(native ? [["ort-cache", ortCache], ["unix-temp", process.env.TMPDIR || "/tmp"], ...["TMP", "TEMP"].filter((key) => process.env[key]).map((key) => [`${key.toLowerCase()}-temp`, process.env[key]])] : [])];
     if (locations.some(([, destination]) => typeof destination !== "string" || !path.isAbsolute(destination) || /[\r\n\0]/u.test(destination))) fail("actual source-selected focused destinations");
-    if (normal) for (const [, requested] of locations) {
+    if (normal || native) for (const [, requested] of locations) {
       let ancestor = requested;
       for (;;) {
         try { if (await realpath(ancestor) !== ancestor) fail("unredirected normal setup destinations"); break; }
@@ -309,10 +326,10 @@ export async function stageFullGroupedReference(options) {
     await assertWritableLocations(locations);
     let sequence = 0;
     const probe = async () => {
-      const filesystems = JSON.parse(await run(`${normal ? preflight ? "normal-preflight" : "normal" : "db"}-filesystems-${sequence++}`, { command: "sudo", args: ["-n", "python3", "scripts/local-ci-full-filesystems.py", JSON.stringify({ locations, uid: process.getuid(), gids: [...new Set([process.getgid(), ...process.getgroups()])] })] }));
+      const filesystems = JSON.parse(await run(`${native ? "native" : normal ? preflight ? "normal-preflight" : "normal" : "db"}-filesystems-${sequence++}`, { command: "sudo", args: ["-n", "python3", "scripts/local-ci-full-filesystems.py", JSON.stringify({ locations, uid: process.getuid(), gids: [...new Set([process.getgid(), ...process.getgroups()])] })] }));
       // Usable observed capacity/quotas only, not a zero-demand Full forecast.
       assessFullDemand(filesystems, []);
-      if (normal && filesystems.some((fs) => !fs.quotas?.some((quota) => quota.type === 2 && quota.state === "kernel-disabled") || fs.quotas.some((quota) => quota.type === 2 && quota.state !== "kernel-disabled"))) fail("known installer project-quota placement before normal setup");
+      if ((normal || native) && filesystems.some((fs) => !fs.quotas?.some((quota) => quota.type === 2 && quota.state === "kernel-disabled") || fs.quotas.some((quota) => quota.type === 2 && quota.state !== "kernel-disabled"))) fail("known installer project-quota placement before focused setup");
       return filesystems;
     };
     const initial = await probe();
@@ -326,12 +343,17 @@ export async function stageFullGroupedReference(options) {
       return;
     }
     if (!normal) {
-      const metadata = JSON.parse(await run("db-target", { command: "cargo", args: ["metadata", "--locked", "--no-deps", "--format-version", "1", "--manifest-path", "src-tauri/Cargo.toml"], env: { RUSTUP_AUTO_INSTALL: "0" } }));
-      if (metadata.target_directory !== target) fail("the source-bound pure-DB Cargo target");
+      const metadata = JSON.parse(await run("db-target", { command: "cargo", args: ["metadata", "--locked", "--no-deps", "--format-version", "1", "--manifest-path", native ? "Cargo.toml" : "src-tauri/Cargo.toml"], cwd: native ? "electron/native/grimodex-node" : ".", env: { RUSTUP_AUTO_INSTALL: "0" } }));
+      if (metadata.target_directory !== target) fail(native ? "the source-bound native Cargo target" : "the source-bound pure-DB Cargo target");
     }
     // Same existing fixture-output convention; normal compilation creates none.
-    const output = normal ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));
-    const preparation = normal ? (cpu ? cpuPrerequisites : normalPrerequisites)(registry) : groupedDbPrerequisites(registry, binding, output);
+    const output = normal || native ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));
+    const preparation = native ? nativePrerequisites(registry) : normal ? (cpu ? cpuPrerequisites : normalPrerequisites)(registry) : groupedDbPrerequisites(registry, binding, output);
+    if (native) {
+      const workspace = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
+      const pkg = JSON.parse(await readFile(path.join(root, "electron/native/grimodex-node/package.json"), "utf8"));
+      if (workspace.scripts?.["napi:build"] !== "pnpm --dir electron/native/grimodex-node build" || pkg.scripts?.build !== "napi build --release" || pkg.napi?.name !== "grimodex-node") fail("the unchanged default-feature release N-API package consumer");
+    }
     const version = async (id, command) => {
       await probe();
       return (await run(id, { command, args: ["--version"], env: { RUSTUP_AUTO_INSTALL: "0" } })).trim();
@@ -361,6 +383,11 @@ export async function stageFullGroupedReference(options) {
       if (!observed.python.accepted || !observed.uv.accepted) fail("pinned uv0.11.29 and existing Python3.12 before CPU materialization");
       versions = { python: `Python ${observed.python.observedVersion}`, uv: `uv ${observed.uv.observedVersion}` };
     } else versions = normal ? { node: process.version, pnpm: await version("normal-pnpm-version", "pnpm") } : { cargo: await version("db-cargo-version", "cargo"), rust: await version("db-rust-version", "rustc") };
+    if (native) {
+      versions.node = process.version;
+      versions.pnpm = await version("native-pnpm-version", "pnpm");
+      if (!/^v22\./u.test(versions.node) || versions.pnpm !== "10.33.0" || !/^cargo [0-9]+\.[0-9]+\.[0-9]+ \([0-9a-f]+ [0-9-]+\)$/u.test(versions.cargo) || !/^rustc [0-9]+\.[0-9]+\.[0-9]+ \([0-9a-f]+ [0-9-]+\)$/u.test(versions.rust)) fail("pinned Node22/pnpm10.33.0 and source-shaped existing native toolchain versions");
+    }
     if (normal && !cpu) {
       if (!/^v22\./u.test(versions.node) || versions.pnpm !== "10.33.0") fail("the pinned normal Node22/pnpm10.33.0 tuple");
       await probe();
@@ -368,7 +395,7 @@ export async function stageFullGroupedReference(options) {
     }
     await durableJson(path.join(directory, "preparation-plan.json"), { binding, sources, versions, initial,
       preparation: preparation.map(({ id, command }) => ({ id, commandDigest: digest(command), timeoutMs: 900_000 })),
-      scope: cpu ? "ONE existing locked CPU environment/cache consumer with existing Python3.12 and no Python download. No tests/model/GPU/B/Full admission or numerical upper-bound claim." : normal ? "Focused normal dependency/materialization/JavaScript compiler observations, not Full/B admission or a numerical upper bound." : "Bounded ordinary locked pure Rust/SQLite prerequisites on the actual single-job hosted VM. No Full input, numerical compiler upper-bound, capacity-as-demand or Full/B admission. No model, app, bus or tool installation.",
+      scope: native ? "ONE existing default-feature release N-API compiler with the exact Full registry environment. No module/test/model/bus/Editor/Full admission or numerical upper bound." : cpu ? "ONE existing locked CPU environment/cache consumer with existing Python3.12 and no Python download. No tests/model/GPU/B/Full admission or numerical upper-bound claim." : normal ? "Focused normal dependency/materialization/JavaScript compiler observations, not Full/B admission or a numerical upper bound." : "Bounded ordinary locked pure Rust/SQLite prerequisites on the actual single-job hosted VM. No Full input, numerical compiler upper-bound, capacity-as-demand or Full/B admission. No model, app, bus or tool installation.",
     });
     const nodeRoot = normal ? path.dirname(path.dirname(await realpath(process.execPath))) : null;
     if (normal && !cpu) {
@@ -384,7 +411,7 @@ export async function stageFullGroupedReference(options) {
       uvRoot = path.dirname(executable);
       if (uvRoot === toolCache) fail("the selected uv payload, not the entire tool cache");
     }
-    const roots = cpu ? [...locations.filter(([label]) => ["uv-cache", "uv-project", "uv-environment"].includes(label)), ["uv-selected", uvRoot]] : normal ? [
+    const roots = native ? [["cargo-registry", path.join(cargo, "registry")], ["cargo-git", path.join(cargo, "git")], ["cargo-target", target], ["ort-cache", ortCache], ["native-output", path.join(root, "electron/native/grimodex-node/grimodex-node.node")]] : cpu ? [...locations.filter(([label]) => ["uv-cache", "uv-project", "uv-environment"].includes(label)), ["uv-selected", uvRoot]] : normal ? [
       ...locations.filter(([label]) => ["pnpm-installer", "pnpm-store-root", "browser-cache", "electron-cache"].includes(label)),
       ["packages-installed", path.join(root, "node_modules")], ["workspace-packages", path.join(root, "packages")],
       ["desktop-build", path.join(root, "dist-electron")], ["renderer-build", path.join(root, "dist")],
@@ -426,12 +453,21 @@ export async function stageFullGroupedReference(options) {
         try { while (!stopped) { await sample(); await new Promise((resolve) => setTimeout(resolve, 200)); } }
         catch (error) { samplingError = error; controller.abort(error); }
       })();
-      let result;
+      let result, commandError;
       try {
         await durableJson(path.join(directory, `${step.id}-pending.json`), { binding, commandDigest: digest(step.command), state: "possible-start", timeoutMs: Math.min(900_000, remaining) });
         controller.signal.throwIfAborted();
         result = await runLocalCiCommand(step.command, { root, taskId: step.id, logDirectory: path.relative(root, directory), signal: controller.signal, timeoutMs: Math.min(900_000, remaining), closeGraceMs: 2_000 });
-      } finally { stopped = true; await sampler; signal?.removeEventListener("abort", abort); }
+      } catch (error) { commandError = error; }
+      finally { stopped = true; await sampler; signal?.removeEventListener("abort", abort); }
+      if (commandError) {
+        if (native) {
+          const partial = commandError.result;
+          await durableJson(path.join(directory, `${step.id}-close.json`), { binding, termination: partial?.termination ?? "unknown", closeObserved: partial?.closeObserved ?? false, cleanup: partial?.cleanup ?? null,
+            logJoins: Object.fromEntries(Object.entries(partial?.logs ?? {}).map(([stream, log]) => [stream, { size: log.size, sha256: log.sha256 }])) });
+        }
+        throw commandError;
+      }
       await durableJson(path.join(directory, `${step.id}-close.json`), { binding, exitCode: result.exitCode, signal: result.signal, timedOut: result.timedOut, interrupted: result.interrupted, closeObserved: result.closeObserved, cleanup: result.cleanup,
         logJoins: Object.fromEntries(Object.entries(result.logs).map(([stream, log]) => [stream, { size: log.size, sha256: log.sha256 }])) });
       if (samplingError || result.exitCode !== 0 || result.signal || result.timedOut || result.interrupted || result.error || !result.closeObserved || !result.cleanup?.complete || result.cleanup.groupAlive) fail(`joined successful focused prerequisite ${step.id}, with no retry`);
@@ -455,25 +491,26 @@ export async function stageFullGroupedReference(options) {
       logs.push({ id: file, size, sha256: hash.digest("hex"), allocatedBytes: String(info.blocks * 512), inodes: "1" });
     }
     signal?.throwIfAborted();
-    if (cpu) {
+    if (cpu || native) {
       const allocation = samples.at(-1)?.allocation;
       const components = allocation?.components, coexistence = allocation?.coexistence;
       // Positive component rows do not establish a complete shared-inode union.
       if (allocation?.status !== "observed-roots-only" || !Array.isArray(components) || components.length !== roots.length ||
           roots.some(([id]) => components.filter((entry) => entry.id === id).length !== 1) ||
-          components.some((entry) => entry.status !== "observed" || typeof entry.device !== "string" || !/^(0|[1-9][0-9]*)$/u.test(entry.device) || !amount(entry.allocatedBytes) || !amount(entry.uniqueInodes))) {
-        fail("complete positive CPU cache/environment/tool allocation observations; retain unknowns without retry");
+          components.some((entry) => !(native && entry.id === "cargo-git" && entry.status === "missing-or-disappeared" && entry.allocatedBytes === null && entry.uniqueInodes === null && entry.device === null) &&
+            (entry.status !== "observed" || typeof entry.device !== "string" || !/^(0|[1-9][0-9]*)$/u.test(entry.device) || !amount(entry.allocatedBytes) || !amount(entry.uniqueInodes)))) {
+        fail(`complete positive ${native ? "native registry/target/ORT/output" : "CPU cache/environment/tool"} allocation observations; retain unknowns without retry`);
       }
-      const devices = new Set(components.map((entry) => entry.device));
+      const devices = new Set(components.filter((entry) => entry.status === "observed").map((entry) => entry.device));
       if (!Array.isArray(coexistence) || coexistence.length !== devices.size ||
           new Set(coexistence.map((entry) => entry.device)).size !== devices.size ||
           coexistence.some((entry) => !devices.has(entry.device) || !amount(entry.allocatedBytes) || !amount(entry.uniqueInodes))) {
-        fail("complete observed CPU deduplicated coexistence for every selected device; retain unknowns without retry");
+        fail(`complete observed ${native ? "native" : "CPU"} deduplicated coexistence for every selected device; retain unknowns without retry`);
       }
     }
     await durableJson(path.join(directory, "setup-reference.json"), { binding, sources, versions, baseline, samples, logs,
-      scope: cpu ? "Actual locked CPU environment/cache and complete private-child-log observations only. Pinned tool's historical action extraction/logs, other workloads and future capacity are unobserved; not Full admission or an all-future bound." : normal ? "Actual normal setup/materialization/JavaScript compiler and complete private-child-log observations only. Not a complete Full forecast/admission or all-future physical certificate." : "Actual grouped pure-DB cold dependency/compiler/official-backup/failure and complete private-log observations only. Not a complete Full forecast, admission, gate receipt or all-future physical certificate.",
-      unobserved: cpu ? ["uv action historical extraction and complete action/job logs", "sub-200ms transients and allocation attribution", "future Python bytecode/test writes, system/audit/native compilation/doctest and fixture/journey/failure/log uncertainty", "future-runner capacity/quota/exclusion and all Full/B gates"] : normal ? ["pnpm/Node action historical download/extraction peaks and complete action logs", "system/uv/audit/native-Rust/doctest and app/bus/Editor workloads", "sub-200ms transients, failure copies and filesystem activity attribution", "additive version/materialization/failure uncertainty and future-runner capacity/quota/exclusion"] : ["warm preinstalled toolchains and Cargo cache cannot attest historical cold peaks", "other normal Full installers/materialization/compilation/doctests and app/bus/Editor journeys", "sub-200ms transients, fixture-suite temporary trees and filesystem/quota activity attribution", "complete hosted action/job logs outside these owned children", "additive version/materialization/failure uncertainty and future-runner capacity/quota/exclusion"],
+      scope: native ? "Actual default-feature release native target (including UniDic generated/extracted inputs), ORT cache, registry/git caches, published .node and complete private-child-log metadata. Not a peak, complete Full forecast/admission or all-future bound." : cpu ? "Actual locked CPU environment/cache and complete private-child-log observations only. Pinned tool's historical action extraction/logs, other workloads and future capacity are unobserved; not Full admission or an all-future bound." : normal ? "Actual normal setup/materialization/JavaScript compiler and complete private-child-log observations only. Not a complete Full forecast/admission or all-future physical certificate." : "Actual grouped pure-DB cold dependency/compiler/official-backup/failure and complete private-log observations only. Not a complete Full forecast, admission, gate receipt or all-future physical certificate.",
+      unobserved: native ? ["ordinary setup/cache action historical extraction and complete action/job logs", "sub-200ms dictionary/ORT/compiler/linker transients and attribution", "additional native/shared check/test/doctest targets, failure copies, logs and additive uncertainty", "future-runner capacity/quota/exclusion and all Full/B gates"] : cpu ? ["uv action historical extraction and complete action/job logs", "sub-200ms transients and allocation attribution", "future Python bytecode/test writes, system/audit/native compilation/doctest and fixture/journey/failure/log uncertainty", "future-runner capacity/quota/exclusion and all Full/B gates"] : normal ? ["pnpm/Node action historical download/extraction peaks and complete action logs", "system/uv/audit/native-Rust/doctest and app/bus/Editor workloads", "sub-200ms transients, failure copies and filesystem activity attribution", "additive version/materialization/failure uncertainty and future-runner capacity/quota/exclusion"] : ["warm preinstalled toolchains and Cargo cache cannot attest historical cold peaks", "other normal Full installers/materialization/compilation/doctests and app/bus/Editor journeys", "sub-200ms transients, fixture-suite temporary trees and filesystem/quota activity attribution", "complete hosted action/job logs outside these owned children", "additive version/materialization/failure uncertainty and future-runner capacity/quota/exclusion"],
     });
   } catch (error) {
     if (error.lateClose) await error.lateClose;
@@ -1169,14 +1206,15 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const setup = args[0] === "--setup";
     const reference = args[0] === "--setup-reference";
     const grouped = args[0] === "--grouped-reference";
+    const native = args[0] === "--native-reference";
     const cpu = args[0] === "--cpu-preflight" || args[0] === "--cpu-reference";
     const normal = cpu || args[0] === "--normal-preflight" || args[0] === "--normal-reference";
     const preflight = args[0] === "--normal-preflight" || args[0] === "--cpu-preflight";
-    if (setup || reference || grouped || normal) args.shift();
+    if (setup || reference || grouped || normal || native) args.shift();
     const [base, head, slots] = args;
     if (args.length !== 3 || !/^([1-9]|1[0-2])$/u.test(slots ?? "")) fail("the existing exact base/head/scheduler option arguments");
-    await (grouped || normal ? stageFullGroupedReference : reference ? stageFullSystemReference : setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal, normal, preflight, cpu });
-    console.log(normal ? `${cpu ? "CPU" : "Normal"} prerequisite ${preflight ? "focused preflight" : "observations"} recorded; Full remains unadmitted` : grouped ? "Grouped pure-DB prerequisite observations recorded; Full remains unadmitted" : reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
+    await (grouped || normal || native ? stageFullGroupedReference : reference ? stageFullSystemReference : setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal, normal, preflight, cpu, native });
+    console.log(native ? "Native compile-only prerequisite observations recorded; Full remains unadmitted" : normal ? `${cpu ? "CPU" : "Normal"} prerequisite ${preflight ? "focused preflight" : "observations"} recorded; Full remains unadmitted` : grouped ? "Grouped pure-DB prerequisite observations recorded; Full remains unadmitted" : reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
   } catch (error) {
     console.error(error.message.startsWith("[precheck]") ? error.message : "[precheck] Full conditional resource acquisition failed; owner retained");
     process.exitCode = 1;

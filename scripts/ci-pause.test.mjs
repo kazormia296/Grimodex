@@ -26,6 +26,8 @@ import {
   groupedDbPrerequisites,
   normalPrerequisites,
   cpuPrerequisites,
+  nativePrerequisites,
+  stageFullGroupedReference,
   cpuVersionFormat,
   produceWorkloadEstimate,
   resolveObservedResidual,
@@ -670,7 +672,8 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     "Test licensed MCP sidecar",
   ].includes(name));
   assert.equal(nativeCommands.length, 6);
-  assert.deepEqual(nativeCommands.map((step) => step.run.trim()), [
+  assert.match(nativeCommands[0].run, /else\n\s+pnpm napi:build\n\s+fi/u);
+  assert.deepEqual(nativeCommands.map((step, index) => index === 0 ? "pnpm napi:build" : step.run.trim()), [
     "pnpm napi:build",
     "pnpm --dir electron/native/grimodex-node test",
     "cargo check --manifest-path electron/native/grimodex-node/Cargo.toml --features licensing,legacy-keyring-migration",
@@ -698,7 +701,9 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
             ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-release-tests'"
             : mcpCommands.includes(step)
               ? "!inputs.canonical_profile || inputs.canonical_profile == 'native-licensed-mcp'"
-              : undefined);
+              : step.name === "Upload native compile-only allocation observations"
+                ? "always() && inputs.canonical_profile == 'native-development-build'"
+                : undefined);
   }
   const selectedNative = (inputs) => nativeCommands.filter((step) => !step.if || value(step.if, inputs));
   assert.deepEqual(selectedNative(defaults), nativeCommands);
@@ -1690,35 +1695,97 @@ test("grouped pure-DB acquisition preserves the official tuple and complete fail
   assert.throws(() => groupedDbPrerequisites(registry, binding, "relative"), /\[precheck\]/u);
 });
 
+test("native allocation connects only the existing compile consumer and preserves ordinary build routing", async () => {
+  const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  assert.deepEqual(nativePrerequisites(registry), [{ id: "native.build", command: { command: "pnpm", args: ["napi:build"], cwd: ".", env: { CARGO_PROFILE_DEV_DEBUG: "0", CARGO_PROFILE_TEST_DEBUG: "0", CARGO_BUILD_JOBS: "4", RUSTUP_AUTO_INSTALL: "0" } } }]);
+  for (const change of [
+    (r) => { r.stages["electron-native"].commands[0].args = ["napi:build:release"]; },
+    (r) => { r.stages["electron-native"].commands[0].cwd = "electron/native/grimodex-node"; },
+    (r) => { r.stages["electron-native"].commands[0].env.CARGO_BUILD_JOBS = "2"; },
+    (r) => { r.stages["electron-native"].env.CARGO_PROFILE_DEV_DEBUG = "1"; },
+    (r) => { r.stages["electron-native"].commands.push(r.stages["electron-native"].commands[0]); },
+  ]) { const changed = structuredClone(registry); change(changed); assert.throws(() => nativePrerequisites(changed), /unchanged compile-only native Full tuple/u); }
+  const ci = await readWorkflow(".github/workflows/ci.yml"), job = ci.jobs["electron-native"];
+  const build = job.steps.find(({ name }) => name === "Build the development N-API module");
+  assert.deepEqual(build.env, { PROFILE: "${{ inputs.canonical_profile }}" });
+  assert.equal(job.steps[1].with["fetch-depth"], "${{ inputs.canonical_profile == 'native-development-build' && '0' || '1' }}");
+  const upload = job.steps.find(({ name }) => name === "Upload native compile-only allocation observations");
+  assert.equal(upload.if, "always() && inputs.canonical_profile == 'native-development-build'");
+  assert.equal(upload.with.path, ".artifacts/local-ci/full-admission/*-setup-reference/*.json");
+  assert.equal(upload.with["include-hidden-files"], true); assert.equal(upload.with["if-no-files-found"], "error");
+  assert.doesNotMatch(upload.with.path, /\.log|node_modules|target/u);
+  const bin = await mkdtemp(path.join(tmpdir(), "native-allocation-routing-"));
+  try {
+    const options = { root: bin, native: true, base: "c".repeat(40), head: "a".repeat(40), maxParallelTasks: 12 };
+    const cancelled = new AbortController(); cancelled.abort(new Error("synthetic cancelled entry"));
+    await assert.rejects(stageFullGroupedReference({ ...options, signal: cancelled.signal }), /cancelled entry/u);
+    for (const flag of ["normal", "cpu", "preflight"]) await assert.rejects(stageFullGroupedReference({ ...options, [flag]: true }), /without mixed purposes/u);
+    const previous = process.env.ORT_CACHE_DIR;
+    try { process.env.ORT_CACHE_DIR = bin; await assert.rejects(stageFullGroupedReference(options), /unoverridden native/u); }
+    finally { if (previous === undefined) delete process.env.ORT_CACHE_DIR; else process.env.ORT_CACHE_DIR = previous; }
+    await assert.rejects(access(path.join(bin, ".artifacts")), { code: "ENOENT" });
+    const script = `#!${process.execPath}
+const fs = require('node:fs'), path = require('node:path'), tool = path.basename(process.argv[1]), args = process.argv.slice(2);
+if (tool === 'git') console.log(args.at(-1) === 'origin/master' ? 'c'.repeat(40) : 'a'.repeat(40));
+else { fs.appendFileSync(process.env.CALLS, JSON.stringify([tool, ...args]) + '\\n'); if (process.env.FAIL_CHILD === '1') process.exit(9); }
+`;
+    for (const tool of ["git", "node", "pnpm"]) await writeFile(path.join(bin, tool), script, { mode: 0o755 });
+    for (const [index, profile] of ["", "native-development-build", "native-development-tests"].entries()) {
+      const calls = path.join(bin, `calls-${index}`), env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PROFILE: profile, CALLS: calls, GITHUB_SHA: "a".repeat(40) };
+      await promisify(execFile)("bash", ["-c", build.run], { env, timeout: 10000 });
+      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), profile === "native-development-build" ? [["node", "scripts/local-ci-full-admission.mjs", "--native-reference", "c".repeat(40), "a".repeat(40), "12"]] : [["pnpm", "napi:build"]]);
+      await assert.rejects(promisify(execFile)("bash", ["-c", build.run], { env: { ...env, FAIL_CHILD: "1" }, timeout: 10000 }), (error) => error.code === 9);
+    }
+    const refused = path.join(bin, "wrong-head-calls");
+    await assert.rejects(promisify(execFile)("bash", ["-c", build.run], { env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, PROFILE: "native-development-build", CALLS: refused, GITHUB_SHA: "b".repeat(40) }, timeout: 10000 }));
+    await assert.rejects(access(refused), { code: "ENOENT" });
+  } finally { await rm(bin, { recursive: true, force: true }); }
+});
+
 test("grouped acquisition joins real synthetic children and retains failure/cancellation owners", async () => {
   const original = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
   const saved = Object.fromEntries(["PATH", "CARGO_HOME", "CARGO_TARGET_DIR", "RUSTUP_TOOLCHAIN", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_TEMP"].map((key) => [key, process.env[key]]));
   const roots = [], outputs = [];
   try {
-    for (const mode of ["success", "failure", "cancel", "cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "quota-inodes-zero", "quota-before-compile", "quota-before-backup"]) {
+    for (const [native, mode] of [
+      ...["success", "failure", "cancel", "cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "quota-inodes-zero", "quota-before-compile", "quota-before-backup"].map((mode) => [false, mode]),
+      ...["success", "failure", "cancel", "cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "project-unknown", "script-drift", "tuple-drift", "allocation-missing", "allocation-changed", "allocation-duplicate-device", "allocation-foreign-device"].map((mode) => [true, mode]),
+    ]) {
       const root = await mkdtemp(path.join(tmpdir(), `grouped-db-${mode}-`)); roots.push(root);
       const bin = path.join(root, "bin"); await mkdir(bin);
-      const files = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs"];
+      const files = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs", ".github/workflows/ci.yml", "package.json", "pnpm-lock.yaml", "electron/native/grimodex-node/package.json", "electron/native/grimodex-node/Cargo.toml", "electron/native/grimodex-node/Cargo.lock", "src-tauri/crates/grimodex-lint/Cargo.toml", "src-tauri/crates/grimodex-semantic/Cargo.toml"];
       for (const file of files) { await mkdir(path.dirname(path.join(root, file)), { recursive: true }); await writeFile(path.join(root, file), await readFile(path.join(repoRoot, file))); }
-      if (mode === "target-redirect") await symlink(bin, path.join(root, "src-tauri/target"));
+      if (mode === "script-drift") {
+        const file = path.join(root, "electron/native/grimodex-node/package.json"), pkg = JSON.parse(await readFile(file, "utf8"));
+        pkg.scripts.build = "napi build --release --features licensing"; await writeFile(file, JSON.stringify(pkg));
+      }
+      if (mode === "tuple-drift") {
+        const file = path.join(root, "scripts/local-ci-registry.json"), registry = JSON.parse(await readFile(file, "utf8"));
+        registry.stages["electron-native"].commands[0].env.CARGO_BUILD_JOBS = "2"; await writeFile(file, JSON.stringify(registry));
+      }
+      const target = path.join(root, native ? "electron/native/grimodex-node/target" : "src-tauri/target");
+      if (mode === "target-redirect") await symlink(bin, target);
       // Synthetic source shim ONLY: do not probe this contract host's isolation.
       // Production keeps its actual hosted VM check. Supervisor remains real.
       const helper = path.join(root, "scripts/local-ci-full-admission.mjs");
       await writeFile(helper, original.replaceAll("await hostedJobIsolation();", "/* synthetic test only */").replace(
-        'const output = normal ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));',
-        'const output = normal ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-")); await durableJson(path.join(root, "synthetic-output.json"), { output });',
-      ));
+        'const output = normal || native ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-"));',
+        'const output = normal || native ? null : await mkdtemp(path.join(tmpdir(), "grimodex-c2zc-restore-fixture-")); if (output) await durableJson(path.join(root, "synthetic-output.json"), { output });',
+      ).replace('versions.node = process.version;', 'versions.node = "v22.0.0";'));
       const script = `#!/usr/bin/env node
 const fs = require("node:fs"), path = require("node:path");
-const tool = path.basename(process.argv[1]), args = process.argv.slice(2), root = process.cwd();
+const tool = path.basename(process.argv[1]), args = process.argv.slice(2), root = ${JSON.stringify(root)}, native = ${JSON.stringify(native)}, mode = ${JSON.stringify(mode)}, target = ${JSON.stringify(target)};
 const head = "a".repeat(40), tree = "b".repeat(40);
 if (tool === "git") {
   if (args[0] === "rev-parse") console.log(args[1].includes("tree") ? tree : head);
 } else if (tool === "cargo" || tool === "rustc") {
   fs.appendFileSync(path.join(root, "cargo-called"), tool + " " + args[0] + "\\n");
   if (!fs.existsSync(path.join(root, "quota-checked"))) { console.error("synthetic Cargo started before quota check"); process.exit(8); }
-  if (args[0] === "metadata") console.log(JSON.stringify({ target_directory: path.join(root, ${JSON.stringify(mode)} === "metadata-mismatch" ? "unassessed-target" : "src-tauri/target") }));
-  else if (args[0] === "--version") console.log(tool + " 1.0.0 (synthetic)");
+  if (process.env.RUSTUP_AUTO_INSTALL !== '0') process.exit(8);
+  if (args[0] === "metadata") {
+    if (process.cwd() !== (native ? path.join(root, 'electron/native/grimodex-node') : root)) process.exit(8);
+    console.log(JSON.stringify({ target_directory: mode === 'metadata-mismatch' ? path.join(root, 'unassessed-target') : target }));
+  } else if (args[0] === "--version") console.log(tool + (native ? " 1.90.0 (0123456789 2026-01-01)" : " 1.0.0 (synthetic)"));
   else {
     fs.appendFileSync(path.join(root, "started"), args[0] + " " + args.includes("--no-run") + "\\n");
     if (args.includes("--no-run") && ${JSON.stringify(mode)} === "failure") process.exit(9);
@@ -1730,16 +1797,25 @@ if (tool === "git") {
     }
     console.log("complete synthetic stdout"); console.error("complete synthetic stderr");
   }
+} else if (tool === 'pnpm') {
+  if (args[0] === '--version') console.log('10.33.0');
+  else {
+    if (!native || args.join(' ') !== 'napi:build' || process.env.CARGO_BUILD_JOBS !== '4' || process.env.CARGO_PROFILE_DEV_DEBUG !== '0' || process.env.CARGO_PROFILE_TEST_DEBUG !== '0' || process.env.RUSTUP_AUTO_INSTALL !== '0' || !fs.existsSync(path.join(root, 'quota-checked'))) process.exit(8);
+    fs.appendFileSync(path.join(root, 'started'), 'napi:build\\n');
+    console.log('complete synthetic stdout'); console.error('complete synthetic stderr');
+    if (mode === 'failure') process.exit(9);
+    if (mode === 'cancel') setInterval(() => {}, 1000);
+  }
 } else if (tool === "sudo") {
   const request = JSON.parse(args.at(-1));
-  if (request.locations.find(([label]) => label === "cargo-target")[1] !== path.join(root, "src-tauri/target") || request.locations.find(([label]) => label === "cargo-home")[1] !== process.env.CARGO_HOME) process.exit(8);
+  if (request.locations.find(([label]) => label === "cargo-target")[1] !== target || request.locations.find(([label]) => label === "cargo-home")[1] !== process.env.CARGO_HOME) process.exit(8);
   if (${JSON.stringify(mode)} === "quota-unknown") { console.error("[precheck] synthetic applicable quota state unavailable"); process.exit(9); }
   const marker = path.join(root, "quota-checked");
   const sequence = fs.existsSync(marker) ? Number(fs.readFileSync(marker, "utf8")) : 0;
   fs.writeFileSync(marker, String(sequence + 1));
   const mode = ${JSON.stringify(mode)};
   console.log(JSON.stringify(request.locations.map(([label]) => {
-    const observation = { label, device: "1", bytes: "100000", inodes: "1000", quotas: [0, 1, 2].map((type) => ({ type, state: "kernel-disabled" })) };
+    const observation = { label, device: "1", bytes: "100000", inodes: "1000", quotas: [0, 1, 2].map((type) => ({ type, state: mode === 'project-unknown' && type === 2 ? 'unknown' : "kernel-disabled" })) };
     if (mode === "capacity-bytes-zero" && label === "cargo-home") observation.bytes = "0";
     if (mode === "capacity-inodes-zero" && label === "cargo-target") observation.inodes = "0";
     if ((mode === "quota-bytes-zero" || mode === "quota-before-compile" && sequence === 3) && label === "cargo-home") observation.quotas[0] = { type: 0, state: "kernel-enabled", bytes: "0", inodes: null };
@@ -1749,17 +1825,20 @@ if (tool === "git") {
 
 } else {
   const roots = JSON.parse(args.at(-1));
-  console.log(JSON.stringify({ status: "synthetic", components: roots.map(([id]) => ({ id, status: "observed", allocatedBytes: "123", uniqueInodes: "2" })), coexistence: [] }));
+  const components = roots.map(([id]) => native && (id === 'cargo-git' || mode === 'allocation-missing' && id === 'native-output') ? { id, status: 'missing-or-disappeared', device: null, allocatedBytes: null, uniqueInodes: null } : { id, status: 'observed', device: '1', allocatedBytes: '4096', uniqueInodes: '1' });
+  const coexistence = native ? [{ device: mode === 'allocation-foreign-device' ? '2' : '1', allocatedBytes: '12288', uniqueInodes: '3' }] : [];
+  if (mode === 'allocation-duplicate-device') coexistence.push({ ...coexistence[0] });
+  console.log(JSON.stringify({ status: native ? mode === 'allocation-changed' ? 'changed-shared-inode' : 'observed-roots-only' : 'synthetic', components, coexistence: mode === 'allocation-changed' ? null : coexistence }));
 }
 `;
-      for (const tool of ["git", "cargo", "rustc", "sudo", "python3"]) await writeFile(path.join(bin, tool), script, { mode: 0o755 });
+      for (const tool of ["git", "cargo", "rustc", "sudo", "python3", "pnpm"]) await writeFile(path.join(bin, tool), script, { mode: 0o755 });
       process.env.PATH = `${bin}${path.delimiter}${saved.PATH}`;
       process.env.CARGO_HOME = mode === "cache-outside" ? root : path.join(process.env.HOME, `synthetic-unused-cargo-${path.basename(root)}`);
       delete process.env.CARGO_TARGET_DIR; delete process.env.RUSTUP_TOOLCHAIN;
       process.env.GITHUB_SHA = "a".repeat(40); process.env.GITHUB_RUN_ID = "1"; process.env.GITHUB_RUN_ATTEMPT = "1"; process.env.RUNNER_TEMP = root;
       const { stageFullGroupedReference } = await import(pathToFileURL(helper).href);
       const controller = new AbortController();
-      const options = { root, base: "c".repeat(40), head: process.env.GITHUB_SHA, maxParallelTasks: 12, signal: controller.signal };
+      const options = { root, base: "c".repeat(40), head: process.env.GITHUB_SHA, maxParallelTasks: 12, signal: controller.signal, native };
       const operation = stageFullGroupedReference(options);
       // Attach rejection handling immediately while waiting for the cancel seam.
       const observed = operation.then(() => null, (error) => error);
@@ -1774,6 +1853,36 @@ if (tool === "git") {
       }
       const error = await observed;
       const directory = path.join(root, ".artifacts/local-ci/full-admission/1-1-setup-reference");
+      if (native) {
+        const owner = await readFile(path.join(directory, "owner.json"), "utf8");
+        if (["success", "failure", "cancel", "allocation-missing", "allocation-changed", "allocation-duplicate-device", "allocation-foreign-device"].includes(mode)) {
+          assert.equal(await readFile(path.join(root, "started"), "utf8"), "napi:build\n");
+          const closed = JSON.parse(await readFile(path.join(directory, "native.build-close.json"), "utf8"));
+          assert.equal(closed.closeObserved, true); assert.equal(closed.cleanup.complete, true); assert.equal(closed.cleanup.groupAlive, false);
+          for (const [stream, log] of Object.entries(closed.logJoins)) {
+            const bytes = await readFile(path.join(directory, `native.build.${stream}.log`));
+            assert.equal(bytes.length, log.size); assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, log.sha256);
+          }
+          await access(path.join(directory, "native.build-pending.json"));
+        } else await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
+        if (mode === "success") {
+          assert.equal(error, null);
+          const reference = JSON.parse(await readFile(path.join(directory, "setup-reference.json"), "utf8"));
+          assert.deepEqual(reference.samples.map(({ id }) => id), ["native.build"]);
+          assert.equal(reference.admitted, undefined);
+          assert.deepEqual(reference.samples[0].allocation.coexistence, [{ device: "1", allocatedBytes: "12288", uniqueInodes: "3" }]);
+          assert.equal(reference.samples[0].allocation.components.find(({ id }) => id === "cargo-git").allocatedBytes, null);
+          assert.ok(reference.logs.length > 6); assert.ok(reference.unobserved.some((fact) => fact.includes("sub-200ms")));
+        } else {
+          assert.match(error.message, /\[precheck\]/u);
+          await assert.rejects(access(path.join(directory, "setup-reference.json")), { code: "ENOENT" });
+        }
+        await assert.rejects(access(path.join(root, "synthetic-output.json")), { code: "ENOENT" });
+        await assert.rejects(access(path.join(directory, "db-cold-compile-pending.json")), { code: "ENOENT" });
+        await assert.rejects(stageFullGroupedReference(options));
+        assert.equal(await readFile(path.join(directory, "owner.json"), "utf8"), owner);
+        continue;
+      }
       if (mode === "quota-before-compile") outputs.push(JSON.parse(await readFile(path.join(root, "synthetic-output.json"), "utf8")).output);
       if (["cache-outside", "target-redirect", "quota-unknown", "metadata-mismatch", "capacity-bytes-zero", "capacity-inodes-zero", "quota-bytes-zero", "quota-inodes-zero", "quota-before-compile"].includes(mode)) {
         const refusal = { "cache-outside": /Cargo cache inside the owned home/u, "target-redirect": /unredirected focused Cargo destinations/u, "quota-unknown": /db-filesystems-0/u, "metadata-mismatch": /source-bound pure-DB Cargo target/u }[mode] ?? /capacity\/quota/u;
@@ -1827,14 +1936,14 @@ test("grouped acquisition retains Full fences, bounded ownership and scoped obse
   assert.doesNotMatch(grouped, /stageFullSystemReference|apt-get|admitted:|acquireWorkloadInput|produceWorkloadEstimate|admitFullSetup|admitFullResources|buildLocalCiPlan|\brm\(/u);
   for (const required of ["900_000", "1_800_000", "--locked", "--no-deps", "assertWritableLocations", "local-ci-full-filesystems.py", "local-ci-setup-allocation.py", "groupedDbPrerequisites", "commandDigest", "possible-start", "await sampler", "error.lateClose", "closeObserved", "cleanup.groupAlive", "logJoins", "setup-reference.json", "sub-200ms", "db-final-clean"]) assert.ok(grouped.includes(required), required);
   assert.ok(grouped.indexOf("const cargo =") < grouped.indexOf("const initial = await probe()"));
-  assert.ok(grouped.indexOf("for (const destination of [cargo, target])") < grouped.indexOf("const initial = await probe()"));
+  assert.ok(grouped.indexOf("for (const destination of [cargo, target,") < grouped.indexOf("const initial = await probe()"));
   assert.ok(grouped.indexOf("await assertWritableLocations(locations)") < grouped.indexOf("const initial = await probe()"));
   assert.ok(grouped.indexOf("assessFullDemand(filesystems, [])") < grouped.indexOf("return filesystems"));
   assert.ok(grouped.indexOf("const initial = await probe()") < grouped.indexOf('run("db-target"'));
   const version = grouped.slice(grouped.indexOf("const version ="), grouped.indexOf("const versions ="));
   assert.ok(version.indexOf("await probe()") < version.indexOf("await run(id"));
   assert.ok(grouped.indexOf("const before = await probe()") < grouped.indexOf("result = await runLocalCiCommand"));
-  assert.ok(grouped.indexOf("metadata.target_directory !== target") < grouped.indexOf("const output = normal ? null : await mkdtemp"));
+  assert.ok(grouped.indexOf("metadata.target_directory !== target") < grouped.indexOf("const output = normal || native ? null : await mkdtemp"));
   assert.ok(grouped.indexOf("possible-start") < grouped.indexOf("result = await runLocalCiCommand"));
   assert.ok(grouped.indexOf("await sampler") < grouped.indexOf('`${step.id}-close.json`'));
   assert.ok(grouped.indexOf("result.exitCode !== 0") < grouped.indexOf("samples.push"));

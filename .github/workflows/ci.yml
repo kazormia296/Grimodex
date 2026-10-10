@@ -1165,6 +1165,8 @@ jobs:
           test -z "$CANDIDATE_BASE$CANDIDATE_HEAD$MAX_PARALLEL_TASKS"
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: ${{ inputs.canonical_profile == 'native-development-build' && '0' || '1' }}
 
       - name: Native build dependencies
         env:
@@ -1203,7 +1205,19 @@ jobs:
 
       - name: Build the development N-API module
         if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests'"
-        run: pnpm napi:build
+        env:
+          PROFILE: ${{ inputs.canonical_profile }}
+        run: |
+          set -euo pipefail
+          if [ "$PROFILE" = native-development-build ]; then
+            # One ordinary Full compiler consumer, not Full or native tests.
+            candidate_base=$(git rev-parse origin/master)
+            candidate_head=$(git rev-parse HEAD)
+            test "$candidate_head" = "$GITHUB_SHA"
+            node scripts/local-ci-full-admission.mjs --native-reference "$candidate_base" "$candidate_head" 12
+          else
+            pnpm napi:build
+          fi
 
       - name: Test the development N-API module
         if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-development-tests'"
@@ -1239,6 +1253,17 @@ jobs:
           --manifest-path src-tauri/Cargo.toml
           -p grimodex-mcp
           --features licensing
+
+      - name: Upload native compile-only allocation observations
+        if: always() && inputs.canonical_profile == 'native-development-build'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-build-allocation-${{ github.run_id }}-${{ github.run_attempt }}
+          # Shaped public metadata only; complete private log bodies stay private.
+          path: .artifacts/local-ci/full-admission/*-setup-reference/*.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
   rust:
     name: Shared Rust crates (check / clippy / test)
