@@ -255,7 +255,7 @@ export function cpuVersionFormat(tool, output) {
   const prefix = tool === "python" ? "Python" : "uv";
   const observedVersion = text.match(new RegExp(`^${prefix} ([0-9]{1,5}\\.[0-9]{1,5}\\.[0-9]{1,5})(?= |$)`, "u"))?.[1] ?? null;
   const recognized = tool === "python" ? /^Python [0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}$/u.test(text)
-    : /^uv [0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(?: \([0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}\))?$/u.test(text);
+    : /^uv [0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}(?: \((?:[0-9a-f]{7,40} [0-9]{4}-[0-9]{2}-[0-9]{2}|x86_64-unknown-linux-gnu)\))?$/u.test(text);
   const matchesExpected = observedVersion !== null && (tool === "python" ? /^3\.12\./u.test(observedVersion) : observedVersion === expected);
   return { expected, observedVersion, format: recognized ? "recognized" : "unsupported", accepted: recognized && matchesExpected };
 }

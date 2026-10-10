@@ -1387,12 +1387,18 @@ test("normal prerequisite is the existing frozen materialization and compile-onl
 });
 
 test("CPU version diagnostics keep the pin and reject unknown text without publishing it", () => {
-  for (const text of ["uv 0.11.29", "uv 0.11.29 (0123456789 2026-10-01)\n"]) {
+  for (const text of ["uv 0.11.29", "uv 0.11.29 (0123456789 2026-10-01)\n", "uv 0.11.29 (x86_64-unknown-linux-gnu)\n"]) {
     assert.deepEqual(cpuVersionFormat("uv", text), { expected: "0.11.29", observedVersion: "0.11.29", format: "recognized", accepted: true });
   }
   assert.equal(cpuVersionFormat("python", "Python 3.12.10\n").accepted, true);
   for (const [tool, text, observed, format] of [
     ["uv", "uv 0.11.28", "0.11.28", "recognized"],
+    ["uv", "uv 0.11.28 (x86_64-unknown-linux-gnu)\n", "0.11.28", "recognized"],
+    ["uv", "uv 0.11.29 (x86_64-unknown-linux-musl)\n", "0.11.29", "unsupported"],
+    ["uv", "uv 0.11.29 (aarch64-unknown-linux-gnu)\n", "0.11.29", "unsupported"],
+    ["uv", "uv 0.11.29 (X86_64-unknown-linux-gnu)\n", "0.11.29", "unsupported"],
+    ["uv", "uv 0.11.29 (x86_64-unknown-linux-gnu) PRIVATE_PAYLOAD\n", "0.11.29", "unsupported"],
+    ["uv", "uv 0.11.29 (x86_64-unknown-linux-gnu)\nPRIVATE_PAYLOAD\n", "0.11.29", "unsupported"],
     ["python", "Python 3.13.0", "3.13.0", "recognized"],
     ["uv", "uv 0.11.29 (2026-10-01)", "0.11.29", "unsupported"],
     ["uv", "uv 0.11.290", "0.11.290", "recognized"],
@@ -1473,7 +1479,7 @@ test("normal and CPU acquisition consume one current focused owner and join synt
   const roots = [];
   try {
     const modes = ["success", "failure", "cancel", "expired", "stale", "location-drift", "digest-missing", "digest-invalid", "quota-zero", "project-unknown", "redirected", "node-outside"];
-    for (const [cpu, mode] of [...modes.map((mode) => [false, mode]), ...["success", "failure", "cancel", "expired", "stale", "purpose-drift", "uv-version", "python-version", "uv-format", "uv-private", "python-private", "uv-oversized", "uv-outside", "allocation-missing", "allocation-changed", "allocation-empty-union", "allocation-foreign-device", "allocation-duplicate-device", "allocation-zero-union", "quota-zero", "project-unknown", "redirected"].map((mode) => [true, mode])]) {
+    for (const [cpu, mode] of [...modes.map((mode) => [false, mode]), ...["success", "uv-platform", "uv-platform-version", "uv-platform-unknown", "uv-platform-private", "failure", "cancel", "expired", "stale", "purpose-drift", "uv-version", "python-version", "uv-format", "uv-private", "python-private", "uv-oversized", "uv-outside", "allocation-missing", "allocation-changed", "allocation-empty-union", "allocation-foreign-device", "allocation-duplicate-device", "allocation-zero-union", "quota-zero", "project-unknown", "redirected"].map((mode) => [true, mode])]) {
       const root = await mkdtemp(path.join(tmpdir(), `normal-reference-${mode}-`)); roots.push(root);
       const bin = path.join(root, "bin"); await mkdir(bin);
       const sources = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "scripts/ensure-electron-binary.mjs", "electron/scripts/build.mjs", "vite.config.ts", "experiments/lfm25-encoder-phase0/pyproject.toml", "experiments/lfm25-encoder-phase0/uv.lock"];
@@ -1504,7 +1510,13 @@ else if (tool === 'sudo') {
     console.log(JSON.stringify({ status: mode === 'allocation-changed' ? 'changed-shared-inode' : 'observed-roots-only', components, coexistence: mode === 'allocation-changed' ? null : coexistence }));
   }
 } else if (tool === 'uv') {
-  if (args[0] === '--version') console.log(mode === 'uv-version' ? 'uv 0.11.28' : mode === 'uv-format' ? 'uv 0.11.29 (2026-10-01)' : mode === 'uv-private' ? 'uv 0.11.29 https://private.invalid/secret' : mode === 'uv-oversized' ? 'uv 0.11.29 ' + 'PRIVATE_PAYLOAD'.repeat(30) : 'uv 0.11.29 (0123456789 2026-10-01)');
+  const platformOutputs = {
+    'uv-platform': 'uv 0.11.29 (x86_64-unknown-linux-gnu)',
+    'uv-platform-version': 'uv 0.11.28 (x86_64-unknown-linux-gnu)',
+    'uv-platform-unknown': 'uv 0.11.29 (x86_64-unknown-linux-musl)',
+    'uv-platform-private': 'uv 0.11.29 (x86_64-unknown-linux-gnu)\\nPRIVATE_PAYLOAD',
+  };
+  if (args[0] === '--version') console.log(platformOutputs[mode] ?? (mode === 'uv-version' ? 'uv 0.11.28' : mode === 'uv-format' ? 'uv 0.11.29 (2026-10-01)' : mode === 'uv-private' ? 'uv 0.11.29 https://private.invalid/secret' : mode === 'uv-oversized' ? 'uv 0.11.29 ' + 'PRIVATE_PAYLOAD'.repeat(30) : 'uv 0.11.29 (0123456789 2026-10-01)'));
   else { if (process.env.UV_PYTHON_DOWNLOADS !== 'never' || process.env.UV_PYTHON !== 'python3') process.exit(8); fs.appendFileSync(path.join(root, 'started'), args.join(' ') + '\\n'); console.log('complete synthetic stdout'); console.error('complete synthetic stderr'); if (mode === 'failure') process.exit(9); if (mode === 'cancel') setInterval(() => {}, 1000); }
 } else if (tool === 'pnpm') {
   if (!fs.existsSync(path.join(root, 'quota-checked'))) process.exit(8);
@@ -1556,7 +1568,7 @@ else if (tool === 'sudo') {
         await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
         continue;
       }
-      if (["node-outside", "uv-outside", "uv-version", "python-version", "uv-format", "uv-private", "python-private", "uv-oversized"].includes(mode)) {
+      if (["node-outside", "uv-outside", "uv-version", "uv-platform-version", "uv-platform-unknown", "uv-platform-private", "python-version", "uv-format", "uv-private", "python-private", "uv-oversized"].includes(mode)) {
         await assert.rejects(stageFullGroupedReference(options), /Node payload inside the assessed tool cache|uv executable inside its assessed tool cache|pinned uv0\.11\.29/u);
         await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
         if (cpu) {
@@ -1598,7 +1610,7 @@ else if (tool === 'sudo') {
         const bytes = await readFile(path.join(directory, `${cpu ? "lfm.setup" : "bootstrap.install"}.${stream}.log`));
         assert.equal(bytes.length, log.size); assert.equal(`sha256:${createHash("sha256").update(bytes).digest("hex")}`, log.sha256);
       }
-      if (mode === "success") {
+      if (mode === "success" || mode === "uv-platform") {
         assert.equal(error, null);
         const reference = JSON.parse(await readFile(path.join(directory, "setup-reference.json"), "utf8"));
         assert.equal(reference.samples.length, cpu ? 1 : 5); assert.equal(reference.admitted, undefined);
@@ -1606,6 +1618,14 @@ else if (tool === 'sudo') {
         if (cpu) {
           const versions = JSON.parse(await readFile(path.join(directory, "cpu-versions.json"), "utf8"));
           assert.equal(versions.observed.python.accepted, true); assert.equal(versions.observed.uv.accepted, true);
+          if (mode === "uv-platform") {
+            const raw = await readFile(path.join(directory, "cpu-uv-version.stdout.log"));
+            assert.equal(raw.toString(), "uv 0.11.29 (x86_64-unknown-linux-gnu)\n");
+            assert.equal(versions.observed.uv.child.closeObserved, true); assert.equal(versions.observed.uv.child.cleanup.complete, true); assert.equal(versions.observed.uv.child.cleanup.groupAlive, false);
+            assert.equal(versions.observed.uv.child.logJoins.stdout.size, 38);
+            assert.equal(versions.observed.uv.child.logJoins.stdout.sha256, `sha256:${createHash("sha256").update(raw).digest("hex")}`);
+            assert.equal(await readFile(path.join(root, "started"), "utf8"), "sync --frozen --extra cpu\n");
+          }
           assert.deepEqual(reference.versions, { python: "Python 3.12.0", uv: "uv 0.11.29" });
           const allocation = reference.samples[0].allocation;
           assert.equal(allocation.status, "observed-roots-only");
@@ -1625,8 +1645,11 @@ else if (tool === 'sudo') {
         await assert.rejects(access(path.join(directory, "bootstrap.electron-binary-pending.json")), { code: "ENOENT" });
       }
       const marker = await readFile(path.join(directory, "normal-start.json"), "utf8");
+      const diagnostic = cpu ? await readFile(path.join(directory, "cpu-versions.json"), "utf8") : null;
       await assert.rejects(stageFullGroupedReference(options));
       assert.equal(await readFile(path.join(directory, "normal-start.json"), "utf8"), marker);
+      if (cpu) assert.equal(await readFile(path.join(directory, "cpu-versions.json"), "utf8"), diagnostic);
+      if (mode === "uv-platform") assert.equal(await readFile(path.join(root, "started"), "utf8"), "sync --frozen --extra cpu\n");
     }
   } finally {
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }

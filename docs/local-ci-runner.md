@@ -683,7 +683,9 @@ whole private logs. Before the CPU continuation's version guard can refuse,
 version tokens, recognized/unsupported/oversized syntax labels, and the already
 joined version children's complete private log sizes/hashes and retirement.
 Only at most 160 stdout bytes are parsed; unknown suffixes/text are never uploaded.
-uv must still be exactly 0.11.29 with the existing bare or hex-revision/date format;
+uv must still be exactly 0.11.29 with the existing bare or hex-revision/date format,
+or the observed literal `x86_64-unknown-linux-gnu` suffix. Other platform suffixes,
+unknown tails and multiline payloads reject; no arbitrary platform grammar is added.
 Python must be an exact 3.12 patch version from the existing interpreter. An
 unsupported format or wrong version stops before the preparation plan or
 `lfm.setup` pending record, retaining the same non-reentrant start fence. Accepted
