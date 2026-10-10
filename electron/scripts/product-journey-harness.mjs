@@ -33,6 +33,7 @@ import {
   isElectronPostExitCloseError,
 } from "./close-electron-app.mjs";
 import { C2ZC_RENDERER_DML_PHASE_ALLOWLIST } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
+import { createNativeBBusOwner, nativeBElectronEnvironment } from "./product-journey-native-b.mjs";
 
 const require = createRequire(import.meta.url);
 const PRODUCT_JOURNEY_AI_ENV = "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI";
@@ -3479,6 +3480,7 @@ export function createProductJourneyHarness({
   let fixtureOperationsInFlight = false;
   let launchInFlight = false;
   let dbusProbeAttempted = false;
+  let nativeQualificationRecorded = false;
   let laneWatchdogController = null;
   let laneWatchdogPromise = null;
   let failureCapturePromise = null;
@@ -3487,6 +3489,13 @@ export function createProductJourneyHarness({
   let retainedRendererScreenshotPromise = null;
   let operationJournalClosed = false;
   const harnessAbortController = new AbortController();
+  // Mocked launchers remain source-test seams, not native qualification. The
+  // actual Linux Editor consumer must own the bus under the verified boundary.
+  const nativeBus = process.platform === "linux" && journeyId === "editor-persistence" && electronLauncher === _electron
+    ? createNativeBBusOwner({
+        signal: harnessAbortController.signal,
+        onFailure: () => { void requestAbort("native-b-daemon-failure").catch(() => undefined); },
+      }) : null;
   let signalHandlersInstalled = false;
   let disposed = false;
   const lastResources = {
@@ -3976,6 +3985,10 @@ export function createProductJourneyHarness({
       await capture.catch(() => undefined);
       await closeActiveResources(`failure:${reason}`).catch(() => undefined);
       await killTrackedChildren();
+      if (nativeBus && (trackedChildren.size || lateLaunchTasks.size || launchContexts.size)) {
+        throw new Error("native B app retirement unverified; owner quarantined");
+      }
+      await nativeBus?.retire();
     })();
     return failureCleanupPromise;
   }
@@ -4192,6 +4205,7 @@ export function createProductJourneyHarness({
   }
 
   function requestAbort(reason) {
+    nativeBus?.closeAdmission();
     // A signal arriving during dispose must join the already-running guarded
     // cleanup. The handlers are deliberately still installed until that
     // promise settles, so checking disposed first would make the second
@@ -5206,6 +5220,22 @@ export function createProductJourneyHarness({
     return normalized;
   }
 
+  async function prepareBeforeCase() {
+    if (!nativeBus) return;
+    if (disposed) throw new Error("product journey harness admission closed");
+    installSignalHandlers();
+    await runHarnessOperation("native-b:qualification", () => nativeBus.qualify(), {
+      phase: "native-b/pre-case",
+    });
+    if (disposed || harnessAbortController.signal.aborted) {
+      throw new Error("native B pre-case admission closed");
+    }
+    if (!nativeQualificationRecorded) {
+      recordTimeline("native-b-qualified-before-case", nativeBus.evidence());
+      nativeQualificationRecorded = true;
+    }
+  }
+
   async function launch(phase) {
     if (fixtureOperationsInFlight) {
       throw new Error(
@@ -5260,7 +5290,15 @@ export function createProductJourneyHarness({
       lastResources.phase = phase;
       lastResources.launchId = launchId;
     }
-    const env = { ...process.env };
+    if (disposed) throw new Error("product journey harness admission closed");
+    if (nativeBus && !nativeQualificationRecorded) {
+      throw new Error("native B requires qualification before case admission");
+    }
+    // qualify() revalidates the SAME live owner on each launch; preparation
+    // already completed its once-only qualification before journey.run.
+    const env = nativeBus
+      ? nativeBElectronEnvironment(process.env, await nativeBus.qualify())
+      : { ...process.env };
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
     env[PRODUCT_JOURNEY_AI_ENV] = PRODUCT_JOURNEY_AI_VERSION;
@@ -5295,6 +5333,7 @@ export function createProductJourneyHarness({
     };
     await requireCleanNarrativeMaintenanceReceiptRoot(receiptState.root, phase);
     if (
+      !nativeBus &&
       probeDbusAtFirstConfigure &&
       phase === "configure" &&
       !dbusProbeAttempted
@@ -6177,6 +6216,7 @@ export function createProductJourneyHarness({
   async function dispose({ success, name }) {
     if (disposed) return;
     disposed = true;
+    nativeBus?.closeAdmission();
     if (!success) {
       await captureFailureWithCleanup(name, name).catch((error) => {
         console.error(
@@ -6185,6 +6225,8 @@ export function createProductJourneyHarness({
           }`,
         );
       });
+      // A capture failure must not bypass bus retirement when no app exists.
+      await nativeBus?.retire();
       removeSignalHandlers();
       await operationJournal.close().catch(() => undefined);
       operationJournalClosed = true;
@@ -6197,6 +6239,13 @@ export function createProductJourneyHarness({
       await killTrackedChildren();
     }
     await awaitLateElectronLaunches();
+    if (nativeBus) {
+      await killTrackedChildren();
+      if (trackedChildren.size || lateLaunchTasks.size || launchContexts.size) {
+        throw new Error("native B app retirement unverified; owner quarantined");
+      }
+    }
+    await nativeBus?.retire();
     await operationJournal.close();
     operationJournalClosed = true;
     await rm(tmpRoot, { recursive: true, force: true });
@@ -6244,6 +6293,7 @@ export function createProductJourneyHarness({
     journalPath: operationJournalPath,
     workspacePath,
     executeFixtureOperations,
+    prepareBeforeCase,
     launch,
     launchForProcessInterruption,
     close,

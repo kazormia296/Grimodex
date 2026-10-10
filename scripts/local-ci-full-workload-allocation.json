@@ -13,11 +13,11 @@
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
-      "sha256": "e868caaba7e385f70cf0546674241e938be7326f4e0e6d21dd204a862b5f39a8"
+      "sha256": "c135e480cdafe14a515dc7a7e7b5aaea2cca4acdc187ae8231c3e05dbae997fe"
     },
     {
       "path": "scripts/local-ci-full-filesystems.py",
-      "sha256": "e8ce96cdcc90463c944be2a6dbfe463c86cc388d9bdcc31cde201da4ea35602b"
+      "sha256": "f73f885293e2bed68c8fc7c43cbd672d0678b15c711851b9b7522d7a23930206"
     },
     {
       "path": "scripts/local-ci-process-supervisor.mjs",
@@ -25,7 +25,7 @@
     },
     {
       "path": "scripts/local-ci.mjs",
-      "sha256": "ee4ec3e9ecebe418d47a35429941d8c3a74e025075096f37d74f846f09b27b6f"
+      "sha256": "a382667c7e8dcf2e7fc89fbc29cb331cdc5d415a75e0b057849631d1e68bcf7f"
     },
     {
       "path": "scripts/local-ci-runner.mjs",
@@ -101,7 +101,7 @@
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",
-      "sha256": "171b2e13d3a41d3284b312cdb282ef4896ce2f634aa681643e365fdb18c893d5"
+      "sha256": "60fc231379b278b3f1158c05335e264129e87b3800e4c7307668ea1b51e51ef1"
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
@@ -113,7 +113,7 @@
     },
     {
       "path": "scripts/local-ci-xvfb.mjs",
-      "sha256": "667c586fbf61a55e201f347d49cfd40f6fa491408a82ffefd6e23b83ac81b2a4"
+      "sha256": "578e551c38c06cea6d75acded67b5ab30fa6fce1b4cf16083527c69b7fcb152b"
     },
     {
       "path": "src/db/generated/schema-contract.json",
@@ -121,10 +121,160 @@
     },
     {
       "path": "docs/pr610-full-workload-risk.md",
-      "sha256": "8b2112ccabae25fadb594f27061062f795424cfdddd4401decd5b891353e1b3b"
+      "sha256": "4e5f827320259840780c3cbacedde468981634289db0d836bf2525ef238d1032"
+    },
+    {
+      "path": "scripts/local-ci-native-b.py",
+      "sha256": "60083022fe8dee96a3a89d8e94e45d606906febc9f28514c281e3b39c36b819c"
+    },
+    {
+      "path": "electron/scripts/product-journey-native-b.mjs",
+      "sha256": "b13e1fed0f6d259f2a0074cbf078b0f7c2f16161dfc12ae0a4e5ccf4cdd259b1"
+    },
+    {
+      "path": "electron/scripts/product-journey-shards.mjs",
+      "sha256": "2982a3c59c0b3eb01dc18329ba799e440d0436ad14d14b6b0522c65855363e04"
     }
   ],
+  "fullMemoryRisk": {
+    "components": ["python-pid1", "node-wrappers", "xvfb", "daemon-clients", "electron-native", "pipes-kernel", "other-full-consumers", "pressure-uncertainty"],
+    "terms": [
+      {
+        "component": "python-pid1", "kind": "retained", "bytes": "33554432", "sources": [30, 29],
+        "basis": "ONE ordinary-UID Python PID1: 32MiB interpreter/metadata/reaping working-set hypothesis, not measured RSS, privileged holding or a hard cap. Ownership/count in the fixed initializer; assumptions/limits in current risk doc.",
+        "operation": "Review practical current-Full hypothesis; acquire actual same-owned host/root/all-cgroup memory and pressure before Full, never capacity as demand"
+      },
+      {
+        "component": "python-pid1", "kind": "transient", "bytes": "100663296", "sources": [30, 31, 29],
+        "basis": "Three additional 32MiB interpreter/escape-probe images for ONE qualification. Overlap reserved despite normal sequential cleanup; no new owner or qualification, not a measured peak or input bound.",
+        "operation": "Review fixed probe/fork topology and additive working-set hypothesis without running or renewing qualification"
+      },
+      {
+        "component": "node-wrappers", "kind": "retained", "bytes": "1073741824", "sources": [5, 4, 24, 27, 32, 29],
+        "basis": "Sixteen 64MiB hypotheses: seven Xvfb wrappers, seven journey runners/harnesses and two outer/orchestration allowances. Nested compiler/test workers are separate task-slot demand. Not V8 limits/RSS measurements; Playwright/identity-file reads may exceed this scenario.",
+        "operation": "Review source ownership/count and practical heap assumption; retain actual headroom/pressure/exclusion requirements, no Node flag changes"
+      },
+      {
+        "component": "xvfb", "kind": "retained", "bytes": "234881024", "sources": [27, 32, 29],
+        "basis": "Seven 32MiB font/client-table/allocator hypotheses, ADDITIONAL to nativeMemory framebuffer pairs. Six ordinary host consumers and one B consumer, not seven privileged roots. Extra font/client state can exceed this scenario.",
+        "operation": "Review current seven-consumer topology; actual same-owned host/root/shm capacity and memory remain required acquisition"
+      },
+      {
+        "component": "daemon-clients", "kind": "retained", "bytes": "16777216", "sources": [30, 31, 24, 29],
+        "basis": "ONE continuous foreground daemon: 16MiB code/heap/driver hypothesis. Installed semantics/RSS unknown; no replacement bus, sandbox/auth/route exception or claimed measured peak.",
+        "operation": "Review fixed daemon lifetime/config and working-set assumption; qualification and Editor remain unconsumed/fenced"
+      },
+      {
+        "component": "daemon-clients", "kind": "transient", "bytes": "33554432", "sources": [30, 31, 29],
+        "basis": "Two additional 16MiB client/malformed-daemon working images within ONE qualification, not two owners or a second purpose. Python probes have separate interpreter terms; binary/process growth is not bounded by this hypothesis.",
+        "operation": "Review fixed client/malformed-config paths and additive coexistence without running or renewing qualification"
+      },
+      {
+        "component": "electron-native", "kind": "transient", "bytes": "5944680448", "sources": [24, 13, 14, 15, 29],
+        "basis": "Seven canonical journey-shard app ensembles, EACH with128MiB main +256MiB renderer +64MiB combined utility/GPU/zygote hypotheses PLUS one288808960B native-output and one90669056B ORT-root full-residency hypothesis PER ensemble from native38023515626/1. Seven native/ORT pairs contribute2656346112B plus3288334336B process working sets =5944680448B. Additive all-shard scenario, NOT seven simultaneously live apps or B owners: no scheduler/cleanup or cross-process sharing credit. Exact artifact/shaped hashes in source-bound risk doc. Payloads are NOT measured RSS/loaded extent bounds; no sharing/cleanup credit. Surfaces/tmpfs separate. Dictionary/ORT/Chromium/restart growth may exceed the scenario.",
+        "operation": "Review whole-payload residency and current process-ensemble assumptions; no installed-fit inference or sandbox/retirement/mainClean suppression"
+      },
+      {
+        "component": "pipes-kernel", "kind": "transient", "bytes": "19922944", "sources": [4, 5, 27, 30, 31, 29],
+        "basis": "Nineteen consumer paths (seven journeys plus default12 slots), each sixteen64KiB pipe/socket/stream backing images. Source stdio/probes/listeners motivate a practical envelope, not measured pipe sizes or caps. Independent pressure term covers further socket/slab/page-table growth only at its stated scale.",
+        "operation": "Review actual stdio/listener topology and uncertainty; actual all-cgroup/host pressure remains separate admission evidence"
+      },
+      {
+        "component": "other-full-consumers", "kind": "transient", "bytes": "12884901888", "sources": [1, 5, 6, 9, 10, 11, 12, 19, 20, 29],
+        "basis": "Default12 task-slot hypotheses, each1GiB =256MiB coordinator plus four192MiB nested worker/compiler/test images. Covers setup/install, JS/typecheck/lint/unit/browser/Electron tests, Cargo/Rust/DB, contracts/security, CPU and reports/artifacts across all68 tasks. Charged EVEN WITH seven journey ensembles: no scheduler/serial/fail-fast savings. Not a per-command peak/four-worker enforcement; larger rustc/AST/nested-worker allocations may exceed it. Separate link/CPU/DB/setup/pressure hypotheses remain.",
+        "operation": "Review practical complete-registry coverage and uncertainty, not a per-command memory profile/approval campaign; preserve commands/dependencies/default12"
+      },
+      {
+        "component": "other-full-consumers", "kind": "transient", "bytes": "1155235840", "sources": [1, 11, 12, 13, 14, 29],
+        "basis": "Additional four-link-image working buffers, each288808960B largest native output from native38023515626/1: the existing build.link-scratch scenario. Hypothetical payload residency/copy coexistence, NOT native-target disk allocation as measured rustc/linker RSS. Compiler heaps also have task-slot/pressure hypotheses; exact provenance in current risk doc.",
+        "operation": "Review current Cargo job/link topology and reference credibility at original acquisition scopes; no compiler replay"
+      },
+      {
+        "component": "other-full-consumers", "kind": "transient", "bytes": "1575354368", "sources": [1, 19, 20, 29],
+        "basis": "1038483456B whole locked CPU environment residency hypothesis plus512MiB import/tensor/conversion scratch. CPU38017460514/1 payload reference and exact hashes in risk doc, NOT measured RSS/model/tensor maxima. Task-slot/pressure demand remains; arbitrary larger inputs can exceed this scenario.",
+        "operation": "Review current locked CPU workload and explicit whole-environment working hypothesis; no acquisition replay or free-RAM inference from disk"
+      },
+      {
+        "component": "other-full-consumers", "kind": "transient", "bytes": "287883264", "sources": [21, 22, 23, 29],
+        "basis": "All7 Q2 plus3 Q512 inventory images plus official C2-ZC fixture as ADDITIONAL full-residency/copy working-set hypotheses. Existing schema-density scenarios and DB38007676893/1 scoped provenance/hashes in risk doc are payload references, not SQLite RSS/cache/step maxima. No file-cache release/alias saving assumed.",
+        "operation": "Review synthetic DB working-image credibility and copy topology; preserve Q2/Q512/fullGold, no unchanged fixture/test replay"
+      },
+      {
+        "component": "other-full-consumers", "kind": "transient", "bytes": "440786944", "sources": [0, 7, 8, 9, 10, 29],
+        "basis": "Two complete220393472B Node payload working-copy hypotheses for installer/extraction/hash/materialization coexistence, additional to task slots. Normal setup38011068810/1 scoped payload provenance/hashes in risk doc, NOT measured installer RSS or whole-installation memory bounds. No installed-state savings; other installer heaps in task-slot/pressure demand.",
+        "operation": "Review existing setup working-copy hypothesis; no install/helper/OS-check purpose renewal or capacity substitution"
+      },
+      {
+        "component": "pressure-uncertainty", "kind": "uncertainty", "bytes": "1215430656", "sources": [0, 1, 4, 5, 13, 14, 29],
+        "basis": "Independent uncertainty: twelve64MiB task-growth images plus288808960B native-sized exceptional allocator/kernel/page-table image plus121315328B complete-log dirty-page/cache image. Separate from ordinary heaps/link/CPU/DB/setup, surfaces/tmpfs. Not a percentage, all-pressure upper bound or log cap. Native/complete-log provenance stays scoped allocation evidence; future growth can exceed this reserve.",
+        "operation": "Review uncertainty credibility; acquire fresh host/all-cgroup pressure/headroom/exclusion, never idle-PSI or free-capacity as zero future demand"
+      }
+    ]
+  },
   "inventories": [
+    {
+      "id": "native.b.root",
+      "sources": [2, 24, 27, 29, 30, 31, 32],
+      "basis": "Private tmpfs metadata scenario: one independent 4KiB allocation/inode per current 5960 checkout files (5958 tracked plus two B sources) and their distinct ancestors (6449 total), including placeholders even where a readonly tree bind covers them. Payload is NOT copied. A separate admission file reserves one 4KiB inode. Fixed NSS/Git/root skeleton and variable installed Node path metadata growth have a separate whole-image uncertainty; this is a finite density forecast, not observed tmpfs geometry or capacity.",
+      "operation": "Construct reviewed path-density forecast from b-native-allocation-start tracked metadata and fixed initializer; acquire actual same-owner tmpfs geometry/inodes/memory limits before native admission",
+      "items": [
+        { "role": "mount-metadata", "bytes": "26415104", "inodes": "6449" },
+        { "role": "admission", "bytes": "4096", "inodes": "1" }
+      ]
+    },
+    {
+      "id": "native.b.root-growth",
+      "sources": [2, 24, 27, 29, 30, 31, 32],
+      "basis": "Independent additional whole metadata path image for fixed NSS/Git skeleton, installed runtime ancestors, root/HOME/XDG growth and future tracked-path changes. One distinct 32-bit-padded 1920x1080 shared surface covers Chromium shared-memory replacement beyond the primary surface. Sole Editor-bearing private-root additive scenario, not a percentage or a limit; its six cases are charged to that root, while the other 27 cases retain host Node-temp originals. Ordinary Chromium shared-memory replacement reuses this surface image as byte-only memory risk, not host disk allocation.",
+      "operation": "Review actual root/symlink/runtime placement and same-owner tmpfs/memory pressure; no disk-capacity substitution",
+      "items": [
+        { "role": "mount-metadata", "bytes": "26415104", "inodes": "6449" },
+        { "role": "shared-surface", "bytes": "8294400", "inodes": "1" }
+      ]
+    },
+    {
+      "id": "native.b.xvfb",
+      "sources": [2, 27, 29, 30],
+      "basis": "ONE native root: eight separate 4KiB inode images for owned xauth directory/file and three transaction/lock scratch paths, X11 socket directory/socket and display lock. Each of six ordinary host shards reuses only the eight-path density image, split into five Node-temp xauth paths and three Unix-temp X11 paths; shared surfaces there are byte-only host memory risk. This is an installed-xauth transaction scenario, not acquired transient behaviour. One distinct Chromium /dev/shm mapped-file surface is 1920x1080x4 bytes; Electron may require more, covered by separate shared-surface and per-case cache growth. Xvfb itself has no -fbdir/-shmem and its heap framebuffer is NOT a file; byte-only nativeMemory scenarios keep it outside inode demand.",
+      "operation": "Source geometry/auth/socket topology forecast only; actual Xvfb/Chromium root/shm and process-memory coexistence remains current-target acquisition",
+      "items": [
+        { "role": "auth-socket-lock", "bytes": "32768", "inodes": "8" },
+        { "role": "shared-surface", "bytes": "8294400", "inodes": "1" }
+      ]
+    },
+    {
+      "id": "native.b.host",
+      "sources": [2, 27, 29, 30, 32],
+      "basis": "Seven independent directory allocation/inode images for the sole Editor-bearing native shard's retained root marker and canonical output/ancestors; common ancestors receive no sharing credit. Ordinary shards do not create B root markers; their task logs/reports and case artifacts remain separately charged at workspace. Actual reports/failure artifact copies are separately charged at workspace. Successful empty-marker rmdir gives no peak/retained-risk credit.",
+      "operation": "Review exact existing marker and canonical output ownership; observe current workspace device and applicable quotas without changing paths",
+      "items": [{ "role": "markers-output", "bytes": "28672", "inodes": "7" }]
+    },
+    {
+      "id": "native.b.sentinels",
+      "sources": [2, 27, 29, 30],
+      "basis": "ONE qualifying Editor owner creates host Node-temp directory, synthetic host-only file and pathname socket: three independent 4KiB inode images. Abstract and TCP sentinels create no filesystem entries; their kernel/process memory remains unobserved, not zero resource demand. Failed/unknown retirement keeps the original allocation/owner, with no retry image.",
+      "operation": "Source-only host sentinel topology; actual host Node-temp quotas and listener/socket memory before one qualification",
+      "items": [{ "role": "directory-file-socket", "bytes": "12288", "inodes": "3" }]
+    },
+    {
+      "id": "native.b.intent",
+      "sources": [2, 27, 29, 30],
+      "basis": "ONE durable qualification intent at workspace: two 4KiB blocks and one inode for fixed candidate/run/attempt/digests and nine installed-binary identity records. Private route endpoints remain stdin only. Separate complete uncapped task logs/reports and failure-growth images already cover wrapper diagnostics; no stream is truncated to fit this metadata scenario.",
+      "operation": "Review fixed qualification intent shape and actual byte size/placement before any sentinel or privileged setup effect",
+      "items": [{ "role": "qualification-intent", "bytes": "8192", "inodes": "1" }]
+    },
+    {
+      "id": "native.b.bus",
+      "sources": [2, 24, 27, 29, 30, 31],
+      "basis": "ONE continuous bus in Editor root: one 4KiB file each for fixed valid and malformed XML, three 4KiB files for bus-start/daemon-start/final qualification evidence, and directory/socket inode images. Probe replies are bounded memory then shaped evidence, not private raw-log files. Complete app/daemon/Xvfb task logs stay with the existing host workspace supervisor; binary/probe heaps and kernel pipe backing are NOT measured by these file allocations.",
+      "operation": "Source config/evidence topology forecast; actual fixed installed daemon/client semantics, same-owner memory/tmpfs and retirement qualification remain NOTRUN",
+      "items": [
+        { "role": "config", "bytes": "4096", "inodes": "1" },
+        { "role": "malformed-config", "bytes": "4096", "inodes": "1" },
+        { "role": "intents-results", "bytes": "12288", "inodes": "3" },
+        { "role": "socket-directory", "bytes": "8192", "inodes": "2" }
+      ]
+    },
     {
       "id": "install.pnpm",
       "sources": [

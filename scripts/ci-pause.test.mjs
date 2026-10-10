@@ -15,6 +15,7 @@ import {
   acquireWorkloadInput,
   assertPreparationEnvelope,
   assessFullDemand,
+  assessFullMemory,
   assessFullSetupDemand,
   collectFullLocations,
   canonicalSystemPackages,
@@ -22,6 +23,8 @@ import {
   coldSystemSolverFormat,
   systemPackageSizes,
   fullPreparation,
+  fullStagedDemand,
+  verifyFullPrivateAdmission,
   fullSetupLocations,
   groupedDbPrerequisites,
   normalPrerequisites,
@@ -36,6 +39,7 @@ import {
   validateFullSetupDecision,
   validateFullSetupEstimate,
   validateFullSetupLocations,
+  validateFullMemoryRisk,
 } from "./local-ci-full-admission.mjs";
 
 const repoRoot = path.resolve(
@@ -2325,7 +2329,7 @@ test("Full workload-risk ledger rejects missing consumers, sizing, source freshn
 test("Reviewed Full workload data covers the real plan and rejects source, tuple, placement and backup drift", async () => {
   // Real proposed risk data, not a resource probe/admission or fixture/app run.
   const data = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-full-workload-allocation.json"), "utf8"));
-  assert.deepEqual(Object.keys(data).sort(), ["version", "registryDigest", "maxParallelTasks", "sources", "inventories", "setup", "preparation", "tasks"].sort());
+  assert.deepEqual(Object.keys(data).sort(), ["version", "registryDigest", "maxParallelTasks", "sources", "inventories", "setup", "preparation", "tasks", "fullMemoryRisk"].sort());
   assert.equal(data.version, "full-workload-allocation/1");
   assert.equal(new Set(data.sources.map(({ path }) => path)).size, data.sources.length);
   assert.ok(!data.sources.some(({ path }) => path === "scripts/local-ci-full-workload-allocation.json"));
@@ -2341,18 +2345,91 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
     FULL_PNPM_DEST: "/synthetic/pnpm", npm_config_store_dir: "/synthetic/store",
     PLAYWRIGHT_BROWSERS_PATH: "/synthetic/browser", UV_CACHE_DIR: "/synthetic/uv",
   });
-  const input = { version: "full-workload-input/1", binding, sources: data.sources, inventories: data.inventories, setup: data.setup, preparation: data.preparation, tasks: data.tasks };
+  const input = { version: "full-workload-input/1", binding, sources: data.sources, inventories: data.inventories, setup: data.setup, preparation: data.preparation, tasks: data.tasks, fullMemoryRisk: data.fullMemoryRisk };
   const produce = (value) => produceWorkloadEstimate(value, binding, repoRoot, locations);
   const estimate = await produce(input);
   await validateFullSetupEstimate(estimate, binding, repoRoot);
   await validateWorkloadEstimate(estimate, binding, plan, preparation, repoRoot);
   assert.equal(estimate.tasks.length, 68);
+  assert.deepEqual(estimate.fullMemoryRisk, { tasks: estimate.tasks, ...data.fullMemoryRisk });
+  assert.equal(estimate.fullMemoryRisk.components.length, 8);
+  assert.equal(validateFullMemoryRisk(estimate, plan), 25017368576n, "finite planning hypotheses, not measured RSS, limits or an admitted capacity");
+  const inventoryBytes = (id) => data.inventories.find((entry) => entry.id === id).items.reduce((sum, item) => sum + BigInt(item.bytes), 0n);
+  const memoryTerms = estimate.fullMemoryRisk.terms;
+  const appEnsembles = BigInt(plan.tasks.filter(({ id }) => /^journeys\.shard-[1-7]$/u.test(id)).length);
+  assert.equal(appEnsembles, 7n, "all canonical shard consumers, not simultaneous apps or B owners; no scheduler/cleanup credit");
+  const appWorkingSets = appEnsembles * 448n * 1024n ** 2n;
+  const nativeOrtPair = inventoryBytes("build.tuple-output") + inventoryBytes("build.ort-cache");
+  assert.equal(appEnsembles * nativeOrtPair, 2656346112n, "one native-output and one ORT image PER ensemble, not one pair for the group");
+  assert.equal(BigInt(memoryTerms[6].bytes), appWorkingSets + appEnsembles * nativeOrtPair);
+  assert.equal(BigInt(memoryTerms[6].bytes) - (appWorkingSets + nativeOrtPair), 2276868096n, "singular-pair alternative is not the reviewed no-sharing-credit hypothesis");
+  assert.equal(BigInt(memoryTerms[8].bytes), BigInt(data.maxParallelTasks) * 1024n ** 3n);
+  assert.equal(BigInt(memoryTerms[9].bytes), inventoryBytes("build.link-scratch"));
+  assert.equal(BigInt(memoryTerms[10].bytes), inventoryBytes("build.cpu-environment") + 512n * 1024n ** 2n);
+  assert.equal(BigInt(memoryTerms[11].bytes), 7n * inventoryBytes("worker.q2") + 3n * inventoryBytes("worker.q512") + inventoryBytes("c2zc.fixture"));
+  assert.equal(BigInt(memoryTerms[13].bytes), 12n * 64n * 1024n ** 2n + inventoryBytes("build.tuple-output") + inventoryBytes("logs.complete"));
+  assert.ok(memoryTerms.every((term) => !Object.hasOwn(term, "inodes") && !Object.hasOwn(term, "location")));
+  // Exercise real produced risk through the existing assessor. These facts
+  // are EXCLUSIVELY synthetic; no resource probe, app or hosted proof here.
+  const sumBytes = (terms) => terms.reduce((sum, term) => sum + BigInt(term.bytes), 0n);
+  const memoryDemand = sumBytes(memoryTerms) + sumBytes(estimate.nativeMemory) + sumBytes(estimate.residual.filter(({ location }) => location === "native-b-root-1"));
+  const psi = Object.fromEntries(["some", "full"].map((kind) => [kind, { avg10: "0.00", avg60: "0.00", avg300: "0.00", total: "0" }]));
+  const facts = { observedAt: Date.now(), membership: "/synthetic", pressure: psi,
+    host: { MemAvailable: String(memoryDemand + 1n), MemTotal: String(memoryDemand + 1n), SwapFree: "0", SwapTotal: "0" },
+    ancestors: [{ path: ".", state: "kernel-root-no-controller-limit", pressure: psi }] };
+  const memoryEstimate = { ...estimate, memoryCgroup: facts.membership };
+  assert.equal(assessFullMemory(facts, memoryEstimate, plan, [{}]).demand, String(memoryDemand));
+  assert.equal(assessFullMemory(facts, memoryEstimate, plan, [], { privatePending: true }).demand, String(memoryDemand), "host gate charges sole-root risk but does not pretend it owns that root");
+  assert.throws(() => assessFullMemory(facts, memoryEstimate, plan, [{}], { privatePending: true }), /remaining memory/u);
+  const staged = fullStagedDemand(estimate);
+  assert.deepEqual(staged.privateTerms, estimate.residual.filter(({ location }) => location === "native-b-root-1"));
+  assert.equal(staged.hostTerms.filter(({ location }) => location === "ordinary-shm").length, 12);
+  assert.ok(!staged.hostTerms.some(({ location }) => location === "native-b-root-1"));
+  assert.equal(sumBytes(staged.hostTerms) + sumBytes(staged.privateTerms), sumBytes(estimate.setup.terms) +
+    sumBytes(estimate.preparation.flatMap(({ terms }) => terms)) + sumBytes(estimate.residual) +
+    sumBytes(estimate.nativeMemory.filter(({ id }) => /^journey-xvfb\.[2-7]\.shared-surface(?:-growth)?$/u.test(id))));
+  const pressured = structuredClone(facts); pressured.pressure.full.avg10 = "0.01";
+  assert.throws(() => assessFullMemory(pressured, memoryEstimate, plan, [], { privatePending: true }), /pressure/u);
+  delete pressured.pressure.full.avg10;
+  assert.throws(() => assessFullMemory(pressured, memoryEstimate, plan, [], { privatePending: true }), /pressure/u);
+  facts.host.MemAvailable = String(memoryDemand);
+  assert.throws(() => assessFullMemory(facts, memoryEstimate, plan, [{}]), /remaining memory/u, "exact threshold rejects, not surface-only or host disk headroom");
+  for (const mutate of [
+    (value) => { delete value.fullMemoryRisk; },
+    (value) => { value.fullMemoryRisk.components.pop(); },
+    (value) => { value.fullMemoryRisk.terms = value.fullMemoryRisk.terms.filter(({ component }) => component !== "other-full-consumers"); },
+    (value) => { value.fullMemoryRisk.terms[0].bytes = "0"; },
+    (value) => { value.fullMemoryRisk.terms[0].bytes = "1e9"; },
+    (value) => { value.fullMemoryRisk.terms[0].basis = " "; },
+    (value) => { value.fullMemoryRisk.terms[0].operation = true; },
+    (value) => { value.fullMemoryRisk.terms[0].sources = [value.sources.length]; },
+    (value) => { value.fullMemoryRisk.terms[0].inodes = "1"; },
+    (value) => { value.fullMemoryRisk.admitted = true; },
+  ]) {
+    const malformed = structuredClone(input);
+    mutate(malformed);
+    await assert.rejects(produce(malformed), /\[precheck\]/u);
+  }
+  for (const mutate of [
+    (value) => { delete value.fullMemoryRisk; },
+    (value) => { value.fullMemoryRisk.tasks.pop(); },
+    (value) => { value.fullMemoryRisk.tasks[0] = value.fullMemoryRisk.tasks[1]; },
+    (value) => { value.fullMemoryRisk.terms[0] = null; },
+    (value) => { value.fullMemoryRisk.terms.forEach((term) => { if (term.kind === "uncertainty") term.kind = "transient"; }); },
+  ]) {
+    const malformed = structuredClone(estimate);
+    mutate(malformed);
+    await assert.rejects(validateWorkloadEstimate(malformed, binding, plan, preparation, repoRoot), /memory/u);
+  }
   // The tracked recipes charge compilation and the CPU environment to workspace.
   // Canonical paths alone do not exclude disjoint mounted descendants.
   const buildLabels = ["cargo-shared", "cargo-shared-package", "cargo-native", "cargo-native-package", "uv-environment"];
   const compileTerms = [...estimate.preparation.flatMap(({ terms }) => terms), ...estimate.residual];
   const compileSum = (metric) => compileTerms.reduce((sum, term) => sum + BigInt(term[metric]), 0n);
-  const compileSpace = locations.map(([label]) => syntheticFilesystem(label, "workspace-device", String(compileSum("bytes") + 1n), String(compileSum("inodes") + 1n)));
+  const nativeLabels = ["native-b-root-1"];
+  const residualLocations = [...locations, ...nativeLabels.map((label) => [label, "/synthetic/native"])];
+  const compileSpace = residualLocations.map(([label]) => syntheticFilesystem(label, nativeLabels.includes(label) ? label : "workspace-device", String(compileSum("bytes") + 1n), String(compileSum("inodes") + 1n)));
+  assert.throws(() => assessFullDemand(compileSpace.filter(({ label }) => !nativeLabels.includes(label)), compileTerms), /effective storage acquisition for native-b-root-1/u, "ample host disk is not private tmpfs/memory acquisition");
   const observedTargets = buildLabels.map((label) => ({ ...compileSpace[0], label }));
   const compileReport = assessFullDemand(compileSpace, compileTerms);
   assert.deepEqual(assessFullDemand([...compileSpace, ...observedTargets], compileTerms), compileReport, "observation aliases do not add another build/environment allocation");
@@ -2371,6 +2448,20 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
     }
   }
   assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, 33);
+  assert.equal(estimate.residual.find(({ id }) => id === "journey.0.tmp").location, "native-b-root-1");
+  assert.equal(estimate.residual.filter(({ id }) => /^native-b\.[1-7]\.root$/u.test(id)).length, 1);
+  assert.equal(estimate.residual.filter(({ id, location }) => /^journey\.[0-9]+\.tmp$/u.test(id) && location === "native-b-root-1").length, 6);
+  assert.equal(estimate.residual.filter(({ id, location }) => /^journey\.[0-9]+\.tmp$/u.test(id) && location === "node-temp").length, 27);
+  assert.ok(!estimate.residual.some(({ location }) => /^native-b-root-[2-7]$/u.test(location)));
+  assert.equal(estimate.residual.filter(({ id }) => id === "native-b.bus").length, 1);
+  for (const label of nativeLabels) {
+    for (const metric of ["bytes", "inodes"]) {
+      const limited = structuredClone(compileSpace);
+      const demand = compileReport.find(({ device }) => device === label);
+      limited.find((fs) => fs.label === label)[metric] = demand[metric === "bytes" ? "demandBytes" : "demandInodes"];
+      assert.throws(() => assessFullDemand(limited, compileTerms), /capacity\/quota/u, "host room cannot be borrowed by the sole private root");
+    }
+  }
   // The actual runner retains a Node-temp original while evidence copies only
   // DB/backup/manifest to workspace. Neither device can borrow the other's room.
   const fixture = data.inventories.find(({ id }) => id === "c2zc.fixture");
@@ -2384,7 +2475,7 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
     assert.equal(BigInt(original[metric]), total(fixture.items));
     assert.equal(BigInt(copy[metric]), total(copiedItems));
     const baseline = estimate.residual.filter((term) => term !== original);
-    const ample = locations.map(([label]) => syntheticFilesystem(label, label,
+    const ample = residualLocations.map(([label]) => syntheticFilesystem(label, label,
       String(estimate.residual.reduce((sum, term) => sum + BigInt(term.bytes), 0n) + 1n),
       String(estimate.residual.reduce((sum, term) => sum + BigInt(term.inodes), 0n) + 1n)));
     const baselineReport = assessFullDemand(ample, baseline);
@@ -2445,6 +2536,10 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   assert.equal(BigInt(shared.demandInodes), report.reduce((total, fs) => total + BigInt(fs.demandInodes), 0n));
   for (const mutate of [
     (value) => { value.sources.at(-1).sha256 = "0".repeat(64); },
+    (value) => { value.inventories = value.inventories.filter(({ id }) => id !== "native.b.root"); },
+    (value) => { value.inventories.find(({ id }) => id === "native.b.bus").items.pop(); },
+    (value) => { value.inventories.find(({ id }) => id === "native.b.xvfb").items[0].bytes = "0"; },
+    (value) => { value.inventories.find(({ id }) => id === "native.b.intent").items[0].inodes = "0"; },
     (value) => { value.inventories.find(({ id }) => id === "c2zc.fixture").items.find(({ role }) => role === "backup").bytes = "0"; },
     (value) => { value.inventories.find(({ id }) => id === "journey.editor-persistence.failure").items.find(({ role }) => role === "backup").inodes = "0"; },
     (value) => { value.inventories.find(({ id }) => id === "install.packages").items.find(({ location }) => location === "pnpm-store").location = "workspace"; },
@@ -2464,6 +2559,76 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   }
 });
 
+test("Full native memory acquisition keeps all cgroup ancestors, swap and incomplete risk separate", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "full-memory-contract-"));
+  try {
+    // Synthetic proc/cgroup files ONLY. No live resource/namespace/bus/app probe.
+    const source = String.raw`
+import json, pathlib, runpy, sys
+m = runpy.run_path(sys.argv[1])
+root = pathlib.Path(sys.argv[2])
+proc, cg = root / "proc", root / "cgroup"
+(proc / "self").mkdir(parents=True)
+(proc / "pressure").mkdir()
+(cg / "parent/leaf").mkdir(parents=True)
+psi = "some avg10=0.00 avg60=0.00 avg300=0.00 total=1\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=1\n"
+(proc / "self/cgroup").write_text("0::/parent/leaf\n")
+(proc / "self/mountinfo").write_text(f"1 0 0:1 / {cg} rw - cgroup2 cgroup rw\n")
+(proc / "meminfo").write_text("MemTotal: 1000 kB\nMemAvailable: 800 kB\nSwapTotal: 500 kB\nSwapFree: 400 kB\n")
+(proc / "pressure/memory").write_text(psi)
+for directory in (cg, cg / "parent", cg / "parent/leaf"):
+    (directory / "memory.pressure").write_text(psi)
+    (directory / "cgroup.controllers").write_text("memory cpu\n")
+    if directory == cg:
+        continue
+    for name, value in {"memory.current":"1000", "memory.max":"max", "memory.high":"max", "memory.swap.current":"0", "memory.swap.max":"max"}.items():
+        (directory / name).write_text(value)
+(cg / "parent/memory.high").write_text("10000")
+inspect = m["inspect_memory"]
+facts = inspect("0::/parent/leaf\n", proc=proc, cgroups=cg)
+assert [entry["path"] for entry in facts["ancestors"]] == ["parent/leaf", "parent", "."]
+assert facts["ancestors"][1]["memory.high"] == "10000"
+assert facts["ancestors"][2]["state"] == "kernel-root-no-controller-limit"
+def reject():
+    try:
+        inspect("0::/parent/leaf\n", proc=proc, cgroups=cg)
+    except (ValueError, FileNotFoundError):
+        return
+    raise AssertionError("unknown memory acquired as unlimited")
+(cg / "parent/memory.current").unlink()
+reject()
+(cg / "parent/memory.current").write_text("1000")
+(proc / "self/mountinfo").write_text(f"1 0 0:1 /hidden {cg} rw - cgroup2 cgroup rw\n")
+reject()
+(proc / "self/mountinfo").write_text(f"1 0 0:1 / {cg} rw - cgroup2 cgroup rw\n")
+(proc / "self/cgroup").write_text("2:memory:/parent/leaf\n")
+reject()
+print(json.dumps(facts))
+`;
+    const { stdout } = await promisify(execFile)("python3", ["-I", "-c", source,
+      path.join(repoRoot, "scripts/local-ci-full-filesystems.py"), temporary], { timeout: 10000 });
+    const facts = JSON.parse(stdout);
+    const plan = { tasks: [{ id: "synthetic-task" }] };
+    const estimate = { sources: [{ path: "synthetic", sha256: "a".repeat(64) }], memoryCgroup: facts.membership,
+      nativeMemory: [{ bytes: "10" }], residual: [{ location: "native-b-root-1", bytes: "10" }] };
+    assert.throws(() => assessFullMemory(facts, estimate, plan, [{}]), /complete source-grounded/u);
+    const components = ["python-pid1", "node-wrappers", "xvfb", "daemon-clients", "electron-native", "pipes-kernel", "other-full-consumers", "pressure-uncertainty"];
+    estimate.fullMemoryRisk = { tasks: ["synthetic-task"], components,
+      terms: components.map((component, index) => ({ component, bytes: "10", kind: ["retained", "transient", "uncertainty"][index % 3],
+        sources: [0], basis: "synthetic only", operation: "synthetic test" })) };
+    const report = assessFullMemory(facts, estimate, plan, [{}]);
+    for (const roots of [[], Array(7).fill({})]) assert.throws(() => assessFullMemory(facts, estimate, plan, roots), /remaining memory/u);
+    assert.equal(report.available, "9000"); // actual restrictive parent, not leaf max/host RAM/swap
+    assert.equal(report.demand, "100");
+    estimate.fullMemoryRisk.terms[0].bytes = "9000";
+    assert.throws(() => assessFullMemory(facts, estimate, plan, [{}]), /remaining memory/u);
+    const changed = structuredClone(facts); changed.ancestors[1]["memory.high"] = "UNKNOWN";
+    assert.throws(() => assessFullMemory(changed, estimate, plan, [{}]), /decimal/u);
+    delete changed.ancestors[1]["memory.high"];
+    assert.throws(() => assessFullMemory(changed, estimate, plan, [{}]), /decimal/u);
+  } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
 test("Full producer acquires reviewed tracked data exclusively and constructs complete coexistence demand without missing-fact defaults", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), "full-producer-contract-"));
   try {
@@ -2473,6 +2638,8 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
       "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
       "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",
       "electron/scripts/product-journey-harness.mjs", "electron/scripts/product-journey-catalog.mjs",
+      "scripts/local-ci-xvfb.mjs", "scripts/local-ci-native-b.py",
+      "electron/scripts/product-journey-native-b.mjs", "electron/scripts/product-journey-shards.mjs",
       "src/features/chat/chatScopeRegistry.json",
       "scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-process-supervisor.mjs",
       "scripts/local-ci.mjs", "scripts/local-ci-runner.mjs", "package.json", "pnpm-lock.yaml",
@@ -2513,12 +2680,26 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
     });
     const input = {
       version: "full-workload-input/1", binding, sources,
+      fullMemoryRisk: {
+        components: ["python-pid1", "node-wrappers", "xvfb", "daemon-clients", "electron-native", "pipes-kernel", "other-full-consumers", "pressure-uncertainty"],
+        terms: ["python-pid1", "node-wrappers", "xvfb", "daemon-clients", "electron-native", "pipes-kernel", "other-full-consumers", "pressure-uncertainty"].map((component, index) => ({
+          component, kind: ["retained", "transient", "uncertainty"][index % 3], bytes: "10", sources: [0],
+          basis: "synthetic arithmetic only, not a memory observation or admission default", operation: "synthetic contract",
+        })),
+      },
       inventories: [
         inventory("risk.build", ["synthetic-build"]), inventory("risk.uncertainty", ["synthetic-additive-uncertainty"]),
         ...installInventories,
         ...["q2", "q512"].map((name) => inventory(`worker.${name}`, ["db", "wal", "shm", "journal", "construction"])),
         inventory("c2zc.fixture", ["db", "wal", "shm", "backup", "standalone", "manifest"]),
         inventory("fixtures.uncertainty", ["sqlite-allocation", "failure-copy", "unsampled-transient"]),
+        inventory("native.b.root", ["mount-metadata", "admission"]),
+        inventory("native.b.root-growth", ["mount-metadata", "shared-surface"]),
+        inventory("native.b.xvfb", ["auth-socket-lock", "shared-surface"]),
+        inventory("native.b.host", ["markers-output"]),
+        inventory("native.b.sentinels", ["directory-file-socket"]),
+        inventory("native.b.intent", ["qualification-intent"]),
+        inventory("native.b.bus", ["config", "malformed-config", "intents-results", "socket-directory"]),
         ...PRODUCT_JOURNEY_CATALOG.flatMap(({ id }) => [
           inventory(`journey.${id}.runtime`, ["db", "wal", "shm", "user-data", "cache", "logs", "receipts", "other"]),
           inventory(`journey.${id}.failure`, ["backup", "receipt-snapshot", "diagnostics", "screenshot"]),
@@ -2532,6 +2713,7 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
       tasks: plan.tasks.map(({ id }) => ({ id, terms: terms().map((entry) => entry.domain === "build-link-doctest" ? { ...entry, measurement: { preparationId: "native.build", mode: "peak", location: "workspace" } } : entry) })),
     };
     const produce = (value) => produceWorkloadEstimate(value, binding, temporary, locations);
+    await assert.rejects(produceWorkloadEstimate(input, binding, temporary, locations.map(([label, location]) => [label, label === "unix-temp" ? "/synthetic/redirected-tmp" : location])), /ordinary X11 \/tmp/u);
     const estimate = await produce(input);
     await validateFullSetupEstimate(estimate, binding, temporary);
     await validateWorkloadEstimate(estimate, binding, plan, preparation, temporary);
@@ -2547,7 +2729,57 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
     assert.equal(find("c2zc.fixture.copy").inodes, "3");
     assert.equal(find("c2zc.fixture.copy").location, "workspace");
     assert.equal(find("journey.0.tmp").bytes, "120");
+    assert.equal(find("journey.0.tmp").location, "native-b-root-1");
     assert.equal(find("journey.0.copy").bytes, "120");
+    assert.equal(find("native-b.1.root").bytes, "40");
+    assert.equal(find("native-b.1.root").location, "native-b-root-1");
+    assert.equal(find("native-b.1.growth").bytes, "50");
+    assert.equal(find("native-b.1.host").bytes, "10");
+    assert.equal(find("journey.uncertainty").bytes, "180");
+    assert.equal(find("journey.uncertainty").location, "node-temp");
+    // Original first shard has these six cases; do not import the heavy
+    // shards/harness before dependency setup merely to validate risk arithmetic.
+    const nativeIds = ["editor-persistence", "chat-authority-isolation", "workspace-switch-authority", "external-write-conflict", "cross-feature-authoring", "chat-stream-project-switch"];
+    for (const [index, journey] of PRODUCT_JOURNEY_CATALOG.entries()) {
+      const native = nativeIds.includes(journey.id);
+      assert.equal(find(`journey.${index}.tmp`).location, native ? "native-b-root-1" : "node-temp");
+      assert.equal(find(`journey.${index}.copy`).location, "workspace");
+    }
+    for (let shard = 1; shard <= 7; shard++) {
+      assert.equal(estimate.nativeMemory.find(({ id }) => id === `journey-xvfb.${shard}.framebuffer`).bytes, "8294400");
+      if (shard === 1) continue;
+      assert.equal(find(`native-b.${shard}.root`), undefined);
+      assert.equal(find(`native-b.${shard}.growth`), undefined);
+      assert.equal(find(`native-b.${shard}.host`), undefined);
+      assert.equal(find(`journey-xvfb.${shard}.auth`).location, "node-temp");
+      assert.equal(find(`journey-xvfb.${shard}.socket`).location, "unix-temp");
+      assert.equal(estimate.nativeMemory.find(({ id }) => id === `journey-xvfb.${shard}.shared-surface`).bytes, "10");
+    }
+    assert.equal(find("native-b.bus").bytes, "40");
+    assert.equal(find("native-b.sentinels").location, "node-temp");
+    assert.equal(find("native-b.intent").location, "workspace");
+    assert.equal(estimate.nativeMemory.find(({ id }) => id === "native-b.probes").bytes, "36992");
+    assert.equal(estimate.nativeMemory.length, 27);
+    assert.deepEqual(estimate.fullMemoryRisk.tasks, plan.tasks.map(({ id }) => id));
+    assert.equal(validateFullMemoryRisk(estimate, plan), 80n);
+    assert.ok(estimate.nativeMemory.every((entry) => !("inodes" in entry) && !("location" in entry)));
+    for (const mutate of [(value) => { value.nativeMemory.pop(); }, (value) => { value.nativeMemory[0].bytes = "0"; }, (value) => { value.nativeMemory[0].inodes = "1"; }, (value) => { value.nativeMemory[0].id = "native-b.2.framebuffer"; }]) {
+      const malformed = structuredClone(estimate);
+      mutate(malformed);
+      await assert.rejects(validateWorkloadEstimate(malformed, binding, plan, preparation, temporary), /native/u);
+    }
+    const partitionSource = sources.find(({ path }) => path === "electron/scripts/product-journey-shards.mjs");
+    const partitionFile = path.join(temporary, partitionSource.path);
+    const originalPartition = await readFile(partitionFile, "utf8");
+    // Unknown executable topology and duplicated/missing cases must fail even
+    // if the supplied source hash matches the changed literal source.
+    for (const changedPartition of [originalPartition.replace('"editor-persistence",', '"editor-persistence", "editor-persistence",'), originalPartition.replace('"editor-persistence",', 'dynamicMembership(),')]) {
+      await writeFile(partitionFile, changedPartition);
+      const changedInput = structuredClone(input);
+      changedInput.sources.find(({ path }) => path === partitionSource.path).sha256 = createHash("sha256").update(changedPartition).digest("hex");
+      await assert.rejects(produce(changedInput), /native B/u);
+    }
+    await writeFile(partitionFile, originalPartition);
     assert.equal(find("journey.0.screenshot").bytes, "10");
     assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, PRODUCT_JOURNEY_CATALOG.length);
     assert.deepEqual(estimate.setup.destinations, locations);
@@ -2621,7 +2853,7 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
     const allocationFile = path.join(temporary, allocationPath);
     const data = {
       version: "full-workload-allocation/1", registryDigest: binding.registryDigest, maxParallelTasks: binding.maxParallelTasks,
-      sources: input.sources, inventories: input.inventories, setup: input.setup, preparation: input.preparation, tasks: input.tasks,
+      sources: input.sources, inventories: input.inventories, setup: input.setup, preparation: input.preparation, tasks: input.tasks, fullMemoryRisk: input.fullMemoryRisk,
     };
     const directory = path.join(temporary, ".artifacts/local-ci/full-admission/1-1-setup");
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -2654,6 +2886,8 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
       (value) => { value.admitted = true; },
       (value) => { value.registryDigest = "sha256:stale"; },
       (value) => { value.maxParallelTasks = 1; },
+      (value) => { delete value.fullMemoryRisk; },
+      (value) => { value.fullMemoryRisk.terms[0].bytes = "0"; },
       (value) => { value.sources = value.sources.filter(({ path: name }) => name !== "pnpm-lock.yaml"); },
       (value) => { value.sources.push(value.sources[0]); },
       (value) => { value.sources[0].sha256 = "0".repeat(64); },
@@ -2729,6 +2963,56 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
     changed.sources.find(({ path: name }) => name === "scripts/nir1-c-query-worker-ci.sh").sha256 = createHash("sha256").update(await readFile(workerPath)).digest("hex");
     assert.equal((await produce(changed)).residual.find(({ id }) => id === "worker.q2").bytes, "400");
   } finally { await rm(temporary, { recursive: true, force: true }); }
+});
+
+test("Full private-gate outcome is required, candidate-bound and cannot turn host-pending or late failure green", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "full-private-outcome-"));
+  try {
+    const host = { localRunId: "00000000-0000-4000-8000-000000000001", uid: process.getuid(),
+      binding: { head: "a".repeat(40), base: "b".repeat(40), tree: "c".repeat(40), runId: "200", attempt: "1" },
+      estimateDigest: "d".repeat(64), memory: { demand: "100" }, privateDemand: { bytes: "50", inodes: "10" } };
+    const file = path.join(root, `.artifacts/local-ci/runs/${host.localRunId}/product-journeys/shard-1/native-resource-admission.json`);
+    await mkdir(path.dirname(file), { recursive: true });
+    await assert.rejects(verifyFullPrivateAdmission(root, host), /ENOENT/u);
+    const record = { state: "private-accepted", binding: host.binding, localRunId: host.localRunId,
+      estimateDigest: host.estimateDigest, memory: { demand: "100", available: "101" },
+      namespaces: Object.fromEntries(["mnt", "net", "pid", "ipc"].map((name) => [name, `${name}:[123]`])),
+      hostFactsDigest: "e".repeat(64), observations: { memory: { ancestors: [{ state: "kernel-root-no-controller-limit" }] } },
+      root: { device: "2", inode: 12, allocationUnit: "4096", bytes: "51", inodes: "11", quotas: disabledQuotas() } };
+    const persist = (value) => writeFile(file, JSON.stringify(value), { mode: 0o600 });
+    await persist(record);
+    assert.equal((await verifyFullPrivateAdmission(root, host)).state, "private-accepted");
+    for (const mutate of [
+      (v) => { v.state = "host-admitted/private-pending"; }, (v) => { v.state = "failed"; },
+      (v) => { v.binding.attempt = "2"; }, (v) => { v.localRunId = "replacement"; },
+      (v) => { v.estimateDigest = "0".repeat(64); }, (v) => { v.memory.demand = "1"; },
+      (v) => { v.root.bytes = "50"; }, (v) => { v.root.inodes = "10"; },
+      (v) => { v.root.allocationUnit = "8192"; }, (v) => { v.memory.available = "100"; },
+      (v) => { v.root.quotas[0].state = "unknown"; }, (v) => { delete v.namespaces.pid; },
+      (v) => { v.hostFactsDigest = "UNKNOWN"; }, (v) => { delete v.observations.memory.ancestors; },
+    ]) { const invalid = structuredClone(record); mutate(invalid); await persist(invalid); await assert.rejects(verifyFullPrivateAdmission(root, host), /private gate/u); }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("Full tmpfs quota adapter acquires geometry and rejects enabled/unknown quota without ext4 fiction", async () => {
+  const source = String.raw`
+import os, runpy, sys
+from types import SimpleNamespace
+m = runpy.run_path(sys.argv[1])
+g = m['inspect_tmpfs'].__globals__
+g['os'] = SimpleNamespace(statvfs=lambda p:SimpleNamespace(f_flag=0, f_bavail=100, f_frsize=4096, f_favail=12),
+                         stat=lambda p:SimpleNamespace(st_dev=2), ST_RDONLY=1)
+record = m['inspect_tmpfs']('ordinary-shm','/synthetic','/synthetic',{'rw','nosuid','nodev','size=1000k','nr_inodes=12'})
+assert record['bytes']=='409600' and record['inodes']=='12' and record['allocationUnit']=='4096'
+assert [q['state'] for q in record['quotas']]==['kernel-disabled']*3
+for options in ({'rw','quota'},{'rw','usrquota'},{'rw','grpquota'},{'rw','prjquota'},{'rw','unknownquota'},{'ro'}):
+    try: m['inspect_tmpfs']('ordinary-shm','/synthetic','/synthetic',options)
+    except ValueError: pass
+    else: raise AssertionError('unknown/readonly tmpfs became unlimited')
+print('synthetic tmpfs schema only, not actual host/private-root admission')
+`;
+  const { stdout } = await promisify(execFile)("python3", ["-I", "-c", source, path.join(repoRoot, "scripts/local-ci-full-filesystems.py")], { timeout: 10000 });
+  assert.match(stdout, /synthetic tmpfs schema/u);
 });
 
 test("Full quota adapter treats kernel disabled, unknown and soft-grace limits distinctly without probing host quotas", async () => {

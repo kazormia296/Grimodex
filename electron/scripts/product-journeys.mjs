@@ -5121,6 +5121,9 @@ export async function runProductJourneys({
         journeyId: journey.id,
       });
       harness.c2zcRustAcceptanceEvidence = report.c2zcRustAcceptance;
+      // Preparation is not a case start. Reject qualification failure before
+      // the lane watchdog or original configure/write/restart callback runs.
+      await harness.prepareBeforeCase?.();
       const runJourney = (laneContext) => journey.run(harness, laneContext);
       const c2zcWatchdogRequired =
         selectionName === "c2-zc" &&

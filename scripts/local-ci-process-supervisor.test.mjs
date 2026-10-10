@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
+import { resolveC2ZcRustAcceptanceCandidate } from "./c2zc-rust-acceptance-receipt.mjs";
+import { isNativeBJourney, nativeBEnvironment, nativeBRootMarker, nativeBIncludesEditor } from "./local-ci-xvfb.mjs";
+import { admitFullResources } from "./local-ci-full-admission.mjs";
+import { assertNativeBQualification, createNativeBBusOwner, nativeBBusConfig, nativeBElectronEnvironment } from "../electron/scripts/product-journey-native-b.mjs";
 
 async function fixture(t) {
   const root = await mkdtemp(path.join(os.tmpdir(), "local-ci-supervisor-"));
@@ -545,4 +551,571 @@ test("Xvfb wrapper does not hide a surviving application descendant from supervi
   );
   assert.throws(() => process.kill(server.pid, 0), { code: "ESRCH" });
   await assert.rejects(readFile(server.auth), { code: "ENOENT" });
+});
+
+test("Full host gate rejects an unowned invocation before effects or privileged holding", async () => {
+  let held = false;
+  const options = { root: "/nonexistent-unadmitted-checkout", localRunId: "synthetic",
+    holdNativeRoots() { held = true; throw new Error("privileged hold reached"); } };
+  await assert.rejects(admitFullResources(options), /checkout-lock owning canonical Full invocation UUID/u);
+  assert.equal(held, false);
+  const controller = new AbortController();
+  controller.abort(new Error("cancelled before Full admission"));
+  await assert.rejects(admitFullResources({ ...options, signal: controller.signal }), /cancelled before/u);
+  assert.equal(held, false);
+  const args = shard => ["electron/scripts/product-journey-shards.mjs", "run", "--shard", String(shard),
+    "--output-dir", ".artifacts/local-ci/runs/synthetic/product-journeys"];
+  assert.equal(nativeBIncludesEditor(args(1), {}), true);
+  for (let shard = 2; shard <= 7; shard++) assert.equal(nativeBIncludesEditor(args(shard), {}), false);
+});
+
+test("non-Editor shards use the ordinary Xvfb owner and reject removed holding flags", async (t) => {
+  for (let shard = 2; shard <= 7; shard++) {
+    const { root, entry, options } = await xvfbFixture(t);
+    await mkdir(path.join(root, "electron/scripts"), { recursive: true });
+    await writeFile(path.join(root, "electron/scripts/product-journey-shards.mjs"),
+      `import { writeFileSync } from "node:fs"; writeFileSync("application-started", "synthetic ordinary shard");`);
+    const command = entry("");
+    command.args = [command.args[0], process.execPath, "electron/scripts/product-journey-shards.mjs",
+      "run", "--shard", String(shard), "--output-dir", ".artifacts/local-ci/runs/synthetic/product-journeys"];
+    const result = await runLocalCiCommand(command, options);
+    assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+    assert.equal(await readFile(path.join(root, "application-started"), "utf8"), "synthetic ordinary shard");
+    await assertXvfbClean(root, result);
+  }
+  const { root, entry, options } = await xvfbFixture(t);
+  const command = entry(xvfbApplicationStarted);
+  command.args.splice(1, 0, "--hold-native-b");
+  const result = await runLocalCiCommand(command, options);
+  assert.equal(result.exitCode, 1);
+  await assert.rejects(readFile(path.join(root, "application-started")), { code: "ENOENT" });
+  await assertXvfbClean(root, result);
+});
+
+test("native B initial transport excludes named host sockets and files", async (t) => {
+  const root = await fixture(t);
+  const source = String.raw`
+import io, json, os, pathlib, runpy, socket, sys
+m = runpy.run_path(sys.argv[1])
+transport = m["private_transport"]
+a, b = socket.socketpair()
+assert transport(a.fileno()) and transport(b.fileno())
+a.close(); b.close()
+r, w = os.pipe()
+assert transport(r) and transport(w)
+os.close(r); os.close(w)
+with open("ordinary", "w") as f:
+    assert not transport(f.fileno())
+listener = socket.socket(socket.AF_UNIX)
+listener.bind("named-host-route")
+listener.listen()
+assert not transport(listener.fileno())
+listener.close()
+assert "hold_setup" not in m and "held_observation" not in m
+# Call the real request validator without namespace/privilege/workload effects.
+# Only path existence is modeled; selection and exact request schema are real.
+from types import SimpleNamespace
+class Checkout:
+    def is_absolute(self): return True
+    def resolve(self, strict): return self
+    def __str__(self): return "/home/runner/work/synthetic/synthetic"
+checkout = Checkout()
+original_path = pathlib.Path
+g = m["request"].__globals__
+g["pathlib"] = SimpleNamespace(Path=lambda value: checkout if value == str(checkout) else original_path(value))
+qualification = {"intentDigest":"d"*64, "identities":{}, "source":{}, "head":"a"*40, "base":"b"*40,
+                 "run":"200", "attempt":"1", "routes":{}}
+value = {"uid":1001, "gid":1001, "checkout":str(checkout), "node":sys.executable,
+         "args":["electron/scripts/product-journey-shards.mjs", "run", "--shard", "1", "--output-dir", ".artifacts/local-ci/runs/synthetic/product-journeys"],
+         "environment":{"CI":"true", "GITHUB_RUN_ID":"200", "GITHUB_RUN_ATTEMPT":"1"},
+         "hostNamespaces":{}, "gitView":{"head":"a"*40,"base":"b"*40}, "qualification":qualification,
+         "resourceAdmission":{"path":"synthetic-host-receipt", "sha256":"f"*64}}
+g["control_read"] = lambda deadline: value
+assert m["request"]() is value
+for shard in range(2, 8):
+    value["args"][3] = str(shard)
+    try: m["request"]()
+    except RuntimeError: pass
+    else: raise AssertionError("non-Editor privileged initializer admitted")
+value["args"][3] = "1"
+value["hold"] = {}
+try: m["request"]()
+except RuntimeError: pass
+else: raise AssertionError("removed held request schema admitted")
+print("initial transport/request model passed; actual native runtime NOTRUN")
+`;
+  const result = await runLocalCiCommand({ command: "python3", args: ["-I", "-c", source,
+    fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url))] },
+  { root, logDirectory: ".logs", taskId: "native-initial-transport", timeoutMs: 10_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  assert.equal(result.cleanup.complete, true);
+});
+
+test("native B initial private resource gate refreshes actual host and rejects late shortages before workloads", async (t) => {
+  const root = await fixture(t);
+  const source = String.raw`
+import copy, hashlib, json, os, pathlib, runpy, sys, time
+from types import SimpleNamespace
+native = runpy.run_path(sys.argv[1])
+helpers = runpy.run_path(sys.argv[2])
+checkout = pathlib.Path.cwd()
+file = checkout / 'scripts/local-ci-full-filesystems.py'
+file.parent.mkdir()
+file.write_text('synthetic reviewed helper identity')
+private = checkout / 'private'
+private.mkdir()
+psi = {k: dict(avg10='0.00', avg60='0.00', avg300='0.00', total='12') for k in ('some','full')}
+quotas = [dict(type=n, state='kernel-disabled') for n in range(3)]
+host_fs = dict(label='workspace', device='1', bytes='101', inodes='101', allocationUnit='4096', quotas=quotas)
+root_fs = dict(label='native-b-root-1', device='2', bytes='51', inodes='51', allocationUnit='4096', quotas=quotas, mount=str(private))
+mem = dict(membership='0::/synthetic\n', observedAt=int(time.time()*1000),
+           host=dict(MemAvailable='201', MemTotal='300', SwapFree='100', SwapTotal='100'), pressure=psi,
+           ancestors=[dict(path='.',state='kernel-root-no-controller-limit',pressure=psi)])
+host = dict(locations=[['workspace',str(checkout)]], uid=os.getuid(), gids=[os.getgid()],
+            filesystems=[host_fs], report=[dict(device='1',demandBytes='100',demandInodes='100')],
+            memoryCgroup=mem['membership'], memory=dict(demand='200'), privateDemand=dict(bytes='50',inodes='50'),
+            binding=dict(head='a'*40,base='b'*40,runId='200',attempt='1'),
+            localRunId='00000000-0000-4000-8000-000000000001', estimateDigest='d'*64)
+value = dict(gid=os.getgid(),qualification=dict(source={'scripts/local-ci-full-filesystems.py':hashlib.sha256(file.read_bytes()).hexdigest()}))
+actual_host, actual_root, actual_mem = map(copy.deepcopy,(host_fs,root_fs,mem))
+calls = []
+def inspect(locations, uid, gids):
+    calls.append(locations[0][0])
+    return [actual_root if locations[0][0]=='native-b-root-1' else actual_host]
+g = native['private_resource_gate'].__globals__
+g['runpy'] = SimpleNamespace(run_path=lambda _: dict(inspect=inspect,inspect_memory=lambda _:actual_mem,assess_memory=helpers['assess_memory']))
+g['os'] = SimpleNamespace(stat=lambda p:SimpleNamespace(st_dev=2 if p==private else 1))
+run = lambda:native['private_resource_gate'](checkout,private,value,host)
+assert run()['state']=='private-accepted'
+assert calls==['workspace','native-b-root-1']
+def reject():
+    try: run()
+    except (RuntimeError,ValueError,KeyError): return
+    raise AssertionError('late unknown/shortage admitted as host or whole-run success')
+for field,val in [('bytes','50'),('inodes','50'),('allocationUnit','8192'),('mount',str(checkout))]:
+    actual_root[field]=val; reject(); actual_root=copy.deepcopy(root_fs)
+actual_root['quotas'][0]['state']='kernel-enabled'; reject(); actual_root=copy.deepcopy(root_fs)
+actual_host['bytes']='100'; reject(); actual_host=copy.deepcopy(host_fs)
+actual_host['device']='foreign'; reject(); actual_host=copy.deepcopy(host_fs)
+actual_host['quotas'][0]=dict(type=0,state='kernel-enabled',bytes='100',inodes=None)
+reject(); actual_host=copy.deepcopy(host_fs)
+actual_mem['host']['MemAvailable']='200'; reject(); actual_mem=copy.deepcopy(mem)
+actual_mem['membership']='0::/replacement\n'; reject(); actual_mem=copy.deepcopy(mem)
+actual_mem['observedAt']-=31000; reject(); actual_mem=copy.deepcopy(mem)
+actual_mem['pressure']['some']['avg10']='0.01'; reject(); actual_mem=copy.deepcopy(mem)
+g['CLOSED']=True; reject()
+print('synthetic late gate only; no native setup, quota syscall, qualification or workload')
+`;
+  const result = await runLocalCiCommand({ command: "python3", args: ["-I", "-c", source,
+    fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url)),
+    fileURLToPath(new URL("./local-ci-full-filesystems.py", import.meta.url))] },
+  { root, logDirectory: ".logs", taskId: "native-private-gate-contract", timeoutMs: 10_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  assert.equal(result.cleanup.complete, true);
+  const initializer = await readFile(new URL("./local-ci-native-b.py", import.meta.url), "utf8");
+  const main = initializer.slice(initializer.indexOf("def main():"), initializer.indexOf("def client_boundary():"));
+  const ordered = ["evidence_sources(", 'mount("tmpfs"', "private_resource_gate(", "os.chroot(", "os.close(0)", "os.closerange(", "facts = drop(", "qualify_routes(", "probe=True", "return supervise("];
+  let cursor = -1;
+  for (const token of ordered) { const next = main.indexOf(token, cursor + 1); assert.ok(next > cursor, token); cursor = next; }
+  assert.doesNotMatch(main, /hold_setup|held_observation|Popen|subprocess\.run/u);
+});
+
+test("native B rejects injected transport/runtime selectors and keeps the sandbox", () => {
+  for (const selector of ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "DBUS_STARTER_ADDRESS",
+    "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "ELECTRON_DISABLE_SANDBOX", "ELECTRON_RENDERER_URL"]) {
+    assert.throws(() => nativeBEnvironment({ [selector]: "injected" }), /rejects/u);
+  }
+  const address = `unix:path=/tmp/synthetic/bus,guid=${"a".repeat(32)}`;
+  const env = nativeBElectronEnvironment({ DISPLAY: ":42", XAUTHORITY: "/tmp/synthetic/Xauthority",
+    PATH: "/usr/bin:/bin", HOME: "/home/runner", SECRET_TEST_VALUE: "not-forwarded", CI: "true" }, address);
+  assert.equal(env.DBUS_SESSION_BUS_ADDRESS, address);
+  assert.equal(env.SECRET_TEST_VALUE, undefined);
+  assert.equal(env.ELECTRON_DISABLE_SANDBOX, undefined);
+  assert.throws(() => nativeBElectronEnvironment({ DISPLAY: ":42", XAUTHORITY: "/tmp/auth" }, "autolaunch:"));
+  assert.equal(isNativeBJourney("node", ["electron/scripts/product-journey-shards.mjs", "run"]), true);
+  assert.equal(isNativeBJourney("node", ["-e", "arbitrary"]), false);
+  const config = nativeBBusConfig(1001, "/tmp/synthetic/bus");
+  assert.match(config, /<auth>EXTERNAL<\/auth>/u);
+  assert.match(config, /<deny own="\*"\/>/u);
+  assert.match(config, /<deny send_destination="\*"\/>/u);
+  assert.match(config, /<deny[^>]+send_member="StartServiceByName"/u);
+  assert.doesNotMatch(config, /ANONYMOUS|<include|<servicedir|<servicehelper|tcp:|<allow own=|<allow send_destination="\*"/u);
+});
+
+test("native B canonical markers and exclusive output leaves reject redirected or duplicate ownership", async (t) => {
+  const root = await fixture(t);
+  const output = ".artifacts/local-ci/runs/synthetic-run/product-journeys";
+  const args = (shard, directory = output) => ["electron/scripts/product-journey-shards.mjs", "run",
+    "--shard", String(shard), "--output-dir", directory];
+  const markers = Array.from({ length: 7 }, (_, index) => nativeBRootMarker(args(index + 1)));
+  assert.equal(new Set(markers).size, 7);
+  assert.notEqual(markers[0], nativeBRootMarker(args(1, output.replace("synthetic-run", "other-run"))));
+  assert.equal(nativeBRootMarker(["electron/scripts/product-journeys.mjs"]), ".artifacts/native-b-root");
+  for (const invalid of [args(0), args(8), args("1\n"), args(1, `${output}\n`),
+    args(1, output.replace("synthetic-run", "../escape")), args(1, `/${output}`),
+    args(1, output.replace("/runs/", "/runs//")), args(1, output.replace("product-journeys", "other")),
+    [...args(1), "--retry"], ["electron/scripts/product-journey-shards.mjs", "aggregate"]]) {
+    assert.throws(() => nativeBRootMarker(invalid), /canonical journey command/u);
+  }
+  // Exercise only the initializer's ordinary filesystem seams. This is not
+  // namespace/authentication/retirement qualification and starts no workload.
+  const source = String.raw`
+import concurrent.futures, json, os, pathlib, runpy, sys
+module = runpy.run_path(sys.argv[1])
+paths, claim = module["journey_paths"], module["owned_directory"]
+checkout, output = pathlib.Path.cwd(), sys.argv[2]
+uid, gid = os.getuid(), os.getgid()
+def rejected(operation):
+    try:
+        operation()
+    except (RuntimeError, FileExistsError):
+        return
+    raise AssertionError("duplicate/redirected owner was admitted")
+def args(shard, directory=output):
+    return ["electron/scripts/product-journey-shards.mjs", "run", "--shard", str(shard), "--output-dir", directory]
+def allocate(shard):
+    marker, leaf = paths(args(shard))
+    claim(checkout, marker, uid, gid)
+    claim(checkout, leaf, uid, gid)
+    return marker, leaf
+with concurrent.futures.ThreadPoolExecutor(max_workers=7) as pool:
+    allocated = list(pool.map(allocate, range(1, 8)))
+for shard, (marker, leaf) in enumerate(allocated, 1):
+    assert leaf == f"{output}/shard-{shard}"
+    assert (checkout / leaf).is_dir()
+    rejected(lambda: claim(checkout, marker, uid, gid))
+    rejected(lambda: claim(checkout, leaf, uid, gid))
+    (checkout / marker).rmdir()  # Simulate proved retirement of ONLY this marker.
+    rejected(lambda: claim(checkout, leaf, uid, gid))  # Output still fences repeat.
+redirect = checkout / ".artifacts/local-ci/runs/redirect"
+redirect.symlink_to(checkout, target_is_directory=True)
+rejected(lambda: claim(checkout, f"{redirect.relative_to(checkout)}/product-journeys/shard-1", uid, gid))
+(checkout / output).chmod(0o777)
+rejected(lambda: claim(checkout, f"{output}/shard-8", uid, gid))
+(checkout / output).chmod(0o700)
+for invalid in json.loads(sys.argv[3]):
+    rejected(lambda: paths(invalid))
+print(json.dumps([marker for marker, _ in allocated]))
+`;
+  const invalid = [args(0), args(8), args("1\n"), args(1, `${output}\n`),
+    args(1, output.replace("synthetic-run", "../escape")), args(1, `/${output}`),
+    args(1, output.replace("/runs/", "/runs//")), [...args(1), "--retry"]];
+  const result = await runLocalCiCommand({ command: "python3", cwd: ".", env: {},
+    args: ["-I", "-c", source, fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url)), output, JSON.stringify(invalid)] },
+  { root, logDirectory: ".logs", taskId: "native-b-shard-paths", timeoutMs: 10_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  assert.equal(result.cleanup.complete, true);
+  assert.deepEqual(JSON.parse(await readFile(path.join(root, result.logs.stdout.path), "utf8")), markers);
+});
+
+test("native B binds forbid privilege regain for read-only and writable views", async (t) => {
+  const root = await fixture(t);
+  // Invoke the real bind helper with intercepted mounts, never real privilege.
+  // This checks flags only, not kernel enforcement or Chromium suitability.
+  const source = String.raw`
+import pathlib, runpy, sys
+module = runpy.run_path(sys.argv[1])
+source = pathlib.Path.cwd() / "source"
+source.mkdir()
+executable = source / "setuid-file"
+executable.write_text("synthetic executable")
+executable.chmod(0o4755)
+calls = []
+def record_mount(source, target, *, flags):
+    calls.append((source, target, flags))
+module["bind"].__globals__["mount"] = record_mount
+for index, (entry, readonly) in enumerate(((source, True), (executable, True), (source, False), (executable, False))):
+    private = pathlib.Path.cwd() / ("private-" + str(index))
+    private.mkdir()
+    calls.clear()
+    module["bind"](private, str(entry), readonly=readonly)
+    target = str(module["private_path"](private, str(entry)))
+    expected = module["MS_BIND"] | module["MS_REMOUNT"] | module["MS_NOSUID"] | module["MS_NODEV"]
+    if readonly:
+        expected |= module["MS_RDONLY"]
+    assert calls == [(str(entry), target, module["MS_BIND"]), (None, target, expected)], calls
+`;
+  const result = await runLocalCiCommand({ command: "python3", cwd: ".", env: {},
+    args: ["-I", "-c", source, fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url))] },
+  { root, logDirectory: ".logs", taskId: "native-b-nosuid-binds", timeoutMs: 10_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  assert.equal(result.cleanup.complete, true);
+});
+
+test("native B exact source views preserve Git child mounts and live identity without host metadata", async (t) => {
+  const root = await fixture(t);
+  // Ordinary synthetic Git/filesystem plus mount-topology model ONLY. Copies
+  // check bytes; the model detects covering overlays that copies alone miss.
+  // Actual mount/root/route/auth/retirement proof remains separate.
+  const source = String.raw`
+import json, os, pathlib, runpy, shutil, subprocess, sys
+module = runpy.run_path(sys.argv[1])
+checkout = pathlib.Path.cwd() / "checkout"
+checkout.mkdir()
+def git(*args):
+    return subprocess.check_output(["git", *args], cwd=checkout, stderr=subprocess.DEVNULL).decode()
+def file(relative, contents):
+    target = checkout / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(contents)
+    return target
+git("init", "--quiet")
+file(".gitignore", ".artifacts/\n.logs/\n")
+file(".npmrc", "ignore-scripts=true\n")
+file("package.json", '{}\n')
+file("docs/source.md", "synthetic source\n")
+git("add", ".")
+git("-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "commit", "--quiet", "-m", "synthetic")
+head = git("rev-parse", "HEAD").strip()
+git("update-ref", "refs/remotes/origin/master", head)
+file(".git/shallow", head + "\n")  # Include the optional third child mount.
+view = dict(head=head, base=head, tracked=git("ls-files", "-z").rstrip("\0").split("\0"))
+# These owned synthetic secrets must never enter the view, even as files.
+file(".git/config", (checkout / ".git/config").read_text() + '\n[credential]\n helper = forbidden-synthetic-helper\n')
+file(".git/hooks/forbidden", "synthetic-credential-do-not-copy")
+receipt = ".artifacts/local-ci/c2-zc-rust-acceptance.json"
+fixture = ".artifacts/local-ci/c2-zc-restore-fixture/synthetic-run"
+for name in (receipt, receipt + ".sha256", *(fixture + "/" + name for name in
+             ("c2zc-restore-fixture.manifest.json", "c2zc-restore-fixture.backup.db", "c2zc-restore-fixture.db"))):
+    file(name, "synthetic immutable evidence " + name)
+file(".artifacts/local-ci/runs/foreign/product-journeys/shard-2/private", "unrelated-output")
+environment = dict(GRIMODEX_C2ZC_RUST_RECEIPT_PATH=receipt, GRIMODEX_C2ZC_RESTORE_FIXTURE=json.dumps(dict(
+    path=str(checkout / fixture / "c2zc-restore-fixture.backup.db"),
+    manifest=str(checkout / fixture / "c2zc-restore-fixture.manifest.json"))))
+tracked = module["git_sources"](checkout, view)
+evidence = module["evidence_sources"](checkout, environment)
+assert len(evidence) == 5
+private = pathlib.Path.cwd() / "private"
+private.mkdir()
+visible_mounts, mount_calls = set(), []
+frozen = False
+inside = module["private_path"](private, str(checkout))
+git_directory = inside / ".git"
+expected_git_mounts = {git_directory / name for name in ("index", "objects", "shallow")}
+def copy_bind(root, source, **options):
+    assert not frozen, "child mounted after metadata freeze"
+    assert options.get("readonly", True), "Git/evidence mount is writable"
+    source = pathlib.Path(source)
+    target = module["private_path"](root, str(source))
+    visible_mounts.add(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, target)
+    else:
+        shutil.copyfile(source, target)
+def model_mount(source, target, *, flags):
+    global frozen
+    target = pathlib.Path(target)
+    assert target == git_directory
+    mount_calls.append((source, flags))
+    if flags == module["MS_BIND"]:
+        assert source == str(target)
+        # Nonrecursive self-bind clones the underlying directory mount, not
+        # its child mounts. A later parent overlay makes those unreachable.
+        visible_mounts.difference_update(child for child in tuple(visible_mounts) if target in child.parents)
+        visible_mounts.add(target)
+    else:
+        assert source is None
+        assert flags == (module["MS_BIND"] | module["MS_REMOUNT"] | module["MS_RDONLY"] |
+                         module["MS_NOSUID"] | module["MS_NODEV"])
+        assert expected_git_mounts <= visible_mounts, "parent self-bind hid Git child mounts"
+        frozen = True  # Remount changes flags, not mount topology.
+module["materialize_git"].__globals__["bind"] = copy_bind
+module["materialize_git"].__globals__["mount"] = model_mount
+for source in tracked + evidence:
+    copy_bind(private, source)
+module["materialize_git"](private, checkout, view, os.getuid(), os.getgid())
+assert frozen and len(mount_calls) == 2
+assert expected_git_mounts <= visible_mounts
+# Check the model's adversarial covering-overlay behavior explicitly. The old
+# production ordering fails above; no real privilege/mount is exercised here.
+model_mount(str(git_directory), str(git_directory), flags=module["MS_BIND"])
+assert not expected_git_mounts.intersection(visible_mounts)
+# Mounts are copies in this ordinary test. Restore directory modes only for
+# fixture teardown and the deliberate tracked-source corruption below.
+inside.chmod(0o755)
+(inside / ".git").chmod(0o755)
+assert not (inside / ".git/hooks").exists()
+assert "credential" not in (inside / ".git/config").read_text()
+assert not (inside / ".artifacts/local-ci/runs").exists()
+assert all((inside / name.relative_to(checkout)).read_bytes() == name.read_bytes() for name in evidence)
+def rejected(operation):
+    try:
+        operation()
+    except (RuntimeError, ValueError, FileNotFoundError):
+        return
+    raise AssertionError("unsafe exact view admitted")
+for path in ("../outside", ".git/config", ".ralph/secret", ".env", "/etc/passwd", "docs//source.md"):
+    rejected(lambda: module["git_sources"](checkout, dict(view, tracked=[path])))
+redirect = checkout / "redirect"
+redirect.symlink_to(checkout / "docs", target_is_directory=True)
+rejected(lambda: module["git_sources"](checkout, dict(view, tracked=["redirect/source.md"])))
+alternates = file(".git/objects/info/alternates", "/forbidden-synthetic-objects")
+rejected(lambda: module["git_sources"](checkout, view))
+alternates.unlink()
+for path in ("/tmp/receipt", ".artifacts/local-ci/runs/foreign/private", receipt + "/../other"):
+    rejected(lambda: module["evidence_sources"](checkout, dict(environment, GRIMODEX_C2ZC_RUST_RECEIPT_PATH=path)))
+rejected(lambda: module["evidence_sources"](checkout, dict(environment, GRIMODEX_C2ZC_RESTORE_FIXTURE=json.dumps(dict(
+    path=str(checkout / fixture / "c2zc-restore-fixture.backup.db"), manifest="/tmp/foreign-manifest")))))
+print(json.dumps(dict(checkout=str(checkout), inside=str(inside))))
+`;
+  const result = await runLocalCiCommand({ command: "python3", cwd: ".", env: {},
+    args: ["-I", "-c", source, fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url))] },
+  { root, logDirectory: ".logs", taskId: "native-b-exact-views", timeoutMs: 10_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  assert.equal(result.cleanup.complete, true);
+  const { checkout, inside } = JSON.parse(await readFile(path.join(root, result.logs.stdout.path), "utf8"));
+  const before = await resolveC2ZcRustAcceptanceCandidate({ root: checkout });
+  const after = await resolveC2ZcRustAcceptanceCandidate({ root: inside });
+  assert.equal(before.worktreeClean, true);
+  assert.deepEqual(after, before);
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(path.join(inside, "docs/source.md"), "changed synthetic source");
+  const changed = await resolveC2ZcRustAcceptanceCandidate({ root: inside });
+  assert.equal(changed.worktreeClean, false);
+  assert.notEqual(changed.worktreeFingerprint, before.worktreeFingerprint);
+});
+
+test("native B pending/reentrant owner stays single and exit alone cannot retire it", async (t) => {
+  let child;
+  let count = 0;
+  let spawned;
+  const ready = new Promise((resolve) => { spawned = resolve; });
+  const owner = createNativeBBusOwner({
+    readBoundary: async () => ({ uid: 1001 }),
+    spawnProcess(command, args, options) {
+      count++;
+      assert.equal(command, "/usr/bin/dbus-daemon");
+      assert.equal(args[0], "--nofork");
+      assert.equal(options.detached, false);
+      child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.stdio = [null, child.stdout, child.stderr, new PassThrough()];
+      child.kill = () => { child.emit("exit", 0, null); return true; };
+      const config = args[1].slice("--config-file=".length);
+      const directory = path.dirname(config);
+      t.after(async () => { const { rm } = await import("node:fs/promises"); await rm(directory, { recursive: true, force: true }); });
+      spawned({ config, directory });
+      return child;
+    },
+  });
+  const first = owner.start();
+  const second = owner.start();
+  const { directory, config } = await ready;
+  assert.match(await readFile(config, "utf8"), /<auth>EXTERNAL<\/auth>/u);
+  child.stdio[3].end(`unix:path=${directory}/bus,guid=${"a".repeat(32)}\n`);
+  assert.equal(await first, await second);
+  assert.equal(count, 1);
+  let retired = false;
+  const retirement = owner.retire().then(() => { retired = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(retired, false, "kill/exit is not close plus stream EOF");
+  await assert.rejects(owner.start(), /admission closed/u);
+  child.stdout.end(); child.stderr.end();
+  await new Promise((resolve) => setImmediate(resolve));
+  child.emit("close", 0, null);
+  await retirement;
+  assert.equal(count, 1);
+});
+
+test("native B cancellation closes pending admission before a late boundary resolves", async () => {
+  const controller = new AbortController();
+  let release;
+  let count = 0;
+  const boundary = new Promise((resolve) => { release = resolve; });
+  const owner = createNativeBBusOwner({ signal: controller.signal, readBoundary: () => boundary,
+    spawnProcess() { count++; throw new Error("late start must not happen"); } });
+  const pending = owner.start();
+  controller.abort();
+  const retirement = owner.retire();
+  const rejectedStart = assert.rejects(pending, /quarantined/u);
+  const rejectedRetirement = assert.rejects(retirement, /quarantined/u);
+  release({ uid: 1001 });
+  await Promise.all([rejectedStart, rejectedRetirement]);
+  assert.equal(count, 0);
+  await assert.rejects(owner.start(), /admission closed/u);
+});
+
+test("native B qualification is mandatory before Electron and scoped to the original Editor partition", async () => {
+  const boundary = { qualification: { intentDigest: "a".repeat(64),
+    routes: { pathnameDenied: true, abstractDenied: true, tcpDenied: true, hostViewDenied: true },
+    retirement: { setsidDoubleFork: true, stdoutEOF: true, stderrEOF: true, descendantsAbsent: true, reaped: 2 } } };
+  assert.equal(assertNativeBQualification(boundary), boundary.qualification);
+  for (const absent of [null, {}, { qualification: {} }]) assert.throws(() => assertNativeBQualification(absent), /prerequisite absent/u);
+  for (const group of ["routes", "retirement"]) {
+    for (const key of Object.keys(boundary.qualification[group])) {
+      const changed = structuredClone(boundary);
+      changed.qualification[group][key] = key === "reaped" ? 1 : "true";
+      assert.throws(() => assertNativeBQualification(changed), /prerequisite absent/u);
+    }
+  }
+  const direct = ["electron/scripts/product-journeys.mjs"];
+  assert.equal(nativeBIncludesEditor(direct, {}), true);
+  assert.equal(nativeBIncludesEditor(direct, { GRIMODEX_PRODUCT_JOURNEY_IDS: '["editor-persistence"]' }), true);
+  assert.equal(nativeBIncludesEditor(direct, { GRIMODEX_PRODUCT_JOURNEY_IDS: '["chat-authority-isolation"]' }), false);
+  for (let shard = 1; shard <= 7; shard++) {
+    assert.equal(nativeBIncludesEditor(["electron/scripts/product-journey-shards.mjs", "run", "--shard", String(shard),
+      "--output-dir", ".artifacts/local-ci/runs/synthetic/product-journeys"], {}), shard === 1);
+  }
+  let starts = 0;
+  const owner = createNativeBBusOwner({ readBoundary: async () => null,
+    spawnProcess() { starts++; throw new Error("missing native proof must not spawn"); } });
+  await assert.rejects(owner.qualify(), /quarantined/u);
+  await assert.rejects(owner.qualify(), /admission closed/u);
+  await assert.rejects(owner.retire(), /quarantined/u);
+  assert.equal(starts, 0);
+  const harness = await readFile(new URL("../electron/scripts/product-journey-harness.mjs", import.meta.url), "utf8");
+  assert.match(harness, /nativeBElectronEnvironment\(process\.env, await nativeBus\.qualify\(\)\)/u);
+  assert.match(harness, /runHarnessOperation\("native-b:qualification", \(\) => nativeBus\.qualify\(\)/u);
+  assert.match(harness, /if \(nativeBus && !nativeQualificationRecorded\) \{\s*throw new Error\("native B requires qualification before case admission"\)/u);
+  assert.doesNotMatch(harness, /await nativeBus\.start\(\)/u);
+});
+
+test("native B real pending client cancellation suppresses late input and joins actual close/EOF", async (t) => {
+  const root = await fixture(t);
+  // Ordinary synthetic child lifecycle only, NOT native boundary qualification.
+  // Replace only client_boundary; execute the actual fixed cancellation mode.
+  const source = String.raw`
+import os, pathlib, runpy, select, signal, subprocess, sys
+module = runpy.run_path(sys.argv[1])
+module["qualify_bus"].__globals__["client_boundary"] = lambda: {}
+# Fork a scoped known child; never inventory or kill host /proc/process groups.
+read, write = os.pipe()
+output, out_write = os.pipe()
+errors, err_write = os.pipe()
+pid = os.fork()
+if pid == 0:
+    os.dup2(read, 0); os.dup2(out_write, 1); os.dup2(err_write, 2)
+    os.closerange(3, os.sysconf("SC_OPEN_MAX"))
+    sys.exit(module["qualify_bus"]("--cancel-client"))
+os.close(read); os.close(out_write); os.close(err_write)
+def read_line(descriptor):
+    data = bytearray()
+    while not data.endswith(b"\n"):
+        assert select.select([descriptor], [], [], 2)[0], "child barrier/EOF timed out"
+        chunk = os.read(descriptor, 1)
+        assert chunk, "child closed before barrier"
+        data.extend(chunk)
+    return data
+assert read_line(output) == b"ready-for-input\n"
+admission_closed = True
+os.kill(pid, signal.SIGTERM)
+# The actual later input callback is suppressed, not delivered to a cancelled
+# socket client. Pipe remains held until its child has actually exited.
+if not admission_closed:
+    os.write(write, b"unapproved-late-endpoint")
+assert read_line(output) == b"cancelled-before-input\n"
+joined, status = os.waitpid(pid, 0)
+assert joined == pid and os.waitstatus_to_exitcode(status) == 0
+assert os.read(output, 1) == b"" and os.read(errors, 1) == b""
+for descriptor in (write, output, errors):
+    os.close(descriptor)
+print("actual cancelled known child exit/EOF/join; native proof NOTRUN")
+`;
+  const result = await runLocalCiCommand({ command: "python3", cwd: ".", env: {},
+    args: ["-I", "-c", source, fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url))] },
+  { root, logDirectory: ".logs", taskId: "native-b-client-cancel", timeoutMs: 10_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  assert.equal(result.cleanup.complete, true);
 });

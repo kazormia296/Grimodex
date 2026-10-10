@@ -4357,6 +4357,20 @@ async function verifyLocalCiReportAtPath({
     await resolveLocalCiCandidate(plan),
   );
   const receipt = JSON.parse(await readFile(reportPath, "utf8"));
+  if (plan.profile === "full") {
+    const resources = receipt.fullResourceAdmission;
+    if (resources?.state !== "private-accepted" || resources.private?.localRunId !== receipt.runId) {
+      throw new Error("Full requires the actual late private gate, not host-only admission");
+    }
+    const { readFullHostAdmission, verifyFullPrivateAdmission } = await import("./local-ci-full-admission.mjs");
+    const binding = resources.private.binding;
+    const host = await readFullHostAdmission(root, { head: candidate.resolvedHeadSha, base: candidate.resolvedBaseSha,
+      tree: candidate.resolvedHeadTreeSha, localRunId: receipt.runId, runId: binding.runId, attempt: binding.attempt });
+    if (JSON.stringify(resources.host) !== JSON.stringify({ path: host.path, sha256: host.sha256 }) ||
+        JSON.stringify(resources.private) !== JSON.stringify(await verifyFullPrivateAdmission(root, host.decision))) {
+      throw new Error("Full staged resource artifacts changed since execution");
+    }
+  }
   const currentProductJourneyEvidence =
     plan.profile === "full"
       ? await collectProductJourneyEvidence(plan, {
@@ -4518,6 +4532,7 @@ async function main() {
   let result = null;
   const runId = randomUUID();
   let runStarted = false;
+  let fullHostAdmission = null;
   try {
     checkoutLock = await acquireCheckoutLock(repoRoot, { runId });
     if (cliAbort.signal.aborted) throw cliAbort.signal.reason;
@@ -4527,6 +4542,12 @@ async function main() {
     );
     await prepareLocalCiArtifacts(plan);
     runStarted = true;
+    if (plan.profile === "full") {
+      if (plan.coverage.completeness !== "complete") throw new Error("Full native resource admission requires stage 1");
+      const { admitFullResources } = await import("./local-ci-full-admission.mjs");
+      fullHostAdmission = await admitFullResources({ root: repoRoot, base: candidate.resolvedBaseSha, head: candidate.resolvedHeadSha,
+        maxParallelTasks: plan.maxParallelTasks ?? plan.maxSlots, signal: cliAbort.signal, localRunId: runId });
+    }
     try {
       result = await runLocalCiInvocationTasks(plan, {
         candidate,
@@ -4541,10 +4562,13 @@ async function main() {
           ...error.result,
           runId: error.result.runId ?? runId,
           status: "failed",
+          ...(fullHostAdmission ? { fullResourceAdmission: { state: "failed", hostState: "admitted", privateState: "unaccepted", binding: fullHostAdmission.binding } } : {}),
         };
+        await writeReport(failureReportPath(reportPath, runId), result);
       }
       throw error;
     }
+    if (fullHostAdmission) result.fullResourceAdmission = { state: "failed", hostState: "admitted", privateState: "unaccepted", binding: fullHostAdmission.binding };
     const finishedCandidate = validateLocalCiCandidate(
       plan,
       await resolveLocalCiCandidate(plan),
@@ -4558,6 +4582,12 @@ async function main() {
     try {
       verifyCandidateBinding(result.candidate, finishedCandidate);
       if (plan.profile === "full" && result.status === "passed") {
+        const { readFullHostAdmission, verifyFullPrivateAdmission } = await import("./local-ci-full-admission.mjs");
+        const host = await readFullHostAdmission(repoRoot, { head: finishedCandidate.resolvedHeadSha,
+          base: finishedCandidate.resolvedBaseSha, tree: finishedCandidate.resolvedHeadTreeSha, localRunId: runId,
+          runId: fullHostAdmission.binding.runId, attempt: fullHostAdmission.binding.attempt });
+        result.fullResourceAdmission = { state: "private-accepted", host: { path: host.path, sha256: host.sha256 },
+          private: await verifyFullPrivateAdmission(repoRoot, host.decision) };
         result.productJourneyEvidence = await collectProductJourneyEvidence(
           plan,
           {
@@ -4610,8 +4640,11 @@ async function main() {
       result = finalized.result;
       process.stdout.write(`[local-ci] report=${finalized.reportPath}\n`);
     } else {
-      await writeReport(reportPath, result);
-      process.stdout.write(`[local-ci] report=${reportPath}\n`);
+      // A late private gate may fail after real canonical tasks ran. Preserve
+      // that attempt/partial outcomes without overwriting an earlier receipt.
+      const outcomePath = plan.profile === "full" ? failureReportPath(reportPath, runId) : reportPath;
+      await writeReport(outcomePath, result);
+      process.stdout.write(`[local-ci] report=${outcomePath}\n`);
     }
   } finally {
     try {

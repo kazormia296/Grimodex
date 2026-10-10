@@ -544,6 +544,11 @@ const fixtureSources = [
   "scripts/local-ci.mjs",
 ];
 
+const nativeBSizingSources = [
+  "scripts/local-ci-xvfb.mjs", "scripts/local-ci-native-b.py",
+  "electron/scripts/product-journey-native-b.mjs", "electron/scripts/product-journey-shards.mjs",
+];
+
 // Constructive arithmetic over reviewed public/synthetic allocation inventories.
 // Inventories are forecasts/observations, NOT capacity attestations. They include
 // physical allocation/inodes (not just logical DB or compressed archive length).
@@ -552,7 +557,7 @@ const fixtureSources = [
 export async function produceWorkloadEstimate(input, binding, root, setupLocations = fullSetupLocations(root)) {
   await validateEstimateIdentity(input, binding, root);
   if (input.version !== "full-workload-input/1") fail(`a reviewed allocation inventory at ${workloadInputPath}`);
-  for (const source of [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", ...fixtureSources]) {
+  for (const source of [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", ...fixtureSources, ...nativeBSizingSources]) {
     if (!input.sources.some((entry) => entry.path === source)) fail(`current constructive sizing source ${source}`);
   }
   const inventories = new Map();
@@ -679,6 +684,78 @@ export async function produceWorkloadEstimate(input, binding, root, setupLocatio
   // harness, test, bus or fixture builder is imported or executed here.
   const { PRODUCT_JOURNEY_CATALOG } = await import(pathToFileURL(path.join(root, fixtureSources[4])).href);
   if (!Array.isArray(PRODUCT_JOURNEY_CATALOG) || !PRODUCT_JOURNEY_CATALOG.length || new Set(PRODUCT_JOURNEY_CATALOG.map(({ id }) => id)).size !== PRODUCT_JOURNEY_CATALOG.length) fail("the actual complete product-journey catalog");
+  // Parse only the fixed literal partition; importing shards would import the
+  // harness/Playwright before setup. Changed/dynamic topology needs review.
+  const shardSource = await readFile(path.join(root, nativeBSizingSources[3]), "utf8");
+  const block = shardSource.match(/export const FIXED_PRODUCT_JOURNEY_SHARDS = Object\.freeze\(\[([\s\S]*?)\n\]\);/u)?.[1];
+  const shardFor = new Map();
+  const partitions = [...(block ?? "").matchAll(/Object\.freeze\(\[([^\]]*)\]\)/gu)];
+  if (partitions.length !== 7 || block.replace(/Object\.freeze\(\[[^\]]*\]\)/gu, "").replace(/[,\s]/gu, "")) fail("reviewed seven literal journey shards with one native B consumer");
+  for (const [index, partition] of partitions.entries()) {
+    if (partition[1].replace(/"[a-z0-9-]+"/gu, "").replace(/[,\s]/gu, "")) fail("literal native B shard membership, not executable sizing input");
+    const ids = [...partition[1].matchAll(/"([a-z0-9-]+)"/gu)].map((match) => match[1]);
+    if (!ids.length || !taskIds.has(`journeys.shard-${index + 1}`)) fail("every actual journey shard consumer");
+    for (const id of ids) {
+      if (shardFor.has(id)) fail("distinct native B journey shard membership without repeated cases");
+      shardFor.set(id, index + 1);
+    }
+  }
+  if (shardFor.size !== PRODUCT_JOURNEY_CATALOG.length || PRODUCT_JOURNEY_CATALOG.some(({ id }) => !shardFor.has(id)) || shardFor.get("editor-persistence") !== 1) fail("complete native B catalog partition and one Editor owner");
+  const nativeInventories = ["native.b.root", "native.b.root-growth", "native.b.xvfb", "native.b.host", "native.b.sentinels", "native.b.intent", "native.b.bus"];
+  for (const id of nativeInventories) {
+    const inventory = get(id);
+    if (inventory.items.some((item) => !amount(item.bytes) || !amount(item.inodes))) fail(`positive native B allocation roles for ${id}`);
+  }
+  get("native.b.root", ["mount-metadata", "admission"]);
+  get("native.b.xvfb", ["auth-socket-lock", "shared-surface"]);
+  get("native.b.bus", ["config", "malformed-config", "intents-results", "socket-directory"]);
+  get("native.b.root-growth", ["mount-metadata", "shared-surface"]);
+  get("native.b.host", ["markers-output"]);
+  get("native.b.sentinels", ["directory-file-socket"]);
+  get("native.b.intent", ["qualification-intent"]);
+  const xvfbSource = await readFile(path.join(root, nativeBSizingSources[0]), "utf8");
+  if (!xvfbSource.includes('"1920x1080x24"') || /"-(?:fbdir|shmem)"/u.test(xvfbSource)) fail("reviewed Xvfb in-memory framebuffer geometry and unchanged storage flags");
+  // Keep byte-only memory scenarios OUTSIDE filesystem/inode demand. The
+  // existing ext4 helper cannot attest process heaps, pipes or tmpfs RAM fit.
+  const nativeMemory = [];
+  const memorySources = nativeBSizingSources.map((name) => input.sources.findIndex((entry) => entry.path === name));
+  const memory = (id, bytes, basis) => ({ id, bytes: String(bytes), sources: memorySources, basis,
+    operation: "Acquire actual same-owner memory/swap/cgroup pressure and complete binary heap/pipe/tmpfs coexistence before native workload admission; these finite byte-only scenarios are not capacity or complete RSS" });
+  // The wrapper enters native B only for the Editor-bearing shard. All seven
+  // Xvfb consumers still coexist; ordinary shards are NOT private-root owners.
+  residual.push(term("native-b.1.root", "retained", "cache-environment", "native-b-root-1", ["native.b.root", "native.b.xvfb"]));
+  residual.push(term("native-b.1.growth", "uncertainty", "cache-environment", "native-b-root-1", ["native.b.root-growth", "fixtures.uncertainty"]));
+  residual.push(term("native-b.1.host", "retained", "cache-environment", "workspace", ["native.b.host"]));
+  if (setupLocations.find(([label]) => label === "unix-temp")?.[1] !== "/tmp") fail("ordinary X11 /tmp socket/lock allocation at its actual acquired Unix-temp destination, without TMPDIR redirect credit");
+  const auth = get("native.b.xvfb").items.find(({ role }) => role === "auth-socket-lock");
+  const surface = get("native.b.xvfb").items.find(({ role }) => role === "shared-surface");
+  const replacement = get("native.b.root-growth").items.find(({ role }) => role === "shared-surface");
+  for (const [index] of partitions.entries()) {
+    const shard = index + 1;
+    const scope = shard === 1 ? "single native B consumer" : "ordinary host Xvfb consumer";
+    nativeMemory.push(memory(`journey-xvfb.${shard}.framebuffer`, 1920n * 1080n * 4n, `${scope}: one 32-bit-padded 1920x1080x24 Xvfb surface; process heap, not a file or inode`));
+    nativeMemory.push(memory(`journey-xvfb.${shard}.framebuffer-growth`, 1920n * 1080n * 4n, `${scope}: independent additional framebuffer/replacement surface; finite additive uncertainty, not complete Xvfb RSS`));
+    if (shard === 1) continue;
+    // Reuse the reviewed eight-path xauth/X11 density inventory: directory,
+    // auth file and three scratch paths in Node-temp; socket dir/socket/lock
+    // in Unix /tmp. No Chromium mapped-file bytes are charged to host disk.
+    for (const [suffix, location, paths] of [["auth", "node-temp", 5n], ["socket", "unix-temp", 3n]]) {
+      residual.push({
+        ...term(`journey-xvfb.${shard}.${suffix}`, "retained", "cache-environment", location, ["native.b.xvfb"]),
+        bytes: String((amount(auth.bytes) + 7n) / 8n * paths), inodes: String((amount(auth.inodes) + 7n) / 8n * paths),
+        basis: `${paths} of eight independent xauth/X11 path images at the ordinary wrapper's actual destination; ${get("native.b.xvfb").basis}`,
+      });
+    }
+    nativeMemory.push(memory(`journey-xvfb.${shard}.shared-surface`, amount(surface.bytes), "ordinary host Chromium shared-memory mapped surface, not a host disk file; actual /dev/shm geometry/quota still requires acquisition"));
+    nativeMemory.push(memory(`journey-xvfb.${shard}.shared-surface-growth`, amount(replacement.bytes), "ordinary host Chromium replacement shared-memory surface; separate additive memory scenario, not complete RSS"));
+  }
+  // Exactly ONE Editor owner creates host sentinels/intent and the continuous
+  // bus. Real probe pipes/heap are memory, not an ext4 byte/inode allowance.
+  residual.push(term("native-b.sentinels", "transient", "cache-environment", "node-temp", ["native.b.sentinels"]));
+  residual.push(term("native-b.intent", "retained", "logs-reports", "workspace", ["native.b.intent"]));
+  residual.push(term("native-b.bus", "retained", "logs-reports", "native-b-root-1", ["native.b.bus"]));
+  nativeMemory.push(memory("native-b.probes", 3n * (4096n + 8192n) + 128n,
+    "three fixed probe request/output accumulation limits plus escape output; excludes installed interpreter/daemon/client heaps and kernel pipe backing, which remain actual-target acquisition deficits"));
   for (const [index, journey] of PRODUCT_JOURNEY_CATALOG.entries()) {
     const id = `journey.${journey.id}`;
     // Inventory must cover the whole case, including all owned workspaces and
@@ -688,7 +765,9 @@ export async function produceWorkloadEstimate(input, binding, root, setupLocatio
     get(`${id}.runtime`, ["db", "wal", "shm", "user-data", "cache", "logs", "receipts", "other"]);
     get(`${id}.failure`, ["backup", "receipt-snapshot", "diagnostics", "screenshot"]);
     const ids = [`${id}.runtime`, `${id}.failure`];
-    residual.push(term(`journey.${index}.tmp`, "retained", "failure-tmproot-artifact-copy", "node-temp", ids, 1n, "all owned case runtime + failure snapshots/diagnostics retained in tmpRoot"));
+    const native = shardFor.get(journey.id) === 1;
+    residual.push(term(`journey.${index}.tmp`, "retained", "failure-tmproot-artifact-copy", native ? "native-b-root-1" : "node-temp", ids, 1n,
+      native ? "Editor-bearing shard: all owned case runtime + failure retained in private /tmp tmpRoot" : "ordinary shard: all owned case runtime + failure retained at host Node os.tmpdir()"));
     residual.push(term(`journey.${index}.copy`, "retained", "failure-tmproot-artifact-copy", "workspace", ids, 1n, "whole tmpRoot artifact copy coexists with retained original"));
     const screenshot = get(`${id}.failure`).items.find((item) => item.role === "screenshot");
     residual.push({
@@ -702,14 +781,14 @@ export async function produceWorkloadEstimate(input, binding, root, setupLocatio
   // default factor or spread guessed from a single low-frequency sample.
   get("fixtures.uncertainty", ["sqlite-allocation", "failure-copy", "unsampled-transient"]);
   residual.push(term("fixtures.uncertainty", "uncertainty", "fixtures-db-wal-backup", workerTemp, ["fixtures.uncertainty"]));
-  residual.push(term("journey.uncertainty", "uncertainty", "failure-tmproot-artifact-copy", "node-temp", ["fixtures.uncertainty"]));
+  residual.push(term("journey.uncertainty", "uncertainty", "failure-tmproot-artifact-copy", "node-temp", ["fixtures.uncertainty"], BigInt(partitions.length - 1), "independent growth image for each of six ordinary host shard consumers; no serial-cleanup savings"));
   residual.push(term("failure.uncertainty", "uncertainty", "failure-tmproot-artifact-copy", "workspace", ["fixtures.uncertainty"]));
   // The constructive terms themselves cite the audited topology, not merely
   // the measured payload's schema. Keep all refs bound to the current checkout.
-  const topology = fixtureSources.map((name) => input.sources.findIndex((entry) => entry.path === name));
-  for (const value of residual.filter((entry) => /^(worker|c2zc|journey|fixtures|failure)\./u.test(entry.id))) value.sources = [...new Set([...value.sources, ...topology])];
+  const topology = [...fixtureSources, ...nativeBSizingSources].map((name) => input.sources.findIndex((entry) => entry.path === name));
+  for (const value of residual.filter((entry) => /^(worker|c2zc|journey|journey-xvfb|fixtures|failure|native-b)\./u.test(entry.id))) value.sources = [...new Set([...value.sources, ...topology])];
   const used = new Set([...input.setup, ...input.preparation.flatMap((step) => step.terms), ...input.tasks.flatMap((task) => task.terms)].flatMap((entry) => entry.inventories));
-  for (const id of [...fixtureInventoryIds, "fixtures.uncertainty"]) used.add(id);
+  for (const id of [...fixtureInventoryIds, ...nativeInventories, "fixtures.uncertainty"]) used.add(id);
   if ([...inventories.keys()].some((id) => !used.has(id))) fail("a reviewed finite inventory without silently unused demand");
   validateTerms(residual, input.sources, residualKinds);
   for (const domain of domains) if (!residual.some((entry) => entry.domain === domain)) fail(`residual inventory for ${domain}`);
@@ -718,9 +797,15 @@ export async function produceWorkloadEstimate(input, binding, root, setupLocatio
     const observed = entry.measurement;
     if (!["retained", "peak"].includes(observed.mode) || !preparationIds.has(observed.preparationId) || observed.location !== entry.location) fail(`current preparation observation at the effective residual destination for ${entry.id}`);
   }
+  // Planning hypotheses are byte-only data, not filesystem observations, RSS
+  // measurements, capacity or hard limits. Keep them in the same reviewed input
+  // and durable estimate; never manufacture omitted process risk from free RAM.
+  if (!input.fullMemoryRisk || digest(Object.keys(input.fullMemoryRisk).sort()) !== digest(["components", "terms"])) fail("reviewed practical Full memory-risk data, without commands or admission flags");
+  const fullMemoryRisk = { tasks: input.tasks.map(({ id }) => id), ...input.fullMemoryRisk };
+  validateFullMemoryRisk({ sources: input.sources, fullMemoryRisk }, { tasks: input.tasks });
   const workflow = await readFile(path.join(root, ".github/workflows/canonical-ci.yml"));
   return {
-    binding, sources: input.sources, inputDigest: digest(input), tasks: input.tasks.map(({ id }) => id),
+    binding, sources: input.sources, inputDigest: digest(input), tasks: input.tasks.map(({ id }) => id), nativeMemory, fullMemoryRisk,
     setup: { workflowSha256: createHash("sha256").update(workflow).digest("hex"), destinations: setupLocations, terms: setupTerms },
     preparation, residual,
   };
@@ -754,6 +839,17 @@ export async function validateWorkloadEstimate(estimate, binding, plan, preparat
   const tasks = plan.tasks.map((task) => task.id).sort();
   if (!Array.isArray(estimate.tasks) || JSON.stringify([...estimate.tasks].sort()) !== JSON.stringify(tasks)) fail("complete Full consumer coverage, including every concurrent task");
   validateTerms(estimate.residual, estimate.sources, residualKinds);
+  if (nativeBSizingSources.every((name) => estimate.sources.some(({ path }) => path === name))) {
+    const expected = [...Array.from({ length: 7 }, (_, index) => [
+      `journey-xvfb.${index + 1}.framebuffer`, `journey-xvfb.${index + 1}.framebuffer-growth`,
+      ...(index ? [`journey-xvfb.${index + 1}.shared-surface`, `journey-xvfb.${index + 1}.shared-surface-growth`] : []),
+    ]).flat(), "native-b.probes"].sort();
+    if (!Array.isArray(estimate.nativeMemory) || digest(estimate.nativeMemory.map((entry) => entry?.id).sort()) !== digest(expected)) fail("separate complete named native B memory scenarios, not filesystem inode terms");
+    for (const entry of estimate.nativeMemory) {
+      if (Object.keys(entry).some((key) => !["id", "bytes", "sources", "basis", "operation"].includes(key)) || !amount(entry.bytes) || typeof entry.basis !== "string" || !entry.basis.trim() || typeof entry.operation !== "string" || !entry.operation.trim() || !Array.isArray(entry.sources) || !entry.sources.length || entry.sources.some((index) => !Number.isSafeInteger(index) || !estimate.sources[index])) fail("positive source-grounded native memory scenarios without capacity or inode fiction");
+    }
+    validateFullMemoryRisk(estimate, plan);
+  }
   for (const domain of domains) {
     if (!estimate.residual.some((term) => term.domain === domain)) fail(`the concrete residual sizing operation for ${domain}`);
   }
@@ -827,6 +923,74 @@ export function assessFullDemand(filesystems, terms) {
     report.push({ device, bytes: String(fs.bytes), inodes: String(fs.inodes), demandBytes: String(fs.demandBytes), demandInodes: String(fs.demandInodes), ...(terms.length ? { allocationUnit: "4096" } : {}) });
   }
   return report;
+}
+
+export function assessFullMemory(memory, estimate, plan, roots, { privatePending = false } = {}) {
+  if (!memory || !Number.isSafeInteger(memory.observedAt) || memory.observedAt > Date.now() ||
+      Date.now() - memory.observedAt > 30_000 || !Array.isArray(memory.ancestors) || !memory.ancestors.length ||
+      memory.membership !== estimate.memoryCgroup) fail("fresh actual same-owner host and all applicable memory cgroup ancestors");
+  let available = amount(memory.host?.MemAvailable);
+  const total = amount(memory.host?.MemTotal), swapFree = amount(memory.host?.SwapFree), swapTotal = amount(memory.host?.SwapTotal);
+  if (available > total || swapFree > swapTotal || !memory.pressure?.some || !memory.pressure?.full) fail("complete actual host memory/swap/pressure acquisition");
+  for (const psi of [memory.pressure, ...memory.ancestors.map(({ pressure }) => pressure)]) {
+    for (const kind of ["some", "full"]) {
+      if (!psi?.[kind] || !/^\d+$/u.test(psi[kind].total ?? "") ||
+          ["avg10", "avg60", "avg300"].some((key) => !/^\d+\.\d+$/u.test(psi[kind][key] ?? "") || Number(psi[kind][key]) !== 0)) {
+        fail("complete actual pressure acquisition without current host/ancestor memory pressure");
+      }
+    }
+  }
+  for (const ancestor of memory.ancestors) {
+    if (!ancestor.pressure?.some || !ancestor.pressure?.full) fail("memory pressure for every applicable ancestor");
+    if (ancestor.state === "kernel-root-no-controller-limit" && ancestor.path === ".") continue;
+    if (ancestor.state !== "kernel-accounted") fail("authoritative actual memory ancestor state");
+    const current = amount(ancestor["memory.current"]);
+    for (const key of ["memory.max", "memory.high"]) {
+      const value = ancestor[key];
+      if (value !== "max") {
+        const limit = amount(value);
+        available = minimum(available, limit > current ? limit - current : 0n);
+      }
+    }
+    // Swap is observed independently. Never add it to remaining physical RAM.
+    const swapCurrent = amount(ancestor["memory.swap.current"]);
+    if (ancestor["memory.swap.max"] !== "max") amount(ancestor["memory.swap.max"]);
+    if (swapCurrent > swapTotal) fail("consistent host/ancestor swap accounting");
+  }
+  let demand = validateFullMemoryRisk(estimate, plan);
+  for (const term of estimate.nativeMemory) demand += amount(term.bytes);
+  for (const term of estimate.residual.filter((term) => term.location === "native-b-root-1")) demand += amount(term.bytes);
+  if (roots.length !== (privatePending ? 0 : 1) || available <= demand) fail("same-host/cgroup remaining memory for all additive private-root and Full process risk (no sibling reservation or swap credit)");
+  return { available: String(available), demand: String(demand), swapFree: String(swapFree), swapTotal: String(swapTotal) };
+}
+
+export function validateFullMemoryRisk(estimate, plan) {
+  const risk = estimate.fullMemoryRisk;
+  // The current framebuffer/probe terms are byte-only scenarios, explicitly NOT
+  // complete Python/Node/daemon/Xvfb/Electron/kernel/other-Full-consumer demand.
+  // Actual capacity observations cannot fill that known risk-ledger deficit.
+  const components = ["python-pid1", "node-wrappers", "xvfb", "daemon-clients", "electron-native", "pipes-kernel", "other-full-consumers", "pressure-uncertainty"];
+  if (!risk || digest(Object.keys(risk).sort()) !== digest(["components", "tasks", "terms"]) ||
+      !Array.isArray(risk.tasks) || new Set(risk.tasks).size !== risk.tasks.length ||
+      !Array.isArray(risk.components) || !Array.isArray(risk.terms) ||
+      digest([...risk.tasks].sort()) !== digest(plan.tasks.map(({ id }) => id).sort()) ||
+      digest([...risk.components].sort()) !== digest([...components].sort())) {
+    fail("complete source-grounded Full process/kernel/pressure memory risk, not only native framebuffer/probe scenarios");
+  }
+  let demand = 0n;
+  for (const term of risk.terms) {
+    if (!term || digest(Object.keys(term).sort()) !== digest(["basis", "bytes", "component", "kind", "operation", "sources"]) ||
+        !components.includes(term.component) || !["retained", "transient", "uncertainty"].includes(term.kind) ||
+        !amount(term.bytes) || typeof term.basis !== "string" || !term.basis.trim() ||
+        typeof term.operation !== "string" || !term.operation.trim() || !Array.isArray(term.sources) || !term.sources.length ||
+        term.sources.some((index) => !Number.isSafeInteger(index) || !estimate.sources[index])) {
+      fail("positive byte-only source-grounded complete memory terms");
+    }
+    demand += amount(term.bytes);
+  }
+  if (components.some((component) => !risk.terms.some((term) => term.component === component)) ||
+      ["retained", "transient", "uncertainty"].some((kind) => !risk.terms.some((term) => term.kind === kind))) fail("all complete Full memory risk components and additive uncertainty");
+  return demand;
 }
 
 export function fullSetupLocations(root, env = process.env) {
@@ -1010,10 +1174,10 @@ async function readWorkloadAllocation(root, binding, run) {
   let data;
   try { data = JSON.parse(bytes.toString("utf8")); }
   catch { fail(`valid reviewed physical allocation JSON in ${workloadAllocationPath}`); }
-  const keys = ["version", "registryDigest", "maxParallelTasks", "sources", "inventories", "setup", "preparation", "tasks"];
+  const keys = ["version", "registryDigest", "maxParallelTasks", "sources", "inventories", "setup", "preparation", "tasks", "fullMemoryRisk"];
   if (!data || Array.isArray(data) || digest(Object.keys(data).sort()) !== digest(keys.sort()) || data.version !== "full-workload-allocation/1") fail("the finite reviewed allocation schema, without a supplied candidate/run binding, command or admission flag");
   if (data.registryDigest !== binding.registryDigest || data.maxParallelTasks !== binding.maxParallelTasks) fail("allocation recipes for the current registry and exact scheduler option");
-  const input = { version: "full-workload-input/1", binding, sources: data.sources, inventories: data.inventories, setup: data.setup, preparation: data.preparation, tasks: data.tasks };
+  const input = { version: "full-workload-input/1", binding, sources: data.sources, inventories: data.inventories, setup: data.setup, preparation: data.preparation, tasks: data.tasks, fullMemoryRisk: data.fullMemoryRisk };
   await validateEstimateIdentity(input, binding, root);
   const required = ["scripts/local-ci-full-admission.mjs", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-process-supervisor.mjs", "scripts/local-ci.mjs", "scripts/local-ci-runner.mjs", "package.json", "pnpm-lock.yaml", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "electron/native/grimodex-node/Cargo.toml", "electron/native/grimodex-node/Cargo.lock"];
   if (new Set(input.sources.map(({ path: name }) => name)).size !== input.sources.length || input.sources.some(({ path: name }) => name === workloadAllocationPath)) fail("distinct sizing sources without a self-referential dataset digest");
@@ -1086,7 +1250,7 @@ async function resumeNormalReference({ root, base, head, maxParallelTasks, signa
   return { directory, registry, run, binding, deadline: preflight.deadline };
 }
 
-async function openAdmission({ root, base, head, maxParallelTasks, signal }, phase) {
+async function openAdmission({ root, base, head, maxParallelTasks, signal, localRunId }, phase) {
   await hostedJobIsolation();
   if (![base, head].every((id) => /^[0-9a-f]{40}$/u.test(id)) || head !== process.env.GITHUB_SHA) fail("the expanded immutable candidate tuple");
   if (!Number.isSafeInteger(maxParallelTasks) || maxParallelTasks < 1 || maxParallelTasks > 12) fail("the existing scheduler option from 1 through 12");
@@ -1097,7 +1261,7 @@ async function openAdmission({ root, base, head, maxParallelTasks, signal }, pha
   const registry = JSON.parse(await readFile(path.join(root, "scripts/local-ci-registry.json"), "utf8"));
   const run = admissionRunner(root, directory, signal);
   try {
-    await durableJson(path.join(directory, "acquisition-owner.json"), { base, head, maxParallelTasks, runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT, state: `possible-${phase}-acquisition` });
+    await durableJson(path.join(directory, "acquisition-owner.json"), { base, head, maxParallelTasks, runId: process.env.GITHUB_RUN_ID, attempt: process.env.GITHUB_RUN_ATTEMPT, state: `possible-${phase}-acquisition`, ...(phase === "host" ? { localRunId } : {}) });
     const tree = (await run("identity-tree", { command: "git", args: ["rev-parse", "HEAD^{tree}"] })).trim();
     if ((await run("identity-head", { command: "git", args: ["rev-parse", "HEAD"] })).trim() !== head || (await run("identity-clean", { command: "git", args: ["status", "--porcelain", "--untracked-files=all"] })).trim()) fail("a clean current candidate before preparation");
     await run("identity-ancestry", { command: "git", args: ["merge-base", "--is-ancestor", base, head] });
@@ -1114,7 +1278,7 @@ async function openAdmission({ root, base, head, maxParallelTasks, signal }, pha
       try {
         input = JSON.parse(await readFile(path.join(root, workloadInputPath), "utf8"));
         estimate = JSON.parse(await readFile(path.join(root, workloadEstimatePath), "utf8"));
-        acquired = JSON.parse(await readFile(path.join(`${directory}-setup`, "workload-acquisition.json"), "utf8"));
+        acquired = JSON.parse(await readFile(path.join(root, ".artifacts/local-ci/full-admission", `${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}-setup`, "workload-acquisition.json"), "utf8"));
       } catch { fail("the exclusively created same-job input/estimate/acquisition receipt, without regeneration or stale transfer"); }
       const current = await readWorkloadAllocation(root, binding, run);
       validateWorkloadAcquisition(acquired, current, input, estimate, binding);
@@ -1154,91 +1318,116 @@ export async function admitFullSetup(options) {
   }
 }
 
+export function fullStagedDemand(estimate) {
+  // Do not replay build-only producers or turn measurement annotations into
+  // measured facts. Charge every positive forecast, including additive overlap.
+  const terms = [...estimate.setup.terms, ...estimate.preparation.flatMap(({ terms }) => terms), ...estimate.residual];
+  const privateTerms = terms.filter(({ location }) => location === "native-b-root-1");
+  const shm = estimate.nativeMemory.filter(({ id }) => /^journey-xvfb\.[2-7]\.shared-surface(?:-growth)?$/u.test(id));
+  if (!privateTerms.length || shm.length !== 12) fail("complete sole-root and six ordinary shared-surface risk");
+  return { hostTerms: [...terms.filter(({ location }) => location !== "native-b-root-1"),
+    ...shm.map(({ id, bytes }) => ({ id, bytes, inodes: "1", location: "ordinary-shm" }))], privateTerms };
+}
+
+async function fullAdmissionPlan(root, binding) {
+  const { buildLocalCiPlan } = await import("./local-ci.mjs");
+  const registry = JSON.parse(await readFile(path.join(root, "scripts/local-ci-registry.json"), "utf8"));
+  const plan = buildLocalCiPlan(registry, { profile: "full", base: binding.base, head: binding.head, maxParallelTasks: binding.maxParallelTasks });
+  if (plan.coverage.completeness !== "complete" || plan.registryDigest !== binding.registryDigest) fail("unchanged complete canonical stage1 plan");
+  return plan;
+}
+
 export async function admitFullResources(options) {
-  const { root, base, head, maxParallelTasks, signal } = options;
-  const { directory, registry, run, binding, estimate } = await openAdmission(options, "preparation");
+  options.signal?.throwIfAborted();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(options.localRunId ?? "")) fail("the checkout-lock owning canonical Full invocation UUID");
+  const { root } = options;
+  const { directory, run, binding, estimate } = await openAdmission(options, "host");
   try {
-    await validateFullSetupEstimate(estimate, binding, root);
-    let setup;
-    try { setup = JSON.parse(await readFile(path.join(`${directory}-setup`, "decision.json"), "utf8")); }
-    catch { fail("the successful same-job setup risk/quota decision before any heavy installation"); }
+    const plan = await fullAdmissionPlan(root, binding);
+    await validateWorkloadEstimate(estimate, binding, plan, fullPreparation(plan), root);
+    const setup = JSON.parse(await readFile(path.join(root, ".artifacts/local-ci/full-admission", `${binding.runId}-${binding.attempt}-setup`, "decision.json"), "utf8"));
     validateFullSetupDecision(setup, binding, estimate);
     validateFullSetupLocations(estimate, fullSetupLocations(root));
-    const locations = await collectFullLocations(root, run);
-    // local-ci's product-plan imports need installed packages. Never import them
-    // before the initial setup risk/quota decision has been validated.
-    const { buildLocalCiPlan } = await import("./local-ci.mjs");
-    const plan = buildLocalCiPlan(registry, { profile: "full", base, head, maxParallelTasks });
-    const preparation = fullPreparation(plan);
-    await validateWorkloadEstimate(estimate, binding, plan, preparation, root);
-    await durableJson(path.join(directory, "preparation-plan.json"), { binding, preparation: preparation.map(({ id, command }) => ({ id, commandDigest: digest(command) })) });
-    let acquisition = 0;
-    const probe = async () => JSON.parse(await run(`filesystems-${acquisition++}`, {
-      command: "sudo", args: ["-n", "python3", "scripts/local-ci-full-filesystems.py", JSON.stringify({ locations, uid: process.getuid(), gids: [...new Set([process.getgid(), ...process.getgroups()])] })], cwd: ".",
-    }));
-    const samples = [];
-    for (const [index, step] of preparation.entries()) {
-      const before = await probe();
-      // Account for all future retained outputs and even all preparation peaks
-      // together. This is conservative workload overlap, never default serial.
-      assessFullDemand(before, [...estimate.preparation.slice(index).flatMap((risk) => risk.terms), ...estimate.residual]);
-      const controller = new AbortController();
-      const abort = () => controller.abort(signal.reason);
-      signal?.addEventListener("abort", abort, { once: true });
-      if (signal?.aborted) abort();
-      let stopped = false, samplingError = null;
-      const peak = new Map(before.map((fs) => [fs.label, { bytes: amount(fs.bytes), inodes: amount(fs.inodes) }]));
-      const risk = estimate.preparation[index];
-      const stepBudgets = assessFullDemand(before, risk.terms);
-      const sample = async () => {
-        for (const [label, requested] of locations) {
-          let ancestor = requested;
-          for (;;) {
-            try {
-              const fs = await statfs(ancestor, { bigint: true });
-              const prior = peak.get(label);
-              prior.bytes = minimum(prior.bytes, fs.bavail * fs.bsize);
-              prior.inodes = minimum(prior.inodes, fs.ffree);
-              break;
-            } catch (error) {
-              const parent = path.dirname(ancestor);
-              if (error.code !== "ENOENT" || parent === ancestor) throw error;
-              ancestor = parent;
-            }
-          }
-        }
-        assertPreparationEnvelope(before, peak, stepBudgets);
-      };
-      const sampler = (async () => {
-        try { while (!stopped) { await sample(); await new Promise((resolve) => setTimeout(resolve, 200)); } }
-        catch (error) { samplingError = error; controller.abort(error); }
-      })();
-      let result;
-      try { result = await run(`prepare-${step.id}`, step.command, risk.timeoutMs, controller.signal, false); }
-      finally { stopped = true; await sampler; signal?.removeEventListener("abort", abort); }
-      if (samplingError) fail(`joined storage sampling for ${step.id}`);
-      await sample();
-      const after = await probe();
-      samples.push({ id: step.id, before, after, lowWater: [...peak].map(([label, values]) => ({ label, bytes: String(values.bytes), inodes: String(values.inodes) })), logs: result.logs });
-      await durableJson(path.join(directory, `preparation-${index}.json`), samples.at(-1));
-    }
-    // Every preparation child and sampler has joined; quota/capacity observations
-    // are fresh on the SAME job. Prepared allocations are already in free space.
-    await hostedJobIsolation();
-    if ((await run("final-head", { command: "git", args: ["rev-parse", "HEAD"] })).trim() !== head || (await run("final-clean", { command: "git", args: ["status", "--porcelain", "--untracked-files=all"] })).trim()) fail("an unchanged clean candidate after preparation");
-    const report = assessFullDemand(await probe(), resolveObservedResidual(estimate.residual, samples));
-    signal?.throwIfAborted();
-    await durableJson(path.join(directory, "decision.json"), { binding, estimateDigest: digest(estimate), admitted: true, report, preparationCount: samples.length });
-    signal?.throwIfAborted();
-    // Fixed canonical caller retains job ownership through Full + immediate verify.
-    // This is not a transferable receipt, B permission, or a Full gate pass.
-    return report;
+    const locations = [...await collectFullLocations(root, run), ["ordinary-shm", "/dev/shm"]];
+    await assertWritableLocations(locations);
+    const memoryCgroup = await readFile("/proc/self/cgroup", "utf8");
+    const uid = process.getuid(), gids = [...new Set([process.getgid(), ...process.getgroups()])];
+    const observations = JSON.parse(await run("host-resources", { command: "sudo", args: ["-n", "python3", "scripts/local-ci-full-filesystems.py", JSON.stringify({ locations, uid, gids, memoryCgroup })], cwd: "." }));
+    const { hostTerms, privateTerms } = fullStagedDemand(estimate);
+    if (observations.filesystems.find(({ label }) => label === "ordinary-shm")?.mount !== "/dev/shm") fail("actual mounted ordinary host /dev/shm tmpfs, not a path forecast");
+    const report = assessFullDemand(observations.filesystems, hostTerms);
+    const memory = assessFullMemory(observations.memory, { ...estimate, memoryCgroup }, plan, [], { privatePending: true });
+    options.signal?.throwIfAborted();
+    const decision = { binding, localRunId: options.localRunId, estimateDigest: digest(estimate),
+      phase: "host", state: "host-admitted/private-pending", locations, uid, gids, memoryCgroup,
+      report, filesystems: observations.filesystems, memory, privateDemand: { bytes: String(privateTerms.reduce((n, term) => n + amount(term.bytes), 0n)),
+        inodes: String(privateTerms.reduce((n, term) => n + amount(term.inodes), 0n)) } };
+    await durableJson(path.join(directory, "decision.json"), decision);
+    options.signal?.throwIfAborted();
+    return decision;
   } catch (error) {
-    // Unknown process retirement retains its supervisor and owner; no replacement
-    // can start while lateClose is pending. Never recover/delete a foreign owner.
+    await durableJson(path.join(directory, "failed.json"), { binding, localRunId: options.localRunId, phase: "host", state: "failed", privateState: "pending" });
     if (error.lateClose) await error.lateClose;
     throw error;
   }
+}
+
+// The consumer revalidates current bytes and owner. An old host pass is only
+// the authority to perform the second gate, never capacity or private approval.
+export async function readFullHostAdmission(root, { head, base, tree, localRunId, runId, attempt }) {
+  const relative = `.artifacts/local-ci/full-admission/${runId}-${attempt}-host/decision.json`;
+  const regular = async (name) => {
+    const file = path.join(root, name), metadata = await lstat(file);
+    if (!metadata.isFile() || await realpath(file) !== file || metadata.uid !== process.getuid() || (metadata.mode & 0o777) !== 0o600) fail("regular current-owned staged admission artifacts");
+    return readFile(file);
+  };
+  const bytes = await regular(relative), decision = JSON.parse(bytes);
+  const binding = decision.binding;
+  if (decision.phase !== "host" || decision.state !== "host-admitted/private-pending" ||
+      decision.localRunId !== localRunId || binding?.head !== head || binding.base !== base || binding.tree !== tree ||
+      binding.runId !== runId || binding.attempt !== attempt || decision.uid !== process.getuid() ||
+      !Array.isArray(decision.gids) || digest([...decision.gids].sort((a, b) => a - b)) !==
+        digest([...new Set([process.getgid(), ...process.getgroups()])].sort((a, b) => a - b)) ||
+      decision.memoryCgroup !== await readFile("/proc/self/cgroup", "utf8")) fail("same continuous Full host/CLI owner before sole initial private gate");
+  try { await lstat(path.join(root, path.dirname(relative), "failed.json")); fail("unfailed host admission"); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const input = JSON.parse(await regular(workloadInputPath)), estimate = JSON.parse(await regular(workloadEstimatePath));
+  const acquired = JSON.parse(await regular(`.artifacts/local-ci/full-admission/${runId}-${attempt}-setup/workload-acquisition.json`));
+  const allocation = await readFile(path.join(root, workloadAllocationPath));
+  const data = JSON.parse(allocation);
+  const current = { allocation: { path: workloadAllocationPath, sha256: createHash("sha256").update(allocation).digest("hex") },
+    input: { version: "full-workload-input/1", binding, sources: data.sources, inventories: data.inventories,
+      setup: data.setup, preparation: data.preparation, tasks: data.tasks, fullMemoryRisk: data.fullMemoryRisk } };
+  validateWorkloadAcquisition(acquired, current, input, estimate, binding);
+  validateFullSetupLocations(estimate, fullSetupLocations(root));
+  const plan = await fullAdmissionPlan(root, binding);
+  await validateWorkloadEstimate(estimate, binding, plan, fullPreparation(plan), root);
+  if (decision.estimateDigest !== digest(estimate)) fail("unchanged complete risk at private admission");
+  const { hostTerms, privateTerms } = fullStagedDemand(estimate);
+  if (digest(assessFullDemand(decision.filesystems, hostTerms)) !== digest(decision.report) ||
+      decision.memory?.demand !== String(validateFullMemoryRisk(estimate, plan) +
+        estimate.nativeMemory.reduce((n, term) => n + amount(term.bytes), 0n) +
+        estimate.residual.filter(({ location }) => location === "native-b-root-1").reduce((n, term) => n + amount(term.bytes), 0n))) fail("unchanged complete host/filesystem/memory risk at private admission");
+  if (decision.privateDemand.bytes !== String(privateTerms.reduce((n, term) => n + amount(term.bytes), 0n)) ||
+      decision.privateDemand.inodes !== String(privateTerms.reduce((n, term) => n + amount(term.inodes), 0n))) fail("unchanged sole-root risk");
+  return { path: relative, sha256: createHash("sha256").update(bytes).digest("hex"), decision };
+}
+
+export async function verifyFullPrivateAdmission(root, host) {
+  const file = path.join(root, `.artifacts/local-ci/runs/${host.localRunId}/product-journeys/shard-1/native-resource-admission.json`);
+  const metadata = await lstat(file);
+  if (!metadata.isFile() || await realpath(file) !== file || metadata.uid !== host.uid || (metadata.mode & 0o777) !== 0o600) fail("owned private-gate outcome after canonical task retirement");
+  const bytes = await readFile(file), record = JSON.parse(bytes);
+  if (record.state !== "private-accepted" || record.localRunId !== host.localRunId ||
+      digest(record.binding) !== digest(host.binding) || record.estimateDigest !== host.estimateDigest ||
+      record.memory?.demand !== host.memory.demand || amount(record.memory.available) <= amount(record.memory.demand) ||
+      !/^[0-9a-f]{64}$/u.test(record.hostFactsDigest ?? "") || !record.observations?.memory?.ancestors?.length ||
+      ["mnt", "net", "pid", "ipc"].some((name) => !new RegExp(`^${name}:\\[\\d+\\]$`, "u").test(record.namespaces?.[name] ?? "")) ||
+      !Number.isSafeInteger(record.root?.inode) || record.root.inode <= 0 ||
+      record.root?.allocationUnit !== "4096" || !record.root.quotas || record.root.quotas.length !== 3 ||
+      record.root.quotas.some((quota, index) => quota.type !== index || quota.state !== "kernel-disabled") ||
+      amount(record.root.device) === 0n || amount(record.root.bytes) <= amount(host.privateDemand.bytes) || amount(record.root.inodes) <= amount(host.privateDemand.inodes)) fail("actual same-instance accepted private gate (host-pending is not Full success)");
+  return { state: "private-accepted", path: path.relative(root, file), sha256: createHash("sha256").update(bytes).digest("hex"), binding: host.binding, localRunId: host.localRunId };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
@@ -1260,7 +1449,7 @@ if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
     const [base, head, slots] = args;
     if (args.length !== 3 || !/^([1-9]|1[0-2])$/u.test(slots ?? "")) fail("the existing exact base/head/scheduler option arguments");
     await (grouped || normal || native ? stageFullGroupedReference : reference ? stageFullSystemReference : setup ? admitFullSetup : admitFullResources)({ root: process.cwd(), base, head, maxParallelTasks: Number(slots), signal: controller.signal, normal, preflight, cpu, native });
-    console.log(native ? "Native compile-only prerequisite observations recorded; Full remains unadmitted" : normal ? `${cpu ? "CPU" : "Normal"} prerequisite ${preflight ? "focused preflight" : "observations"} recorded; Full remains unadmitted` : grouped ? "Grouped pure-DB prerequisite observations recorded; Full remains unadmitted" : reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk" : "resource"} admission passed; preparation is not Full/B/Editor acceptance`);
+    console.log(native ? "Native compile-only prerequisite observations recorded; Full remains unadmitted" : normal ? `${cpu ? "CPU" : "Normal"} prerequisite ${preflight ? "focused preflight" : "observations"} recorded; Full remains unadmitted` : grouped ? "Grouped pure-DB prerequisite observations recorded; Full remains unadmitted" : reference ? "Canonical system prerequisite size reference recorded; Full remains unadmitted" : `Full same-job ${setup ? "setup risk admitted; private gate remains pending" : "host admitted/private pending"}; not Full/B/Editor acceptance`);
   } catch (error) {
     console.error(error.message.startsWith("[precheck]") ? error.message : "[precheck] Full conditional resource acquisition failed; owner retained");
     process.exitCode = 1;
