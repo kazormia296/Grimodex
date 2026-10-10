@@ -1367,7 +1367,11 @@ test("normal prerequisite is the existing frozen materialization and compile-onl
   const selected = normalPrerequisites(registry);
   assert.deepEqual(selected.map(({ id }) => id), ["bootstrap.install", "bootstrap.electron-binary", "bootstrap.workspace-build", "bootstrap.chromium", "electron.build"]);
   const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
-  for (const step of selected) assert.deepEqual(step.command, plan.tasks.find(({ id }) => id === step.id).command);
+  for (const step of selected) {
+    const command = { ...plan.tasks.find(({ id }) => id === step.id).command };
+    delete command.label; // Descriptive metadata is not part of the execution tuple.
+    assert.deepEqual(step.command, command);
+  }
   for (const change of [
     (value) => { value.stages.bootstrap.commands[0].args.push("--ignore-scripts"); },
     (value) => { value.stages.bootstrap.env = { PRIVATE_OVERRIDE: "1" }; },
@@ -1428,7 +1432,8 @@ test("normal acquisition consumes one current focused owner and joins synthetic 
       // Synthetic host isolation/version ONLY; real supervisor/streams/fsync.
       await writeFile(helper, original.replaceAll("await hostedJobIsolation();", "/* synthetic only */").replace("node: process.version, pnpm:", 'node: "v22.0.0", pnpm:').replace("const nodeRoot = normal ? path.dirname(path.dirname(await realpath(process.execPath))) : null;", `const nodeRoot = normal ? path.join(root, ${JSON.stringify(mode === "node-outside" ? "../foreign-node" : "synthetic-node")}) : null;`));
       const script = `#!${process.execPath}
-const fs = require('node:fs'), path = require('node:path');
+import fs from 'node:fs';
+import path from 'node:path';
 const tool = path.basename(process.argv[1]), args = process.argv.slice(2), root = process.cwd(), mode = ${JSON.stringify(mode)};
 if (tool === 'git') { if (args[0] === 'rev-parse') console.log(args[1].includes('tree') ? 'b'.repeat(40) : 'a'.repeat(40)); }
 else if (tool === 'sudo') {
