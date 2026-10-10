@@ -842,6 +842,127 @@ for index, (entry, readonly) in enumerate(((source, True), (executable, True), (
   assert.equal(result.cleanup.complete, true);
 });
 
+test("native B admits only the locked pnpm workspace links and exact read-only builds", async (t) => {
+  const root = await fixture(t);
+  // Synthetic files + copied bind model only: no privilege, namespace, B or
+  // Editor purpose. Node exercises actual resolution through the private view.
+  const source = String.raw`
+import json, os, pathlib, runpy, shutil, sys
+module = runpy.run_path(sys.argv[1])
+checkout = pathlib.Path.cwd() / "checkout"
+checkout.mkdir()
+def file(relative, contents):
+    target = checkout / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(contents)
+    return target
+def rejected(operation):
+    try:
+        operation()
+    except (RuntimeError, FileNotFoundError):
+        return
+    raise AssertionError("unsafe workspace view admitted")
+file("package.json", '{"type":"module"}')
+tracked = ["package.json"]
+for name in module["WORKSPACES"]:
+    manifest = f"packages/{name}/package.json"
+    file(manifest, json.dumps(dict(name="@grimodex/" + name, type="module", exports="./dist/index.js")))
+    file(f"packages/{name}/src/index.ts", "// reviewed synthetic source\n")
+    tracked.extend((manifest, f"packages/{name}/src/index.ts"))
+    file(f"packages/{name}/untracked-private", "synthetic-do-not-expose")
+    alias = checkout / "node_modules/@grimodex" / name
+    alias.parent.mkdir(parents=True, exist_ok=True)
+    alias.symlink_to("../../packages/" + name, target_is_directory=True)
+file("packages/scan-contract/dist/index.js", "export const value = 41;\n")
+file("packages/scan-core/dist/index.js", "import { value } from '@grimodex/scan-contract'; export const result = value + 1;\n")
+# Ordinary locked pnpm also has this nested alias; its parent is NOT mounted.
+nested = checkout / "packages/scan-core/node_modules/@grimodex/scan-contract"
+nested.parent.mkdir(parents=True)
+nested.symlink_to("../../../scan-contract", target_is_directory=True)
+base = [checkout / name for name in module["CHECKOUT"] if (checkout / name).exists()]
+# This is the actual old failure predicate, not a weakened expectation.
+rejected(lambda: module["audit_checkout"](checkout / "node_modules", base))
+workspaces, links = module["workspace_sources"](checkout)
+admitted = base + workspaces
+assert {str(p.relative_to(checkout)) for p in workspaces} == {
+    f"packages/{name}/{leaf}" for name in module["WORKSPACES"] for leaf in ("package.json", "dist")}
+for path in admitted:
+    module["audit_checkout"](path, admitted, links)
+private = pathlib.Path.cwd() / "private"
+private.mkdir()
+mounts = []
+def copy_mount(source, target, kind=None, flags=0, data=None):
+    assert kind is None and data is None
+    target = pathlib.Path(target)
+    mounts.append(flags)
+    if source is not None:
+        assert flags == module["MS_BIND"]  # No recursive mount.
+        source = pathlib.Path(source)
+        if source.is_dir():
+            shutil.copytree(source, target, dirs_exist_ok=True, symlinks=True)
+        else:
+            shutil.copyfile(source, target)
+    else:
+        assert flags == (module["MS_BIND"] | module["MS_REMOUNT"] | module["MS_RDONLY"] |
+                         module["MS_NOSUID"] | module["MS_NODEV"])
+module["bind"].__globals__["mount"] = copy_mount
+for path in admitted:
+    module["bind"](private, str(path))
+for name in tracked:
+    path = module["exact_file"](checkout, name)
+    if not any(path == base or base in path.parents for base in admitted):
+        module["bind"](private, str(path))
+inside = module["private_path"](private, str(checkout))
+assert mounts and len(mounts) % 2 == 0
+for name in module["WORKSPACES"]:
+    package = inside / "packages" / name
+    assert (inside / "node_modules/@grimodex" / name).resolve(strict=True) == package
+    assert (package / "src/index.ts").read_bytes() == (checkout / "packages" / name / "src/index.ts").read_bytes()
+    assert not (package / "untracked-private").exists() and not (package / "node_modules").exists()
+# Fixed aliases cannot swap even to the other admitted workspace/build tree.
+alias = checkout / "node_modules/@grimodex/scan-core"
+for destination in ("../../packages/scan-contract", "../../packages/scan-core/dist", "../../outside", "../../missing"):
+    alias.unlink()
+    alias.symlink_to(destination, target_is_directory=True)
+    rejected(lambda: module["workspace_sources"](checkout))
+    rejected(lambda: module["audit_checkout"](checkout / "node_modules", admitted, links))
+alias.unlink()
+alias.symlink_to("../../packages/scan-core", target_is_directory=True)
+extra = checkout / "node_modules/unreviewed-workspace"
+extra.symlink_to("../packages/scan-core", target_is_directory=True)
+rejected(lambda: module["audit_checkout"](checkout / "node_modules", admitted, links))
+extra.unlink()
+secret = file("packages/scan-core/dist/.env", "synthetic-secret")
+rejected(lambda: module["audit_checkout"](secret.parent, admitted, links))
+secret.unlink()
+escape = checkout / "packages/scan-core/dist/escape"
+escape.symlink_to(checkout / "packages/scan-core/untracked-private")
+rejected(lambda: module["audit_checkout"](escape.parent, admitted, links))
+escape.unlink()
+manifest = checkout / "packages/scan-core/package.json"
+manifest.unlink()
+manifest.symlink_to(checkout / "packages/scan-contract/package.json")
+rejected(lambda: module["workspace_sources"](checkout))
+# A dist parent alias must not expose an unreviewed runtime tree either.
+dist = checkout / "packages/scan-contract/dist"
+dist.rename(dist.with_name("other-build"))
+dist.symlink_to("other-build", target_is_directory=True)
+rejected(lambda: module["workspace_sources"](checkout))
+print(json.dumps(dict(inside=str(inside))))
+`;
+  const result = await runLocalCiCommand({ command: "python3", cwd: ".", env: {},
+    args: ["-I", "-c", source, fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url))] },
+  { root, logDirectory: ".logs", taskId: "native-b-workspace-views", timeoutMs: 10_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  assert.equal(result.cleanup.complete, true);
+  const { inside } = JSON.parse(await readFile(path.join(root, result.logs.stdout.path), "utf8"));
+  const imported = await runLocalCiCommand({ command: process.execPath, cwd: inside, env: {},
+    args: ["--input-type=module", "-e", "import { result } from '@grimodex/scan-core'; if (result !== 42) throw new Error('workspace resolution failed');"] },
+  { root, logDirectory: ".logs", taskId: "native-b-workspace-import", timeoutMs: 10_000 });
+  assert.equal(imported.exitCode, 0, await readFile(path.join(root, imported.logs.stderr.path), "utf8"));
+  assert.equal(imported.cleanup.complete, true);
+});
+
 test("native B exact source views preserve Git child mounts and live identity without host metadata", async (t) => {
   const root = await fixture(t);
   // Ordinary synthetic Git/filesystem plus mount-topology model ONLY. Copies

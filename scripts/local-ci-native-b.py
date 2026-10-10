@@ -26,6 +26,7 @@ RECEIPT = "/run/grimodex-native-b/admission.json"
 RUNTIME = ("/usr", "/lib", "/lib64")
 CHECKOUT = ("electron", "src", "src-tauri", "scripts", "dist", "dist-electron",
             "node_modules", "public", "resources")
+WORKSPACES = ("scan-contract", "scan-core")
 CLOSED = False
 
 
@@ -111,7 +112,7 @@ def owned_directory(checkout, relative, uid, gid):
             os.setegid(original_gid)
 
 
-def audit_checkout(source, admitted):
+def audit_checkout(source, admitted, workspace_links=None):
     for directory, directories, files in os.walk(source, followlinks=False):
         for name in directories + files:
             entry = pathlib.Path(directory) / name
@@ -123,8 +124,11 @@ def audit_checkout(source, admitted):
                     not name.startswith(".env."), "native B checkout contains excluded configuration")
             if entry.is_symlink():
                 resolved = entry.resolve(strict=True)
-                require(any(resolved == base or base in resolved.parents for base in admitted),
-                        "native B checkout symlink escapes admitted sources")
+                if workspace_links and entry in workspace_links:
+                    require(resolved == workspace_links[entry], "native B workspace link redirected")
+                else:
+                    require(any(resolved == base or base in resolved.parents for base in admitted),
+                            "native B checkout symlink escapes admitted sources")
 
 
 def exact_file(checkout, relative):
@@ -136,6 +140,24 @@ def exact_file(checkout, relative):
     require(source.resolve(strict=True) == source and stat.S_ISREG(source.lstat().st_mode),
             "native B exact source redirected or not a file")
     return source
+
+
+def workspace_sources(checkout):
+    # pnpm's two locked root aliases need package.json + prebuilt dist, not a
+    # broad packages mount. Tracked workspace sources are bound individually.
+    sources, links = [], {}
+    for name in WORKSPACES:
+        package = checkout / "packages" / name
+        manifest = exact_file(checkout, f"packages/{name}/package.json")
+        dist = package / "dist"
+        require(dist.resolve(strict=True) == dist and dist.is_dir(),
+                "native B workspace build missing or redirected")
+        alias = checkout / "node_modules" / "@grimodex" / name
+        require(alias.is_symlink() and alias.resolve(strict=True) == package,
+                "native B workspace link missing or redirected")
+        sources.extend((manifest, dist))
+        links[alias] = package
+    return sources, links
 
 
 def git_sources(checkout, view):
@@ -596,9 +618,10 @@ def main():
     tracked = git_sources(checkout, value["gitView"])
     evidence = evidence_sources(checkout, value["environment"])
     host = resource_owner(checkout, value)
+    workspaces, workspace_links = workspace_sources(checkout)
     root = owned_directory(checkout, root_marker, uid, gid)
     mount("tmpfs", str(root), "tmpfs", MS_NOSUID | MS_NODEV, "mode=0755")
-    admitted = [checkout / name for name in CHECKOUT if (checkout / name).exists()]
+    admitted = [checkout / name for name in CHECKOUT if (checkout / name).exists()] + workspaces
     for source in RUNTIME:
         entry = pathlib.Path(source)
         if entry.is_symlink():
@@ -606,7 +629,7 @@ def main():
         elif entry.exists():
             bind(root, source)
     for source in admitted:
-        audit_checkout(source, admitted)
+        audit_checkout(source, admitted, workspace_links)
         bind(root, str(source))
     # Complete the live tracked checkout, not just runtime directories. Bind
     # individual files outside those trees (including tracked .gitignore and

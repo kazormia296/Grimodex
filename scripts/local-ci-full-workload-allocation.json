@@ -125,7 +125,7 @@
     },
     {
       "path": "scripts/local-ci-native-b.py",
-      "sha256": "60083022fe8dee96a3a89d8e94e45d606906febc9f28514c281e3b39c36b819c"
+      "sha256": "753404dc12d09ea08b890d7b1b07617b4e00f989c1812577158494c1c3689822"
     },
     {
       "path": "electron/scripts/product-journey-native-b.mjs",
