@@ -2111,6 +2111,53 @@ test("Full resolves installer caches before setup and rejects unknown or changed
   }
 });
 
+test("Full Cargo collection rejects unaccounted targets in every caller context and symlink ancestors", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "full-cargo-placement-contract-"));
+  const prior = Object.fromEntries(["RUNNER_TEMP", "RUNNER_TOOL_CACHE"].map((key) => [key, process.env[key]]));
+  try {
+    process.env.RUNNER_TEMP = temporary;
+    process.env.RUNNER_TOOL_CACHE = temporary;
+    const env = {
+      FULL_PNPM_DEST: path.join(temporary, "installer"), npm_config_store_dir: path.join(temporary, "store"),
+      PLAYWRIGHT_BROWSERS_PATH: path.join(temporary, "browser"), UV_CACHE_DIR: path.join(temporary, "uv"),
+    };
+    const targets = ["cargo-shared", "cargo-shared-package", "cargo-native", "cargo-native-package"];
+    const expected = (label) => path.join(temporary, label.startsWith("cargo-shared") ? "src-tauri/target" : "electron/native/grimodex-node/target");
+    const runner = (queries, wrong, target) => async (id, command) => {
+      queries.push(id);
+      if (id === "storage-pnpm") return path.join(env.npm_config_store_dir, "v10");
+      if (id === "storage-browser") return JSON.stringify(`${env.PLAYWRIGHT_BROWSERS_PATH}/chromium-123/chrome-linux64/chrome`);
+      if (id === "storage-uv") return env.UV_CACHE_DIR;
+      const label = id.slice("storage-".length);
+      assert.ok(targets.includes(label), "no preparation/build/writability child may be spawned");
+      assert.deepEqual(command.args.slice(0, 6), ["metadata", "--no-deps", "--locked", "--offline", "--format-version", "1"]);
+      assert.equal(command.cwd, label.endsWith("-package") ? label.startsWith("cargo-shared") ? "src-tauri" : "electron/native/grimodex-node" : ".");
+      return JSON.stringify({ target_directory: label === wrong ? target : expected(label) });
+    };
+    const queries = [];
+    const locations = await collectFullLocations(temporary, runner(queries), env);
+    assert.deepEqual(locations.filter(([label]) => targets.includes(label)), targets.map((label) => [label, expected(label)]));
+    assert.equal(queries.length, 7);
+    for (const label of targets) {
+      for (const target of [undefined, null, "relative-target", path.join(temporary, "unaccounted-target"), path.join(temporary, "../disjoint-target")]) {
+        const rejectedQueries = [];
+        await assert.rejects(collectFullLocations(temporary, runner(rejectedQueries, label, target), env), /source-bound workspace Cargo target/u);
+        assert.equal(rejectedQueries.at(-1), `storage-${label}`);
+      }
+    }
+    // An exact lexical target is still redirected if an existing ancestor is a
+    // symlink. Do not borrow workspace demand for its physical destination.
+    await mkdir(path.join(temporary, "elsewhere"));
+    await symlink(path.join(temporary, "elsewhere"), path.join(temporary, "src-tauri"));
+    await assert.rejects(collectFullLocations(temporary, runner([]), env), /unredirected source-bound workspace Cargo target ancestors/u);
+  } finally {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Full setup is dependency-free and binds workflow, estimate and same-job phase before later preparation", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), "full-setup-contract-"));
   try {
@@ -2273,6 +2320,27 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   await validateFullSetupEstimate(estimate, binding, repoRoot);
   await validateWorkloadEstimate(estimate, binding, plan, preparation, repoRoot);
   assert.equal(estimate.tasks.length, 68);
+  // The tracked recipes charge Cargo compilation to workspace. Canonical paths
+  // alone are insufficient: a target may be a disjoint mounted descendant.
+  const cargoLabels = ["cargo-shared", "cargo-shared-package", "cargo-native", "cargo-native-package"];
+  const compileTerms = [...estimate.preparation.flatMap(({ terms }) => terms), ...estimate.residual];
+  const compileSum = (metric) => compileTerms.reduce((sum, term) => sum + BigInt(term[metric]), 0n);
+  const compileSpace = locations.map(([label]) => syntheticFilesystem(label, "workspace-device", String(compileSum("bytes") + 1n), String(compileSum("inodes") + 1n)));
+  const observedTargets = cargoLabels.map((label) => ({ ...compileSpace[0], label }));
+  const compileReport = assessFullDemand(compileSpace, compileTerms);
+  assert.deepEqual(assessFullDemand([...compileSpace, ...observedTargets], compileTerms), compileReport, "observation aliases do not add another compilation allocation");
+  for (const label of cargoLabels) {
+    for (const metric of ["bytes", "inodes"]) {
+      const disjoint = observedTargets.map((fs) => fs.label === label ? { ...fs, device: "disjoint-cargo", [metric]: "1" } : fs);
+      assert.throws(() => assessFullDemand([...compileSpace, ...disjoint], compileTerms), /Cargo targets on the charged workspace device before preparation/u);
+      // Same-device enabled target quotas constrain the aggregate workspace
+      // demand, despite abundant workspace capacity and no term at that alias.
+      const quotas = disabledQuotas();
+      quotas[0] = { type: 0, state: "kernel-enabled", bytes: null, inodes: null, [metric]: String(compileSum(metric)) };
+      const limited = observedTargets.map((fs) => fs.label === label ? { ...fs, quotas } : fs);
+      assert.throws(() => assessFullDemand([...compileSpace, ...limited], compileTerms), /capacity\/quota/u);
+    }
+  }
   assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, 33);
   // The actual runner retains a Node-temp original while evidence copies only
   // DB/backup/manifest to workspace. Neither device can borrow the other's room.

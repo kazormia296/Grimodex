@@ -806,6 +806,11 @@ export function assessFullDemand(filesystems, terms) {
     const prior = devices.get(fs.device);
     devices.set(fs.device, { bytes: prior ? minimum(prior.bytes, bytes) : bytes, inodes: prior ? minimum(prior.inodes, inodes) : inodes, demandBytes: prior?.demandBytes ?? 0n, demandInodes: prior?.demandInodes ?? 0n });
   }
+  // Reviewed shared/native compilation is charged to workspace. Metadata may
+  // not silently move those writes to an observation-only, disjoint device.
+  for (const [label, device] of locations) {
+    if (/^cargo-(shared|native)(-package)?$/u.test(label) && device !== locations.get("workspace")) fail("source-bound Cargo targets on the charged workspace device before preparation");
+  }
   for (const term of terms) {
     const device = locations.get(term.location);
     if (!device) fail(`effective storage acquisition for ${term.location}`);
@@ -854,8 +859,13 @@ async function assertWritableLocations(locations) {
     if (typeof requested !== "string" || !path.isAbsolute(requested)) fail(`the actual ${label} destination`);
     let ancestor = requested;
     for (;;) {
-      try { await realpath(ancestor); break; }
+      try {
+        const resolved = await realpath(ancestor);
+        if (/^cargo-(shared|native)(-package)?$/u.test(label) && resolved !== ancestor) fail("unredirected source-bound workspace Cargo target ancestors");
+        break;
+      }
       catch (error) {
+        if (error.message?.startsWith("[precheck]")) throw error;
         const parent = path.dirname(ancestor);
         if (error.code !== "ENOENT" || parent === ancestor) fail(`the ${label} directory ancestor`);
         ancestor = parent;
@@ -915,7 +925,9 @@ export async function collectFullLocations(root, run, env = process.env) {
     ["cargo-native-package", "electron/native/grimodex-node", "Cargo.toml"],
   ]) {
     const metadata = JSON.parse(await run(`storage-${label}`, { command: "cargo", args: ["metadata", "--no-deps", "--locked", "--offline", "--format-version", "1", "--manifest-path", manifest], cwd }));
-    locations.push([label, metadata.target_directory]);
+    const target = path.join(root, label.startsWith("cargo-shared") ? "src-tauri/target" : "electron/native/grimodex-node/target");
+    if (metadata.target_directory !== target) fail(`the source-bound workspace Cargo target for ${label}`);
+    locations.push([label, target]);
   }
   locations.push(["uv-environment", process.env.UV_PROJECT_ENVIRONMENT ? path.resolve(root, "experiments/lfm25-encoder-phase0", process.env.UV_PROJECT_ENVIRONMENT) : path.join(root, "experiments/lfm25-encoder-phase0/.venv")]);
   await assertWritableLocations(locations);

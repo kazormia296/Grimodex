@@ -68,7 +68,16 @@ Current source hashes and every actual preparation tuple are bound at ingestion.
   certificates or source/lockfile-size multipliers. Common dependency images are reserved once per
   distinct target/profile family, with a distinct top-level output image per
   additional Cargo tuple; this is explicit compatible cache-graph reuse, not
-  cleanup or old capacity. Additional global variant images are charged once
+  cleanup or old capacity. These shared/native compilation recipes charge the
+  workspace device: all four root/package Cargo metadata contexts must resolve
+  exactly to `src-tauri/target` or `electron/native/grimodex-node/target` inside
+  this checkout. Redirected metadata or symlinked existing ancestors reject;
+  a canonical target on a disjoint mounted device also rejects at the first
+  pre-spawn demand assessment, rather than receiving zero demand. Same-device
+  target quota observations constrain the entire workspace aggregate through
+  the existing per-device minimum, without charging aliased targets twice.
+  No target path is rewritten and no disjoint device borrows workspace capacity.
+  Additional global variant images are charged once
   for preparation and once for post-preparation uncertainty. Each tuple still
   has positive output/link/log/growth terms. The producer sums all simultaneous
   transient terms without serial/fail-fast cleanup savings. Real same-job observations can
