@@ -950,6 +950,7 @@ for path in ("../outside", ".git/config", ".ralph/secret", ".env", "/etc/passwd"
 redirect = checkout / "redirect"
 redirect.symlink_to(checkout / "docs", target_is_directory=True)
 rejected(lambda: module["git_sources"](checkout, dict(view, tracked=["redirect/source.md"])))
+redirect.unlink()
 alternates = file(".git/objects/info/alternates", "/forbidden-synthetic-objects")
 rejected(lambda: module["git_sources"](checkout, view))
 alternates.unlink()

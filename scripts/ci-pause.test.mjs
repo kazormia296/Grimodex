@@ -2442,7 +2442,7 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
       // Same-device enabled target quotas constrain the aggregate workspace
       // demand, despite abundant workspace capacity and no term at that alias.
       const quotas = disabledQuotas();
-      quotas[0] = { type: 0, state: "kernel-enabled", bytes: null, inodes: null, [metric]: String(compileSum(metric)) };
+      quotas[0] = { type: 0, state: "kernel-enabled", bytes: null, inodes: null, [metric]: compileReport.find(({ device }) => device === "workspace-device")[metric === "bytes" ? "demandBytes" : "demandInodes"] };
       const limited = observedTargets.map((fs) => fs.label === label ? { ...fs, quotas } : fs);
       assert.throws(() => assessFullDemand([...compileSpace, ...limited], compileTerms), /capacity\/quota/u);
     }
