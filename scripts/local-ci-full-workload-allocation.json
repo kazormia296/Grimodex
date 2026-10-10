@@ -5,7 +5,7 @@
   "sources": [
     {
       "path": ".github/workflows/canonical-ci.yml",
-      "sha256": "ab92d55f64d5b2b0d219c90e3da8a8763a1adaa7402169243fbe317d3e07ab3f"
+      "sha256": "9be8991f5b376e0de3f44a36b4827809e64746c9e1e48c9af5be814d861b3b14"
     },
     {
       "path": "scripts/local-ci-registry.json",
@@ -121,7 +121,7 @@
     },
     {
       "path": "docs/pr610-full-workload-risk.md",
-      "sha256": "4e5f827320259840780c3cbacedde468981634289db0d836bf2525ef238d1032"
+      "sha256": "e88f531a0d6543f00cdcee5984c3b39de909a596d95672482bfbc3cd4f7ec766"
     },
     {
       "path": "scripts/local-ci-native-b.py",

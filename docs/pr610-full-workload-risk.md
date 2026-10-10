@@ -14,9 +14,11 @@ Current hashes bind those revised assumptions, not historical admission results.
 The file/surface scenarios alone are NOT Full process/kernel/pressure memory
 risk or actual resource evidence. The separate `fullMemoryRisk` ledger below now
 covers the eight named planning components, without claiming measured RSS or an
-all-future bound. Same-owner acquisition and count-preserving
-Full–ONE-Editor placement remain unresolved. `admitFullResources` refuses before
-preparation or privilege; both workflow refusals remain, without preflight waiver.
+all-future bound. The workflow now retains fail-closed setup assessment before
+installers and delegates the host gate to the existing checkout-lock-owning CLI
+before stage1. Shard1 retains the sole initial private gate after its canonical
+dependencies. This wiring is not actual resource fit or final-candidate admission;
+original B/Editor prerequisites and all final gates remain mandatory.
 
 ## Direct references (run/attempt, artifact, SHA256)
 
@@ -227,8 +229,9 @@ private-gate result (numeric filesystem/memory/PSI facts, owner/candidate/attemp
 root/namespace identity and risk digest); no raw proc/env/routes are published.
 Only canonical task success AND a current-bound private-accepted result may
 finalize Full; immediate verify checks the same artifact identities. Existing
-workflow refusals still prevent runtime before independent changed-unit source
-acceptance, reviewed checkpoint and necessary hosted contracts. No qualification,
+workflow wiring removes the obsolete unconditional refusals, not the actual setup,
+CLI host or shard1 private gates. Independent changed-unit source acceptance,
+reviewed checkpoint and necessary hosted contracts must precede runtime. No qualification,
 Editor, OS or diagnostic allowance is renewed; no install, new profile/platform,
 privileged hold/late attachment/control protocol or trial/replacement root.
 
@@ -275,9 +278,10 @@ a smaller profile, larger runner, deletion, fallback or a repeated purpose.
 There is no new helper/spawn/owner/lifecycle in this unit. The producer rejects
 missing component/term/source coverage, zero or malformed decimal demand and
 extra inode/location/capacity/admission fields; native estimate validation checks
-all tasks again. Both workflow refusals and the pre-effect `admitFullResources`
-refusal remain. Count-preserving ONE qualification/ONE original Editor placement
-and actual same-owner acquisition are still separate unresolved causal work.
+all tasks again. `admitFullResources` requires the checkout-lock-owning CLI UUID
+before effects; no standalone host acquisition is allowed. Count-preserving ONE
+qualification/ONE original Editor placement retains its existing shard1 private
+gate, and actual same-owner acquisition remains unobserved.
 
 ## Acceptance and remaining boundary
 
@@ -287,7 +291,7 @@ credibility by itself. No required unknown is silently converted to an observed
 zero. No fixed capacity/%/GB/inode threshold or free-capacity-as-demand is used.
 Actual same continuously owned hosted runner destination geometry, writable
 capacity/user-group-project quotas/root-home pressure/exclusion are separate.
-Both Full fences remain. P2 clean freeze/B/ONEEditor/final High/current Quick and
+Executable setup/host/private fences remain. P2 clean freeze/B/ONEEditor/final High/current Quick and
 adjacent verify/Full from stage1 and adjacent identical verify/readiness/approved
 base expected-HEAD squash/first-parent and fetched master are still incomplete.
 

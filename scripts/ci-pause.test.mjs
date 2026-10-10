@@ -1219,14 +1219,11 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
   const job = workflow.jobs.canonical;
   assert.equal(job["runs-on"], "ubuntu-24.04");
   const steps = job.steps;
-  const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
-  assert.equal(stop.if, "inputs.profile == 'full'");
+  assert.ok(!steps.some(({ name }) => name === "Full prerequisites remain unresolved"));
   const setup = steps.find(({ id }) => id === "full_setup");
   assert.equal(setup.if, "inputs.profile == 'full'");
-  assert.ok(steps.indexOf(setup) < steps.indexOf(stop));
-  assert.ok(steps.indexOf(stop) < steps.findIndex(({ id }) => id === "pnpm_setup"));
-  assert.match(stop.run, /\[precheck\][\s\S]*exit 1/u);
-  assert.doesNotMatch(stop.run, /df |quota|dbus|sudo|pnpm|ci:local:/u);
+  assert.ok(steps.indexOf(setup) < steps.findIndex(({ id }) => id === "pnpm_setup"));
+  assert.match(setup.run, /set -euo pipefail/u);
   const checkout = steps.find(({ uses }) => uses?.startsWith("actions/checkout@"));
   assert.equal(checkout.with.ref, "${{ github.sha }}");
   assert.equal(checkout.with["fetch-depth"], 0);
@@ -1360,9 +1357,8 @@ test("canonical prerequisite reference is isolated from Full ingestion and heavy
   assert.ok(helper.indexOf('if (phase === "setup-reference") return') < helper.indexOf("({ input, estimate } = await acquireWorkloadInput"));
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
   const stage = steps.find(({ id }) => id === "full_setup");
-  const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
   // Real shell adversary: failed assessment cannot be ignored; successful
-  // assessment still stops before installation or gates. Hosted tests only.
+  // setup only exports assessed settings, never runs gates. Hosted tests only.
   const bin = await mkdtemp(path.join(tmpdir(), "full-reference-shell-contract-"));
   try {
     const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, GITHUB_ENV: path.join(bin, "exports"), FULL_PNPM_DEST: path.join(bin, "installer"), npm_config_store_dir: path.join(bin, "store"), PLAYWRIGHT_BROWSERS_PATH: path.join(bin, "browser"), UV_CACHE_DIR: path.join(bin, "uv"), REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" };
@@ -1370,7 +1366,8 @@ test("canonical prerequisite reference is isolated from Full ingestion and heavy
     await assert.rejects(promisify(execFile)("bash", ["-c", stage.run], { env, timeout: 10000 }), (error) => error.code === 9);
     await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     await promisify(execFile)("bash", ["-c", stage.run], { env, timeout: 10000 });
-    await assert.rejects(promisify(execFile)("bash", ["-c", stop.run], { env, timeout: 10000 }), (error) => error.code === 1 && /\[precheck\]/u.test(error.stderr));
+    assert.deepEqual((await readFile(env.GITHUB_ENV, "utf8")).trim().split("\n"), ["FULL_PNPM_DEST", "npm_config_store_dir", "PLAYWRIGHT_BROWSERS_PATH", "UV_CACHE_DIR"].map((key) => `${key}=${env[key]}`));
+    assert.doesNotMatch(stage.run, /ci:local:|cargo|dbus|sudo/u);
   } finally { await rm(bin, { recursive: true, force: true }); }
 });
 
@@ -1452,10 +1449,9 @@ test("CPU prerequisite preserves the one locked Full consumer and excludes Pytho
 test("reviewed workload setup assessment replaces consumed CPU acquisition and still refuses every heavy effect", async () => {
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
   const setup = steps.find(({ id }) => id === "full_setup");
-  const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
   const checkout = steps.find(({ uses }) => uses?.startsWith("actions/checkout@"));
   assert.equal(steps.indexOf(setup), steps.indexOf(checkout) + 1);
-  assert.equal(steps.indexOf(stop), steps.indexOf(setup) + 1);
+  assert.equal(steps.findIndex(({ id }) => id === "pnpm_setup"), steps.indexOf(setup) + 1);
   for (const step of steps) {
     assert.ok(!["full_reference", "full_normal_preflight"].includes(step.id));
     assert.doesNotMatch(step.run ?? "", /--(?:cpu|normal|grouped|setup)-reference|--cpu-preflight/u);
@@ -1465,20 +1461,21 @@ test("reviewed workload setup assessment replaces consumed CPU acquisition and s
   assert.equal(actions[0].with.version, "0.11.29");
   assert.equal(actions[0].with["cache-local-path"], "${{ env.UV_CACHE_DIR }}");
   assert.equal(actions[0].with["enable-cache"], undefined);
-  assert.ok(steps.indexOf(actions[0]) > steps.indexOf(stop));
+  assert.ok(steps.indexOf(actions[0]) > steps.indexOf(setup));
   const bin = await mkdtemp(path.join(tmpdir(), "reviewed-setup-shell-"));
   try {
     const exported = path.join(bin, "exports"), calls = path.join(bin, "calls");
     const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, GITHUB_ENV: exported, FULL_PNPM_DEST: path.join(bin, "installer"), npm_config_store_dir: path.join(bin, "store"), PLAYWRIGHT_BROWSERS_PATH: path.join(bin, "browser"), UV_CACHE_DIR: path.join(bin, "uv"), REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" };
-    const shell = `${setup.run}\n${stop.run}\nprintf 'installer or gate started' > '${calls}'`;
+    const shell = `${setup.run}\nprintf 'installer continuation' > '${calls}'`;
     await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 9\n", { mode: 0o755 });
     await assert.rejects(promisify(execFile)("bash", ["-c", shell], { env, timeout: 10000 }), (error) => error.code === 9);
     await assert.rejects(access(exported), { code: "ENOENT" });
     await assert.rejects(access(calls), { code: "ENOENT" });
     await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-    await assert.rejects(promisify(execFile)("bash", ["-c", shell], { env, timeout: 10000 }), (error) => error.code === 1 && /\[precheck\]/u.test(error.stderr));
+    await promisify(execFile)("bash", ["-c", shell], { env, timeout: 10000 });
     assert.deepEqual((await readFile(exported, "utf8")).trim().split("\n"), ["FULL_PNPM_DEST", "npm_config_store_dir", "PLAYWRIGHT_BROWSERS_PATH", "UV_CACHE_DIR"].map((key) => `${key}=${env[key]}`));
-    await assert.rejects(access(calls), { code: "ENOENT" });
+    assert.equal(await readFile(calls, "utf8"), "installer continuation");
+    assert.doesNotMatch(setup.run, /ci:local:|cargo|apt-get|dbus/u);
   } finally { await rm(bin, { recursive: true, force: true }); }
 });
 
@@ -1984,8 +1981,8 @@ test("grouped acquisition retains Full fences, bounded ownership and scoped obse
   const setup = steps.find(({ id }) => id === "full_setup");
   assert.match(setup.run, /--setup /u);
   assert.doesNotMatch(setup.run, /--(?:cpu|grouped|setup|normal)-reference/u);
-  assert.ok(steps.indexOf(setup) < steps.findIndex(({ name }) => name === "Full prerequisites remain unresolved"));
-  assert.ok(steps.find(({ id }) => id === "canonical").run.includes("Full conditional admission is not yet enabled"));
+  assert.ok(steps.indexOf(setup) < steps.findIndex(({ id }) => id === "pnpm_setup"));
+  assert.doesNotMatch(steps.find(({ id }) => id === "canonical").run, /node scripts\/local-ci-full-admission|--(?:grouped|normal|cpu|native)-reference|--from/u);
 });
 
 test("Full preparation preserves actual compilation tuples without executing tests or journeys", async () => {
@@ -2247,9 +2244,8 @@ test("canonical Full setup assessment precedes every heavy action/install and ca
   assert.match(setup.run, /node scripts\/local-ci-full-admission\.mjs --setup "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
   assert.doesNotMatch(setup.run, /ci:local:|pnpm|cargo|apt-get|\|\|\s*true/u);
   // No prerequisite installer remains before the actual reviewed-input assessment.
-  // All eight ordinary Full installers are still behind the first refusal.
-  const stopIndex = steps.findIndex(({ name }) => name === "Full prerequisites remain unresolved");
-  assert.equal(stopIndex, setupIndex + 1);
+  // All eight ordinary Full installers are behind successful setup assessment.
+  assert.equal(steps.findIndex(({ id }) => id === "pnpm_setup"), setupIndex + 1);
   const helper = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
   const runner = helper.slice(helper.indexOf("function admissionRunner"), helper.indexOf("// Exactly one same-job continuation"));
   assert.ok(runner.indexOf("`${id}-start.json`") < runner.indexOf("await runLocalCiCommand"));
@@ -2259,7 +2255,7 @@ test("canonical Full setup assessment precedes every heavy action/install and ca
   const heavy = steps.filter(({ uses, run }) => /pnpm\/action-setup@|actions\/setup-node@|dtolnay\/rust-toolchain@|astral-sh\/setup-uv@/u.test(uses ?? "") || /apt-get|pnpm install|playwright install-deps|cargo install/u.test(run ?? ""));
   assert.equal(heavy.length, 8);
   for (const step of heavy) {
-    assert.ok(steps.indexOf(step) > stopIndex, step.name ?? step.uses ?? step.run);
+    assert.ok(steps.indexOf(step) > setupIndex, step.name ?? step.uses ?? step.run);
     assert.doesNotMatch(step.if ?? "", /always\(|failure\(|cancelled\(/u);
     assert.equal(step["continue-on-error"], undefined);
   }
@@ -3143,78 +3139,58 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   const workflow = await readWorkflow(".github/workflows/canonical-ci.yml");
   const steps = workflow.jobs.canonical.steps;
   const selection = steps.find(({ name }) => name === "Validate canonical selection");
-  const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
   const canonical = steps.find(({ id }) => id === "canonical");
   assert.equal(selection.if, undefined);
-  assert.equal(stop.if, "inputs.profile == 'full'");
   assert.equal(canonical.if, "inputs.profile != 'contracts'");
   assert.deepEqual(canonical.env, selection.env);
   assert.match(canonical.run, /readonly candidate_base=/u);
   assert.match(canonical.run, /readonly candidate_head=/u);
-  const inspectionStart = canonical.run.indexOf('if [[ "$PROFILE" == full ]]; then');
   const profileStart = canonical.run.indexOf('pnpm "ci:local:$PROFILE"');
-  assert.ok(inspectionStart > canonical.run.indexOf('git merge-base --is-ancestor'));
-  assert.ok(inspectionStart < profileStart);
-  const inspection = canonical.run.slice(inspectionStart, profileStart);
-  assert.ok(inspection.includes('node scripts/local-ci-full-admission.mjs "$candidate_base" "$candidate_head" "$MAX_PARALLEL_TASKS"'));
-  assert.match(inspection, /\[precheck\] Full conditional admission is not yet enabled:[\s\S]*exit 1/u);
-  assert.doesNotMatch(inspection, /recover-lock|unlink|^\s*(?:sudo|kill)\b/mu);
+  assert.ok(profileStart > canonical.run.indexOf('git merge-base --is-ancestor'));
+  assert.doesNotMatch(canonical.run, /node scripts\/local-ci-full-admission|Full conditional admission is not yet enabled|recover-lock|unlink|^\s*(?:sudo|kill)\b/mu);
+  const cli = await readFile(path.join(repoRoot, "scripts/local-ci.mjs"), "utf8");
+  const main = cli.slice(cli.indexOf("async function main()"));
+  const lock = main.indexOf("checkoutLock = await acquireCheckoutLock");
+  const host = main.indexOf("fullHostAdmission = await admitFullResources");
+  const tasks = main.indexOf("result = await runLocalCiInvocationTasks");
+  assert.ok(lock >= 0 && lock < host && host < tasks);
+  assert.match(main.slice(host, tasks), /signal: cliAbort\.signal, localRunId: runId/u);
+  assert.match(main, /verifyFullPrivateAdmission\(repoRoot, host\.decision\)/u);
   assert.equal((canonical.run.match(/--base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/gu) ?? []).length, 2);
   const execute = promisify(execFile);
   const temporary = await mkdtemp(path.join(tmpdir(), "canonical-ci-contract-"));
   const cwd = path.join(temporary, "checkout");
   const bin = path.join(temporary, "bin");
   const calls = path.join(temporary, "calls.jsonl");
-  const inspectionCalls = path.join(temporary, "inspection.jsonl");
   try {
     await mkdir(cwd);
     await mkdir(bin);
-    await writeFile(path.join(bin, "pnpm"), `#!${process.execPath}\nconst { appendFileSync } = require('node:fs');\nconst args = process.argv.slice(2);\nappendFileSync(process.env.CALLS, JSON.stringify(args) + '\\n');\nif (process.env.FAIL_PROFILE === '1') process.exitCode = 7;\n`, { mode: 0o755 });
-    // Synthetic admission only: no real preparation/quota/host probe in contracts.
-    await writeFile(path.join(bin, "node"), `#!${process.execPath}\nconst fs = require('node:fs');\nfs.appendFileSync(process.env.INSPECTION_CALLS, JSON.stringify(process.argv.slice(2)) + '\\n');\nif (process.env.INSPECTION_UNAVAILABLE === '1') { console.error('[precheck] Full scoped filesystem/quota acquisition unavailable'); process.exitCode = 9; }\n`, { mode: 0o755 });
+    // Model either host or late private failure at the CLI boundary, not fit.
+    await writeFile(path.join(bin, "pnpm"), `#!${process.execPath}\nconst { appendFileSync } = require('node:fs');\nconst args = process.argv.slice(2);\nappendFileSync(process.env.CALLS, JSON.stringify(args) + '\\n');\nif (process.env.FAIL_PROFILE === '1') { console.error('[precheck] canonical profile gate failed'); process.exitCode = 7; }\n`, { mode: 0o755 });
+    // No workflow-owned host acquisition may precede the checkout-lock owner.
+    await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 99\n", { mode: 0o755 });
     const git = (...args) => execute("git", args, { cwd, timeout: 10000 });
     await git("init", "--initial-branch=contract");
     await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
     await git("add", "source.txt");
     await git("-c", "user.name=Contract", "-c", "user.email=contract@example.invalid", "commit", "-m", "Synthetic workflow contract");
     const sha = (await git("rev-parse", "HEAD")).stdout.trim();
-    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls, INSPECTION_CALLS: inspectionCalls, INSPECTION_UNAVAILABLE: "0", PROFILE: "quick", REQUESTED_BASE: sha, EXPECTED_HEAD: sha, GITHUB_SHA: sha, MAX_PARALLEL_TASKS: "3", FAIL_PROFILE: "0" };
+    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls, PROFILE: "quick", REQUESTED_BASE: sha, EXPECTED_HEAD: sha, GITHUB_SHA: sha, MAX_PARALLEL_TASKS: "3", FAIL_PROFILE: "0" };
     const shell = (source, overrides = {}) => execute("bash", ["-c", source], { cwd, env: { ...env, ...overrides }, timeout: 10000 });
-    await assert.rejects(shell(stop.run), (error) => {
-      assert.equal(error.code, 1);
-      assert.match(error.stderr, /\[precheck\] Full requires candidate acceptance\/freeze, prerequisite closure and actual-runner resource-isolation admission/u);
-      return true;
-    });
-    await assert.rejects(access(calls));
-    await assert.rejects(access(inspectionCalls));
-    await shell(selection.run);
-    await shell(canonical.run);
-    assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
-      ["ci:local:quick", "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
-      ["ci:local:verify", "--", "quick", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
-    ]);
-    await assert.rejects(access(inspectionCalls), "Quick must not inspect Full resources");
-    await writeFile(calls, "");
-    await shell(selection.run, { PROFILE: "full" });
-    await assert.rejects(shell(canonical.run, { PROFILE: "full" }), (error) => {
-      assert.equal(error.code, 1);
-      assert.match(error.stderr, /\[precheck\] Full conditional admission is not yet enabled/u);
-      return true;
-    });
-    assert.deepEqual((await readFile(inspectionCalls, "utf8")).trim().split("\n").map(JSON.parse), [["scripts/local-ci-full-admission.mjs", sha, sha, "3"]]);
-    assert.equal(await readFile(calls, "utf8"), "", "even successful conditional admission remains fenced until review and prerequisites");
-    await writeFile(inspectionCalls, "");
-    await assert.rejects(shell(canonical.run, { PROFILE: "full", INSPECTION_UNAVAILABLE: "1" }), (error) => {
-      assert.equal(error.code, 9);
-      assert.match(error.stderr, /\[precheck\] Full scoped filesystem\/quota acquisition unavailable/u);
-      return true;
-    });
-    assert.equal(await readFile(calls, "utf8"), "", "missing facts must not start Full or verify");
-    await writeFile(inspectionCalls, "");
-    await assert.rejects(shell(canonical.run, { FAIL_PROFILE: "1" }));
-    const failedCalls = (await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse);
-    assert.equal(failedCalls.length, 1);
-    assert.equal(failedCalls[0][0], "ci:local:quick");
+    for (const PROFILE of ["quick", "full"]) {
+      await writeFile(calls, "");
+      await shell(selection.run, { PROFILE });
+      await shell(canonical.run, { PROFILE });
+      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
+        [`ci:local:${PROFILE}`, "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
+        ["ci:local:verify", "--", PROFILE, "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
+      ]);
+      await writeFile(calls, "");
+      await assert.rejects(shell(canonical.run, { PROFILE, FAIL_PROFILE: "1" }), (error) => error.code === 7 && /canonical profile gate failed/u.test(error.stderr));
+      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
+        [`ci:local:${PROFILE}`, "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
+      ], "a failed host/private/profile gate must not start verify");
+    }
     for (const overrides of [
       { REQUESTED_BASE: "$(touch injected)" },
       { EXPECTED_HEAD: "0".repeat(40) },
@@ -3228,7 +3204,6 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
     await assert.rejects(shell(canonical.run));
     await assert.rejects(shell(canonical.run, { PROFILE: "full" }));
     assert.equal(await readFile(calls, "utf8"), "");
-    assert.equal(await readFile(inspectionCalls, "utf8"), "", "dirty candidate must fail before inspection");
     await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
     await assert.rejects(shell(canonical.run, { GITHUB_SHA: "0".repeat(40) }));
     await assert.rejects(shell(canonical.run, { REQUESTED_BASE: "0".repeat(40) }));

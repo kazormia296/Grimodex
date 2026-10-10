@@ -635,8 +635,10 @@ using the complete reviewed `full-workload-allocation/1` input on the actual
 owned hosted VM. No accepted normal/DB/APT/CPU/native acquisition is replayed.
 This read-only assessment acquires writable destination capacity and applicable
 user/group/project quotas, including root/home and temporary pressure, under
-the existing single-job VM exclusion. The first refusal follows it immediately,
-before every setup action or installer; the second refusal remains unchanged.
+the existing single-job VM exclusion. Failed/unknown setup stops before every
+setup action or installer. After successful setup, the existing CLI owns host
+admission under its checkout lock/UUID before stage1; shard1 owns private-root
+admission only after canonical dependencies. No standalone host call is made.
 No new profile/job/input, executor, receipt schema, bus or Editor is introduced.
 A successful assessment is only current-job **setup risk** fit, not deeper build/
 fixture/journey fit, candidate freeze, B authority, Full or merge readiness.
@@ -832,15 +834,16 @@ package/version/architecture, with unchanged distinctness and cached size-field
 validation. Nonempty annotations, extra whitespace/text and malformed tuples stay
 rejected. The actual rejected tuple text remains unobserved; this narrow grammar
 correction is not a successful size acquisition. The former focused acquisitions were
-followed by the Full refusal; current setup assessment retains that refusal before
-actual Full installers without replaying those accepted acquisitions.
+followed by an unconditional Full refusal; current setup assessment replaces that
+historical stop with fail-closed resource checks before actual Full installers,
+without replaying those accepted acquisitions.
 Candidate-untouched changed-unit P2 review is required before checkpoint/hosted
 execution; future actual installer/build sizing and applicable quotas/capacity/
 exclusion remain independently necessary before those heavy operations.
 
-The command connection for actual Full is prepared, but must not be enabled until candidate acceptance/freeze, outstanding
-prerequisites, and a reviewed **actual-runner** resource-isolation preflight
-connection are complete. No dispatch input or source-contract pass attests those
+The actual Full route is wired, but dispatch still requires candidate acceptance/freeze,
+outstanding prerequisites, and reviewed **actual-runner** resource-isolation
+admission. No dispatch input or source-contract pass attests those
 facts. That preflight must check the actual workspace/build-cache/temp, root/home
 pressure, temp quota and competing heavy work without fixed capacity thresholds,
 automatic deletion, foreign-process kills or temp-path rewriting.
@@ -867,17 +870,23 @@ Installer-created project placement is not inferred from an ancestor: enabled
 project quotas require an actual destination-placement acquisition and currently
 reject. User/group quotas and disabled project domains are acquired, not guessed.
 
-The deeper shell connects the same helper after candidate/ancestry validation.
-It consumes the successful initial decision bound to the **unchanged entire
-estimate**, candidate, registry, option and run/attempt before importing the
-product plan or starting preparation. Initial setup and deeper preparation have
-separate non-recoverable phase owners; no stale retry or runner transfer. Failed
-setup logs are included in the existing canonical evidence upload even when the
-profile step is skipped. Setup admission is not a measured Full pass. **Both source refusals remain**: source review,
-affected hosted contracts, the reviewed workload-sizing producer and remaining
-candidate/B prerequisites must close before enabling Full. Even a successful
-helper is currently followed by the second refusal. This is a conditional
-mechanism source milestone, not completed admission or a Full pass.
+The deeper shell validates one immutable candidate/ancestry/clean tuple, then
+calls the existing canonical profile and immediate verifier with the same options.
+For Full, the CLI acquires its checkout lock/UUID, consumes the successful setup
+decision bound to the **unchanged entire estimate**, candidate, registry, option
+and run/attempt, and admits actual host/cgroup/ordinary-shm resources BEFORE
+stage1. Setup and host have separate non-recoverable phase owners; no stale retry
+or runner transfer. The unchanged shard1 dependencies produce the exact artifacts
+before ONE initial private root assesses actual tmpfs and fresh same-owner host
+facts. All host descriptors/privilege are removed before workloads. Host-admitted/
+private-pending is not Full/B acceptance. Late private failure/unknown fails Full,
+fences B/Editor, and retains partial outcomes and uncertain owner/quarantine.
+Only all original task success AND current-bound private acceptance may finalize
+Full; shell failure skips verify. No producer replay or installed-fit credit.
+Failed setup evidence is uploaded even when the profile step is skipped. Removing
+the two obsolete unconditional refusals is wiring only, not candidate freeze,
+resource fit or permission to start B/Editor. Untouched source review, reviewed
+checkpoint/necessary hosted proof and all final candidate gates remain required.
 
 The helper uses the existing registry and process supervisor. It derives required
 materialization/build-only preparation from the actual Full commands, adds the
@@ -986,8 +995,8 @@ observations or justified source-grounded cold-operation forecasts and independe
 review. This source connection does **not** supply missing numerical inventories:
 no dataset is manufactured from the synthetic contract numbers, source lengths or
 compressed artifact sizes. No new profile, job, dispatch input, external download
-or configuration fallback is added. Both Full fences and separate B/Editor
-prerequisites remain until their actual gates close. The smaller prerequisite
+or configuration fallback is added. Actual setup/CLI host/shard1 private gates
+and separate B/Editor prerequisites remain until their actual gates close. The smaller prerequisite
 reference above does not relax this ingestion contract or assert that the
 remaining numerical acquisition is complete.
 
@@ -1047,7 +1056,7 @@ public/synthetic risk inputs, not an admission Boolean or mathematical certifica
 for all future Full consumers. Historical download/extraction peaks, complete
 hosted action logs, other installers and explicit future-growth/uncertainty
 forecasts remain unobserved; actual future owned-runner resource/quota/exclusion
-and B/Editor prerequisites remain independent. Both Full fences are unchanged.
+and B/Editor prerequisites remain independent. Setup/host/private gates remain mandatory.
 
 ### Constructive workload-risk producer
 
@@ -1139,8 +1148,8 @@ coverage are revalidated, with existing process/phase ownership unchanged. The
 actual runner's applicable quotas/capacity and exclusion are still independently
 acquired; reviewed numerical input is not proof that they fit. Necessary target
 inventories remain to be acquired/reviewed; source implementation and synthetic
-contracts are not an executed resource admission or Full pass. Both Full fences
-and independent B/Editor prerequisites remain.
+contracts are not an executed resource admission or Full pass. Setup/host/private
+gates and independent B/Editor prerequisites remain.
 
 These are defensible estimates with explicit uncertainty, not mathematical
 all-future allocation certificates. A cached/no-growth preparation does not zero

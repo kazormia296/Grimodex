@@ -102,13 +102,9 @@ jobs:
             printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_ENV"
           done
 
-      # Even successful setup assessment is not Full/B/candidate admission.
-      # Keep the first refusal before EVERY installer; the second is unchanged.
-      - name: Full prerequisites remain unresolved
-        if: inputs.profile == 'full'
-        run: |
-          echo '[precheck] Full requires candidate acceptance/freeze, prerequisite closure and actual-runner resource-isolation admission' >&2
-          exit 1
+      # Failed/unknown setup stops before EVERY installer. Setup success is not
+      # host/private/B/candidate admission: the CLI owns the pre-stage1 host gate,
+      # and shard1 owns the initial private gate after canonical dependencies.
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         id: pnpm_setup
@@ -197,13 +193,9 @@ jobs:
           [[ "$(git rev-parse HEAD)" == "$candidate_head" ]]
           [[ -z "$(git status --porcelain --untracked-files=all)" ]]
           git merge-base --is-ancestor "$candidate_base" "$candidate_head"
-          if [[ "$PROFILE" == full ]]; then
-            # Actual conditional same-job acquisition/decision. Both source fences
-            # remain pending independent review, hosted contracts and risk sizing.
-            node scripts/local-ci-full-admission.mjs "$candidate_base" "$candidate_head" "$MAX_PARALLEL_TASKS"
-            echo '[precheck] Full conditional admission is not yet enabled: reviewed workload sizing and remaining candidate/B prerequisites must close' >&2
-            exit 1
-          fi
+          # Full's existing CLI acquires the checkout lock/UUID and admits actual
+          # host resources BEFORE stage1; only shard1's initial root can admit
+          # private resources/B. A failed/unknown gate fails Full, skipping verify.
           pnpm "ci:local:$PROFILE" -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
           pnpm ci:local:verify -- "$PROFILE" --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
 
