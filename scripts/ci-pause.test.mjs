@@ -2213,6 +2213,96 @@ test("Full workload-risk ledger rejects missing consumers, sizing, source freshn
   } finally { await rm(temporary, { recursive: true, force: true }); }
 });
 
+test("Reviewed Full workload data covers the real plan and rejects source, tuple, placement and backup drift", async () => {
+  // Real proposed risk data, not a resource probe/admission or fixture/app run.
+  const data = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-full-workload-allocation.json"), "utf8"));
+  assert.deepEqual(Object.keys(data).sort(), ["version", "registryDigest", "maxParallelTasks", "sources", "inventories", "setup", "preparation", "tasks"].sort());
+  assert.equal(data.version, "full-workload-allocation/1");
+  assert.equal(new Set(data.sources.map(({ path }) => path)).size, data.sources.length);
+  assert.ok(!data.sources.some(({ path }) => path === "scripts/local-ci-full-workload-allocation.json"));
+  const registry = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
+  const preparation = fullPreparation(plan);
+  assert.equal(data.registryDigest, plan.registryDigest);
+  assert.equal(data.maxParallelTasks, 12);
+  assert.deepEqual(data.tasks.map(({ id }) => id), plan.tasks.map(({ id }) => id));
+  assert.deepEqual(data.preparation.map(({ id, commandDigest }) => ({ id, commandDigest })), preparation.map(({ id, command }) => ({ id, commandDigest: createHash("sha256").update(JSON.stringify(command)).digest("hex") })));
+  const binding = { head: "b".repeat(40), registryDigest: data.registryDigest, maxParallelTasks: 12, runId: "1", attempt: "1" };
+  const locations = fullSetupLocations(repoRoot, {
+    FULL_PNPM_DEST: "/synthetic/pnpm", npm_config_store_dir: "/synthetic/store",
+    PLAYWRIGHT_BROWSERS_PATH: "/synthetic/browser", UV_CACHE_DIR: "/synthetic/uv",
+  });
+  const input = { version: "full-workload-input/1", binding, sources: data.sources, inventories: data.inventories, setup: data.setup, preparation: data.preparation, tasks: data.tasks };
+  const produce = (value) => produceWorkloadEstimate(value, binding, repoRoot, locations);
+  const estimate = await produce(input);
+  await validateFullSetupEstimate(estimate, binding, repoRoot);
+  await validateWorkloadEstimate(estimate, binding, plan, preparation, repoRoot);
+  assert.equal(estimate.tasks.length, 68);
+  assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, 33);
+  for (const term of [...estimate.setup.terms, ...estimate.preparation.flatMap(({ terms }) => terms), ...estimate.residual]) {
+    assert.ok(BigInt(term.bytes) > 0n && BigInt(term.inodes) > 0n);
+  }
+  // The SAME mutable images must reach their actual devices, not just an
+  // ample tool-cache. All resource values below are synthetic, not probes.
+  const mutableTerms = [
+    ["node", "install.node", "tool-cache"], ["rust", "install.rust", "rustup-home"],
+    ["system", "install.system", "root"], ["store", "install.packages", "pnpm-store"],
+  ].map(([name, installer, location]) => {
+    const id = `setup.mutable-${name}`;
+    const inventory = data.inventories.find((entry) => entry.id === id);
+    const installed = data.inventories.find((entry) => entry.id === installer).items.find((item) => item.role === "installed" && item.location === location);
+    assert.deepEqual(inventory.items, [{ role: "scenario", bytes: installed.bytes, inodes: installed.inodes }]);
+    const recipes = data.setup.map((recipe, index) => ({ recipe, index })).filter(({ recipe }) => recipe.inventories.includes(id));
+    assert.equal(recipes.length, 1);
+    assert.deepEqual(recipes[0].recipe, { kind: "uncertainty", domain: "cache-environment", location, inventories: [id] });
+    const term = estimate.setup.terms.find((entry) => entry.id === `setup.${recipes[0].index}`);
+    assert.equal(term.location, location);
+    assert.equal(term.bytes, installed.bytes);
+    assert.equal(term.inodes, installed.inodes);
+    return term;
+  });
+  assert.ok(!data.inventories.some(({ id }) => id === "setup.mutable-images"));
+  const sum = (terms, metric) => terms.reduce((total, term) => total + BigInt(term[metric]), 0n);
+  assert.equal(sum(mutableTerms, "bytes"), 5494403072n);
+  assert.equal(sum(mutableTerms, "inodes"), 719022n);
+  const disjoint = locations.map(([label]) => syntheticFilesystem(label, label, String(sum(estimate.setup.terms, "bytes") + 1n), String(sum(estimate.setup.terms, "inodes") + 1n)));
+  const report = assessFullSetupDemand(disjoint, estimate.setup.terms);
+  const baseline = estimate.setup.terms.filter((term) => !mutableTerms.includes(term));
+  const baselineReport = assessFullDemand(disjoint, baseline);
+  for (const { location } of mutableTerms) {
+    for (const metric of ["bytes", "inodes"]) {
+      const limited = structuredClone(disjoint);
+      const demandKey = metric === "bytes" ? "demandBytes" : "demandInodes";
+      limited.find(({ label }) => label === location)[metric] = String(BigInt(baselineReport.find(({ device }) => device === location)[demandKey]) + 1n);
+      assert.doesNotThrow(() => assessFullDemand(limited, baseline));
+      assert.throws(() => assessFullSetupDemand(limited, estimate.setup.terms), /capacity\/quota/u);
+    }
+  }
+  const aliased = disjoint.map((fs) => ({ ...fs, device: "shared" }));
+  const [shared] = assessFullSetupDemand(aliased, estimate.setup.terms);
+  assert.equal(BigInt(shared.demandBytes), report.reduce((total, fs) => total + BigInt(fs.demandBytes), 0n));
+  assert.equal(BigInt(shared.demandInodes), report.reduce((total, fs) => total + BigInt(fs.demandInodes), 0n));
+  for (const mutate of [
+    (value) => { value.sources.at(-1).sha256 = "0".repeat(64); },
+    (value) => { value.inventories.find(({ id }) => id === "c2zc.fixture").items.find(({ role }) => role === "backup").bytes = "0"; },
+    (value) => { value.inventories.find(({ id }) => id === "journey.editor-persistence.failure").items.find(({ role }) => role === "backup").inodes = "0"; },
+    (value) => { value.inventories.find(({ id }) => id === "install.packages").items.find(({ location }) => location === "pnpm-store").location = "workspace"; },
+  ]) {
+    const malformed = structuredClone(input);
+    mutate(malformed);
+    await assert.rejects(produce(malformed), /\[precheck\]/u);
+  }
+  for (const mutate of [
+    (value) => { value.tasks.pop(); },
+    (value) => { value.preparation[0].commandDigest = "0".repeat(64); },
+  ]) {
+    const malformed = structuredClone(input);
+    mutate(malformed);
+    const rejected = await produce(malformed);
+    await assert.rejects(validateWorkloadEstimate(rejected, binding, plan, preparation, repoRoot), /\[precheck\]/u);
+  }
+});
+
 test("Full producer acquires reviewed tracked data exclusively and constructs complete coexistence demand without missing-fact defaults", async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), "full-producer-contract-"));
   try {
