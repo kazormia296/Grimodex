@@ -777,6 +777,10 @@ export function assessFullDemand(filesystems, terms) {
   for (const fs of filesystems) {
     if (locations.has(fs.label) || typeof fs.device !== "string") fail("unique observed storage labels/device identity");
     locations.set(fs.label, fs.device);
+    // Positive forecasts use the reviewed 4 KiB allocation scenario. This is
+    // geometry compatibility, not a fixed free-capacity threshold. No-demand
+    // prerequisite observations do not claim that scenario or renew acquisition.
+    if (terms.length && fs.allocationUnit !== "4096") fail(`actual allocation geometry compatible with the reviewed 4 KiB forecast for ${fs.label}`);
     let bytes = amount(fs.bytes), inodes = amount(fs.inodes);
     if (!Array.isArray(fs.quotas) || !fs.quotas.length) fail(`authoritative applicable quota acquisition for ${fs.label}`);
     const types = new Set();
@@ -804,7 +808,7 @@ export function assessFullDemand(filesystems, terms) {
   const report = [];
   for (const [device, fs] of devices) {
     if (fs.bytes <= fs.demandBytes || fs.inodes <= fs.demandInodes) fail("workload-derived writable capacity/quota including separate root/home pressure");
-    report.push({ device, bytes: String(fs.bytes), inodes: String(fs.inodes), demandBytes: String(fs.demandBytes), demandInodes: String(fs.demandInodes) });
+    report.push({ device, bytes: String(fs.bytes), inodes: String(fs.inodes), demandBytes: String(fs.demandBytes), demandInodes: String(fs.demandInodes), ...(terms.length ? { allocationUnit: "4096" } : {}) });
   }
   return report;
 }
@@ -1013,7 +1017,18 @@ export async function acquireWorkloadInput({ root, binding, directory, run, sign
 
 function admissionRunner(root, directory, signal) {
   return async (id, command, timeoutMs = 30_000, commandSignal = signal, capture = true) => {
-    const result = await runLocalCiCommand(command, { root, taskId: id, logDirectory: path.relative(root, directory), signal: commandSignal, timeoutMs, closeGraceMs: 2_000 });
+    // Retain per-child ownership and complete supervisor close/log identities,
+    // not raw argv/environment/log bodies, in the existing phase directory.
+    await durableJson(path.join(directory, `${id}-start.json`), { id, state: "possible-start", timeoutMs });
+    let result;
+    try {
+      result = await runLocalCiCommand(command, { root, taskId: id, logDirectory: path.relative(root, directory), signal: commandSignal, timeoutMs, closeGraceMs: 2_000 });
+    } catch (error) {
+      await durableJson(path.join(directory, `${id}-close.json`), error.result ?? { termination: "unknown" });
+      if (error.lateClose) await durableJson(path.join(directory, `${id}-late-close.json`), await error.lateClose);
+      throw error;
+    }
+    await durableJson(path.join(directory, `${id}-close.json`), result);
     if (result.exitCode !== 0 || result.signal || result.interrupted || result.timedOut || !result.closeObserved || result.cleanup?.complete !== true || result.cleanup?.groupAlive || result.error) fail(`successful actual close/EOF/file joins/group absence for ${id}`);
     return capture ? readFile(path.resolve(root, result.logs.stdout.path), "utf8") : result;
   };

@@ -1217,19 +1217,19 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
   const steps = job.steps;
   const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
   assert.equal(stop.if, "inputs.profile == 'full'");
-  const reference = steps.find(({ id }) => id === "full_reference");
-  assert.equal(reference.if, "inputs.profile == 'full'");
-  assert.ok(steps.indexOf(reference) < steps.indexOf(stop));
-  assert.ok(steps.indexOf(stop) < steps.findIndex(({ id }) => id === "full_setup"));
+  const setup = steps.find(({ id }) => id === "full_setup");
+  assert.equal(setup.if, "inputs.profile == 'full'");
+  assert.ok(steps.indexOf(setup) < steps.indexOf(stop));
+  assert.ok(steps.indexOf(stop) < steps.findIndex(({ id }) => id === "pnpm_setup"));
   assert.match(stop.run, /\[precheck\][\s\S]*exit 1/u);
   assert.doesNotMatch(stop.run, /df |quota|dbus|sudo|pnpm|ci:local:/u);
   const checkout = steps.find(({ uses }) => uses?.startsWith("actions/checkout@"));
   assert.equal(checkout.with.ref, "${{ github.sha }}");
   assert.equal(checkout.with["fetch-depth"], 0);
   assert.equal(checkout.with["persist-credentials"], false);
-  assert.ok(steps.indexOf(reference) > steps.indexOf(checkout));
-  assert.match(reference.run, /node scripts\/local-ci-full-admission\.mjs --cpu-reference "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
-  assert.doesNotMatch(reference.run, /pnpm|cargo|sudo|ci:local:|\|\|\s*true/u);
+  assert.equal(steps.indexOf(setup), steps.indexOf(checkout) + 1);
+  assert.match(setup.run, /node scripts\/local-ci-full-admission\.mjs --setup "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
+  assert.doesNotMatch(setup.run, /cargo|sudo|ci:local:|\|\|\s*true/u);
   const dependencies = steps.find(({ name }) => name === "Canonical system dependencies");
   assert.equal(dependencies.if, "inputs.profile != 'contracts'");
   assert.deepEqual(dependencies.run.trim().split("\n").slice(0, 2), [
@@ -1262,8 +1262,9 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
     if (step.run) assert.doesNotMatch(step.run, /\$\{\{ inputs\.|--dry-run|--from|--recover-lock|\|\|\s*true/u);
   }
   const upload = steps.find(({ name }) => name === "Upload existing canonical evidence");
-  assert.equal(upload.if, "always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped' || steps.full_reference.outcome != 'skipped' || steps.full_normal_preflight.outcome != 'skipped')");
-  assert.match(upload.with.path, /steps\.full_setup\.outcome == 'skipped' && '\.artifacts\/local-ci\/full-admission\/\*-setup-reference\/\*\.json'/u);
+  assert.equal(upload.if, "always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped')");
+  assert.equal(upload.with.path.trim().split("\n")[0], "${{ steps.canonical.outcome == 'skipped' && '.artifacts/local-ci/full-admission/*-setup/*.json' || '.artifacts/local-ci/' }}");
+  assert.doesNotMatch(upload.with.path, /setup-reference|full-workload-(?:input|estimate)|\.log|stdout|stderr/u);
   assert.equal(upload.with["include-hidden-files"], true);
   assert.equal(upload.with["if-no-files-found"], "error");
   assert.ok(upload.with.path.includes(".artifacts/local-ci/"));
@@ -1354,13 +1355,13 @@ test("canonical prerequisite reference is isolated from Full ingestion and heavy
   assert.doesNotMatch(reference, /admitted:|acquireWorkloadInput|produceWorkloadEstimate|admitFullResources|admitFullSetup|sudo|apt-get update/u);
   assert.ok(helper.indexOf('if (phase === "setup-reference") return') < helper.indexOf("({ input, estimate } = await acquireWorkloadInput"));
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
-  const stage = steps.find(({ id }) => id === "full_reference");
+  const stage = steps.find(({ id }) => id === "full_setup");
   const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
-  // Real shell adversary: failed staging cannot be ignored; successful staging
-  // still stops before any setup/installation or gate. Run only in hosted tests.
+  // Real shell adversary: failed assessment cannot be ignored; successful
+  // assessment still stops before installation or gates. Hosted tests only.
   const bin = await mkdtemp(path.join(tmpdir(), "full-reference-shell-contract-"));
   try {
-    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" };
+    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, GITHUB_ENV: path.join(bin, "exports"), FULL_PNPM_DEST: path.join(bin, "installer"), npm_config_store_dir: path.join(bin, "store"), PLAYWRIGHT_BROWSERS_PATH: path.join(bin, "browser"), UV_CACHE_DIR: path.join(bin, "uv"), REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" };
     await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 9\n", { mode: 0o755 });
     await assert.rejects(promisify(execFile)("bash", ["-c", stage.run], { env, timeout: 10000 }), (error) => error.code === 9);
     await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -1444,36 +1445,36 @@ test("CPU prerequisite preserves the one locked Full consumer and excludes Pytho
   }
 });
 
-test("CPU focused setup owns the pinned tool before one continuation without normal replay or Full admission", async () => {
+test("reviewed workload setup assessment replaces consumed CPU acquisition and still refuses every heavy effect", async () => {
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
-  const preflight = steps.find(({ id }) => id === "full_normal_preflight");
-  const reference = steps.find(({ id }) => id === "full_reference");
+  const setup = steps.find(({ id }) => id === "full_setup");
   const stop = steps.find(({ name }) => name === "Full prerequisites remain unresolved");
-  const actions = steps.slice(steps.indexOf(preflight) + 1, steps.indexOf(reference));
-  assert.equal(preflight.if, "inputs.profile == 'full'");
-  assert.deepEqual(actions.map(({ uses }) => uses), ["astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b"]);
-  for (const step of actions) {
-    assert.equal(step.if, "inputs.profile == 'full'"); assert.equal(step["timeout-minutes"], 5);
-    assert.equal(step["continue-on-error"], undefined);
+  const checkout = steps.find(({ uses }) => uses?.startsWith("actions/checkout@"));
+  assert.equal(steps.indexOf(setup), steps.indexOf(checkout) + 1);
+  assert.equal(steps.indexOf(stop), steps.indexOf(setup) + 1);
+  for (const step of steps) {
+    assert.ok(!["full_reference", "full_normal_preflight"].includes(step.id));
+    assert.doesNotMatch(step.run ?? "", /--(?:cpu|normal|grouped|setup)-reference|--cpu-preflight/u);
   }
+  const actions = steps.filter(({ uses }) => uses?.startsWith("astral-sh/setup-uv@"));
+  assert.equal(actions.length, 1); // Retain the ordinary Full action, not its consumed acquisition copy.
   assert.equal(actions[0].with.version, "0.11.29");
   assert.equal(actions[0].with["cache-local-path"], "${{ env.UV_CACHE_DIR }}");
-  assert.equal(actions[0].with["enable-cache"], undefined); // Ordinary canonical action behavior is not suppressed.
-  assert.ok(preflight.run.indexOf('>> "$GITHUB_ENV"') > preflight.run.indexOf("--cpu-preflight"));
-  assert.match(reference.run, /--cpu-reference/u);
-  assert.doesNotMatch(reference.run, /--normal-reference/u);
-  assert.doesNotMatch(reference.run, /--grouped-reference|--setup-reference|ci:local:/u);
-  assert.ok(steps.indexOf(reference) < steps.indexOf(stop));
-  assert.ok(steps.indexOf(stop) < steps.findIndex(({ id }) => id === "full_setup"));
-  const upload = steps.find(({ name }) => name === "Upload existing canonical evidence");
-  assert.ok(upload.with.path.includes("steps.full_normal_preflight.outcome != 'skipped'"));
-  assert.ok(upload.with.path.includes("*-setup-reference/*.json"));
-  const bin = await mkdtemp(path.join(tmpdir(), "normal-preflight-shell-"));
+  assert.equal(actions[0].with["enable-cache"], undefined);
+  assert.ok(steps.indexOf(actions[0]) > steps.indexOf(stop));
+  const bin = await mkdtemp(path.join(tmpdir(), "reviewed-setup-shell-"));
   try {
-    const exported = path.join(bin, "exports");
+    const exported = path.join(bin, "exports"), calls = path.join(bin, "calls");
+    const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, GITHUB_ENV: exported, FULL_PNPM_DEST: path.join(bin, "installer"), npm_config_store_dir: path.join(bin, "store"), PLAYWRIGHT_BROWSERS_PATH: path.join(bin, "browser"), UV_CACHE_DIR: path.join(bin, "uv"), REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" };
+    const shell = `${setup.run}\n${stop.run}\nprintf 'installer or gate started' > '${calls}'`;
     await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 9\n", { mode: 0o755 });
-    await assert.rejects(promisify(execFile)("bash", ["-c", preflight.run], { env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, GITHUB_ENV: exported, REQUESTED_BASE: "a".repeat(40), EXPECTED_HEAD: "b".repeat(40), MAX_PARALLEL_TASKS: "12" }, timeout: 10000 }), (error) => error.code === 9);
+    await assert.rejects(promisify(execFile)("bash", ["-c", shell], { env, timeout: 10000 }), (error) => error.code === 9);
     await assert.rejects(access(exported), { code: "ENOENT" });
+    await assert.rejects(access(calls), { code: "ENOENT" });
+    await writeFile(path.join(bin, "node"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    await assert.rejects(promisify(execFile)("bash", ["-c", shell], { env, timeout: 10000 }), (error) => error.code === 1 && /\[precheck\]/u.test(error.stderr));
+    assert.deepEqual((await readFile(exported, "utf8")).trim().split("\n"), ["FULL_PNPM_DEST", "npm_config_store_dir", "PLAYWRIGHT_BROWSERS_PATH", "UV_CACHE_DIR"].map((key) => `${key}=${env[key]}`));
+    await assert.rejects(access(calls), { code: "ENOENT" });
   } finally { await rm(bin, { recursive: true, force: true }); }
 });
 
@@ -1549,6 +1550,18 @@ else if (tool === 'sudo') {
       }
       await stageFullGroupedReference({ ...options, preflight: true });
       await assert.rejects(stageFullGroupedReference({ ...options, preflight: true }));
+      const identityStart = JSON.parse(await readFile(path.join(directory, "identity-tree-start.json"), "utf8"));
+      assert.equal(identityStart.state, "possible-start");
+      const identityClose = JSON.parse(await readFile(path.join(directory, "identity-tree-close.json"), "utf8"));
+      assert.equal(identityClose.closeObserved, true);
+      assert.equal(identityClose.cleanup.complete, true);
+      assert.equal(identityClose.cleanup.groupAlive, false);
+      assert.equal(identityClose.exitCode, 0);
+      for (const log of Object.values(identityClose.logs)) {
+        const bytes = await readFile(path.join(root, log.path));
+        assert.equal(log.size, bytes.length);
+        assert.equal(log.sha256, `sha256:${createHash("sha256").update(bytes).digest("hex")}`);
+      }
       const preflightPath = path.join(directory, "normal-preflight.json");
       const preflightBytes = await readFile(preflightPath, "utf8");
       const value = JSON.parse(preflightBytes);
@@ -1964,10 +1977,10 @@ test("grouped acquisition retains Full fences, bounded ownership and scoped obse
   assert.ok(grouped.indexOf("await sampler") < grouped.indexOf('`${step.id}-close.json`'));
   assert.ok(grouped.indexOf("result.exitCode !== 0") < grouped.indexOf("samples.push"));
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
-  const reference = steps.find(({ id }) => id === "full_reference");
-  assert.match(reference.run, /--cpu-reference/u);
-  assert.doesNotMatch(reference.run, /--grouped-reference|--setup-reference|--normal-reference/u);
-  assert.ok(steps.indexOf(reference) < steps.findIndex(({ name }) => name === "Full prerequisites remain unresolved"));
+  const setup = steps.find(({ id }) => id === "full_setup");
+  assert.match(setup.run, /--setup /u);
+  assert.doesNotMatch(setup.run, /--(?:cpu|grouped|setup|normal)-reference/u);
+  assert.ok(steps.indexOf(setup) < steps.findIndex(({ name }) => name === "Full prerequisites remain unresolved"));
   assert.ok(steps.find(({ id }) => id === "canonical").run.includes("Full conditional admission is not yet enabled"));
 });
 
@@ -2010,12 +2023,12 @@ test("Full preparation preserves actual compilation tuples without executing tes
 });
 
 const disabledQuotas = () => [0, 1, 2].map((type) => ({ type, state: "kernel-disabled" }));
-const syntheticFilesystem = (label, device = "1", bytes = "1000", inodes = "100") => ({ label, device, bytes, inodes, quotas: disabledQuotas() });
+const syntheticFilesystem = (label, device = "1", bytes = "1000", inodes = "100") => ({ label, device, bytes, inodes, allocationUnit: "4096", quotas: disabledQuotas() });
 const syntheticTerm = (location = "workspace", bytes = "200", inodes = "10") => ({ location, bytes, inodes });
 
 test("Full demand aggregates aliases, applicable quotas, failure coexistence and inode demand", () => {
   const fs = [syntheticFilesystem("workspace"), syntheticFilesystem("home"), syntheticFilesystem("root")];
-  assert.deepEqual(assessFullDemand(fs, [syntheticTerm(), syntheticTerm("home")])[0], { device: "1", bytes: "1000", inodes: "100", demandBytes: "400", demandInodes: "20" });
+  assert.deepEqual(assessFullDemand(fs, [syntheticTerm(), syntheticTerm("home")])[0], { device: "1", bytes: "1000", inodes: "100", demandBytes: "400", demandInodes: "20", allocationUnit: "4096" });
   assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "600"), syntheticTerm("home", "600")]), /capacity\/quota/u);
   assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "1", "100")]), /capacity\/quota/u);
   assert.throws(() => assessFullDemand(fs, [syntheticTerm("missing")]), /effective storage/u);
@@ -2028,6 +2041,20 @@ test("Full demand aggregates aliases, applicable quotas, failure coexistence and
   assert.throws(() => assessFullDemand([fs[0], fs[0]], []), /unique/u);
   assert.throws(() => assessFullDemand([syntheticFilesystem("root", "2", "0")], []), /root\/home pressure/u);
   assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "1e6")]), /decimal/u);
+});
+
+test("Full positive forecasts require observed allocation geometry, including aliased and observation-only destinations", () => {
+  const fs = [syntheticFilesystem("workspace"), syntheticFilesystem("home"), syntheticFilesystem("root", "root")];
+  assert.equal(assessFullDemand(fs, [syntheticTerm()])[0].allocationUnit, "4096");
+  for (const index of [0, 1, 2]) {
+    for (const allocationUnit of [undefined, null, 4096, "0", "1024", "8192", "65536", "unknown"]) {
+      const changed = fs.map((row, i) => i === index ? { ...row, allocationUnit } : row);
+      assert.throws(() => assessFullDemand(changed, [syntheticTerm()]), /actual allocation geometry/u);
+      assert.doesNotThrow(() => assessFullDemand(changed, []), "no-demand reference scope does not attest forecast geometry");
+      const terms = ["retained", "transient", "uncertainty"].map((kind) => ({ ...syntheticTerm("workspace", "1", "1"), kind }));
+      assert.throws(() => assessFullSetupDemand(changed, terms), /actual allocation geometry/u);
+    }
+  }
 });
 
 test("Full setup risk charges workload destinations, observes aliases and fails closed for quotas and pressure", () => {
@@ -2141,12 +2168,20 @@ test("canonical Full setup assessment precedes every heavy action/install and ca
   assert.equal(steps.find(({ uses }) => uses?.startsWith("astral-sh/setup-uv@")).with["cache-local-path"], "${{ env.UV_CACHE_DIR }}");
   assert.match(setup.run, /node scripts\/local-ci-full-admission\.mjs --setup "\$REQUESTED_BASE" "\$EXPECTED_HEAD" "\$MAX_PARALLEL_TASKS"/u);
   assert.doesNotMatch(setup.run, /ci:local:|pnpm|cargo|apt-get|\|\|\s*true/u);
-  // The separately admitted two-action focused prerequisite is tested below;
-  // all eight actual Full installers still follow their complete Full decision.
-  const heavy = steps.slice(setupIndex + 1).filter(({ uses, run }) => /pnpm\/action-setup@|actions\/setup-node@|dtolnay\/rust-toolchain@|astral-sh\/setup-uv@/u.test(uses ?? "") || /apt-get|pnpm install|playwright install-deps|cargo install/u.test(run ?? ""));
+  // No prerequisite installer remains before the actual reviewed-input assessment.
+  // All eight ordinary Full installers are still behind the first refusal.
+  const stopIndex = steps.findIndex(({ name }) => name === "Full prerequisites remain unresolved");
+  assert.equal(stopIndex, setupIndex + 1);
+  const helper = await readFile(path.join(repoRoot, "scripts/local-ci-full-admission.mjs"), "utf8");
+  const runner = helper.slice(helper.indexOf("function admissionRunner"), helper.indexOf("// Exactly one same-job continuation"));
+  assert.ok(runner.indexOf("`${id}-start.json`") < runner.indexOf("await runLocalCiCommand"));
+  assert.ok(runner.lastIndexOf("`${id}-close.json`") < runner.indexOf("if (result.exitCode"));
+  assert.match(runner, /error\.result \?\? \{ termination: "unknown" \}/u);
+  assert.match(runner, /error\.lateClose[\s\S]*await error\.lateClose[\s\S]*throw error/u);
+  const heavy = steps.filter(({ uses, run }) => /pnpm\/action-setup@|actions\/setup-node@|dtolnay\/rust-toolchain@|astral-sh\/setup-uv@/u.test(uses ?? "") || /apt-get|pnpm install|playwright install-deps|cargo install/u.test(run ?? ""));
   assert.equal(heavy.length, 8);
   for (const step of heavy) {
-    assert.ok(steps.indexOf(step) > setupIndex, step.name ?? step.uses ?? step.run);
+    assert.ok(steps.indexOf(step) > stopIndex, step.name ?? step.uses ?? step.run);
     assert.doesNotMatch(step.if ?? "", /always\(|failure\(|cancelled\(/u);
     assert.equal(step["continue-on-error"], undefined);
   }
@@ -2584,6 +2619,7 @@ class Lib:
 mounts = '1 0 8:1 / / rw - ext4 /dev/synthetic rw'
 result = m.inspect([['workspace', os.getcwd()]], os.getuid(), [os.getgid()], libc=Lib(errno.ESRCH), mountinfo=mounts)
 assert [q['state'] for q in result[0]['quotas']] == ['kernel-disabled'] * 3
+assert result[0]['allocationUnit'] == str(os.statvfs(os.getcwd()).f_frsize)
 for error in (errno.EACCES, errno.EINVAL, errno.ENOSYS):
     try: m.inspect([['workspace', os.getcwd()]], os.getuid(), [os.getgid()], libc=Lib(error), mountinfo=mounts)
     except ValueError: pass
@@ -2621,7 +2657,7 @@ class Query:
 query = Query()
 lib = SimpleNamespace(quotactl=query)
 destination = SimpleNamespace(st_mode=stat.S_IFDIR | stat.S_ISGID | 0o770, st_gid=77, st_dev=1)
-capacity = SimpleNamespace(f_flag=0, f_bavail=65536, f_frsize=1, f_favail=1000)
+capacity = SimpleNamespace(f_flag=0, f_bavail=16, f_frsize=4096, f_favail=1000)
 mounts = '1 0 8:1 / / rw - ext4 /dev/synthetic rw'
 # All storage and quota observations are synthetic: no chmod/chown, foreign
 # group lookup, real quota syscall or host filesystem capacity acquisition.
@@ -2630,6 +2666,10 @@ with patch.object(m.os, 'stat', return_value=destination), patch.object(m.os, 's
         query.groups.clear()
         return m.inspect([['workspace', requested]], 10, groups, libc=lib, mountinfo=mountinfo)
     sgid = inspect()
+    assert sgid[0]['allocationUnit'] == '4096'
+    capacity.f_frsize = 65536
+    assert inspect()[0]['allocationUnit'] == '65536', 'actual geometry must not be replaced with the forecast unit'
+    capacity.f_frsize = 4096
     assert query.groups == [11, 12, 77], query.groups
     assert inspect('/synthetic/sgid/pending/cache') == sgid
     assert query.groups == [11, 12, 77], query.groups

@@ -125,7 +125,7 @@ def inspect(locations, uid, gids, *, libc=None, mountinfo=None):
         results.append({
             "label": label, "device": str(destination.st_dev),
             "bytes": str(fs.f_bavail * fs.f_frsize), "inodes": str(fs.f_favail),
-            "quotas": quotas,
+            "allocationUnit": str(fs.f_frsize), "quotas": quotas,
         })
     return results
 

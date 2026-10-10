@@ -5,7 +5,7 @@
   "sources": [
     {
       "path": ".github/workflows/canonical-ci.yml",
-      "sha256": "ebfda3c112602477d55fd2952b6466a0cd1623d3efef3b5cd9204e1d94c48d28"
+      "sha256": "ab92d55f64d5b2b0d219c90e3da8a8763a1adaa7402169243fbe317d3e07ab3f"
     },
     {
       "path": "scripts/local-ci-registry.json",
@@ -13,11 +13,11 @@
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
-      "sha256": "c485fd0d1b24af5897054ce313462a3bac012064bf93ac65e24e711c910f5590"
+      "sha256": "9197a093ffe5688833cc907f2657aa2bbde4418549ac9eb5346051e64c3b184a"
     },
     {
       "path": "scripts/local-ci-full-filesystems.py",
-      "sha256": "e9290a96bb8960f56e67dbe6b14a8d28636dca9ef5b85f155c4188c516b9f9ef"
+      "sha256": "e8ce96cdcc90463c944be2a6dbfe463c86cc388d9bdcc31cde201da4ea35602b"
     },
     {
       "path": "scripts/local-ci-process-supervisor.mjs",

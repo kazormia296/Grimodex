@@ -630,16 +630,29 @@ requires the existing workload/resource admission decision. A failed profile
 never starts verify. Uploaded artifacts retain the existing receipt/log formats;
 a hosted job result is not a replacement for receipt verification or acceptance.
 
-`full` remains stopped before actual Full setup/install and gate execution. The
-accepted normal38011068810/1, pure-DB38007676893/1 and APT38000600715/1 references
-are retained, not replayed. The current focused prerequisite selects the minimum
-remaining **locked CPU Python environment/cache materialization** needed by
-`lfm.setup`; pnpm/DB/APT quantities cannot honestly determine its expanded native
-wheel/environment allocations. No new profile/job/dispatch input, executor or
-receipt schema is added. It reuses the exclusive `setup-reference` owner,
-supervisor, allocation walker and shaped-JSON upload. It neither consumes the
-missing complete `full-workload-allocation/1` nor enables either Full fence.
-Requiring complete Full input before acquiring it would be circular.
+`full` now connects the existing `--setup` consumer directly after checkout,
+using the complete reviewed `full-workload-allocation/1` input on the actual
+owned hosted VM. No accepted normal/DB/APT/CPU/native acquisition is replayed.
+This read-only assessment acquires writable destination capacity and applicable
+user/group/project quotas, including root/home and temporary pressure, under
+the existing single-job VM exclusion. The first refusal follows it immediately,
+before every setup action or installer; the second refusal remains unchanged.
+No new profile/job/input, executor, receipt schema, bus or Editor is introduced.
+A successful assessment is only current-job **setup risk** fit, not deeper build/
+fixture/journey fit, candidate freeze, B authority, Full or merge readiness.
+Failure/unknown retains the existing owner and evidence without retry. When the
+canonical profile never starts, uploads contain only shaped setup owner,
+acquisition, child-start/close and decision JSON. The generated estimate's actual
+destination paths and complete private query log bodies are not published.
+Per-child exclusive starts and actual close/late-close plus complete supervisor
+log size/hash identities are retained before any continuation; ambiguous starts
+or failed retirement never authorize retry/replacement.
+Future actual Full must reacquire its own continuously-owned setup and deeper
+resource decisions; this assessment cannot transfer capacity to another runner.
+
+The retained CPU helper implementation below documents the accepted acquisition
+scope; the workflow no longer selects it. Its historical quantities are inputs,
+not peaks or current-runner capacity, and its consumed purpose is not renewed.
 
 `--cpu-preflight` uses existing Node/Python/git and the same clean current
 candidate/source/registry/default12/run/attempt/VM checks as the retained normal
@@ -818,8 +831,9 @@ rejected literal empty-bracket ending; the strict parser now accepts only option
 package/version/architecture, with unchanged distinctness and cached size-field
 validation. Nonempty annotations, extra whitespace/text and malformed tuples stay
 rejected. The actual rejected tuple text remains unobserved; this narrow grammar
-correction is not a successful size acquisition. Either focused prerequisite's successful acquisition is
-immediately followed by the unchanged Full refusal, before actual Full installers.
+correction is not a successful size acquisition. The former focused acquisitions were
+followed by the Full refusal; current setup assessment retains that refusal before
+actual Full installers without replaying those accepted acquisitions.
 Candidate-untouched changed-unit P2 review is required before checkpoint/hosted
 execution; future actual installer/build sizing and applicable quotas/capacity/
 exclusion remain independently necessary before those heavy operations.
@@ -896,7 +910,13 @@ mode. An unreadable enabled group record rejects.
 The initial implementation supports ext4's generic quota interface: other actual
 filesystem types fail with a missing quota-acquisition operation. Only kernel
 `ESRCH` establishes a disabled domain; permission/unsupported/unknown responses
-reject. Enabled limits include soft ceilings even during grace, expired grace,
+reject. The probe also acquires the actual ext4 statvfs allocation unit. Positive
+setup/preparation/residual forecasts require that unit to equal the reviewed
+4 KiB scenario on every observed destination, and carry it in the existing
+per-device demand report. Missing/different geometry rejects before heavy work;
+this is scenario compatibility, not a fixed free-capacity threshold or an
+all-future physical certificate. No-demand historical prerequisite checks do not
+claim geometry compatibility. Enabled limits include soft ceilings even during grace, expired grace,
 current usage and inode limits; zero kernel limits are unbounded, not guessed
 empty-quota attestations. Labels on a shared device share capacity exactly once,
 while root/home pressure remains separately observed. All retained, transient,
