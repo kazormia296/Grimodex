@@ -672,7 +672,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     "Test licensed MCP sidecar",
   ].includes(name));
   assert.equal(nativeCommands.length, 6);
-  assert.match(nativeCommands[0].run, /else\n\s+pnpm napi:build\n\s+fi/u);
+  assert.match(nativeCommands[0].run, /else\n[ \t]+pnpm napi:build\n[ \t]*fi(?:\n|$)/u);
   assert.deepEqual(nativeCommands.map((step, index) => index === 0 ? "pnpm napi:build" : step.run.trim()), [
     "pnpm napi:build",
     "pnpm --dir electron/native/grimodex-node test",
@@ -1753,6 +1753,8 @@ test("grouped acquisition joins real synthetic children and retains failure/canc
     ]) {
       const root = await mkdtemp(path.join(tmpdir(), `grouped-db-${mode}-`)); roots.push(root);
       const bin = path.join(root, "bin"); await mkdir(bin);
+      // Copied consumer package.json is ESM; these extensionless mocks use require.
+      await writeFile(path.join(bin, "package.json"), JSON.stringify({ type: "commonjs" }));
       const files = [".github/workflows/canonical-ci.yml", "scripts/local-ci-registry.json", "scripts/local-ci-full-filesystems.py", "scripts/local-ci-setup-allocation.py", "scripts/local-ci-process-supervisor.mjs", "src-tauri/Cargo.toml", "src-tauri/Cargo.lock", "src-tauri/crates/grimodex-db/Cargo.toml", "src-tauri/crates/grimodex-core/Cargo.toml", "src-tauri/crates/grimodex-db/tests/c2zc_restore_fixture.rs", "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs", ".github/workflows/ci.yml", "package.json", "pnpm-lock.yaml", "electron/native/grimodex-node/package.json", "electron/native/grimodex-node/Cargo.toml", "electron/native/grimodex-node/Cargo.lock", "src-tauri/crates/grimodex-lint/Cargo.toml", "src-tauri/crates/grimodex-semantic/Cargo.toml"];
       for (const file of files) { await mkdir(path.dirname(path.join(root, file)), { recursive: true }); await writeFile(path.join(root, file), await readFile(path.join(repoRoot, file))); }
       if (mode === "script-drift") {
@@ -1852,6 +1854,9 @@ if (tool === "git") {
         } finally { controller.abort(new Error("synthetic cancellation")); }
       }
       const error = await observed;
+      // Report the operation's original error before a missing output masks it.
+      if (mode === "success") assert.ifError(error);
+      else assert.ok(error instanceof Error, `${native ? "native" : "pure-DB"}/${mode} must refuse`);
       const directory = path.join(root, ".artifacts/local-ci/full-admission/1-1-setup-reference");
       if (native) {
         const owner = await readFile(path.join(directory, "owner.json"), "utf8");
@@ -1866,7 +1871,6 @@ if (tool === "git") {
           await access(path.join(directory, "native.build-pending.json"));
         } else await assert.rejects(access(path.join(root, "started")), { code: "ENOENT" });
         if (mode === "success") {
-          assert.equal(error, null);
           const reference = JSON.parse(await readFile(path.join(directory, "setup-reference.json"), "utf8"));
           assert.deepEqual(reference.samples.map(({ id }) => id), ["native.build"]);
           assert.equal(reference.admitted, undefined);
@@ -1899,7 +1903,6 @@ if (tool === "git") {
       }
       outputs.push(JSON.parse(await readFile(path.join(root, "synthetic-output.json"), "utf8")).output);
       if (mode === "success") {
-        assert.equal(error, null);
         const reference = JSON.parse(await readFile(path.join(directory, "setup-reference.json"), "utf8"));
         assert.equal(reference.samples.length, 3); assert.ok(reference.logs.length > 6);
         assert.ok(reference.unobserved.some((fact) => fact.includes("sub-200ms")));
