@@ -2274,6 +2274,35 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   await validateWorkloadEstimate(estimate, binding, plan, preparation, repoRoot);
   assert.equal(estimate.tasks.length, 68);
   assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, 33);
+  // The actual runner retains a Node-temp original while evidence copies only
+  // DB/backup/manifest to workspace. Neither device can borrow the other's room.
+  const fixture = data.inventories.find(({ id }) => id === "c2zc.fixture");
+  const original = estimate.residual.find(({ id }) => id === "c2zc.fixture");
+  const copy = estimate.residual.find(({ id }) => id === "c2zc.fixture.copy");
+  assert.equal(original.location, "node-temp");
+  assert.equal(copy.location, "workspace");
+  const copiedItems = fixture.items.filter(({ role }) => ["db", "backup", "manifest"].includes(role));
+  for (const metric of ["bytes", "inodes"]) {
+    const total = (items) => items.reduce((sum, item) => sum + BigInt(item[metric]), 0n);
+    assert.equal(BigInt(original[metric]), total(fixture.items));
+    assert.equal(BigInt(copy[metric]), total(copiedItems));
+    const baseline = estimate.residual.filter((term) => term !== original);
+    const ample = locations.map(([label]) => syntheticFilesystem(label, label,
+      String(estimate.residual.reduce((sum, term) => sum + BigInt(term.bytes), 0n) + 1n),
+      String(estimate.residual.reduce((sum, term) => sum + BigInt(term.inodes), 0n) + 1n)));
+    const baselineReport = assessFullDemand(ample, baseline);
+    const limited = structuredClone(ample);
+    limited.find(({ label }) => label === "node-temp")[metric] = String(BigInt(baselineReport.find(({ device }) => device === "node-temp")[metric === "bytes" ? "demandBytes" : "demandInodes"]) + 1n);
+    assert.doesNotThrow(() => assessFullDemand(limited, baseline));
+    assert.throws(() => assessFullDemand(limited, estimate.residual), /capacity\/quota/u);
+  }
+  const aliasedFixture = locations.map(([label]) => syntheticFilesystem(label, "shared-fixture",
+    String(BigInt(original.bytes) + BigInt(copy.bytes) + 1n),
+    String(BigInt(original.inodes) + BigInt(copy.inodes) + 1n)));
+  const [fixtureDemand] = assessFullDemand(aliasedFixture, [original, copy]);
+  assert.equal(BigInt(fixtureDemand.demandBytes), BigInt(original.bytes) + BigInt(copy.bytes));
+  assert.equal(BigInt(fixtureDemand.demandInodes), BigInt(original.inodes) + BigInt(copy.inodes));
+  assert.ok([original, copy].every((term) => term.sources.some((index) => data.sources[index].path === "scripts/local-ci.mjs")));
   for (const term of [...estimate.setup.terms, ...estimate.preparation.flatMap(({ terms }) => terms), ...estimate.residual]) {
     assert.ok(BigInt(term.bytes) > 0n && BigInt(term.inodes) > 0n);
   }
@@ -2415,6 +2444,11 @@ test("Full producer acquires reviewed tracked data exclusively and constructs co
     assert.equal(find("worker.q2").inodes, "35");
     assert.equal(find("worker.q2").location, process.env.RUNNER_TEMP ? "runner-temp" : process.env.TMPDIR ? "unix-temp" : process.env.TMP ? "tmp-temp" : process.env.TEMP ? "temp-temp" : "unix-temp");
     assert.equal(find("c2zc.fixture").bytes, "60");
+    assert.equal(find("c2zc.fixture").inodes, "6");
+    assert.equal(find("c2zc.fixture").location, "node-temp");
+    assert.equal(find("c2zc.fixture.copy").bytes, "30");
+    assert.equal(find("c2zc.fixture.copy").inodes, "3");
+    assert.equal(find("c2zc.fixture.copy").location, "workspace");
     assert.equal(find("journey.0.tmp").bytes, "120");
     assert.equal(find("journey.0.copy").bytes, "120");
     assert.equal(find("journey.0.screenshot").bytes, "10");

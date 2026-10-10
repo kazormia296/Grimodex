@@ -82,7 +82,13 @@ Current source hashes and every actual preparation tuple are bound at ingestion.
   not SQLite page_count or100000 SQL steps as rows. Whole WAL
   images/frame headers,32KiB SHM regions, journals and construction images are
   separate. Producer owns7/3 pristine+input copies. Official backup, standalone
-  and manifest remain positive and simultaneous. This intentionally broad
+  and manifest remain positive and simultaneous. The full original C2-ZC
+  construction inventory is charged to Node's os.tmpdir() (`node-temp`), as
+  createC2ZcRestoreFixtureContext actually allocates it. Its retained original
+  coexists with captureC2ZcRestoreFixtureEvidence's DB/backup/manifest copy at
+  `workspace`; only those three roles are copied, and staged publication is a
+  rename, not another copy. Distinct devices each need their own capacity;
+  aliases sum these two distinct allocations once each. This intentionally broad
   page-density assumption is not a SQLite page_count observation.
 - Each of33 journey cases reserves the whole case/restarts/owned workspaces,
   schema+Q512 mutation image, full desktop/renderer/log image as userData profile envelope,

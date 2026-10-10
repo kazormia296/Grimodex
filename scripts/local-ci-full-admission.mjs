@@ -541,6 +541,7 @@ const fixtureSources = [
   "electron/scripts/product-journey-harness.mjs",
   "electron/scripts/product-journey-catalog.mjs",
   "src/features/chat/chatScopeRegistry.json",
+  "scripts/local-ci.mjs",
 ];
 
 // Constructive arithmetic over reviewed public/synthetic allocation inventories.
@@ -661,9 +662,18 @@ export async function produceWorkloadEstimate(input, binding, root, setupLocatio
     get(`worker.${name}`, ["db", "wal", "shm", "journal", "construction"]);
     residual.push(term(`worker.${name}`, "retained", "fixtures-db-wal-backup", workerTemp, [`worker.${name}`], BigInt(1 + copies), `${1 + copies} source-derived pristine/input copies, each including open SQLite sidecars and construction risk`));
   }
-  // A live DB, WAL/SHM and official backup coexist before the standalone copy.
-  get("c2zc.fixture", ["db", "wal", "shm", "backup", "standalone", "manifest"]);
-  residual.push(term("c2zc.fixture", "retained", "fixtures-db-wal-backup", "workspace", ["c2zc.fixture"]));
+  // createC2ZcRestoreFixtureContext retains the original under os.tmpdir().
+  // captureC2ZcRestoreFixtureEvidence copies only DB/backup/manifest into the
+  // workspace; publishing renames that staged tree, not another allocation.
+  const fixture = get("c2zc.fixture", ["db", "wal", "shm", "backup", "standalone", "manifest"]);
+  residual.push(term("c2zc.fixture", "retained", "fixtures-db-wal-backup", "node-temp", ["c2zc.fixture"]));
+  const fixtureCopy = fixture.items.filter(({ role }) => ["db", "backup", "manifest"].includes(role));
+  residual.push({
+    ...term("c2zc.fixture.copy", "retained", "fixtures-db-wal-backup", "workspace", ["c2zc.fixture"]),
+    bytes: String(fixtureCopy.reduce((sum, item) => sum + amount(item.bytes), 0n)),
+    inodes: String(fixtureCopy.reduce((sum, item) => sum + amount(item.inodes), 0n)),
+    basis: `DB/backup/manifest evidence copy coexists with retained Node-temp original; ${fixture.basis}`,
+  });
 
   // This existing catalog is explicitly dependency-free/preinstall-safe. No
   // harness, test, bus or fixture builder is imported or executed here.

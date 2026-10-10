@@ -13,7 +13,7 @@
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
-      "sha256": "9197a093ffe5688833cc907f2657aa2bbde4418549ac9eb5346051e64c3b184a"
+      "sha256": "0153cc45a01ae3ed2bb0d8c4d31177151b5ef04a9575bedb109ae81d9bb25ceb"
     },
     {
       "path": "scripts/local-ci-full-filesystems.py",
@@ -121,7 +121,7 @@
     },
     {
       "path": "docs/pr610-full-workload-risk.md",
-      "sha256": "486a6ce9cf1fe87fb200fcdf6ac686b756398e37a9deb803cc398ec96f139ed4"
+      "sha256": "b2ec466e98192a0e7c14b7e7bb5a8b98672ece232c1ea88d56618ac1e4a3d168"
     }
   ],
   "inventories": [
