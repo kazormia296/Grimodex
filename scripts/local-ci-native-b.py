@@ -24,7 +24,9 @@ LIBC = ctypes.CDLL(None, use_errno=True)
 MS_RDONLY, MS_NOSUID, MS_NODEV, MS_NOEXEC = 1, 2, 4, 8
 MS_REMOUNT, MS_BIND, MS_REC, MS_PRIVATE = 32, 4096, 16384, 1 << 18
 RECEIPT = "/run/grimodex-native-b/admission.json"
-RUNTIME = ("/usr", "/lib", "/lib64")
+# /bin (a usr-merge symlink on current runners) carries /bin/sh, which Xvfb's
+# popen of xkbcomp needs to compile the keymap.
+RUNTIME = ("/usr", "/lib", "/lib64", "/bin")
 CHECKOUT = ("electron", "src", "src-tauri", "scripts", "dist", "dist-electron",
             "node_modules", "public", "resources")
 WORKSPACES = ("scan-contract", "scan-core")
@@ -775,7 +777,9 @@ def main():
     for source in ("/etc/ld.so.cache", "/etc/fonts"):
         if pathlib.Path(source).exists():
             bind(root, source)
-    for directory, mode in (("/tmp", 0o1777), ("/run", 0o755), ("/dev", 0o755),
+    # /tmp/.X11-unix is root-owned sticky like a system's; Xvfb running as the
+    # dropped user cannot create it itself.
+    for directory, mode in (("/tmp", 0o1777), ("/tmp/.X11-unix", 0o1777), ("/run", 0o755), ("/dev", 0o755),
                             ("/dev/shm", 0o1777), ("/proc", 0o755), ("/home/runner", 0o700),
                             ("/run/grimodex-native-b", 0o700)):
         destination = private_path(root, directory)
