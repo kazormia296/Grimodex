@@ -5323,9 +5323,10 @@ export function createProductJourneyHarness({
     const env = nativeBus
       ? nativeBElectronEnvironment(process.env, await nativeBus.qualify())
       : { ...process.env };
-    // Other journeys in the native B root get their own private session bus;
-    // the runner's user bus does not exist inside that root.
-    if (!nativeBus && electronLauncher === _electron && (await insideNativeBRoot())) {
+    // Without a usable user bus (hosted runners, the native B root) each
+    // other journey gets its own private locked-down session bus.
+    if (!nativeBus && electronLauncher === _electron && process.platform === "linux" &&
+        !analyzeDbusAddress(env.DBUS_SESSION_BUS_ADDRESS).supportedLocalUnix) {
       privateSessionBusPromise ??= startPrivateSessionBus();
       env.DBUS_SESSION_BUS_ADDRESS = (await privateSessionBusPromise).address;
     }

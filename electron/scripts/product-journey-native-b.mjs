@@ -34,18 +34,17 @@ ${DRIVER_METHODS.map((method) => `    <allow send_destination="org.freedesktop.D
 }
 
 // The Editor journey's qualified bus stays with createNativeBBusOwner. Other
-// journeys sharing the private root still need a session bus for Chromium
-// (the runner's own bus is absent there): give each the same locked-down
-// EXTERNAL-only config, privately owned, without qualification bookkeeping.
-export async function startPrivateSessionBus({ spawnProcess = spawn, readBoundary = readNativeBBoundary } = {}) {
-  const boundary = await readBoundary();
-  if (!boundary) throw new Error("native B namespace prerequisite absent");
+// journeys still need a session bus for Chromium where none exists (hosted
+// runners and the native B root have no user bus): give each the same
+// locked-down EXTERNAL-only config for this uid, privately owned, without
+// qualification bookkeeping.
+export async function startPrivateSessionBus({ spawnProcess = spawn, uid = process.getuid() } = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "grimodex-native-b-session-"));
   const socket = path.join(directory, "bus");
   const config = path.join(directory, "bus.conf");
   let child;
   try {
-    await writeFile(config, nativeBBusConfig(boundary.uid, socket), { mode: 0o600, flag: "wx" });
+    await writeFile(config, nativeBBusConfig(uid, socket), { mode: 0o600, flag: "wx" });
     child = spawnProcess("/usr/bin/dbus-daemon", ["--nofork", `--config-file=${config}`, "--print-address=3"], {
       env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, TMPDIR: "/tmp" },
       stdio: ["ignore", "ignore", "ignore", "pipe"], detached: false, shell: false,
