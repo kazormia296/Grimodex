@@ -3988,10 +3988,12 @@ mod tests {
         let ready_a = state.ws.lifecycle_core().snapshot().expect("A Ready");
         let binding_a = ready_a.binding().expect("A binding").clone();
         let revision_a = ready_a.revision;
-        let mut ledger = schedule_generation_recovery(&state, &binding_a, revision_a)
-            .expect("reserve the same production slot");
-        ledger.worker_active = true;
-        drop(ledger);
+        {
+            // Scope the std guard so no await point can observe it held.
+            let mut ledger = schedule_generation_recovery(&state, &binding_a, revision_a)
+                .expect("reserve the same production slot");
+            ledger.worker_active = true;
+        }
         let (tail_tx, tail_rx) = mpsc::channel();
         let (tail_release_tx, tail_release_rx) = mpsc::channel();
         *state
