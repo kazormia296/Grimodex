@@ -4160,6 +4160,11 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         let mut candidate_rows = 0usize;
         loop {
             usage.admit(0, super::candidates::source_input_bytes(SEED)?)?;
+            // Mirror the production loop: an exhausted record budget ends
+            // paging before a zero-row page could repeat forever.
+            if usage.rows == MAX_GRAPH_RECORDS {
+                break;
+            }
             let page_limit = (MAX_GRAPH_RECORDS - usage.rows).min(16);
             let page = super::candidates::read_candidate_page(
                 conn,
