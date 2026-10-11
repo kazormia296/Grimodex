@@ -541,6 +541,11 @@ if (
   process.argv[1] &&
   fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
 ) {
-  const code = await runWithXvfb(process.argv[2], process.argv.slice(3));
-  process.exitCode = code;
+  // No top-level await: native B later imports local-ci.mjs, whose journey
+  // modules import this file back. A module still evaluating its top-level
+  // await would deadlock that cycle; a completed module is simply reused.
+  runWithXvfb(process.argv[2], process.argv.slice(3)).then(
+    (code) => { process.exitCode = code; },
+    (error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; },
+  );
 }

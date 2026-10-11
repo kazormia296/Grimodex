@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -7,7 +7,8 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
 import { resolveC2ZcRustAcceptanceCandidate } from "./c2zc-rust-acceptance-receipt.mjs";
@@ -759,6 +760,19 @@ test("native B rejects injected transport/runtime selectors and keeps the sandbo
   assert.match(config, /<deny send_destination="\*"\/>/u);
   assert.match(config, /<deny[^>]+send_member="StartServiceByName"/u);
   assert.doesNotMatch(config, /ANONYMOUS|<include|<servicedir|<servicehelper|tcp:|<allow own=|<allow send_destination="\*"/u);
+});
+
+test("the Xvfb entry finishes evaluating before native B imports local-ci back", async () => {
+  // local-ci.mjs -> product journeys -> native B -> local-ci-xvfb.mjs: an entry
+  // still awaiting at top level would deadlock (exit 13, no error message).
+  const source = await readFile(new URL("./local-ci-xvfb.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /^\s*(?:const \w+ = )?await runWithXvfb\(/mu);
+  const entry = fileURLToPath(new URL("./local-ci-xvfb.mjs", import.meta.url));
+  const loaded = await promisify(execFile)(process.execPath, ["--input-type=module", "-e",
+    `process.argv[1] = ${JSON.stringify(entry)}; await import(${JSON.stringify(pathToFileURL(entry).href)}); await import(${JSON.stringify(new URL("./local-ci.mjs", import.meta.url).href)}); console.log("imported");`],
+  { timeout: 20_000 }).catch((error) => error);
+  assert.match(loaded.stdout ?? "", /imported/u, loaded.stderr);
+  assert.match(loaded.stderr ?? "", /Usage: local-ci-xvfb\.mjs/u, "the entry reports its own failure instead of an unsettled await");
 });
 
 test("native B launch options prevent Playwright from silently disabling the sandbox", async (t) => {
