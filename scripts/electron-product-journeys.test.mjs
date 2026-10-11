@@ -4211,10 +4211,21 @@ test("paused CI keeps every product journey job definition available", async () 
       assert.equal(job.uses, "./.github/workflows/canonical-ci.yml");
       continue;
     }
+    // Like canonical, the OS-suitability owner runs only for its own profiles.
+    if (jobId === "existing-os-suitability") {
+      assert.equal(job.if, "${{ startsWith(inputs.canonical_profile, 'os-') }}");
+      continue;
+    }
     const independentExclusion = ["electron-runtime-performance", productJourneyJobId, "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
       ? " && !inputs.independent_gates" : "";
+    // A job may additionally be selected by its own exact canonical profiles;
+    // its ordinary guard must still be the exact grouped alternative.
+    const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(job.if ?? "");
+    const ordinaryGuard = selected
+      ? (jobId === productJourneyJobId ? `\${{ ${selected[2]} }}` : selected[2])
+      : job.if;
     assert.equal(
-      job.if,
+      ordinaryGuard,
       jobId === productJourneyJobId
         ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
         : jobId === "electron"

@@ -113,7 +113,7 @@
     },
     {
       "path": "scripts/local-ci-xvfb.mjs",
-      "sha256": "36277104327a2279a60262efe5ab7fe29a7bb9cf7bd72dc3036c860367f2584d"
+      "sha256": "984e7126982ee527832f1a05294ca3c1ea224c67bc597210db875c389a7ab4cf"
     },
     {
       "path": "src/db/generated/schema-contract.json",

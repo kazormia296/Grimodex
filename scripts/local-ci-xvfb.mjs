@@ -111,6 +111,11 @@ export function nativeBEnvironment(environment, uid = process.getuid?.()) {
     // is never forwarded and its /run/user path is absent from the private root.
     if (key === "DBUS_SESSION_BUS_ADDRESS" && Number.isSafeInteger(uid) && uid > 0 &&
         value === `unix:path=/run/user/${uid}/bus`) continue;
+    // pnpm's script runner exports its own node_modules search path. It only
+    // shapes this already-running wrapper and is never forwarded inward.
+    if (key === "NODE_PATH" && value.split(":").every((entry) => path.isAbsolute(entry) &&
+        path.normalize(entry) === entry && !entry.split("/").includes("..") &&
+        path.basename(entry) === "node_modules")) continue;
     if (value && (/^(?:DBUS_|WAYLAND_|LD_|NODE_OPTIONS$|NODE_PATH$)/u.test(key) ||
       key === "ELECTRON_DISABLE_SANDBOX" || key === "ELECTRON_RENDERER_URL")) {
       // Name the selector, never its value.

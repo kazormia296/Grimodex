@@ -738,6 +738,12 @@ test("native B rejects injected transport/runtime selectors and keeps the sandbo
     assert.throws(() => nativeBEnvironment({ DBUS_SESSION_BUS_ADDRESS: address }, 1001), /DBUS_SESSION_BUS_ADDRESS/u);
   }
   assert.throws(() => nativeBEnvironment({ DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/0/bus" }, 0), /DBUS_SESSION_BUS_ADDRESS/u);
+  // pnpm's own node_modules search path is tolerated but never forwarded.
+  const pnpmPath = "/repo/node_modules/.pnpm/node_modules:/opt/pnpm/node_modules/pnpm/bin/node_modules";
+  assert.deepEqual(nativeBEnvironment({ NODE_PATH: pnpmPath }, 1001), {});
+  for (const value of ["/repo/node_modules/../../tmp/node_modules", "relative/node_modules", "/repo/lib", "/repo/node_modules:/tmp/evil"]) {
+    assert.throws(() => nativeBEnvironment({ NODE_PATH: value }, 1001), /NODE_PATH/u);
+  }
   const address = `unix:path=/tmp/synthetic/bus,guid=${"a".repeat(32)}`;
   const env = nativeBElectronEnvironment({ DISPLAY: ":42", XAUTHORITY: "/tmp/synthetic/Xauthority",
     PATH: "/usr/bin:/bin", HOME: "/home/runner", SECRET_TEST_VALUE: "not-forwarded", CI: "true" }, address);
