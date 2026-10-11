@@ -5647,7 +5647,7 @@ test("split Full aggregate binds every part to one candidate, plan and run in pl
   assert.deepEqual(assembled.stages.map(({ id }) => id), plan.stages.map(({ id }) => id));
   assert.ok(assembled.stages.every(({ status }) => status === "passed"));
   assert.deepEqual(assembled.fullResourceAdmission, { state: "private-accepted" });
-  assert.equal(assembled.executionDurationMs, 5_005 - 1_000);
+  assert.equal(assembled.executionDurationMs, 5_000 + config.parts.length - 1 - 1_000);
   const reject = (mutate, pattern) => {
     const reports = makeReports();
     mutate(reports);

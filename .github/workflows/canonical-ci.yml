@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: ${{ fromJSON(inputs.profile == 'full' && '["frontend","native","journeys","rust","cquery","migration"]' || '["all"]') }}
+        part: ${{ fromJSON(inputs.profile == 'full' && '["frontend","native","journeys","rust","cquery","migration","runtime"]' || '["all"]') }}
     steps:
       - name: Validate canonical selection
         env:

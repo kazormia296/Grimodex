@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rm, rmdir, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readFile, readlink, realpath, rm, rmdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -168,6 +169,8 @@ export async function readNativeBBoundary() {
 async function runWithXvfb(command, args) {
   const children = new Set();
   let directory;
+  let nodeCopyDirectory;
+  let privateNode;
   let nativeEnvironment;
   let routeSentinels;
   let admissionClosed = false;
@@ -340,16 +343,10 @@ async function runWithXvfb(command, args) {
           const identities = {};
           for (const [id, executable] of Object.entries({ sudo: "/usr/bin/sudo", unshare: "/usr/bin/unshare",
             env: "/usr/bin/env", python: "/usr/bin/python3", daemon: "/usr/bin/dbus-daemon",
-            client: "/usr/bin/dbus-send", xvfb: "/usr/bin/Xvfb", xauth: "/usr/bin/xauth", node: process.execPath })) {
+            client: "/usr/bin/dbus-send", xvfb: "/usr/bin/Xvfb", xauth: "/usr/bin/xauth", node: privateNode })) {
             const file = await realpath(executable);
             const metadata = await lstat(file);
-            // Never world-writable. Group write is tolerated only on a binary this
-            // runner user already owns (setup-node's toolcache node), since that
-            // owner could rewrite it anyway; root/foreign files stay strict.
-            if (!metadata.isFile() || metadata.mode & 0o002 ||
-                (metadata.mode & 0o020 && metadata.uid !== process.getuid())) {
-              throw new Error(`native B binary identity unsafe: ${id}`);
-            }
+            if (!metadata.isFile() || metadata.mode & 0o022) throw new Error(`native B binary identity unsafe: ${id}`);
             identities[id] = { sha256: createHash("sha256").update(await readFile(file)).digest("hex"),
               uid: metadata.uid, mode: metadata.mode & 0o7777 };
           }
@@ -393,10 +390,17 @@ async function runWithXvfb(command, args) {
         const resourceAdmission = await readFullHostAdmission(process.cwd(), { head, base, tree, localRunId,
           runId: environment.GITHUB_RUN_ID, attempt: environment.GITHUB_RUN_ATTEMPT });
         if (admissionClosed) throw new Error("native B private resource admission closed");
+        // setup-node's shared toolcache node is not owned/protected like a
+        // system binary. Native B binds and identifies a byte-identical private
+        // copy (runner-owned 0755 in a 0700 directory) instead.
+        nodeCopyDirectory = await mkdtemp(path.join(os.tmpdir(), "grimodex-native-b-node-"));
+        privateNode = path.join(nodeCopyDirectory, "node");
+        await copyFile(await realpath(process.execPath), privateNode, fsConstants.COPYFILE_EXCL);
+        await chmod(privateNode, 0o755);
         const qualification = await prepareQualification();
         const request = JSON.stringify({
           uid: process.getuid(), gid: process.getgid(), checkout: process.cwd(),
-          node: process.execPath, args, environment, hostNamespaces, gitView, qualification,
+          node: privateNode, args, environment, hostNamespaces, gitView, qualification,
           resourceAdmission: { path: resourceAdmission.path, sha256: resourceAdmission.sha256 },
         });
         if (Buffer.byteLength(request) > 1024 * 1024) {
@@ -532,6 +536,7 @@ async function runWithXvfb(command, args) {
     await closeAdmission();
     try { await routeSentinels?.retire(); } catch (error) { failure ??= error; }
     if (directory) await rm(directory, { recursive: true, force: true });
+    if (nodeCopyDirectory) await rm(nodeCopyDirectory, { recursive: true, force: true });
     process.removeListener("SIGTERM", onTerm);
     process.removeListener("SIGINT", onInt);
     if (failure) {

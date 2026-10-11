@@ -42,7 +42,9 @@ diagnostic evidence and cannot establish merge readiness.
 Hosted canonical Full runs as independent parts, each on its own fresh
 `ubuntu-24.04` VM, plus one aggregate job. `scripts/local-ci-full-parts.json`
 assigns every Full task to exactly one part (`frontend`, `native`, `journeys`,
-`rust`, `cquery`, `migration`); the `canonical` job's matrix lists the same ids.
+`rust`, `cquery`, `migration`, `runtime`); the `canonical` job's matrix lists the
+same ids. `runtime` holds only the runtime performance budget so it measures on
+its own VM, as the ordinary performance job does.
 A part may re-run an explicitly listed **support** task owned elsewhere when it
 consumes that task's build output (for example `native.build` and
 `electron.build` before the journeys). Support executions log under

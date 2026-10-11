@@ -39,8 +39,7 @@
         "electron.budget",
         "electron.contracts",
         "electron.unit",
-        "runtime.contracts",
-        "runtime.benchmark"
+        "runtime.contracts"
       ],
       "support": [
         "bootstrap.install",
@@ -124,6 +123,21 @@
       "support": [
         "bootstrap.install",
         "bootstrap.workspace-build"
+      ]
+    },
+    {
+      "id": "runtime",
+      "owned": [
+        "runtime.benchmark"
+      ],
+      "support": [
+        "bootstrap.install",
+        "bootstrap.electron-binary",
+        "bootstrap.workspace-build",
+        "bootstrap.chromium",
+        "native.build",
+        "electron.typecheck",
+        "electron.build"
       ]
     }
   ]
