@@ -2309,6 +2309,14 @@ function createChatTurnStoreActions(
                         if (!title) {
                           title = content.slice(0, 30);
                         }
+                        // After a project/workspace switch the captured
+                        // session's database is no longer the live one.
+                        if (
+                          !capturedProjectIsCurrent() ||
+                          !capturedWorkspaceIsCurrent()
+                        ) {
+                          return;
+                        }
                         if (sessionIdForPersist) {
                           const updated =
                             await chatApi.updateSessionTitleIfAutomatic(
@@ -2352,11 +2360,14 @@ function createChatTurnStoreActions(
                         }
                       })
                       .catch((e) => {
-                        debugLog.error(
-                          "ChatStore",
-                          "title generation",
-                          errorDetail(e),
-                        );
+                        // A switch racing the persistence is expected; only a
+                        // failure within the still-current scope is an error.
+                        const log =
+                          capturedProjectIsCurrent() &&
+                          capturedWorkspaceIsCurrent()
+                            ? debugLog.error
+                            : debugLog.warn;
+                        log("ChatStore", "title generation", errorDetail(e));
                       });
                     void turnRuntime.trackTurn(titleGeneration);
                   }
