@@ -2394,6 +2394,12 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   assert.equal(sumBytes(staged.hostTerms) + sumBytes(staged.privateTerms), sumBytes(estimate.setup.terms) +
     sumBytes(estimate.preparation.flatMap(({ terms }) => terms)) + sumBytes(estimate.residual) +
     sumBytes(estimate.nativeMemory.filter(({ id }) => /^journey-xvfb\.[2-7]\.shared-surface(?:-growth)?$/u.test(id))));
+  // Only the 10 s average is current pressure; decaying history is recorded.
+  const recovering = structuredClone(facts);
+  recovering.pressure.some.avg60 = "1.25"; recovering.pressure.full.avg300 = "0.40";
+  assert.doesNotThrow(() => assessFullMemory(recovering, memoryEstimate, plan, [], { privatePending: true }));
+  recovering.pressure.some.avg300 = "not-a-number";
+  assert.throws(() => assessFullMemory(recovering, memoryEstimate, plan, [], { privatePending: true }), /pressure/u);
   const pressured = structuredClone(facts); pressured.pressure.full.avg10 = "0.01";
   assert.throws(() => assessFullMemory(pressured, memoryEstimate, plan, [], { privatePending: true }), /pressure/u);
   delete pressured.pressure.full.avg10;

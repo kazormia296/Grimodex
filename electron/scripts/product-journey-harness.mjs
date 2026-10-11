@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import {
   closeSync,
+  existsSync,
   fsyncSync,
   mkdtempSync,
   openSync,
@@ -3504,9 +3505,12 @@ export function createProductJourneyHarness({
   let retainedRendererScreenshotPromise = null;
   let operationJournalClosed = false;
   const harnessAbortController = new AbortController();
-  // Mocked launchers remain source-test seams, not native qualification. The
-  // actual Linux Editor consumer must own the bus under the verified boundary.
-  const nativeBus = process.platform === "linux" && journeyId === "editor-persistence" && electronLauncher === _electron
+  // Mocked launchers remain source-test seams, not native qualification. Inside
+  // the native B root the actual Linux Editor consumer must own the qualified
+  // bus; canonical Full always runs it there. Ordinary CI outside that root
+  // runs Editor persistence as an ordinary journey (no native B claim).
+  const nativeBus = process.platform === "linux" && journeyId === "editor-persistence" && electronLauncher === _electron &&
+    existsSync(NATIVE_B_RECEIPT)
     ? createNativeBBusOwner({
         signal: harnessAbortController.signal,
         onFailure: () => { void requestAbort("native-b-daemon-failure").catch(() => undefined); },

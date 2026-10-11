@@ -158,7 +158,12 @@ def assess_memory(memory, expected_cgroup, demand, enforce=True):
     if available > total or swap_free > swap_total:
         raise ValueError("inconsistent actual host memory/swap")
     for psi in [memory["pressure"], *(entry["pressure"] for entry in memory["ancestors"])]:
-        if any(float(psi[kind][key]) != 0 for kind in ("some", "full") for key in ("avg10", "avg60", "avg300")):
+        # Current pressure is the 10 s average; the 60/300 s averages are a
+        # decaying history of earlier work and are parsed but not enforced.
+        for kind in ("some", "full"):
+            for key in ("avg60", "avg300"):
+                float(psi[kind][key])
+        if any(float(psi[kind]["avg10"]) != 0 for kind in ("some", "full")):
             raise ValueError("current host or memory ancestor pressure")
     for entry in memory["ancestors"]:
         if entry["state"] == "kernel-root-no-controller-limit" and entry["path"] == ".":

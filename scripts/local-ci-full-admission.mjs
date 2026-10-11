@@ -937,7 +937,11 @@ export function assessFullMemory(memory, estimate, plan, roots, { privatePending
   for (const psi of [memory.pressure, ...memory.ancestors.map(({ pressure }) => pressure)]) {
     for (const kind of ["some", "full"]) {
       if (!psi?.[kind] || !/^\d+$/u.test(psi[kind].total ?? "") ||
-          ["avg10", "avg60", "avg300"].some((key) => !/^\d+\.\d+$/u.test(psi[kind][key] ?? "") || Number(psi[kind][key]) !== 0)) {
+          // Current pressure is the 10 s average; the 60/300 s averages are a
+          // decaying history of earlier work (e.g. a preceding build) and are
+          // recorded, not enforced.
+          ["avg10", "avg60", "avg300"].some((key) => !/^\d+\.\d+$/u.test(psi[kind][key] ?? "")) ||
+          Number(psi[kind].avg10) !== 0) {
         fail("complete actual pressure acquisition without current host/ancestor memory pressure");
       }
     }

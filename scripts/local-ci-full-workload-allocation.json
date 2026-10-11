@@ -13,11 +13,11 @@
     },
     {
       "path": "scripts/local-ci-full-admission.mjs",
-      "sha256": "7dfc3eaaa7f9e6ded16ba976aa1c1fa5eacb9a477792690ee76fcdcc4c670e24"
+      "sha256": "07cf838fa1a8be86a3339a5daae69846f4e4048b3dfb0fd2889cb29fe16b29f8"
     },
     {
       "path": "scripts/local-ci-full-filesystems.py",
-      "sha256": "3883696fd2e71d0b95308ec0fef0919b18fe36cf1b6b39a26f9b423f58c80e36"
+      "sha256": "718ab8fac5bf2aa5f9814742ea076dc3520523b26d4d95de33a5d23fc9f9f579"
     },
     {
       "path": "scripts/local-ci-process-supervisor.mjs",
@@ -101,7 +101,7 @@
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",
-      "sha256": "c314d5fbddaf306b5957daeedb872a22bf3d270137a6c8e5583bb924f1428a5f"
+      "sha256": "881fd14963da74ee0fe481c1a66d92ff349e1520f412b45f8bc9e32d659e61ef"
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",

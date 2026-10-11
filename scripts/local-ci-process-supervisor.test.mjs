@@ -711,6 +711,8 @@ del host['memoryForecast']; reject(); host['memoryForecast']='recorded-not-enfor
 actual_mem['membership']='0::/replacement\n'; reject(); actual_mem=copy.deepcopy(mem)
 actual_mem['observedAt']-=31000; reject(); actual_mem=copy.deepcopy(mem)
 actual_mem['pressure']['some']['avg10']='0.01'; reject(); actual_mem=copy.deepcopy(mem)
+# Decaying 60/300 s history alone is recorded, not refused.
+actual_mem['pressure']['some']['avg300']='0.75'; assert run()['state']=='private-accepted'; actual_mem=copy.deepcopy(mem)
 g['CLOSED']=True; reject()
 print('synthetic late gate only; no native setup, quota syscall, qualification or workload')
 `;
