@@ -50,6 +50,17 @@ import {
 } from "./c2zc-rust-acceptance-receipt.mjs";
 import { validateWebEditorArtifact } from "./validate-web-editor-artifact.mjs";
 import { runLocalCiTasks, validateLocalCiTasks } from "./local-ci-runner.mjs";
+import {
+  FULL_PART_REPORT_VERSION,
+  assembleFullFromParts,
+  buildFullPartTasks,
+  canonicalGithubRunId,
+  fullPartReportPath,
+  fullPartsDigest,
+  readFullParts,
+  supportLogDirectory,
+  validateFullParts,
+} from "./local-ci-full-parts.mjs";
 import { runLocalCiCommand } from "./local-ci-process-supervisor.mjs";
 
 const repoRoot = path.resolve(
@@ -2735,7 +2746,12 @@ export function parseLocalCiArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--") continue;
-    if (argument === "--dry-run") result.dryRun = true;
+    // Split canonical Full: run one part, or assemble every part's report.
+    if (argument === "--part") {
+      result.part = readOptionValue(argv, argument, index);
+      index += 1;
+    } else if (argument === "--aggregate") result.aggregate = true;
+    else if (argument === "--dry-run") result.dryRun = true;
     else if (argument === "--list") result.list = true;
     else if (argument === "--recover-lock") result.recoverLock = true;
     else if (argument === "--verify") result.verify = true;
@@ -3136,7 +3152,10 @@ async function runConcurrentLocalCiPlan(
     resolveNativeTargetDirectory,
     root,
     runId,
+    scheduleTasks,
     signal,
+    supportLogDirectory,
+    supportTaskIds,
   },
 ) {
   const startedAt = new Date().toISOString();
@@ -3147,7 +3166,9 @@ async function runConcurrentLocalCiPlan(
   let c2zcRestoreFixtureDiagnostic = null;
   let c2zcRestoreFixtureEvidenceOwned = false;
 
-  const scheduled = await runLocalCiTasks(plan.tasks, {
+  // A split Full part schedules only its owned and support tasks. Support
+  // executions keep their logs outside the canonical per-task log path.
+  const scheduled = await runLocalCiTasks(scheduleTasks ?? plan.tasks, {
     deadlineMs,
     maxSlots: plan.maxSlots,
     maxParallelTasks: plan.maxParallelTasks ?? plan.maxSlots,
@@ -3200,7 +3221,9 @@ async function runConcurrentLocalCiPlan(
       let execution;
       try {
         execution = await execute(command, {
-          logDirectory,
+          logDirectory: supportTaskIds?.has(task.id)
+            ? supportLogDirectory
+            : logDirectory,
           root,
           signal,
           taskId: task.id,
@@ -3399,6 +3422,9 @@ export async function runLocalCiPlan(
     concurrent = false,
     deadlineMs = Number.POSITIVE_INFINITY,
     logDirectory = null,
+    scheduleTasks = null,
+    supportTaskIds = new Set(),
+    supportLogDirectory = null,
     signal = null,
   } = {},
 ) {
@@ -3417,7 +3443,10 @@ export async function runLocalCiPlan(
       resolveNativeTargetDirectory,
       root,
       runId,
+      scheduleTasks,
       signal,
+      supportLogDirectory,
+      supportTaskIds,
     });
   }
   const stages = [];
@@ -4357,7 +4386,9 @@ async function verifyLocalCiReportAtPath({
     await resolveLocalCiCandidate(plan),
   );
   const receipt = JSON.parse(await readFile(reportPath, "utf8"));
-  if (plan.profile === "full") {
+  if (plan.profile === "full" && receipt.parts !== undefined) {
+    await verifyPartedFullResources(receipt, { plan, root });
+  } else if (plan.profile === "full") {
     const resources = receipt.fullResourceAdmission;
     if (resources?.state !== "private-accepted" || resources.private?.localRunId !== receipt.runId) {
       throw new Error("Full requires the actual late private gate, not host-only admission");
@@ -4417,6 +4448,187 @@ export async function verifyLocalCiStagingReport({
   });
 }
 
+function printCommandEvent(event) {
+  if (event.type === "command-start") {
+    process.stdout.write(`[local-ci] $ ${formatCommand(event.command)}\n`);
+  } else if (event.type === "command-end") {
+    process.stdout.write(`[local-ci] ${event.status.toUpperCase()} ${event.command.label}\n`);
+    if (event.status === "failed") {
+      if (event.execution?.error) process.stderr.write(`[local-ci] error=${event.execution.error}\n`);
+      for (const stream of ["stderr", "stdout"]) {
+        const logPath = event.execution?.logs?.[stream]?.path;
+        if (logPath) process.stderr.write(`[local-ci] ${stream}=${logPath}\n`);
+      }
+    }
+  } else if (event.type === "build-cache-cleanup") {
+    process.stdout.write(`[local-ci] removed ${event.target} after ${event.taskId}\n`);
+  }
+}
+
+// One split canonical Full part on its own hosted VM: the same checkout lock,
+// candidate binding and host admission as Full, scheduling only this part's
+// owned and support tasks, then a part report for the aggregate job.
+async function runFullPartInvocation({ args, plan }) {
+  const parts = await readFullParts(repoRoot);
+  const { privateGatePart } = validateFullParts(parts, plan);
+  const { part, tasks, owned, support } = buildFullPartTasks(plan, parts, args.part);
+  const runId = canonicalGithubRunId();
+  const reportFile = path.resolve(repoRoot, fullPartReportPath(part.id));
+  const cliAbort = new AbortController();
+  const interrupt = (name) => { if (!cliAbort.signal.aborted) cliAbort.abort(new Error(`Local CI interrupted by ${name}.`)); };
+  const onSigint = () => interrupt("SIGINT"), onSigterm = () => interrupt("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  let checkoutLock = null, result = null, runStarted = false;
+  const report = { version: FULL_PART_REPORT_VERSION, part: part.id, partsDigest: fullPartsDigest(parts),
+    registryDigest: plan.registryDigest, planDigest: digestJson(createLocalCiPlanDescriptor(plan)), runId, status: "failed" };
+  try {
+    checkoutLock = await acquireCheckoutLock(repoRoot, { runId });
+    const candidate = validateLocalCiCandidate(plan, await resolveLocalCiCandidate(plan));
+    report.candidate = candidate;
+    await prepareLocalCiArtifacts(plan);
+    runStarted = true;
+    const { admitFullResources, readFullHostAdmission, verifyFullPrivateAdmission } = await import("./local-ci-full-admission.mjs");
+    const host = await admitFullResources({ root: repoRoot, base: candidate.resolvedBaseSha, head: candidate.resolvedHeadSha,
+      maxParallelTasks: plan.maxParallelTasks, signal: cliAbort.signal, localRunId: runId });
+    process.stdout.write(`[local-ci] full part=${part.id} owned=${owned.size} support=${support.size} run=${runId}\n`);
+    result = await runLocalCiInvocationTasks(plan, { candidate, notify: printCommandEvent, root: repoRoot, runId,
+      signal: cliAbort.signal, scheduleTasks: tasks, supportTaskIds: support,
+      supportLogDirectory: supportLogDirectory(runId, part.id) });
+    const after = validateLocalCiCandidate(plan, await resolveLocalCiCandidate(plan));
+    verifyCandidateBinding(candidate, after);
+    report.candidateAfter = after;
+    const ownedTasks = result.tasks.filter(({ id }) => owned.has(id));
+    const commands = Object.fromEntries(result.stages.flatMap(({ commands }) => commands)
+      .filter(({ id }) => owned.has(id)).map((command) => [command.id, command]));
+    Object.assign(report, { startedAt: result.startedAt, finishedAt: result.finishedAt, durationMs: result.durationMs,
+      tasks: ownedTasks, commands, support: result.tasks.filter(({ id }) => support.has(id)),
+      c2zcRestoreFixtureDiagnostic: result.c2zcRestoreFixtureDiagnostic ?? null });
+    let passed = result.status === "passed" && !result.deadlineExceeded && !result.interrupted;
+    if (passed && part.id === privateGatePart) {
+      const hostAdmission = await readFullHostAdmission(repoRoot, { head: after.resolvedHeadSha, base: after.resolvedBaseSha,
+        tree: after.resolvedHeadTreeSha, localRunId: runId, runId: host.binding.runId, attempt: host.binding.attempt });
+      const privateRecord = await verifyFullPrivateAdmission(repoRoot, hostAdmission.decision);
+      const outcome = await resolveArtifactEvidence(
+        `.artifacts/local-ci/runs/${runId}/product-journeys/shard-1/native-resource-admission.json`, { root: repoRoot });
+      Object.assign(report, {
+        c2zcRestoreFixture: result.c2zcRestoreFixture,
+        fullResourceAdmission: { state: "private-accepted", host: { path: hostAdmission.path, sha256: hostAdmission.sha256 }, private: privateRecord },
+        privateOutcome: { path: outcome.path, size: outcome.size, sha256: outcome.sha256 },
+        productJourneyEvidence: await collectProductJourneyEvidence(plan, { candidate: after,
+          restoreFixtureEvidence: result.c2zcRestoreFixture, runId }),
+      });
+    }
+    report.status = passed ? "passed" : "failed";
+  } catch (error) {
+    report.error = boundedError(error);
+    throw error;
+  } finally {
+    try {
+      await writeReport(reportFile, report);
+      process.stdout.write(`[local-ci] part-report=${relativePath(repoRoot, reportFile)} status=${report.status}\n`);
+      const lock = await finalizeCheckoutLock(checkoutLock, { result, runId, runStarted });
+      if (lock.retained) process.stderr.write(`[local-ci] checkout lock retained for cleanup recovery: ${checkoutLock.path}\n`);
+    } finally {
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigterm);
+    }
+  }
+  if (report.status !== "passed") process.exitCode = 1;
+}
+
+async function readPartReports(parts) {
+  const reports = new Map();
+  const identities = [];
+  for (const { id } of parts.parts) {
+    const evidence = await resolveArtifactEvidence(fullPartReportPath(id), { root: repoRoot });
+    reports.set(id, JSON.parse(await readFile(evidence.realPath, "utf8")));
+    identities.push({ id, report: { path: evidence.path, size: evidence.size, sha256: evidence.sha256 } });
+  }
+  return { reports, identities };
+}
+
+// Hash-bound transfer of the private gate: the owning part VM performed the
+// complete live host/private revalidation before writing its report. Mode/uid
+// facts do not survive artifact transfer, so content identity binds them here.
+async function verifyPartedFullResources(receipt, { plan, root = repoRoot }) {
+  const parts = await readFullParts(root);
+  const { privateGatePart } = validateFullParts(parts, plan);
+  if (receipt.partsDigest !== fullPartsDigest(parts) ||
+      JSON.stringify(receipt.parts?.map(({ id }) => id)) !== JSON.stringify(parts.parts.map(({ id }) => id))) {
+    throw new Error("Split Full receipt does not match the current part partition");
+  }
+  let gateReport = null;
+  for (const entry of receipt.parts) {
+    const current = await resolveArtifactEvidence(entry.report?.path, { root });
+    if (entry.report.path !== fullPartReportPath(entry.id) || current.size !== entry.report.size || current.sha256 !== entry.report.sha256) {
+      throw new Error(`Split Full part ${entry.id} report identity changed`);
+    }
+    if (entry.id === privateGatePart) gateReport = JSON.parse(await readFile(current.realPath, "utf8"));
+  }
+  const resources = receipt.fullResourceAdmission;
+  if (resources?.state !== "private-accepted" || resources.private?.localRunId !== receipt.runId ||
+      JSON.stringify(resources) !== JSON.stringify(gateReport?.fullResourceAdmission) ||
+      JSON.stringify(receipt.privateOutcome) !== JSON.stringify(gateReport?.privateOutcome)) {
+    throw new Error("Full requires the private gate accepted in its owning part");
+  }
+  for (const file of [resources.host, receipt.privateOutcome]) {
+    const current = await resolveArtifactEvidence(file?.path, { root });
+    if (current.sha256 !== file.sha256 || (file.size !== undefined && current.size !== file.size)) {
+      throw new Error("Full staged resource artifacts changed since execution");
+    }
+  }
+}
+
+// The aggregate job: same candidate on a clean checkout, every part report
+// downloaded, then the single Full receipt finalized and verified as usual.
+async function aggregateFullInvocation({ args, plan, reportPath }) {
+  const invocationStarted = performance.now();
+  const parts = await readFullParts(repoRoot);
+  const runId = canonicalGithubRunId();
+  const candidate = validateLocalCiCandidate(plan, await resolveLocalCiCandidate(plan));
+  const { reports, identities } = await readPartReports(parts);
+  const planDescriptor = createLocalCiPlanDescriptor(plan);
+  const assembled = assembleFullFromParts({ plan, config: parts, reports, candidate, runId, planDescriptor });
+  const productJourneyEvidence = await collectProductJourneyEvidence(plan, { candidate,
+    restoreFixtureEvidence: assembled.c2zcRestoreFixture, runId });
+  if (JSON.stringify(productJourneyEvidence) !== JSON.stringify(assembled.productJourneyEvidence)) {
+    throw new Error("Split Full journey evidence changed between its part and the aggregate");
+  }
+  const result = {
+    version: LOCAL_CI_RECEIPT_VERSION, profile: plan.profile, comparison: plan.comparison, coverage: plan.coverage,
+    candidate, runId, startedAt: assembled.startedAt, finishedAt: assembled.finishedAt,
+    durationMs: assembled.executionDurationMs, status: "passed", deadlineExceeded: false, interrupted: false,
+    registryDigest: plan.registryDigest, plan: planDescriptor, tasks: assembled.tasks,
+    c2zcRestoreFixture: assembled.c2zcRestoreFixture, c2zcRestoreFixtureDiagnostic: null,
+    productJourneyEvidence, releaseOnlyJobs: plan.releaseOnlyJobs, stages: assembled.stages,
+    candidateAfter: candidate, executionDurationMs: assembled.executionDurationMs,
+    fullResourceAdmission: assembled.fullResourceAdmission, privateOutcome: assembled.privateOutcome,
+    partsDigest: fullPartsDigest(parts), parts: identities,
+  };
+  await verifyPartedFullResources(result, { plan });
+  const stagingReceiptPath = path.join(path.dirname(reportPath), `.${path.basename(reportPath)}.${runId}.staging`);
+  const finalized = await finalizeLocalCiExecution({
+    args: { ...args, aggregate: undefined },
+    executionDurationMs: assembled.executionDurationMs,
+    invocationStarted,
+    reportPath,
+    result,
+    root: repoRoot,
+    runId,
+    stagingReceiptPath,
+    validateFinal: async (finalResult) => {
+      verifyLocalCiReceipt(finalResult, { profile: plan.profile, candidate, plan,
+        currentProductJourneyEvidence: finalResult.productJourneyEvidence,
+        currentC2ZcRestoreFixtureEvidence: finalResult.productJourneyEvidence?.c2zcRestoreFixture ?? null,
+        requireTaskEvidence: true });
+      await verifyLocalCiTaskEvidence(finalResult, { allowPrePublication: true, requireFinalization: true, root: repoRoot });
+    },
+  });
+  process.stdout.write(`[local-ci] report=${finalized.reportPath}\n[local-ci] status=${finalized.result.status}\n`);
+  if (finalized.result.status !== "passed") process.exitCode = 1;
+}
+
 async function main() {
   const invocationStarted = performance.now();
   const args = parseLocalCiArgs(process.argv.slice(2));
@@ -4469,6 +4681,15 @@ async function main() {
     repoRoot,
     args.report ?? `.artifacts/local-ci/${plan.profile}.json`,
   );
+  if (args.part !== undefined || args.aggregate) {
+    if (plan.profile !== "full" || args.verify || args.dryRun || args.from !== null ||
+        (args.part !== undefined && args.aggregate)) {
+      throw new Error("--part and --aggregate select exactly one split Full role");
+    }
+    if (args.aggregate) await aggregateFullInvocation({ args, plan, reportPath });
+    else await runFullPartInvocation({ args, plan });
+    return;
+  }
   if (args.verify) {
     if (args.dryRun) {
       throw new Error("--verify cannot be combined with --dry-run");

@@ -1,0 +1,129 @@
+{
+  "version": "local-ci-full-parts/1",
+  "parts": [
+    {
+      "id": "frontend",
+      "owned": [
+        "bootstrap.install",
+        "bootstrap.electron-binary",
+        "bootstrap.workspace-build",
+        "bootstrap.chromium",
+        "security.pnpm-audit",
+        "frontend.unit-shard-1",
+        "frontend.unit-shard-2",
+        "frontend.unit",
+        "frontend.typecheck",
+        "frontend.lint",
+        "frontend.architecture",
+        "frontend.browser-contracts",
+        "frontend.web-build",
+        "browser.tests",
+        "quality.contracts",
+        "webgl.zen",
+        "webgl.tests",
+        "storybook.tests"
+      ],
+      "support": []
+    },
+    {
+      "id": "native",
+      "owned": [
+        "native.build",
+        "native.public-tests",
+        "native.check",
+        "native.clippy",
+        "native.tests",
+        "native.mcp-tests",
+        "electron.typecheck",
+        "electron.build",
+        "electron.budget",
+        "electron.contracts",
+        "electron.unit",
+        "runtime.contracts",
+        "runtime.benchmark"
+      ],
+      "support": [
+        "bootstrap.install",
+        "bootstrap.electron-binary",
+        "bootstrap.workspace-build",
+        "bootstrap.chromium"
+      ]
+    },
+    {
+      "id": "journeys",
+      "owned": [
+        "c2zc.rust-acceptance",
+        "c2zc.fixture-build",
+        "c2zc.fixture-verify",
+        "journeys.mcp-build",
+        "journeys.shard-1",
+        "journeys.shard-2",
+        "journeys.shard-3",
+        "journeys.shard-4",
+        "journeys.shard-5",
+        "journeys.shard-6",
+        "journeys.shard-7",
+        "journeys.run"
+      ],
+      "support": [
+        "bootstrap.install",
+        "bootstrap.electron-binary",
+        "bootstrap.workspace-build",
+        "bootstrap.chromium",
+        "native.build",
+        "electron.typecheck",
+        "electron.build"
+      ]
+    },
+    {
+      "id": "rust",
+      "owned": [
+        "security.shared-rust-audit",
+        "security.native-rust-audit",
+        "rust.tests-db-integrations",
+        "rust.tests-db-lib",
+        "rust.tests-db-nir1-capacity",
+        "rust.tests-db-nir1-capacity-binary",
+        "rust.tests-other-workspace",
+        "rust.check",
+        "rust.clippy",
+        "rust.tests-db-doctests",
+        "rust.tests",
+        "rust.runtime-authority",
+        "rust.license"
+      ],
+      "support": [
+        "bootstrap.install"
+      ]
+    },
+    {
+      "id": "cquery",
+      "owned": [
+        "rust.c-query-worker"
+      ],
+      "support": [
+        "bootstrap.install"
+      ]
+    },
+    {
+      "id": "migration",
+      "owned": [
+        "rust.supervisor-failpoints",
+        "migration.supervisor",
+        "migration.failpoints-lib",
+        "migration.safe-mode",
+        "migration.release-schema",
+        "migration.crash",
+        "migration.ipc",
+        "migration.ui",
+        "lfm.setup",
+        "lfm.tests",
+        "lfm.dataset"
+      ],
+      "support": [
+        "bootstrap.install",
+        "bootstrap.workspace-build"
+      ]
+    }
+  ]
+}

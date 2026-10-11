@@ -37,6 +37,40 @@ without a requested commit/PR does not create a commit or start PR-bound CI
 solely for Quick; an explicitly requested dirty working-tree run remains
 diagnostic evidence and cannot establish merge readiness.
 
+### Split hosted Full
+
+Hosted canonical Full runs as independent parts, each on its own fresh
+`ubuntu-24.04` VM, plus one aggregate job. `scripts/local-ci-full-parts.json`
+assigns every Full task to exactly one part (`frontend`, `native`, `journeys`,
+`rust`, `cquery`, `migration`); the `canonical` job's matrix lists the same ids.
+A part may re-run an explicitly listed **support** task owned elsewhere when it
+consumes that task's build output (for example `native.build` and
+`electron.build` before the journeys). Support executions log under
+`.artifacts/local-ci/runs/<run>/support/<part>/` and never count as the owned
+result. A dependency on a task owned by another part and not supported locally is
+ordering-only on that VM; the aggregate requires it to have passed in its own
+part. The private gate, the C2-ZC fixture and every product journey share the
+`journeys` part.
+
+Each part runs `pnpm ci:local:full -- --part <id>` with the same immutable
+tuple: the checkout lock, candidate binding and host admission are unchanged,
+and the run id is one UUIDv4 derived from the workflow run and attempt, shared by
+every part. The part writes `.artifacts/local-ci/parts/<id>.json` with its owned
+task results and command records; only the `journeys` part also records the live
+host/private gate (revalidated on its own VM), the private outcome identity, the
+C2-ZC fixture and the product journey evidence. `full-aggregate` downloads every
+part into `.artifacts/`, checks a clean checkout of the same candidate, then runs
+`pnpm ci:local:full -- --aggregate` and the unchanged `pnpm ci:local:verify --
+full` with the same tuple. The aggregate rejects a missing, failed or differently
+bound part, any task reported by the wrong part, and journey or gate evidence
+outside the `journeys` part. The single receipt keeps every task in plan order
+and binds each part report by size and SHA-256. Artifact transfer does not keep
+file mode/owner, so verify checks the transferred host decision and private
+outcome by content identity instead of re-running the live revalidation.
+
+Empty `max_parallel_tasks` selects 1 for Full parts (matching the reviewed
+allocation) and 12 for Quick.
+
 ### Manual GitHub connection (source preparation)
 
 `.github/workflows/canonical-ci.yml` is a thin manual/reusable adapter to the

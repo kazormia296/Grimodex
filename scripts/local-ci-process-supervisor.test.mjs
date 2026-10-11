@@ -730,8 +730,14 @@ print('synthetic late gate only; no native setup, quota syscall, qualification o
 test("native B rejects injected transport/runtime selectors and keeps the sandbox", () => {
   for (const selector of ["DBUS_SESSION_BUS_ADDRESS", "DBUS_SYSTEM_BUS_ADDRESS", "DBUS_STARTER_ADDRESS",
     "WAYLAND_DISPLAY", "WAYLAND_SOCKET", "NODE_OPTIONS", "NODE_PATH", "LD_PRELOAD", "ELECTRON_DISABLE_SANDBOX", "ELECTRON_RENDERER_URL"]) {
-    assert.throws(() => nativeBEnvironment({ [selector]: "injected" }), /rejects/u);
+    assert.throws(() => nativeBEnvironment({ [selector]: "injected" }), new RegExp(`rejects external route/runtime selector ${selector}$`, "u"));
   }
+  // Only the hosted runner's own user bus is inherited without forwarding.
+  assert.deepEqual(nativeBEnvironment({ DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1001/bus" }, 1001), {});
+  for (const address of ["unix:path=/run/user/1002/bus", "unix:path=/run/user/1001/bus,guid=x", "tcp:host=127.0.0.1,port=1"]) {
+    assert.throws(() => nativeBEnvironment({ DBUS_SESSION_BUS_ADDRESS: address }, 1001), /DBUS_SESSION_BUS_ADDRESS/u);
+  }
+  assert.throws(() => nativeBEnvironment({ DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/0/bus" }, 0), /DBUS_SESSION_BUS_ADDRESS/u);
   const address = `unix:path=/tmp/synthetic/bus,guid=${"a".repeat(32)}`;
   const env = nativeBElectronEnvironment({ DISPLAY: ":42", XAUTHORITY: "/tmp/synthetic/Xauthority",
     PATH: "/usr/bin:/bin", HOME: "/home/runner", SECRET_TEST_VALUE: "not-forwarded", CI: "true" }, address);

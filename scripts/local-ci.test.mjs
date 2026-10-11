@@ -5570,3 +5570,120 @@ test("AI workflow authorities require local Quick and complete Full evidence", a
   assert.match(policy, /clean candidate run local Quick.*immediately verified/s);
   assert.match(policy, /Partial `--from` runs.*never\s+converted into merge or release passes/s);
 });
+
+// Split canonical Full: parts on separate hosted VMs, one aggregate receipt.
+const fullParts = await import("./local-ci-full-parts.mjs");
+
+async function splitFullPlan() {
+  const registry = JSON.parse(await fs.promises.readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  const config = JSON.parse(await fs.promises.readFile(path.join(repoRoot, fullParts.FULL_PARTS_PATH), "utf8"));
+  const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40), maxParallelTasks: 1 });
+  return { config, plan };
+}
+
+test("split Full parts partition every task once and keep the private gate with all journeys", async () => {
+  const { config, plan } = await splitFullPlan();
+  const { owner, privateGatePart } = fullParts.validateFullParts(config, plan);
+  assert.equal(privateGatePart, "journeys");
+  assert.equal(owner.size, plan.tasks.length);
+  for (const { id } of plan.tasks) if (/^(journeys|c2zc)\./u.test(id)) assert.equal(owner.get(id), "journeys", id);
+  const reject = (mutate, pattern) => {
+    const changed = structuredClone(config);
+    mutate(changed);
+    assert.throws(() => fullParts.validateFullParts(changed, plan), pattern);
+  };
+  reject((c) => c.parts[0].owned.pop(), /not owned by any part/u);
+  reject((c) => c.parts[1].owned.push(c.parts[0].owned[0]), /more than one part/u);
+  reject((c) => c.parts[1].support.push(c.parts[1].owned[0]), /distinct task owned elsewhere/u);
+  reject((c) => { c.parts[0].owned.push("journeys.run"); c.parts[2].owned = c.parts[2].owned.filter((id) => id !== "journeys.run"); }, /share the private-gate part/u);
+  reject((c) => { c.parts[1].id = c.parts[0].id; }, /unique/u);
+  reject((c) => { c.version = "local-ci-full-parts/0"; }, /local-ci-full-parts\/1/u);
+});
+
+test("a split Full part schedules owned and support tasks and drops ordering-only dependencies", async () => {
+  const { config, plan } = await splitFullPlan();
+  const { tasks, owned, support } = fullParts.buildFullPartTasks(plan, config, "journeys");
+  const ids = new Set(tasks.map(({ id }) => id));
+  assert.deepEqual([...ids].sort(), [...owned, ...support].sort());
+  const shard = tasks.find(({ id }) => id === "journeys.shard-1");
+  assert.ok(shard.after.includes("journeys.mcp-build") && shard.after.includes("c2zc.fixture-verify"));
+  assert.ok(!shard.after.includes("webgl.tests") && !shard.after.includes("native.public-tests"), "ordering-only edges are verified by the aggregate");
+  for (const task of tasks) for (const dependency of task.after) assert.ok(ids.has(dependency), `${task.id} -> ${dependency}`);
+  assert.throws(() => fullParts.buildFullPartTasks(plan, config, "missing"), /Unknown Full part/u);
+});
+
+test("split Full shares one deterministic UUIDv4 per hosted workflow attempt", () => {
+  const env = { RUNNER_ENVIRONMENT: "github-hosted", GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "1", GITHUB_REPOSITORY: "owner/repo" };
+  const runId = fullParts.canonicalGithubRunId(env);
+  assert.match(runId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  assert.equal(fullParts.canonicalGithubRunId({ ...env }), runId);
+  assert.notEqual(fullParts.canonicalGithubRunId({ ...env, GITHUB_RUN_ATTEMPT: "2" }), runId);
+  for (const change of [{ RUNNER_ENVIRONMENT: "self-hosted" }, { GITHUB_RUN_ID: "" }, { GITHUB_RUN_ATTEMPT: "0" }]) {
+    assert.throws(() => fullParts.canonicalGithubRunId({ ...env, ...change }), /GitHub-hosted/u);
+  }
+});
+
+test("split Full aggregate binds every part to one candidate, plan and run in plan order", async () => {
+  const { config, plan } = await splitFullPlan();
+  const planDescriptor = createLocalCiPlanDescriptor(plan);
+  const runId = fullParts.canonicalGithubRunId({ RUNNER_ENVIRONMENT: "github-hosted", GITHUB_RUN_ID: "9", GITHUB_RUN_ATTEMPT: "1" });
+  const candidate = { requestedBase: "a".repeat(40), requestedHead: "b".repeat(40), resolvedBaseSha: "a".repeat(40), resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40), currentHeadSha: "b".repeat(40), worktreeClean: true, worktreeFingerprint: "f", worktreeStatusHash: "s" };
+  const digest = (value) => `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  const { owner, privateGatePart } = fullParts.validateFullParts(config, plan);
+  const makeReports = () => new Map(config.parts.map((part, index) => {
+    const ids = plan.tasks.filter(({ id }) => owner.get(id) === part.id).map(({ id }) => id);
+    return [part.id, {
+      version: fullParts.FULL_PART_REPORT_VERSION, part: part.id, partsDigest: fullParts.fullPartsDigest(config),
+      registryDigest: plan.registryDigest, planDigest: digest(planDescriptor), runId, status: "passed", candidate, candidateAfter: candidate,
+      startedAt: new Date(1_000 + index).toISOString(), finishedAt: new Date(5_000 + index).toISOString(),
+      tasks: ids.map((id) => ({ id, status: "passed", durationMs: 1 })),
+      commands: Object.fromEntries(ids.map((id) => [id, { id, label: id }])),
+      ...(part.id === privateGatePart ? { fullResourceAdmission: { state: "private-accepted" }, productJourneyEvidence: { journeys: true }, c2zcRestoreFixture: { fixture: true } } : {}),
+    }];
+  }));
+  const assembled = fullParts.assembleFullFromParts({ plan, config, reports: makeReports(), candidate, runId, planDescriptor });
+  assert.deepEqual(assembled.tasks.map(({ id }) => id), plan.tasks.map(({ id }) => id));
+  assert.deepEqual(assembled.stages.map(({ id }) => id), plan.stages.map(({ id }) => id));
+  assert.ok(assembled.stages.every(({ status }) => status === "passed"));
+  assert.deepEqual(assembled.fullResourceAdmission, { state: "private-accepted" });
+  assert.equal(assembled.executionDurationMs, 5_005 - 1_000);
+  const reject = (mutate, pattern) => {
+    const reports = makeReports();
+    mutate(reports);
+    assert.throws(() => fullParts.assembleFullFromParts({ plan, config, reports, candidate, runId, planDescriptor }), pattern);
+  };
+  reject((r) => r.delete("rust"), /missing, failed or bound/u);
+  reject((r) => { r.get("rust").status = "failed"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("rust").runId = randomUUID(); }, /missing, failed or bound/u);
+  reject((r) => { r.get("rust").planDigest = "sha256:other"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("native").candidateAfter = { ...candidate, worktreeClean: false }; }, /worktreeClean/u);
+  reject((r) => { r.get("frontend").tasks.pop(); }, /exactly its owned tasks/u);
+  reject((r) => { r.get("frontend").tasks.push({ id: "journeys.run", status: "passed" }); }, /exactly its owned tasks/u);
+  reject((r) => { r.get("rust").fullResourceAdmission = { state: "private-accepted" }; }, /private-gate or journey evidence/u);
+});
+
+test("split Full CLI roles and hosted aggregate job keep one tuple and the unchanged verify", async () => {
+  assert.equal(parseLocalCiArgs(["full", "--part", "rust"]).part, "rust");
+  assert.equal(parseLocalCiArgs(["full", "--aggregate"]).aggregate, true);
+  assert.equal(parseLocalCiArgs(["full"]).part, undefined);
+  const workflow = yaml.load(await fs.promises.readFile(path.join(repoRoot, ".github/workflows/canonical-ci.yml"), "utf8"));
+  const { config } = await splitFullPlan();
+  assert.equal(workflow.jobs.canonical.strategy["fail-fast"], false);
+  assert.ok(workflow.jobs.canonical.strategy.matrix.part.includes(JSON.stringify(config.parts.map(({ id }) => id))),
+    "workflow part list equals the reviewed partition");
+  const aggregate = workflow.jobs["full-aggregate"];
+  assert.equal(aggregate.if, "inputs.profile == 'full'");
+  assert.equal(aggregate.needs, "canonical");
+  assert.equal(aggregate["runs-on"], "ubuntu-24.04");
+  const download = aggregate.steps.find(({ uses }) => uses?.startsWith("actions/download-artifact@"));
+  assert.deepEqual(download.with, { pattern: "canonical-full-part-*-${{ github.run_id }}-${{ github.run_attempt }}", path: ".artifacts", "merge-multiple": true });
+  const run = aggregate.steps.find(({ id }) => id === "aggregate").run;
+  const tuple = '--base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"';
+  assert.ok(run.indexOf("git merge-base --is-ancestor") < run.indexOf(`pnpm ci:local:full -- --aggregate ${tuple}`));
+  assert.ok(run.indexOf(`pnpm ci:local:full -- --aggregate ${tuple}`) < run.indexOf(`pnpm ci:local:verify -- full ${tuple}`));
+  assert.match(run, /git status --porcelain --untracked-files=all/u);
+  const upload = workflow.jobs.canonical.steps.find(({ name }) => name === "Upload Full part evidence");
+  assert.match(upload.with.path, /\.artifacts\/\.canonical-full-part-\$\{\{ matrix\.part \}\}/u);
+  assert.match(upload.with.path, /matrix\.part == 'journeys' && '\.artifacts\/local-ci\/full-admission\/\*-host\/decision\.json'/u);
+});

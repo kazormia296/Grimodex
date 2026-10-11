@@ -5,7 +5,7 @@
   "sources": [
     {
       "path": ".github/workflows/canonical-ci.yml",
-      "sha256": "9be8991f5b376e0de3f44a36b4827809e64746c9e1e48c9af5be814d861b3b14"
+      "sha256": "c66e9e56f94bfecc5d8193e50fc6f8167b6222bbd5a733716961cbe2701f7f4d"
     },
     {
       "path": "scripts/local-ci-registry.json",
@@ -25,7 +25,7 @@
     },
     {
       "path": "scripts/local-ci.mjs",
-      "sha256": "a382667c7e8dcf2e7fc89fbc29cb331cdc5d415a75e0b057849631d1e68bcf7f"
+      "sha256": "dddda9857144eb2d88d2280a832db8f6fe8bc2f31b2ae2b7eb8aca14945d1bda"
     },
     {
       "path": "scripts/local-ci-runner.mjs",
@@ -113,7 +113,7 @@
     },
     {
       "path": "scripts/local-ci-xvfb.mjs",
-      "sha256": "ff6bc32334cf974aa2a6001502293af48e09f61ad383838b667d7155eb584b7a"
+      "sha256": "36277104327a2279a60262efe5ab7fe29a7bb9cf7bd72dc3036c860367f2584d"
     },
     {
       "path": "src/db/generated/schema-contract.json",

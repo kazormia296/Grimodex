@@ -399,7 +399,8 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(ci.on.workflow_call.inputs.independent_gates, undefined);
   assert.deepEqual(Object.keys(ci.on.workflow_call.inputs), ["product_journey_mode"]);
   assert.equal(workflow.on.workflow_call.inputs.profile.default, "contracts");
-  assert.equal(workflow.on.workflow_call.inputs.max_parallel_tasks.default, "12");
+  // Empty selects the profile default inside the adapter (Full parts 1, Quick 12).
+  assert.equal(workflow.on.workflow_call.inputs.max_parallel_tasks.default, "");
   const owner = ci.jobs.canonical;
   assert.equal(owner.uses, "./.github/workflows/canonical-ci.yml");
   for (const key of ["steps", "runs-on", "secrets", "continue-on-error"]) assert.equal(owner[key], undefined, key);
@@ -408,7 +409,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
   assert.equal(owner.with.profile, "${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}");
   assert.equal(owner.with.candidate_base, "${{ inputs.candidate_base || '' }}");
   assert.equal(owner.with.candidate_head, "${{ inputs.candidate_head || '' }}");
-  assert.equal(owner.with.max_parallel_tasks, "${{ inputs.max_parallel_tasks || '12' }}");
+  assert.equal(owner.with.max_parallel_tasks, "${{ inputs.max_parallel_tasks || '' }}");
   // Only this workflow's boolean/string-equality expression subset; GitHub
   // string equality is case-insensitive. Actual reusable dispatch is hosted proof.
   const value = (expression, inputs, event = "workflow_dispatch") => new Function("inputs", "github", "startsWith", `return (${expression
@@ -816,11 +817,12 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     const args = mapped(inputs);
     return execute("bash", ["-c", selection.run], { timeout: 10000, env: {
       ...process.env, PROFILE: args.profile, REQUESTED_BASE: args.candidate_base,
-      EXPECTED_HEAD: args.candidate_head, MAX_PARALLEL_TASKS: args.max_parallel_tasks, GITHUB_SHA: head,
+      // The adapter resolves an empty option to its profile default.
+      EXPECTED_HEAD: args.candidate_head, MAX_PARALLEL_TASKS: args.max_parallel_tasks || (String(args.profile).toLowerCase() === "full" ? "1" : "12"), GITHUB_SHA: head,
     } });
   };
   const contracts = { ...defaults, canonical_profile: "contracts" };
-  assert.equal(mapped(contracts).max_parallel_tasks, "12");
+  assert.equal(mapped(contracts).max_parallel_tasks, "");
   await validate(contracts);
   const quick = { ...defaults, canonical_profile: "quick", candidate_base: "a".repeat(40), candidate_head: head, max_parallel_tasks: "3" };
   await validate(quick); // Validation only; no canonical profile or resource probe.
@@ -1215,7 +1217,7 @@ test("canonical hosted connection is manual/reusable and defaults to contracts, 
   const inputs = workflow.on.workflow_dispatch.inputs;
   assert.equal(inputs.profile.default, "contracts");
   assert.deepEqual(inputs.profile.options, ["contracts", "quick", "full"]);
-  assert.equal(inputs.max_parallel_tasks.default, "12");
+  assert.equal(inputs.max_parallel_tasks.default, "");
   const job = workflow.jobs.canonical;
   assert.equal(job["runs-on"], "ubuntu-24.04");
   const steps = job.steps;
@@ -3160,7 +3162,10 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   const canonical = steps.find(({ id }) => id === "canonical");
   assert.equal(selection.if, undefined);
   assert.equal(canonical.if, "inputs.profile != 'contracts'");
-  assert.deepEqual(canonical.env, selection.env);
+  const { FULL_PART, ...canonicalEnv } = canonical.env;
+  assert.equal(FULL_PART, "${{ matrix.part }}");
+  assert.deepEqual(canonicalEnv, selection.env);
+  assert.equal(selection.env.MAX_PARALLEL_TASKS, "${{ inputs.max_parallel_tasks || (inputs.profile == 'full' && '1' || '12') }}");
   assert.match(canonical.run, /readonly candidate_base=/u);
   assert.match(canonical.run, /readonly candidate_head=/u);
   const profileStart = canonical.run.indexOf('pnpm "ci:local:$PROFILE"');
@@ -3174,7 +3179,7 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
   assert.ok(lock >= 0 && lock < host && host < tasks);
   assert.match(main.slice(host, tasks), /signal: cliAbort\.signal, localRunId: runId/u);
   assert.match(main, /verifyFullPrivateAdmission\(repoRoot, host\.decision\)/u);
-  assert.equal((canonical.run.match(/--base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/gu) ?? []).length, 2);
+  assert.equal((canonical.run.match(/--base "\$candidate_base" --head "\$candidate_head" --max-parallel-tasks "\$MAX_PARALLEL_TASKS"/gu) ?? []).length, 3);
   const execute = promisify(execFile);
   const temporary = await mkdtemp(path.join(tmpdir(), "canonical-ci-contract-"));
   const cwd = path.join(temporary, "checkout");
@@ -3190,25 +3195,34 @@ test("canonical shell uses one immutable tuple/options and verifies only profile
     const git = (...args) => execute("git", args, { cwd, timeout: 10000 });
     await git("init", "--initial-branch=contract");
     await writeFile(path.join(cwd, "source.txt"), "public synthetic fixture\n");
-    await git("add", "source.txt");
+    // Matches the repository: run outputs under .artifacts/ stay ignored.
+    await writeFile(path.join(cwd, ".gitignore"), ".artifacts/\n");
+    await git("add", "source.txt", ".gitignore");
     await git("-c", "user.name=Contract", "-c", "user.email=contract@example.invalid", "commit", "-m", "Synthetic workflow contract");
     const sha = (await git("rev-parse", "HEAD")).stdout.trim();
     const env = { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}`, CALLS: calls, PROFILE: "quick", REQUESTED_BASE: sha, EXPECTED_HEAD: sha, GITHUB_SHA: sha, MAX_PARALLEL_TASKS: "3", FAIL_PROFILE: "0" };
     const shell = (source, overrides = {}) => execute("bash", ["-c", source], { cwd, env: { ...env, ...overrides }, timeout: 10000 });
     for (const PROFILE of ["quick", "full"]) {
+      // Quick runs profile then verify; a Full part runs only its part and
+      // leaves assembly and verify to full-aggregate.
+      const run = PROFILE === "full"
+        ? ["ci:local:full", "--", "--part", "journeys", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"]
+        : [`ci:local:${PROFILE}`, "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"];
       await writeFile(calls, "");
       await shell(selection.run, { PROFILE });
-      await shell(canonical.run, { PROFILE });
-      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
-        [`ci:local:${PROFILE}`, "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
+      await shell(canonical.run, { PROFILE, FULL_PART: "journeys" });
+      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), PROFILE === "full" ? [run] : [
+        run,
         ["ci:local:verify", "--", PROFILE, "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
       ]);
+      if (PROFILE === "full") await access(path.join(cwd, ".artifacts/.canonical-full-part-journeys"));
       await writeFile(calls, "");
-      await assert.rejects(shell(canonical.run, { PROFILE, FAIL_PROFILE: "1" }), (error) => error.code === 7 && /canonical profile gate failed/u.test(error.stderr));
-      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [
-        [`ci:local:${PROFILE}`, "--", "--base", sha, "--head", sha, "--max-parallel-tasks", "3"],
-      ], "a failed host/private/profile gate must not start verify");
+      await assert.rejects(shell(canonical.run, { PROFILE, FULL_PART: "journeys", FAIL_PROFILE: "1" }), (error) => error.code === 7 && /canonical profile gate failed/u.test(error.stderr));
+      assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n").map(JSON.parse), [run], "a failed host/private/profile gate must not start verify");
     }
+    await writeFile(calls, "");
+    for (const FULL_PART of ["", "../escape", "Journeys"]) await assert.rejects(shell(canonical.run, { PROFILE: "full", FULL_PART }));
+    assert.equal(await readFile(calls, "utf8"), "");
     for (const overrides of [
       { REQUESTED_BASE: "$(touch injected)" },
       { EXPECTED_HEAD: "0".repeat(40) },

@@ -165,7 +165,7 @@ jobs:
       profile: ${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}
       candidate_base: ${{ inputs.candidate_base || '' }}
       candidate_head: ${{ inputs.candidate_head || '' }}
-      max_parallel_tasks: ${{ inputs.max_parallel_tasks || '12' }}
+      max_parallel_tasks: ${{ inputs.max_parallel_tasks || '' }}
 
   quality:
     name: Quality (traceability / impact-selected light gates)

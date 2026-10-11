@@ -103,13 +103,18 @@ export async function createNativeBRouteSentinels(assertOpen, onFailure) {
   }
 }
 
-export function nativeBEnvironment(environment) {
+export function nativeBEnvironment(environment, uid = process.getuid?.()) {
   // Reject selectors, rather than silently overwriting an injected route or
   // sandbox bypass. Namespace containment remains a separate prerequisite.
   for (const [key, value] of Object.entries(environment)) {
+    // The hosted runner's own systemd user bus is inherited, not injected; it
+    // is never forwarded and its /run/user path is absent from the private root.
+    if (key === "DBUS_SESSION_BUS_ADDRESS" && Number.isSafeInteger(uid) && uid > 0 &&
+        value === `unix:path=/run/user/${uid}/bus`) continue;
     if (value && (/^(?:DBUS_|WAYLAND_|LD_|NODE_OPTIONS$|NODE_PATH$)/u.test(key) ||
       key === "ELECTRON_DISABLE_SANDBOX" || key === "ELECTRON_RENDERER_URL")) {
-      throw new Error("native B rejects external route/runtime selectors");
+      // Name the selector, never its value.
+      throw new Error(`native B rejects external route/runtime selector ${key}`);
     }
   }
   return Object.fromEntries(NATIVE_B_ENVIRONMENT.filter((key) => environment[key] !== undefined)
