@@ -33,6 +33,13 @@ ${DRIVER_METHODS.map((method) => `    <allow send_destination="org.freedesktop.D
 </busconfig>\n`;
 }
 
+// Fixed "native B ..." refusal texts are safe to report; anything else (which
+// may carry paths, endpoints or payloads) reports only its error type.
+export function nativeBReason(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^native B [\w ,;:()/.-]{1,400}$/u.test(message) ? message : (error?.name ?? "Error");
+}
+
 export function nativeBElectronEnvironment(environment, address) {
   const selected = nativeBEnvironment(environment);
   if (!/^unix:path=\/[^,;\s]+,guid=[0-9a-f]{32}$/u.test(address)) throw new Error("native B owned bus address invalid");
@@ -85,7 +92,12 @@ export function createNativeBBusOwner({ signal, spawnProcess = spawn, readBounda
   const probes = new Set();
   const closeAdmission = () => { admissionClosed = true; };
   function fail(error) {
-    if (!failure) { failure = error; onFailure(); }
+    if (!failure) {
+      failure = error;
+      // Only fixed refusal texts are reported; never paths, endpoints or payloads.
+      process.stderr.write(`[native-b] ${nativeBReason(error)}\n`);
+      onFailure();
+    }
     closeAdmission();
   }
   async function bounded(promise) {
@@ -134,7 +146,11 @@ export function createNativeBBusOwner({ signal, spawnProcess = spawn, readBounda
       stream.on("data", (data) => {
         owned.bytes += data.length;
         if (owned.bytes > 8192) { fail(new Error("native B client output overflow")); stopProbe(owned); return; }
-        if (stream !== processChild.stdout) return; // Never publish stderr.
+        if (stream !== processChild.stdout) {
+          // Never publish stderr; keep it only to extract a fixed refusal text.
+          owned.stderr = `${owned.stderr ?? ""}${data.toString("utf8")}`;
+          return;
+        }
         owned.text += data.toString("utf8");
         if (mode === "--cancel-client" && owned.text === "ready-for-input\n" && !owned.stopping) {
           // Real child is blocked awaiting input. Close its admission first;
@@ -162,7 +178,12 @@ export function createNativeBBusOwner({ signal, spawnProcess = spawn, readBounda
       }
       probes.delete(owned);
       return { exit: 0, stdoutEOF: true, stderrEOF: true, joined: true };
-    } catch { const error = new Error("native B qualification client failed; owner quarantined"); fail(error); stopProbe(owned); throw error; }
+    } catch (cause) {
+      const refusal = /native B setup\/admission failed; no fallback \(([^)\n]{1,200})\)/u.exec(owned.stderr ?? "")?.[1];
+      const error = new Error(`native B qualification client failed; owner quarantined (${mode}: ${refusal
+        ? nativeBReason(new Error(refusal.startsWith("native B ") ? refusal : `native B child ${refusal}`)) : nativeBReason(cause)})`);
+      fail(error); stopProbe(owned); throw error;
+    }
     finally { clearTimeout(timeout); }
   }
 
@@ -197,7 +218,7 @@ export function createNativeBBusOwner({ signal, spawnProcess = spawn, readBounda
         child.once("close", (code, childSignal) => {
           done = true;
           if (!admissionClosed || ends !== 3 || (code !== 0 && !["SIGTERM", "SIGKILL"].includes(childSignal))) {
-            fail(new Error("native B daemon unexpected exit/EOF"));
+            fail(new Error(`native B daemon unexpected exit/EOF (code ${code} signal ${childSignal} ends ${ends})`));
           }
           resolve({ code, signal: childSignal });
         });
@@ -230,7 +251,10 @@ export function createNativeBBusOwner({ signal, spawnProcess = spawn, readBounda
       });
       assertOpen();
       return endpoint;
-    })().catch(() => { const error = new Error("native B daemon start failed; owner quarantined"); fail(error); throw error; });
+    })().catch((cause) => {
+      const error = new Error(`native B daemon start failed; owner quarantined (${nativeBReason(cause)})`);
+      fail(error); throw error;
+    });
     return startPromise;
   }
 
