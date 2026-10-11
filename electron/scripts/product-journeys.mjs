@@ -1210,10 +1210,7 @@ async function createSceneThroughUi(harness, page) {
   const existingSceneIds = new Set(
     (before?.rows ?? []).map((row) => String(row.id)),
   );
-  await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
-  await page
-    .getByRole("menuitem", { name: NEW_SCENE_MENU_ITEM, exact: true })
-    .click();
+  await clickCreateMenuItem(header, page, NEW_SCENE_MENU_ITEM);
 
   const renameInput = page.locator(
     '[data-droptarget-id="scenes-panel"] input:focus',
@@ -1529,6 +1526,25 @@ async function runChatAuthorityIsolationJourney(harness) {
   }
 }
 
+// A background reload right after workspace open can re-render the scenes
+// panel and detach the freshly opened create menu; reopen it rather than wait
+// 30 s on a detached item.
+async function clickCreateMenuItem(header, page, name) {
+  for (let attempt = 1; ; attempt += 1) {
+    await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
+    const clicked = await page
+      .getByRole("menuitem", { name, exact: true })
+      .click({ timeout: 5_000 })
+      .then(() => true)
+      .catch((error) => {
+        if (attempt >= 4) throw error;
+        return false;
+      });
+    if (clicked) return;
+    await page.keyboard.press("Escape");
+  }
+}
+
 async function createFolderThroughUi(harness, page) {
   const header = scenesPanelHeader(page);
   await header.waitFor({ state: "visible", timeout: 60_000 });
@@ -1538,10 +1554,7 @@ async function createFolderThroughUi(harness, page) {
     "SELECT id FROM tree_nodes WHERE node_type = 'folder'",
   );
   const existingFolderIds = new Set(before.map((row) => String(row.id)));
-  await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
-  await page
-    .getByRole("menuitem", { name: NEW_FOLDER_MENU_ITEM, exact: true })
-    .click();
+  await clickCreateMenuItem(header, page, NEW_FOLDER_MENU_ITEM);
 
   const renameInput = page.locator(
     '[data-droptarget-id="scenes-panel"] input:focus',
