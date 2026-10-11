@@ -45,9 +45,13 @@ class IfConf(ctypes.Structure):
     _fields_ = [("length", ctypes.c_int), ("buffer", ctypes.c_void_p)]
 
 
+class NativeBRefusal(RuntimeError):
+    """A fixed, payload-free refusal text that is safe to report."""
+
+
 def require(value, message):
     if not value:
-        raise RuntimeError(message)
+        raise NativeBRefusal(message)
 
 
 def mount(source, target, kind=None, flags=0, data=None):
@@ -607,7 +611,7 @@ def qualify_routes(routes):
         except OSError as error:
             require(error.errno == errno.EBADF, "native B descriptor audit unknown")
         else:
-            raise RuntimeError("native B inherited host descriptor remains")
+            raise NativeBRefusal("native B inherited host descriptor remains")
     for family, address in ((socket.AF_UNIX, routes["pathname"]),
                             (socket.AF_UNIX, routes["abstract"]),
                             (socket.AF_INET, ("127.0.0.1", routes["tcp"]))):
@@ -620,7 +624,7 @@ def qualify_routes(routes):
                 require(error.errno in (errno.ENOENT, errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH),
                         "native B route denial unknown")
             else:
-                raise RuntimeError("native B owned host route escaped")
+                raise NativeBRefusal("native B owned host route escaped")
     require(not descendants(), "native B unexpected pre-workload descendant")
     return {"pathnameDenied": True, "abstractDenied": True, "tcpDenied": True, "hostViewDenied": True}
 
@@ -867,7 +871,7 @@ def fixed_client(executable, args):
         except subprocess.TimeoutExpired:
             child.kill()
             child.communicate(timeout=2)
-            raise RuntimeError("native B client timeout; qualification failed")
+            raise NativeBRefusal("native B client timeout; qualification failed")
         require(len(stdout) + len(stderr) <= 8192, "native B client output overflow")
         return child.returncode, stdout, stderr
 
@@ -885,7 +889,7 @@ def qualify_bus(mode):
         signal.signal(signal.SIGTERM, cancelled)
         print("ready-for-input", flush=True)
         sys.stdin.buffer.read(4097)
-        raise RuntimeError("native B late cancelled client admitted")
+        raise NativeBRefusal("native B late cancelled client admitted")
     data = sys.stdin.buffer.read(4097)
     require(len(data) <= 4096, "native B client request overflow")
     request = json.loads(data)
@@ -954,7 +958,9 @@ if __name__ == "__main__":
         require(len(sys.argv) == 1 or sys.argv[1:] in (["--qualify-bus"], ["--reject-config"], ["--cancel-client"]),
                 "native B invocation invalid")
         sys.exit(main() if len(sys.argv) == 1 else qualify_bus(sys.argv[1]))
-    except Exception:
-        # Never print transport paths, inherited env/argv or exception payloads.
-        print("native B setup/admission failed; no fallback", file=sys.stderr)
+    except Exception as error:
+        # Never print transport paths, inherited env/argv or exception payloads:
+        # only the fixed refusal text, or else just the exception type.
+        reason = str(error) if type(error) is NativeBRefusal else type(error).__name__
+        print(f"native B setup/admission failed; no fallback ({reason})", file=sys.stderr)
         sys.exit(1)
