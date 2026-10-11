@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { toast } from "sonner";
 import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
+import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import { announce } from "@/lib/a11y/announcer";
 import * as snippetApi from "./api";
 import type { Snippet, NewSnippet } from "./api";
@@ -176,8 +177,14 @@ export const useSnippetStore = create<SnippetState>()((set, get) => ({
       } catch (e) {
         if (generation === entriesLoadGeneration) {
           set({ isLoading: false });
-          toast.error(i18next.t("snippets.store.loadFailed"));
-          debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
+          if (isIpcLifecycleCancellation(e)) {
+            // A workspace/project transition cancelled the read; the new
+            // scope reloads its entries, so this is not a user-facing failure.
+            debugLog.warn("SnippetStore", "loadEntries", errorDetail(e));
+          } else {
+            toast.error(i18next.t("snippets.store.loadFailed"));
+            debugLog.error("SnippetStore", "loadEntries", errorDetail(e));
+          }
         }
         throw e;
       }
