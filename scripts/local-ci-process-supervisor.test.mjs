@@ -907,9 +907,16 @@ mounts = [line.split() for line in pathlib.Path('/proc/self/mountinfo').read_tex
 options = {fields[4]: fields[5].split(',') for fields in mounts}
 assert 'nosuid' not in options[helper] and 'ro' in options[helper], options[helper]
 assert 'nosuid' in options[str(checkout / 'node_modules')]
-# Chromium requests helper API 1 the same way when it launches its zygote.
+# Chromium requests helper API 1 and passes its zygote-ID socket at fd 7 the
+# same way when it launches its zygote through the helper.
+import socket
+zygote, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+os.dup2(peer.fileno(), 7, inheritable=True)
+peer.close()
 helped = subprocess.run([helper, '/usr/bin/true'], stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
-                        env={'PATH': '/usr/bin:/bin', 'SBX_CHROME_API_RQ': '1'})
+                        env={'PATH': '/usr/bin:/bin', 'SBX_CHROME_API_RQ': '1'}, pass_fds=(7,))
+os.close(7)
+zygote.close()
 assert helped.returncode == 0, helped.stderr.decode(errors='replace')
 print(json.dumps({'helper': record['sha256'], 'bounding': record['bounding']}))
 `;
