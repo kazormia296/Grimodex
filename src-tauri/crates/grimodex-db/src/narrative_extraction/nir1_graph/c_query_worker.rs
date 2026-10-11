@@ -3042,6 +3042,16 @@ fn drain_to_eof(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The native slot and its capacity permit are process-wide; tests that
+    // reserve them must not overlap in one test binary.
+    static NATIVE_SLOT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn native_slot_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        NATIVE_SLOT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
     use std::io::Cursor;
 
     fn unavailable_test_frame(reason: &str) -> Vec<u8> {
@@ -3103,6 +3113,7 @@ mod tests {
 
     #[test]
     fn post_ready_owner_drops_authority_but_keeps_exact_binding_claim_and_region() -> Result<()> {
+        let _slot = native_slot_test_guard();
         use crate::state::{ActiveWorkspace, WorkspaceState};
         use crate::workspace_lifecycle::{
             AdmissionKind, AdmissionOutcome, LiveBinding, WorkspaceLifecycleCompatibilityView,
@@ -3547,6 +3558,7 @@ mod tests {
 
     #[test]
     fn native_static_slot_is_exclusive_and_resets_after_retirement() -> Result<()> {
+        let _slot = native_slot_test_guard();
         let first = reserve_storage()?;
         let region = first.region();
         let address = region as *const NativeRegion;

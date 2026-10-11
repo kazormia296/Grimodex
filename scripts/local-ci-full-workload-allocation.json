@@ -129,7 +129,7 @@
     },
     {
       "path": "electron/scripts/product-journey-native-b.mjs",
-      "sha256": "26d79aa45caed91e2200c749ab0949ac52ca940b4b5f2df6677a33ff23d1e430"
+      "sha256": "9b8685a7acc62cfdc6f2a09f18cd686feaf03faeb217da868a2749888bc864ea"
     },
     {
       "path": "electron/scripts/product-journey-shards.mjs",

@@ -28,7 +28,7 @@ export function nativeBBusConfig(uid, socket) {
     <deny receive_sender="*"/>
     <allow receive_sender="org.freedesktop.DBus"/>
 ${DRIVER_METHODS.map((method) => `    <allow send_destination="org.freedesktop.DBus" send_interface="org.freedesktop.DBus" send_member="${method}" send_type="method_call"/>`).join("\n")}
-    <deny send_destination="org.freedesktop.DBus" send_member="StartServiceByName"/>
+    <deny send_destination="org.freedesktop.DBus" send_interface="org.freedesktop.DBus" send_member="StartServiceByName"/>
   </policy>
 </busconfig>\n`;
 }
