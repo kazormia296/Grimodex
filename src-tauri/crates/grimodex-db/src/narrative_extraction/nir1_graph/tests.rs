@@ -4160,6 +4160,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         let mut candidate_rows = 0usize;
         loop {
             usage.admit(0, super::candidates::source_input_bytes(SEED)?)?;
+            let page_limit = (MAX_GRAPH_RECORDS - usage.rows).min(16);
             let page = super::candidates::read_candidate_page(
                 conn,
                 PROJECT,
@@ -4182,7 +4183,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             usage.admit(count, bytes)?;
             usage.pages += 1;
             candidate_rows += count;
-            if count < 16 {
+            if count < page_limit {
                 break;
             }
         }
@@ -4686,6 +4687,27 @@ fn oversized_seed_candidate_set_is_refused_without_partial_graph() -> Result<()>
     );
     assert_unavailable(
         &reader.query(&graph_request("nir1-alice"))?,
+        "query-budget-or-validation-failed",
+    );
+    assert!(reader.connection.as_ref().unwrap().is_autocommit());
+    Ok(())
+}
+
+#[test]
+fn oversized_hop1_candidate_set_is_refused_at_a_partial_page_boundary() -> Result<()> {
+    // Seed paging plus its A2/A3 admission leaves a charged row count that is
+    // not a multiple of the 16-row page, so the hop-1 frontier reaches the
+    // 512-record limit inside a short page. Its remaining rows must still be
+    // probed and refused instead of silently truncating the graph.
+    let fixture = Fixture::new()?;
+    let mut reader = fixture.registered_reader()?;
+    let baseline = query(&mut reader, "nir1-alice")?;
+    assert_eq!(baseline.status, "available", "{:?}", baseline.reason);
+    drop(reader);
+    fixture.add_decoys(600, "codex:nir1-bob")?;
+    let mut reader = fixture.registered_reader()?;
+    assert_unavailable(
+        &query(&mut reader, "nir1-alice")?,
         "query-budget-or-validation-failed",
     );
     assert!(reader.connection.as_ref().unwrap().is_autocommit());

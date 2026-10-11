@@ -1713,7 +1713,10 @@ fn query_in_snapshot(
                     }
                 }
             }
-            if count < 16 {
+            // A short page ends the source only when it returned fewer rows
+            // than it asked for; a page truncated by the remaining record
+            // budget must reach the has-more probe above.
+            if count < page_limit {
                 break;
             }
         }

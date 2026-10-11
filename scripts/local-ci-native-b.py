@@ -392,7 +392,11 @@ def proc_net_rows(name):
 
 def interface_ioctl(descriptor, command, payload):
     buffer = ctypes.create_string_buffer(payload, IFREQ_SIZE)
-    require(LIBC.ioctl(descriptor, ctypes.c_ulong(command), buffer) == 0, "native B loopback ioctl refused")
+    if LIBC.ioctl(descriptor, ctypes.c_ulong(command), buffer) != 0:
+        # Only a missing privilege is distinguishable; layout/device errors differ.
+        code = ctypes.get_errno()
+        raise RuntimeError("native B loopback ioctl not permitted" if code == errno.EPERM
+                           else "native B loopback ioctl failed")
     return buffer.raw
 
 

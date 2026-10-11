@@ -842,10 +842,11 @@ print(json.dumps(result))
       assert.equal(facts.version, "B-debugger-private-loopback-v1");
       return;
     }
-    // Only an unavailable namespace/privilege route (including a user
-    // namespace without CAP_NET_ADMIN) may fall through; an admitted namespace
-    // that fails the loopback contract fails the test.
-    assert.doesNotMatch(stderr, /AssertionError|SystemExit|not fresh|configuration unexpected|listing/u, stderr);
+    // Only an unavailable namespace/privilege route (an unshare or privilege
+    // wrapper refusal, or a user namespace without CAP_NET_ADMIN) may fall
+    // through; any other failure inside an admitted namespace fails the test.
+    assert.match(stderr, /native B loopback ioctl not permitted|^unshare: |^sudo: /mu, stderr);
+    assert.doesNotMatch(stderr, /AssertionError|SystemExit|not fresh|configuration unexpected|listing|ioctl failed/u, stderr);
   }
   t.skip("no network namespace route on this host; actual lo-up NOTRUN");
 });
