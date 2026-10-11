@@ -2,7 +2,10 @@
 
 This is reviewed-risk **input**, not a capacity/admission receipt, historical peak,
 all-future certificate, B grant, gate pass or merge readiness. The fixed dataset
-uses the existing full-workload-allocation/1 producer with all68 tasks/default12.
+uses the existing full-workload-allocation/1 producer with all68 tasks. Canonical hosted
+Full runs with three concurrent tasks (`maxParallelTasks: 3`): at the default12 the
+4-vCPU runner starved renderer unit tests into timeouts. On the hosted VM the additive
+disk and memory forecasts are recorded, not enforced (see local-ci-runner.md).
 Current source hashes and every actual preparation tuple are bound at ingestion.
 
 **Current topology:** the rejected seven-root privileged hold/control/late
@@ -241,7 +244,7 @@ privileged hold/late attachment/control protocol or trial/replacement root.
 existing immutable input/estimate. Its task coverage is derived from all68
 consumers; no replacement commands, reduced default12, fixture change or new
 profile/measurement framework. All14 positive byte-only terms add to
-**25017368576B** before the27 separately charged surface/probe scenarios and
+**15353692160B** (other-full-consumers charges the three task slots) before the27 separately charged surface/probe scenarios and
 sole-root tmpfs writes. This is a deliberately conservative **planning scenario**,
 not an RSS observation, hard cap, free-memory threshold or claim an installed
 runner fits. No capacity value was used to choose these numbers.

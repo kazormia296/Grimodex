@@ -2340,10 +2340,11 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40) });
   const preparation = fullPreparation(plan);
   assert.equal(data.registryDigest, plan.registryDigest);
-  assert.equal(data.maxParallelTasks, 12);
+  // Canonical hosted Full runs at three concurrent tasks on the 4-vCPU runner.
+  assert.equal(data.maxParallelTasks, 3);
   assert.deepEqual(data.tasks.map(({ id }) => id), plan.tasks.map(({ id }) => id));
   assert.deepEqual(data.preparation.map(({ id, commandDigest }) => ({ id, commandDigest })), preparation.map(({ id, command }) => ({ id, commandDigest: createHash("sha256").update(JSON.stringify(command)).digest("hex") })));
-  const binding = { head: "b".repeat(40), registryDigest: data.registryDigest, maxParallelTasks: 12, runId: "1", attempt: "1" };
+  const binding = { head: "b".repeat(40), registryDigest: data.registryDigest, maxParallelTasks: data.maxParallelTasks, runId: "1", attempt: "1" };
   const locations = fullSetupLocations(repoRoot, {
     FULL_PNPM_DEST: "/synthetic/pnpm", npm_config_store_dir: "/synthetic/store",
     PLAYWRIGHT_BROWSERS_PATH: "/synthetic/browser", UV_CACHE_DIR: "/synthetic/uv",
@@ -2356,7 +2357,7 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   assert.equal(estimate.tasks.length, 68);
   assert.deepEqual(estimate.fullMemoryRisk, { tasks: estimate.tasks, ...data.fullMemoryRisk });
   assert.equal(estimate.fullMemoryRisk.components.length, 8);
-  assert.equal(validateFullMemoryRisk(estimate, plan), 25017368576n, "finite planning hypotheses, not measured RSS, limits or an admitted capacity");
+  assert.equal(validateFullMemoryRisk(estimate, plan), 15353692160n, "finite planning hypotheses, not measured RSS, limits or an admitted capacity");
   const inventoryBytes = (id) => data.inventories.find((entry) => entry.id === id).items.reduce((sum, item) => sum + BigInt(item.bytes), 0n);
   const memoryTerms = estimate.fullMemoryRisk.terms;
   const appEnsembles = BigInt(plan.tasks.filter(({ id }) => /^journeys\.shard-[1-7]$/u.test(id)).length);

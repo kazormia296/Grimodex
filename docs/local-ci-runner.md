@@ -1160,6 +1160,13 @@ their groups, and the sampler must join before subsequent admission. Complete lo
 are retained, never truncated. Capacity/quota and candidate identity are reacquired
 after preparation; sampled growth raises relevant residuals before comparison.
 
+On that fresh single-job hosted VM the host phase and the private-root gate
+record, not enforce, the additive whole-Full disk and memory forecasts (every term
+summed with no concurrency or release credit). A real shortage or OOM fails that
+Full itself. Geometry, quota, placement, freshness, same-owner cgroup, zero current
+pressure, the private-root tmpfs capacity and the setup-phase forecast still refuse.
+The canonical hosted Full uses `max_parallel_tasks=3`, matching the allocation.
+
 Heavy-work exclusion relies on the fixed standard `ubuntu-24.04` hosted job's
 [fresh single-job VM contract](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners),
 corroborated by actual hosted-run metadata and Linux VM identity, plus sequential
