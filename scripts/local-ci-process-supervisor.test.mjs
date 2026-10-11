@@ -882,9 +882,14 @@ for entry in g['RUNTIME']:
     elif path.exists():
         g['bind'](root, entry)
 g['bind'](root, str(checkout / 'node_modules'))
-for directory, mode in (('/tmp', 0o1777), ('/run', 0o755), ('/proc', 0o755)):
+for directory, mode in (('/tmp', 0o1777), ('/run', 0o755), ('/proc', 0o755), ('/dev', 0o755)):
     g['private_path'](root, directory).mkdir(parents=True, exist_ok=True)
     os.chmod(g['private_path'](root, directory), mode)
+# The same device views PID1 provides in the real private root.
+for name in ('null', 'zero', 'random', 'urandom'):
+    target = g['private_path'](root, '/dev/' + name)
+    target.touch()
+    g['mount']('/dev/' + name, str(target), flags=g['MS_BIND'])
 record = g['sandbox_helper'](root, checkout)
 g['mount']('proc', str(root / 'proc'), 'proc', g['MS_NOSUID'] | g['MS_NODEV'] | g['MS_NOEXEC'])
 helper = record['path']
