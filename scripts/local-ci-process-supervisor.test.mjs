@@ -742,6 +742,114 @@ test("native B rejects injected transport/runtime selectors and keeps the sandbo
   assert.doesNotMatch(config, /ANONYMOUS|<include|<servicedir|<servicehelper|tcp:|<allow own=|<allow send_destination="\*"/u);
 });
 
+test("native B launch options prevent Playwright from silently disabling the sandbox", async (t) => {
+  if (process.platform !== "linux") return t.skip("Playwright's Linux sandbox argument default");
+  const root = await fixture(t);
+  const executable = path.join(root, "synthetic-electron");
+  // The real locked launcher builds argv, but this shim never starts Electron,
+  // an inspector, a debugging listener, a bus or a native namespace.
+  await writeFile(executable, '#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE_ARGS"\nexit 23\n', { mode: 0o700 });
+  const harness = await readFile(new URL("../electron/scripts/product-journey-harness.mjs", import.meta.url), "utf8");
+  const launch = harness.match(/electronLauncher\.launch\((\{[\s\S]*?\n          \})\)/u);
+  assert.ok(launch, "exercise the production launch-options expression");
+  const source = `
+import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {_electron} from ${JSON.stringify(import.meta.resolve("playwright"))};
+// Locked Playwright also leaves its internal launch-line waiters rejected when
+// the shim exits early; only that exact launch failure is tolerated.
+process.on('unhandledRejection', (error) => { if (!/^Process failed to launch!$/u.test(error?.message)) throw error; });
+const electronBin=${JSON.stringify(executable)}, electronArgs=['synthetic-main.cjs'], launchTimeoutMs=1500;
+for (const nativeBus of [true, false]) {
+  const capture=${JSON.stringify(root)}+'/'+(nativeBus?'native':'default')+'-args';
+  const env={PATH:process.env.PATH,CAPTURE_ARGS:capture};
+  const options=(${launch[1]});
+  await assert.rejects(_electron.launch(options), /Process failed to launch!/u);
+  const args=(await readFile(capture,'utf8')).trim().split('\\n');
+  assert.ok(args.includes('--inspect=0') && args.includes('--remote-debugging-port=0'));
+  assert.equal(args.includes('--no-sandbox'), !nativeBus, 'effective Playwright argv, not just harness args');
+  assert.equal(args.filter(a=>a==='synthetic-main.cjs').length,1);
+}
+console.log('locked Playwright argv regression only; actual Electron/sandbox/native runtime NOTRUN');
+`;
+  const result = await runLocalCiCommand({ command: process.execPath,
+    args: ["--input-type=module", "-e", source], timeoutMs: 10_000 },
+  { root, logDirectory: ".logs", taskId: "native-sandbox-launch", closeGraceMs: 2_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  await assertXvfbClean(root, result);
+});
+
+test("native B admits only the private namespace loopback for the debugger transport", async (t) => {
+  const initializer = fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url));
+  const source = await readFile(initializer, "utf8");
+  const main = source.slice(source.indexOf("def main():"), source.indexOf("def client_boundary():"));
+  // lo is configured once, as root, before the private root and permanent drop.
+  const ordered = ['network_interfaces() == ["lo"]', "loopback = private_loopback()", 'mount("tmpfs"', "os.chroot(", "facts = drop(", '"loopback": loopback'];
+  let cursor = -1;
+  for (const token of ordered) { const next = main.indexOf(token, cursor + 1); assert.ok(next > cursor, token); cursor = next; }
+  assert.equal(main.match(/private_loopback\(/gu).length, 1);
+  assert.doesNotMatch(source, /\/sys\/class\/net|SIOCSIFADDR|SIOCADDRT|RTM_NEW|veth|ip_forward/u);
+  const unit = `
+import copy, runpy, sys
+g = runpy.run_path(sys.argv[1], run_name='contract')
+good = {'interfaces': ['lo'], 'up': True, 'ipv4': [['lo', '127.0.0.1']], 'ipv6': [['lo', '0' * 31 + '1']],
+        'ipv4MainRoutes': 0, 'ipv6Routes': [['lo', '00', True], ['lo', '80', False]]}
+assert g['admissible_loopback'](good)
+for change in (lambda f: f.update(interfaces=['eth0', 'lo']), lambda f: f.update(up=False),
+               lambda f: f['ipv4'].append(['lo', '127.0.0.2']), lambda f: f.update(ipv4=[['lo', '10.0.0.1']]),
+               lambda f: f['ipv6'].append(['lo', 'fe80' + '0' * 28]), lambda f: f.update(ipv4MainRoutes=1),
+               lambda f: f['ipv6Routes'].append(['lo', '00', False]), lambda f: f['ipv6Routes'].append(['eth0', '40', False])):
+    facts = copy.deepcopy(good); change(facts); assert not g['admissible_loopback'](facts)
+print('synthetic loopback admission contract')
+`;
+  const root = await fixture(t);
+  const contract = await runLocalCiCommand({ command: "python3", args: ["-I", "-c", unit, initializer] },
+    { root, logDirectory: ".logs", taskId: "native-loopback-contract", timeoutMs: 10_000 });
+  assert.equal(contract.exitCode, 0, await readFile(path.join(root, contract.logs.stderr.path), "utf8"));
+  if (process.platform !== "linux") return t.skip("Linux network namespaces only");
+  // Real lo-up in a throwaway network namespace: unprivileged user namespace
+  // first, else the runner's existing passwordless sudo -> unshare route.
+  const probe = `
+import json, runpy, socket, sys
+g = runpy.run_path(sys.argv[1], run_name='probe')
+result = g['private_loopback']()
+assert result['interfaces'] == ['lo'] and result['ipv4'] == [['lo', '127.0.0.1']] and result['ipv4MainRoutes'] == 0
+with socket.socket() as server:
+    server.bind(('127.0.0.1', 0)); server.listen()
+    socket.create_connection(server.getsockname(), 1).close()
+try:
+    socket.create_connection(('192.0.2.1', 9), 1)
+except OSError as error:
+    assert error.errno in (101, 113), error.errno
+else:
+    raise SystemExit('external route reachable')
+try:
+    g['private_loopback']()
+except RuntimeError as error:
+    assert 'not fresh' in str(error)
+else:
+    raise SystemExit('non-fresh namespace reconfigured')
+print(json.dumps(result))
+`;
+  const routes = [["/usr/bin/unshare", ["-rn"]], ["/usr/bin/sudo", ["-n", "/usr/bin/unshare", "--net"]]];
+  for (const [command, prefix] of routes) {
+    const result = await runLocalCiCommand({ command, args: [...prefix, "python3", "-I", "-c", probe, initializer] },
+      { root, logDirectory: ".logs", taskId: `native-loopback-${path.basename(command)}`, timeoutMs: 10_000 });
+    assert.equal(result.cleanup.complete, true);
+    const stderr = await readFile(path.join(root, result.logs.stderr.path), "utf8");
+    if (result.exitCode === 0) {
+      const facts = JSON.parse((await readFile(path.join(root, result.logs.stdout.path), "utf8")).trim());
+      assert.equal(facts.version, "B-debugger-private-loopback-v1");
+      return;
+    }
+    // Only an unavailable namespace/privilege route (including a user
+    // namespace without CAP_NET_ADMIN) may fall through; an admitted namespace
+    // that fails the loopback contract fails the test.
+    assert.doesNotMatch(stderr, /AssertionError|SystemExit|not fresh|configuration unexpected|listing/u, stderr);
+  }
+  t.skip("no network namespace route on this host; actual lo-up NOTRUN");
+});
+
 test("native B canonical markers and exclusive output leaves reject redirected or duplicate ownership", async (t) => {
   const root = await fixture(t);
   const output = ".artifacts/local-ci/runs/synthetic-run/product-journeys";

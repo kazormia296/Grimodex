@@ -15,6 +15,7 @@ import select
 import signal
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -28,6 +29,13 @@ CHECKOUT = ("electron", "src", "src-tauri", "scripts", "dist", "dist-electron",
             "node_modules", "public", "resources")
 WORKSPACES = ("scan-contract", "scan-core")
 CLOSED = False
+SIOCGIFCONF, SIOCGIFFLAGS, SIOCSIFFLAGS, IFF_UP, RTF_REJECT = 0x8912, 0x8913, 0x8914, 0x1, 0x200
+IFREQ = "16sH22x"
+IFREQ_SIZE = struct.calcsize(IFREQ)
+
+
+class IfConf(ctypes.Structure):
+    _fields_ = [("length", ctypes.c_int), ("buffer", ctypes.c_void_p)]
 
 
 def require(value, message):
@@ -371,6 +379,72 @@ def drop(uid, gid):
     return facts
 
 
+def network_interfaces():
+    return sorted(line.split(":", 1)[0].strip()
+                  for line in pathlib.Path("/proc/net/dev").read_text().splitlines()[2:])
+
+
+def proc_net_rows(name):
+    # IPv6 may be disabled by the kernel; then neither table exists.
+    table = pathlib.Path("/proc/net", name)
+    return [line.split() for line in table.read_text().splitlines()] if table.exists() else []
+
+
+def interface_ioctl(descriptor, command, payload):
+    buffer = ctypes.create_string_buffer(payload, IFREQ_SIZE)
+    require(LIBC.ioctl(descriptor, ctypes.c_ulong(command), buffer) == 0, "native B loopback ioctl refused")
+    return buffer.raw
+
+
+def loopback_facts():
+    """Observe the fresh namespace's complete interface/address/route view."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        flags = struct.unpack(IFREQ, interface_ioctl(probe.fileno(), SIOCGIFFLAGS,
+                                                     struct.pack(IFREQ, b"lo", 0)))[1]
+        listing = ctypes.create_string_buffer(IFREQ_SIZE * 8)
+        conf = IfConf(len(listing), ctypes.cast(listing, ctypes.c_void_p))
+        require(LIBC.ioctl(probe.fileno(), ctypes.c_ulong(SIOCGIFCONF), ctypes.byref(conf)) == 0,
+                "native B loopback address listing refused")
+    # A full buffer may have truncated the listing; never accept it as complete.
+    require(0 <= conf.length < len(listing) and conf.length % IFREQ_SIZE == 0,
+            "native B loopback address listing incomplete")
+    ipv4 = []
+    for offset in range(0, conf.length, IFREQ_SIZE):
+        name, family, _port, address = struct.unpack_from("16sHH4s", listing.raw, offset)
+        require(family == socket.AF_INET, "native B loopback address family unknown")
+        ipv4.append([name.rstrip(b"\0").decode("ascii"), socket.inet_ntoa(address)])
+    ipv6 = [[fields[5], fields[0]] for fields in proc_net_rows("if_inet6")]
+    # lo-up adds only local-table IPv4 routes; the main table stays empty.
+    ipv4_routes = pathlib.Path("/proc/net/route").read_text().splitlines()[1:]
+    ipv6_routes = [[fields[9], fields[1], int(fields[8], 16) & RTF_REJECT != 0]
+                   for fields in proc_net_rows("ipv6_route")]
+    return {"interfaces": network_interfaces(), "up": flags & IFF_UP != 0,
+            "ipv4": sorted(ipv4), "ipv6": sorted(ipv6), "ipv4MainRoutes": len(ipv4_routes),
+            "ipv6Routes": ipv6_routes}
+
+
+def admissible_loopback(facts):
+    return (facts["interfaces"] == ["lo"] and facts["up"] and facts["ipv4"] == [["lo", "127.0.0.1"]] and
+            facts["ipv6"] in ([], [["lo", "0" * 31 + "1"]]) and facts["ipv4MainRoutes"] == 0 and
+            all(device == "lo" and (prefix != "00" or reject) for device, prefix, reject in facts["ipv6Routes"]))
+
+
+def private_loopback():
+    # B-debugger-private-loopback-v1: Playwright's Electron launcher reaches the
+    # inspector/DevTools over local TCP, so this fresh private namespace's own lo
+    # is brought up once, before chroot and the permanent privilege drop. No
+    # other interface, address, route or host network state is touched.
+    before = loopback_facts()
+    require(before["interfaces"] == ["lo"] and not before["up"] and not before["ipv4"] and
+            not before["ipv6"] and before["ipv4MainRoutes"] == 0, "native B loopback namespace not fresh")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        interface_ioctl(probe.fileno(), SIOCSIFFLAGS, struct.pack(IFREQ, b"lo", IFF_UP))
+    after = loopback_facts()
+    require(admissible_loopback(after), "native B loopback configuration unexpected")
+    return {"version": "B-debugger-private-loopback-v1", "interfaces": after["interfaces"],
+            "ipv4": after["ipv4"], "ipv6": after["ipv6"], "ipv4MainRoutes": after["ipv4MainRoutes"]}
+
+
 def request():
     value = control_read(int(time.time() * 1000) + 10_000)
     require(set(value) == {"uid", "gid", "checkout", "node", "args", "environment", "hostNamespaces", "gitView", "qualification", "resourceAdmission"},
@@ -610,7 +684,9 @@ def main():
     require(set(value["hostNamespaces"]) == set(namespace_names) and
             all(current[name] != value["hostNamespaces"][name] for name in namespace_names),
             "native B namespace separation absent")
-    require(set(os.listdir("/sys/class/net")) == {"lo"}, "native B unexpected network interface")
+    # sysfs keeps listing its mounter's (host) devices; /proc/net is per reader.
+    require(network_interfaces() == ["lo"], "native B unexpected network interface")
+    loopback = private_loopback()
     mount(None, "/", flags=MS_REC | MS_PRIVATE)
     uid, gid = value["uid"], value["gid"]
     checkout = pathlib.Path(value["checkout"])
@@ -702,7 +778,7 @@ def main():
     require(not CLOSED, "native B workload admission closed")
     write_json(RECEIPT, {"version": "B-native-privileged-setup-v1", "uid": uid, "gid": gid,
                          "namespaces": current, "hostNamespaces": value["hostNamespaces"], "qualification": qualification,
-                         "capabilities": facts, "resources": {"state": resources["state"],
+                         "capabilities": facts, "loopback": loopback, "resources": {"state": resources["state"],
                          "estimateDigest": resources["estimateDigest"], "localRunId": resources["localRunId"]},
                          "root": os.stat("/").st_ino,
                          "rootDevice": os.stat("/").st_dev}, uid, gid)

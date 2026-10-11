@@ -101,7 +101,7 @@
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",
-      "sha256": "60fc231379b278b3f1158c05335e264129e87b3800e4c7307668ea1b51e51ef1"
+      "sha256": "5580d524bce3a5f135479a4cbd7d70c1e4c2cd3f64e9e3903527eab4652d5b72"
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
@@ -125,7 +125,7 @@
     },
     {
       "path": "scripts/local-ci-native-b.py",
-      "sha256": "753404dc12d09ea08b890d7b1b07617b4e00f989c1812577158494c1c3689822"
+      "sha256": "304b8e1c647c5a2dd2b97bb78a0be67cc4679f7891ada36c10b2cfbf6d988e34"
     },
     {
       "path": "electron/scripts/product-journey-native-b.mjs",

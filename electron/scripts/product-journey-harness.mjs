@@ -5398,6 +5398,7 @@ export function createProductJourneyHarness({
             executablePath: electronBin,
             args: electronArgs,
             env,
+            ...(nativeBus ? { chromiumSandbox: true } : {}),
             timeout: launchTimeoutMs,
           }),
         {
