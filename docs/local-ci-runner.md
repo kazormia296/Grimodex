@@ -1165,7 +1165,8 @@ record, not enforce, the additive whole-Full disk and memory forecasts (every te
 summed with no concurrency or release credit). A real shortage or OOM fails that
 Full itself. Geometry, quota, placement, freshness, same-owner cgroup, zero current
 pressure, the private-root tmpfs capacity and the setup-phase forecast still refuse.
-The canonical hosted Full uses `max_parallel_tasks=3`, matching the allocation.
+The canonical hosted Full uses `max_parallel_tasks=1`, matching the allocation, so
+timing-sensitive tasks get the whole 4-vCPU runner as in ordinary CI jobs.
 
 Heavy-work exclusion relies on the fixed standard `ubuntu-24.04` hosted job's
 [fresh single-job VM contract](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners),

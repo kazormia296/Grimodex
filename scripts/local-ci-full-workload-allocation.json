@@ -1,7 +1,7 @@
 {
   "version": "full-workload-allocation/1",
   "registryDigest": "sha256:b4f04b9f0e6edd1c48fa193a7f2fc2acee622a1b1ac77a45d66dcc6a5ba7f1ad",
-  "maxParallelTasks": 3,
+  "maxParallelTasks": 1,
   "sources": [
     {
       "path": ".github/workflows/canonical-ci.yml",
@@ -121,7 +121,7 @@
     },
     {
       "path": "docs/pr610-full-workload-risk.md",
-      "sha256": "d540368e06319ebc2c45f36aae0dc1d64e4b0edaa1fa19d43de7e00bb4c3251e"
+      "sha256": "fd615f7b063fb4ec9cf1deaa885cd412cfdb0568d4f9aefe47313a86c9f5cb49"
     },
     {
       "path": "scripts/local-ci-native-b.py",
@@ -180,8 +180,8 @@
         "operation": "Review actual stdio/listener topology and uncertainty; actual all-cgroup/host pressure remains separate admission evidence"
       },
       {
-        "component": "other-full-consumers", "kind": "transient", "bytes": "3221225472", "sources": [1, 5, 6, 9, 10, 11, 12, 19, 20, 29],
-        "basis": "Three canonical task-slot hypotheses, each1GiB =256MiB coordinator plus four192MiB nested worker/compiler/test images. Covers setup/install, JS/typecheck/lint/unit/browser/Electron tests, Cargo/Rust/DB, contracts/security, CPU and reports/artifacts across all68 tasks. Charged EVEN WITH seven journey ensembles: no scheduler/serial/fail-fast savings. Not a per-command peak/four-worker enforcement; larger rustc/AST/nested-worker allocations may exceed it. Separate link/CPU/DB/setup/pressure hypotheses remain.",
+        "component": "other-full-consumers", "kind": "transient", "bytes": "1073741824", "sources": [1, 5, 6, 9, 10, 11, 12, 19, 20, 29],
+        "basis": "One canonical task-slot hypothesis, each1GiB =256MiB coordinator plus four192MiB nested worker/compiler/test images. Covers setup/install, JS/typecheck/lint/unit/browser/Electron tests, Cargo/Rust/DB, contracts/security, CPU and reports/artifacts across all68 tasks. Charged EVEN WITH seven journey ensembles: no scheduler/serial/fail-fast savings. Not a per-command peak/four-worker enforcement; larger rustc/AST/nested-worker allocations may exceed it. Separate link/CPU/DB/setup/pressure hypotheses remain.",
         "operation": "Review practical complete-registry coverage and uncertainty, not a per-command memory profile/approval campaign; preserve commands/dependencies/default12"
       },
       {
