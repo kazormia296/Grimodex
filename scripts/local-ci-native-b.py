@@ -961,6 +961,9 @@ if __name__ == "__main__":
     except Exception as error:
         # Never print transport paths, inherited env/argv or exception payloads:
         # only the fixed refusal text, or else just the exception type.
-        reason = str(error) if type(error) is NativeBRefusal else type(error).__name__
+        # The reviewed filesystem/memory helper raises fixed ValueError texts
+        # (at most a filesystem type name); report those too, never quoted data.
+        fixed = type(error) is ValueError and re.fullmatch(r"[a-z][\w ,;:()/.-]{0,200}", str(error))
+        reason = str(error) if type(error) is NativeBRefusal or fixed else type(error).__name__
         print(f"native B setup/admission failed; no fallback ({reason})", file=sys.stderr)
         sys.exit(1)
