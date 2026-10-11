@@ -1011,7 +1011,8 @@ test("smoke measures the seeded long scene before running the independent persis
   );
   assert.equal(
     source.match(/globalThis\.snapshotPerfSession\?\.\(\)/g)?.length,
-    3,
+    4,
+    "the first-initial-autosave profile preserves active LongTask evidence on failure",
   );
   assert.equal(
     source.match(/globalThis\.endPerfSession\?\.\(\)/g)?.length,

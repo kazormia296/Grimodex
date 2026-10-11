@@ -21,16 +21,16 @@ const repoRoot = path.resolve(import.meta.dirname, "..");
 const EXPECTED_JOURNEY_IDS = [
   "editor-persistence",
   "chat-authority-isolation",
+  "chat-stream-folder-switch",
+  "chat-stream-snippet-switch",
+  "chat-stream-codex-switch",
   "workspace-switch-authority",
   "external-write-conflict",
   "cross-feature-authoring",
   "chat-stream-project-switch",
-  "chat-stream-workspace-switch",
   "agent-stream-project-switch",
+  "chat-stream-workspace-switch",
   "agent-stream-workspace-switch",
-  "chat-stream-folder-scope",
-  "chat-stream-codex-scope",
-  "chat-stream-snippet-scope",
   "editor-pending-project-switch",
   "mcp-external-write-conflict",
   "chronicle-native-roundtrip",
@@ -44,13 +44,13 @@ const EXPECTED_JOURNEY_IDS = [
 ];
 
 const IMPLEMENTED_CONTRACT_IDS = [
-  "scope-transition:chat-stream:project",
-  "scope-transition:chat-stream:workspace",
-  "scope-transition:agent-stream:project",
-  "scope-transition:agent-stream:workspace",
   "scope-transition:chat-stream:folder",
-  "scope-transition:chat-stream:codex",
   "scope-transition:chat-stream:snippet",
+  "scope-transition:chat-stream:codex",
+  "scope-transition:chat-stream:project",
+  "scope-transition:agent-stream:project",
+  "scope-transition:chat-stream:workspace",
+  "scope-transition:agent-stream:workspace",
   "scope-transition:editor-pending:project",
   "d2a:mcp:pre-dispatch-denial",
   "native-command-roundtrip:chronicle-bulk",
@@ -63,8 +63,6 @@ const IMPLEMENTED_CONTRACT_IDS = [
   ),
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.flatMap((entry) => entry.contracts),
 ];
-
-const EXEMPTED_CHAT_SCOPE_CONTRACT_IDS = [];
 
 const PLANNED_JOURNEY_IDS = [
   "chronicle-ui-roundtrip",
@@ -135,28 +133,27 @@ test("ChatScope is derived from one registry and has exact ratchet parity", asyn
     ).map((transition) => transition.authority),
     ["lifecycle"],
   );
+  assert.deepEqual(
+    PRODUCT_SCOPE_TRANSITIONS.filter(
+      (transition) =>
+        transition.operation === "agent-stream" &&
+        ["project", "workspace"].includes(transition.scope),
+    ).map((transition) => transition.authority),
+    ["lifecycle", "lifecycle"],
+  );
 });
 
-test("tracked scope exemptions and planned journeys keep affected execution locked", () => {
+test("implemented scope contracts are active and remaining planned journeys stay visible", () => {
   assert.equal(PRODUCT_JOURNEY_ROLLOUT_MODE, "shadow");
   assert.deepEqual(
-    [...IMPLEMENTED_CONTRACT_IDS, ...EXEMPTED_CHAT_SCOPE_CONTRACT_IDS].filter(
-      (contractId) =>
-        PRODUCT_CONTRACT_REQUIREMENTS.some(
-          (contract) => contract.id === contractId,
-        ),
+    IMPLEMENTED_CONTRACT_IDS.filter((contractId) =>
+      PRODUCT_CONTRACT_REQUIREMENTS.some(
+        (contract) => contract.id === contractId,
+      ),
     ),
-    [...IMPLEMENTED_CONTRACT_IDS, ...EXEMPTED_CHAT_SCOPE_CONTRACT_IDS],
+    IMPLEMENTED_CONTRACT_IDS,
   );
-  assert.deepEqual(
-    PRODUCT_CONTRACT_EXEMPTIONS.map((exemption) => exemption.targetId),
-    EXEMPTED_CHAT_SCOPE_CONTRACT_IDS,
-  );
-  for (const exemption of PRODUCT_CONTRACT_EXEMPTIONS) {
-    assert.equal(exemption.trackingIssue, "#429");
-    assert.equal(exemption.expiresOn, "2026-09-30");
-    assert.ok(exemption.reason.length > 0);
-  }
+  assert.deepEqual(PRODUCT_CONTRACT_EXEMPTIONS, []);
 
   assert.deepEqual(
     PRODUCT_JOURNEY_COVERAGE_BACKLOG.map((journey) => journey.id),
@@ -168,10 +165,7 @@ test("tracked scope exemptions and planned journeys keep affected execution lock
   );
   const coverage = validateCurrentProductJourneyCoverage();
   assert.equal(coverage.affectedReady, false);
-  assert.deepEqual(
-    coverage.exemptedContracts,
-    EXEMPTED_CHAT_SCOPE_CONTRACT_IDS,
-  );
+  assert.deepEqual(coverage.exemptedContracts, []);
   assert.deepEqual(coverage.plannedJourneyIds, PLANNED_JOURNEY_IDS);
   assert.deepEqual(coverage.plannedContractIds, PLANNED_CONTRACT_IDS);
 });

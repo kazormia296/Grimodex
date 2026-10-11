@@ -161,6 +161,8 @@ pub(crate) mod nir1_capacity;
 #[cfg(feature = "nir1-material-diagnostics")]
 pub mod nir1_capacity_diagnostics;
 #[cfg(feature = "nir1-material-diagnostics")]
+pub mod nir1_graph_memory_diagnostics;
+#[cfg(feature = "nir1-material-diagnostics")]
 mod nir1_capacity_disk;
 #[cfg(feature = "nir1-material-diagnostics")]
 pub mod nir1_capacity_fixtures;
@@ -357,6 +359,7 @@ pub use legacy_backfill::{
     BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
 };
 pub use maintenance_lifecycle::resolve_reused_maintenance_run;
+pub(crate) use maintenance_lifecycle::sqlite_database_file_identity;
 pub use repair::{
     repair_narrative_dependency_declarations_for_project,
     repair_narrative_dependency_declarations_for_request, seal_repair_plan, RepairOutcome,

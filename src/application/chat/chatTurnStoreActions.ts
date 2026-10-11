@@ -29,6 +29,11 @@ import {
 } from "./chatTurnPayload";
 import { maybeRunSummarization } from "./chatSummarization";
 import {
+  alreadyInjectedCodexEntryResult,
+  createAskUserToolHandler,
+  createChatResearchSubagentHandler,
+} from "./chatAgentToolHandlers";
+import {
   isCapturedProjectCurrent,
   isCapturedWorkspaceCurrent,
 } from "./chatSessionAuthority";
@@ -52,14 +57,6 @@ import {
   executeTool,
   executeReadOnlyTool,
 } from "@/features/chat/agent/toolExecutors";
-import {
-  getResearchSubagentTools,
-  RESEARCH_SUBAGENT_TOOL,
-} from "@/features/chat/agent/toolDefinitions";
-import {
-  invalidAskUserResult,
-  normalizeAskUserSpec,
-} from "@/features/chat/agent/askUser";
 import {
   getToolTokenBudgetForContext,
   getAgentToolCallBudgetForContext,
@@ -212,6 +209,27 @@ function createChatTurnStoreActions(
     debugLog,
     errorDetail,
   });
+  const hasManualSessionTitleInStore = (sessionId: string): boolean => {
+    const currentSession = get().sessions.find(
+      (session) => session.id === sessionId,
+    );
+    return Boolean(currentSession && currentSession.titleManual !== 0);
+  };
+  const hasManualSessionTitle = async (
+    sessionId: string,
+    projectId: string,
+  ): Promise<boolean> => {
+    if (hasManualSessionTitleInStore(sessionId)) return true;
+
+    const persistedSession = await chatApi.getSessionForProject(
+      sessionId,
+      projectId,
+    );
+    return (
+      hasManualSessionTitleInStore(sessionId) ||
+      Boolean(persistedSession && persistedSession.titleManual !== 0)
+    );
+  };
 
   return {
     sendMessage: async (
@@ -384,6 +402,7 @@ function createChatTurnStoreActions(
       // session it creates below. Any other session transition invalidates it.
       let turnSessionId = activeSessionId;
       let transportStarted = false;
+      let observedResponseText = "";
       const captureTurn = turnLifecycle.createTurn(sendControl, turnRoute);
       turnRuntime.setStoppedStreamFinalizer(null);
       const isCurrentTurn = (): boolean =>
@@ -665,6 +684,120 @@ function createChatTurnStoreActions(
         }
       }
       if (cancelBeforeTransport()) return;
+      // Scope changes clear the live session list while the captured turn still
+      // owns its persisted session and may need to finish its first title.
+      const titleEligibleAtTurnStart =
+        get().sessions.find((session) => session.id === sessionIdForPersist)
+          ?.titleManual === 0;
+      const preserveFailedAnchoredTurn = async (
+        error: unknown,
+      ): Promise<boolean> => {
+        const current = get();
+        const anchoredScope =
+          chatScope === "folder" ||
+          chatScope === "codex" ||
+          chatScope === "snippet";
+        if (
+          !transportStarted ||
+          sendControl.aborted ||
+          !isCurrentTurn() ||
+          useAgentPath ||
+          sendControl.transport !== "http" ||
+          !sessionIdForPersist ||
+          !anchoredScope ||
+          !scopeAnchorId ||
+          current.chatScope !== chatScope ||
+          current.scopeAnchorId === null ||
+          current.scopeAnchorId === scopeAnchorId ||
+          current.activeProjectId !== turnProjectId ||
+          !capturedWorkspaceIsCurrent() ||
+          !capturedProjectIsCurrent() ||
+          isAiFeatureBlockedByPolicy("chat") ||
+          isWriteRestrictedByLicense()
+        ) {
+          return false;
+        }
+
+        if (error instanceof ChatTurnPersistenceError) {
+          toast.error(i18next.t("chat.pendingCompletedTurnPersistence"));
+          return true;
+        }
+
+        const failureMessage =
+          error instanceof Error ? error.message : String(error);
+        const userMetadata =
+          options?.mentionedSceneIds && options.mentionedSceneIds.length > 0
+            ? JSON.stringify({
+                mentioned_scene_ids: options.mentionedSceneIds,
+              })
+            : undefined;
+        const failedAssistant = observedResponseText
+          ? {
+              ...assistantMsg,
+              sessionId: sessionIdForPersist,
+              content: observedResponseText,
+              model: turnRoute?.model ?? chatModelEarly ?? null,
+              metadata: JSON.stringify({ runtime_error: failureMessage }),
+            }
+          : undefined;
+        const retry = createRetryableCompletedTurnPersistence({
+          persistUser: async () => {
+            await chatApi.addMessage(sessionIdForPersist, "user", content, {
+              id: userMsg.id,
+              createdAt: userMsg.createdAt,
+              recordTimelapse: false,
+              ...(userMetadata ? { metadata: userMetadata } : {}),
+            });
+          },
+          ...(failedAssistant
+            ? {
+                persistAssistant: async () => {
+                  await chatApi.addMessage(
+                    sessionIdForPersist,
+                    "assistant",
+                    failedAssistant.content,
+                    {
+                      id: failedAssistant.id,
+                      model: failedAssistant.model ?? undefined,
+                      metadata: failedAssistant.metadata ?? undefined,
+                      createdAt: failedAssistant.createdAt,
+                      recordTimelapse: false,
+                    },
+                  );
+                },
+              }
+            : {}),
+        });
+        try {
+          await persistCompletedTurn({
+            retry,
+            sessionId: sessionIdForPersist,
+            ...(userMetadata ? { userMetadata } : {}),
+            ...(failedAssistant ? { assistantMessage: failedAssistant } : {}),
+          });
+        } catch (persistenceError) {
+          debugLog.error(
+            "ChatStore",
+            "preserve failed anchored turn",
+            errorDetail(persistenceError),
+          );
+          toast.error(i18next.t("chat.pendingCompletedTurnPersistence"));
+        }
+
+        const kind = classifyError(error);
+        if (kind === "auth") {
+          toast.error(i18next.t("chat.invalidApiKey"));
+        } else if (kind === "rate_limit") {
+          toast.warning(i18next.t("chat.rateLimited"));
+        } else if (kind === "network") {
+          toast.error(i18next.t("chat.networkError"));
+        } else {
+          toast.error(
+            i18next.t("chat.sendFailed", { message: failureMessage }),
+          );
+        }
+        return true;
+      };
       // -----------------------------------------------------------------------
       // Agent mode path — tool-use loop
       //
@@ -971,8 +1104,6 @@ function createChatTurnStoreActions(
           // run_research（サブエージェント）の 1 ターンあたり呼び出し上限。
           // 各サブエージェントは独立したループ（高コスト）なので、親予算とは別枠で
           // 厳しめに絞る。各呼び出しは parentMaxToolCalls も 1 消費する。
-          const MAX_SUBAGENT_CALLS = 4;
-          let subAgentCallCount = 0;
           let parentAuditExecutionId: string | null = null;
           const agentThinkingParams =
             turnRoute?.thinking ??
@@ -994,6 +1125,55 @@ function createChatTurnStoreActions(
           const agentControl = getPromptCatalog(
             projectCtx?.language ?? "ja",
           ).agentControl;
+          const runResearchSubagent = createChatResearchSubagentHandler({
+            set,
+            sendAgentMessage: chatApi.sendAgentMessage,
+            executeReadOnlyTool,
+            recordAiUsage,
+            assertTurnAuthority,
+            isCurrentTurn,
+            shouldAbortTurn,
+            getParentAuditExecutionId: () => parentAuditExecutionId,
+            resolveTransportOverride: () => ({
+              model:
+                turnRoute?.model ??
+                (xprov
+                  ? xprov.model
+                  : (agentRole?.model ??
+                    resolveModelForPath(
+                      "agent_research_subagent",
+                      undefined,
+                      aiSettings?.provider,
+                    ))),
+              provider: turnRoute
+                ? turnRoute.providerOverride
+                : (xprov?.provider ?? agentRole?.provider ?? null),
+              endpointId: turnRoute
+                ? turnRoute.endpointId
+                : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
+            }),
+            turnRoute,
+            turnProjectId,
+            operationId: sendTurnId,
+            assistantMessageId: assistantMsg.id,
+            projectLanguage: projectCtxLang,
+            model: currentModel,
+            provider: currentProvider,
+            usageRoute: agentUsageRoute,
+            tokenEstimatorFamily,
+            apiVariant: agentApiVariant,
+            thinkingParams: agentThinkingParams,
+            tokenBudget,
+            parentMaxToolCalls,
+            systemPrompt: agentControl.researchSubagentSystem,
+            limitMessage: agentControl.researchLimitMessage,
+          });
+          const handleAskUserTool = createAskUserToolHandler({
+            set,
+            runtime: userQuestionRuntime,
+            getSessionId: () => sessionIdForPersist ?? activeSessionId,
+            dismissNote: agentControl.userDismissMessage,
+          });
           const guardedExecuteTool: typeof executeTool = async (
             name,
             toolCallId,
@@ -1001,245 +1181,21 @@ function createChatTurnStoreActions(
             authorization,
           ) => {
             assertTurnAuthority();
-            // ask_user: 遅延 Promise を返し、UI の回答で resolve されるまでループを
-            // 待機させる。resolve クロージャは module-local に退避し、renderable な
-            // 仕様のみ state に置く。
-            if (name === "ask_user") {
-              const spec = normalizeAskUserSpec(params);
-              if (!spec) {
-                return invalidAskUserResult(
-                  toolCallId,
-                  "ask_user requires a non-empty questions[] array.",
-                );
-              }
-              const sessionId = sessionIdForPersist ?? activeSessionId;
-              const dismissNote = agentControl.userDismissMessage;
-              return await new Promise<Awaited<ReturnType<typeof executeTool>>>(
-                (resolve) => {
-                  userQuestionRuntime.register(resolve);
-                  set({
-                    pendingUserQuestion: {
-                      sessionId,
-                      toolCallId,
-                      spec,
-                      dismissNote,
-                    },
-                  });
-                },
-              );
-            }
-            // run_research: 読み取り専用のサブエージェントを別ループで起動し、
-            // 要約だけを tool_result として親に返す。親のツール予算を温存しつつ
-            // 大規模な調査を1呼び出しに圧縮する。子は read-only ツールのみ宣言され、
-            // executeReadOnlyTool で dispatch されるため、書き込み・質問・再帰
-            // （run_research 自身）は構造的に不可（depth=1）。
-            if (name === RESEARCH_SUBAGENT_TOOL) {
-              const task = String(params?.["task"] ?? "").trim();
-              if (!task) {
-                const msg = "run_research requires a non-empty 'task'.";
-                return {
-                  toolCallId,
-                  name,
-                  content: null,
-                  summary: msg,
-                  tokensUsed: 0,
-                  error: msg,
-                };
-              }
-              if (subAgentCallCount >= MAX_SUBAGENT_CALLS) {
-                const msg = `Research sub-agent limit reached (${MAX_SUBAGENT_CALLS} per turn). Summarize with the information you already have.`;
-                return {
-                  toolCallId,
-                  name,
-                  content: null,
-                  summary: msg,
-                  tokensUsed: 0,
-                  error: msg,
-                };
-              }
-              subAgentCallCount++;
-              // 予算分割: 子は親の半分（トークン / 呼び出し）。子の重い文脈は
-              // 親予算を消費せず、返す要約のみが親に積まれる。
-              const childTokenBudget = Math.max(
-                2_000,
-                Math.floor(tokenBudget * 0.5),
-              );
-              const childMaxCalls = Math.max(
-                3,
-                Math.floor(parentMaxToolCalls / 2),
-              );
-              const childMessages: AgentMessagePayload[] = [
-                {
-                  role: "system",
-                  content: agentControl.researchSubagentSystem,
-                },
-                { role: "user", content: task },
-              ];
-              let researchInputTokenDrift = createInputTokenDriftTotals();
-              let researchAuditExecutionId = parentAuditExecutionId;
-              let childResult;
-              try {
-                childResult = await runAgentLoop({
-                  messages: childMessages,
-                  tools: getResearchSubagentTools(),
-                  tokenBudget: childTokenBudget,
-                  maxToolCalls: childMaxCalls,
-                  // 親 Stop / セッション切替を子にも伝播させる。
-                  shouldAbort: shouldAbortTurn,
-                  // 子内部の上限メッセージは「続行」ボタン案内を含まない専用文言。
-                  // 子に Continue ボタンは無く、その案内を要約へ取り込んで親へ
-                  // 漏らさないようにする。
-                  callLimitMessage: agentControl.researchLimitMessage,
-                  tokenBudgetMessage: agentControl.researchLimitMessage,
-                  sendToLLM: async (msgs, tools) => {
-                    assertTurnAuthority();
-                    const finalized = turnRoute
-                      ? finalizeChatTurnPayload({
-                          route: turnRoute,
-                          fallbackSystemPrompt: msgs
-                            .filter((message) => message.role === "system")
-                            .map((message) => message.content)
-                            .join("\n"),
-                          messages: msgs,
-                          tools,
-                        })
-                      : null;
-                    const executionId = crypto.randomUUID();
-                    const response = await chatApi.sendAgentMessage(
-                      msgs,
-                      tools,
-                      {
-                        projectId: turnProjectId,
-                        pathId: "agent_research_subagent",
-                        operationId: sendTurnId,
-                        executionId,
-                        parentExecutionId: researchAuditExecutionId,
-                      },
-                      agentThinkingParams,
-                      // 子は親の cacheSegments / volatileTail を使わず、専用の
-                      // system prompt を持つ。Web 検索も無効（null）。
-                      finalized?.transport.systemCacheSegments,
-                      agentApiVariant,
-                      null,
-                      finalized?.transport.systemVolatileTail,
-                      turnRoute?.model ??
-                        (xprov
-                          ? xprov.model
-                          : (agentRole?.model ??
-                            resolveModelForPath(
-                              "agent_research_subagent",
-                              undefined,
-                              aiSettings?.provider,
-                            ))),
-                      turnRoute
-                        ? turnRoute.providerOverride
-                        : (xprov?.provider ?? agentRole?.provider ?? null),
-                      turnRoute
-                        ? turnRoute.endpointId
-                        : (xprov?.endpointId ?? agentRole?.endpointId ?? null),
-                      turnRoute?.outputBudget.requestMaxOutputTokens ?? null,
-                      turnRoute?.provider ?? null,
-                      turnRoute?.resolvedEndpointId ?? null,
-                      turnRoute?.toolProtocol ?? null,
-                      turnRoute?.resolvedOllamaEndpoint ?? null,
-                    );
-                    researchAuditExecutionId = executionId;
-                    researchInputTokenDrift = accumulateInputTokenDrift(
-                      researchInputTokenDrift,
-                      currentProvider,
-                      {
-                        estimatedInputTokens:
-                          finalized?.usage.inputTokens ?? null,
-                        safetyMarginTokens:
-                          finalized?.usage.safetyMarginTokens ?? null,
-                        inputTokens: response.inputTokens,
-                        cacheReadTokens: response.cacheReadTokens,
-                        cacheWriteTokens: response.cacheWriteTokens,
-                      },
-                    );
-                    return response;
-                  },
-                  executeTool: async (name, toolCallId, params) => {
-                    assertTurnAuthority();
-                    return executeReadOnlyTool(name, toolCallId, params);
-                  },
-                  onProgress: (p) => {
-                    if (isCurrentTurn()) set({ subAgentProgress: p });
-                  },
-                  onTextChunk: () => {},
-                });
-              } catch (e) {
-                // 子の LLM / ネットワーク失敗で親ターン全体を破棄しない。
-                // error ToolResult として返し、親 LLM が回復・継続できるようにする
-                // （他ツールと同じ「失敗は tool_result 化」契約に揃える）。
-                const msg = e instanceof Error ? e.message : String(e);
-                return {
-                  toolCallId,
-                  name,
-                  content: null,
-                  summary: `Research sub-agent failed: ${msg}`,
-                  tokensUsed: 0,
-                  error: msg,
-                };
-              } finally {
-                if (isCurrentTurn()) set({ subAgentProgress: null });
-              }
-              // 子の LLM usage（input/output/コスト）は親メッセージと同じ traceId で
-              // 台帳に記録する（同一論理ターンにロールアップ）。
-              void recordAiUsage({
-                surface: "agent",
-                model: currentModel,
-                provider: currentProvider,
-                projectId: turnProjectId,
-                tokensIn: childResult.tokensIn,
-                tokensOut: childResult.tokensOut,
-                cacheReadTokens: researchInputTokenDrift.cacheReadTokens,
-                cacheWriteTokens: researchInputTokenDrift.cacheWriteTokens,
-                costUsd: childResult.cost,
-                traceId: assistantMsg.id,
-                refId: assistantMsg.id,
-                metadata: agentUsageRoute
-                  ? buildInputTokenDriftMetadata({
-                      scope: "agent-research",
-                      projectId: turnProjectId,
-                      route: agentUsageRoute,
-                      estimatorFamily: tokenEstimatorFamily,
-                      language: projectCtxLang,
-                      contextPlanDigest: null,
-                      totals: researchInputTokenDrift,
-                    })
-                  : null,
-              });
-
-              const findings = childResult.finalText.trim() || "(no findings)";
-              const content = {
-                findings,
-                toolCalls: childResult.toolCallRecords.length,
-              };
-              return {
-                toolCallId,
-                name,
-                content,
-                summary: `Research sub-agent completed (${childResult.toolCallRecords.length} read calls)`,
-                tokensUsed: countTokens(JSON.stringify(content)),
-              };
-            }
-            if (name === "get_codex_entry") {
-              const id = String(params?.["id"] ?? "");
-              if (id && fullyInjectedIds.has(id)) {
-                const note =
-                  "This entry is already fully injected in the system prompt — refer to the 登場キャラクター・設定情報 section above (id, aliases, summary, custom details, full body are all there). Do not call get_codex_entry on this id again.";
-                const content = { id, note };
-                const json = JSON.stringify(content);
-                return {
-                  toolCallId,
-                  name,
-                  content,
-                  summary: "Already injected (short-circuited)",
-                  tokensUsed: countTokens(json),
-                };
-              }
-            }
+            const askUserResult = handleAskUserTool(name, toolCallId, params);
+            if (askUserResult) return askUserResult;
+            const researchResult = runResearchSubagent(
+              name,
+              toolCallId,
+              params,
+            );
+            if (researchResult) return researchResult;
+            const injectedEntryResult = alreadyInjectedCodexEntryResult(
+              name,
+              toolCallId,
+              params,
+              fullyInjectedIds,
+            );
+            if (injectedEntryResult) return injectedEntryResult;
             return authorization
               ? executeTool(name, toolCallId, params, {
                   ...authorization,
@@ -1611,10 +1567,20 @@ function createChatTurnStoreActions(
                     if (!title) {
                       title = content.slice(0, 30);
                     }
-                    await chatApi.updateSessionTitle(
+                    const updated = await chatApi.updateSessionTitleIfAutomatic(
                       sessionIdForPersist,
                       title,
                     );
+                    if (!updated) return;
+                    if (
+                      (await hasManualSessionTitle(
+                        sessionIdForPersist,
+                        turnProjectId,
+                      )) ||
+                      hasManualSessionTitleInStore(sessionIdForPersist)
+                    ) {
+                      return;
+                    }
                     set((state) => ({
                       sessions: state.sessions.map((s) =>
                         s.id === sessionIdForPersist ? { ...s, title } : s,
@@ -2037,6 +2003,7 @@ function createChatTurnStoreActions(
           const callbacks: StreamCallbacks = {
             onTextDelta: (delta: string) => {
               if (!isCurrentTurn()) return;
+              observedResponseText += delta;
               pendingDelta += delta;
               scheduleFlush();
             },
@@ -2194,7 +2161,10 @@ function createChatTurnStoreActions(
               // Persist to DB
               const lastMsg = get().messages.find(
                 (message) => message.id === assistantMsg.id,
-              );
+              ) ?? {
+                ...assistantMsg,
+                content: observedResponseText,
+              };
               const userMetadata =
                 options?.mentionedSceneIds &&
                 options.mentionedSceneIds.length > 0
@@ -2318,10 +2288,12 @@ function createChatTurnStoreActions(
                   const currentSession = get().sessions.find(
                     (s) => s.id === sessionIdForPersist,
                   );
+                  const titleEligible = currentSession
+                    ? currentSession.titleManual === 0
+                    : titleEligibleAtTurnStart;
                   if (
                     isFirstResponse &&
-                    currentSession &&
-                    currentSession.titleManual === 0 &&
+                    titleEligible &&
                     lastMsg?.role === "assistant" &&
                     lastMsg.content
                   ) {
@@ -2338,10 +2310,21 @@ function createChatTurnStoreActions(
                           title = content.slice(0, 30);
                         }
                         if (sessionIdForPersist) {
-                          await chatApi.updateSessionTitle(
-                            sessionIdForPersist,
-                            title,
-                          );
+                          const updated =
+                            await chatApi.updateSessionTitleIfAutomatic(
+                              sessionIdForPersist,
+                              title,
+                            );
+                          if (!updated) return;
+                          if (
+                            (await hasManualSessionTitle(
+                              sessionIdForPersist,
+                              turnProjectId,
+                            )) ||
+                            hasManualSessionTitleInStore(sessionIdForPersist)
+                          ) {
+                            return;
+                          }
                           if (isCodexAppServer && turnWorkspaceIdentity) {
                             void codexAppApi
                               .setCodexSessionThreadName({
@@ -2618,6 +2601,9 @@ function createChatTurnStoreActions(
           // A destructive lifecycle must remain on the old authority when the
           // completed turn could not become durable in that old scope.
           throw e;
+        }
+        if (!captureCleanupFailed && (await preserveFailedAnchoredTurn(e))) {
+          return;
         }
         if (
           shouldAbortTurn() &&

@@ -40,6 +40,10 @@ impl CapacityBudget {
         })
     }
 
+    pub(crate) fn sql_steps_used(&self) -> u64 {
+        self.steps.load(Ordering::Relaxed)
+    }
+
     fn check(&self, grant: Option<&Arc<AtomicBool>>) -> anyhow::Result<()> {
         if self.steps.load(Ordering::Relaxed) > self.step_limit {
             return Err(validation_terminated(
@@ -69,6 +73,27 @@ impl CapacityBudget {
             || (steps.is_multiple_of(1_000)
                 && !grant.is_some_and(|grant| grant.load(Ordering::Acquire))
                 && Instant::now() >= self.deadline)
+    }
+
+    fn try_reserve_commit_step(&self) -> bool {
+        let mut used = self.steps.load(Ordering::Relaxed);
+        loop {
+            let Some(total) = used
+                .checked_add(1)
+                .filter(|total| *total <= self.step_limit)
+            else {
+                return false;
+            };
+            match self.steps.compare_exchange_weak(
+                used,
+                total,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(current) => used = current,
+            }
+        }
     }
 }
 
@@ -227,7 +252,8 @@ fn install(conn: &Connection, state: SharedProgress) -> rusqlite::Result<()> {
         interval,
         Some(move || {
             let _keep_registered_state_alive = &state;
-            let reserved_commit_tail = reserved_commit_tail.swap(false, Ordering::Relaxed);
+            let reserved_commit_tail = reserved_commit_tail.load(Ordering::Relaxed)
+                && reserved_commit_tail.swap(false, Ordering::Relaxed);
             let mut stop = false;
             for active in &budgets {
                 stop |= active
@@ -338,6 +364,12 @@ where
 }
 
 impl ProgressOwnerRestore {
+    /// Disable SQLite's callback for rollback without removing the registered
+    /// outer owner; `restore` reinstalls that owner before any later SQL runs.
+    pub(crate) fn clear_for_cleanup(&self, conn: &Connection) -> rusqlite::Result<()> {
+        crate::install_sqlite_progress_handler(conn, 0, None::<fn() -> bool>)
+    }
+
     pub(crate) fn restore(mut self, conn: &Connection) -> rusqlite::Result<()> {
         let previous = self.previous.take();
         self.state
@@ -373,17 +405,10 @@ pub(crate) fn commit_transaction(conn: &Connection) -> anyhow::Result<()> {
     // synchronous connection owner consumes this credit only in COMMIT's tail.
     // This is the only commit-hook owner in the crate.
     conn.commit_hook(Some(move || {
-        if budgets.iter().any(|active| {
-            active.check().is_err()
-                || active
-                    .budget
-                    .steps
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
-                        used.checked_add(1)
-                            .filter(|total| *total <= active.budget.step_limit)
-                    })
-                    .is_err()
-        }) {
+        if budgets
+            .iter()
+            .any(|active| active.check().is_err() || !active.budget.try_reserve_commit_step())
+        {
             gate_refused.store(true, Ordering::Relaxed);
             return true;
         }
@@ -652,6 +677,19 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn commit_tail_step_reservation_is_bounded_and_does_not_wrap() {
+        let budget = CapacityBudget::new(1, Instant::now() + DEADLINE);
+        assert!(budget.try_reserve_commit_step());
+        assert!(!budget.try_reserve_commit_step());
+        assert_eq!(budget.sql_steps_used(), 1);
+
+        let exhausted = CapacityBudget::new(u64::MAX, Instant::now() + DEADLINE);
+        exhausted.steps.store(u64::MAX, Ordering::Relaxed);
+        assert!(!exhausted.try_reserve_commit_step());
+        assert_eq!(exhausted.sql_steps_used(), u64::MAX);
+    }
+
+    #[test]
     fn json_checks_existing_owner_inside_long_strings_without_replacing_hook() {
         let conn = Connection::open_in_memory().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
@@ -749,9 +787,9 @@ mod tests {
         set_progress_owner(&conn, 0, None::<fn() -> bool>).unwrap();
     }
 
-    const INSERT: &str = "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<200) INSERT INTO bounded SELECT n FROM x";
+    const INSERT: &str = "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<?1) INSERT INTO bounded SELECT n FROM x";
 
-    fn run_sql(limit: u64) -> (u64, bool) {
+    fn run_sql(limit: u64, rows: usize, padding_selects: usize) -> (u64, bool) {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE bounded(n INTEGER)")
             .unwrap();
@@ -766,16 +804,27 @@ mod tests {
             }),
         )
         .unwrap();
-        let budget = CapacityBudget::new(limit, Instant::now() + Duration::from_secs(30));
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let budget = CapacityBudget::new(limit, deadline);
         let tx = conn.unchecked_transaction().unwrap();
         let result = with_capacity_scope(
             &tx,
             Some(Arc::clone(&budget)),
             &mut ForegroundValidationControl,
             |_, _| {
-                tx.execute(INSERT, [])?;
+                tx.execute(INSERT, [rows as i64])?;
+                for _ in 0..padding_selects {
+                    let _: i64 = tx.query_row("SELECT 1", [], |row| row.get(0))?;
+                }
+                if padding_selects > 0 {
+                    let _: i64 = tx.query_row("SELECT 1 + 1", [], |row| row.get(0))?;
+                }
                 Ok(())
             },
+        );
+        assert!(
+            Instant::now() < deadline,
+            "SQL probe must not hit its deadline"
         );
         let succeeded = result.is_ok();
         if let Err(error) = result {
@@ -786,7 +835,9 @@ mod tests {
             assert!(
                 !super::super::maintenance_runtime::classify_failure(&error.to_string()).retryable
             );
-            tx.rollback().unwrap();
+            if !tx.is_autocommit() {
+                tx.rollback().unwrap();
+            }
         } else {
             tx.commit().unwrap();
         }
@@ -794,7 +845,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT count(*) FROM bounded", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(count, if succeeded { 200 } else { 0 });
+        assert_eq!(count, if succeeded { rows as i64 } else { 0 });
         let used = budget.steps.load(Ordering::Relaxed);
         let before = owner_calls.load(Ordering::Relaxed);
         conn.query_row("WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<20) SELECT sum(n) FROM x", [], |row| row.get::<_, i64>(0)).unwrap();
@@ -813,10 +864,33 @@ mod tests {
 
     #[test]
     fn sql_n_succeeds_n_plus_one_refuses_and_preserves_outer_owner() {
-        let (n, succeeded) = run_sql(u64::MAX);
+        let (n, succeeded) = run_sql(u64::MAX, 200, 0);
         assert!(succeeded && n > 1);
-        assert_eq!(run_sql(n), (n, true));
-        assert_eq!(run_sql(n - 1), (n, false));
+        assert_eq!(run_sql(n, 200, 0), (n, true));
+        assert_eq!(run_sql(n - 1, 200, 0), (n, false));
+    }
+
+    #[test]
+    fn fixed_graph_sql_budget_admits_100000_steps_and_refuses_100001() {
+        let limit = super::super::nir1_graph::QUERY_SQL_STEPS;
+        assert_eq!(limit, 100_000);
+        let (used, succeeded) = run_sql(limit, 4_346, 5);
+        assert!(succeeded, "the exact-cap workload must commit");
+        assert_eq!(
+            used, limit,
+            "successful work must use exactly 100,000 steps"
+        );
+
+        let (used, succeeded) = run_sql(limit, 50_000, 0);
+        assert!(
+            !succeeded,
+            "the recursive statement must exceed the fixed budget"
+        );
+        assert_eq!(
+            used,
+            limit + 1,
+            "only the 100,001st progress callback refuses"
+        );
     }
 
     fn finalize_run_at_limit(

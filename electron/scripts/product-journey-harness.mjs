@@ -33,6 +33,7 @@ import {
   isElectronPostExitCloseError,
 } from "./close-electron-app.mjs";
 import { C2ZC_RENDERER_DML_PHASE_ALLOWLIST } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
+import { createNativeBBusOwner, nativeBElectronEnvironment } from "./product-journey-native-b.mjs";
 
 const require = createRequire(import.meta.url);
 const PRODUCT_JOURNEY_AI_ENV = "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI";
@@ -110,6 +111,308 @@ const UUID_V4 =
 function nullableEnvironmentValue(env, name) {
   const value = env[name];
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+const DBUS_REPLY_TIMEOUT_MS = 1_000;
+const DBUS_PARENT_TIMEOUT_MS = 1_500;
+const DBUS_TERM_GRACE_MS = 250;
+const DBUS_CLOSE_TIMEOUT_MS = 1_000;
+const DBUS_MAX_BUFFER_BYTES = 1_024;
+const DBUS_UNKNOWN = "unprobed/unknown";
+
+function analyzeDbusAddress(value) {
+  const presence =
+    typeof value !== "string" ? "absent" : value === "" ? "empty" : "present";
+  const result = {
+    presence,
+    transport: "other",
+    syntax: "unsupported/unknown",
+    supportedLocalUnix: false,
+  };
+  if (presence !== "present") return result;
+
+  const colon = value.indexOf(":");
+  if (
+    colon <= 0 ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    result.syntax = "invalid";
+    return result;
+  }
+  const scheme = value.slice(0, colon).toLowerCase();
+  if (scheme === "autolaunch") {
+    result.transport = "autolaunch";
+    return result;
+  }
+  if (scheme === "tcp" || scheme === "nonce-tcp") {
+    result.transport = "network";
+    return result;
+  }
+  if (scheme !== "unix") return result;
+  result.transport = "local-unix";
+  if (value.includes(";")) return result;
+
+  const fields = new Map();
+  for (const field of value.slice(colon + 1).split(",")) {
+    const separator = field.indexOf("=");
+    if (
+      separator <= 0 ||
+      separator !== field.lastIndexOf("=") ||
+      /%(?![\da-f]{2})/iu.test(field)
+    ) {
+      result.syntax = "invalid";
+      return result;
+    }
+    const key = field.slice(0, separator);
+    let decoded;
+    try {
+      decoded = decodeURIComponent(field.slice(separator + 1));
+    } catch {
+      result.syntax = "invalid";
+      return result;
+    }
+    if (fields.has(key)) {
+      result.syntax = "invalid";
+      return result;
+    }
+    if (/[\u0000-\u001f\u007f]/u.test(decoded)) {
+      result.syntax = "invalid";
+      return result;
+    }
+    fields.set(key, decoded);
+  }
+
+  if (
+    [...fields.keys()].some(
+      (key) => !["path", "abstract", "guid"].includes(key),
+    )
+  ) {
+    return result;
+  }
+  const pathValue = fields.get("path");
+  const abstractValue = fields.get("abstract");
+  const guid = fields.get("guid");
+  if (
+    (pathValue === undefined) === (abstractValue === undefined) ||
+    (pathValue !== undefined && !pathValue.startsWith("/")) ||
+    (abstractValue !== undefined && abstractValue.length === 0) ||
+    (guid !== undefined && !/^[\da-f]{32}$/iu.test(guid))
+  ) {
+    result.syntax = "invalid";
+    return result;
+  }
+  result.syntax = "valid-supported-subset";
+  result.supportedLocalUnix = true;
+  return result;
+}
+
+export function classifyDbusAddress(value) {
+  const analysis = analyzeDbusAddress(value);
+  return {
+    presence: analysis.presence,
+    transport: analysis.transport,
+    syntax: analysis.syntax,
+  };
+}
+
+function classifyDbusReply({ error, stdout = "", stderr = "" }) {
+  const ownerReply = /^method return[\s\S]*\n\s*boolean (true|false)\s*$/u.exec(
+    stdout.trim(),
+  );
+  if (!error && ownerReply) {
+    return ownerReply[1] === "true" ? "available" : "unavailable endpoint";
+  }
+  const diagnostic = stderr.toLowerCase();
+  if (
+    error?.code === "ETIMEDOUT" ||
+    /timed? out|timeout|did not receive a reply/iu.test(diagnostic)
+  ) {
+    return "timeout";
+  }
+  if (
+    error?.code === "ECONNREFUSED" ||
+    /connection refused|access denied|authentication failed/iu.test(diagnostic)
+  ) {
+    return "connection rejected";
+  }
+  if (
+    /no such file|failed to connect to socket|endpoint unavailable/iu.test(
+      diagnostic,
+    )
+  ) {
+    return "unavailable endpoint";
+  }
+  return DBUS_UNKNOWN;
+}
+
+function queryDbusNameOwner(address, { execFile, trackChild, signal }) {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve({ availability: DBUS_UNKNOWN, retired: true, started: false });
+      return;
+    }
+
+    let child;
+    let started = false;
+    let callbackResult = null;
+    let callbackObserved = false;
+    let closeObserved = false;
+    let timedOut = false;
+    let cancelled = false;
+    let stopping = false;
+    let settled = false;
+    let parentTimer;
+    let killTimer;
+    let closeTimer;
+    let resolveChildRetirement;
+    const childRetirement = new Promise((resolve) => {
+      resolveChildRetirement = resolve;
+    });
+
+    const finish = (availability, retired) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(parentTimer);
+      clearTimeout(killTimer);
+      clearTimeout(closeTimer);
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ availability, retired, started });
+    };
+    const finishAfterClose = () => {
+      if (!closeObserved || !callbackObserved) return;
+      resolveChildRetirement();
+      finish(
+        timedOut
+          ? "timeout"
+          : cancelled
+            ? DBUS_UNKNOWN
+            : classifyDbusReply(callbackResult),
+        true,
+      );
+    };
+    const stop = (reason) => {
+      if (stopping || (closeObserved && callbackObserved)) return;
+      stopping = true;
+      timedOut ||= reason === "timeout";
+      cancelled ||= reason === "cancelled";
+      if (!closeObserved) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // Retirement requires both callback and close observations below.
+        }
+      }
+      killTimer = setTimeout(() => {
+        if (!closeObserved) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Keep waiting for the bounded close proof.
+          }
+        }
+      }, DBUS_TERM_GRACE_MS);
+      closeTimer = setTimeout(
+        () => finish(DBUS_UNKNOWN, false),
+        DBUS_TERM_GRACE_MS + DBUS_CLOSE_TIMEOUT_MS,
+      );
+    };
+    function onAbort() {
+      stop("cancelled");
+    }
+
+    try {
+      child = execFile(
+        "dbus-send",
+        [
+          "--session",
+          "--dest=org.freedesktop.DBus",
+          "--print-reply",
+          `--reply-timeout=${DBUS_REPLY_TIMEOUT_MS}`,
+          "/org/freedesktop/DBus",
+          "org.freedesktop.DBus.NameHasOwner",
+          "string:org.freedesktop.DBus",
+        ],
+        {
+          env: {
+            PATH: process.env.PATH ?? "/usr/bin:/bin",
+            LANG: "C",
+            DBUS_SESSION_BUS_ADDRESS: address,
+          },
+          encoding: "utf8",
+          maxBuffer: DBUS_MAX_BUFFER_BYTES,
+          windowsHide: true,
+        },
+        (error, stdout, stderr) => {
+          callbackObserved = true;
+          callbackResult = { error, stdout, stderr };
+          finishAfterClose();
+        },
+      );
+      started = true;
+    } catch {
+      finish(DBUS_UNKNOWN, true);
+      return;
+    }
+    try {
+      trackChild(child, childRetirement);
+    } catch {
+      // This helper still owns the child and waits for callback plus close.
+    }
+    child.once("close", () => {
+      closeObserved = true;
+      finishAfterClose();
+    });
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    parentTimer = setTimeout(() => stop("timeout"), DBUS_PARENT_TIMEOUT_MS);
+  });
+}
+
+export async function inspectProductJourneyDbusEnvironment(
+  environment = process.env,
+  {
+    execFile = execFileCallback,
+    trackChild = () => undefined,
+    signal = null,
+  } = {},
+) {
+  const session = analyzeDbusAddress(environment.DBUS_SESSION_BUS_ADDRESS);
+  const system = analyzeDbusAddress(environment.DBUS_SYSTEM_BUS_ADDRESS);
+  let availability = DBUS_UNKNOWN;
+  let retirement = "not-started";
+  if (session.supportedLocalUnix) {
+    const result = await queryDbusNameOwner(
+      environment.DBUS_SESSION_BUS_ADDRESS,
+      {
+        execFile,
+        trackChild,
+        signal,
+      },
+    );
+    availability = result.availability;
+    retirement = result.started
+      ? result.retired
+        ? "closed"
+        : "unverified"
+      : "not-started";
+  }
+  return {
+    sessionBus: {
+      presence: session.presence,
+      transport: session.transport,
+      syntax: session.syntax,
+      availability,
+      retirement,
+    },
+    systemBus: {
+      presence: system.presence,
+      transport: system.transport,
+      syntax: system.syntax,
+      availability: DBUS_UNKNOWN,
+    },
+  };
 }
 
 /**
@@ -1947,8 +2250,11 @@ export const PRODUCT_JOURNEY_ELECTRON_PHASES = Object.freeze([
   "cross-feature-authoring/restart",
   "chat-stream-project-switch/prepare-projects",
   "chat-stream-project-switch",
+  "agent-stream-project-switch/prepare-projects",
+  "agent-stream-project-switch",
   "chat-stream-workspace-switch/prepare-workspaces",
   "chat-stream-workspace-switch",
+  "agent-stream-workspace-switch",
   "editor-pending-project-switch/prepare-projects",
   "editor-pending-project-switch",
   "mcp-external-write-conflict/prepare-settings",
@@ -2805,6 +3111,7 @@ export async function runWithLaneWatchdog(
   let cleanupStarted = false;
   const killedChildren = new Set();
   const pendingChildKills = new Set();
+  const registeredCleanups = new Set();
   let timerId;
   let abortListener;
   let externalAbortListener;
@@ -2952,6 +3259,16 @@ export async function runWithLaneWatchdog(
         // explicit unverified diagnostic when the late resource misses this
         // bounded window.
       }
+      for (const registeredCleanup of [...registeredCleanups]) {
+        try {
+          await settleWithin(
+            Promise.resolve().then(() => registeredCleanup({ error, status })),
+            PRODUCT_JOURNEY_LANE_CLEANUP_TIMEOUT_MS,
+          );
+        } catch {
+          // Continue to mandatory process cleanup while preserving the lane error.
+        }
+      }
       try {
         await settleWithin(
           Promise.resolve().then(() => cleanup({ error, status })),
@@ -3025,6 +3342,13 @@ export async function runWithLaneWatchdog(
         childSet.add(child);
         return child;
       },
+      registerCleanup(callback) {
+        if (typeof callback !== "function") {
+          throw new TypeError("lane cleanup registration requires a function");
+        }
+        registeredCleanups.add(callback);
+        return () => registeredCleanups.delete(callback);
+      },
     });
   });
   try {
@@ -3082,9 +3406,13 @@ export function createProductJourneyHarness({
   journalPath = null,
   mainProcessDrainTimeoutMs = MAIN_PROCESS_DRAIN_TIMEOUT_MS,
   artifactRoot = process.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
+  probeDbusAtFirstConfigure = false,
+  journeyId = null,
+  dbusExecFile = execFileCallback,
   electronLauncher = _electron,
   closeApp = closeElectronAppWithDiagnostics,
   mainProcessNoiseAllowlist = MAIN_PROCESS_NOISE_ALLOWLIST,
+  onChildProcess = () => undefined,
 } = {}) {
   if (!mainCjs) throw new Error("product journey harness requires mainCjs");
   if (
@@ -3117,6 +3445,9 @@ export function createProductJourneyHarness({
     );
   }
   validateMainProcessNoiseAllowlist(mainProcessNoiseAllowlist);
+  if (typeof onChildProcess !== "function") {
+    throw new TypeError("onChildProcess must be a function");
+  }
   const failureCleanupBudget = Math.max(1, Math.floor(failureCleanupTimeoutMs));
   const trustedCloseApp = closeApp === closeElectronAppWithDiagnostics;
 
@@ -3148,6 +3479,8 @@ export function createProductJourneyHarness({
   const lateLaunchTasks = new Set();
   let fixtureOperationsInFlight = false;
   let launchInFlight = false;
+  let dbusProbeAttempted = false;
+  let nativeQualificationRecorded = false;
   let laneWatchdogController = null;
   let laneWatchdogPromise = null;
   let failureCapturePromise = null;
@@ -3156,6 +3489,13 @@ export function createProductJourneyHarness({
   let retainedRendererScreenshotPromise = null;
   let operationJournalClosed = false;
   const harnessAbortController = new AbortController();
+  // Mocked launchers remain source-test seams, not native qualification. The
+  // actual Linux Editor consumer must own the bus under the verified boundary.
+  const nativeBus = process.platform === "linux" && journeyId === "editor-persistence" && electronLauncher === _electron
+    ? createNativeBBusOwner({
+        signal: harnessAbortController.signal,
+        onFailure: () => { void requestAbort("native-b-daemon-failure").catch(() => undefined); },
+      }) : null;
   let signalHandlersInstalled = false;
   let disposed = false;
   const lastResources = {
@@ -3384,18 +3724,29 @@ export function createProductJourneyHarness({
     }
   }
 
-  function trackChild(child) {
+  function trackChild(child, retirement = null) {
     if (!child || typeof child !== "object") return child;
     trackedChildren.add(child);
+    let retirementObserved = retirement === null;
     const remove = () => {
+      if (!retirementObserved) return;
       trackedChildren.delete(child);
       trackedChildRemovers.delete(child);
     };
-    if (typeof child.once === "function") {
+    trackedChildRemovers.set(child, remove);
+    if (retirement !== null) {
+      Promise.resolve(retirement).then(
+        () => {
+          retirementObserved = true;
+          remove();
+        },
+        () => undefined,
+      );
+    } else if (typeof child.once === "function") {
       child.once("exit", remove);
       child.once("close", remove);
     }
-    trackedChildRemovers.set(child, remove);
+    onChildProcess(child);
     return child;
   }
 
@@ -3634,6 +3985,10 @@ export function createProductJourneyHarness({
       await capture.catch(() => undefined);
       await closeActiveResources(`failure:${reason}`).catch(() => undefined);
       await killTrackedChildren();
+      if (nativeBus && (trackedChildren.size || lateLaunchTasks.size || launchContexts.size)) {
+        throw new Error("native B app retirement unverified; owner quarantined");
+      }
+      await nativeBus?.retire();
     })();
     return failureCleanupPromise;
   }
@@ -3850,6 +4205,7 @@ export function createProductJourneyHarness({
   }
 
   function requestAbort(reason) {
+    nativeBus?.closeAdmission();
     // A signal arriving during dispose must join the already-running guarded
     // cleanup. The handlers are deliberately still installed until that
     // promise settles, so checking disposed first would make the second
@@ -4864,6 +5220,22 @@ export function createProductJourneyHarness({
     return normalized;
   }
 
+  async function prepareBeforeCase() {
+    if (!nativeBus) return;
+    if (disposed) throw new Error("product journey harness admission closed");
+    installSignalHandlers();
+    await runHarnessOperation("native-b:qualification", () => nativeBus.qualify(), {
+      phase: "native-b/pre-case",
+    });
+    if (disposed || harnessAbortController.signal.aborted) {
+      throw new Error("native B pre-case admission closed");
+    }
+    if (!nativeQualificationRecorded) {
+      recordTimeline("native-b-qualified-before-case", nativeBus.evidence());
+      nativeQualificationRecorded = true;
+    }
+  }
+
   async function launch(phase) {
     if (fixtureOperationsInFlight) {
       throw new Error(
@@ -4918,7 +5290,15 @@ export function createProductJourneyHarness({
       lastResources.phase = phase;
       lastResources.launchId = launchId;
     }
-    const env = { ...process.env };
+    if (disposed) throw new Error("product journey harness admission closed");
+    if (nativeBus && !nativeQualificationRecorded) {
+      throw new Error("native B requires qualification before case admission");
+    }
+    // qualify() revalidates the SAME live owner on each launch; preparation
+    // already completed its once-only qualification before journey.run.
+    const env = nativeBus
+      ? nativeBElectronEnvironment(process.env, await nativeBus.qualify())
+      : { ...process.env };
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
     env[PRODUCT_JOURNEY_AI_ENV] = PRODUCT_JOURNEY_AI_VERSION;
@@ -4952,6 +5332,45 @@ export function createProductJourneyHarness({
       receiptCount: 0,
     };
     await requireCleanNarrativeMaintenanceReceiptRoot(receiptState.root, phase);
+    if (
+      !nativeBus &&
+      probeDbusAtFirstConfigure &&
+      phase === "configure" &&
+      !dbusProbeAttempted
+    ) {
+      dbusProbeAttempted = true;
+      const signal =
+        laneWatchdogController?.signal ?? harnessAbortController.signal;
+      const dbusState = await inspectProductJourneyDbusEnvironment(env, {
+        execFile: dbusExecFile,
+        signal,
+        trackChild,
+      });
+      const dbusRecord = {
+        journeyId,
+        phase,
+        launchId,
+        ...dbusState,
+      };
+      recordTimeline("dbus-session-probe", dbusRecord);
+      console.info(
+        `[electron:product] dbus-probe ${JSON.stringify(dbusRecord)}`,
+      );
+      if (dbusState.sessionBus.retirement === "unverified") {
+        throw new Error(
+          "product-journey D-Bus probe client retirement was not verified",
+        );
+      }
+      if (signal.aborted) {
+        throw operationAbortError({
+          phase,
+          operation: "dbus-session-probe",
+          command: "dbus-send",
+          requestId: launchId,
+          reason: signal.reason ?? "abort",
+        });
+      }
+    }
     // Only an invoked launcher can resolve late. Receipt-root precheck failure
     // must not leave a launch promise for cleanup to wait on.
     let resolveLateLaunch;
@@ -4979,6 +5398,7 @@ export function createProductJourneyHarness({
             executablePath: electronBin,
             args: electronArgs,
             env,
+            ...(nativeBus ? { chromiumSandbox: true } : {}),
             timeout: launchTimeoutMs,
           }),
         {
@@ -5645,7 +6065,7 @@ export function createProductJourneyHarness({
         }),
       awaitLateResources: () => awaitLateElectronLaunches(),
       journal: operationJournal,
-      signal: controller.signal,
+      signal: laneOptions.signal ?? controller.signal,
       abortController: controller,
     });
     laneWatchdogPromise = watchdog;
@@ -5797,6 +6217,7 @@ export function createProductJourneyHarness({
   async function dispose({ success, name }) {
     if (disposed) return;
     disposed = true;
+    nativeBus?.closeAdmission();
     if (!success) {
       await captureFailureWithCleanup(name, name).catch((error) => {
         console.error(
@@ -5805,6 +6226,8 @@ export function createProductJourneyHarness({
           }`,
         );
       });
+      // A capture failure must not bypass bus retirement when no app exists.
+      await nativeBus?.retire();
       removeSignalHandlers();
       await operationJournal.close().catch(() => undefined);
       operationJournalClosed = true;
@@ -5817,6 +6240,13 @@ export function createProductJourneyHarness({
       await killTrackedChildren();
     }
     await awaitLateElectronLaunches();
+    if (nativeBus) {
+      await killTrackedChildren();
+      if (trackedChildren.size || lateLaunchTasks.size || launchContexts.size) {
+        throw new Error("native B app retirement unverified; owner quarantined");
+      }
+    }
+    await nativeBus?.retire();
     await operationJournal.close();
     operationJournalClosed = true;
     await rm(tmpRoot, { recursive: true, force: true });
@@ -5864,6 +6294,7 @@ export function createProductJourneyHarness({
     journalPath: operationJournalPath,
     workspacePath,
     executeFixtureOperations,
+    prepareBeforeCase,
     launch,
     launchForProcessInterruption,
     close,

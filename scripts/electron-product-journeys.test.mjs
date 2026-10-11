@@ -21,10 +21,15 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
 import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
-import { PRODUCT_JOURNEY_CATALOG } from "../electron/scripts/product-journey-catalog.mjs";
+import {
+  digestProductJourneyCatalog,
+  PRODUCT_JOURNEY_CATALOG,
+} from "../electron/scripts/product-journey-catalog.mjs";
 import {
   createProductJourneyJournal,
   createProductJourneyHarness,
+  classifyDbusAddress,
+  inspectProductJourneyDbusEnvironment,
   invokeOk,
   isMainProcessErrorMessage,
   killProcessTree,
@@ -54,6 +59,7 @@ import {
 import {
   configureWorkspace,
   PRODUCT_JOURNEYS,
+  runProductJourneys,
   selectPersistedFolderScopeAnchor,
 } from "../electron/scripts/product-journeys.mjs";
 import {
@@ -138,6 +144,434 @@ test("package.json exposes the runner and canonical product journey contracts", 
       .includes("scripts/codex-entity-relation-product-journey.test.mjs"),
     "canonical product journey contracts must include the NIR-1 Entity/Relation journey",
   );
+});
+
+test("D-Bus address classification never exposes or contacts unsupported addresses", async () => {
+  const sessionAddress =
+    "tcp:host=198.51.100.17,port=4312,noncefile=never-log-this";
+  const systemAddress = "autolaunch:guid=never-log-this";
+  assert.deepEqual(classifyDbusAddress(undefined), {
+    presence: "absent",
+    transport: "other",
+    syntax: "unsupported/unknown",
+  });
+  assert.deepEqual(classifyDbusAddress(""), {
+    presence: "empty",
+    transport: "other",
+    syntax: "unsupported/unknown",
+  });
+  assert.deepEqual(
+    classifyDbusAddress(
+      "unix:path=%2Frun%2Fuser%2F1000%2Fbus,guid=0123456789abcdef0123456789abcdef",
+    ),
+    {
+      presence: "present",
+      transport: "local-unix",
+      syntax: "valid-supported-subset",
+    },
+  );
+  assert.deepEqual(classifyDbusAddress("unix:path=relative"), {
+    presence: "present",
+    transport: "local-unix",
+    syntax: "invalid",
+  });
+  assert.deepEqual(
+    classifyDbusAddress("unix:path=/run/user/1000/bus;tcp:host=remote"),
+    {
+      presence: "present",
+      transport: "local-unix",
+      syntax: "unsupported/unknown",
+    },
+  );
+
+  let invoked = false;
+  const state = await inspectProductJourneyDbusEnvironment(
+    {
+      DBUS_SESSION_BUS_ADDRESS: sessionAddress,
+      DBUS_SYSTEM_BUS_ADDRESS: systemAddress,
+    },
+    {
+      execFile: () => {
+        invoked = true;
+        throw new Error("unsupported address must not be contacted");
+      },
+    },
+  );
+  assert.equal(invoked, false);
+  assert.deepEqual(state.sessionBus, {
+    presence: "present",
+    transport: "network",
+    syntax: "unsupported/unknown",
+    availability: "unprobed/unknown",
+    retirement: "not-started",
+  });
+  assert.deepEqual(state.systemBus, {
+    presence: "present",
+    transport: "autolaunch",
+    syntax: "unsupported/unknown",
+    availability: "unprobed/unknown",
+  });
+  assert.equal(JSON.stringify(state).includes("never-log-this"), false);
+  assert.equal(JSON.stringify(state).includes("198.51.100.17"), false);
+});
+
+test("D-Bus query uses a private local address and waits for the owned child close", async () => {
+  const address =
+    "unix:path=%2Frun%2Fuser%2F1000%2Fprivate-probe.sock,guid=0123456789abcdef0123456789abcdef";
+  let command;
+  let trackedChild;
+  const state = await inspectProductJourneyDbusEnvironment(
+    {
+      DBUS_SESSION_BUS_ADDRESS: address,
+      DBUS_SYSTEM_BUS_ADDRESS: "unix:path=/run/dbus/system_bus_socket",
+    },
+    {
+      execFile(executable, args, options, callback) {
+        command = { executable, args, options };
+        const child = new EventEmitter();
+        child.kill = () => true;
+        process.nextTick(() => {
+          callback(
+            null,
+            "method return time=1 sender=org.freedesktop.DBus -> :1.1 serial=2 reply_serial=1\n   boolean true\n",
+            "",
+          );
+          child.emit("close", 0, null);
+        });
+        return child;
+      },
+      trackChild: (child) => {
+        trackedChild = child;
+      },
+    },
+  );
+
+  assert.equal(command.executable, "dbus-send");
+  assert.deepEqual(command.args, [
+    "--session",
+    "--dest=org.freedesktop.DBus",
+    "--print-reply",
+    "--reply-timeout=1000",
+    "/org/freedesktop/DBus",
+    "org.freedesktop.DBus.NameHasOwner",
+    "string:org.freedesktop.DBus",
+  ]);
+  assert.equal(JSON.stringify(command.args).includes(address), false);
+  assert.deepEqual(Object.keys(command.options.env).sort(), [
+    "DBUS_SESSION_BUS_ADDRESS",
+    "LANG",
+    "PATH",
+  ]);
+  assert.equal(command.options.env.DBUS_SESSION_BUS_ADDRESS, address);
+  assert.equal(command.options.maxBuffer, 1_024);
+  assert.ok(trackedChild);
+  assert.equal(state.sessionBus.availability, "available");
+  assert.equal(state.sessionBus.retirement, "closed");
+  assert.equal(state.systemBus.availability, "unprobed/unknown");
+  assert.equal(JSON.stringify(state).includes(address), false);
+  assert.equal(JSON.stringify(state).includes("boolean true"), false);
+
+  const rejected = await inspectProductJourneyDbusEnvironment(
+    { DBUS_SESSION_BUS_ADDRESS: address },
+    {
+      execFile(_executable, _args, _options, callback) {
+        const child = new EventEmitter();
+        process.nextTick(() => {
+          callback(
+            new Error("private child failure"),
+            "",
+            `Connection refused: ${address}`,
+          );
+          child.emit("close", 1, null);
+        });
+        return child;
+      },
+    },
+  );
+  assert.equal(rejected.sessionBus.availability, "connection rejected");
+  assert.equal(JSON.stringify(rejected).includes(address), false);
+});
+
+test("D-Bus probe requires both callback and close in either event order", async () => {
+  const reply =
+    "method return time=1 sender=org.freedesktop.DBus -> :1.1 serial=2 reply_serial=1\n   boolean true\n";
+  for (const order of ["close-first", "callback-first"]) {
+    const child = new EventEmitter();
+    child.kill = () => true;
+    let callback;
+    let retirement;
+    let ownerRetained = true;
+    let settled = false;
+    const statePromise = inspectProductJourneyDbusEnvironment(
+      { DBUS_SESSION_BUS_ADDRESS: "unix:abstract=grimodex-order-test" },
+      {
+        execFile(_executable, _args, _options, childCallback) {
+          callback = childCallback;
+          return child;
+        },
+        trackChild(_child, childRetirement) {
+          retirement = childRetirement;
+          childRetirement.then(() => {
+            ownerRetained = false;
+          });
+        },
+      },
+    );
+    statePromise.then(() => {
+      settled = true;
+    });
+
+    if (order === "close-first") {
+      child.emit("close", 0, null);
+      await new Promise(setImmediate);
+      assert.equal(settled, false);
+      assert.equal(ownerRetained, true);
+      callback(null, reply, "");
+    } else {
+      callback(null, reply, "");
+      await new Promise(setImmediate);
+      assert.equal(settled, false);
+      assert.equal(ownerRetained, true);
+      child.emit("close", 0, null);
+    }
+
+    const state = await statePromise;
+    await retirement;
+    assert.equal(state.sessionBus.availability, "available");
+    assert.equal(state.sessionBus.retirement, "closed");
+    assert.equal(ownerRetained, false);
+  }
+});
+
+test("D-Bus NameHasOwner false reply is unavailable", async () => {
+  const state = await inspectProductJourneyDbusEnvironment(
+    { DBUS_SESSION_BUS_ADDRESS: "unix:abstract=grimodex-no-owner-test" },
+    {
+      execFile(_executable, _args, _options, callback) {
+        const child = new EventEmitter();
+        process.nextTick(() => {
+          child.emit("close", 0, null);
+          callback(
+            null,
+            "method return time=1 sender=org.freedesktop.DBus -> :1.1 serial=2 reply_serial=1\n   boolean false\n",
+            "",
+          );
+        });
+        return child;
+      },
+    },
+  );
+  assert.equal(state.sessionBus.availability, "unavailable endpoint");
+  assert.equal(state.sessionBus.retirement, "closed");
+});
+
+test("only the first Linux Actions journey opts into the configure D-Bus probe", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "journey-dbus-runner-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const catalog = [{ id: "first-case" }, { id: "second-case" }];
+  const journeys = catalog.map((entry) => ({
+    ...entry,
+    run: async () => undefined,
+  }));
+  const harnessOptions = [];
+
+  await runProductJourneys({
+    createHarness: (options) => {
+      harnessOptions.push(options);
+      return {
+        finalizeDiagnostics: async () => undefined,
+        dispose: async () => undefined,
+      };
+    },
+    journeys,
+    catalog,
+    artifactJourneys: [],
+    assertArtifacts: async () => [],
+    expectedCatalogDigest: digestProductJourneyCatalog(catalog),
+    environment: { GITHUB_ACTIONS: "true" },
+    root,
+    resultsPath: "results.json",
+  });
+
+  assert.deepEqual(
+    harnessOptions.map(({ probeDbusAtFirstConfigure, journeyId }) => ({
+      probeDbusAtFirstConfigure,
+      journeyId,
+    })),
+    [
+      {
+        probeDbusAtFirstConfigure: process.platform === "linux",
+        journeyId: "first-case",
+      },
+      { probeDbusAtFirstConfigure: false, journeyId: "second-case" },
+    ],
+  );
+});
+
+test("first configure launch records redacted D-Bus state before Electron launch", async (t) => {
+  const rawAddress = "tcp:host=198.51.100.23,port=4312,secret=never-log-this";
+  const priorAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
+  process.env.DBUS_SESSION_BUS_ADDRESS = rawAddress;
+  const events = [];
+  const originalInfo = console.info;
+  console.info = (...args) => events.push(args.join(" "));
+  const mainStderr = new EventEmitter();
+  const page = {
+    isClosed: () => false,
+    on: () => undefined,
+    waitForFunction: async () => undefined,
+    screenshot: async () => undefined,
+  };
+  const app = {
+    firstWindow: async () => page,
+    process: () => childProcessStub({ stderr: mainStderr }),
+  };
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    probeDbusAtFirstConfigure: true,
+    journeyId: "editor-persistence",
+    electronLauncher: {
+      launch: async () => {
+        events.push("electron-launch");
+        return app;
+      },
+    },
+    closeApp: async () => mainStderr.emit("end"),
+  });
+  t.after(async () => {
+    console.info = originalInfo;
+    if (priorAddress === undefined) delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    else process.env.DBUS_SESSION_BUS_ADDRESS = priorAddress;
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+  });
+
+  const launched = await harness.launch("configure");
+  await harness.close(launched.app, launched.page, "configure");
+  await harness.finalizeDiagnostics();
+
+  assert.equal(events[1], "electron-launch");
+  assert.match(events[0], /"phase":"configure"/u);
+  assert.match(events[0], /"journeyId":"editor-persistence"/u);
+  assert.match(events[0], /"transport":"network"/u);
+  assert.equal(events.join(" ").includes(rawAddress), false);
+  assert.equal(events.join(" ").includes("never-log-this"), false);
+});
+
+test("D-Bus harness retains an exit-first child until close is verified", async (t) => {
+  const previousAddress = process.env.DBUS_SESSION_BUS_ADDRESS;
+  process.env.DBUS_SESSION_BUS_ADDRESS =
+    "unix:abstract=grimodex-exit-close-stalled-test";
+  const signals = [];
+  let child;
+  let disposed = false;
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    probeDbusAtFirstConfigure: true,
+    dbusExecFile(_executable, _args, _options) {
+      child = new EventEmitter();
+      child.kill = (signal) => {
+        signals.push(signal);
+        return true;
+      };
+      process.nextTick(() => child.emit("exit", 0, null));
+      return child;
+    },
+    electronLauncher: {
+      launch: async () => {
+        throw new Error("Electron must not launch before probe retirement");
+      },
+    },
+  });
+  t.after(async () => {
+    if (!disposed) {
+      await harness.dispose({
+        success: false,
+        name: "dbus-exit-close-stalled",
+      });
+    }
+    if (previousAddress === undefined) {
+      delete process.env.DBUS_SESSION_BUS_ADDRESS;
+    } else {
+      process.env.DBUS_SESSION_BUS_ADDRESS = previousAddress;
+    }
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+  });
+
+  await assert.rejects(
+    harness.launch("configure"),
+    /D-Bus probe client retirement was not verified/u,
+  );
+  assert.ok(child);
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  await harness.dispose({
+    success: false,
+    name: "dbus-exit-close-stalled",
+  });
+  disposed = true;
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL", "SIGTERM", "SIGKILL"]);
+});
+
+test("D-Bus probe refuses to claim retirement when the child never closes", async () => {
+  const signals = [];
+  let trackedChild;
+  const state = await inspectProductJourneyDbusEnvironment(
+    { DBUS_SESSION_BUS_ADDRESS: "unix:abstract=grimodex-unclosed-test" },
+    {
+      execFile() {
+        const child = new EventEmitter();
+        child.kill = (signal) => {
+          signals.push(signal);
+          return true;
+        };
+        return child;
+      },
+      trackChild: (child) => {
+        trackedChild = child;
+      },
+    },
+  );
+
+  assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
+  assert.ok(trackedChild);
+  assert.equal(state.sessionBus.availability, "unprobed/unknown");
+  assert.equal(state.sessionBus.retirement, "unverified");
+});
+
+test("D-Bus cancellation terminates only the probe child and remains unknown", async () => {
+  const controller = new AbortController();
+  const signals = [];
+  const address = "unix:abstract=grimodex-test-bus";
+  const statePromise = inspectProductJourneyDbusEnvironment(
+    { DBUS_SESSION_BUS_ADDRESS: address },
+    {
+      signal: controller.signal,
+      execFile(_executable, _args, _options, callback) {
+        const child = new EventEmitter();
+        child.kill = (signal) => {
+          signals.push(signal);
+          process.nextTick(() => {
+            callback(
+              Object.assign(new Error("private failure"), {
+                code: "ABORT_ERR",
+              }),
+              "",
+              "",
+            );
+            child.emit("close", null, signal);
+          });
+          return true;
+        };
+        process.nextTick(() => controller.abort("test-cancel"));
+        return child;
+      },
+    },
+  );
+  const state = await statePromise;
+  assert.deepEqual(signals, ["SIGTERM"]);
+  assert.equal(state.sessionBus.availability, "unprobed/unknown");
+  assert.equal(state.sessionBus.retirement, "closed");
+  assert.equal(JSON.stringify(state).includes(address), false);
 });
 
 const RECEIPT_NONCE = "00000000-0000-4000-8000-000000000001";
@@ -633,44 +1067,15 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
     launchTimeoutMs: 100,
     electronLauncher: {
       launch: async ({ env }) => {
-        const expected = expectedNarrativeMaintenanceCiReceipt(env);
-        const nonceDir = path.join(
-          env.GRIMODEX_USER_DATA_DIR,
-          NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
-          expected.nonce,
-        );
-        await mkdir(nonceDir, { recursive: true });
-        await writeFile(
-          path.join(nonceDir, "receipt.json"),
-          canonicalReceiptText(expected),
-          { mode: 0o600 },
-        );
-        await writeFile(
+        const launchExpected = expectedNarrativeMaintenanceCiReceipt(env);
+        assert.deepEqual(launchExpected, expected);
+        await rename(
+          stagedNonceDir,
           path.join(
-            nonceDir,
-            NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+            env.GRIMODEX_USER_DATA_DIR,
+            NARRATIVE_MAINTENANCE_RECEIPT_ROOT_NAME,
+            launchExpected.nonce,
           ),
-          canonicalValueText({
-            version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-            type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
-            nonce: expected.nonce,
-            requestNonce: HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
-            phase: "held-freshness-file",
-            workspaceBinding: { authorityId: "authority-1", generation: 1 },
-            requestedAt: "1970-01-01T00:00:00.000Z",
-          }),
-          { mode: 0o600 },
-        );
-        await writeFile(
-          path.join(nonceDir, "held-freshness-0000000001.json"),
-          canonicalValueText(
-            heldFreshnessReceipt(
-              1,
-              RECEIPT_NONCE,
-              HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
-            ),
-          ),
-          { mode: 0o600 },
         );
         return app;
       },
@@ -692,6 +1097,47 @@ test("harness accepts a file held-Freshness sequence independently of stdout", a
       process.env[NARRATIVE_MAINTENANCE_NONCE_ENV] = previousNonce;
     }
   });
+  // Prepare fixture I/O outside the launch budget, keeping the receipt root
+  // empty until the mock launcher atomically publishes the complete sequence.
+  const expected = expectedNarrativeMaintenanceCiReceipt(process.env);
+  const stagedNonceDir = path.join(
+    harness.tmpRoot,
+    "held-freshness-fixture",
+    expected.nonce,
+  );
+  await mkdir(stagedNonceDir, { recursive: true, mode: 0o700 });
+  await writeFile(
+    path.join(stagedNonceDir, "receipt.json"),
+    canonicalReceiptText(expected),
+    { mode: 0o600 },
+  );
+  await writeFile(
+    path.join(
+      stagedNonceDir,
+      NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_FILE,
+    ),
+    canonicalValueText({
+      version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+      type: NARRATIVE_MAINTENANCE_HELD_FRESHNESS_REQUEST_TYPE,
+      nonce: expected.nonce,
+      requestNonce: HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
+      phase: "held-freshness-file",
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+      requestedAt: "1970-01-01T00:00:00.000Z",
+    }),
+    { mode: 0o600 },
+  );
+  await writeFile(
+    path.join(stagedNonceDir, "held-freshness-0000000001.json"),
+    canonicalValueText(
+      heldFreshnessReceipt(
+        1,
+        RECEIPT_NONCE,
+        HELD_FRESHNESS_INITIAL_REQUEST_NONCE,
+      ),
+    ),
+    { mode: 0o600 },
+  );
   const launched = await harness.launch("held-freshness-file");
   assert.equal(launched.heldFreshnessArtifact.receipt.sequence, 1);
   const firstHeldFreshnessPath = path.join(
@@ -3463,13 +3909,137 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
   }
 });
 
-test("CI has a dedicated product-journeys gate with native Electron and SQLite", async () => {
+test("CI prepares candidate-bound C2-ZC product evidence before journeys", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const job = workflow.jobs["electron-product-journeys"];
   const electronJob = workflow.jobs.electron;
 
   assert.ok(job, "electron-product-journeys job is required");
   assert.equal(job["runs-on"], "ubuntu-24.04");
+  const checkout = job.steps.find((step) =>
+    step.uses?.startsWith("actions/checkout@"),
+  );
+  const receipt = job.steps.find(
+    (step) => step.name === "Candidate-bound C2-ZC Rust acceptance gate",
+  );
+  const fixture = job.steps.find(
+    (step) =>
+      step.name === "Build and verify candidate-bound C2-ZC restore fixture",
+  );
+  const evidence = job.steps.find(
+    (step) => step.name === "Bind candidate-bound product journey evidence",
+  );
+  const gate = job.steps.find((step) => step.name === "Product journey gate");
+  const shouldRunCondition =
+    "steps.product-journey-impact.outputs.should_run == 'true'";
+  assert.ok(checkout, "product journey checkout is required");
+  assert.equal(checkout.with["fetch-depth"], 0);
+  assert.notEqual(checkout.with.clean, false, "checkout must be clean");
+  assert.equal(
+    job.env.GRIMODEX_C2ZC_RUST_RECEIPT_PATH,
+    ".artifacts/local-ci/c2-zc-rust-acceptance.json",
+  );
+  assert.equal(job.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE, "origin/master");
+  assert.equal(job.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, "HEAD");
+  assert.ok(
+    receipt,
+    "the real candidate-bound Rust receipt producer is required",
+  );
+  assert.ok(fixture, "the real candidate-bound restore fixture is required");
+  assert.ok(evidence, "verified build and fixture evidence must be bound");
+  for (const step of [receipt, fixture, evidence]) {
+    assert.equal(step.if, shouldRunCondition);
+  }
+  assert.equal(fixture.id, "c2zc-restore-fixture");
+  assert.equal(fixture.env.CARGO_BUILD_JOBS, "2");
+  assert.match(
+    fixture.run,
+    /printf 'output_dir=%s\\n' "\$output_dir" >> "\$GITHUB_OUTPUT"/,
+  );
+  assert.equal(
+    evidence.env.GRIMODEX_C2ZC_RESTORE_FIXTURE_BUILD_DIR,
+    "${{ steps.c2zc-restore-fixture.outputs.output_dir }}",
+  );
+  assert.ok(
+    job.steps.indexOf(receipt) < job.steps.indexOf(fixture) &&
+      job.steps.indexOf(fixture) < job.steps.indexOf(evidence) &&
+      job.steps.indexOf(evidence) < job.steps.indexOf(gate),
+    "Rust acceptance, fixture validation and evidence binding must precede journeys",
+  );
+  const appBuild = job.steps.find(
+    (step) => step.name === "Build native module and production Electron app",
+  );
+  const mcpBuild = job.steps.find(
+    (step) => step.name === "Build selected MCP journey dependency",
+  );
+  assert.ok(appBuild && mcpBuild);
+  assert.ok(
+    job.steps.indexOf(appBuild) < job.steps.indexOf(evidence) &&
+      job.steps.indexOf(mcpBuild) < job.steps.indexOf(evidence),
+    "the build receipt must follow all selected artifact builds",
+  );
+  for (const variable of [
+    "GRIMODEX_C2ZC_RUST_RECEIPT_PATH",
+    "GRIMODEX_C2ZC_RUST_REQUESTED_BASE",
+    "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD",
+    "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT",
+    "GRIMODEX_C2ZC_RESTORE_FIXTURE",
+  ]) {
+    assert.equal(
+      gate.env?.[variable],
+      undefined,
+      `${variable} must stay shared and consumer-verified`,
+    );
+  }
+  assert.equal(receipt.env.CARGO_BUILD_JOBS, "2");
+  assert.equal(receipt.env.RUST_TEST_THREADS, "2");
+  assert.match(receipt.run, /node scripts\/c2zc-rust-acceptance-receipt\.mjs/);
+  assert.match(receipt.run, /--base "\$GRIMODEX_C2ZC_RUST_REQUESTED_BASE"/);
+  assert.match(receipt.run, /--head "\$GRIMODEX_C2ZC_RUST_REQUESTED_HEAD"/);
+  assert.match(receipt.run, /--output "\$GRIMODEX_C2ZC_RUST_RECEIPT_PATH"/);
+  assert.match(
+    fixture.run,
+    /mktemp -d "\$RUNNER_TEMP\/grimodex-c2zc-restore-fixture/,
+  );
+  assert.match(fixture.run, /--features c2zc-fixture-builder/);
+  assert.match(fixture.run, /--bin c2zc-restore-fixture/);
+  assert.match(fixture.run, /expected_head="\$\(git rev-parse HEAD\)"/);
+  assert.match(
+    fixture.run,
+    /expected_tree="\$\(git rev-parse 'HEAD\^\{tree\}'\)"/,
+  );
+  assert.match(fixture.run, /--expected-head "\$expected_head"/);
+  assert.match(fixture.run, /--expected-tree "\$expected_tree"/);
+  assert.match(fixture.run, /--output-dir "\$output_dir"/);
+  assert.match(
+    fixture.run,
+    /--manifest "\$output_dir\/c2zc-restore-fixture\.manifest\.json"/,
+  );
+  assert.match(fixture.run, /--candidate HEAD/);
+  assert.match(
+    evidence.run,
+    /node scripts\/prepare-electron-product-journey-evidence\.mjs/,
+  );
+  const evidenceScript = await read(
+    "scripts/prepare-electron-product-journey-evidence.mjs",
+  );
+  for (const requiredSource of [
+    "readC2ZcRustAcceptanceEvidence",
+    "assertOutsideRepository,",
+    "assertOutsideRepository(\n    repository,\n    fixtureDirectory,",
+    "bindC2ZcProductJourneyCommand",
+    "readC2ZcRestoreFixtureEvidence",
+    "captureC2ZcRestoreFixtureEvidence",
+    "buildStagePassed: true",
+    "restoreFixtureEvidence: fixtureEvidence",
+    "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT",
+    "GRIMODEX_C2ZC_RESTORE_FIXTURE",
+    "GRIMODEX_C2ZC_RUST_RECEIPT_SHA256",
+    "await appendFile(",
+    "GITHUB_ENV",
+  ]) {
+    assert.ok(evidenceScript.includes(requiredSource), requiredSource);
+  }
   const commands = runCommands(job);
   assert.match(commands, /pnpm exec playwright install-deps chromium/);
   assert.match(commands, /pnpm napi:build/);
@@ -3634,12 +4204,23 @@ test("paused CI keeps every product journey job definition available", async () 
     jobEntries.some(([jobId]) => jobId === productJourneyJobId),
     "electron-product-journeys job is required",
   );
+  const canonicalExclusion =
+    " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
   for (const [jobId, job] of jobEntries) {
-    if (jobId === productJourneyJobId) continue;
+    if (jobId === "canonical") {
+      assert.equal(job.uses, "./.github/workflows/canonical-ci.yml");
+      continue;
+    }
+    const independentExclusion = ["electron-runtime-performance", productJourneyJobId, "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
+      ? " && !inputs.independent_gates" : "";
     assert.equal(
       job.if,
-      "github.event_name != 'schedule'",
-      `${jobId} must retain its non-scheduled execution guard`,
+      jobId === productJourneyJobId
+        ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
+        : jobId === "electron"
+          ? `github.event_name != 'schedule'${canonicalExclusion}`
+          : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
+      `${jobId} must retain its ordinary execution guard and exact canonical/independent exclusions`,
     );
   }
 });
@@ -3648,6 +4229,75 @@ test("catalog and runner implementation IDs match in deterministic order", () =>
   assert.deepEqual(
     PRODUCT_JOURNEYS.map((journey) => journey.id),
     PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
+  );
+});
+
+test("active anchor-stream journeys retain coverage and outer-lane ownership", async () => {
+  const source = await read("electron/scripts/product-journeys.mjs");
+  for (const [runner, kind] of [
+    ["runFolderStreamSwitchJourney", "folder"],
+    ["runSnippetStreamSwitchJourney", "snippet"],
+    ["runCodexStreamSwitchJourney", "codex"],
+  ]) {
+    const start = source.indexOf(`async function ${runner}(`);
+    const end = source.indexOf("\nasync function ", start + 1);
+    assert.notEqual(start, -1, `${runner} must remain implemented`);
+    assert.notEqual(end, -1, `${runner} must remain a distinct journey`);
+    const runnerBody = source.slice(start, end);
+    assert.match(
+      runnerBody,
+      new RegExp(
+        `runIsolatedChatStreamAnchorScopeJourney\\(\\s*harness,\\s*"${kind}",\\s*laneContext,`,
+      ),
+    );
+    assert.match(runnerBody, /return \{ anchorScopeDiagnostics \}/);
+  }
+  const anchorStart = source.indexOf(
+    "async function runChatStreamAnchorScopeJourney(",
+  );
+  const anchorEnd = source.indexOf("\nasync function ", anchorStart + 1);
+  assert.notEqual(
+    anchorStart,
+    -1,
+    "the anchor-scope journey must remain implemented",
+  );
+  assert.notEqual(
+    anchorEnd,
+    -1,
+    "the anchor-scope journey must remain a distinct helper",
+  );
+  const anchorJourney = source.slice(anchorStart, anchorEnd);
+  const isolatedStart = source.indexOf(
+    "async function runIsolatedChatStreamAnchorScopeJourney(",
+  );
+  const isolatedEnd = source.indexOf("\nasync function ", isolatedStart + 1);
+  assert.notEqual(isolatedStart, -1);
+  assert.notEqual(isolatedEnd, -1);
+  const isolatedJourney = source.slice(isolatedStart, isolatedEnd);
+  assert.match(isolatedJourney, /createProductJourneyHarness\(/);
+  assert.match(isolatedJourney, /onChildProcess: laneContext\.registerChild/);
+  assert.match(isolatedJourney, /scopeHarness\.withLaneWatchdog\(/);
+  assert.match(isolatedJourney, /signal: laneContext\.signal/);
+  assert.match(isolatedJourney, /laneContext\.registerCleanup\(/);
+  assert.match(isolatedJourney, /scopeHarness\.finalizeDiagnostics\(\)/);
+  assert.match(isolatedJourney, /error\.diagnostics = diagnostics/);
+  assert.match(isolatedJourney, /error\.nestedDiagnostics = diagnostics/);
+  assert.match(
+    isolatedJourney,
+    /await runChatStreamAnchorScopeJourney\(scopeHarness, kind\)/,
+  );
+  assert.match(
+    isolatedJourney,
+    /scopeHarness\.dispose\(\{ success: succeeded, name \}/,
+  );
+  assert.match(isolatedJourney, /diagnostics,/);
+  assert.match(anchorJourney, /scope changed during the old stream/);
+  assert.match(anchorJourney, /scope did not commit after stream completion/);
+  assert.match(anchorJourney, /new scope persistence/);
+  assert.match(anchorJourney, /scope reused the old stream session authority/);
+  assert.match(
+    source,
+    /const runJourney = \(laneContext\) => journey\.run\(harness, laneContext\)/,
   );
 });
 
@@ -4239,6 +4889,18 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /aiAttributionPersisted:\s*true/);
   assert.match(source, /cross-feature-authoring-restored/);
   assert.match(source, /project-chat-stream-drained/);
+  assert.match(source, /runAgentStreamProjectSwitchJourney/);
+  assert.match(source, /pathId:\s*"chat_agent_main"/);
+  assert.match(source, /transport:\s*"send_agent_message"/);
+  assert.match(source, /responseStillPending:\s*true/);
+  assert.match(source, /agent-project-switch-drained/);
+  assert.match(source, /runAgentStreamWorkspaceSwitchJourney/);
+  assert.match(source, /AGENT_WORKSPACE_SWITCH_PROMPT/);
+  assert.match(
+    source,
+    /workspace authority revision changed while Agent transport was pending/,
+  );
+  assert.match(source, /agent-workspace-switch-drained/);
   assert.match(source, /workspace-chat-stream-drained/);
   assert.match(source, /project-pending-editor-restored/);
   assert.match(source, /mcp-d2a-pre-dispatch-denial/);
@@ -4966,24 +5628,15 @@ test("expired default Ubuntu Xvfb allowances leave every error unallowed", async
   t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
 
   assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 5);
-  const launched = await harness.launch("configure");
-  mainStderr.emit(
-    "data",
+  const mainMessages = [
     '[6341:0730/134519.105645:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")\n',
-  );
-  mainStderr.emit(
-    "data",
     "[6341:0730/134519.106425:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n",
-  );
-  mainStderr.emit(
-    "data",
     "[6468:0730/134521.502865:ERROR:gpu/command_buffer/service/context_group.cc:148] ContextResult::kFatalFailure: WebGL2 blocklisted\n",
-  );
-  mainStderr.emit(
-    "data",
     "[8054:0730/135929.157713:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox.\n",
-  );
-  mainStderr.emit("data", "Fatal: database corruption\n");
+    "Fatal: database corruption\n",
+  ];
+  const launched = await harness.launch("configure");
+  for (const message of mainMessages) mainStderr.emit("data", message);
   await harness.close(launched.app, launched.page, "configure");
 
   const error = await harness.finalizeDiagnostics().then(
@@ -4991,35 +5644,14 @@ test("expired default Ubuntu Xvfb allowances leave every error unallowed", async
     (cause) => cause,
   );
   assert.equal(error?.name, "MainProcessDiagnosticsError");
-  assert.equal(error.diagnostics.mainErrorCount, 5);
+  assert.equal(error.diagnostics.mainErrorCount, mainMessages.length);
+  assert.equal(error.diagnostics.mainCleanPass, false);
   assert.deepEqual(
     error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
       phase,
       message,
     })),
-    [
-      {
-        phase: "configure",
-        message:
-          '[6341:0730/134519.105645:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")\n',
-      },
-      {
-        phase: "configure",
-        message:
-          "[6341:0730/134519.106425:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n",
-      },
-      {
-        phase: "configure",
-        message:
-          "[6468:0730/134521.502865:ERROR:gpu/command_buffer/service/context_group.cc:148] ContextResult::kFatalFailure: WebGL2 blocklisted\n",
-      },
-      {
-        phase: "configure",
-        message:
-          "[8054:0730/135929.157713:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:395] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox.\n",
-      },
-      { phase: "configure", message: "Fatal: database corruption\n" },
-    ],
+    mainMessages.map((message) => ({ phase: "configure", message })),
   );
 });
 
@@ -5473,13 +6105,25 @@ test("expired C2-ZC Skia mailbox allowance fails clean diagnostics", async (t) =
   );
   await harness.close(launched.app, launched.page, phase);
 
-  await assert.rejects(
-    harness.finalizeDiagnostics(),
-    (error) =>
-      error.name === "MainProcessDiagnosticsError" &&
-      error.diagnostics.mainErrorCount === 1 &&
-      error.diagnostics.unallowedMainErrors.length === 1 &&
-      error.diagnostics.mainCleanPass === false,
+  const error = await harness.finalizeDiagnostics().then(
+    () => null,
+    (cause) => cause,
+  );
+  assert.equal(error?.name, "MainProcessDiagnosticsError");
+  assert.equal(error.diagnostics.mainErrorCount, 1);
+  assert.equal(error.diagnostics.mainCleanPass, false);
+  assert.deepEqual(
+    error.diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+      phase,
+      message,
+    })),
+    [
+      {
+        phase,
+        message:
+          "[1145775:0828/155801.947748:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n",
+      },
+    ],
   );
 });
 
@@ -6003,6 +6647,97 @@ test("lane watchdog captures partial evidence and kills registered children", as
     ),
     "partial",
   );
+});
+
+test("harness lane watchdog relays outer-lane cancellation", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-linked-watchdog-"),
+  );
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+  });
+  const outerController = new AbortController();
+  const started = createPromiseBarrier();
+  let nestedSignal;
+  t.after(async () => {
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  const running = harness.withLaneWatchdog(
+    ({ signal }) => {
+      nestedSignal = signal;
+      started.resolve();
+      return new Promise((resolve) =>
+        signal.addEventListener("abort", resolve, { once: true }),
+      );
+    },
+    {
+      phase: "observability/linked-watchdog",
+      timeoutMs: 1_000,
+      signal: outerController.signal,
+    },
+  );
+  await started.promise;
+  outerController.abort("outer-lane-timeout");
+  await assert.rejects(running, /aborted.*outer-lane-timeout/i);
+  assert.equal(nestedSignal.aborted, true);
+  await harness.dispose({ success: false, name: "linked-watchdog" });
+});
+
+test("lane watchdog owns dynamic children and awaits registered cleanup", async () => {
+  const child = new EventEmitter();
+  child.pid = 424246;
+  child.exitCode = null;
+  child.signalCode = null;
+  let cleanupSettled = false;
+  let captureAfterCleanup = false;
+  let terminationVerified = false;
+  await assert.rejects(
+    runWithLaneWatchdog(
+      ({ registerChild, registerCleanup }) => {
+        registerChild(child);
+        registerCleanup(async ({ status, error }) => {
+          assert.equal(status, "timeout");
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          cleanupSettled = true;
+          error.cleanupDiagnosticsAttached = true;
+        });
+        return new Promise(() => {});
+      },
+      {
+        phase: "observability/registered-cleanup",
+        timeoutMs: 20,
+        killGraceMs: 0,
+        killChildren: async (registeredChild) => {
+          assert.equal(registeredChild, child);
+          registeredChild.exitCode = 0;
+          terminationVerified = true;
+          return { terminationVerified: true, failures: [] };
+        },
+        cleanup: async () => {
+          assert.equal(cleanupSettled, true);
+        },
+        captureFailureArtifact: async () => {
+          captureAfterCleanup = cleanupSettled;
+        },
+      },
+    ),
+    (error) => {
+      assert.match(
+        error.message,
+        /watchdog.*observability\/registered-cleanup/i,
+      );
+      assert.equal(error.cleanupDiagnosticsAttached, true);
+      return true;
+    },
+  );
+  assert.equal(cleanupSettled, true);
+  assert.equal(captureAfterCleanup, true);
+  assert.equal(terminationVerified, true);
+  assert.equal(child.exitCode, 0);
 });
 
 test("harness bounds lifecycle init-script installation and retains a partial lane artifact", async (t) => {

@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -12,7 +18,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 
 import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
-import { prepareRuntimePerformanceArtifacts } from "../electron/scripts/performance-benchmark.mjs";
+import {
+  buildRuntimePerformanceBuildIdentity,
+  prepareRuntimePerformanceArtifacts,
+} from "../electron/scripts/performance-benchmark.mjs";
+import {
+  buildRunnerDiagnosticInvocation,
+  buildRuntimePerformanceDiagnosticPaths,
+  parseLinuxProcIo,
+  parseLinuxProcStat,
+  runObservedRuntimeCommand,
+  signalOwnedGroup,
+} from "../electron/scripts/runtime-performance-diagnostic.mjs";
 import { buildRuntimePerformanceAttemptPaths } from "../electron/scripts/runtime-performance-retry.mjs";
 import {
   RUNTIME_PERFORMANCE_RAF_CALIBRATION_SAMPLE_COUNT,
@@ -220,6 +237,84 @@ test("CI runs a fixed Linux Electron runtime gate and always publishes its evide
     commands,
     /xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:perf:ci/,
   );
+  const runtimeGate = job.steps.find(
+    (step) => step.id === "runtime-performance",
+  );
+  assert.ok(runtimeGate);
+  assert.equal(
+    runtimeGate.run,
+    'xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:perf:ci',
+  );
+  assert.equal(runtimeGate.env.GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY, "1");
+  assert.equal(runtimeGate["continue-on-error"], undefined);
+  const benchmarkSource = await read(
+    "electron/scripts/performance-benchmark.mjs",
+  );
+  const benchmarkExecution = benchmarkSource.indexOf(
+    "const result = runRuntimePerformanceWithRetry({",
+  );
+  const identityCapture = benchmarkSource.indexOf(
+    'process.env.GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY === "1"',
+  );
+  const originalFailureReturn = benchmarkSource.indexOf(
+    "if (result.status !== 0) return result.status;",
+  );
+  assert.ok(benchmarkExecution >= 0 && identityCapture > benchmarkExecution);
+  assert.ok(originalFailureReturn > identityCapture);
+  assert.match(benchmarkSource, /optional build identity unavailable/);
+  assert.match(
+    benchmarkSource,
+    /RUNTIME_BUILD_IDENTITY_CAPTURE_TIMEOUT_MS = 15_000/u,
+  );
+  assert.match(
+    benchmarkSource,
+    /timeout: RUNTIME_BUILD_IDENTITY_CAPTURE_TIMEOUT_MS/u,
+  );
+  assert.match(benchmarkSource, /timeout: 5_000[\s\S]*?maxBuffer: 1024/u);
+  assert.match(
+    benchmarkSource,
+    /run:\s*\{\s*id: process\.env\.GITHUB_RUN_ID \?\? null,\s*attempt: process\.env\.GITHUB_RUN_ATTEMPT \?\? null/su,
+  );
+  const diagnosticSource = await read(
+    "electron/scripts/runtime-performance-diagnostic.mjs",
+  );
+  assert.match(
+    diagnosticSource,
+    /normalIdentity\?\.run\?\.id !== env\.GITHUB_RUN_ID[\s\S]*?normalIdentity\?\.run\?\.attempt !== env\.GITHUB_RUN_ATTEMPT/u,
+  );
+  assert.match(diagnosticSource, /mkdirSync\(paths\.directory\);/u);
+  assert.match(diagnosticSource, /error\?\.code !== "EEXIST"/u);
+  assert.match(diagnosticSource, /libc\.prctl\(36, 1, 0, 0, 0\)/u);
+  assert.match(diagnosticSource, /os\.waitpid\(-1, 0\)/u);
+  assert.match(diagnosticSource, /captureRuntimePerformanceBuildIdentity\(/u);
+  assert.doesNotMatch(
+    diagnosticSource,
+    /buildRuntimePerformanceBuildIdentity\(/u,
+  );
+  assert.match(
+    diagnosticSource,
+    /leader\.startTimeTicks === leaderIdentity\.startTimeTicks/u,
+  );
+
+  const diagnostic = job.steps.find(
+    (step) =>
+      step.name === "Runner-bound Electron runtime diagnostic (failure only)",
+  );
+  assert.ok(diagnostic);
+  assert.ok(job.steps.indexOf(diagnostic) > job.steps.indexOf(runtimeGate));
+  assert.equal(
+    diagnostic.if,
+    "${{ failure() && steps.runtime-performance.outcome == 'failure' }}",
+  );
+  assert.equal(
+    diagnostic.run,
+    "node electron/scripts/runtime-performance-diagnostic.mjs",
+  );
+  assert.equal(
+    diagnostic.env.GRIMODEX_REQUIRED_RUNTIME_GATE_OUTCOME,
+    "${{ steps.runtime-performance.outcome }}",
+  );
+  assert.equal(diagnostic["continue-on-error"], undefined);
 
   const upload = job.steps.find(
     (step) =>
@@ -231,6 +326,295 @@ test("CI runs a fixed Linux Electron runtime gate and always publishes its evide
   assert.equal(upload.with.path, ".artifacts/electron-runtime-performance/");
   assert.equal(upload.with["if-no-files-found"], "error");
   assert.equal(upload.with["retention-days"], 14);
+});
+
+test("runner diagnostic binds exact generated build and canonical fixture", (t) => {
+  const projectRoot = mkdtempSync(
+    path.join(os.tmpdir(), "grimodex-runtime-build-identity-"),
+  );
+  t.after(() => rmSync(projectRoot, { recursive: true, force: true }));
+  for (const relativePath of [
+    "dist/index.html",
+    "dist/assets/index-test.js",
+    "dist-electron/main.cjs",
+    "dist-electron/preload.cjs",
+    "electron/native/grimodex-node/grimodex-node.node",
+    "node_modules/electron/package.json",
+  ]) {
+    const absolutePath = path.join(projectRoot, relativePath);
+    mkdirSync(path.dirname(absolutePath), { recursive: true });
+    writeFileSync(
+      absolutePath,
+      relativePath === "node_modules/electron/package.json"
+        ? JSON.stringify({ version: "43.0.0" })
+        : `${relativePath}\n`,
+    );
+  }
+
+  const options = {
+    projectRoot,
+    gitHead: "a".repeat(40),
+    nativeModuleOverride: null,
+  };
+  const identity = buildRuntimePerformanceBuildIdentity(options);
+  assert.deepEqual(buildRuntimePerformanceBuildIdentity(options), identity);
+  assert.equal(identity.gitHead, options.gitHead);
+  assert.deepEqual(identity.runtime, {
+    node: process.version,
+    electron: "43.0.0",
+  });
+  assert.match(identity.fixture.sha256, /^[0-9a-f]{64}$/u);
+  assert.ok(
+    identity.generatedBuild.files.some(
+      ({ path: filePath }) => filePath === "dist/assets/index-test.js",
+    ),
+  );
+
+  writeFileSync(path.join(projectRoot, "dist/assets/index-test.js"), "changed");
+  assert.notEqual(
+    buildRuntimePerformanceBuildIdentity(options).generatedBuild.sha256,
+    identity.generatedBuild.sha256,
+  );
+  assert.throws(
+    () =>
+      buildRuntimePerformanceBuildIdentity({
+        ...options,
+        nativeModuleOverride: "../outside.node",
+      }),
+    /native-module-identity-unavailable/u,
+  );
+});
+
+test("runner diagnostic uses a run-scoped output and one no-retry profiled command", () => {
+  const paths = buildRuntimePerformanceDiagnosticPaths({
+    projectRoot: repoRoot,
+    runId: "37280411413",
+    attempt: "2",
+  });
+  const invocation = buildRunnerDiagnosticInvocation({
+    projectRoot: repoRoot,
+    paths,
+    environment: { GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY: "1" },
+  });
+  assert.ok(
+    path
+      .relative(repoRoot, paths.metrics)
+      .startsWith(
+        path.join(
+          ".artifacts",
+          "electron-runtime-performance",
+          "diagnostic",
+          "37280411413-2",
+        ),
+      ),
+  );
+  assert.notEqual(paths.metrics, path.join(repoRoot, metricsPath));
+  assert.deepEqual(invocation.args, [
+    path.join(repoRoot, "electron/scripts/performance-benchmark.mjs"),
+    "--output",
+    path.relative(repoRoot, paths.metrics),
+  ]);
+  assert.ok(!invocation.args.includes("--retry-transient-once"));
+  assert.equal(
+    invocation.env.GRIMODEX_PERF_CPU_PROFILE,
+    path.relative(repoRoot, paths.profile),
+  );
+  assert.equal(invocation.env.GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY, undefined);
+  assert.throws(
+    () =>
+      buildRuntimePerformanceDiagnosticPaths({
+        runId: "../escape",
+        attempt: "1",
+      }),
+    /github-run-identity-unavailable/u,
+  );
+});
+
+test("runner sampler owns Playwright-style detached descendants and reaps them", async (t) => {
+  if (process.platform !== "linux") return t.skip("Linux /proc diagnostic");
+  const statFields = Array(20).fill("0");
+  statFields[0] = "S";
+  statFields[1] = "1";
+  statFields[2] = "777";
+  statFields[11] = "12";
+  statFields[12] = "3";
+  statFields[19] = "998";
+  assert.deepEqual(
+    parseLinuxProcStat(`123 (node ) test) ${statFields.join(" ")}`),
+    {
+      pid: 123,
+      state: "S",
+      ppid: 1,
+      pgrp: 777,
+      userTicks: 12,
+      systemTicks: 3,
+      startTimeTicks: 998,
+    },
+  );
+  assert.deepEqual(
+    parseLinuxProcIo("rchar: 1\nwchar: 2\nread_bytes: 3\nwrite_bytes: 4\n"),
+    { rchar: 1, wchar: 2, readBytes: 3, writeBytes: 4 },
+  );
+
+  const foreign = spawn(
+    process.execPath,
+    ["-e", "setInterval(() => {}, 1000)"],
+    { detached: true, stdio: "ignore" },
+  );
+  const foreignClosed = new Promise((resolve) =>
+    foreign.once("close", resolve),
+  );
+  await new Promise((resolve, reject) => {
+    foreign.once("spawn", resolve);
+    foreign.once("error", reject);
+  });
+  const waitForForeignClose = (timeoutMs) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      foreignClosed.then(() => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  t.after(async () => {
+    try {
+      process.kill(-foreign.pid, "SIGTERM");
+    } catch {
+      // Already terminated.
+    }
+    if (await waitForForeignClose(1_000)) return;
+    try {
+      process.kill(-foreign.pid, "SIGKILL");
+    } catch {
+      // Already terminated.
+    }
+    assert.equal(await waitForForeignClose(1_000), true);
+  });
+
+  const detachedChildDirectory = mkdtempSync(
+    path.join(os.tmpdir(), "grimodex-runtime-detached-child-"),
+  );
+  t.after(() =>
+    rmSync(detachedChildDirectory, { recursive: true, force: true }),
+  );
+  const detachedPidPath = path.join(detachedChildDirectory, "pid");
+  const ownedTreeSource = [
+    "const { spawn } = require('node:child_process');",
+    "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+    `require('node:fs').writeFileSync(${JSON.stringify(detachedPidPath)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join(" ");
+  const observation = await runObservedRuntimeCommand({
+    command: process.execPath,
+    args: ["-e", ownedTreeSource],
+    cwd: repoRoot,
+    env: process.env,
+    sampleIntervalMs: 50,
+    timeoutMs: 250,
+    termGraceMs: 1_000,
+    killGraceMs: 1_000,
+  });
+  t.after(async () => {
+    if (observation.leaderPid === null) return;
+    const groupAlive = () => {
+      try {
+        process.kill(-observation.leaderPid, 0);
+        return true;
+      } catch (error) {
+        return error?.code !== "ESRCH";
+      }
+    };
+    const waitForGroupExit = async () => {
+      const deadline = Date.now() + 1_000;
+      while (Date.now() < deadline) {
+        if (!groupAlive()) return true;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return !groupAlive();
+    };
+    if (!groupAlive()) return;
+    try {
+      process.kill(-observation.leaderPid, "SIGTERM");
+    } catch {
+      // Already terminated.
+    }
+    if (await waitForGroupExit()) return;
+    try {
+      process.kill(-observation.leaderPid, "SIGKILL");
+    } catch {
+      // Already terminated.
+    }
+    assert.equal(await waitForGroupExit(), true);
+  });
+  assert.equal(observation.stopReason, "diagnostic-timeout");
+  assert.equal(observation.cleanup.actualTermination, true);
+  const detachedChildPid = Number(readFileSync(detachedPidPath, "utf8"));
+  assert.ok(Number.isSafeInteger(detachedChildPid));
+  assert.ok(
+    observation.samples.some((sample) =>
+      sample.processGroups.some((group) => group.groupId === detachedChildPid),
+    ),
+    "the detached child's independent process group must be observed",
+  );
+  assert.throws(
+    () => process.kill(detachedChildPid, 0),
+    { code: "ESRCH" },
+    "the detached process must actually be gone",
+  );
+  assert.deepEqual(observation.limits, {
+    sampleIntervalMs: 50,
+    timeoutMs: 250,
+    termGraceMs: 1_000,
+    killGraceMs: 1_000,
+  });
+  const ownedSample = observation.samples.find(
+    (sample) => sample.processCount >= 2,
+  );
+  assert.ok(ownedSample);
+  assert.equal(ownedSample.status, "complete");
+  assert.equal(ownedSample.ioComplete, true);
+  assert.ok(Number.isFinite(ownedSample.userCpuTicks));
+  assert.ok(Number.isFinite(ownedSample.systemCpuTicks));
+  assert.equal(
+    ownedSample.cpuTicks,
+    ownedSample.userCpuTicks + ownedSample.systemCpuTicks,
+  );
+  assert.ok(Number.isSafeInteger(ownedSample.leaderStartTimeTicks));
+  assert.ok(Number.isFinite(ownedSample.io.readBytes));
+  assert.ok(Number.isFinite(ownedSample.clock.wallEpochMs));
+  assert.match(ownedSample.clock.monotonicNs, /^\d+$/u);
+  assert.ok(ownedSample.clock.uncertaintyMs >= 0.5);
+  assert.ok(Number.isFinite(ownedSample.observerDurationMs));
+  assert.ok(ownedSample.pressure.systemCpu);
+  assert.ok(ownedSample.pressure.systemIo);
+  assert.doesNotThrow(() => process.kill(foreign.pid, 0));
+});
+
+test("owned process-group signals reject a reused leader identity", (t) => {
+  const procRoot = mkdtempSync(
+    path.join(os.tmpdir(), "grimodex-runtime-proc-identity-"),
+  );
+  t.after(() => rmSync(procRoot, { recursive: true, force: true }));
+  const pid = 987654;
+  mkdirSync(path.join(procRoot, String(pid)));
+  const fields = Array(20).fill("0");
+  fields[0] = "S";
+  fields[1] = "1";
+  fields[2] = String(pid);
+  fields[19] = "999";
+  writeFileSync(
+    path.join(procRoot, String(pid), "stat"),
+    `${pid} (runtime-owner) ${fields.join(" ")}`,
+  );
+  let signaled = false;
+  assert.equal(
+    signalOwnedGroup(pid, { pid, startTimeTicks: 998 }, "SIGTERM", {
+      procRoot,
+      killImpl: () => (signaled = true),
+    }),
+    "refused-owner-identity",
+  );
+  assert.equal(signaled, false);
 });
 
 test("runtime frame gate pins active-foreground Chromium timing semantics", async () => {
@@ -330,6 +714,75 @@ test("smoke phase and failure cleanup wire bounded owned cleanup", async () => {
     failureCatch,
     /runBoundedOperation\(\s*"forceKill"/,
     "owned process fallback must also be bounded",
+  );
+});
+
+test("opt-in CPU profiling spans only the first initial autosave and records renderer-clock edges", async () => {
+  const source = await read("electron/scripts/smoke.mjs");
+  const measureStart = source.indexOf(
+    "async function measureRuntimeAutosaveSample(",
+  );
+  const measureEnd = source.indexOf(
+    "function aggregateRuntimeLongTaskSamples(",
+    measureStart,
+  );
+  const measure = source.slice(measureStart, measureEnd);
+  const profileStop = measure.indexOf('cpuProfiler.send("Profiler.stop")');
+
+  assert.match(
+    source,
+    /process\.env\.GRIMODEX_PERF_CPU_PROFILE\s*\n\s*\?\s*path\.resolve/,
+  );
+  assert.match(
+    source,
+    /cpuProfilePath:\s*index === 0 \? performanceCpuProfilePath : null/,
+    "only the first initial autosave receives the optional profile path",
+  );
+  assert.match(
+    measure,
+    /if \(cpuProfilePath\) \{[\s\S]*?newCDPSession\(page\)[\s\S]*?Profiler\.start/,
+    "CDP profiling and renderer-clock collection require the explicit path",
+  );
+  assert.ok(profileStop > measure.indexOf("page.keyboard.type(inputText"));
+  assert.ok(profileStop > measure.indexOf("sceneContainsTextInDb(page"));
+  assert.ok(profileStop > measure.indexOf("waitForRuntimePostSaveDrain(page"));
+  assert.ok(profileStop > measure.indexOf('"postSaveDrain"'));
+  assert.ok(profileStop > measure.indexOf("globalThis.endPerfSession?.()"));
+  assert.match(measure, /"durable-save-observed"/);
+  assert.match(measure, /"post-save-drain-checkpoint"/);
+  assert.match(measure, /rendererClockEdges,\s*longTaskSession/);
+  assert.match(measure, /session\.rendererClockEdges = rendererClockEdges/);
+});
+
+test("opt-in CPU profiling detaches its CDP session after autosave failure", async () => {
+  const source = await read("electron/scripts/smoke.mjs");
+  const measureStart = source.indexOf(
+    "async function measureRuntimeAutosaveSample(",
+  );
+  const measureEnd = source.indexOf(
+    "function aggregateRuntimeLongTaskSamples(",
+    measureStart,
+  );
+  const measure = source.slice(measureStart, measureEnd);
+  const finallyStart = measure.indexOf("} finally {");
+  const detach = measure.indexOf("await cpuProfiler.detach()", finallyStart);
+  const stop = measure.indexOf(
+    'cpuProfiler.send("Profiler.stop")',
+    finallyStart,
+  );
+
+  assert.ok(finallyStart >= 0);
+  assert.ok(stop > finallyStart);
+  assert.ok(detach > stop, "CDP detach follows the attempted profiler stop");
+  assert.match(
+    measure.slice(finallyStart),
+    /try \{\s+await cpuProfiler\.detach\(\);\s+\} catch \(error\) \{\s+profileCleanupError \?\?= error;/,
+    "detach is attempted even when stopping or writing the profile fails",
+  );
+  assert.match(
+    measure.slice(finallyStart),
+    /if \(operationError\) \{\s+if \(profileCleanupError\) \{\s+console\.error\(/,
+    "profile cleanup failure does not replace the original autosave failure",
   );
 });
 

@@ -11,7 +11,10 @@ use grimodex_core::narrative_nir1::{
     EntityInput, EntityRelationBundle, EvidenceInput, GraphEdgeInput, ScopeBinding, ScopeValue,
     ENTITY_RELATION_PRODUCER,
 };
-use grimodex_core::narrative_scene_scope::NarrativeSceneScopeRegistryV1;
+use grimodex_core::narrative_scene_scope::{
+    NarrativeSceneQueryIdentityV1, NarrativeSceneScopeRegistryV1,
+    NarrativeScopeCompatibilityMarkerV1, NarrativeScopeConstraintV1,
+};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -27,14 +30,15 @@ use super::nir1_capacity_diagnostics::{
 use super::nir1_entity_relation::create_nir1_entity_relation_revision;
 use super::project_scope_authority::load_live_project_scope_authority;
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
+use super::scene_scope::NarrativeSceneScopeUpdateV1;
 use super::semantic_epoch::create_epoch_in_tx;
 use super::{
     ensure_scene_scope_binding_in_tx, narrative_extraction_append_human_decision,
-    narrative_extraction_create_run, read_narrative_scene_scope,
+    narrative_extraction_create_run, read_narrative_scene_scope, update_narrative_scene_scope,
     update_narrative_scene_scope_registry, AppendDecisionPayload, BuildAction, CreateRunPayload,
     EdgeObservation, EvidenceFreshness, FindingReasonCode,
-    NarrativeSceneScopeRegistryUpdatePayload, Nir1EntityRelationRevisionRequest,
-    NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+    NarrativeSceneScopeRegistryUpdatePayload, NarrativeSceneScopeUpdatePayload,
+    Nir1EntityRelationRevisionRequest, NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
 };
 
 pub const NIR1_CAPACITY_FIXTURE_SCHEMA_VERSION: &str = "nir1-capacity/1";
@@ -44,6 +48,8 @@ const NIR1_CAPACITY_SCOPE_DRIFT_SCENE_ID: &str = "nir1-capacity-scope-drift-scen
 const NIR1_CAPACITY_RUN_ID: &str = "nir1-capacity-fixture-run";
 const NIR1_CAPACITY_UPDATED_AT: &str = "2026-09-17T00:00:00Z";
 const NIR1_CAPACITY_DRIFTED_AT: &str = "2026-09-18T00:00:00Z";
+const A3_ELIGIBLE_SHARED_Q512_CASE: &str = "Q512/R2/A3-eligible-shared";
+const A3_ELIGIBLE_N512_REGISTRY33_CASE: &str = "Q512/R1/E12/registry33";
 const NIR1_CAPACITY_SOURCE_DRIFTED_AT: &str = "2026-09-19T00:00:00Z";
 const NIR1_CAPACITY_FRESHNESS_STALE_AT: &str = "2026-09-18T00:00:00.000Z";
 const MAX_REVISION_MATERIAL_RECORDS: usize = 511;
@@ -188,6 +194,14 @@ pub fn build_fixture_from_manifest(
         db.migrate()?;
         let catalog = catalog_for_plans(&plans);
         seed_catalog_and_authorities(&db, &catalog.entries, &catalog.relations)?;
+        let registry_reference_count = match case_id {
+            A3_ELIGIBLE_SHARED_Q512_CASE => Some(3),
+            A3_ELIGIBLE_N512_REGISTRY33_CASE => Some(32),
+            _ => None,
+        };
+        if let Some(reference_count) = registry_reference_count {
+            make_fixture_scope_a3_eligible(&db, reference_count)?;
+        }
         create_typed_run(&db, NIR1_CAPACITY_RUN_ID, "capacity-initial")?;
 
         let mut source_drift_ids = Vec::new();
@@ -285,7 +299,10 @@ pub fn build_fixture_from_manifest(
         }
 
         if let Some(target) = spec.source_input_bytes {
-            ensure!(has_ineligible, "source byte padding requires ineligible candidates");
+            ensure!(
+                has_ineligible,
+                "source byte padding requires ineligible candidates"
+            );
             pad_ineligible_source_input(&db, target)?;
         }
 
@@ -767,6 +784,100 @@ fn seed_stale_freshness_candidates(db: &Database, revision_ids: &[String]) -> Re
     })
 }
 
+fn make_fixture_scope_a3_eligible(db: &Database, registry_reference_count: usize) -> Result<()> {
+    let current = db.with_read_transaction(|conn| {
+        read_narrative_scene_scope(
+            conn,
+            NIR1_CAPACITY_FIXTURE_PROJECT_ID,
+            NIR1_CAPACITY_FIXTURE_SCENE_ID,
+        )
+    })?;
+    let mut registry = current.registry;
+    ensure!(
+        registry_reference_count >= 3,
+        "A3-eligible fixture needs three explicit scope references"
+    );
+    registry.timeline_refs.push("timeline:main".to_owned());
+    registry.worldline_refs.push("worldline:prime".to_owned());
+    registry
+        .narrative_layer_refs
+        .push("layer:manuscript".to_owned());
+    for ordinal in 0..registry_reference_count - 3 {
+        registry
+            .timeline_refs
+            .push(format!("timeline:capacity-{ordinal}"));
+    }
+    update_narrative_scene_scope_registry(
+        db,
+        NarrativeSceneScopeRegistryUpdatePayload {
+            project_id: NIR1_CAPACITY_FIXTURE_PROJECT_ID.to_owned(),
+            request_id: "q512-explicit-registry".to_owned(),
+            session_id: "q512-explicit-scope".to_owned(),
+            event_uid: "q512-explicit-registry-event".to_owned(),
+            base_version: current.registry_revision,
+            updated_at: "2026-09-20T00:00:00.000Z".to_owned(),
+            registry,
+        },
+    )?;
+    let identity = NarrativeSceneQueryIdentityV1 {
+        timeline: NarrativeScopeConstraintV1::Exact {
+            reference: "timeline:main".to_owned(),
+        },
+        worldline: NarrativeScopeConstraintV1::Exact {
+            reference: "worldline:prime".to_owned(),
+        },
+        narrative_layer: NarrativeScopeConstraintV1::Exact {
+            reference: "layer:manuscript".to_owned(),
+        },
+    };
+    for (scene_id, ordinal) in [
+        (NIR1_CAPACITY_FIXTURE_SCENE_ID, 0),
+        (NIR1_CAPACITY_SCOPE_DRIFT_SCENE_ID, 1),
+    ] {
+        let current = db.with_read_transaction(|conn| {
+            read_narrative_scene_scope(conn, NIR1_CAPACITY_FIXTURE_PROJECT_ID, scene_id)
+        })?;
+        update_narrative_scene_scope(
+            db,
+            NarrativeSceneScopeUpdatePayload {
+                project_id: NIR1_CAPACITY_FIXTURE_PROJECT_ID.to_owned(),
+                scene_id: scene_id.to_owned(),
+                request_id: format!("q512-explicit-scope-{ordinal}"),
+                session_id: "q512-explicit-scope".to_owned(),
+                event_uid: format!("q512-explicit-scope-event-{ordinal}"),
+                base_version: current.binding.version,
+                updated_at: format!("2026-09-20T00:00:0{}.000Z", ordinal + 1),
+                scope: NarrativeSceneScopeUpdateV1 {
+                    schema_version: current.binding.schema_version,
+                    compatibility_marker: NarrativeScopeCompatibilityMarkerV1::Explicit,
+                    query_identity: identity.clone(),
+                    material_constraint: current.binding.material_constraint,
+                    knowledge_holder: current.binding.knowledge_holder,
+                    audience: current.binding.audience,
+                },
+            },
+        )?;
+    }
+    let mut drained = false;
+    for _ in 0..8 {
+        match super::run_incremental_freshness_cycle(db)? {
+            super::incremental_freshness::IncrementalFreshnessCycleOutcome::Processed(_) => {}
+            super::incremental_freshness::IncrementalFreshnessCycleOutcome::Idle => {
+                drained = true;
+                break;
+            }
+            super::incremental_freshness::IncrementalFreshnessCycleOutcome::Held(_) => {
+                anyhow::bail!("A3-eligible capacity fixture Freshness held")
+            }
+        }
+    }
+    ensure!(
+        drained,
+        "A3-eligible capacity fixture Freshness did not drain"
+    );
+    Ok(())
+}
+
 fn mutate_scope_registry(db: &Database) -> Result<()> {
     let current = db.with_read_transaction(|conn| {
         read_narrative_scene_scope(
@@ -1028,12 +1139,10 @@ fn validate_candidate_shape(
 
 fn plan_case(case_id: &str, expected: &FixtureExpectedShape) -> Result<Vec<RevisionPlan>> {
     let qualified = expected.qualified_materials.unwrap_or(0);
-    let revisions = expected
-        .qualified_revisions
-        .unwrap_or(match case_id {
-            "Q2044/byte-heavy" | "Q2044/evidence-shared" | "Q2044/evidence-unique" => 4,
-            _ => 0,
-        });
+    let revisions = expected.qualified_revisions.unwrap_or(match case_id {
+        "Q2044/byte-heavy" | "Q2044/evidence-shared" | "Q2044/evidence-unique" => 4,
+        _ => 0,
+    });
     let mut plans = Vec::new();
     let mut index = 0usize;
     if let Some(ineligible) = expected.ineligible_candidates {
@@ -1079,7 +1188,10 @@ fn plan_case(case_id: &str, expected: &FixtureExpectedShape) -> Result<Vec<Revis
         "{case_id}: qualified revisions are required for qualified materials"
     );
     let partition = partition_materials(qualified, revisions)?;
-    let shared = case_id == "Q2044/evidence-shared";
+    let shared = matches!(
+        case_id,
+        "Q2044/evidence-shared" | A3_ELIGIBLE_SHARED_Q512_CASE | A3_ELIGIBLE_N512_REGISTRY33_CASE
+    );
     let byte_heavy = case_id == "Q2044/byte-heavy";
     for (revision_index, material_count) in partition.into_iter().enumerate() {
         let relation_count = usize::from(material_count >= 3 && material_count % 2 == 1);

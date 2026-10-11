@@ -121,6 +121,10 @@ function syncFileSync(filePath: string): void {
   }
 }
 
+function syncFixtureFile(filePath: string): void {
+  if (process.platform !== "win32") syncFileSync(filePath);
+}
+
 async function createHeldFreshnessWriterFixture(
   prefix: string,
   options: {
@@ -185,9 +189,9 @@ async function writeHeldFreshnessRequest(
     }),
     { mode: 0o600 },
   );
-  syncFileSync(temporaryPath);
+  syncFixtureFile(temporaryPath);
   await rename(temporaryPath, requestPath);
-  syncDirectorySync(nonceDir);
+  if (process.platform !== "win32") syncDirectorySync(nonceDir);
 }
 
 function writeHeldFreshnessRequestSync(
@@ -466,9 +470,11 @@ describe("C2-5B main-only CI seam", () => {
         path.join(nonceDir, "receipt.json"),
         "utf8",
       );
-      expect(
-        (await stat(path.join(nonceDir, "receipt.json"))).mode & 0o777,
-      ).toBe(0o600);
+      if (process.platform !== "win32") {
+        expect(
+          (await stat(path.join(nonceDir, "receipt.json"))).mode & 0o777,
+        ).toBe(0o600);
+      }
       expect(JSON.parse(encoded)).toEqual(artifact?.receipt);
       expect(encoded).not.toContain(NARRATIVE_MAINTENANCE_OWNER_TOKEN);
       await expect(
@@ -649,191 +655,205 @@ describe("C2-5B main-only CI seam", () => {
     ).toBe(false);
   });
 
-  it("publishes one held-Freshness event after the request rename without owner callbacks", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      // A completed callback before request visibility is not evidence. The
-      // next periodic Held callback is the only causal publication point.
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 1),
-        ),
-      ).toBeNull();
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000006",
+  it.skipIf(process.platform === "win32")(
+    "publishes one held-Freshness event after the request rename without owner callbacks",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-red-",
       );
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 2),
-        ),
-      ).toBeNull();
-      const artifact = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 3),
-      );
-      expect(artifact).not.toBeNull();
-      expect(
-        (artifact as { receipt: Record<string, unknown> }).receipt,
-      ).toEqual(
-        expect.objectContaining({
-          type: HELD_FRESHNESS_TYPE,
-          requestNonce: "00000000-0000-4000-8000-000000000006",
-          workspaceBinding: TEST_WORKSPACE_BINDING,
-          freshness: expect.objectContaining({
-            heldProjectId: "project-hold",
-            cutoverNotReady: true,
-            noWrite: true,
-            hasMore: false,
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        // A completed callback before request visibility is not evidence. The
+        // next periodic Held callback is the only causal publication point.
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 1),
+          ),
+        ).toBeNull();
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000006",
+        );
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 2),
+          ),
+        ).toBeNull();
+        const artifact = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 3),
+        );
+        expect(artifact).not.toBeNull();
+        expect(
+          (artifact as { receipt: Record<string, unknown> }).receipt,
+        ).toEqual(
+          expect.objectContaining({
+            type: HELD_FRESHNESS_TYPE,
+            requestNonce: "00000000-0000-4000-8000-000000000006",
+            workspaceBinding: TEST_WORKSPACE_BINDING,
+            freshness: expect.objectContaining({
+              heldProjectId: "project-hold",
+              cutoverNotReady: true,
+              noWrite: true,
+              hasMore: false,
+            }),
           }),
-        }),
-      );
-      expect(
-        (artifact as { receipt: Record<string, unknown> }).receipt,
-      ).not.toHaveProperty("discovery");
-      expect(
-        (artifact as { receipt: Record<string, unknown> }).receipt,
-      ).not.toHaveProperty("scheduler");
-      expect(await readdir(fixture.nonceDir)).toEqual([
-        `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000001.json`,
-        HELD_FRESHNESS_REQUEST_FILE,
-        "receipt.json",
-      ]);
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
+        );
+        expect(
+          (artifact as { receipt: Record<string, unknown> }).receipt,
+        ).not.toHaveProperty("discovery");
+        expect(
+          (artifact as { receipt: Record<string, unknown> }).receipt,
+        ).not.toHaveProperty("scheduler");
+        expect(await readdir(fixture.nonceDir)).toEqual([
+          `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000001.json`,
+          HELD_FRESHNESS_REQUEST_FILE,
+          "receipt.json",
+        ]);
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
-  it("requires the same request after the first durable barrier and resets on mutation", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-barrier-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000005",
+  it.skipIf(process.platform === "win32")(
+    "requires the same request after the first durable barrier and resets on mutation",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-barrier-red-",
       );
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000005",
+        );
 
-      // The first callback only establishes the main-process durable barrier.
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 1),
-        ),
-      ).toBeNull();
+        // The first callback only establishes the main-process durable barrier.
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 1),
+          ),
+        ).toBeNull();
 
-      // A changed request cannot reuse the prior barrier. It must establish a
-      // new one and remain fail-closed for this callback.
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000006",
-      );
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 2),
-        ),
-      ).toBeNull();
+        // A changed request cannot reuse the prior barrier. It must establish a
+        // new one and remain fail-closed for this callback.
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000006",
+        );
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 2),
+          ),
+        ).toBeNull();
 
-      const artifact = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 3),
-      );
-      expect(artifact).not.toBeNull();
-      const receipt = (artifact as { receipt: Record<string, unknown> })
-        .receipt;
-      const freshness = receipt.freshness as Record<string, unknown>;
-      expect(receipt.requestNonce).toBe("00000000-0000-4000-8000-000000000006");
-      expect(freshness.requestPublishedAtMs).toEqual(expect.any(Number));
-      expect(freshness.requestBarrierCycleGeneration).toBe(2);
-      expect(freshness.cycleStartedAtMs).toBeGreaterThan(
-        freshness.requestPublishedAtMs as number,
-      );
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
+        const artifact = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 3),
+        );
+        expect(artifact).not.toBeNull();
+        const receipt = (artifact as { receipt: Record<string, unknown> })
+          .receipt;
+        const freshness = receipt.freshness as Record<string, unknown>;
+        expect(receipt.requestNonce).toBe(
+          "00000000-0000-4000-8000-000000000006",
+        );
+        expect(freshness.requestPublishedAtMs).toEqual(expect.any(Number));
+        expect(freshness.requestBarrierCycleGeneration).toBe(2);
+        expect(freshness.cycleStartedAtMs).toBeGreaterThan(
+          freshness.requestPublishedAtMs as number,
+        );
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
-  it("arms the durable request barrier before recordFreshness returns", async () => {
-    let barrierArmed = false;
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-synchronous-barrier-red-",
-      {
-        afterRequestBarrierForTest: () => {
-          barrierArmed = true;
+  it.skipIf(process.platform === "win32")(
+    "arms the durable request barrier before recordFreshness returns",
+    async () => {
+      let barrierArmed = false;
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-synchronous-barrier-red-",
+        {
+          afterRequestBarrierForTest: () => {
+            barrierArmed = true;
+          },
         },
-      },
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000023",
       );
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000023",
+        );
 
-      const firstCallback = fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 1),
-      );
-      expect(barrierArmed).toBe(true);
-      await expect(firstCallback).resolves.toBeNull();
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
+        const firstCallback = fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 1),
+        );
+        expect(barrierArmed).toBe(true);
+        await expect(firstCallback).resolves.toBeNull();
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
-  it("keeps a pre-barrier cycle fail-closed before a later causal cycle", async () => {
-    vi.useFakeTimers();
-    const t1 = 50_000;
-    vi.setSystemTime(t1);
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-barrier-timing-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000007",
+  it.skipIf(process.platform === "win32")(
+    "keeps a pre-barrier cycle fail-closed before a later causal cycle",
+    async () => {
+      vi.useFakeTimers();
+      const t1 = 50_000;
+      vi.setSystemTime(t1);
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-barrier-timing-red-",
       );
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 1, "project-hold", t1 + 1, t1 - 1),
-        ),
-      ).toBeNull();
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 2, "project-hold", t1 + 1, t1),
-        ),
-      ).toBeNull();
-      const artifact = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 3, "project-hold", t1 + 2, t1 + 1),
-      );
-      expect(artifact).not.toBeNull();
-      expect(
-        (artifact as { receipt: Record<string, unknown> }).receipt.freshness,
-      ).toEqual(
-        expect.objectContaining({
-          requestBarrierCycleGeneration: 1,
-          requestPublishedAtMs: t1,
-          cycleStartedAtMs: t1 + 1,
-        }),
-      );
-    } finally {
-      vi.useRealTimers();
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000007",
+        );
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 1, "project-hold", t1 + 1, t1 - 1),
+          ),
+        ).toBeNull();
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 2, "project-hold", t1 + 1, t1),
+          ),
+        ).toBeNull();
+        const artifact = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 3, "project-hold", t1 + 2, t1 + 1),
+        );
+        expect(artifact).not.toBeNull();
+        expect(
+          (artifact as { receipt: Record<string, unknown> }).receipt.freshness,
+        ).toEqual(
+          expect.objectContaining({
+            requestBarrierCycleGeneration: 1,
+            requestPublishedAtMs: t1,
+            cycleStartedAtMs: t1 + 1,
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("treats nullable maintenance and scheduler producer bindings as ordinary invalidation", async () => {
     const fixture = await createHeldFreshnessWriterFixture(
@@ -924,419 +944,443 @@ describe("C2-5B main-only CI seam", () => {
     }
   });
 
-  it("does not observe a request until atomic rename and rejects duplicate request publication", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-atomic-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      const temporaryRequest = `${HELD_FRESHNESS_REQUEST_FILE}.tmp`;
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000010",
-        TEST_WORKSPACE_BINDING,
-        temporaryRequest,
+  it.skipIf(process.platform === "win32")(
+    "does not observe a request until atomic rename and rejects duplicate request publication",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-atomic-red-",
       );
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 1),
-        ),
-      ).toBeNull();
-      await rename(
-        path.join(fixture.nonceDir, temporaryRequest),
-        path.join(fixture.nonceDir, HELD_FRESHNESS_REQUEST_FILE),
-      );
-      const first = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 2),
-      );
-      expect(first).toBeNull();
-      const second = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 3),
-      );
-      expect(second).not.toBeNull();
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 4),
-        ),
-      ).toBeNull();
-      expect(await readdir(fixture.nonceDir)).toEqual([
-        `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000001.json`,
-        HELD_FRESHNESS_REQUEST_FILE,
-        "receipt.json",
-      ]);
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("does not accept a request renamed during a queued callback until the next cycle", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-rename-race-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      const temporaryRequest = `${HELD_FRESHNESS_REQUEST_FILE}.tmp`;
-      const observedAtMs = Date.now();
-      const callback = fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 1, "project-hold", observedAtMs),
-      );
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000011",
-        TEST_WORKSPACE_BINDING,
-        temporaryRequest,
-      );
-      await rename(
-        path.join(fixture.nonceDir, temporaryRequest),
-        path.join(fixture.nonceDir, HELD_FRESHNESS_REQUEST_FILE),
-      );
-      expect(await callback).toBeNull();
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 2),
-        ),
-      ).toBeNull();
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 3),
-        ),
-      ).not.toBeNull();
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("arms only after a strict main directory barrier for a renamed request", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-durable-publication-race-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      const request = {
-        version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
-        type: HELD_FRESHNESS_REQUEST_TYPE,
-        nonce: baseEnv[NARRATIVE_MAINTENANCE_NONCE_ENV],
-        requestNonce: "00000000-0000-4000-8000-000000000022",
-        phase: "held-freshness-durable-publication",
-        requestedAt: "1970-01-01T00:00:00.000Z",
-        workspaceBinding: TEST_WORKSPACE_BINDING,
-      };
-      const temporaryPath = path.join(
-        fixture.nonceDir,
-        `${HELD_FRESHNESS_REQUEST_FILE}.tmp`,
-      );
-      const requestPath = path.join(
-        fixture.nonceDir,
-        HELD_FRESHNESS_REQUEST_FILE,
-      );
-      writeFileSync(temporaryPath, canonicalJson(request), { mode: 0o600 });
-      syncFileSync(temporaryPath);
-      renameSync(temporaryPath, requestPath);
-
-      // The request is visible after rename, but the nonce directory has not
-      // been fsynced by the harness. The main writer must establish its own
-      // strict barrier and cannot certify this callback from metadata alone.
-      const barrierCallback = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 1, "project-hold", Date.now() + 100),
-      );
-      expect(barrierCallback).toBeNull();
-
-      const cycleStartedAtMs = Date.now() + 10;
-      const afterBarrier = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(
-          state,
-          2,
-          "project-hold",
-          cycleStartedAtMs + 1,
-          cycleStartedAtMs,
-        ),
-      );
-      expect(afterBarrier).not.toBeNull();
-      expect(
-        (afterBarrier as { receipt: Record<string, unknown> }).receipt
-          .freshness,
-      ).toEqual(
-        expect.objectContaining({
-          requestBarrierCycleGeneration: 1,
-          requestPublishedAtMs: expect.any(Number),
-        }),
-      );
-      const freshness = (afterBarrier as { receipt: Record<string, unknown> })
-        .receipt.freshness as Record<string, unknown>;
-      expect(cycleStartedAtMs).toBeGreaterThan(
-        freshness.requestPublishedAtMs as number,
-      );
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects a request published after callback entry at the same observed time", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-publication-race-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      const temporaryRequest = `${HELD_FRESHNESS_REQUEST_FILE}.tmp`;
-      writeHeldFreshnessRequestSync(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000016",
-        temporaryRequest,
-      );
-      const callbackEntryObservedAtMs = Date.now();
-      // Leave a measurable publication boundary so filesystems with
-      // millisecond timestamps cannot collapse the two observations.
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      renameSync(
-        path.join(fixture.nonceDir, temporaryRequest),
-        path.join(fixture.nonceDir, HELD_FRESHNESS_REQUEST_FILE),
-      );
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(
-            state,
-            1,
-            "project-hold",
-            callbackEntryObservedAtMs,
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        const temporaryRequest = `${HELD_FRESHNESS_REQUEST_FILE}.tmp`;
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000010",
+          TEST_WORKSPACE_BINDING,
+          temporaryRequest,
+        );
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 1),
           ),
-        ),
-      ).toBeNull();
-      expect(
-        await fixture.writer?.recordFreshness(
+        ).toBeNull();
+        await rename(
+          path.join(fixture.nonceDir, temporaryRequest),
+          path.join(fixture.nonceDir, HELD_FRESHNESS_REQUEST_FILE),
+        );
+        const first = await fixture.writer?.recordFreshness(
           heldFreshnessObservation(state, 2),
-        ),
-      ).not.toBeNull();
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects an atomic request replacement captured before the queued read", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-request-replace-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000012",
-      );
-      const callback = fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 1),
-      );
-
-      // Replace the final request before the queued operation gets to its
-      // reader. The operation must parse the invocation snapshot, then reject
-      // the durable path mismatch rather than publishing for the old request.
-      const replacement = `${HELD_FRESHNESS_REQUEST_FILE}.tmp`;
-      writeHeldFreshnessRequestSync(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000013",
-        replacement,
-      );
-      renameSync(
-        path.join(fixture.nonceDir, replacement),
-        path.join(fixture.nonceDir, HELD_FRESHNESS_REQUEST_FILE),
-      );
-      expect(await callback).toBeNull();
-      expect(await readdir(fixture.nonceDir)).toEqual([
-        HELD_FRESHNESS_REQUEST_FILE,
-        "receipt.json",
-      ]);
-
-      // The rejected invocation does not consume the sequence. The next
-      // Freshness cycle can publish the replacement as sequence one.
-      const next = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 2),
-      );
-      expect(next).toBeNull();
-      const published = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 3),
-      );
-      expect(published).not.toBeNull();
-      expect(
-        (published as { receipt: Record<string, unknown> }).receipt,
-      ).toEqual(
-        expect.objectContaining({
-          sequence: 1,
-          requestNonce: "00000000-0000-4000-8000-000000000013",
-        }),
-      );
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("does not overwrite a competing sequence target or advance sequence", async () => {
-    let publishInterpositions = 0;
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-publish-competitor-red-",
-      {
-        beforePublishForTest: (finalPath) => {
-          publishInterpositions += 1;
-          if (publishInterpositions === 1) {
-            writeFileSync(finalPath, "competitor", { mode: 0o600 });
-          }
-        },
-      },
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000015",
-      );
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 1),
-        ),
-      ).toBeNull();
-      const competitorPath = path.join(
-        fixture.nonceDir,
-        `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000001.json`,
-      );
-      const competing = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 2),
-      );
-      expect(competing).toBeNull();
-      expect(publishInterpositions).toBe(1);
-      expect(await readFile(competitorPath, "utf8")).toBe("competitor");
-      await rm(competitorPath, { force: true });
-      const next = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 3),
-      );
-      expect(next).toBeNull();
-      const published = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(state, 4),
-      );
-      expect(published).not.toBeNull();
-      expect(
-        (published as { receipt: Record<string, unknown> }).receipt.sequence,
-      ).toBe(1);
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects a non-adjacent replay of a request nonce during one launch", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-request-replay-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      const requestA = "00000000-0000-4000-8000-000000000017";
-      const requestB = "00000000-0000-4000-8000-000000000018";
-      await writeHeldFreshnessRequest(fixture.nonceDir, requestA);
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 1),
-        ),
-      ).toBeNull();
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 2),
-        ),
-      ).not.toBeNull();
-
-      await writeHeldFreshnessRequest(fixture.nonceDir, requestB);
-      expect(
-        await fixture.writer?.recordFreshness(
+        );
+        expect(first).toBeNull();
+        const second = await fixture.writer?.recordFreshness(
           heldFreshnessObservation(state, 3),
-        ),
-      ).toBeNull();
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 4),
-        ),
-      ).not.toBeNull();
+        );
+        expect(second).not.toBeNull();
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 4),
+          ),
+        ).toBeNull();
+        expect(await readdir(fixture.nonceDir)).toEqual([
+          `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000001.json`,
+          HELD_FRESHNESS_REQUEST_FILE,
+          "receipt.json",
+        ]);
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
-      // A request nonce is a launch-lifetime identity, not merely a
-      // consecutive-cycle value. Replaying A after B must not publish again.
-      await writeHeldFreshnessRequest(fixture.nonceDir, requestA);
-      expect(
-        await fixture.writer?.recordFreshness(
-          heldFreshnessObservation(state, 5),
-        ),
-      ).toBeNull();
-      expect(await readdir(fixture.nonceDir)).toEqual([
-        `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000001.json`,
-        `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000002.json`,
-        HELD_FRESHNESS_REQUEST_FILE,
-        "receipt.json",
-      ]);
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("rejects a held callback without a post-publication native cycle start", async () => {
-    const fixture = await createHeldFreshnessWriterFixture(
-      "grimodex-held-freshness-cycle-causality-red-",
-    );
-    try {
-      const state = quiescenceState({
-        freshnessHoldProjectId: "project-hold",
-        heldProjectId: "project-hold",
-      });
-      const cycleStartedAtMs = Date.now();
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      await writeHeldFreshnessRequest(
-        fixture.nonceDir,
-        "00000000-0000-4000-8000-000000000020",
+  it.skipIf(process.platform === "win32")(
+    "does not accept a request renamed during a queued callback until the next cycle",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-rename-race-red-",
       );
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        const temporaryRequest = `${HELD_FRESHNESS_REQUEST_FILE}.tmp`;
+        const observedAtMs = Date.now();
+        const callback = fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 1, "project-hold", observedAtMs),
+        );
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000011",
+          TEST_WORKSPACE_BINDING,
+          temporaryRequest,
+        );
+        await rename(
+          path.join(fixture.nonceDir, temporaryRequest),
+          path.join(fixture.nonceDir, HELD_FRESHNESS_REQUEST_FILE),
+        );
+        expect(await callback).toBeNull();
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 2),
+          ),
+        ).toBeNull();
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 3),
+          ),
+        ).not.toBeNull();
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
-      // The native cycle started before this request was published. Even
-      // though it completed afterward, its state snapshot is not causal.
-      expect(
-        await fixture.writer?.recordFreshness(
+  it.skipIf(process.platform === "win32")(
+    "arms only after a strict main directory barrier for a renamed request",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-durable-publication-race-red-",
+      );
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        const request = {
+          version: NARRATIVE_MAINTENANCE_RECEIPT_VERSION,
+          type: HELD_FRESHNESS_REQUEST_TYPE,
+          nonce: baseEnv[NARRATIVE_MAINTENANCE_NONCE_ENV],
+          requestNonce: "00000000-0000-4000-8000-000000000022",
+          phase: "held-freshness-durable-publication",
+          requestedAt: "1970-01-01T00:00:00.000Z",
+          workspaceBinding: TEST_WORKSPACE_BINDING,
+        };
+        const temporaryPath = path.join(
+          fixture.nonceDir,
+          `${HELD_FRESHNESS_REQUEST_FILE}.tmp`,
+        );
+        const requestPath = path.join(
+          fixture.nonceDir,
+          HELD_FRESHNESS_REQUEST_FILE,
+        );
+        writeFileSync(temporaryPath, canonicalJson(request), { mode: 0o600 });
+        syncFixtureFile(temporaryPath);
+        renameSync(temporaryPath, requestPath);
+
+        // The request is visible after rename, but the nonce directory has not
+        // been fsynced by the harness. The main writer must establish its own
+        // strict barrier and cannot certify this callback from metadata alone.
+        const barrierCallback = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 1, "project-hold", Date.now() + 100),
+        );
+        expect(barrierCallback).toBeNull();
+
+        const cycleStartedAtMs = Date.now() + 10;
+        const afterBarrier = await fixture.writer?.recordFreshness(
           heldFreshnessObservation(
             state,
-            1,
+            2,
             "project-hold",
-            Date.now() + 100,
+            cycleStartedAtMs + 1,
             cycleStartedAtMs,
           ),
-        ),
-      ).toBeNull();
-      const nextCycleStartedAtMs = Date.now() + 10;
-      const next = await fixture.writer?.recordFreshness(
-        heldFreshnessObservation(
-          state,
-          2,
-          "project-hold",
-          nextCycleStartedAtMs + 10,
-          nextCycleStartedAtMs,
-        ),
+        );
+        expect(afterBarrier).not.toBeNull();
+        expect(
+          (afterBarrier as { receipt: Record<string, unknown> }).receipt
+            .freshness,
+        ).toEqual(
+          expect.objectContaining({
+            requestBarrierCycleGeneration: 1,
+            requestPublishedAtMs: expect.any(Number),
+          }),
+        );
+        const freshness = (afterBarrier as { receipt: Record<string, unknown> })
+          .receipt.freshness as Record<string, unknown>;
+        expect(cycleStartedAtMs).toBeGreaterThan(
+          freshness.requestPublishedAtMs as number,
+        );
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a request published after callback entry at the same observed time",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-publication-race-red-",
       );
-      expect(next).not.toBeNull();
-      expect(
-        (next as { receipt: Record<string, unknown> }).receipt.sequence,
-      ).toBe(1);
-    } finally {
-      await rm(fixture.tempRoot, { recursive: true, force: true });
-    }
-  });
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        const temporaryRequest = `${HELD_FRESHNESS_REQUEST_FILE}.tmp`;
+        writeHeldFreshnessRequestSync(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000016",
+          temporaryRequest,
+        );
+        const callbackEntryObservedAtMs = Date.now();
+        // Leave a measurable publication boundary so filesystems with
+        // millisecond timestamps cannot collapse the two observations.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        renameSync(
+          path.join(fixture.nonceDir, temporaryRequest),
+          path.join(fixture.nonceDir, HELD_FRESHNESS_REQUEST_FILE),
+        );
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(
+              state,
+              1,
+              "project-hold",
+              callbackEntryObservedAtMs,
+            ),
+          ),
+        ).toBeNull();
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 2),
+          ),
+        ).not.toBeNull();
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects an atomic request replacement captured before the queued read",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-request-replace-red-",
+      );
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000012",
+        );
+        const callback = fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 1),
+        );
+
+        // Replace the final request before the queued operation gets to its
+        // reader. The operation must parse the invocation snapshot, then reject
+        // the durable path mismatch rather than publishing for the old request.
+        const replacement = `${HELD_FRESHNESS_REQUEST_FILE}.tmp`;
+        writeHeldFreshnessRequestSync(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000013",
+          replacement,
+        );
+        renameSync(
+          path.join(fixture.nonceDir, replacement),
+          path.join(fixture.nonceDir, HELD_FRESHNESS_REQUEST_FILE),
+        );
+        expect(await callback).toBeNull();
+        expect(await readdir(fixture.nonceDir)).toEqual([
+          HELD_FRESHNESS_REQUEST_FILE,
+          "receipt.json",
+        ]);
+
+        // The rejected invocation does not consume the sequence. The next
+        // Freshness cycle can publish the replacement as sequence one.
+        const next = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 2),
+        );
+        expect(next).toBeNull();
+        const published = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 3),
+        );
+        expect(published).not.toBeNull();
+        expect(
+          (published as { receipt: Record<string, unknown> }).receipt,
+        ).toEqual(
+          expect.objectContaining({
+            sequence: 1,
+            requestNonce: "00000000-0000-4000-8000-000000000013",
+          }),
+        );
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not overwrite a competing sequence target or advance sequence",
+    async () => {
+      let publishInterpositions = 0;
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-publish-competitor-red-",
+        {
+          beforePublishForTest: (finalPath) => {
+            publishInterpositions += 1;
+            if (publishInterpositions === 1) {
+              writeFileSync(finalPath, "competitor", { mode: 0o600 });
+            }
+          },
+        },
+      );
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000015",
+        );
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 1),
+          ),
+        ).toBeNull();
+        const competitorPath = path.join(
+          fixture.nonceDir,
+          `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000001.json`,
+        );
+        const competing = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 2),
+        );
+        expect(competing).toBeNull();
+        expect(publishInterpositions).toBe(1);
+        expect(await readFile(competitorPath, "utf8")).toBe("competitor");
+        await rm(competitorPath, { force: true });
+        const next = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 3),
+        );
+        expect(next).toBeNull();
+        const published = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(state, 4),
+        );
+        expect(published).not.toBeNull();
+        expect(
+          (published as { receipt: Record<string, unknown> }).receipt.sequence,
+        ).toBe(1);
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a non-adjacent replay of a request nonce during one launch",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-request-replay-red-",
+      );
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        const requestA = "00000000-0000-4000-8000-000000000017";
+        const requestB = "00000000-0000-4000-8000-000000000018";
+        await writeHeldFreshnessRequest(fixture.nonceDir, requestA);
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 1),
+          ),
+        ).toBeNull();
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 2),
+          ),
+        ).not.toBeNull();
+
+        await writeHeldFreshnessRequest(fixture.nonceDir, requestB);
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 3),
+          ),
+        ).toBeNull();
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 4),
+          ),
+        ).not.toBeNull();
+
+        // A request nonce is a launch-lifetime identity, not merely a
+        // consecutive-cycle value. Replaying A after B must not publish again.
+        await writeHeldFreshnessRequest(fixture.nonceDir, requestA);
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(state, 5),
+          ),
+        ).toBeNull();
+        expect(await readdir(fixture.nonceDir)).toEqual([
+          `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000001.json`,
+          `${HELD_FRESHNESS_SEQUENCE_PREFIX}0000000002.json`,
+          HELD_FRESHNESS_REQUEST_FILE,
+          "receipt.json",
+        ]);
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a held callback without a post-publication native cycle start",
+    async () => {
+      const fixture = await createHeldFreshnessWriterFixture(
+        "grimodex-held-freshness-cycle-causality-red-",
+      );
+      try {
+        const state = quiescenceState({
+          freshnessHoldProjectId: "project-hold",
+          heldProjectId: "project-hold",
+        });
+        const cycleStartedAtMs = Date.now();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        await writeHeldFreshnessRequest(
+          fixture.nonceDir,
+          "00000000-0000-4000-8000-000000000020",
+        );
+
+        // The native cycle started before this request was published. Even
+        // though it completed afterward, its state snapshot is not causal.
+        expect(
+          await fixture.writer?.recordFreshness(
+            heldFreshnessObservation(
+              state,
+              1,
+              "project-hold",
+              Date.now() + 100,
+              cycleStartedAtMs,
+            ),
+          ),
+        ).toBeNull();
+        const nextCycleStartedAtMs = Date.now() + 10;
+        const next = await fixture.writer?.recordFreshness(
+          heldFreshnessObservation(
+            state,
+            2,
+            "project-hold",
+            nextCycleStartedAtMs + 10,
+            nextCycleStartedAtMs,
+          ),
+        );
+        expect(next).not.toBeNull();
+        expect(
+          (next as { receipt: Record<string, unknown> }).receipt.sequence,
+        ).toBe(1);
+      } finally {
+        await rm(fixture.tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("rejects a self-consistent payload whose hold is outside the launch seam", async () => {
     const fixture = await createHeldFreshnessWriterFixture(
@@ -1408,7 +1452,7 @@ describe("C2-5B main-only CI seam", () => {
     }
   });
 
-  it("fails closed when strict nonce directory fsync is unavailable", async () => {
+  it("does not publish Held Freshness evidence on Win32", async () => {
     const fixture = await createHeldFreshnessWriterFixture(
       "grimodex-held-freshness-directory-fsync-blocked-red-",
     );
@@ -1416,6 +1460,10 @@ describe("C2-5B main-only CI seam", () => {
       await writeHeldFreshnessRequest(
         fixture.nonceDir,
         "00000000-0000-4000-8000-000000000023",
+      );
+      const originalReceipt = await readFile(
+        path.join(fixture.nonceDir, "receipt.json"),
+        "utf8",
       );
       const state = quiescenceState({
         freshnessHoldProjectId: "project-hold",
@@ -1434,6 +1482,16 @@ describe("C2-5B main-only CI seam", () => {
             heldFreshnessObservation(state, 2),
           ),
         ).toBeNull();
+        expect(
+          (await readdir(fixture.nonceDir)).filter(
+            (name) =>
+              name.startsWith(HELD_FRESHNESS_SEQUENCE_PREFIX) &&
+              name !== HELD_FRESHNESS_REQUEST_FILE,
+          ),
+        ).toEqual([]);
+        expect(
+          await readFile(path.join(fixture.nonceDir, "receipt.json"), "utf8"),
+        ).toBe(originalReceipt);
       } finally {
         Object.defineProperty(process, "platform", {
           value: originalPlatform,

@@ -183,6 +183,61 @@ test("runner MCP artifact resolution honors override, CARGO_TARGET_DIR, and defa
   );
 });
 
+test("Editor preparation gates case/watchdog admission and disposes the same harness on rejection", async (t) => {
+  // Synthetic runner seam only: no daemon, Electron, or actual Editor case.
+  const root = await mkdtemp(path.join(os.tmpdir(), "grimodex-pre-case-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const rejected of [false, true]) {
+    const events = [];
+    let release;
+    let started;
+    const pending = new Promise((resolve) => { release = resolve; });
+    const preparing = new Promise((resolve) => { started = resolve; });
+    const harness = {
+      async prepareBeforeCase() {
+        events.push("prepare");
+        started();
+        await pending;
+        if (rejected) throw new Error("pre-case qualification rejected");
+        events.push("qualified");
+      },
+      async withLaneWatchdog(run) {
+        events.push("watchdog");
+        return run();
+      },
+      async dispose({ success }) { events.push(`dispose:${success}`); },
+    };
+    const outcome = runProductJourneys({
+      journeys: [{ id: "editor-persistence", run(received) {
+        assert.equal(received, harness);
+        events.push("case");
+      } }],
+      catalog: [{ id: "editor-persistence" }],
+      artifactJourneys: [],
+      assertArtifacts: async () => [],
+      createHarness: () => harness,
+      environment: {},
+      root,
+      resultsPath: `results-${rejected}.json`,
+    }).then((report) => ({ report }), (error) => ({ error }));
+    await preparing;
+    assert.deepEqual(events, ["prepare"], "pending qualification must not start watchdog/case");
+    release();
+    const result = await outcome;
+    if (rejected) {
+      assert.match(result.error.message, /pre-case qualification rejected/u);
+      assert.deepEqual(events, ["prepare", "dispose:false"]);
+      const report = await readJson(path.join(root, "results-true.json"));
+      assert.equal(report.status, "failed");
+      assert.equal(report.journeys[0].cleanPass, false);
+    } else {
+      assert.equal(result.error, undefined);
+      assert.deepEqual(events, ["prepare", "qualified", "watchdog", "case", "dispose:true"]);
+      assert.equal(result.report.status, "passed");
+    }
+  }
+});
+
 test("product runner records deterministic results while preserving serial fresh harnesses", async (t) => {
   const outputRoot = await mkdtemp(
     path.join(os.tmpdir(), "grimodex-product-results-"),

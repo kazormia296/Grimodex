@@ -279,7 +279,19 @@ fn workspace_maintenance_registry() -> &'static (Mutex<WorkspaceMaintenanceRegis
 }
 
 fn workspace_maintenance_key(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    // Preserve a held key after fixture deletion, including symlinked temp
+    // ancestors. A missing leaf must not turn a canonical path into an alias.
+    for ancestor in path.ancestors() {
+        let existing = if ancestor.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            ancestor
+        };
+        if let (Ok(base), Ok(suffix)) = (existing.canonicalize(), path.strip_prefix(ancestor)) {
+            return base.join(suffix);
+        }
+    }
+    path.to_path_buf()
 }
 
 pub(crate) fn try_claim_workspace_maintenance(path: &Path) -> Option<WorkspaceMaintenanceClaim> {
@@ -301,6 +313,104 @@ pub(crate) fn try_claim_workspace_maintenance(path: &Path) -> Option<WorkspaceMa
     }
     registry.active.insert(key.clone());
     Some(WorkspaceMaintenanceClaim(key))
+}
+
+/// Workers and path fences owned by the existing workspace open lock.
+/// A path claim excludes file effects; only a successful Join retires a worker.
+#[derive(Default)]
+pub struct WorkspaceMaintenanceOwner {
+    paths: HashSet<PathBuf>,
+    workers: Vec<std::thread::JoinHandle<()>>,
+    drains: Vec<WorkspaceMaintenanceClaim>,
+    shutdown: bool,
+    failure: Option<String>,
+}
+
+impl WorkspaceMaintenanceOwner {
+    pub(crate) fn check_admission(&self) -> Result<(), AppError> {
+        if self.shutdown {
+            return Err(anyhow::anyhow!("workspace storage shutdown requested").into());
+        }
+        if let Some(failure) = &self.failure {
+            return Err(anyhow::anyhow!("{failure}").into());
+        }
+        Ok(())
+    }
+
+    fn reap_finished(&mut self) {
+        let mut index = 0;
+        while index < self.workers.len() {
+            if self.workers[index].is_finished() {
+                if self.workers.swap_remove(index).join().is_err() {
+                    self.failure = Some("workspace maintenance worker panicked".into());
+                }
+            } else {
+                index += 1;
+            }
+        }
+    }
+}
+
+/// Called only after the Native operation/participant drains. Keep the Backend
+/// alive through fixture deletion: its open-lock owner retains these fences.
+pub fn shutdown_workspace_storage(ws_state: &WorkspaceState) -> Result<(), AppError> {
+    let mut owner = ws_state
+        .open_lock
+        .lock()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    owner.shutdown = true;
+    let mut inner = ws_state
+        .inner
+        .lock()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    if let Some(active) = inner.as_ref() {
+        owner.paths.insert(workspace_maintenance_key(active.path()));
+    }
+    if owner.drains.is_empty() {
+        let mut paths: Vec<_> = owner.paths.iter().cloned().collect();
+        paths.sort();
+        for path in paths {
+            // No second observation timeout that would release a pending fence.
+            owner
+                .drains
+                .push(claim_workspace_maintenance_exclusive_unbounded(&path));
+        }
+    }
+    // The path registry lock is not held while joining. Guards stay in `owner`,
+    // including on panic/error, rather than dropping before the caller deletes.
+    while let Some(worker) = owner.workers.pop() {
+        if worker.join().is_err() {
+            owner.failure = Some("workspace maintenance worker panicked".into());
+        }
+    }
+    if let Some(failure) = &owner.failure {
+        return Err(anyhow::anyhow!("{failure}").into());
+    }
+    if let Some(active) = inner.as_ref() {
+        if let Err(error) = crate::backup_restore::wait_for_sole_owner(&active.authority) {
+            owner.failure = Some(error.to_string());
+            return Err(error);
+        }
+    }
+    drop(inner.take());
+    Ok(())
+}
+
+fn claim_workspace_maintenance_exclusive_unbounded(path: &Path) -> WorkspaceMaintenanceClaim {
+    let key = workspace_maintenance_key(path);
+    let (lock, idle) = workspace_maintenance_registry();
+    let mut registry = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *registry.exclusive_waiters.entry(key.clone()).or_default() += 1;
+    while registry.active.contains(&key) {
+        registry = idle
+            .wait(registry)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    remove_workspace_maintenance_waiter(&mut registry, &key);
+    registry.active.insert(key.clone());
+    WorkspaceMaintenanceClaim(key)
 }
 
 pub(crate) fn claim_workspace_maintenance_exclusive(
@@ -544,9 +654,22 @@ fn maybe_auto_backup(ws_path: &Path, db: &Database, config: AutoBackupConfig) {
 /// bounded to direct primary-key deletes, so it cannot inherit the normal
 /// five-second foreground busy timeout or retain a stale active DB after a
 /// same-path reopen.
-fn schedule_workspace_maintenance(ws_path: &Path, global_settings_path: &Path) {
-    if let Err(error) = spawn_workspace_maintenance_worker(ws_path, global_settings_path, || {}) {
-        tracing::warn!("workspace maintenance: cannot spawn worker: {error}");
+fn schedule_workspace_maintenance(
+    owner: &mut WorkspaceMaintenanceOwner,
+    ws_path: &Path,
+    global_settings_path: &Path,
+) {
+    owner.reap_finished();
+    if owner.failure.is_some() {
+        return;
+    }
+    match spawn_workspace_maintenance_worker(ws_path, global_settings_path, || {}) {
+        Ok(Some(worker)) => {
+            owner.paths.insert(workspace_maintenance_key(ws_path));
+            owner.workers.push(worker);
+        }
+        Ok(None) => {}
+        Err(error) => tracing::warn!("workspace maintenance: cannot spawn worker: {error}"),
     }
 }
 
@@ -554,6 +677,20 @@ pub(crate) fn spawn_workspace_maintenance_worker(
     ws_path: &Path,
     global_settings_path: &Path,
     on_started: impl FnOnce() + Send + 'static,
+) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
+    spawn_workspace_maintenance_worker_with_return_hook(
+        ws_path,
+        global_settings_path,
+        on_started,
+        || {},
+    )
+}
+
+fn spawn_workspace_maintenance_worker_with_return_hook(
+    ws_path: &Path,
+    global_settings_path: &Path,
+    on_started: impl FnOnce() + Send + 'static,
+    on_return: impl FnOnce() + Send + 'static,
 ) -> std::io::Result<Option<std::thread::JoinHandle<()>>> {
     let Some(claim) = try_claim_workspace_maintenance(ws_path) else {
         return Ok(None);
@@ -621,6 +758,9 @@ pub(crate) fn spawn_workspace_maintenance_worker(
                     "workspace maintenance: cannot open background connection: {error}"
                 ),
             }
+            drop(_lease);
+            drop(_claim);
+            on_return();
         })
         .map(Some)
 }
@@ -921,12 +1061,14 @@ fn open_workspace_sync_impl(
     // open 自体を直列化 (併走 migrate の check-then-act / 二重
     // VACUUM INTO 防止)。ロック順序は open_lock → inner → write_lock
     // の一方向のみ (with_db は inner のみ取るので循環しない)。
-    let _open_guard = trace.record_result(NativeWorkspaceOpenSpanName::OpenLockWait, || {
+    let mut open_guard = trace.record_result(NativeWorkspaceOpenSpanName::OpenLockWait, || {
         ws_state
             .open_lock
             .lock()
             .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))
     })?;
+    open_guard.reap_finished();
+    open_guard.check_admission()?;
 
     let (ws_path, is_existing, workspace_meta) =
         trace.record_result(NativeWorkspaceOpenSpanName::PathMeta, || {
@@ -1124,7 +1266,11 @@ fn open_workspace_sync_impl(
     // Backup and log pruning are deliberately after the authority swap and
     // recent-workspace commit. They must not delay the renderer's open invoke.
     let maintenance_span = trace.begin_span(NativeWorkspaceOpenSpanName::MaintenanceSchedule);
-    schedule_workspace_maintenance(&maintenance_workspace_path, &maintenance_settings_path);
+    schedule_workspace_maintenance(
+        &mut open_guard,
+        &maintenance_workspace_path,
+        &maintenance_settings_path,
+    );
     trace.finish_span(maintenance_span);
 
     let name = workspace::workspace_name(path);
@@ -1258,7 +1404,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let gs_path = GlobalSettingsPath {
             path: dir.join("global-settings.json"),
@@ -1598,6 +1744,90 @@ mod tests {
     }
 
     #[test]
+    fn storage_shutdown_joins_after_claim_release_and_retains_deleted_path_fence() {
+        let dir = std::env::temp_dir().join(format!(
+            "grimodex-maintenance-join-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws_dir = dir.join("workspace");
+        let gs_file = dir.join("global-settings.json");
+        std::fs::create_dir_all(&ws_dir).expect("fixture");
+        std::fs::write(
+            &gs_file,
+            r#"{"user_preferences":{"data.autoBackup":"false"}}"#,
+        )
+        .expect("settings");
+        let database = Database::new(&ws_dir.join("grimodex.db")).expect("DB");
+        database.migrate().expect("schema");
+        drop(database);
+        let (tail_tx, tail_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = spawn_workspace_maintenance_worker_with_return_hook(
+            &ws_dir,
+            &gs_file,
+            || {},
+            move || {
+                tail_tx.send(()).expect("claim released");
+                release_rx
+                    .recv_timeout(Duration::from_secs(30))
+                    .expect("release thread return");
+            },
+        )
+        .expect("spawn")
+        .expect("claim");
+        tail_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker tail");
+        assert!(
+            !worker.is_finished(),
+            "claim release is not thread termination"
+        );
+        let state = Arc::new(WorkspaceState {
+            inner: Mutex::new(None),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: Mutex::new(WorkspaceMaintenanceOwner {
+                paths: HashSet::from([workspace_maintenance_key(&ws_dir)]),
+                workers: vec![worker],
+                ..Default::default()
+            }),
+        });
+        let shutdown_state = Arc::clone(&state);
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let shutdown = std::thread::spawn(move || {
+            let result =
+                shutdown_workspace_storage(&shutdown_state).map_err(|error| error.to_string());
+            closed_tx.send(result).expect("shutdown result");
+        });
+        let early = closed_rx.recv_timeout(Duration::from_millis(200));
+        let _ = release_tx.send(());
+        let closed = match early {
+            Ok(result) => {
+                shutdown.join().expect("shutdown helper join");
+                panic!("shutdown returned before actual maintenance Join: {result:?}");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => closed_rx
+                .recv_timeout(Duration::from_secs(35))
+                .expect("shutdown bounded observation"),
+            Err(error) => panic!("shutdown owner lost: {error}"),
+        };
+        closed.expect("successful maintenance Join");
+        shutdown.join().expect("shutdown helper join");
+        assert!(
+            try_claim_workspace_maintenance(&ws_dir).is_none(),
+            "retained path exclusion"
+        );
+        std::fs::remove_dir_all(&dir).expect("strict removal while state owns fence");
+        shutdown_workspace_storage(&state).expect("same owner reentry without reacquisition");
+        assert!(
+            try_claim_workspace_maintenance(&ws_dir).is_none(),
+            "fence after deletion"
+        );
+        assert!(!dir.exists(), "reentry must not recreate files");
+        drop(state);
+    }
+
+    #[test]
     fn same_path_reopen_does_not_retain_the_previous_active_database() {
         let dir = std::env::temp_dir().join(format!(
             "grimodex-maintenance-reopen-{}",
@@ -1639,7 +1869,7 @@ mod tests {
             inner: Mutex::new(Some(ActiveWorkspace::new(previous_authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         });
         let gs_path = Arc::new(GlobalSettingsPath {
             path: gs_file.clone(),
@@ -1731,7 +1961,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let gs_path = GlobalSettingsPath {
             path: gs_file.clone(),
@@ -1803,7 +2033,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let mut trace = NativeWorkspaceOpenTrace::new(false);
         let mut on_swapped = |_: &mut NativeWorkspaceOpenTrace| {};
@@ -1847,7 +2077,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let mut initial_hook = || {};
         let mut initial_deps = OpenDeps {
@@ -1969,7 +2199,7 @@ mod tests {
             inner: Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let mut initial_hook = || {};
         let mut initial_deps = OpenDeps {

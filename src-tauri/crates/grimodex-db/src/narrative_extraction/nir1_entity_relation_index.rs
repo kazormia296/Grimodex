@@ -34,8 +34,8 @@ use super::dependency_edges::{
 use super::evaluator::{
     evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation, EvidenceFreshness,
 };
-use super::nir1_chronicle_index::NirChronicleIndexRuntime;
 use super::nir1_capacity::{self, with_capacity_scope, CapacityBudget};
+use super::nir1_chronicle_index::NirChronicleIndexRuntime;
 use super::nir1_entity_relation::{
     read_nir1_entity_relation_revision_current_for_graph_index, Nir1EntityRelationRevision,
 };
@@ -589,7 +589,10 @@ fn sort_roster_with_control(
                     since_check = 0;
                 }
                 match (left < middle, right < end) {
-                    (true, true) if compare_roster_entries(&roster[left], &roster[right]) != Ordering::Greater => {
+                    (true, true)
+                        if compare_roster_entries(&roster[left], &roster[right])
+                            != Ordering::Greater =>
+                    {
                         merged.push(roster[left].clone());
                         left += 1;
                     }
@@ -641,6 +644,24 @@ pub(crate) fn read_eligibility_source_with_control(
 ) -> Result<GraphEligibilitySource> {
     with_capacity_scope(conn, None, control, |_, control| {
         read_eligibility_source_bounded(conn, project, None, Some(control))
+    })
+}
+
+fn read_eligibility_source_with_control_and_scratch(
+    conn: &Connection,
+    project: &str,
+    control: &mut dyn GraphWorkControl,
+    scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+) -> Result<GraphEligibilitySource> {
+    with_capacity_scope(conn, None, control, |_, control| {
+        read_eligibility_source_counted(
+            conn,
+            project,
+            None,
+            Some(control),
+            Some(scratch_scope),
+            &mut SourceCapacity::default(),
+        )
     })
 }
 
@@ -739,15 +760,19 @@ fn read_eligibility_source_bounded(
         project,
         admission,
         control,
+        None,
         &mut SourceCapacity::default(),
     )
 }
+
+type ScratchScopeCallback<'a> = &'a mut dyn FnMut(&mut dyn FnMut()) -> bool;
 
 fn read_eligibility_source_counted(
     conn: &Connection,
     project: &str,
     admission: Option<&GraphReadAdmission<'_>>,
     mut control: Option<&mut dyn GraphWorkControl>,
+    mut scratch_scope: Option<ScratchScopeCallback<'_>>,
     capacity: &mut SourceCapacity,
 ) -> Result<GraphEligibilitySource> {
     ensure!(
@@ -803,7 +828,17 @@ fn read_eligibility_source_counted(
             &cursor,
             GRAPH_SOURCE_PAGE_SIZE,
         ])?;
-        let mut page = Vec::with_capacity(GRAPH_SOURCE_PAGE_SIZE as usize);
+        // LIMIT bounds pushes. Tuple slots and row strings use S for workers and Q otherwise.
+        let mut page = Vec::new();
+        if let Some(scratch_scope) = scratch_scope.as_deref_mut() {
+            let mut reserve_page = || page.reserve_exact(GRAPH_SOURCE_PAGE_SIZE as usize);
+            ensure!(
+                scratch_scope(&mut reserve_page),
+                "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
+            );
+        } else {
+            page.reserve_exact(GRAPH_SOURCE_PAGE_SIZE as usize);
+        }
         while let Some(row) = rows.next()? {
             // Check the caller-owned stop boundary and both scalar byte
             // lengths before asking rusqlite to allocate either key. The
@@ -834,8 +869,30 @@ fn read_eligibility_source_counted(
             );
             capacity.input(proposal_id_bytes)?;
             capacity.input(revision_id_bytes)?;
-            page.push((row.get::<_, String>(2)?, row.get::<_, String>(3)?));
+            // Lengths are charged above; only String materialization enters S.
+            let (proposal_id, revision_id) = if let Some(scratch_scope) = scratch_scope.as_deref_mut() {
+                let mut decoded_row: Option<rusqlite::Result<(String, String)>> = None;
+                let mut decode_row = || {
+                    decoded_row = Some((|| -> rusqlite::Result<(String, String)> {
+                        let proposal_id = row.get::<_, String>(2)?;
+                        let revision_id = row.get::<_, String>(3)?;
+                        Ok((proposal_id, revision_id))
+                    })());
+                };
+                ensure!(
+                    scratch_scope(&mut decode_row),
+                    "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
+                );
+                decoded_row.ok_or_else(|| {
+                    anyhow::anyhow!("NIR1_GRAPH_SCRATCH_SCOPE_SKIPPED")
+                })??
+            } else {
+                (row.get::<_, String>(2)?, row.get::<_, String>(3)?)
+            };
+            page.push((proposal_id, revision_id));
         }
+        drop(rows);
+        drop(statement);
         if page.is_empty() {
             break;
         }
@@ -1001,9 +1058,24 @@ fn read_revision_input_stats(
     }
     let (entity_count, relation_count, evidence_count): (i64, i64, i64) = conn.query_row(
         "SELECT CASE WHEN json_valid(revision.payload_json)
-                         THEN COALESCE(json_array_length(
-                                  json_extract(revision.payload_json, '$.bundle.entities')
-                              ), 0)
+                         THEN COALESCE(
+                              CASE WHEN json_type(
+                                             revision.payload_json,
+                                             '$.bundle.entities'
+                                        ) = 'array'
+                                   THEN json_array_length(
+                                            revision.payload_json,
+                                            '$.bundle.entities'
+                                        )
+                                   ELSE json_array_length(
+                                            json_extract(
+                                                revision.payload_json,
+                                                '$.bundle.entities'
+                                            )
+                                        )
+                              END,
+                              0
+                         )
                          ELSE 0 END,
                     CASE WHEN json_valid(revision.payload_json)
                          THEN COALESCE(json_array_length(
@@ -1025,7 +1097,7 @@ fn read_revision_input_stats(
                                                revision.payload_json,
                                                '$.bundle.entities'
                                          ) = 'array'
-                                         THEN json_extract(
+                                         THEN jsonb_extract(
                                                revision.payload_json,
                                                '$.bundle.entities'
                                          )
@@ -1075,10 +1147,7 @@ fn read_revision_input_stats(
     Ok(Some(RevisionInputStats { material_records }))
 }
 
-fn persisted_revision_components_within_limit(
-    payload_bytes: usize,
-    envelope_bytes: usize,
-) -> bool {
+fn persisted_revision_components_within_limit(payload_bytes: usize, envelope_bytes: usize) -> bool {
     payload_bytes <= REVISION_INPUT_BYTE_LIMIT && envelope_bytes <= REVISION_INPUT_BYTE_LIMIT
 }
 
@@ -1097,6 +1166,105 @@ fn preflight_revision_source_basis(
         admission.ensure_current(conn)?;
     }
     let scope_key = format!("project:scope-authority:{project}");
+    // query_row finalizes its statement before the relation statement is prepared.
+    let (
+        entity_payload_count,
+        basis_count,
+        basis_scope_count,
+        entity_matched_payload_count,
+        entity_matched_basis_count,
+        payload_scope_count,
+        matched_scope_count,
+        invalid_entity_count,
+    ): (i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
+        "WITH payload_root AS MATERIALIZED (
+    SELECT CASE WHEN json_valid(revision.payload_json)
+                THEN jsonb(revision.payload_json)
+                ELSE '[]' END AS payload_json
+      FROM narrative_proposal_revisions revision
+     WHERE revision.id = ?1
+), entity_items AS NOT MATERIALIZED (
+    SELECT entity.type AS element_type,
+           CASE WHEN entity.type = 'object'
+                THEN json_extract(entity.value, '$.entityId') END AS material_id,
+           CASE WHEN entity.type = 'object'
+                THEN json_extract(entity.value, '$.sourceToken') END AS source_token,
+           CASE WHEN entity.type = 'object'
+                THEN json_extract(entity.value, '$.scope.authorityRevision') END AS scope_token,
+           CASE WHEN entity.type = 'object'
+                THEN json_type(entity.value, '$.entityId') END AS material_id_type,
+           CASE WHEN entity.type = 'object'
+                THEN json_type(entity.value, '$.sourceToken') END AS source_token_type,
+           CASE WHEN entity.type = 'object'
+                THEN json_type(entity.value, '$.scope.authorityRevision') END AS scope_token_type
+      FROM payload_root revision
+      JOIN jsonb_each(
+           CASE WHEN json_type(revision.payload_json, '$.bundle.entities') = 'array'
+                THEN revision.payload_json
+                ELSE '[]' END,
+           '$.bundle.entities'
+      ) AS entity
+), entity_rollup AS (
+    SELECT COUNT(*) AS payload_count,
+           COUNT(*) FILTER (
+               WHERE COALESCE(element_type, '') <> 'object'
+                  OR COALESCE(material_id_type, '') <> 'text'
+                  OR COALESCE(source_token_type, '') <> 'text'
+                  OR COALESCE(scope_token_type, '') <> 'text'
+           ) AS invalid_count,
+           COUNT(scope_token) AS scope_count,
+           COUNT(*) FILTER (WHERE material_match.rowid IS NOT NULL) AS matched_payload_count,
+           (SELECT COUNT(*)
+          FROM narrative_revision_source_basis basis
+         WHERE basis.revision_id = ?1
+           AND basis.source_kind = 'codex-entry'
+           AND EXISTS (
+               SELECT 1 FROM entity_items item
+                WHERE basis.source_key = 'codex:' || item.material_id
+                  AND basis.revision_token = item.source_token
+           )) AS matched_basis_count,
+           COUNT(*) FILTER (WHERE scope_match.rowid IS NOT NULL) AS matched_scope_count
+      FROM entity_items entity
+      LEFT JOIN narrative_revision_source_basis AS material_match
+        ON material_match.revision_id = ?1
+       AND material_match.source_kind = 'codex-entry'
+       AND material_match.source_key = 'codex:' || entity.material_id
+       AND material_match.revision_token = entity.source_token
+      LEFT JOIN narrative_revision_source_basis AS scope_match
+        ON scope_match.revision_id = ?1
+       AND scope_match.source_kind = 'project-scope-authority'
+       AND scope_match.source_key = ?2
+       AND scope_match.revision_token = entity.scope_token
+)
+SELECT entity.payload_count,
+       (SELECT COUNT(*)
+          FROM narrative_revision_source_basis
+         WHERE revision_id = ?1),
+       (SELECT COUNT(*)
+          FROM narrative_revision_source_basis
+         WHERE revision_id = ?1
+           AND source_kind = 'project-scope-authority'
+           AND source_key = ?2),
+       entity.matched_payload_count,
+       entity.matched_basis_count,
+       entity.scope_count,
+       entity.matched_scope_count,
+       entity.invalid_count
+  FROM entity_rollup AS entity",
+        params![revision_id, scope_key],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        },
+    )?;
     let (
         payload_source_count,
         basis_count,
@@ -1108,108 +1276,74 @@ fn preflight_revision_source_basis(
         invalid_entity_count,
         invalid_relation_count,
     ): (i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
-        "WITH entity_sources AS (
-                 SELECT entity.type AS element_type,
-                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
-                             THEN json_extract(entity.value, '$.entityId') END AS material_id,
-                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
-                             THEN json_extract(entity.value, '$.sourceToken') END AS source_token,
-                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
-                             THEN json_extract(entity.value, '$.scope.authorityRevision') END AS scope_token,
-                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
-                             THEN json_type(entity.value, '$.entityId') END AS material_id_type,
-                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
-                             THEN json_type(entity.value, '$.sourceToken') END AS source_token_type,
-                        CASE WHEN entity.type = 'object' AND json_valid(entity.value)
-                             THEN json_type(entity.value, '$.scope.authorityRevision') END AS scope_token_type
-                   FROM narrative_proposal_revisions revision
-                   JOIN json_each(
-                        CASE WHEN json_valid(revision.payload_json)
-                                  AND json_type(revision.payload_json, '$.bundle.entities') = 'array'
-                             THEN json_extract(revision.payload_json, '$.bundle.entities')
-                             ELSE '[]' END
-                   ) AS entity
-                  WHERE revision.id = ?1
-             ), relation_sources AS (
-                 SELECT relation.type AS element_type,
-                        CASE WHEN relation.type = 'object' AND json_valid(relation.value)
-                             THEN json_extract(relation.value, '$.edgeId') END AS material_id,
-                        CASE WHEN relation.type = 'object' AND json_valid(relation.value)
-                             THEN json_extract(relation.value, '$.sourceToken') END AS source_token,
-                        CASE WHEN relation.type = 'object' AND json_valid(relation.value)
-                             THEN json_type(relation.value, '$.edgeId') END AS material_id_type,
-                        CASE WHEN relation.type = 'object' AND json_valid(relation.value)
-                             THEN json_type(relation.value, '$.sourceToken') END AS source_token_type
-                   FROM narrative_proposal_revisions revision
-                   JOIN json_each(
-                        CASE WHEN json_valid(revision.payload_json)
-                                  AND json_type(revision.payload_json, '$.bundle.relations') = 'array'
-                             THEN json_extract(revision.payload_json, '$.bundle.relations')
-                             ELSE '[]' END
-                   ) AS relation
-                  WHERE revision.id = ?1
-             ), payload_sources AS (
-                 SELECT 'codex-entry' AS source_kind,
-                        'codex:' || material_id AS source_key,
-                        source_token
-                   FROM entity_sources
-                  UNION ALL
-                 SELECT 'codex-relation',
-                        'codex-relation:' || material_id,
-                        source_token
-                   FROM relation_sources
-             ), payload_scopes AS (
-                 SELECT scope_token
-                   FROM entity_sources
-                  WHERE scope_token IS NOT NULL
-             ), basis AS (
-                 SELECT source_kind, source_key, revision_token
-                   FROM narrative_revision_source_basis
-                  WHERE revision_id = ?1
-             )
-         SELECT
-             (SELECT COUNT(*) FROM payload_sources),
-             (SELECT COUNT(*) FROM basis),
-             (SELECT COUNT(*) FROM basis
-               WHERE source_kind = 'project-scope-authority' AND source_key = ?2),
-             (SELECT COUNT(*)
-                FROM payload_sources payload
-               WHERE EXISTS (
-                     SELECT 1 FROM basis
-                      WHERE basis.source_kind = payload.source_kind
-                        AND basis.source_key = payload.source_key
-                        AND basis.revision_token = payload.source_token
-               )),
-             (SELECT COUNT(*)
-                FROM basis material
-               WHERE material.source_kind IN ('codex-entry', 'codex-relation')
-                 AND EXISTS (
-                     SELECT 1 FROM payload_sources payload
-                      WHERE payload.source_kind = material.source_kind
-                        AND payload.source_key = material.source_key
-                        AND payload.source_token = material.revision_token
-               )),
-             (SELECT COUNT(*) FROM payload_scopes),
-             (SELECT COUNT(*)
-                FROM payload_scopes payload
-               WHERE EXISTS (
-                     SELECT 1 FROM basis
-                      WHERE basis.source_kind = 'project-scope-authority'
-                        AND basis.source_key = ?2
-                        AND basis.revision_token = payload.scope_token
-               )),
-             (SELECT COUNT(*)
-                FROM entity_sources
+        "WITH payload_root AS MATERIALIZED (
+    SELECT CASE WHEN json_valid(revision.payload_json)
+                THEN jsonb(revision.payload_json)
+                ELSE '[]' END AS payload_json
+      FROM narrative_proposal_revisions revision
+     WHERE revision.id = ?1
+), relation_items AS NOT MATERIALIZED (
+    SELECT relation.type AS element_type,
+           CASE WHEN relation.type = 'object'
+                THEN json_extract(relation.value, '$.edgeId') END AS material_id,
+           CASE WHEN relation.type = 'object'
+                THEN json_extract(relation.value, '$.sourceToken') END AS source_token,
+           CASE WHEN relation.type = 'object'
+                THEN json_type(relation.value, '$.edgeId') END AS material_id_type,
+           CASE WHEN relation.type = 'object'
+                THEN json_type(relation.value, '$.sourceToken') END AS source_token_type
+      FROM payload_root revision
+      JOIN jsonb_each(
+           CASE WHEN json_type(revision.payload_json, '$.bundle.relations') = 'array'
+                THEN revision.payload_json
+                ELSE '[]' END,
+           '$.bundle.relations'
+      ) AS relation
+), relation_rollup AS (
+    SELECT COUNT(*) AS payload_count,
+           COUNT(*) FILTER (
                WHERE COALESCE(element_type, '') <> 'object'
                   OR COALESCE(material_id_type, '') <> 'text'
                   OR COALESCE(source_token_type, '') <> 'text'
-                  OR COALESCE(scope_token_type, '') <> 'text'),
-             (SELECT COUNT(*)
-                FROM relation_sources
-               WHERE COALESCE(element_type, '') <> 'object'
-                  OR COALESCE(material_id_type, '') <> 'text'
-                  OR COALESCE(source_token_type, '') <> 'text')",
-        params![revision_id, scope_key],
+           ) AS invalid_count,
+           COUNT(*) FILTER (WHERE material_match.rowid IS NOT NULL) AS matched_payload_count,
+           (SELECT COUNT(*)
+          FROM narrative_revision_source_basis basis
+         WHERE basis.revision_id = ?1
+           AND basis.source_kind = 'codex-relation'
+           AND EXISTS (
+               SELECT 1 FROM relation_items item
+                WHERE basis.source_key = 'codex-relation:' || item.material_id
+                  AND basis.revision_token = item.source_token
+           )) AS matched_basis_count
+      FROM relation_items relation
+      LEFT JOIN narrative_revision_source_basis AS material_match
+        ON material_match.revision_id = ?1
+       AND material_match.source_kind = 'codex-relation'
+       AND material_match.source_key = 'codex-relation:' || relation.material_id
+       AND material_match.revision_token = relation.source_token
+)
+SELECT ?2 + relation.payload_count,
+       ?3,
+       ?4,
+       ?5 + relation.matched_payload_count,
+       ?6 + relation.matched_basis_count,
+       ?7,
+       ?8,
+       ?9,
+       relation.invalid_count
+  FROM relation_rollup AS relation",
+        params![
+            revision_id,
+            entity_payload_count,
+            basis_count,
+            basis_scope_count,
+            entity_matched_payload_count,
+            entity_matched_basis_count,
+            payload_scope_count,
+            matched_scope_count,
+            invalid_entity_count,
+        ],
         |row| {
             Ok((
                 row.get(0)?,
@@ -1227,15 +1361,13 @@ fn preflight_revision_source_basis(
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    Ok(
-        basis_count == payload_source_count + 1
-            && scope_count == 1
-            && matched_payload_count == payload_source_count
-            && matched_basis_count == payload_source_count
-            && invalid_entity_count == 0
-            && invalid_relation_count == 0
-            && (payload_scope_count == 0 || matched_scope_count == payload_scope_count),
-    )
+    Ok(basis_count == payload_source_count + 1
+        && scope_count == 1
+        && matched_payload_count == payload_source_count
+        && matched_basis_count == payload_source_count
+        && invalid_entity_count == 0
+        && invalid_relation_count == 0
+        && (payload_scope_count == 0 || matched_scope_count == payload_scope_count))
 }
 
 /// Preflight the live Source values that the A2 reader will resolve. The
@@ -1320,7 +1452,14 @@ pub(crate) fn source_capacity_usage(conn: &Connection, project: &str) -> Result<
         None,
         &mut ForegroundValidationControl,
         |_, control| {
-            read_eligibility_source_counted(conn, project, None, Some(control), &mut usage)
+            read_eligibility_source_counted(
+                conn,
+                project,
+                None,
+                Some(control),
+                None,
+                &mut usage,
+            )
         },
     )?;
     Ok((usage.input_bytes, usage.roster_bytes))
@@ -1351,7 +1490,12 @@ fn admit_capacity(value: &mut usize, additional: usize, maximum: usize, field: &
 
 impl SourceCapacity {
     fn input(&mut self, bytes: usize) -> Result<()> {
-        admit_capacity(&mut self.input_bytes, bytes, nir1_capacity::INPUT_BYTES, "input-bytes")
+        admit_capacity(
+            &mut self.input_bytes,
+            bytes,
+            nir1_capacity::INPUT_BYTES,
+            "input-bytes",
+        )
     }
 }
 
@@ -1547,9 +1691,20 @@ fn read_internal(
     // Nested publish/Verify reads inherit their budget; standalone Freshness
     // admission gets the same bound without gaining full-Source authority.
     let mut structural = NeverStopGraphWorkControl;
-    with_capacity_scope(conn, None, control.unwrap_or(&mut structural), |_, control| {
-        read_internal_bounded(conn, project, require_freshness, require_current_freshness, Some(control))
-    })
+    with_capacity_scope(
+        conn,
+        None,
+        control.unwrap_or(&mut structural),
+        |_, control| {
+            read_internal_bounded(
+                conn,
+                project,
+                require_freshness,
+                require_current_freshness,
+                Some(control),
+            )
+        },
+    )
 }
 
 fn read_internal_bounded(
@@ -1767,7 +1922,10 @@ pub(crate) fn is_registered_with_control(
         return Ok(false);
     }
     control.check(GraphWorkStage::Coverage)?;
-    Ok(matches!(read_internal(conn, project, true, true, Some(control))?, BindingRead::Registered(_)))
+    Ok(matches!(
+        read_internal(conn, project, true, true, Some(control))?,
+        BindingRead::Registered(_)
+    ))
 }
 
 /// Check whether the exact Graph binding is completely registered and live
@@ -1787,12 +1945,27 @@ pub(crate) fn is_complete_registered_with_control(
     key: &str,
     control: &mut dyn GraphWorkControl,
 ) -> Result<bool> {
+    let mut current_heap = |operation: &mut dyn FnMut()| {
+        operation();
+        true
+    };
+    is_complete_registered_with_scratch(conn, project, key, control, &mut current_heap)
+}
+
+/// Worker variant whose callback scopes temporary source-page and comparison allocations.
+pub(crate) fn is_complete_registered_with_scratch(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+    control: &mut dyn GraphWorkControl,
+    scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+) -> Result<bool> {
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered_with_control(&tx, project, key, control);
+        return is_complete_registered_with_scratch(&tx, project, key, control, scratch_scope);
     }
     with_capacity_scope(conn, None, control, |_, control| {
-        is_complete_registered_with_control_unmetered(conn, project, key, control)
+        is_complete_registered_with_control_unmetered(conn, project, key, control, scratch_scope)
     })
 }
 
@@ -1801,28 +1974,36 @@ fn is_complete_registered_with_control_unmetered(
     project: &str,
     key: &str,
     control: &mut dyn GraphWorkControl,
+    scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
 ) -> Result<bool> {
     if key != INDEX_KEY {
         return Ok(false);
     }
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered_with_control(&tx, project, key, control);
+        return is_complete_registered_with_scratch(&tx, project, key, control, scratch_scope);
     }
     control.check(GraphWorkStage::CompleteRegistration)?;
     let BindingRead::Registered(binding) = read_with_control(conn, project, control)? else {
         return Ok(false);
     };
+    drop(binding.dependency_set_digest);
+    drop(binding.declaration_set_id);
     let Some(epoch) = get_current_epoch(conn, project)? else {
         return Ok(false);
     };
     control.check(GraphWorkStage::Source)?;
-    let source = read_eligibility_source_with_control(conn, project, control)?;
+    let source = read_eligibility_source_with_control_and_scratch(
+        conn,
+        project,
+        control,
+        scratch_scope,
+    )?;
     if binding.source_digest != source.digest {
         return Ok(false);
     }
     let edges = find_edges_by_consumer(conn, project, CONSUMER_KIND, key)?;
-    if !edges_match_source_with_control(&edges, project, &source, control)? {
+    if !edges_match_source_with_control(&edges, project, &source, control, scratch_scope)? {
         return Ok(false);
     }
     control.check(GraphWorkStage::Coverage)?;
@@ -1904,18 +2085,33 @@ fn edges_match_source_with_control(
     project: &str,
     source: &GraphEligibilitySource,
     control: &mut dyn GraphWorkControl,
+    scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
 ) -> Result<bool> {
-    let mut expected = BTreeMap::<String, BTreeSet<String>>::new();
-    expected.insert(
-        source_key(project),
-        [source.digest.clone()].into_iter().collect(),
+    // Only tree nodes enter S; every borrowed key and token remains Q-owned.
+    let mut expected = BTreeMap::<&str, BTreeSet<&str>>::new();
+    let project_key = source_key(project);
+    let mut insert_project = || {
+        expected
+            .entry(project_key.as_str())
+            .or_default()
+            .insert(source.digest.as_str());
+    };
+    ensure!(
+        scratch_scope(&mut insert_project),
+        "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
     );
     for entry in &source.roster {
         control.check(GraphWorkStage::Coverage)?;
-        expected
-            .entry(entry.source_object_identity.clone())
-            .or_default()
-            .insert(entry.source_token.clone());
+        let mut insert_entry = || {
+            expected
+                .entry(entry.source_object_identity.as_str())
+                .or_default()
+                .insert(entry.source_token.as_str());
+        };
+        ensure!(
+            scratch_scope(&mut insert_entry),
+            "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
+        );
     }
     control.check(GraphWorkStage::Coverage)?;
     if expected.len() != edges.len() {
@@ -1923,7 +2119,7 @@ fn edges_match_source_with_control(
     }
     for edge in edges {
         control.check(GraphWorkStage::Coverage)?;
-        let Some(tokens) = expected.get(&edge.source_object_identity) else {
+        let Some(tokens) = expected.get(edge.source_object_identity.as_str()) else {
             return Ok(false);
         };
         let actual = serde_json::from_str::<Vec<String>>(&edge.read_set_json).ok();
@@ -1931,9 +2127,15 @@ fn edges_match_source_with_control(
             return Ok(false);
         };
         let mut actual_tokens = BTreeSet::new();
-        for token in actual {
+        for token in &actual {
             control.check(GraphWorkStage::Coverage)?;
-            actual_tokens.insert(token);
+            let mut insert_token = || {
+                actual_tokens.insert(token.as_str());
+            };
+            ensure!(
+                scratch_scope(&mut insert_token),
+                "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
+            );
         }
         control.check(GraphWorkStage::Coverage)?;
         if &actual_tokens != tokens {
@@ -2375,6 +2577,179 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn revision_input_stats_use_jsonb_for_arrays_and_preserve_string_counts() -> Result<()> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE narrative_proposal_revisions (
+                 id TEXT, proposal_id TEXT, payload_json TEXT,
+                 reconciliation_envelope_json TEXT, origin_kind TEXT,
+                 reconciliation_envelope_digest TEXT, created_at TEXT
+             );
+             CREATE TABLE narrative_proposals (
+                 id TEXT, proposal_set_id TEXT, current_revision_id TEXT, status TEXT
+             );
+             CREATE TABLE narrative_proposal_sets (
+                 id TEXT, run_id TEXT, project_id TEXT, set_kind TEXT
+             );
+             CREATE TABLE narrative_extraction_runs (
+                 id TEXT, project_id TEXT, surface_path_id TEXT
+             );
+             CREATE TABLE narrative_proposal_decisions (
+                 id TEXT, proposal_id TEXT, revision_id TEXT, decision TEXT,
+                 decision_json TEXT, created_at TEXT, created_by TEXT, actor_kind TEXT,
+                 actor_id TEXT, authority_scope TEXT, override_field_paths_json TEXT
+             );",
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs VALUES ('run-1', 'project-1', ?1)",
+            [crate::narrative_extraction::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_sets VALUES ('set-1', 'run-1', 'project-1', ?1)",
+            [crate::narrative_extraction::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND],
+        )?;
+
+        for (revision_id, proposal_id, payload, expected_records) in [
+            (
+                "array",
+                "proposal-array",
+                r#"{"bundle":{"entities":[{"evidence":[1,2]},{"evidence":[]}],"relations":[]}}"#,
+                4,
+            ),
+            (
+                "string-array",
+                "proposal-string-array",
+                r#"{"bundle":{"entities":"[1,2]"}}"#,
+                2,
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO narrative_proposals VALUES (?1, 'set-1', ?2, 'accepted')",
+                params![proposal_id, revision_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                 VALUES (?1, ?2, ?3, '{}', 'human', 'digest', 'now')",
+                params![revision_id, proposal_id, payload],
+            )?;
+            let stats = read_revision_input_stats(
+                &conn,
+                "project-1",
+                revision_id,
+                None,
+                &mut SourceCapacity::default(),
+            )?
+            .expect("revision is in scope");
+            assert_eq!(stats.material_records, expected_records);
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn source_basis_preflight_keeps_guarded_json_array_semantics() -> Result<()> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE narrative_proposal_revisions (
+                 id TEXT, proposal_id TEXT, payload_json TEXT
+             );
+             CREATE TABLE narrative_proposals (
+                 id TEXT, proposal_set_id TEXT
+             );
+             CREATE TABLE narrative_proposal_sets (
+                 id TEXT, run_id TEXT, project_id TEXT, set_kind TEXT
+             );
+             CREATE TABLE narrative_extraction_runs (
+                 id TEXT, project_id TEXT, surface_path_id TEXT
+             );
+             CREATE TABLE narrative_revision_source_basis (
+                 revision_id TEXT, source_kind TEXT, source_key TEXT, revision_token TEXT
+             );",
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs VALUES ('run-1', 'project-1', ?1)",
+            [crate::narrative_extraction::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_sets VALUES ('set-1', 'run-1', 'project-1', ?1)",
+            [crate::narrative_extraction::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_revisions VALUES ('revision-1', 'proposal-1', '')",
+            [],
+        )?;
+
+        let scope_basis = [(
+            "project-scope-authority",
+            "project:scope-authority:project-1",
+            "scope-token",
+        )];
+        let valid_basis = [
+            ("codex-entry", "codex:entity-1", "entity-token"),
+            (
+                "codex-relation",
+                "codex-relation:relation-1",
+                "relation-token",
+            ),
+            scope_basis[0],
+        ];
+        let duplicate_basis = [
+            ("codex-entry", "codex:entity-1", "entity-token"),
+            scope_basis[0],
+        ];
+        type SourceBasisPreflightCase<'a> =
+            (&'a str, &'a str, &'a [(&'a str, &'a str, &'a str)], bool);
+        let cases: [SourceBasisPreflightCase<'_>; 12] = [
+            (
+                "normal arrays",
+                r#"{"bundle":{"entities":[{"entityId":"entity-1","sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}}],"relations":[{"edgeId":"relation-1","sourceToken":"relation-token"}]}}"#,
+                &valid_basis,
+                true,
+            ),
+            ("empty arrays", r#"{"bundle":{"entities":[],"relations":[]}}"#, &scope_basis, true),
+            ("missing entities", r#"{"bundle":{"relations":[]}}"#, &scope_basis, true),
+            ("missing relations", r#"{"bundle":{"entities":[]}}"#, &scope_basis, true),
+            ("null arrays", r#"{"bundle":{"entities":null,"relations":null}}"#, &scope_basis, true),
+            ("wrong array types", r#"{"bundle":{"entities":"[]","relations":{"x":1}}}"#, &scope_basis, true),
+            ("malformed root", r#"{"bundle":{"entities":["#, &scope_basis, true),
+            ("duplicate member", r#"{"bundle":{"entities":[{"entityId":"entity-1","sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}},{"entityId":"entity-1","sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}}],"relations":[]}}"#, &duplicate_basis, false),
+            ("non-object entity", r#"{"bundle":{"entities":[null],"relations":[]}}"#, &scope_basis, false),
+            ("missing entity fields", r#"{"bundle":{"entities":[{"sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}}],"relations":[]}}"#, &scope_basis, false),
+            ("null entity fields", r#"{"bundle":{"entities":[{"entityId":null,"sourceToken":null,"scope":{"authorityRevision":null}}],"relations":[]}}"#, &scope_basis, false),
+            ("wrong relation field types", r#"{"bundle":{"entities":[],"relations":[{"edgeId":42,"sourceToken":"relation-token"}]}}"#, &scope_basis, false),
+        ];
+
+        for (name, payload, basis_rows, expected) in cases {
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET payload_json = ?1 WHERE id = 'revision-1'",
+                [payload],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_revision_source_basis WHERE revision_id = 'revision-1'",
+                [],
+            )?;
+            for (source_kind, source_key, revision_token) in basis_rows {
+                conn.execute(
+                    "INSERT INTO narrative_revision_source_basis
+                     VALUES ('revision-1', ?1, ?2, ?3)",
+                    params![source_kind, source_key, revision_token],
+                )?;
+            }
+            assert_eq!(
+                preflight_revision_source_basis(&conn, "project-1", "revision-1", None)?,
+                expected,
+                "unexpected source-basis eligibility for {name}"
+            );
+        }
+
+        Ok(())
+    }
+
     struct StopAt(GraphWorkStage);
 
     impl GraphWorkControl for StopAt {
@@ -2399,6 +2774,15 @@ mod tests {
                 }
                 self.remaining -= 1;
             }
+            Ok(())
+        }
+    }
+
+    struct OutsideScratch<'a>(&'a std::cell::Cell<bool>);
+
+    impl GraphWorkControl for OutsideScratch<'_> {
+        fn check(&mut self, _stage: GraphWorkStage) -> Result<()> {
+            assert!(!self.0.get(), "control checks must remain in Q");
             Ok(())
         }
     }
@@ -2464,6 +2848,75 @@ mod tests {
             graph_source_from_roster("project-1", source.roster.clone()).expect("source")
         );
         assert!(source.digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn edge_comparison_scopes_only_borrowed_set_insertions() -> Result<()> {
+        let project = "project-1";
+        let source = graph_source_from_roster(
+            project,
+            vec![roster_entry(
+                "entity",
+                "entity-1",
+                "codex:entity-1",
+                "revision-1",
+                "decision-1",
+                "token-1",
+            )],
+        )?;
+        let mut input_control = NeverStopGraphWorkControl;
+        let edges = input_edges_with_control(project, &source, &mut input_control)?;
+
+        let mut ordinary_control = NeverStopGraphWorkControl;
+        let mut ordinary_scope = |operation: &mut dyn FnMut()| {
+            operation();
+            true
+        };
+        assert!(edges_match_source_with_control(
+            &edges,
+            project,
+            &source,
+            &mut ordinary_control,
+            &mut ordinary_scope,
+        )?);
+
+        let scratch_active = std::cell::Cell::new(false);
+        let scope_count = std::cell::Cell::new(0);
+        let mut control = OutsideScratch(&scratch_active);
+        let mut scratch_scope = |operation: &mut dyn FnMut()| {
+            assert!(
+                !scratch_active.replace(true),
+                "scratch scopes must not nest"
+            );
+            scope_count.set(scope_count.get() + 1);
+            operation();
+            scratch_active.set(false);
+            true
+        };
+        assert!(edges_match_source_with_control(
+            &edges,
+            project,
+            &source,
+            &mut control,
+            &mut scratch_scope,
+        )?);
+        assert_eq!(scope_count.get(), 4);
+        assert!(!scratch_active.get());
+
+        let mut refused_control = NeverStopGraphWorkControl;
+        let mut refused_scope = |_operation: &mut dyn FnMut()| false;
+        let error = edges_match_source_with_control(
+            &edges,
+            project,
+            &source,
+            &mut refused_control,
+            &mut refused_scope,
+        )
+        .expect_err("scratch refusal must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"));
+        Ok(())
     }
 
     #[test]
@@ -2592,13 +3045,10 @@ mod tests {
             stage: GraphWorkStage::Digest,
             remaining: 12,
         };
-        let digest_error = graph_source_from_roster_with_control(
-            "project-1",
-            roster,
-            &mut digest_control,
-        )
-        .expect_err("long digest serialization must remain cancellable")
-        .to_string();
+        let digest_error =
+            graph_source_from_roster_with_control("project-1", roster, &mut digest_control)
+                .expect_err("long digest serialization must remain cancellable")
+                .to_string();
         assert!(digest_error.contains("NIR1_GRAPH_TEST_CANCELLED_AFTER_Digest"));
     }
 

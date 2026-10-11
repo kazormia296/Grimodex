@@ -773,6 +773,24 @@ describe("release workflow boundary", () => {
     assert.deepEqual(actualGuardedSteps, expectedGuardedSteps);
   });
 
+  it("pins Electron to the patched version required by the audit gate", async () => {
+    const manifest = JSON.parse(
+      await readFile(path.join(repoRoot, "package.json"), "utf8"),
+    );
+    const lockfile = await readFile(
+      path.join(repoRoot, "pnpm-lock.yaml"),
+      "utf8",
+    );
+
+    assert.equal(manifest.devDependencies.electron, "43.5.0");
+    assert.match(
+      lockfile,
+      /^      electron:\n        specifier: 43\.5\.0\n        version: 43\.5\.0$/m,
+    );
+    assert.match(lockfile, /^  electron@43\.5\.0:$/m);
+    assert.doesNotMatch(lockfile, /^  electron@43\.1\.0:$/m);
+  });
+
   it("pins brace-expansion to the patched version required by the audit gate", async () => {
     const workspace = await readFile(
       path.join(repoRoot, "pnpm-workspace.yaml"),

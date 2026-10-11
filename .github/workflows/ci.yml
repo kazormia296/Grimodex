@@ -14,6 +14,48 @@ on:
         options:
           - all
           - shadow
+      independent_gates:
+        description: Run 10 independent normal jobs including 3OS workers; defer runtime/journeys and native/shared/migration jobs (not complete CI)
+        required: false
+        type: boolean
+        default: false
+      source_focused:
+        description: Run source repair contracts and generate license notices (not canonical CI)
+        required: false
+        type: boolean
+        default: false
+      source_resolve_sharp:
+        description: Resolve sharp lock repair source (requires source_focused; not acceptance)
+        required: false
+        type: boolean
+        default: false
+      source_audit_compat:
+        description: Audit patched dependencies and exercise sharp consumers (requires source_focused; not canonical CI)
+        required: false
+        type: boolean
+        default: false
+      source_canonical_contracts:
+        description: Canonical adapter source contracts only (requires source_focused; no gates or generation)
+        required: false
+        type: boolean
+        default: false
+      canonical_profile:
+        description: Empty preserves ordinary CI; contracts/quick/full selects canonical CI; shared-rust selects Rust; native-development-build selects existing development N-API build only; native-development-tests selects that build then complete public tests in the same job; native-release-static selects existing release-feature check/clippy only; native-licensed-mcp selects existing licensed MCP tests only; c-query-workers selects the existing three-OS real-worker matrix only; c-query-cancellation selects only its existing caller-cancellation case; c-query-startup-refusal selects only its existing startup-registration-refusal case; c-query-trailing-data selects only its existing committed-frame trailing-data case; c-query-partial-terminal selects only its existing partial-terminal-marker case; c-query-terminal-refusals groups both existing trailing-data and partial-terminal-marker steps; c-query-practical selects existing Q512 30x then maximum once on Linux; c-query-frame-lifecycle groups existing partial-body refusal on three OSes and missing-EOF refusal on Linux; migration-crash/migration-safe-mode/migration-library selects one existing step; migration-remaining groups four remaining migration steps; os-contracts/os-check selects existing Linux helper source/check only
+        required: false
+        type: string
+        default: ""
+      candidate_base:
+        description: Immutable base SHA for canonical quick/full only
+        required: false
+        type: string
+      candidate_head:
+        description: Immutable head SHA for canonical quick/full only, equal to dispatched ref
+        required: false
+        type: string
+      max_parallel_tasks:
+        description: Canonical scheduler option (empty uses existing default 12)
+        required: false
+        type: string
   workflow_call:
     inputs:
       product_journey_mode:
@@ -26,11 +68,110 @@ permissions:
   contents: read
 
 jobs:
+  existing-os-suitability:
+    if: ${{ startsWith(inputs.canonical_profile, 'os-') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Validate existing OS suitability selection
+        id: os-selection
+        env:
+          OS_SUITABILITY: ${{ inputs.canonical_profile }}
+          PRODUCT_JOURNEY_MODE: ${{ inputs.product_journey_mode }}
+          INDEPENDENT_GATES: ${{ inputs.independent_gates }}
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+          SOURCE_CANONICAL_CONTRACTS: ${{ inputs.source_canonical_contracts }}
+          CANDIDATE_BASE: ${{ inputs.candidate_base }}
+          CANDIDATE_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          case "$OS_SUITABILITY" in os-contracts|os-check) ;; *) exit 1 ;; esac
+          test "$PRODUCT_JOURNEY_MODE" = all
+          for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
+            case "$flag" in false|"") ;; *) exit 1 ;; esac
+          done
+          test -z "$CANDIDATE_BASE$CANDIDATE_HEAD$MAX_PARALLEL_TASKS"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record existing OS suitability checkout identity
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .artifacts/ci
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          test "$COMMIT_SHA" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" > .artifacts/ci/checkout-identity.json
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        if: inputs.canonical_profile == 'os-contracts'
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: inputs.canonical_profile == 'os-contracts'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - if: inputs.canonical_profile == 'os-contracts'
+        run: pnpm install --frozen-lockfile
+
+      - name: Existing OS suitability source contracts
+        if: inputs.canonical_profile == 'os-contracts'
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p .artifacts/ci-os-source
+          node --test --test-name-pattern='existing OS suitability|registered CI exposes only opt-in|registered canonical reuse|manual source-focused repair' scripts/ci-pause.test.mjs scripts/existing-os-suitability.test.mjs | tee .artifacts/ci-os-source/contracts.tap
+
+      - name: One existing namespace permission and harmless behavior check
+        if: inputs.canonical_profile == 'os-check'
+        run: node scripts/existing-os-suitability.mjs
+
+      - name: Upload existing OS suitability source-shaped evidence
+        if: always() && steps.os-selection.outcome == 'success'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-os-suitability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/ci/checkout-identity.json
+            .artifacts/ci-os-source/contracts.tap
+            .artifacts/ci-os-suitability/namespace-check-intent.json
+            .artifacts/ci-os-suitability/result.json
+            .artifacts/ci-os-suitability/late-close.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  # Local reusable calls load the callee at this same commit, without requiring
+  # the branch-only canonical adapter to be registered for manual dispatch.
+  canonical:
+    if: ${{ !startsWith(inputs.canonical_profile, 'os-') && inputs.canonical_profile != 'shared-rust' && inputs.canonical_profile != 'c-query-workers' && inputs.canonical_profile != 'c-query-cancellation' && inputs.canonical_profile != 'c-query-startup-refusal' && inputs.canonical_profile != 'c-query-trailing-data' && inputs.canonical_profile != 'c-query-partial-terminal' && inputs.canonical_profile != 'c-query-terminal-refusals' && inputs.canonical_profile != 'c-query-practical' && inputs.canonical_profile != 'c-query-frame-lifecycle' && inputs.canonical_profile != 'migration-crash' && inputs.canonical_profile != 'migration-safe-mode' && inputs.canonical_profile != 'migration-library' && inputs.canonical_profile != 'migration-remaining' && inputs.canonical_profile != 'native-development-build' && inputs.canonical_profile != 'native-development-tests' && inputs.canonical_profile != 'native-release-static' && inputs.canonical_profile != 'native-release-tests' && inputs.canonical_profile != 'native-licensed-mcp' && (inputs.canonical_profile || inputs.candidate_base || inputs.candidate_head || inputs.max_parallel_tasks) }}
+    uses: ./.github/workflows/canonical-ci.yml
+    with:
+      # Mixed modes go to the sole owner for rejection before setup; ordinary
+      # jobs below exclude any canonical request even when that request is bad.
+      profile: ${{ !inputs.independent_gates && !inputs.source_focused && !inputs.source_resolve_sharp && !inputs.source_audit_compat && !inputs.source_canonical_contracts && inputs.product_journey_mode == 'all' && inputs.canonical_profile || 'invalid' }}
+      candidate_base: ${{ inputs.candidate_base || '' }}
+      candidate_head: ${{ inputs.candidate_head || '' }}
+      max_parallel_tasks: ${{ inputs.max_parallel_tasks || '12' }}
+
   quality:
     name: Quality (traceability / impact-selected light gates)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -90,7 +231,7 @@ jobs:
 
   frontend:
     name: Frontend (type-check / lint / test)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -134,7 +275,7 @@ jobs:
 
   lfm-encoder-phase0:
     name: LFM Encoder Phase 0 (contracts / offline unit tests)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -160,7 +301,7 @@ jobs:
 
   browser:
     name: Browser (Vitest browser)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -209,7 +350,7 @@ jobs:
 
   webgl:
     name: WebGL (deterministic SwiftShader)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -261,7 +402,7 @@ jobs:
 
   storybook:
     name: Storybook (Vitest browser)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -310,7 +451,7 @@ jobs:
 
   security:
     name: Security (audit)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -345,7 +486,7 @@ jobs:
 
   electron:
     name: Electron (workflow contract / type-check / test / build)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -360,9 +501,211 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
+      - name: Validate canonical contracts selection
+        if: inputs.source_canonical_contracts
+        env:
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+        run: |
+          set -euo pipefail
+          test "$SOURCE_FOCUSED" = true
+          test "$SOURCE_RESOLVE_SHARP" != true
+          test "$SOURCE_AUDIT_COMPAT" != true
+
+      - name: Validate audit compatibility selection
+        if: inputs.source_audit_compat
+        env:
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+        run: test "$SOURCE_FOCUSED" = true && test "$SOURCE_RESOLVE_SHARP" != true
+
+      - name: Validate sharp repair selection
+        if: inputs.source_resolve_sharp
+        env:
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+        run: test "$SOURCE_FOCUSED" = true
+
+      - name: Resolve sharp lock repair source
+        if: inputs.source_focused && inputs.source_resolve_sharp
+        run: |
+          mkdir -p .artifacts/ci-source-focused
+          cp pnpm-lock.yaml .artifacts/ci-source-focused/sharp-before.yaml
+          pnpm update sharp --depth Infinity --lockfile-only --ignore-scripts
+
+      - id: install
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify sharp repair graph
+        if: inputs.source_focused && inputs.source_resolve_sharp
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import yaml from 'js-yaml';
+          function verify(lock) {
+            const sharp = Object.keys(lock.packages).filter((key) => key.startsWith('sharp@'));
+            assert.deepEqual(sharp, ['sharp@0.35.5']);
+            assert.equal(lock.packages[sharp[0]].resolution.integrity, 'sha512-Ywn4OnzGukp7CDMrp08RQ50YKmuwG47brZgIVPTvBaaAfQlRlygrRqSrxdCiL9M+LlzLBiJ68IR1QqvzHyjC7g==');
+            const platforms = Object.keys(lock.packages).filter((key) => key.startsWith('@img/sharp-'));
+            assert.ok(platforms.length > 0);
+            for (const key of platforms) assert.ok(key.endsWith(key.startsWith('@img/sharp-libvips-') ? '@1.3.4' : '@0.35.5'), key);
+            const consumers = {};
+            for (const name of ['miniflare', 'vite-imagetools']) {
+              const snapshots = Object.entries(lock.snapshots).filter(([key]) => key.startsWith(`${name}@`));
+              assert.equal(snapshots.length, 1, name);
+              for (const [key, value] of snapshots) {
+                const dependency = value.dependencies.sharp;
+                assert.equal(dependency.split('(')[0], '0.35.5', key);
+                assert.ok(Object.hasOwn(lock.snapshots, `sharp@${dependency}`), key);
+                consumers[key] = dependency;
+              }
+            }
+            return { sharp, platforms, consumers };
+          }
+          assert.throws(() => verify(yaml.load(readFileSync('.artifacts/ci-source-focused/sharp-before.yaml', 'utf8'))));
+          const graph = verify(yaml.load(readFileSync('pnpm-lock.yaml', 'utf8')));
+          writeFileSync('.artifacts/ci-source-focused/sharp-graph.json', `${JSON.stringify(graph, null, 2)}\n`);
+          NODE
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        if: inputs.source_focused && !inputs.source_audit_compat
+        with:
+          toolchain: stable
+
+      - name: Record source-focused checkout identity
+        if: inputs.source_focused
+        run: |
+          mkdir -p .artifacts/ci-source-focused
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" \
+            > .artifacts/ci-source-focused/checkout-identity.json
+
+      - name: Canonical connection source contracts
+        id: source-canonical-contracts
+        if: inputs.source_focused && inputs.source_canonical_contracts
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/canonical-source
+          node --test scripts/ci-pause.test.mjs scripts/local-ci.test.mjs scripts/local-ci-runner.test.mjs scripts/local-ci-process-supervisor.test.mjs | tee .artifacts/canonical-source/contracts.tap
+
+      - name: Upload canonical connection source contracts
+        if: always() && inputs.source_focused && inputs.source_canonical_contracts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/ci-source-focused/checkout-identity.json
+            .artifacts/canonical-source/contracts.tap
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Source-focused contracts (before generation)
+        id: source-focused-contracts
+        if: inputs.source_focused && !inputs.source_audit_compat && !inputs.source_canonical_contracts
+        run: |
+          set -euo pipefail
+          node --test \
+            scripts/ci-pause.test.mjs \
+            scripts/local-ci.test.mjs \
+            scripts/local-ci-runner.test.mjs \
+            scripts/local-ci-process-supervisor.test.mjs \
+            scripts/electron-product-journeys.test.mjs \
+            scripts/generate-licenses.test.mjs \
+            scripts/license-policy.test.mjs \
+            | tee .artifacts/ci-source-focused/contracts.tap
+
+      # Keep a stale-copy test failure visible. Generated files are repair source,
+      # not acceptance of this now-dirty checkout or a canonical Quick/Full pass.
+      - name: Generate license repair source
+        if: >-
+          inputs.source_focused && !inputs.source_audit_compat && !cancelled() &&
+          !inputs.source_canonical_contracts && steps.install.outcome == 'success' &&
+          (steps.source-focused-contracts.outcome == 'success' ||
+           steps.source-focused-contracts.outcome == 'failure')
+        run: pnpm generate:licenses
+
+      - name: Upload source-focused repair evidence
+        if: always() && inputs.source_focused && !inputs.source_audit_compat && !inputs.source_canonical_contracts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-source-focused-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            .artifacts/ci-source-focused/checkout-identity.json
+            .artifacts/ci-source-focused/contracts.tap
+            .artifacts/ci-source-focused/sharp-graph.json
+            pnpm-lock.yaml
+            THIRD_PARTY_LICENSES.md
+            public/THIRD_PARTY_LICENSES.md
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Audit and real sharp consumer compatibility
+        if: inputs.source_focused && inputs.source_audit_compat
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { writeFile } from 'node:fs/promises';
+          import { runLocalCiCommand } from './scripts/local-ci-process-supervisor.mjs';
+          const controller = new AbortController();
+          const abort = () => controller.abort();
+          process.once('SIGINT', abort);
+          process.once('SIGTERM', abort);
+          try {
+            for (const [taskId, args, timeoutMs] of [
+              ['sharp-consumers', ['--test', 'scripts/ci-pause.test.mjs', 'scripts/sharp-consumers.test.mjs'], 300000],
+              ['pnpm-audit', ['scripts/pnpm-audit.mjs'], 600000],
+            ]) {
+              const result = await runLocalCiCommand({ command: 'node', args, timeoutMs }, {
+                root: process.cwd(),
+                logDirectory: '.artifacts/ci-source-focused/audit-compat',
+                taskId, signal: controller.signal, closeGraceMs: 2000,
+              }).catch(async (error) => {
+                try {
+                  if (error.result) {
+                    await writeFile(`.artifacts/ci-source-focused/audit-compat/${taskId}.json`, `${JSON.stringify(error.result, null, 2)}\n`);
+                  }
+                } finally {
+                  // Unknown close retains ownership; late cleanup never makes this task pass.
+                  if (error.lateClose) {
+                    const late = await error.lateClose;
+                    await writeFile(`.artifacts/ci-source-focused/audit-compat/${taskId}.late-close.json`, `${JSON.stringify(late, null, 2)}\n`);
+                  }
+                }
+                throw error;
+              });
+              await writeFile(`.artifacts/ci-source-focused/audit-compat/${taskId}.json`, `${JSON.stringify(result, null, 2)}\n`);
+              console.log(`${taskId}: exit=${result.exitCode} cleanup=${result.cleanup.complete} termination=${result.termination}`);
+              assert.equal(result.exitCode, 0, taskId);
+              assert.equal(result.timedOut, false, taskId);
+              assert.equal(result.interrupted, false, taskId);
+              assert.equal(result.cleanup.complete, true, taskId);
+              assert.equal(result.closeObserved, true, taskId);
+              assert.equal(result.termination, 'close-and-group-exit-observed', taskId);
+            }
+          } finally {
+            process.removeListener('SIGINT', abort);
+            process.removeListener('SIGTERM', abort);
+          }
+          NODE
+
+      - name: Upload audit compatibility evidence
+        if: always() && inputs.source_focused && inputs.source_audit_compat
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-audit-compat-${{ github.run_id }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          path: |
+            .artifacts/ci-source-focused/checkout-identity.json
+            .artifacts/ci-source-focused/audit-compat/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Release workflow and manifest contract tests
+        if: ${{ !inputs.source_focused }}
         run: >-
           node --test
           scripts/validate-release-version.test.mjs
@@ -390,22 +733,26 @@ jobs:
           scripts/semantic-reranker-release.test.mjs
 
       - name: Electron type-check
+        if: ${{ !inputs.source_focused }}
         run: pnpm exec tsc -p electron/tsconfig.json --noEmit
 
       - name: Electron tests
+        if: ${{ !inputs.source_focused }}
         run: pnpm test:electron --run
 
       - name: Electron production build
+        if: ${{ !inputs.source_focused }}
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
       - name: Renderer performance budget
+        if: ${{ !inputs.source_focused }}
         run: pnpm perf:budget
 
   electron-runtime-performance:
     name: Electron runtime performance (50k chars / 20 Beats)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
@@ -465,7 +812,16 @@ jobs:
           pnpm electron:build
 
       - name: 50k-character / 20-Beat runtime performance gate
+        id: runtime-performance
+        env:
+          GRIMODEX_PERF_CAPTURE_BUILD_IDENTITY: "1"
         run: xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:perf:ci
+
+      - name: Runner-bound Electron runtime diagnostic (failure only)
+        if: ${{ failure() && steps.runtime-performance.outcome == 'failure' }}
+        env:
+          GRIMODEX_REQUIRED_RUNTIME_GATE_OUTCOME: ${{ steps.runtime-performance.outcome }}
+        run: node electron/scripts/runtime-performance-diagnostic.mjs
 
       - name: Upload Electron runtime performance evidence
         if: always()
@@ -478,12 +834,16 @@ jobs:
 
   electron-product-journeys:
     name: Electron product journeys (persistence / workspace authority)
+    if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/product-journeys
+      GRIMODEX_C2ZC_RUST_RECEIPT_PATH: .artifacts/local-ci/c2-zc-rust-acceptance.json
+      GRIMODEX_C2ZC_RUST_REQUESTED_BASE: origin/master
+      GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: HEAD
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -590,6 +950,53 @@ jobs:
           contains(fromJSON(steps.product-journey-impact.outputs.execution_capabilities), 'mcp')
         run: pnpm mcp:build
 
+      - name: Candidate-bound C2-ZC Rust acceptance gate
+        if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          CARGO_BUILD_JOBS: "2"
+          RUST_TEST_THREADS: "2"
+        run: |
+          node scripts/c2zc-rust-acceptance-receipt.mjs \
+            --base "$GRIMODEX_C2ZC_RUST_REQUESTED_BASE" \
+            --head "$GRIMODEX_C2ZC_RUST_REQUESTED_HEAD" \
+            --output "$GRIMODEX_C2ZC_RUST_RECEIPT_PATH"
+
+      - name: Build and verify candidate-bound C2-ZC restore fixture
+        id: c2zc-restore-fixture
+        if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          output_dir="$(mktemp -d "$RUNNER_TEMP/grimodex-c2zc-restore-fixture.XXXXXXXX")"
+          printf 'output_dir=%s\n' "$output_dir" >> "$GITHUB_OUTPUT"
+          expected_head="$(git rev-parse HEAD)"
+          expected_tree="$(git rev-parse 'HEAD^{tree}')"
+          cargo run -p grimodex-db \
+            --manifest-path src-tauri/Cargo.toml \
+            --features c2zc-fixture-builder \
+            --bin c2zc-restore-fixture -- \
+            build \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --output-dir "$output_dir" \
+            --candidate HEAD \
+            --expected-head "$expected_head" \
+            --expected-tree "$expected_tree"
+          cargo run -p grimodex-db \
+            --manifest-path src-tauri/Cargo.toml \
+            --features c2zc-fixture-builder \
+            --bin c2zc-restore-fixture -- \
+            verify \
+            --manifest "$output_dir/c2zc-restore-fixture.manifest.json" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --candidate HEAD
+
+      - name: Bind candidate-bound product journey evidence
+        if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          GRIMODEX_C2ZC_RESTORE_FIXTURE_BUILD_DIR: ${{ steps.c2zc-restore-fixture.outputs.output_dir }}
+        run: node scripts/prepare-electron-product-journey-evidence.mjs
+
       - name: Product journey gate
         if: steps.product-journey-impact.outputs.should_run == 'true'
         env:
@@ -618,7 +1025,7 @@ jobs:
 
   electron-windows-installer-contract:
     name: Electron Windows (unit test / NSIS migration contract)
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -727,20 +1134,39 @@ jobs:
 
   electron-native:
     name: Electron native (N-API / release features / MCP)
-    if: github.event_name != 'schedule'
+    if: ${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Free runner disk space
+      - name: Validate standalone native selection
+        if: inputs.canonical_profile
+        env:
+          PROFILE: ${{ inputs.canonical_profile }}
+          PRODUCT_JOURNEY_MODE: ${{ inputs.product_journey_mode }}
+          INDEPENDENT_GATES: ${{ inputs.independent_gates }}
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+          SOURCE_CANONICAL_CONTRACTS: ${{ inputs.source_canonical_contracts }}
+          CANDIDATE_BASE: ${{ inputs.candidate_base }}
+          CANDIDATE_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
         run: |
-          sudo rm -rf /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
-          df -h /
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          case "$PROFILE" in native-development-build|native-development-tests|native-release-static|native-release-tests|native-licensed-mcp) ;; *) exit 1 ;; esac
+          test "$PRODUCT_JOURNEY_MODE" = all
+          for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
+            case "$flag" in false|"") ;; *) exit 1 ;; esac
+          done
+          test -z "$CANDIDATE_BASE$CANDIDATE_HEAD$MAX_PARALLEL_TASKS"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: ${{ inputs.canonical_profile == 'native-development-build' && '0' || '1' }}
 
       - name: Native build dependencies
         env:
@@ -774,21 +1200,40 @@ jobs:
             src-tauri
             electron/native/grimodex-node
           key: electron-native
+          # Keep ORT's external binaries with restored targets for allocation acquisition.
+          cache-directories: ${{ inputs.canonical_profile == 'native-development-build' && '~/.cache/ort.pyke.io' || '' }}
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Build and test the development N-API module
+      - name: Build the development N-API module
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests'"
+        env:
+          PROFILE: ${{ inputs.canonical_profile }}
         run: |
-          pnpm napi:build
-          pnpm --dir electron/native/grimodex-node test
+          set -euo pipefail
+          if [ "$PROFILE" = native-development-build ]; then
+            # One ordinary Full compiler consumer, not Full or native tests.
+            candidate_base=$(git rev-parse origin/master)
+            candidate_head=$(git rev-parse HEAD)
+            test "$candidate_head" = "$GITHUB_SHA"
+            node scripts/local-ci-full-admission.mjs --native-reference "$candidate_base" "$candidate_head" 12
+          else
+            pnpm napi:build
+          fi
+
+      - name: Test the development N-API module
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-development-tests'"
+        run: pnpm --dir electron/native/grimodex-node test
 
       - name: Check both release-only native features
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-release-static'"
         run: >-
           cargo check
           --manifest-path electron/native/grimodex-node/Cargo.toml
           --features licensing,legacy-keyring-migration
 
       - name: Clippy both release-only native features
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-release-static'"
         run: >-
           cargo clippy
           --manifest-path electron/native/grimodex-node/Cargo.toml
@@ -797,34 +1242,71 @@ jobs:
           -- -D warnings
 
       - name: Test both release-only native features
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-release-tests'"
         run: >-
           cargo test
           --manifest-path electron/native/grimodex-node/Cargo.toml
           --features licensing,legacy-keyring-migration
 
       - name: Test licensed MCP sidecar
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'native-licensed-mcp'"
         run: >-
           cargo test
           --manifest-path src-tauri/Cargo.toml
           -p grimodex-mcp
           --features licensing
 
+      - name: Upload native compile-only allocation observations
+        if: always() && inputs.canonical_profile == 'native-development-build'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-build-allocation-${{ github.run_id }}-${{ github.run_attempt }}
+          # Shaped public metadata only; complete private log bodies stay private.
+          path: .artifacts/local-ci/full-admission/*-setup-reference/*.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
   rust:
     name: Shared Rust crates (check / clippy / test)
-    if: github.event_name != 'schedule'
+    if: ${{ inputs.canonical_profile == 'shared-rust' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
+      # Unfiltered tests include credential-gated live bodies. Never activate
+      # providers through inherited keys; early-return OK is not qualification.
+      OPENAI_API_KEY: ""
+      OPENROUTER_API_KEY: ""
+      OPEN_ROUTER_API_KEY: ""
+      ANTHROPIC_API_KEY: ""
+      SAKANA_API_KEY: ""
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: ランナーのディスク容量を確保
+      - name: Validate standalone shared Rust selection
+        if: inputs.canonical_profile
+        env:
+          PROFILE: ${{ inputs.canonical_profile }}
+          PRODUCT_JOURNEY_MODE: ${{ inputs.product_journey_mode }}
+          INDEPENDENT_GATES: ${{ inputs.independent_gates }}
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+          SOURCE_CANONICAL_CONTRACTS: ${{ inputs.source_canonical_contracts }}
+          CANDIDATE_BASE: ${{ inputs.candidate_base }}
+          CANDIDATE_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
         run: |
-          sudo rm -rf /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
-          df -h /
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$PROFILE" = shared-rust
+          test "$PRODUCT_JOURNEY_MODE" = all
+          for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
+            case "$flag" in false|"") ;; *) exit 1 ;; esac
+          done
+          test -z "$CANDIDATE_BASE$CANDIDATE_HEAD$MAX_PARALLEL_TASKS"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Native build dependencies
         run: |
@@ -889,22 +1371,118 @@ jobs:
         working-directory: src-tauri
         run: cargo test -p grimodex-license --features licensing
 
+  nir1-c-query-worker:
+    name: C-query worker (${{ matrix.os }})
+    if: ${{ inputs.canonical_profile == 'c-query-workers' || inputs.canonical_profile == 'c-query-cancellation' || inputs.canonical_profile == 'c-query-startup-refusal' || inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals' || inputs.canonical_profile == 'c-query-practical' || inputs.canonical_profile == 'c-query-frame-lifecycle' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.canonical_profile == 'c-query-practical' && '["ubuntu-latest"]' || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Validate standalone C-query worker selection
+        if: inputs.canonical_profile
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.canonical_profile }}
+          PRODUCT_JOURNEY_MODE: ${{ inputs.product_journey_mode }}
+          INDEPENDENT_GATES: ${{ inputs.independent_gates }}
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+          SOURCE_CANONICAL_CONTRACTS: ${{ inputs.source_canonical_contracts }}
+          CANDIDATE_BASE: ${{ inputs.candidate_base }}
+          CANDIDATE_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          case "$PROFILE" in c-query-workers|c-query-cancellation|c-query-startup-refusal|c-query-trailing-data|c-query-partial-terminal|c-query-terminal-refusals|c-query-practical|c-query-frame-lifecycle) ;; *) exit 1 ;; esac
+          test "$PRODUCT_JOURNEY_MODE" = all
+          for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
+            case "$flag" in false|"") ;; *) exit 1 ;; esac
+          done
+          test -z "$CANDIDATE_BASE$CANDIDATE_HEAD$MAX_PARALLEL_TASKS"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          workspaces: src-tauri
+
+      - name: Build private Q2 fixture and run caller-cancellation worker test
+        if: inputs.canonical_profile == 'c-query-cancellation'
+        shell: bash
+        run: bash scripts/nir1-c-query-worker-ci.sh caller-cancellation
+
+      - name: Build private Q2 fixture and run startup-registration-refusal worker test
+        if: inputs.canonical_profile == 'c-query-startup-refusal'
+        shell: bash
+        run: bash scripts/nir1-c-query-worker-ci.sh startup-registration-refusal
+
+      - name: Build private Q2 fixture and run committed-frame trailing-data worker test
+        if: inputs.canonical_profile == 'c-query-trailing-data' || inputs.canonical_profile == 'c-query-terminal-refusals'
+        shell: bash
+        run: bash scripts/nir1-c-query-worker-ci.sh trailing-data
+
+      - name: Build private Q2 fixture and run partial-terminal-marker worker test
+        if: inputs.canonical_profile == 'c-query-partial-terminal' || inputs.canonical_profile == 'c-query-terminal-refusals'
+        shell: bash
+        run: bash scripts/nir1-c-query-worker-ci.sh partial-terminal-marker
+
+      - name: Run finite Q512 retention and maximum-fixture worker tests
+        if: inputs.canonical_profile == 'c-query-practical'
+        shell: bash
+        run: bash scripts/nir1-c-query-worker-ci.sh practical-retention
+
+      - name: Run grouped Q2 partial-body and Linux missing-EOF worker tests
+        if: inputs.canonical_profile == 'c-query-frame-lifecycle'
+        shell: bash
+        run: bash scripts/nir1-c-query-worker-ci.sh frame-lifecycle
+
+      - name: Build private Q2/Q512 fixtures and run focused real-worker tests
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'c-query-workers'"
+        shell: bash
+        run: bash scripts/nir1-c-query-worker-ci.sh
+
   migration-recovery-gate:
     name: Migration recovery gate (Gate A2)
-    if: github.event_name != 'schedule'
+    if: ${{ inputs.canonical_profile == 'migration-crash' || inputs.canonical_profile == 'migration-safe-mode' || inputs.canonical_profile == 'migration-library' || inputs.canonical_profile == 'migration-remaining' || (github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates) }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: ランナーのディスク容量を確保
+      - name: Validate standalone migration selection
+        if: inputs.canonical_profile
+        env:
+          PROFILE: ${{ inputs.canonical_profile }}
+          PRODUCT_JOURNEY_MODE: ${{ inputs.product_journey_mode }}
+          INDEPENDENT_GATES: ${{ inputs.independent_gates }}
+          SOURCE_FOCUSED: ${{ inputs.source_focused }}
+          SOURCE_RESOLVE_SHARP: ${{ inputs.source_resolve_sharp }}
+          SOURCE_AUDIT_COMPAT: ${{ inputs.source_audit_compat }}
+          SOURCE_CANONICAL_CONTRACTS: ${{ inputs.source_canonical_contracts }}
+          CANDIDATE_BASE: ${{ inputs.candidate_base }}
+          CANDIDATE_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
         run: |
-          sudo rm -rf /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/share/dotnet /usr/share/swift
-          df -h /
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          case "$PROFILE" in migration-crash|migration-safe-mode|migration-library|migration-remaining) ;; *) exit 1 ;; esac
+          test "$PRODUCT_JOURNEY_MODE" = all
+          for flag in "$INDEPENDENT_GATES" "$SOURCE_FOCUSED" "$SOURCE_RESOLVE_SHARP" "$SOURCE_AUDIT_COMPAT" "$SOURCE_CANONICAL_CONTRACTS"; do
+            case "$flag" in false|"") ;; *) exit 1 ;; esac
+          done
+          test -z "$CANDIDATE_BASE$CANDIDATE_HEAD$MAX_PARALLEL_TASKS"
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Native build dependencies
         run: |
@@ -939,10 +1517,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Migration supervisor unit/integration
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-remaining'"
         working-directory: src-tauri
         run: cargo test -p grimodex-db --test workspace_migration_supervisor
 
       - name: Migration supervisor failpoint suite
+        if: "!inputs.canonical_profile"
         working-directory: src-tauri
         run: >-
           cargo test
@@ -951,10 +1531,12 @@ jobs:
           --test workspace_migration_supervisor
 
       - name: Migration recovery failpoint library tests
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-library'"
         working-directory: src-tauri
         run: cargo test -p grimodex-db --features test-failpoints --lib
 
       - name: Safe Mode structured outcome + restore-by-id
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-safe-mode'"
         working-directory: src-tauri
         run: >-
           cargo test
@@ -963,10 +1545,12 @@ jobs:
           --test workspace_safe_mode_outcome
 
       - name: Real release-schema fixture + WAL preservation
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-remaining'"
         working-directory: src-tauri
         run: cargo test -p grimodex-db --test release_schema_migration
 
       - name: Subprocess crash recovery
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-crash'"
         working-directory: src-tauri
         run: >-
           cargo test
@@ -976,9 +1560,11 @@ jobs:
           --test restore_subprocess_crash
 
       - name: Safe Mode IPC contract
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-remaining'"
         run: pnpm test:electron --run electron/shared/ipcContract.test.ts
 
       - name: Recovery Shell frontend tests
+        if: "!inputs.canonical_profile || inputs.canonical_profile == 'migration-remaining'"
         run: >-
           pnpm test --run
           src/features/workspace/store.test.ts

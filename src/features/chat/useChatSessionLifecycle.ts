@@ -10,6 +10,7 @@ export interface ChatSessionLifecycleOptions {
   chatScope: ChatScope;
   scopeAnchorId: string | null;
   activeSessionId: string | null;
+  isStreaming: boolean;
   includeBodies: boolean;
   includeMapBoard: boolean;
   mapBoardId: string | null;
@@ -37,6 +38,7 @@ export function useChatSessionLifecycle({
   chatScope,
   scopeAnchorId,
   activeSessionId,
+  isStreaming,
   includeBodies,
   includeMapBoard,
   mapBoardId,
@@ -84,7 +86,7 @@ export function useChatSessionLifecycle({
   }, [treeActiveSceneId, setActiveSceneId]);
 
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive || isStreaming) return;
     if (chatScope === "scene" && !treeActiveSceneId) return;
     let stale = false;
     const {
@@ -130,6 +132,7 @@ export function useChatSessionLifecycle({
     };
   }, [
     isActive,
+    isStreaming,
     treeActiveSceneId,
     chatScope,
     scopeAnchorId,

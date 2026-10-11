@@ -40,6 +40,7 @@ const DEFAULT_SCENE_TITLE = "シーン 1";
 const SCENES_PANEL_TITLE = "シーン";
 const CREATE_BUTTON_TITLE = "新規作成";
 const NEW_SCENE_MENU_ITEM = "New scene";
+const NEW_FOLDER_MENU_ITEM = "New folder";
 const JOURNEY_TEXT = `PRODUCT-JOURNEY-${Date.now()}`;
 const PENDING_SAVE_TEXT = `PENDING-SAVE-JOURNEY-${Date.now()}`;
 const PENDING_PROJECT_SAVE_TEXT = `PENDING-PROJECT-SAVE-JOURNEY-${Date.now()}`;
@@ -47,11 +48,17 @@ const CLEAN_EXTERNAL_TEXT = `CLEAN-EXTERNAL-JOURNEY-${Date.now()}`;
 const DIRTY_LOCAL_TEXT = `DIRTY-LOCAL-JOURNEY-${Date.now()}`;
 const DIRTY_EXTERNAL_TEXT = `DIRTY-EXTERNAL-JOURNEY-${Date.now()}`;
 const CHAT_AUTHORITY_PROMPT = `CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
+const FOLDER_CHAT_SWITCH_PROMPT = `FOLDER-CHAT-SWITCH-${Date.now()}`;
+const CODEX_CHAT_SWITCH_PROMPT = `CODEX-CHAT-SWITCH-${Date.now()}`;
+const CODEX_CHAT_SWITCH_A_MARKER = `CODEX-SWITCH-A-${Date.now()}`;
+const CODEX_CHAT_SWITCH_B_MARKER = `CODEX-SWITCH-B-${Date.now()}`;
+const SNIPPET_CHAT_SWITCH_PROMPT = `SNIPPET-CHAT-SWITCH-${Date.now()}`;
 const PROJECT_CHAT_AUTHORITY_PROMPT = `PROJECT-CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
+const AGENT_PROJECT_SWITCH_PROMPT = `AGENT-PROJECT-SWITCH-PROMPT-${Date.now()}`;
+const AGENT_PROJECT_SWITCH_OUTPUT = "AGENT-PROJECT-SWITCH-OUTPUT";
+const AGENT_WORKSPACE_SWITCH_PROMPT = `AGENT-WORKSPACE-SWITCH-PROMPT-${Date.now()}`;
+const AGENT_WORKSPACE_SWITCH_OUTPUT = "AGENT-WORKSPACE-SWITCH-OUTPUT";
 const WORKSPACE_CHAT_AUTHORITY_PROMPT = `WORKSPACE-CHAT-AUTHORITY-JOURNEY-${Date.now()}`;
-const AGENT_PROJECT_AUTHORITY_PROMPT = `AGENT-AUTHORITY-JOURNEY-PROJECT-${Date.now()}`;
-const AGENT_WORKSPACE_AUTHORITY_PROMPT = `AGENT-AUTHORITY-JOURNEY-WORKSPACE-${Date.now()}`;
-const AGENT_AUTHORITY_OUTPUT = "AGENT-OLD-SCOPE-OUTPUT";
 const NEW_SCOPED_CHAT_PROMPT = `NEW-SCOPE-JOURNEY-${Date.now()}`;
 const CHAT_AUTHORITY_EARLY = "AUTHORITY-OLD-EARLY";
 const CHAT_AUTHORITY_LATE = "AUTHORITY-OLD-LATE";
@@ -728,33 +735,14 @@ async function switchProjectThroughUi(harness, page, { id, title }, label) {
   }, label);
 }
 
-async function switchProjectThroughUiDuringAgentTurn(
-  harness,
-  page,
-  { id, title },
-  label,
-) {
-  // A pending Agent response has a fixed four-second boundary. Dispatch DOM
-  // clicks as soon as the controls are visible; Playwright's pointer-stability
-  // wait can outlast that boundary on Xvfb's software renderer.
+async function clickProjectSwitchDuringAgentTurn(page, project) {
+  // Avoid Playwright's pointer-stability wait on Xvfb's software renderer.
   const trigger = page.getByTestId("project-menu-trigger");
   await trigger.waitFor({ state: "visible" });
   await trigger.evaluate((button) => button.click());
-  const option = page.getByTestId(`project-switch-${id}`);
+  const option = page.getByTestId(`project-switch-${project.id}`);
   await option.waitFor({ state: "visible" });
   await option.evaluate((button) => button.click());
-  await harness.waitUntil(async () => {
-    const activeSetting = await queryRows(
-      harness,
-      page,
-      "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
-    );
-    const triggerText = await trigger.textContent();
-    return (
-      activeSetting[0]?.value === id &&
-      String(triggerText ?? "").includes(title)
-    );
-  }, label);
 }
 
 async function switchWorkspaceThroughUi(harness, page, workspace, label) {
@@ -777,29 +765,19 @@ async function switchWorkspaceThroughUi(harness, page, workspace, label) {
   }, label);
 }
 
-async function switchWorkspaceThroughUiDuringAgentTurn(
-  harness,
-  page,
-  workspace,
-  label,
-) {
-  const previousRevision = await workspaceOpenRevision(page);
-  const workspaceName = path.basename(workspace);
+async function clickWorkspaceSwitchDuringAgentTurn(page, workspace) {
+  // Avoid Playwright's pointer-stability wait on Xvfb's software renderer.
   const trigger = page.getByTestId("workspace-menu-trigger");
   await trigger.waitFor({ state: "visible" });
   await trigger.evaluate((button) => button.click());
   const option = page
     .getByTestId("workspace-menu-dropdown")
-    .getByRole("button", { name: workspaceName, exact: true });
+    .getByRole("button", {
+      name: path.basename(workspace),
+      exact: true,
+    });
   await option.waitFor({ state: "visible" });
   await option.evaluate((button) => button.click());
-  await harness.waitUntil(async () => {
-    const triggerText = await trigger.textContent();
-    return (
-      String(triggerText ?? "").includes(workspaceName) &&
-      (await workspaceOpenRevision(page)) > previousRevision
-    );
-  }, label);
 }
 
 async function findSceneById(harness, page, sceneId) {
@@ -897,29 +875,51 @@ async function startAgentAuthorityTurn(harness, page, projectId, prompt) {
   if (await toggle.isDisabled()) {
     throw new Error("Agent mode is unavailable in the deterministic journey");
   }
-  await toggle.click();
   if ((await toggle.getAttribute("aria-pressed")) !== "true") {
-    throw new Error("Agent mode did not engage");
+    await toggle.click();
   }
+  await harness.waitUntil(
+    async () => (await toggle.getAttribute("aria-pressed")) === "true",
+    "Agent mode enabled for lifecycle journey",
+  );
   await sendChatPrompt(page, prompt);
-  await harness.waitUntil(async () => {
+  const preparedAudit = await harness.waitUntil(async () => {
     const rows = await queryRows(
       harness,
       page,
-      `SELECT execution_id AS executionId FROM ai_audit_events
+      `SELECT execution_id AS executionId, payload
+       FROM ai_audit_events
        WHERE project_id = ? AND path_id = 'chat_agent_main'
-         AND event_type = 'request.dispatched'
-       ORDER BY id DESC LIMIT 1`,
+         AND event_type = 'request.prepared'
+       ORDER BY sequence DESC LIMIT 1`,
       [projectId],
     );
-    return rows[0]?.executionId ?? null;
-  }, "Agent transport dispatch before lifecycle switch");
+    return String(rows[0]?.payload ?? "").includes(prompt) ? rows[0] : null;
+  }, "Agent request prepared before lifecycle switch");
+  await harness.waitUntil(
+    async () =>
+      (
+        await queryRows(
+          harness,
+          page,
+          `SELECT sequence FROM ai_audit_events
+           WHERE project_id = ? AND path_id = 'chat_agent_main'
+             AND execution_id = ? AND event_type = 'request.dispatched'`,
+          [projectId, preparedAudit.executionId],
+        )
+      ).length === 1,
+    "Agent transport dispatch before lifecycle switch",
+  );
   await page
     .getByTestId("chat-send")
     .waitFor({ state: "detached", timeout: 5_000 });
+  return preparedAudit;
 }
 
-function assertCompletedAgentAuthority(rows, { prompt, label }) {
+function assertCompletedAgentAuthority(
+  rows,
+  { prompt, outputMarker, label },
+) {
   if (
     !rows.some(
       (row) =>
@@ -928,7 +928,7 @@ function assertCompletedAgentAuthority(rows, { prompt, label }) {
     !rows.some(
       (row) =>
         row.role === "assistant" &&
-        String(row.content ?? "").includes(AGENT_AUTHORITY_OUTPUT),
+        String(row.content ?? "").includes(outputMarker),
     ) ||
     !rows.some((row) => row.systemPrompt != null)
   ) {
@@ -938,11 +938,11 @@ function assertCompletedAgentAuthority(rows, { prompt, label }) {
   }
 }
 
-function agentAuthorityLeaks(rows, prompt) {
+function agentAuthorityLeaks(rows, prompt, outputMarker) {
   return rows.filter(
     (row) =>
       String(row.content ?? "").includes(prompt) ||
-      String(row.content ?? "").includes(AGENT_AUTHORITY_OUTPUT) ||
+      String(row.content ?? "").includes(outputMarker) ||
       String(row.systemPrompt ?? "").includes(prompt),
   );
 }
@@ -1032,6 +1032,88 @@ async function prepareCodexContextEntry(harness) {
       prepared.page,
       "cross-feature-authoring/prepare",
     );
+  }
+}
+
+async function prepareCodexChatStreamEntries(harness, journeyId) {
+  const prepared = await harness.launch(`${journeyId}/prepare`);
+  try {
+    const project = await currentProjectRow(harness, prepared.page);
+    const projectId = String(project.id);
+    const characterType = await queryRows(
+      harness,
+      prepared.page,
+      `SELECT id FROM codex_types
+       WHERE project_id = ? AND slug = 'character' LIMIT 1`,
+      [projectId],
+    );
+    if (characterType.length !== 1) {
+      throw new Error(
+        `project '${projectId}' is missing its canonical character type`,
+      );
+    }
+
+    const suffix = Date.now();
+    const entries = [
+      {
+        id: `product-codex-chat-switch-${suffix}-a`,
+        name: `Journey Codex A ${suffix}`,
+        type: "character",
+        marker: CODEX_CHAT_SWITCH_A_MARKER,
+      },
+      {
+        id: `product-codex-chat-switch-${suffix}-b`,
+        name: `Journey Codex B ${suffix}`,
+        type: "character",
+        marker: CODEX_CHAT_SWITCH_B_MARKER,
+      },
+    ];
+    for (const entry of entries) {
+      await harness.invokeOk(prepared.page, "codex_create", {
+        payload: {
+          requestId: `product-codex-create-${entry.id}`,
+          eventUid: `product-codex-create-event:${entry.id}`,
+          origin: "human",
+          authorityRoute: "human-direct",
+          caller: "manual-wrapper",
+          controls: [
+            "runtime-policy",
+            "actor-context",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+          ],
+          provenance: null,
+          writesAuthorityProtectedField: false,
+          originalTransactionId: null,
+          undoJournalId: null,
+          entryId: entry.id,
+          projectId,
+          sessionId: "electron-product-journey",
+          surface: "chat-stream-codex-switch-fixture",
+          typeSlug: "character",
+          name: entry.name,
+          summary: entry.marker,
+          content: sceneDocument(entry.marker),
+          aliases: null,
+          excludedAliases: null,
+          readings: null,
+          tagsCache: null,
+          parentId: null,
+          contextMode: "suppress",
+          childrenBudget: null,
+          sourceChatMessageId: null,
+          model: null,
+          chatMessageId: null,
+          traceId: null,
+          authorshipSpans: [],
+        },
+      });
+    }
+    return { projectId, entries };
+  } finally {
+    await harness.close(prepared.app, prepared.page, `${journeyId}/prepare`);
   }
 }
 
@@ -1447,6 +1529,988 @@ async function runChatAuthorityIsolationJourney(harness) {
   }
 }
 
+async function createFolderThroughUi(harness, page) {
+  const header = scenesPanelHeader(page);
+  await header.waitFor({ state: "visible", timeout: 60_000 });
+  const before = await queryRows(
+    harness,
+    page,
+    "SELECT id FROM tree_nodes WHERE node_type = 'folder'",
+  );
+  const existingFolderIds = new Set(before.map((row) => String(row.id)));
+  await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
+  await page
+    .getByRole("menuitem", { name: NEW_FOLDER_MENU_ITEM, exact: true })
+    .click();
+
+  const renameInput = page.locator(
+    '[data-droptarget-id="scenes-panel"] input:focus',
+  );
+  if (
+    await renameInput
+      .waitFor({ state: "visible", timeout: 1_000 })
+      .then(() => true)
+      .catch(() => false)
+  ) {
+    await page.keyboard.press("Enter");
+  }
+
+  const created = await harness.waitUntil(async () => {
+    const rows = await queryRows(
+      harness,
+      page,
+      `SELECT id, project_id AS projectId, title
+       FROM tree_nodes
+       WHERE node_type = 'folder'
+       ORDER BY created_at DESC`,
+    );
+    return rows.find((row) => !existingFolderIds.has(String(row.id))) ?? null;
+  }, "new folder persistence");
+  if (!created.projectId) {
+    throw new Error("new folder did not expose its project authority");
+  }
+  return {
+    folderId: String(created.id),
+    projectId: String(created.projectId),
+    title: String(created.title),
+  };
+}
+
+async function selectChatFolder(harness, page, folder) {
+  const picker = page.getByTestId("chat-scope-picker");
+  await picker.click();
+  const pickerLabel = await picker.getAttribute("aria-label");
+  if (!pickerLabel)
+    throw new Error("chat scope picker has no accessible label");
+  await page
+    .getByRole("tablist", { name: pickerLabel })
+    .locator("xpath=..")
+    .getByRole("button", { name: folder.title, exact: true })
+    .click();
+  await harness.waitUntil(async () => {
+    const label = await picker.textContent();
+    return (
+      (await picker.getAttribute("data-chat-scope")) === "folder" &&
+      String(label ?? "").includes(folder.title)
+    );
+  }, `chat folder scope ${folder.title}`);
+}
+
+async function setSnippetPanelOpen(harness, page, open) {
+  const toggle = page.getByTestId("panel-toggle-root").getByRole("button");
+  await toggle.click();
+  const item = page.getByTestId("panel-toggle-item-snippets");
+  const isOpen = (await item.getAttribute("aria-pressed")) === "true";
+  if (isOpen !== open) {
+    await item.focus();
+    await page.keyboard.press("Space");
+  }
+  await toggle.click();
+  await harness.waitUntil(
+    async () => {
+      const visible = await page
+        .getByTestId("snippet-panel")
+        .isVisible()
+        .catch(() => false);
+      return visible === open;
+    },
+    `Snippet panel ${open ? "opened" : "closed"}`,
+  );
+}
+
+async function createSnippetThroughUi(harness, page, title) {
+  const project = await currentProjectRow(harness, page);
+  const existing = new Set(
+    (
+      await queryRows(
+        harness,
+        page,
+        "SELECT id FROM snippets WHERE project_id = ?",
+        [project.id],
+      )
+    ).map((row) => String(row.id)),
+  );
+  await setSnippetPanelOpen(harness, page, true);
+  await page.getByTestId("snippet-new-button").click();
+  const snippet = await harness.waitUntil(async () => {
+    const rows = await queryRows(
+      harness,
+      page,
+      `SELECT id, project_id AS projectId, title
+       FROM snippets WHERE project_id = ? ORDER BY created_at DESC`,
+      [project.id],
+    );
+    return rows.find((row) => !existing.has(String(row.id))) ?? null;
+  }, "new Snippet persistence");
+  await page.getByTestId("snippet-detail-title").fill(title);
+  await harness.waitUntil(async () => {
+    const rows = await queryRows(
+      harness,
+      page,
+      "SELECT title FROM snippets WHERE id = ? AND project_id = ?",
+      [snippet.id, project.id],
+    );
+    return rows[0]?.title === title;
+  }, `Snippet title ${title}`);
+  await setSnippetPanelOpen(harness, page, false);
+  return {
+    snippetId: String(snippet.id),
+    projectId: String(snippet.projectId),
+    title,
+  };
+}
+
+async function selectChatCodex(harness, page, entry) {
+  const picker = page.getByTestId("chat-scope-picker");
+  await picker.click();
+  const pickerLabel = await picker.getAttribute("aria-label");
+  if (!pickerLabel)
+    throw new Error("chat scope picker has no accessible label");
+  const codexTab = page
+    .getByRole("tablist", { name: pickerLabel })
+    .getByRole("tab")
+    .nth(1);
+  if ((await codexTab.getAttribute("aria-selected")) !== "true") {
+    await codexTab.focus();
+    await codexTab.press("Enter");
+  }
+  const pickerContent = page
+    .getByRole("tablist", { name: pickerLabel })
+    .locator("xpath=..");
+  await pickerContent
+    .getByRole("button", {
+      name: `${entry.name} ${entry.type}`,
+      exact: true,
+    })
+    .click();
+  await harness.waitUntil(async () => {
+    const label = await picker.textContent();
+    return (
+      (await picker.getAttribute("data-chat-scope")) === "codex" &&
+      String(label ?? "").includes(entry.name)
+    );
+  }, `chat Codex scope ${entry.name}`);
+}
+
+async function selectChatSnippet(harness, page, snippet) {
+  const picker = page.getByTestId("chat-scope-picker");
+  await picker.click();
+  const pickerLabel = await picker.getAttribute("aria-label");
+  if (!pickerLabel)
+    throw new Error("chat scope picker has no accessible label");
+  const tabs = page
+    .getByRole("tablist", { name: pickerLabel })
+    .getByRole("tab");
+  const snippetTab = tabs.nth(2);
+  if ((await snippetTab.getAttribute("aria-selected")) !== "true") {
+    await snippetTab.focus();
+    await snippetTab.press("Enter");
+  }
+  const snippetOption = page.getByRole("button", {
+    name: snippet.title,
+    exact: true,
+  });
+  await snippetOption.focus();
+  await snippetOption.press("Enter");
+  await harness.waitUntil(async () => {
+    const label = await picker.textContent();
+    return (
+      (await picker.getAttribute("data-chat-scope")) === "snippet" &&
+      String(label ?? "").includes(snippet.title)
+    );
+  }, `chat Snippet scope ${snippet.title}`);
+}
+
+async function runFolderStreamSwitchJourney(harness, laneContext) {
+  const workspace = harness.workspacePath("chat-stream-folder-switch");
+  await configureWorkspace(harness, workspace, { deterministicAi: true });
+
+  const chat = await harness.launch("chat-stream-folder-switch");
+  try {
+    const project = await currentProjectRow(harness, chat.page);
+    const folderA = await createFolderThroughUi(harness, chat.page);
+    const folderB = await createFolderThroughUi(harness, chat.page);
+    if (
+      folderA.folderId === folderB.folderId ||
+      folderA.projectId !== String(project.id) ||
+      folderB.projectId !== String(project.id)
+    ) {
+      throw new Error(
+        "folder chat journey did not create distinct same-project folders",
+      );
+    }
+    await selectChatFolder(harness, chat.page, folderA);
+    await sendChatPrompt(chat.page, FOLDER_CHAT_SWITCH_PROMPT);
+    await chat.page
+      .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+      .last()
+      .waitFor({ state: "visible", timeout: 30_000 });
+
+    const preparedAudit = await harness.waitUntil(async () => {
+      const rows = await queryRows(
+        harness,
+        chat.page,
+        `SELECT execution_id AS executionId, payload
+         FROM ai_audit_events
+         WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+           AND event_type = 'request.prepared'
+         ORDER BY sequence DESC LIMIT 1`,
+        [project.id],
+      );
+      return String(rows[0]?.payload ?? "").includes(FOLDER_CHAT_SWITCH_PROMPT)
+        ? rows[0]
+        : null;
+    }, "folder A chat request prepared");
+    await harness.waitUntil(
+      async () =>
+        (
+          await queryRows(
+            harness,
+            chat.page,
+            `SELECT sequence
+             FROM ai_audit_events
+             WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+               AND execution_id = ? AND event_type = 'request.dispatched'`,
+            [project.id, preparedAudit.executionId],
+          )
+        ).length === 1,
+      "folder A chat request dispatched",
+    );
+    const completionBeforeSwitch = await queryRows(
+      harness,
+      chat.page,
+      `SELECT sequence
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [project.id, preparedAudit.executionId],
+    );
+    if (completionBeforeSwitch.length !== 0) {
+      throw new Error("folder A chat stream completed before switching to B");
+    }
+    harness.recordTimeline("folder-chat-stream-started", {
+      workspace,
+      projectId: project.id,
+      folderAId: folderA.folderId,
+      folderBId: folderB.folderId,
+      executionId: preparedAudit.executionId,
+      pathId: "chat_stream_non_agent",
+      earlyChunkVisible: true,
+      responseStillPending: true,
+    });
+
+    await selectChatFolder(harness, chat.page, folderB);
+    const staleUiBeforeCompletion =
+      (await chat.page
+        .getByText(FOLDER_CHAT_SWITCH_PROMPT, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+        .count()) > 0;
+    const completionAfterSwitch = await queryRows(
+      harness,
+      chat.page,
+      `SELECT sequence
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [project.id, preparedAudit.executionId],
+    );
+    if (staleUiBeforeCompletion || completionAfterSwitch.length !== 0) {
+      throw new Error(
+        "folder B did not become an isolated visible scope while folder A was pending",
+      );
+    }
+    harness.recordTimeline("folder-chat-scope-switched", {
+      workspace,
+      projectId: project.id,
+      fromFolderId: folderA.folderId,
+      toFolderId: folderB.folderId,
+      responseStillPending: true,
+      oldContentVisibleInNewScope: false,
+    });
+
+    const auditEvents = await harness.waitUntil(async () => {
+      const rows = await queryRows(
+        harness,
+        chat.page,
+        `SELECT sequence, event_type AS eventType, payload
+         FROM ai_audit_events
+         WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+           AND execution_id = ?
+         ORDER BY sequence`,
+        [project.id, preparedAudit.executionId],
+      );
+      return rows.some((event) => event.eventType === "response.completed")
+        ? rows
+        : null;
+    }, "folder A correlated chat terminal audit");
+    const authorityRows = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(harness, chat.page, project.id);
+      try {
+        assertCompletedChatAuthority(
+          rows.filter((row) => row.nodeId === folderA.folderId),
+          { prompt: FOLDER_CHAT_SWITCH_PROMPT, label: "folder A chat" },
+        );
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "folder A transcript and prompt snapshot persistence");
+
+    const preparedEvent = auditEvents.find(
+      (event) => event.eventType === "request.prepared",
+    );
+    const dispatchedEvent = auditEvents.find(
+      (event) => event.eventType === "request.dispatched",
+    );
+    const completedEvents = auditEvents.filter(
+      (event) => event.eventType === "response.completed",
+    );
+    if (
+      !preparedEvent ||
+      !dispatchedEvent ||
+      completedEvents.length !== 1 ||
+      !(preparedEvent.sequence < dispatchedEvent.sequence) ||
+      !(dispatchedEvent.sequence < completedEvents[0].sequence) ||
+      !String(completedEvents[0].payload ?? "").includes(
+        CHAT_AUTHORITY_EARLY,
+      ) ||
+      !String(completedEvents[0].payload ?? "").includes(CHAT_AUTHORITY_LATE)
+    ) {
+      throw new Error("folder A terminal audit is incomplete or uncorrelated");
+    }
+
+    const folderARows = authorityRows.filter(
+      (row) => row.nodeId === folderA.folderId,
+    );
+    const userRows = folderARows.filter(
+      (row) =>
+        row.role === "user" &&
+        String(row.content ?? "").includes(FOLDER_CHAT_SWITCH_PROMPT),
+    );
+    const assistantRows = folderARows.filter(
+      (row) =>
+        row.role === "assistant" &&
+        String(row.content ?? "").includes(CHAT_AUTHORITY_EARLY) &&
+        String(row.content ?? "").includes(CHAT_AUTHORITY_LATE),
+    );
+    const ownerSessionIds = new Set(
+      [...userRows, ...assistantRows].map((row) => String(row.sessionId)),
+    );
+    const folderBLeaks = chatAuthorityLeaks(
+      authorityRows.filter((row) => row.nodeId === folderB.folderId),
+      FOLDER_CHAT_SWITCH_PROMPT,
+    );
+    if (
+      userRows.length !== 1 ||
+      assistantRows.length !== 1 ||
+      ownerSessionIds.size !== 1 ||
+      folderBLeaks.length > 0
+    ) {
+      throw new Error(
+        "folder A transcript ownership or folder B database isolation failed",
+      );
+    }
+
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "visible", timeout: 30_000 });
+    const picker = chat.page.getByTestId("chat-scope-picker");
+    if (
+      (await picker.getAttribute("data-chat-scope")) !== "folder" ||
+      !String(await picker.textContent()).includes(folderB.title) ||
+      (await chat.page
+        .getByText(FOLDER_CHAT_SWITCH_PROMPT, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_LATE, { exact: false })
+        .count()) > 0
+    ) {
+      throw new Error(
+        "folder B UI contains folder A chat content after completion",
+      );
+    }
+
+    await selectChatFolder(harness, chat.page, folderA);
+    await harness.waitUntil(
+      async () =>
+        (await chat.page
+          .getByText(FOLDER_CHAT_SWITCH_PROMPT, { exact: false })
+          .count()) > 0 &&
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+          .count()) > 0 &&
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_LATE, { exact: false })
+          .count()) > 0,
+      "folder A persisted transcript restored on return",
+    );
+    harness.recordTimeline("folder-chat-stream-completed", {
+      workspace,
+      projectId: project.id,
+      folderAId: folderA.folderId,
+      folderBId: folderB.folderId,
+      sessionId: [...ownerSessionIds][0],
+      executionId: preparedAudit.executionId,
+      terminalRecordsOwnedByFolderA: true,
+      folderBDatabaseLeak: false,
+      folderBUiLeak: false,
+      folderARestoredOnReturn: true,
+    });
+    log(
+      "Folder chat switch: pending stream terminal records stayed in folder A with no folder B transcript/UI leak",
+    );
+  } finally {
+    await harness.close(chat.app, chat.page, "chat-stream-folder-switch");
+  }
+  const anchorScopeDiagnostics = await runIsolatedChatStreamAnchorScopeJourney(
+    harness,
+    "folder",
+    laneContext,
+  );
+  return { anchorScopeDiagnostics };
+}
+
+async function runSnippetStreamSwitchJourney(harness, laneContext) {
+  const journeyId = "chat-stream-snippet-switch";
+  const workspace = harness.workspacePath(journeyId);
+  await configureWorkspace(harness, workspace, { deterministicAi: true });
+
+  const chat = await harness.launch(journeyId);
+  try {
+    const project = await currentProjectRow(harness, chat.page);
+    const suffix = Date.now();
+    const snippetA = await createSnippetThroughUi(
+      harness,
+      chat.page,
+      `Journey Snippet A ${suffix}`,
+    );
+    const snippetB = await createSnippetThroughUi(
+      harness,
+      chat.page,
+      `Journey Snippet B ${suffix}`,
+    );
+    if (
+      snippetA.snippetId === snippetB.snippetId ||
+      snippetA.projectId !== String(project.id) ||
+      snippetB.projectId !== String(project.id)
+    ) {
+      throw new Error(
+        "snippet chat journey did not create distinct same-project snippets",
+      );
+    }
+    await selectChatSnippet(harness, chat.page, snippetA);
+    await sendChatPrompt(chat.page, SNIPPET_CHAT_SWITCH_PROMPT);
+    await chat.page
+      .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+      .last()
+      .waitFor({ state: "visible", timeout: 30_000 });
+
+    const preparedAudit = await harness.waitUntil(async () => {
+      const rows = await queryRows(
+        harness,
+        chat.page,
+        `SELECT execution_id AS executionId, payload
+         FROM ai_audit_events
+         WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+           AND event_type = 'request.prepared'
+         ORDER BY sequence DESC LIMIT 1`,
+        [project.id],
+      );
+      return String(rows[0]?.payload ?? "").includes(SNIPPET_CHAT_SWITCH_PROMPT)
+        ? rows[0]
+        : null;
+    }, "snippet A chat request prepared");
+    await harness.waitUntil(
+      async () =>
+        (
+          await queryRows(
+            harness,
+            chat.page,
+            `SELECT sequence
+             FROM ai_audit_events
+             WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+               AND execution_id = ? AND event_type = 'request.dispatched'`,
+            [project.id, preparedAudit.executionId],
+          )
+        ).length === 1,
+      "snippet A chat request dispatched",
+    );
+    const completionBeforeSwitch = await queryRows(
+      harness,
+      chat.page,
+      `SELECT sequence
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [project.id, preparedAudit.executionId],
+    );
+    if (completionBeforeSwitch.length !== 0) {
+      throw new Error("snippet A chat stream completed before switching to B");
+    }
+    harness.recordTimeline("snippet-chat-stream-started", {
+      workspace,
+      projectId: project.id,
+      snippetAId: snippetA.snippetId,
+      snippetBId: snippetB.snippetId,
+      executionId: preparedAudit.executionId,
+      pathId: "chat_stream_non_agent",
+      earlyChunkVisible: true,
+      responseStillPending: true,
+    });
+
+    await selectChatSnippet(harness, chat.page, snippetB);
+    const staleUiBeforeCompletion =
+      (await chat.page
+        .getByText(SNIPPET_CHAT_SWITCH_PROMPT, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+        .count()) > 0;
+    const completionAfterSwitch = await queryRows(
+      harness,
+      chat.page,
+      `SELECT sequence
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [project.id, preparedAudit.executionId],
+    );
+    if (staleUiBeforeCompletion || completionAfterSwitch.length !== 0) {
+      throw new Error(
+        "snippet B did not become isolated while snippet A was pending",
+      );
+    }
+    harness.recordTimeline("snippet-chat-scope-switched", {
+      workspace,
+      projectId: project.id,
+      fromSnippetId: snippetA.snippetId,
+      toSnippetId: snippetB.snippetId,
+      responseStillPending: true,
+      oldContentVisibleInNewScope: false,
+    });
+
+    const auditEvents = await harness.waitUntil(async () => {
+      const rows = await queryRows(
+        harness,
+        chat.page,
+        `SELECT sequence, event_type AS eventType, payload
+         FROM ai_audit_events
+         WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+           AND execution_id = ?
+         ORDER BY sequence`,
+        [project.id, preparedAudit.executionId],
+      );
+      return rows.some((event) => event.eventType === "response.completed")
+        ? rows
+        : null;
+    }, "snippet A correlated chat terminal audit");
+    const authorityRows = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(harness, chat.page, project.id);
+      try {
+        assertCompletedChatAuthority(
+          rows.filter((row) => row.snippetAnchorId === snippetA.snippetId),
+          { prompt: SNIPPET_CHAT_SWITCH_PROMPT, label: "snippet A chat" },
+        );
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "snippet A transcript and prompt snapshot persistence");
+
+    const preparedEvent = auditEvents.find(
+      (event) => event.eventType === "request.prepared",
+    );
+    const dispatchedEvent = auditEvents.find(
+      (event) => event.eventType === "request.dispatched",
+    );
+    const completedEvents = auditEvents.filter(
+      (event) => event.eventType === "response.completed",
+    );
+    if (
+      !preparedEvent ||
+      !dispatchedEvent ||
+      completedEvents.length !== 1 ||
+      !(preparedEvent.sequence < dispatchedEvent.sequence) ||
+      !(dispatchedEvent.sequence < completedEvents[0].sequence) ||
+      !String(completedEvents[0].payload ?? "").includes(
+        CHAT_AUTHORITY_EARLY,
+      ) ||
+      !String(completedEvents[0].payload ?? "").includes(CHAT_AUTHORITY_LATE)
+    ) {
+      throw new Error("snippet A terminal audit is incomplete or uncorrelated");
+    }
+
+    const snippetARows = authorityRows.filter(
+      (row) => row.snippetAnchorId === snippetA.snippetId,
+    );
+    const userRows = snippetARows.filter(
+      (row) =>
+        row.role === "user" &&
+        String(row.content ?? "").includes(SNIPPET_CHAT_SWITCH_PROMPT),
+    );
+    const assistantRows = snippetARows.filter(
+      (row) =>
+        row.role === "assistant" &&
+        String(row.content ?? "").includes(CHAT_AUTHORITY_EARLY) &&
+        String(row.content ?? "").includes(CHAT_AUTHORITY_LATE),
+    );
+    const ownerSessionIds = new Set(
+      [...userRows, ...assistantRows].map((row) => String(row.sessionId)),
+    );
+    const snippetBLeaks = chatAuthorityLeaks(
+      authorityRows.filter((row) => row.snippetAnchorId === snippetB.snippetId),
+      SNIPPET_CHAT_SWITCH_PROMPT,
+    );
+    if (
+      userRows.length !== 1 ||
+      assistantRows.length !== 1 ||
+      ownerSessionIds.size !== 1 ||
+      snippetARows.some((row) => row.nodeId != null) ||
+      snippetBLeaks.length > 0
+    ) {
+      throw new Error(
+        "snippet A transcript ownership or snippet B database isolation failed",
+      );
+    }
+
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "visible", timeout: 30_000 });
+    const picker = chat.page.getByTestId("chat-scope-picker");
+    if (
+      (await picker.getAttribute("data-chat-scope")) !== "snippet" ||
+      !String(await picker.textContent()).includes(snippetB.title) ||
+      (await chat.page
+        .getByText(SNIPPET_CHAT_SWITCH_PROMPT, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_LATE, { exact: false })
+        .count()) > 0
+    ) {
+      throw new Error(
+        "snippet B UI contains snippet A chat content after completion",
+      );
+    }
+
+    await selectChatSnippet(harness, chat.page, snippetA);
+    await harness.waitUntil(
+      async () =>
+        (await chat.page
+          .getByText(SNIPPET_CHAT_SWITCH_PROMPT, { exact: false })
+          .count()) > 0 &&
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+          .count()) > 0 &&
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_LATE, { exact: false })
+          .count()) > 0,
+      "snippet A persisted transcript restored on return",
+    );
+    harness.recordTimeline("snippet-chat-stream-completed", {
+      workspace,
+      projectId: project.id,
+      snippetAId: snippetA.snippetId,
+      snippetBId: snippetB.snippetId,
+      sessionId: [...ownerSessionIds][0],
+      executionId: preparedAudit.executionId,
+      terminalRecordsOwnedBySnippetA: true,
+      snippetBDatabaseLeak: false,
+      snippetBUiLeak: false,
+      snippetARestoredOnReturn: true,
+    });
+    log(
+      "Snippet chat switch: pending stream terminal records stayed in snippet A with no snippet B transcript/UI leak",
+    );
+  } finally {
+    await harness.close(chat.app, chat.page, journeyId);
+  }
+  const anchorScopeDiagnostics = await runIsolatedChatStreamAnchorScopeJourney(
+    harness,
+    "snippet",
+    laneContext,
+  );
+  return { anchorScopeDiagnostics };
+}
+
+async function runCodexStreamSwitchJourney(harness, laneContext) {
+  const journeyId = "chat-stream-codex-switch";
+  const workspace = harness.workspacePath(journeyId);
+  await configureWorkspace(harness, workspace, { deterministicAi: true });
+  const prepared = await prepareCodexChatStreamEntries(harness, journeyId);
+  const chat = await harness.launch(`${journeyId}/write`);
+  try {
+    const project = await currentProjectRow(harness, chat.page);
+    const [codexA, codexB] = prepared.entries;
+    if (
+      String(project.id) !== prepared.projectId ||
+      !codexA ||
+      !codexB ||
+      codexA.id === codexB.id
+    ) {
+      throw new Error("Codex chat journey lost distinct same-project anchors");
+    }
+
+    await selectChatCodex(harness, chat.page, codexA);
+    await sendChatPrompt(chat.page, CODEX_CHAT_SWITCH_PROMPT);
+    await chat.page
+      .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+      .last()
+      .waitFor({ state: "visible", timeout: 30_000 });
+
+    const preparedAudit = await harness.waitUntil(async () => {
+      const rows = await queryRows(
+        harness,
+        chat.page,
+        `SELECT execution_id AS executionId, payload
+         FROM ai_audit_events
+         WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+           AND event_type = 'request.prepared'
+         ORDER BY sequence DESC LIMIT 1`,
+        [project.id],
+      );
+      return String(rows[0]?.payload ?? "").includes(CODEX_CHAT_SWITCH_PROMPT)
+        ? rows[0]
+        : null;
+    }, "Codex A chat request prepared");
+    await harness.waitUntil(
+      async () =>
+        (
+          await queryRows(
+            harness,
+            chat.page,
+            `SELECT sequence
+             FROM ai_audit_events
+             WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+               AND execution_id = ? AND event_type = 'request.dispatched'`,
+            [project.id, preparedAudit.executionId],
+          )
+        ).length === 1,
+      "Codex A chat request dispatched",
+    );
+    const completionBeforeSwitch = await queryRows(
+      harness,
+      chat.page,
+      `SELECT sequence
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [project.id, preparedAudit.executionId],
+    );
+    if (completionBeforeSwitch.length !== 0) {
+      throw new Error("Codex A chat stream completed before switching to B");
+    }
+    if (
+      !String(preparedAudit.payload).includes(CODEX_CHAT_SWITCH_A_MARKER) ||
+      String(preparedAudit.payload).includes(CODEX_CHAT_SWITCH_B_MARKER)
+    ) {
+      throw new Error(
+        "Codex A audit request did not retain isolated A context",
+      );
+    }
+    harness.recordTimeline("codex-chat-stream-started", {
+      workspace,
+      projectId: project.id,
+      codexAId: codexA.id,
+      codexBId: codexB.id,
+      executionId: preparedAudit.executionId,
+      pathId: "chat_stream_non_agent",
+      earlyChunkVisible: true,
+      responseStillPending: true,
+      promptOwnedByCodexA: true,
+    });
+
+    await selectChatCodex(harness, chat.page, codexB);
+    const staleUiBeforeCompletion =
+      (await chat.page
+        .getByText(CODEX_CHAT_SWITCH_PROMPT, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+        .count()) > 0;
+    const completionAfterSwitch = await queryRows(
+      harness,
+      chat.page,
+      `SELECT sequence
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [project.id, preparedAudit.executionId],
+    );
+    if (staleUiBeforeCompletion || completionAfterSwitch.length !== 0) {
+      throw new Error(
+        "Codex B did not remain isolated while Codex A was pending",
+      );
+    }
+    harness.recordTimeline("codex-chat-scope-switched", {
+      workspace,
+      projectId: project.id,
+      fromCodexId: codexA.id,
+      toCodexId: codexB.id,
+      responseStillPending: true,
+      oldContentVisibleInNewScope: false,
+    });
+
+    const auditEvents = await harness.waitUntil(async () => {
+      const rows = await queryRows(
+        harness,
+        chat.page,
+        `SELECT sequence, event_type AS eventType, payload
+         FROM ai_audit_events
+         WHERE project_id = ? AND path_id = 'chat_stream_non_agent'
+           AND execution_id = ?
+         ORDER BY sequence`,
+        [project.id, preparedAudit.executionId],
+      );
+      return rows.some((event) => event.eventType === "response.completed")
+        ? rows
+        : null;
+    }, "Codex A correlated chat terminal audit");
+    const authorityRows = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(harness, chat.page, project.id);
+      try {
+        assertCompletedChatAuthority(
+          rows.filter((row) => row.codexAnchorId === codexA.id),
+          { prompt: CODEX_CHAT_SWITCH_PROMPT, label: "Codex A chat" },
+        );
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "Codex A transcript and prompt snapshot persistence");
+
+    const preparedEvent = auditEvents.find(
+      (event) => event.eventType === "request.prepared",
+    );
+    const dispatchedEvent = auditEvents.find(
+      (event) => event.eventType === "request.dispatched",
+    );
+    const completedEvents = auditEvents.filter(
+      (event) => event.eventType === "response.completed",
+    );
+    if (
+      !preparedEvent ||
+      !dispatchedEvent ||
+      completedEvents.length !== 1 ||
+      !(preparedEvent.sequence < dispatchedEvent.sequence) ||
+      !(dispatchedEvent.sequence < completedEvents[0].sequence) ||
+      !String(completedEvents[0].payload ?? "").includes(
+        CHAT_AUTHORITY_EARLY,
+      ) ||
+      !String(completedEvents[0].payload ?? "").includes(CHAT_AUTHORITY_LATE)
+    ) {
+      throw new Error("Codex A terminal audit is incomplete or uncorrelated");
+    }
+
+    const codexARows = authorityRows.filter(
+      (row) => row.codexAnchorId === codexA.id,
+    );
+    const userRows = codexARows.filter(
+      (row) =>
+        row.role === "user" &&
+        String(row.content ?? "").includes(CODEX_CHAT_SWITCH_PROMPT),
+    );
+    const assistantRows = codexARows.filter(
+      (row) =>
+        row.role === "assistant" &&
+        String(row.content ?? "").includes(CHAT_AUTHORITY_EARLY) &&
+        String(row.content ?? "").includes(CHAT_AUTHORITY_LATE),
+    );
+    const promptRows = userRows.filter((row) => row.systemPrompt != null);
+    const promptSnapshot = String(promptRows[0]?.systemPrompt ?? "");
+    const ownerSessionIds = new Set(
+      [...userRows, ...assistantRows].map((row) => String(row.sessionId)),
+    );
+    const codexBRows = authorityRows.filter(
+      (row) => row.codexAnchorId === codexB.id,
+    );
+    if (
+      userRows.length !== 1 ||
+      assistantRows.length !== 1 ||
+      promptRows.length !== 1 ||
+      !promptSnapshot.includes(CODEX_CHAT_SWITCH_A_MARKER) ||
+      promptSnapshot.includes(CODEX_CHAT_SWITCH_B_MARKER) ||
+      ownerSessionIds.size !== 1 ||
+      codexARows.some(
+        (row) => row.nodeId != null || row.snippetAnchorId != null,
+      ) ||
+      codexBRows.length > 0 ||
+      String(preparedEvent.payload ?? "").includes(CODEX_CHAT_SWITCH_B_MARKER)
+    ) {
+      throw new Error(
+        "Codex A transcript/prompt ownership or Codex B isolation failed",
+      );
+    }
+
+    await chat.page
+      .getByTestId("chat-send")
+      .waitFor({ state: "visible", timeout: 30_000 });
+    const picker = chat.page.getByTestId("chat-scope-picker");
+    if (
+      (await picker.getAttribute("data-chat-scope")) !== "codex" ||
+      !String(await picker.textContent()).includes(codexB.name) ||
+      (await chat.page
+        .getByText(CODEX_CHAT_SWITCH_PROMPT, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+        .count()) > 0 ||
+      (await chat.page
+        .getByText(CHAT_AUTHORITY_LATE, { exact: false })
+        .count()) > 0
+    ) {
+      throw new Error(
+        "Codex B UI contains Codex A chat content after completion",
+      );
+    }
+
+    await selectChatCodex(harness, chat.page, codexA);
+    await harness.waitUntil(
+      async () =>
+        (await chat.page
+          .getByText(CODEX_CHAT_SWITCH_PROMPT, { exact: false })
+          .count()) > 0 &&
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_EARLY, { exact: false })
+          .count()) > 0 &&
+        (await chat.page
+          .getByText(CHAT_AUTHORITY_LATE, { exact: false })
+          .count()) > 0,
+      "Codex A persisted transcript restored on return",
+    );
+    harness.recordTimeline("codex-chat-stream-completed", {
+      workspace,
+      projectId: project.id,
+      codexAId: codexA.id,
+      codexBId: codexB.id,
+      sessionId: [...ownerSessionIds][0],
+      executionId: preparedAudit.executionId,
+      terminalRecordsOwnedByCodexA: true,
+      codexBDatabaseLeak: false,
+      codexBUiLeak: false,
+      codexARestoredOnReturn: true,
+    });
+    log(
+      "Codex chat switch: pending stream records stayed in Codex A with no Codex B transcript/UI leak",
+    );
+  } finally {
+    await harness.close(chat.app, chat.page, `${journeyId}/write`);
+  }
+  const anchorScopeDiagnostics = await runIsolatedChatStreamAnchorScopeJourney(
+    harness,
+    "codex",
+    laneContext,
+  );
+  return { anchorScopeDiagnostics };
+}
+
 async function runChatStreamProjectSwitchJourney(harness) {
   const workspace = harness.workspacePath("chat-stream-project-switch");
   await configureWorkspace(harness, workspace, {
@@ -1556,6 +2620,420 @@ async function runChatStreamProjectSwitchJourney(harness) {
     );
   } finally {
     await harness.close(chat.app, chat.page, "chat-stream-project-switch");
+  }
+}
+
+async function runAgentStreamProjectSwitchJourney(harness) {
+  const workspace = harness.workspacePath("agent-stream-project-switch");
+  await configureWorkspace(harness, workspace, {
+    deterministicAi: true,
+  });
+  const projects = await prepareSecondProject(harness, {
+    phase: "agent-stream-project-switch",
+    workspace,
+    id: `product-agent-project-b-${Date.now()}`,
+    title: "Product Agent Project B",
+  });
+
+  const chat = await harness.launch("agent-stream-project-switch");
+  try {
+    const sceneA = await createSceneThroughUi(harness, chat.page);
+    if (sceneA.projectId !== projects.projectA.id) {
+      throw new Error("Agent project journey started under the wrong project");
+    }
+    await setProjectChatScope(chat.page);
+    const preparedAudit = await startAgentAuthorityTurn(
+      harness,
+      chat.page,
+      projects.projectA.id,
+      AGENT_PROJECT_SWITCH_PROMPT,
+    );
+    harness.recordTimeline("agent-project-switch-transport-started", {
+      workspace,
+      projectId: projects.projectA.id,
+      executionId: preparedAudit.executionId,
+      pathId: "chat_agent_main",
+      transport: "send_agent_message",
+    });
+
+    await clickProjectSwitchDuringAgentTurn(
+      chat.page,
+      projects.projectB,
+    );
+    const transitionEvents = await harness.waitUntil(async () => {
+      const events = await harness.readLifecycleTrace(chat.page);
+      const matching = events.filter(
+        (event) =>
+          event.kind === "project" &&
+          lifecycleScopeMatches(event.from, {
+            workspacePath: workspace,
+            projectId: projects.projectA.id,
+          }) &&
+          lifecycleScopeMatches(event.to, {
+            workspacePath: workspace,
+            projectId: projects.projectB.id,
+          }),
+      );
+      return matching.some((event) => event.phase === "quiescence-started")
+        ? matching
+        : null;
+    }, "Agent project switch entered strict quiescence");
+    if (transitionEvents.some((event) => event.phase === "authority-commit")) {
+      throw new Error(
+        "project authority committed before Agent transport drained",
+      );
+    }
+    const activeProject = await queryRows(
+      harness,
+      chat.page,
+      "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
+    );
+    if (activeProject[0]?.value !== projects.projectA.id) {
+      throw new Error(
+        "project authority changed while Agent transport was pending",
+      );
+    }
+    const earlyCompletion = await queryRows(
+      harness,
+      chat.page,
+      `SELECT sequence
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_agent_main'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [projects.projectA.id, preparedAudit.executionId],
+    );
+    if (earlyCompletion.length > 0) {
+      throw new Error(
+        "deterministic Agent response completed before switch quiescence",
+      );
+    }
+    harness.recordTimeline("agent-project-switch-quiescence-blocked", {
+      fromProjectId: projects.projectA.id,
+      toProjectId: projects.projectB.id,
+      authorityStayedWithOldProject: true,
+      responseStillPending: true,
+    });
+
+    await harness.waitUntil(async () => {
+      const active = await queryRows(
+        harness,
+        chat.page,
+        "SELECT value FROM app_settings WHERE key = 'workspace.lastActiveProjectId'",
+      );
+      const triggerText = await chat.page
+        .getByTestId("project-menu-trigger")
+        .textContent();
+      return (
+        active[0]?.value === projects.projectB.id &&
+        String(triggerText ?? "").includes(projects.projectB.title)
+      );
+    }, "project B UI authority after Agent transport drain");
+    await sceneA.editorSurface.waitFor({ state: "detached", timeout: 30_000 });
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      kind: "project",
+      from: {
+        workspacePath: workspace,
+        projectId: projects.projectA.id,
+      },
+      to: {
+        workspacePath: workspace,
+        projectId: projects.projectB.id,
+      },
+      label: "Agent project switch",
+    });
+    const projectARows = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(
+        harness,
+        chat.page,
+        projects.projectA.id,
+      );
+      try {
+        assertCompletedAgentAuthority(rows, {
+          prompt: AGENT_PROJECT_SWITCH_PROMPT,
+          outputMarker: AGENT_PROJECT_SWITCH_OUTPUT,
+          label: "project A Agent turn",
+        });
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "project A Agent transcript persistence");
+    const completedAudit = await queryRows(
+      harness,
+      chat.page,
+      `SELECT payload
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_agent_main'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [projects.projectA.id, preparedAudit.executionId],
+    );
+    if (
+      completedAudit.length !== 1 ||
+      !String(completedAudit[0]?.payload ?? "").includes(
+        AGENT_PROJECT_SWITCH_OUTPUT,
+      )
+    ) {
+      throw new Error("Agent response audit did not remain under project A");
+    }
+    const projectBRows = await listChatAuthorityRows(
+      harness,
+      chat.page,
+      projects.projectB.id,
+    );
+    if (
+      agentAuthorityLeaks(
+        projectBRows,
+        AGENT_PROJECT_SWITCH_PROMPT,
+        AGENT_PROJECT_SWITCH_OUTPUT,
+      ).length > 0
+    ) {
+      throw new Error(
+        "project B received project A Agent conversation content",
+      );
+    }
+    const projectBAudit = await queryRows(
+      harness,
+      chat.page,
+      `SELECT payload
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_agent_main'`,
+      [projects.projectB.id],
+    );
+    if (
+      projectBAudit.some((row) => {
+        const payload = String(row.payload ?? "");
+        return (
+          payload.includes(AGENT_PROJECT_SWITCH_PROMPT) ||
+          payload.includes(AGENT_PROJECT_SWITCH_OUTPUT)
+        );
+      })
+    ) {
+      throw new Error("project B received project A Agent audit content");
+    }
+    await harness.waitUntil(
+      async () =>
+        (await chat.page
+          .getByText(AGENT_PROJECT_SWITCH_PROMPT, { exact: false })
+          .count()) === 0 &&
+        (await chat.page
+          .getByText(AGENT_PROJECT_SWITCH_OUTPUT, { exact: false })
+          .count()) === 0,
+      "project B Agent UI isolation",
+    );
+    harness.recordTimeline("agent-project-switch-drained", {
+      workspace,
+      fromProjectId: projects.projectA.id,
+      toProjectId: projects.projectB.id,
+      executionId: preparedAudit.executionId,
+      oldScopeCompleted: true,
+      oldProjectTranscriptPersisted: projectARows.some(
+        (row) =>
+          row.role === "assistant" &&
+          String(row.content ?? "").includes(AGENT_PROJECT_SWITCH_OUTPUT),
+      ),
+      newScopeLeak: false,
+    });
+    log(
+      "Agent project switch: send_agent_message drained and persisted in project A before authority committed to project B",
+    );
+  } finally {
+    await harness.close(chat.app, chat.page, "agent-stream-project-switch");
+  }
+}
+
+async function runAgentStreamWorkspaceSwitchJourney(harness) {
+  const workspaceA = harness.workspacePath("agent-workspace-a");
+  const workspaceB = harness.workspacePath("agent-workspace-b");
+  await configureWorkspace(harness, workspaceA, {
+    deterministicAi: true,
+    additionalWorkspaces: [workspaceB],
+  });
+
+  const chat = await harness.launch("agent-stream-workspace-switch");
+  try {
+    const sceneA = await createSceneThroughUi(harness, chat.page);
+    await setProjectChatScope(chat.page);
+    const preparedAudit = await startAgentAuthorityTurn(
+      harness,
+      chat.page,
+      sceneA.projectId,
+      AGENT_WORKSPACE_SWITCH_PROMPT,
+    );
+
+    const previousRevision = await workspaceOpenRevision(chat.page);
+    harness.recordTimeline("agent-workspace-switch-transport-started", {
+      workspace: workspaceA,
+      workspaceOpenRevision: previousRevision,
+      projectId: sceneA.projectId,
+      executionId: preparedAudit.executionId,
+      pathId: "chat_agent_main",
+      transport: "send_agent_message",
+    });
+    await clickWorkspaceSwitchDuringAgentTurn(chat.page, workspaceB);
+
+    const transitionEvents = await harness.waitUntil(async () => {
+      const events = await harness.readLifecycleTrace(chat.page);
+      const matching = events.filter(
+        (event) =>
+          event.kind === "workspace" &&
+          lifecycleScopeMatches(event.from, {
+            workspacePath: workspaceA,
+            projectId: sceneA.projectId,
+          }) &&
+          lifecycleScopeMatches(event.to, { workspacePath: workspaceB }),
+      );
+      return matching.some((event) => event.phase === "quiescence-started")
+        ? matching
+        : null;
+    }, "Agent workspace switch entered strict quiescence");
+    if (transitionEvents.some((event) => event.phase === "authority-commit")) {
+      throw new Error(
+        "workspace authority committed before Agent transport drained",
+      );
+    }
+    if ((await workspaceOpenRevision(chat.page)) !== previousRevision) {
+      throw new Error(
+        "workspace authority revision changed while Agent transport was pending",
+      );
+    }
+    const workspaceTriggerText = await chat.page
+      .getByTestId("workspace-menu-trigger")
+      .textContent();
+    if (
+      !String(workspaceTriggerText ?? "").includes(path.basename(workspaceA))
+    ) {
+      throw new Error(
+        "workspace A remained not visible as authority during Agent transport",
+      );
+    }
+    harness.recordTimeline("agent-workspace-switch-quiescence-blocked", {
+      fromWorkspace: workspaceA,
+      toWorkspace: workspaceB,
+      workspaceOpenRevision: previousRevision,
+      authorityStayedWithOldWorkspace: true,
+      responseStillPending: true,
+    });
+
+    await harness.waitUntil(async () => {
+      const triggerText = await chat.page
+        .getByTestId("workspace-menu-trigger")
+        .textContent();
+      return (
+        String(triggerText ?? "").includes(path.basename(workspaceB)) &&
+        (await workspaceOpenRevision(chat.page)) > previousRevision
+      );
+    }, "workspace B UI authority after Agent transport drain");
+    await assertLifecycleTransitionOrder(harness, chat.page, {
+      kind: "workspace",
+      from: {
+        workspacePath: workspaceA,
+        projectId: sceneA.projectId,
+      },
+      to: { workspacePath: workspaceB },
+      label: "Agent workspace switch",
+    });
+
+    const projectB = await currentProjectRow(harness, chat.page);
+    const workspaceBRows = await listChatAuthorityRows(
+      harness,
+      chat.page,
+      String(projectB.id),
+    );
+    if (
+      agentAuthorityLeaks(
+        workspaceBRows,
+        AGENT_WORKSPACE_SWITCH_PROMPT,
+        AGENT_WORKSPACE_SWITCH_OUTPUT,
+      ).length > 0
+    ) {
+      throw new Error("workspace B received workspace A Agent conversation");
+    }
+    const workspaceBAudit = await queryRows(
+      harness,
+      chat.page,
+      "SELECT payload FROM ai_audit_events WHERE path_id = 'chat_agent_main'",
+    );
+    if (
+      workspaceBAudit.some((row) => {
+        const payload = String(row.payload ?? "");
+        return (
+          payload.includes(AGENT_WORKSPACE_SWITCH_PROMPT) ||
+          payload.includes(AGENT_WORKSPACE_SWITCH_OUTPUT)
+        );
+      })
+    ) {
+      throw new Error("workspace B received workspace A Agent audit content");
+    }
+    await harness.waitUntil(
+      async () =>
+        (await chat.page
+          .getByText(AGENT_WORKSPACE_SWITCH_PROMPT, { exact: false })
+          .count()) === 0 &&
+        (await chat.page
+          .getByText(AGENT_WORKSPACE_SWITCH_OUTPUT, { exact: false })
+          .count()) === 0,
+      "workspace B Agent UI isolation",
+    );
+
+    await switchWorkspaceThroughUi(
+      harness,
+      chat.page,
+      workspaceA,
+      "workspace A Agent authority after return",
+    );
+    const workspaceARows = await harness.waitUntil(async () => {
+      const rows = await listChatAuthorityRows(
+        harness,
+        chat.page,
+        sceneA.projectId,
+      );
+      try {
+        assertCompletedAgentAuthority(rows, {
+          prompt: AGENT_WORKSPACE_SWITCH_PROMPT,
+          outputMarker: AGENT_WORKSPACE_SWITCH_OUTPUT,
+          label: "workspace A Agent turn",
+        });
+        return rows;
+      } catch {
+        return null;
+      }
+    }, "workspace A Agent transcript persistence");
+    const completedAudit = await queryRows(
+      harness,
+      chat.page,
+      `SELECT payload
+       FROM ai_audit_events
+       WHERE project_id = ? AND path_id = 'chat_agent_main'
+         AND execution_id = ? AND event_type = 'response.completed'`,
+      [sceneA.projectId, preparedAudit.executionId],
+    );
+    if (
+      completedAudit.length !== 1 ||
+      !String(completedAudit[0]?.payload ?? "").includes(
+        AGENT_WORKSPACE_SWITCH_OUTPUT,
+      )
+    ) {
+      throw new Error("Agent response audit did not remain under workspace A");
+    }
+    harness.recordTimeline("agent-workspace-switch-drained", {
+      from: workspaceA,
+      to: workspaceB,
+      workspaceOpenRevision: await workspaceOpenRevision(chat.page),
+      projectId: sceneA.projectId,
+      executionId: preparedAudit.executionId,
+      oldScopeCompleted: true,
+      oldWorkspaceTranscriptPersisted: workspaceARows.some(
+        (row) =>
+          row.role === "assistant" &&
+          String(row.content ?? "").includes(AGENT_WORKSPACE_SWITCH_OUTPUT),
+      ),
+      newScopeLeak: false,
+    });
+    log(
+      "Agent workspace switch: send_agent_message drained and persisted in workspace A before authority committed to workspace B",
+    );
+  } finally {
+    await harness.close(chat.app, chat.page, "agent-stream-workspace-switch");
   }
 }
 
@@ -1682,176 +3160,6 @@ async function runChatStreamWorkspaceSwitchJourney(harness) {
     );
   } finally {
     await harness.close(chat.app, chat.page, "chat-stream-workspace-switch");
-  }
-}
-
-async function runAgentStreamProjectSwitchJourney(harness) {
-  const workspace = harness.workspacePath("agent-stream-project-switch");
-  await configureWorkspace(harness, workspace, { deterministicAi: true });
-  const projects = await prepareSecondProject(harness, {
-    phase: "agent-stream-project-switch",
-    workspace,
-    id: `product-agent-project-b-${Date.now()}`,
-    title: "Product Agent Project B",
-  });
-  const agent = await harness.launch("agent-stream-project-switch");
-  try {
-    const sceneA = await createSceneThroughUi(harness, agent.page);
-    if (sceneA.projectId !== projects.projectA.id) {
-      throw new Error("Agent project journey started under the wrong project");
-    }
-    await setProjectChatScope(agent.page);
-    await startAgentAuthorityTurn(
-      harness,
-      agent.page,
-      sceneA.projectId,
-      AGENT_PROJECT_AUTHORITY_PROMPT,
-    );
-    harness.recordTimeline("project-agent-request-dispatched", {
-      workspace,
-      projectId: sceneA.projectId,
-      workspaceOpenRevision: await workspaceOpenRevision(agent.page),
-    });
-    await switchProjectThroughUiDuringAgentTurn(
-      harness,
-      agent.page,
-      projects.projectB,
-      "project B UI authority after Agent drain",
-    );
-    await assertLifecycleTransitionOrder(harness, agent.page, {
-      kind: "project",
-      from: { workspacePath: workspace, projectId: projects.projectA.id },
-      to: { workspacePath: workspace, projectId: projects.projectB.id },
-      label: "project Agent switch",
-    });
-    await sceneA.editorSurface.waitFor({ state: "detached", timeout: 30_000 });
-    const rowsA = await harness.waitUntil(async () => {
-      const rows = await listChatAuthorityRows(
-        harness,
-        agent.page,
-        projects.projectA.id,
-      );
-      try {
-        assertCompletedAgentAuthority(rows, {
-          prompt: AGENT_PROJECT_AUTHORITY_PROMPT,
-          label: "project A Agent turn",
-        });
-        return rows;
-      } catch {
-        return null;
-      }
-    }, "project A Agent drain and persistence");
-    const rowsB = await listChatAuthorityRows(
-      harness,
-      agent.page,
-      projects.projectB.id,
-    );
-    if (agentAuthorityLeaks(rowsB, AGENT_PROJECT_AUTHORITY_PROMPT).length) {
-      throw new Error(
-        "project B received project A Agent output or prompt snapshot",
-      );
-    }
-    await harness.waitUntil(
-      async () =>
-        (await agent.page.getByText(AGENT_AUTHORITY_OUTPUT).count()) === 0,
-      "project B Agent UI isolation",
-    );
-    harness.recordTimeline("project-agent-request-drained", {
-      workspace,
-      fromProjectId: projects.projectA.id,
-      toProjectId: projects.projectB.id,
-      sessionIds: [...new Set(rowsA.map((row) => String(row.sessionId)))],
-      oldScopeCompleted: true,
-      newScopeLeak: false,
-    });
-  } finally {
-    await harness.close(agent.app, agent.page, "agent-stream-project-switch");
-  }
-}
-
-async function runAgentStreamWorkspaceSwitchJourney(harness) {
-  const workspaceA = harness.workspacePath("agent-workspace-a");
-  const workspaceB = harness.workspacePath("agent-workspace-b");
-  await configureWorkspace(harness, workspaceA, {
-    deterministicAi: true,
-    additionalWorkspaces: [workspaceB],
-  });
-  const agent = await harness.launch("agent-stream-workspace-switch");
-  try {
-    const sceneA = await createSceneThroughUi(harness, agent.page);
-    await setProjectChatScope(agent.page);
-    await startAgentAuthorityTurn(
-      harness,
-      agent.page,
-      sceneA.projectId,
-      AGENT_WORKSPACE_AUTHORITY_PROMPT,
-    );
-    harness.recordTimeline("workspace-agent-request-dispatched", {
-      workspace: workspaceA,
-      projectId: sceneA.projectId,
-      workspaceOpenRevision: await workspaceOpenRevision(agent.page),
-    });
-    await switchWorkspaceThroughUiDuringAgentTurn(
-      harness,
-      agent.page,
-      workspaceB,
-      "workspace B UI authority after Agent drain",
-    );
-    await assertLifecycleTransitionOrder(harness, agent.page, {
-      kind: "workspace",
-      from: { workspacePath: workspaceA, projectId: sceneA.projectId },
-      to: { workspacePath: workspaceB },
-      label: "workspace Agent switch",
-    });
-    const projectB = await currentProjectRow(harness, agent.page);
-    const rowsB = await listChatAuthorityRows(
-      harness,
-      agent.page,
-      String(projectB.id),
-    );
-    if (agentAuthorityLeaks(rowsB, AGENT_WORKSPACE_AUTHORITY_PROMPT).length) {
-      throw new Error(
-        "workspace B received workspace A Agent output or prompt snapshot",
-      );
-    }
-    await harness.waitUntil(
-      async () =>
-        (await agent.page.getByText(AGENT_AUTHORITY_OUTPUT).count()) === 0,
-      "workspace B Agent UI isolation",
-    );
-    await switchWorkspaceThroughUi(
-      harness,
-      agent.page,
-      workspaceA,
-      "workspace A Agent authority after return",
-    );
-    const rowsA = await harness.waitUntil(async () => {
-      const rows = await listChatAuthorityRows(
-        harness,
-        agent.page,
-        sceneA.projectId,
-      );
-      try {
-        assertCompletedAgentAuthority(rows, {
-          prompt: AGENT_WORKSPACE_AUTHORITY_PROMPT,
-          label: "workspace A Agent turn",
-        });
-        return rows;
-      } catch {
-        return null;
-      }
-    }, "workspace A Agent drain and persistence");
-    harness.recordTimeline("workspace-agent-request-drained", {
-      from: workspaceA,
-      to: workspaceB,
-      fromProjectId: sceneA.projectId,
-      toProjectId: String(projectB.id),
-      sessionIds: [...new Set(rowsA.map((row) => String(row.sessionId)))],
-      oldScopeCompleted: true,
-      newScopeLeak: false,
-    });
-  } finally {
-    await harness.close(agent.app, agent.page, "agent-stream-workspace-switch");
   }
 }
 
@@ -2090,6 +3398,89 @@ async function runChatStreamAnchorScopeJourney(harness, kind) {
     });
   } finally {
     await harness.close(chat.app, chat.page, phase);
+  }
+}
+
+async function runIsolatedChatStreamAnchorScopeJourney(
+  harness,
+  kind,
+  laneContext,
+) {
+  if (
+    !laneContext?.signal ||
+    typeof laneContext.registerChild !== "function" ||
+    typeof laneContext.registerCleanup !== "function"
+  ) {
+    throw new Error(
+      "isolated anchor-scope journey requires outer lane ownership",
+    );
+  }
+  const name = `chat-stream-${kind}-scope`;
+  const scopeHarness = createProductJourneyHarness({
+    mainCjs: path.join(rootDir, "dist-electron", "main.cjs"),
+    onChildProcess: laneContext.registerChild,
+  });
+  let succeeded = false;
+  const nestedTask = (async () => {
+    try {
+      let operationError = null;
+      let diagnostics;
+      try {
+        await scopeHarness.withLaneWatchdog(
+          async () => {
+            await runChatStreamAnchorScopeJourney(scopeHarness, kind);
+            diagnostics = await scopeHarness.finalizeDiagnostics();
+          },
+          {
+            phase: name,
+            timeoutMs: PRODUCT_JOURNEY_LANE_WATCHDOG_TIMEOUT_MS,
+            signal: laneContext.signal,
+          },
+        );
+      } catch (error) {
+        diagnostics = error?.diagnostics ?? scopeHarness.diagnostics();
+        operationError = error;
+      }
+      harness.recordTimeline("nested-product-journey-diagnostics", {
+        kind,
+        diagnostics,
+        passed: operationError === null,
+      });
+      if (operationError) {
+        const error =
+          operationError instanceof Error
+            ? operationError
+            : new Error(String(operationError), { cause: operationError });
+        error.diagnostics = diagnostics;
+        error.nestedDiagnostics = diagnostics;
+        throw error;
+      }
+      succeeded = true;
+      return diagnostics;
+    } finally {
+      await scopeHarness.dispose({ success: succeeded, name });
+    }
+  })();
+  const unregisterCleanup = laneContext.registerCleanup(({ error }) => {
+    const attachDiagnostics = (diagnostics) => {
+      if (error && typeof error === "object") {
+        error.diagnostics = diagnostics;
+        error.nestedDiagnostics = diagnostics;
+      }
+    };
+    attachDiagnostics(scopeHarness.diagnostics());
+    return nestedTask.catch((nestedError) => {
+      attachDiagnostics(
+        nestedError?.nestedDiagnostics ??
+          nestedError?.diagnostics ??
+          scopeHarness.diagnostics(),
+      );
+    });
+  });
+  try {
+    return await nestedTask;
+  } finally {
+    unregisterCleanup();
   }
 }
 
@@ -2716,6 +4107,18 @@ export const PRODUCT_JOURNEYS = [
     run: runChatAuthorityIsolationJourney,
   },
   {
+    id: "chat-stream-folder-switch",
+    run: runFolderStreamSwitchJourney,
+  },
+  {
+    id: "chat-stream-snippet-switch",
+    run: runSnippetStreamSwitchJourney,
+  },
+  {
+    id: "chat-stream-codex-switch",
+    run: runCodexStreamSwitchJourney,
+  },
+  {
     id: "workspace-switch-authority",
     run: runWorkspaceSwitchAuthorityJourney,
   },
@@ -2732,28 +4135,16 @@ export const PRODUCT_JOURNEYS = [
     run: runChatStreamProjectSwitchJourney,
   },
   {
-    id: "chat-stream-workspace-switch",
-    run: runChatStreamWorkspaceSwitchJourney,
-  },
-  {
     id: "agent-stream-project-switch",
     run: runAgentStreamProjectSwitchJourney,
   },
   {
+    id: "chat-stream-workspace-switch",
+    run: runChatStreamWorkspaceSwitchJourney,
+  },
+  {
     id: "agent-stream-workspace-switch",
     run: runAgentStreamWorkspaceSwitchJourney,
-  },
-  {
-    id: "chat-stream-folder-scope",
-    run: (harness) => runChatStreamAnchorScopeJourney(harness, "folder"),
-  },
-  {
-    id: "chat-stream-codex-scope",
-    run: (harness) => runChatStreamAnchorScopeJourney(harness, "codex"),
-  },
-  {
-    id: "chat-stream-snippet-scope",
-    run: (harness) => runChatStreamAnchorScopeJourney(harness, "snippet"),
   },
   {
     id: "editor-pending-project-switch",
@@ -3703,10 +5094,12 @@ export async function runProductJourneys({
 
   const factory =
     createHarness ??
-    (() =>
+    (({ probeDbusAtFirstConfigure = false, journeyId = null } = {}) =>
       createProductJourneyHarness({
         mainCjs: path.join(root, "dist-electron", "main.cjs"),
         artifactRoot: environment.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR ?? null,
+        probeDbusAtFirstConfigure,
+        journeyId,
       }));
   const continueAfterJourneyFailure = selectionName === "c2-zc";
   let firstJourneyFailure = null;
@@ -3720,9 +5113,18 @@ export async function runProductJourneys({
     let harness = null;
     let journeyResultIndex = -1;
     try {
-      harness = factory();
+      harness = factory({
+        probeDbusAtFirstConfigure:
+          index === 0 &&
+          process.platform === "linux" &&
+          environment.GITHUB_ACTIONS === "true",
+        journeyId: journey.id,
+      });
       harness.c2zcRustAcceptanceEvidence = report.c2zcRustAcceptance;
-      const runJourney = () => journey.run(harness);
+      // Preparation is not a case start. Reject qualification failure before
+      // the lane watchdog or original configure/write/restart callback runs.
+      await harness.prepareBeforeCase?.();
+      const runJourney = (laneContext) => journey.run(harness, laneContext);
       const c2zcWatchdogRequired =
         selectionName === "c2-zc" &&
         C2ZC_PRODUCT_JOURNEY_IDS.includes(journey.id);

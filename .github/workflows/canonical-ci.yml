@@ -1,0 +1,239 @@
+name: Canonical CI (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Contracts only by default; canonical gates require separate candidate admission
+        required: true
+        type: choice
+        default: contracts
+        options: [contracts, quick, full]
+      candidate_base:
+        description: Immutable 40-character base commit SHA (required for a canonical profile)
+        required: false
+        type: string
+      candidate_head:
+        description: Immutable 40-character candidate SHA, equal to the dispatched ref (required for a canonical profile)
+        required: false
+        type: string
+      max_parallel_tasks:
+        description: Existing scheduler admission limit (1 through 12; same option for profile and verify)
+        required: true
+        type: string
+        default: "12"
+  # Same-commit reuse from registered ci.yml; no independent dispatch registration
+  # or new runner/registry is needed for this entry.
+  workflow_call:
+    inputs:
+      profile:
+        required: false
+        type: string
+        default: contracts
+      candidate_base:
+        required: false
+        type: string
+      candidate_head:
+        required: false
+        type: string
+      max_parallel_tasks:
+        required: false
+        type: string
+        default: "12"
+
+permissions:
+  contents: read
+
+jobs:
+  canonical:
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.profile == 'contracts' && 20 || 360 }}
+    steps:
+      - name: Validate canonical selection
+        env:
+          PROFILE: ${{ inputs.profile }}
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          [[ "$PROFILE" == contracts || "$PROFILE" == quick || "$PROFILE" == full ]]
+          [[ "$MAX_PARALLEL_TASKS" =~ ^([1-9]|1[0-2])$ ]]
+          if [[ "$PROFILE" == contracts ]]; then
+            [[ -z "$REQUESTED_BASE" && -z "$EXPECTED_HEAD" ]]
+          else
+            [[ "$REQUESTED_BASE" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$EXPECTED_HEAD" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$EXPECTED_HEAD" == "$GITHUB_SHA" ]]
+          fi
+
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Consume the complete reviewed workload input on this actual owned VM.
+      # Accepted CPU/normal/DB/APT/native acquisitions are not replayed.
+      # Use only the runner's preinstalled Node/Python/git here. Full's setup
+      # downloads, caches, extraction and logs must be assessed BEFORE they start.
+      # The setup helper ingests the fixed Git-tracked reviewed allocation dataset
+      # scripts/local-ci-full-workload-allocation.json and exclusively creates
+      # current-run input/estimate under its existing durable setup owner. Missing
+      # numerical acquisition rejects here; no external data/config or fallback.
+      - name: Assess Full setup risk before installations
+        id: full_setup
+        if: inputs.profile == 'full'
+        env:
+          # Explicit existing installer/consumer settings, not inferred defaults.
+          FULL_PNPM_DEST: ${{ format('{0}/setup-pnpm', runner.tool_cache) }}
+          npm_config_store_dir: ${{ format('{0}/pnpm-store', runner.tool_cache) }}
+          PLAYWRIGHT_BROWSERS_PATH: ${{ format('{0}/ms-playwright', runner.tool_cache) }}
+          UV_CACHE_DIR: ${{ format('{0}/uv-cache', runner.tool_cache) }}
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          node scripts/local-ci-full-admission.mjs --setup "$REQUESTED_BASE" "$EXPECTED_HEAD" "$MAX_PARALLEL_TASKS"
+          # Only successful setup carries the exact assessed settings forward.
+          # Quick/contracts never run this step and keep their default placement.
+          for key in FULL_PNPM_DEST npm_config_store_dir PLAYWRIGHT_BROWSERS_PATH UV_CACHE_DIR; do
+            printf '%s=%s\n' "$key" "${!key}" >> "$GITHUB_ENV"
+          done
+
+      # Failed/unknown setup stops before EVERY installer. Setup success is not
+      # host/private/B/candidate admission: the CLI owns the pre-stage1 host gate,
+      # and shard1 owns the initial private gate after canonical dependencies.
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        id: pnpm_setup
+        with:
+          version: 10.33.0
+          dest: ${{ env.FULL_PNPM_DEST || '~/setup-pnpm' }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Canonical system dependencies
+        if: inputs.profile != 'contracts'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libssl-dev libdbus-1-dev libsecret-1-dev pkg-config xvfb
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        if: inputs.profile == 'full'
+        with:
+          version: 0.11.29
+          cache-local-path: ${{ env.UV_CACHE_DIR }}
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Browser system dependencies
+        if: inputs.profile != 'contracts'
+        run: pnpm exec playwright install-deps chromium
+
+      - name: Rust audit tool
+        if: inputs.profile == 'full'
+        run: cargo install cargo-audit --locked
+
+      - name: Record canonical source checkout identity
+        if: inputs.profile == 'contracts'
+        run: |
+          mkdir -p .artifacts/canonical-source
+          COMMIT_SHA="$(git rev-parse HEAD)"
+          TREE_SHA="$(git rev-parse HEAD^{tree})"
+          printf '%s\n' "{\"commitSha\":\"${COMMIT_SHA}\",\"treeSha\":\"${TREE_SHA}\",\"event\":\"${GITHUB_EVENT_NAME}\",\"ref\":\"${GITHUB_REF}\",\"sha\":\"${GITHUB_SHA}\"}" \
+            > .artifacts/canonical-source/checkout-identity.json
+
+      # Only metadata of public payloads already installed above; no cold Full,
+      # extra installation, broad HOME/temp scan, fixture, bus or Editor run.
+      - name: Observe grouped canonical setup allocation
+        id: setup_observation
+        if: inputs.profile == 'contracts'
+        env:
+          SETUP_OBSERVATION_PROFILE: ${{ inputs.profile }}
+          PNPM_OBSERVATION_DEST: ${{ steps.pnpm_setup.outputs.dest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/local-ci-setup-observation.mjs installed
+
+      - name: Canonical connection source contracts
+        id: contracts
+        if: inputs.profile == 'contracts'
+        run: |
+          set -euo pipefail
+          mkdir -p .artifacts/canonical-source
+          node --test scripts/ci-pause.test.mjs scripts/local-ci.test.mjs scripts/local-ci-runner.test.mjs scripts/local-ci-process-supervisor.test.mjs | tee .artifacts/canonical-source/contracts.tap
+
+      - name: Canonical profile and immediate verify
+        id: canonical
+        if: inputs.profile != 'contracts'
+        env:
+          PROFILE: ${{ inputs.profile }}
+          REQUESTED_BASE: ${{ inputs.candidate_base }}
+          EXPECTED_HEAD: ${{ inputs.candidate_head }}
+          MAX_PARALLEL_TASKS: ${{ inputs.max_parallel_tasks }}
+        run: |
+          set -euo pipefail
+          readonly candidate_base="$(git rev-parse "${REQUESTED_BASE}^{commit}")"
+          readonly candidate_head="$(git rev-parse "${EXPECTED_HEAD}^{commit}")"
+          [[ "$candidate_head" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse HEAD)" == "$candidate_head" ]]
+          [[ -z "$(git status --porcelain --untracked-files=all)" ]]
+          git merge-base --is-ancestor "$candidate_base" "$candidate_head"
+          # Full's existing CLI acquires the checkout lock/UUID and admits actual
+          # host resources BEFORE stage1; only shard1's initial root can admit
+          # private resources/B. A failed/unknown gate fails Full, skipping verify.
+          pnpm "ci:local:$PROFILE" -- --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
+          pnpm ci:local:verify -- "$PROFILE" --base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"
+
+      - name: Observe canonical local report allocation
+        if: always() && inputs.profile == 'contracts' && steps.contracts.outcome != 'skipped'
+        env:
+          SETUP_OBSERVATION_PROFILE: ${{ inputs.profile }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/local-ci-setup-observation.mjs reports
+
+      - name: Upload canonical connection source contracts
+        if: always() && inputs.profile == 'contracts' && (steps.setup_observation.outcome != 'skipped' || steps.contracts.outcome != 'skipped')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/canonical-source/checkout-identity.json
+            .artifacts/canonical-source/contracts.tap
+            .artifacts/canonical-source/allocation-*.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload existing canonical evidence
+        if: always() && (steps.canonical.outcome != 'skipped' || steps.full_setup.outcome != 'skipped')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canonical-ci-${{ github.run_id }}-${{ github.run_attempt }}
+          # Assessment-only attempts publish shaped setup owner/acquisition/close/
+          # decision JSON. Estimate destination paths and complete query log bodies
+          # stay private; ordinary canonical receipt publication is unchanged.
+          path: |
+            ${{ steps.canonical.outcome == 'skipped' && '.artifacts/local-ci/full-admission/*-setup/*.json' || '.artifacts/local-ci/' }}
+            .artifacts/product-journeys/
+            .artifacts/browser-ci/
+            .artifacts/electron-runtime-performance/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

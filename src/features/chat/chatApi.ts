@@ -1,6 +1,5 @@
 import { invoke } from "@/lib/tauri";
 import { db } from "@/db/client";
-import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import {
   chatSessions,
   chatMessages,
@@ -37,11 +36,7 @@ import {
 } from "@/features/timelapse/captureChat";
 import type { CodexEntry } from "@/features/codex/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
-import { sanitizeSceneContent, type LayerBreakdown } from "./contextBuilder";
-import { resolveRoleSendOverride } from "./modelRouting";
-import { getPromptCatalog } from "@/prompts/index";
-import { useTreeStore } from "@/features/tree/treeStore";
-import { getProject } from "@/features/project/api";
+import type { LayerBreakdown } from "./contextBuilder";
 import { scheduleChatIndex } from "@/features/semantic-search/scheduler";
 import type { TurnToolProtocol } from "@/features/ai-context/finalizeTurnPayload";
 import type { AiProvider } from "./types";
@@ -49,13 +44,17 @@ import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 import type { AiAuditTransportContext } from "@/features/ai-audit/transportContext";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
-import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import {
   abortChatStream,
   loadAiAuditRuntime,
   loadSingleShotTransport,
   sendChatMessageStream,
 } from "./lazyTransportApi";
+
+export {
+  generateSessionTitle,
+  generateSynopsisFromContent,
+} from "./chatContentGeneration";
 
 // --- AI message sending (existing) ---
 
@@ -137,58 +136,6 @@ export async function sendChatMessageOnceAb(
   };
 }
 
-/**
- * B-8: One-shot synopsis generation from scene content.
- * Returns the generated synopsis text (100-200 chars).
- */
-export async function generateSynopsisFromContent(
-  sceneTitle: string,
-  sceneContent: string,
-): Promise<string> {
-  const { invokeSingleShotChat } = await loadSingleShotTransport();
-  const projectId = useTreeStore.getState().projectId;
-  const project = await getProject(projectId).catch(() => null);
-  const lang = project?.language ?? "ja";
-  const messages = [
-    {
-      role: "user",
-      content: getPromptCatalog(lang).chatApi.buildSynopsisFromContentPrompt(
-        sceneTitle,
-        sanitizeSceneContent(sceneContent),
-      ),
-    },
-  ];
-  const ov = resolveRoleSendOverride("synopsis");
-  const response = await invokeSingleShotChat(
-    {
-      messages,
-      thinking: null,
-      effort: null,
-      reasoningEnabled: null,
-      reasoningEffort: null,
-      apiVariant: ov.apiVariant,
-      model: ov.model,
-      provider: ov.provider,
-      endpointId: ov.endpointId,
-    },
-    {
-      projectId: requireAuditProjectId(projectId),
-      pathId: "synopsis",
-    },
-  );
-  // N4: あらすじ生成の usage を台帳に記録する。
-  void recordAiUsage({
-    surface: "synopsis",
-    tokensIn: response.inputTokens,
-    tokensOut: response.outputTokens,
-    projectId,
-  });
-  return response.blocks
-    .filter((b) => b.type === "text")
-    .map((b) => (b as { type: "text"; content: string }).content)
-    .join("\n");
-}
-
 import type {
   AgentMessagePayload,
   AgentLLMResponse,
@@ -196,7 +143,6 @@ import type {
   WebSearchConfig,
 } from "./agent/agentTypes";
 import type { ThinkingParams } from "./agent/modelLimits";
-import { buildThinkingParams, getEffortForTask } from "./agent/modelLimits";
 
 /** Send a tool-aware agent message and return a structured response. */
 export async function sendAgentMessage(
@@ -373,76 +319,6 @@ export async function sendChatMessageWithThinking(
 
 export type { StreamCallbacks } from "./chatStreamTransport";
 export { abortChatStream, sendChatMessageStream };
-
-/**
- * セッションタイトルを軽量モデルで自動生成する (P1-2)
- * Returns the generated title, or null if generation failed.
- */
-export async function generateSessionTitle(
-  userMessage: string,
-  assistantReply: string,
-  model: string,
-  lang = "ja",
-  projectId?: string | null,
-): Promise<string | null> {
-  try {
-    const { invokeSingleShotChat } = await loadSingleShotTransport();
-    // 機能別モデル: session_title ロールが設定されていればそれを使い、未設定なら
-    // 呼び出し側が渡した既定モデル(model)へフォールバック（thinking/usage 表示用）。
-    // 実生成は invoke の model 引数（roleModel ?? null）で決まり、null は Rust 側で
-    // settings.model に解決される＝未設定時 byte-identical。
-    const ov = resolveRoleSendOverride("session_title");
-    const effectiveModel = ov.model ?? model;
-    const thinkingParams = buildThinkingParams(
-      effectiveModel,
-      getEffortForTask("session_title"),
-      "omitted",
-    );
-    const messages = [
-      {
-        role: "user",
-        content: getPromptCatalog(lang).chatApi.buildSessionTitlePrompt(
-          userMessage,
-          assistantReply,
-        ),
-      },
-    ];
-    const response = await invokeSingleShotChat(
-      {
-        messages,
-        thinking: thinkingParams.thinking ?? null,
-        effort: thinkingParams.effort ?? null,
-        reasoningEnabled: thinkingParams.reasoningEnabled ?? null,
-        reasoningEffort: thinkingParams.reasoningEffort ?? null,
-        apiVariant: ov.apiVariant,
-        model: ov.model,
-        provider: ov.provider,
-        endpointId: ov.endpointId,
-      },
-      {
-        projectId: requireAuditProjectId(
-          projectId ?? useTreeStore.getState().projectId,
-        ),
-        pathId: "session_title",
-      },
-    );
-    void recordAiUsage({
-      surface: "session_title",
-      model: effectiveModel,
-      projectId,
-      tokensIn: response.inputTokens,
-      tokensOut: response.outputTokens,
-    });
-    const title = response.blocks
-      .filter((b) => b.type === "text")
-      .map((b) => (b as { type: "text"; content: string }).content)
-      .join("")
-      .trim();
-    return title || null;
-  } catch {
-    return null;
-  }
-}
 
 // --- Session/message persistence ---
 
@@ -972,15 +848,10 @@ export async function getMessagePrompt(
   };
 }
 
-export async function updateSessionTitle(
-  id: string,
-  title: string,
-): Promise<void> {
-  await db
-    .update(chatSessions)
-    .set({ title, updatedAt: new Date().toISOString() })
-    .where(eq(chatSessions.id, id));
-}
+export {
+  updateSessionTitle,
+  updateSessionTitleIfAutomatic,
+} from "./chatHistoryApi";
 
 // --- Pinned Codex entries (normalized: chat_session_pinned_codex table) ---
 
