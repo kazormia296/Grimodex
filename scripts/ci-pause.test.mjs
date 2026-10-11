@@ -3007,6 +3007,15 @@ test("Full private-gate outcome is required, candidate-bound and cannot turn hos
       (v) => { v.root.quotas[0].state = "unknown"; }, (v) => { delete v.namespaces.pid; },
       (v) => { v.hostFactsDigest = "UNKNOWN"; }, (v) => { delete v.observations.memory.ancestors; },
     ]) { const invalid = structuredClone(record); mutate(invalid); await persist(invalid); await assert.rejects(verifyFullPrivateAdmission(root, host), /private gate/u); }
+    // A recorded-not-enforced host decision accepts an over-ledger private
+    // record only when its fit flag states the observation consistently.
+    const recorded = { ...host, memoryForecast: "recorded-not-enforced" };
+    await persist({ ...record, memory: { demand: "100", available: "50", fits: false } });
+    assert.equal((await verifyFullPrivateAdmission(root, recorded)).state, "private-accepted");
+    for (const memory of [{ demand: "100", available: "50", fits: true }, { demand: "100", available: "150", fits: false }, { demand: "100", available: "50" }]) {
+      await persist({ ...record, memory });
+      await assert.rejects(verifyFullPrivateAdmission(root, recorded), /private gate/u);
+    }
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

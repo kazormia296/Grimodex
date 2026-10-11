@@ -66,7 +66,12 @@ bound part, any task reported by the wrong part, and journey or gate evidence
 outside the `journeys` part. The single receipt keeps every task in plan order
 and binds each part report by size and SHA-256. Artifact transfer does not keep
 file mode/owner, so verify checks the transferred host decision and private
-outcome by content identity instead of re-running the live revalidation.
+outcome by content identity instead of re-running the live revalidation. Journey
+evidence needs the journeys VM's build outputs, so it is collected live there and
+transferred inside the hash-bound part report rather than re-collected. The
+receipt's execution duration is the parts' wall-clock span and the aggregate's
+own work is its finalization. Parts, artifact names and the run id belong to one
+workflow attempt: re-run all jobs, never only failed ones.
 
 Empty `max_parallel_tasks` selects 1 for Full parts (matching the reviewed
 allocation) and 12 for Quick.

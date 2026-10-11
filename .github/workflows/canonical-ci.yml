@@ -239,7 +239,9 @@ jobs:
 
       # The part evidence the aggregate merges back under .artifacts/. The
       # sentinel pins the archive root; only the private-gate part carries the
-      # host decision, so same-named admission paths never collide.
+      # host decision and C2-ZC outputs, so same-named paths never collide.
+      # Parts, artifacts and the run id are bound to one attempt: re-run ALL
+      # jobs, never only failed ones, or the aggregate refuses the mixed parts.
       - name: Upload Full part evidence
         if: always() && inputs.profile == 'full' && steps.canonical.outcome != 'skipped'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -253,6 +255,8 @@ jobs:
             .artifacts/browser-ci/
             .artifacts/electron-runtime-performance/
             ${{ matrix.part == 'journeys' && '.artifacts/local-ci/full-admission/*-host/decision.json' || '.artifacts/.canonical-full-part-none' }}
+            ${{ matrix.part == 'journeys' && '.artifacts/local-ci/c2-zc-restore-fixture/' || '.artifacts/.canonical-full-part-none' }}
+            ${{ matrix.part == 'journeys' && '.artifacts/local-ci/c2-zc-rust-acceptance.json*' || '.artifacts/.canonical-full-part-none' }}
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14

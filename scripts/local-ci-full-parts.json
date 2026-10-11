@@ -70,6 +70,7 @@
         "bootstrap.electron-binary",
         "bootstrap.workspace-build",
         "bootstrap.chromium",
+        "rust.supervisor-failpoints",
         "native.build",
         "electron.typecheck",
         "electron.build"

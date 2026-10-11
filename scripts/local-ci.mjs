@@ -4386,8 +4386,9 @@ async function verifyLocalCiReportAtPath({
     await resolveLocalCiCandidate(plan),
   );
   const receipt = JSON.parse(await readFile(reportPath, "utf8"));
+  let partedJourneyEvidence;
   if (plan.profile === "full" && receipt.parts !== undefined) {
-    await verifyPartedFullResources(receipt, { plan, root });
+    ({ productJourneyEvidence: partedJourneyEvidence } = await verifyPartedFullResources(receipt, { plan, root }));
   } else if (plan.profile === "full") {
     const resources = receipt.fullResourceAdmission;
     if (resources?.state !== "private-accepted" || resources.private?.localRunId !== receipt.runId) {
@@ -4403,7 +4404,9 @@ async function verifyLocalCiReportAtPath({
     }
   }
   const currentProductJourneyEvidence =
-    plan.profile === "full"
+    partedJourneyEvidence !== undefined
+      ? partedJourneyEvidence
+      : plan.profile === "full"
       ? await collectProductJourneyEvidence(plan, {
           candidate,
           restoreFixtureEvidence: receipt.c2zcRestoreFixture,
@@ -4578,23 +4581,29 @@ async function verifyPartedFullResources(receipt, { plan, root = repoRoot }) {
       throw new Error("Full staged resource artifacts changed since execution");
     }
   }
+  // Journey evidence needs the journeys VM's build outputs, so it is collected
+  // live there and transferred inside the hash-bound part report.
+  if (JSON.stringify(receipt.productJourneyEvidence) !== JSON.stringify(gateReport.productJourneyEvidence) ||
+      JSON.stringify(receipt.c2zcRestoreFixture) !== JSON.stringify(gateReport.c2zcRestoreFixture)) {
+    throw new Error("Split Full journey evidence differs from its owning part");
+  }
+  return { productJourneyEvidence: gateReport.productJourneyEvidence };
 }
 
 // The aggregate job: same candidate on a clean checkout, every part report
 // downloaded, then the single Full receipt finalized and verified as usual.
 async function aggregateFullInvocation({ args, plan, reportPath }) {
-  const invocationStarted = performance.now();
+  const aggregateStarted = performance.now();
   const parts = await readFullParts(repoRoot);
   const runId = canonicalGithubRunId();
   const candidate = validateLocalCiCandidate(plan, await resolveLocalCiCandidate(plan));
   const { reports, identities } = await readPartReports(parts);
   const planDescriptor = createLocalCiPlanDescriptor(plan);
   const assembled = assembleFullFromParts({ plan, config: parts, reports, candidate, runId, planDescriptor });
-  const productJourneyEvidence = await collectProductJourneyEvidence(plan, { candidate,
-    restoreFixtureEvidence: assembled.c2zcRestoreFixture, runId });
-  if (JSON.stringify(productJourneyEvidence) !== JSON.stringify(assembled.productJourneyEvidence)) {
-    throw new Error("Split Full journey evidence changed between its part and the aggregate");
-  }
+  const productJourneyEvidence = assembled.productJourneyEvidence;
+  // Execution is the parts' wall-clock span; the aggregate's own work counts as
+  // finalization, keeping durationMs = execution + finalization.
+  const invocationStarted = aggregateStarted - assembled.executionDurationMs;
   const result = {
     version: LOCAL_CI_RECEIPT_VERSION, profile: plan.profile, comparison: plan.comparison, coverage: plan.coverage,
     candidate, runId, startedAt: assembled.startedAt, finishedAt: assembled.finishedAt,

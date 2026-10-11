@@ -1433,7 +1433,13 @@ export async function verifyFullPrivateAdmission(root, host) {
   const bytes = await readFile(file), record = JSON.parse(bytes);
   if (record.state !== "private-accepted" || record.localRunId !== host.localRunId ||
       digest(record.binding) !== digest(host.binding) || record.estimateDigest !== host.estimateDigest ||
-      record.memory?.demand !== host.memory.demand || amount(record.memory.available) <= amount(record.memory.demand) ||
+      record.memory?.demand !== host.memory.demand ||
+      // A recorded-not-enforced host decision carries the additive memory
+      // ledger as an observation: the private record must state its fit
+      // consistently instead of refusing on it.
+      (host.memoryForecast === "recorded-not-enforced"
+        ? record.memory.fits !== (amount(record.memory.available) > amount(record.memory.demand))
+        : amount(record.memory.available) <= amount(record.memory.demand)) ||
       !/^[0-9a-f]{64}$/u.test(record.hostFactsDigest ?? "") || !record.observations?.memory?.ancestors?.length ||
       ["mnt", "net", "pid", "ipc"].some((name) => !new RegExp(`^${name}:\\[\\d+\\]$`, "u").test(record.namespaces?.[name] ?? "")) ||
       !Number.isSafeInteger(record.root?.inode) || record.root.inode <= 0 ||

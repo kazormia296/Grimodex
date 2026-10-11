@@ -13,7 +13,8 @@ const { Backend } = require(join(here, "..", "grimodex-node.node"));
 const root = mkdtempSync(join(tmpdir(), "grimodex-node-sample-seed-"));
 const appDataDir = join(root, "app-data");
 const backend = new Backend(appDataDir);
-process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+// A late backend write can race the recursive removal; retry ENOTEMPTY/EBUSY.
+process.on("exit", () => rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
 
 test("seedSampleWorkspace creates a complete sample and exposes its active path after open", async () => {
   await assert.rejects(
