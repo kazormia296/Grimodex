@@ -1,7 +1,12 @@
 import "@testing-library/jest-dom/vitest";
 import "@/lib/i18n";
+import { configure } from "@testing-library/react";
 import { vi, expect } from "vitest";
 import * as axeMatchers from "vitest-axe/matchers";
+
+// waitFor/findBy default to 1 s, a host-speed assumption that loaded hosted CI
+// runners exceed; this matches the CI-only vitest timeout relaxation.
+if (process.env.CI) configure({ asyncUtilTimeout: 5_000 });
 // vitest-axe 0.1.0 の extend-expect.js は 0 バイトの no-op のため、matcher を
 // 手動登録する。型拡張 (toHaveNoViolations) は vitest-axe 同梱の d.ts が廃止済の
 // global Vi.Assertion を狙っていて vitest 4 では効かないため、

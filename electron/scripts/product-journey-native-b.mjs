@@ -33,6 +33,64 @@ ${DRIVER_METHODS.map((method) => `    <allow send_destination="org.freedesktop.D
 </busconfig>\n`;
 }
 
+// The Editor journey's qualified bus stays with createNativeBBusOwner. Other
+// journeys sharing the private root still need a session bus for Chromium
+// (the runner's own bus is absent there): give each the same locked-down
+// EXTERNAL-only config, privately owned, without qualification bookkeeping.
+export async function startPrivateSessionBus({ spawnProcess = spawn, readBoundary = readNativeBBoundary } = {}) {
+  const boundary = await readBoundary();
+  if (!boundary) throw new Error("native B namespace prerequisite absent");
+  const directory = await mkdtemp(path.join(os.tmpdir(), "grimodex-native-b-session-"));
+  const socket = path.join(directory, "bus");
+  const config = path.join(directory, "bus.conf");
+  let child;
+  try {
+    await writeFile(config, nativeBBusConfig(boundary.uid, socket), { mode: 0o600, flag: "wx" });
+    child = spawnProcess("/usr/bin/dbus-daemon", ["--nofork", `--config-file=${config}`, "--print-address=3"], {
+      env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME, TMPDIR: "/tmp" },
+      stdio: ["ignore", "ignore", "ignore", "pipe"], detached: false, shell: false,
+    });
+  } catch (error) {
+    await rm(directory, { recursive: true, force: true });
+    throw error;
+  }
+  const closed = new Promise((resolve) => {
+    child.once("error", () => undefined);
+    child.once("close", (code, signal) => resolve({ code, signal }));
+  });
+  const retire = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    let timer;
+    try {
+      await Promise.race([closed, new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error("native B session bus retirement unobserved")), 5000);
+      })]);
+    } finally { clearTimeout(timer); }
+    await rm(directory, { recursive: true, force: true });
+  };
+  try {
+    const address = await new Promise((resolve, reject) => {
+      let text = "";
+      const timer = setTimeout(() => reject(new Error("native B session bus readiness timed out")), 5000);
+      const stream = child.stdio[3];
+      stream.on("error", () => { clearTimeout(timer); reject(new Error("native B session bus address stream failed")); });
+      stream.on("data", (chunk) => {
+        text += chunk.toString("utf8");
+        if (text.length > 1024) { clearTimeout(timer); reject(new Error("native B session bus address rejected")); }
+        else if (text.endsWith("\n")) { clearTimeout(timer); resolve(text.slice(0, -1)); }
+      });
+      stream.once("end", () => { clearTimeout(timer); reject(new Error("native B session bus EOF before readiness")); });
+    });
+    if (!address.startsWith(`unix:path=${socket},guid=`) || !/^[0-9a-f]{32}$/u.test(address.split(",guid=")[1] ?? "")) {
+      throw new Error("native B session bus address identity rejected");
+    }
+    return { address, retire };
+  } catch (error) {
+    await retire().catch(() => undefined);
+    throw error;
+  }
+}
+
 // Fixed "native B ..." refusal texts are safe to report; anything else (which
 // may carry paths, endpoints or payloads) reports only its error type.
 export function nativeBReason(error) {

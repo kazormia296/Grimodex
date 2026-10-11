@@ -33,7 +33,7 @@ import {
   isElectronPostExitCloseError,
 } from "./close-electron-app.mjs";
 import { C2ZC_RENDERER_DML_PHASE_ALLOWLIST } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
-import { createNativeBBusOwner, nativeBElectronEnvironment } from "./product-journey-native-b.mjs";
+import { createNativeBBusOwner, nativeBElectronEnvironment, startPrivateSessionBus } from "./product-journey-native-b.mjs";
 
 const NATIVE_B_RECEIPT = "/run/grimodex-native-b/admission.json";
 
@@ -3513,6 +3513,14 @@ export function createProductJourneyHarness({
       }) : null;
   let signalHandlersInstalled = false;
   let disposed = false;
+  let privateSessionBusPromise = null;
+  async function retirePrivateSessionBus() {
+    if (!privateSessionBusPromise) return;
+    const pending = privateSessionBusPromise;
+    privateSessionBusPromise = null;
+    const bus = await pending.catch(() => null);
+    await bus?.retire();
+  }
   const lastResources = {
     app: null,
     page: null,
@@ -4004,6 +4012,7 @@ export function createProductJourneyHarness({
         throw new Error("native B app retirement unverified; owner quarantined");
       }
       await nativeBus?.retire();
+      await retirePrivateSessionBus();
     })();
     return failureCleanupPromise;
   }
@@ -5314,6 +5323,12 @@ export function createProductJourneyHarness({
     const env = nativeBus
       ? nativeBElectronEnvironment(process.env, await nativeBus.qualify())
       : { ...process.env };
+    // Other journeys in the native B root get their own private session bus;
+    // the runner's user bus does not exist inside that root.
+    if (!nativeBus && electronLauncher === _electron && (await insideNativeBRoot())) {
+      privateSessionBusPromise ??= startPrivateSessionBus();
+      env.DBUS_SESSION_BUS_ADDRESS = (await privateSessionBusPromise).address;
+    }
     delete env.ELECTRON_RENDERER_URL;
     env.GRIMODEX_USER_DATA_DIR = userDataDir;
     env[PRODUCT_JOURNEY_AI_ENV] = PRODUCT_JOURNEY_AI_VERSION;
@@ -6244,6 +6259,7 @@ export function createProductJourneyHarness({
       });
       // A capture failure must not bypass bus retirement when no app exists.
       await nativeBus?.retire();
+      await retirePrivateSessionBus();
       removeSignalHandlers();
       await operationJournal.close().catch(() => undefined);
       operationJournalClosed = true;
@@ -6263,6 +6279,7 @@ export function createProductJourneyHarness({
       }
     }
     await nativeBus?.retire();
+    await retirePrivateSessionBus();
     await operationJournal.close();
     operationJournalClosed = true;
     await rm(tmpRoot, { recursive: true, force: true });
