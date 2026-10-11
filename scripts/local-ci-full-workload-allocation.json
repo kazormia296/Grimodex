@@ -25,7 +25,7 @@
     },
     {
       "path": "scripts/local-ci.mjs",
-      "sha256": "daf87b61d65c2addbee6a3574f20df44097ebfde05d9779c55860d0d89419cab"
+      "sha256": "a6e5780c6e1e77e874a7b585b4988176d8d1216e7c7eccb6333e7436781ebb81"
     },
     {
       "path": "scripts/local-ci-runner.mjs",

@@ -5663,6 +5663,18 @@ test("split Full aggregate binds every part to one candidate, plan and run in pl
   reject((r) => { r.get("rust").fullResourceAdmission = { state: "private-accepted" }; }, /private-gate or journey evidence/u);
 });
 
+test("split Full staged artifacts compare bare host and prefixed evidence digests", async () => {
+  const { stagedArtifactMatches } = await import("./local-ci.mjs");
+  const hex = "a".repeat(64);
+  const current = { size: 7, sha256: `sha256:${hex}` };
+  assert.equal(stagedArtifactMatches(current, { path: "decision.json", sha256: hex }), true);
+  assert.equal(stagedArtifactMatches(current, { path: "outcome.json", size: 7, sha256: `sha256:${hex}` }), true);
+  assert.equal(stagedArtifactMatches(current, { size: 8, sha256: hex }), false);
+  assert.equal(stagedArtifactMatches(current, { sha256: "b".repeat(64) }), false);
+  assert.equal(stagedArtifactMatches(current, { sha256: "sha256:" }), false);
+  assert.equal(stagedArtifactMatches({ size: 7, sha256: undefined }, {}), false);
+});
+
 test("split Full CLI roles and hosted aggregate job keep one tuple and the unchanged verify", async () => {
   assert.equal(parseLocalCiArgs(["full", "--part", "rust"]).part, "rust");
   assert.equal(parseLocalCiArgs(["full", "--aggregate"]).aggregate, true);

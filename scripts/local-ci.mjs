@@ -4551,6 +4551,14 @@ async function readPartReports(parts) {
   return { reports, identities };
 }
 
+// The host decision records a bare hex digest, artifact evidence a
+// `sha256:`-prefixed one; both name the same content hash.
+export function stagedArtifactMatches(current, recorded) {
+  const hex = (digest) => (typeof digest === "string" ? digest.replace(/^sha256:/u, "") : null);
+  return /^[0-9a-f]{64}$/u.test(hex(recorded?.sha256) ?? "") && hex(current.sha256) === hex(recorded.sha256) &&
+    (recorded.size === undefined || current.size === recorded.size);
+}
+
 // Hash-bound transfer of the private gate: the owning part VM performed the
 // complete live host/private revalidation before writing its report. Mode/uid
 // facts do not survive artifact transfer, so content identity binds them here.
@@ -4577,7 +4585,7 @@ async function verifyPartedFullResources(receipt, { plan, root = repoRoot }) {
   }
   for (const file of [resources.host, receipt.privateOutcome]) {
     const current = await resolveArtifactEvidence(file?.path, { root });
-    if (current.sha256 !== file.sha256 || (file.size !== undefined && current.size !== file.size)) {
+    if (!stagedArtifactMatches(current, file)) {
       throw new Error("Full staged resource artifacts changed since execution");
     }
   }
@@ -4617,8 +4625,15 @@ async function aggregateFullInvocation({ args, plan, reportPath }) {
   };
   await verifyPartedFullResources(result, { plan });
   const stagingReceiptPath = path.join(path.dirname(reportPath), `.${path.basename(reportPath)}.${runId}.staging`);
+  // The external verifier subprocess requires an abort signal, as in a direct run.
+  const cliAbort = new AbortController();
+  const interrupt = (name) => { if (!cliAbort.signal.aborted) cliAbort.abort(new Error(`Local CI interrupted by ${name}.`)); };
+  const onSigint = () => interrupt("SIGINT"), onSigterm = () => interrupt("SIGTERM");
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
   const finalized = await finalizeLocalCiExecution({
     args: { ...args, aggregate: undefined },
+    signal: cliAbort.signal,
     executionDurationMs: assembled.executionDurationMs,
     invocationStarted,
     reportPath,
@@ -4633,6 +4648,9 @@ async function aggregateFullInvocation({ args, plan, reportPath }) {
         requireTaskEvidence: true });
       await verifyLocalCiTaskEvidence(finalResult, { allowPrePublication: true, requireFinalization: true, root: repoRoot });
     },
+  }).finally(() => {
+    process.removeListener("SIGINT", onSigint);
+    process.removeListener("SIGTERM", onSigterm);
   });
   process.stdout.write(`[local-ci] report=${finalized.reportPath}\n[local-ci] status=${finalized.result.status}\n`);
   if (finalized.result.status !== "passed") process.exitCode = 1;
