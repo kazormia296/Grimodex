@@ -1588,11 +1588,11 @@ function createChatTurnStoreActions(
                     }));
                   })
                   .catch((e) => {
-                    debugLog.error(
-                      "ChatStore",
-                      "agent title generation",
-                      errorDetail(e),
-                    );
+                    const detail = errorDetail(e);
+                    const log = /IPC_\w+_CANCELLED/.test(detail)
+                      ? debugLog.warn // a lifecycle switch cancelled it
+                      : debugLog.error;
+                    log("ChatStore", "agent title generation", detail);
                   });
                 void turnRuntime.trackTurn(titleGeneration);
               }
