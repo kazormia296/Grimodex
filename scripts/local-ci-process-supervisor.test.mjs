@@ -907,6 +907,11 @@ assert helped.returncode == 0, helped.stderr.decode(errors='replace')
 print(json.dumps({'helper': record['sha256'], 'bounding': record['bounding']}))
 `;
   const root = await fixture(t);
+  // Use the real pinned Electron helper, provisioned exactly as Full does.
+  const ensured = await runLocalCiCommand({ command: process.execPath,
+    args: [fileURLToPath(new URL("./ensure-electron-binary.mjs", import.meta.url))] },
+  { root, logDirectory: ".logs", taskId: "native-sandbox-electron", timeoutMs: 300_000 });
+  assert.equal(ensured.exitCode, 0, await readFile(path.join(root, ensured.logs.stderr.path), "utf8"));
   const sandboxRoot = path.join(root, "sandbox-root");
   await mkdir(sandboxRoot);
   const result = await runLocalCiCommand({ command: "/usr/bin/sudo",
