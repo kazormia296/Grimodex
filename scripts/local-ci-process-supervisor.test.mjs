@@ -907,7 +907,9 @@ mounts = [line.split() for line in pathlib.Path('/proc/self/mountinfo').read_tex
 options = {fields[4]: fields[5].split(',') for fields in mounts}
 assert 'nosuid' not in options[helper] and 'ro' in options[helper], options[helper]
 assert 'nosuid' in options[str(checkout / 'node_modules')]
-helped = subprocess.run([helper, '/usr/bin/true'], stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+# Chromium requests helper API 1 the same way when it launches its zygote.
+helped = subprocess.run([helper, '/usr/bin/true'], stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
+                        env={'PATH': '/usr/bin:/bin', 'SBX_CHROME_API_RQ': '1'})
 assert helped.returncode == 0, helped.stderr.decode(errors='replace')
 print(json.dumps({'helper': record['sha256'], 'bounding': record['bounding']}))
 `;
