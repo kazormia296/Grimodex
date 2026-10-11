@@ -35,6 +35,21 @@ import {
 import { C2ZC_RENDERER_DML_PHASE_ALLOWLIST } from "./c2zc-renderer-mcp-dml-denial-product-journey.mjs";
 import { createNativeBBusOwner, nativeBElectronEnvironment } from "./product-journey-native-b.mjs";
 
+const NATIVE_B_RECEIPT = "/run/grimodex-native-b/admission.json";
+
+// Every Electron launched inside the native B private root keeps Chromium's
+// sandbox; that root stages the SUID helper. Elsewhere the default remains.
+async function insideNativeBRoot() {
+  if (process.platform !== "linux") return false;
+  try {
+    await lstat(NATIVE_B_RECEIPT);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 const require = createRequire(import.meta.url);
 const PRODUCT_JOURNEY_AI_ENV = "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI";
 const PRODUCT_JOURNEY_AI_VERSION = "deterministic-v1";
@@ -5391,6 +5406,7 @@ export function createProductJourneyHarness({
     launchContexts.set(launchId, launchContext);
     let app;
     try {
+      const nativeBRoot = await insideNativeBRoot();
       app = await runHarnessOperation(
         "electron-launch",
         () =>
@@ -5398,7 +5414,7 @@ export function createProductJourneyHarness({
             executablePath: electronBin,
             args: electronArgs,
             env,
-            ...(nativeBus ? { chromiumSandbox: true } : {}),
+            ...(nativeBus || nativeBRoot ? { chromiumSandbox: true } : {}),
             timeout: launchTimeoutMs,
           }),
         {

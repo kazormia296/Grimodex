@@ -136,9 +136,10 @@ export async function readNativeBBoundary() {
       record.gid !== process.getgid() || record.uid === 0 || process.getgroups().some((gid) => gid !== record.gid)) {
     throw new Error("native B workload identity invalid");
   }
-  for (const key of ["CapEff", "CapPrm", "CapInh", "CapAmb", "CapBnd"]) {
+  // Only CAP_SYS_CHROOT|CAP_SYS_ADMIN stay bounded, for the SUID sandbox helper.
+  for (const [key, expected] of [["CapEff", 0n], ["CapPrm", 0n], ["CapInh", 0n], ["CapAmb", 0n], ["CapBnd", 0x240000n]]) {
     const current = status.match(new RegExp(`^${key}:\\s*([0-9a-f]+)$`, "mu"))?.[1];
-    if (!current || !/^0+$/u.test(current) || record.capabilities[key] !== current) {
+    if (!current || BigInt(`0x${current}`) !== expected || record.capabilities[key] !== current) {
       throw new Error("native B workload capability drop invalid");
     }
   }

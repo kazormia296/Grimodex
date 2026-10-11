@@ -31,6 +31,11 @@ WORKSPACES = ("scan-contract", "scan-core")
 CLOSED = False
 SIOCGIFCONF, SIOCGIFFLAGS, SIOCSIFFLAGS, IFF_UP, RTF_REJECT = 0x8912, 0x8913, 0x8914, 0x1, 0x200
 IFREQ = "16sH22x"
+# Chromium's SUID sandbox helper needs exactly these to create its PID/network
+# namespaces and chroot; no other setuid/file-capability path is executable.
+CAP_SYS_CHROOT, CAP_SYS_ADMIN = 18, 21
+SANDBOX_BOUNDING = (1 << CAP_SYS_CHROOT) | (1 << CAP_SYS_ADMIN)
+SANDBOX_HELPER_MAX = 1 << 20
 IFREQ_SIZE = struct.calcsize(IFREQ)
 
 
@@ -354,10 +359,13 @@ def capabilities():
 
 
 def drop(uid, gid):
-    # Drop every bounding bit supported by this kernel, not a versioned subset.
+    # Drop every bounding bit supported by this kernel, not a versioned subset,
+    # except the two only the root-owned SUID sandbox helper can regain on exec.
     last = int(pathlib.Path("/proc/sys/kernel/cap_last_cap").read_text())
-    require(0 <= last < 64, "native B unsupported capability range")
+    require(CAP_SYS_ADMIN <= last < 64, "native B unsupported capability range")
     for cap in range(last + 1):
+        if SANDBOX_BOUNDING & (1 << cap):
+            continue
         require(LIBC.prctl(24, cap, 0, 0, 0) == 0, "native B bounding capability drop refused")
     require(LIBC.prctl(47, 4, 0, 0, 0) == 0, "native B ambient capability drop refused")
     os.setgroups([])
@@ -371,12 +379,50 @@ def drop(uid, gid):
     require(LIBC.capset(ctypes.byref(Header(0x20080522, 0)), ctypes.byref((Data * 2)())) == 0,
             "native B capability clearing refused")
     facts = capabilities()
-    require(all(int(facts[key], 16) == 0 for key in ("CapEff", "CapPrm", "CapInh", "CapAmb", "CapBnd")),
-            "native B capabilities remain")
+    require(all(int(facts[key], 16) == 0 for key in ("CapEff", "CapPrm", "CapInh", "CapAmb")) and
+            int(facts["CapBnd"], 16) == SANDBOX_BOUNDING, "native B capabilities remain")
     require(facts["NoNewPrivs"] == "0", "native B sandbox-incompatible no-new-privileges")
     require(os.getresuid() == (uid, uid, uid) and os.getresgid() == (gid, gid, gid) and not os.getgroups(),
             "native B identity drop incomplete")
     return facts
+
+
+def sandbox_helper(root, checkout):
+    """Stage Chromium's own SUID sandbox helper as the only setuid path."""
+    modules = (checkout / "node_modules").resolve(strict=True)
+    link = checkout / "node_modules" / "electron"
+    source = link.resolve(strict=True) / "dist" / "chrome-sandbox"
+    require(modules in source.parents and not source.is_symlink(), "native B sandbox helper outside locked modules")
+    metadata = os.lstat(source)
+    require(stat.S_ISREG(metadata.st_mode) and 0 < metadata.st_size <= SANDBOX_HELPER_MAX,
+            "native B sandbox helper invalid")
+    content = source.read_bytes()
+    require(len(content) == metadata.st_size, "native B sandbox helper changed")
+    digest = hashlib.sha256(content).hexdigest()
+    # Root-only staging inside the private tmpfs; the workload sees only the
+    # read-only bind at Electron's own helper path.
+    staging = private_path(root, "/run/grimodex-chrome-sandbox")
+    staging.mkdir(mode=0o700)
+    os.chown(staging, 0, 0)
+    os.chmod(staging, 0o700)
+    helper = staging / "chrome-sandbox"
+    descriptor = os.open(helper, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700)
+    try:
+        require(os.write(descriptor, content) == len(content), "native B sandbox helper copy incomplete")
+        os.fchown(descriptor, 0, 0)
+        os.fchmod(descriptor, 0o4755)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    target = private_path(root, str(source))
+    require(target.is_file() and not target.is_symlink(), "native B sandbox helper target missing")
+    mount(str(helper), str(target), flags=MS_BIND)
+    # Unlike every other view this bind keeps setuid, and only for this file.
+    mount(None, str(target), flags=MS_BIND | MS_REMOUNT | MS_RDONLY | MS_NODEV)
+    staged = os.stat(target)
+    require(staged.st_uid == 0 and staged.st_gid == 0 and stat.S_IMODE(staged.st_mode) == 0o4755 and
+            hashlib.sha256(target.read_bytes()).hexdigest() == digest, "native B sandbox helper staging invalid")
+    return {"path": str(source), "sha256": digest, "mode": "4755", "bounding": format(SANDBOX_BOUNDING, "016x")}
 
 
 def network_interfaces():
@@ -744,6 +790,7 @@ def main():
     (etc / "passwd").write_text(f"runner:x:{uid}:{gid}:synthetic:/home/runner:/bin/false\n")
     (etc / "group").write_text(f"runner:x:{gid}:\n")
     (etc / "nsswitch.conf").write_text("passwd: files\ngroup: files\nhosts: files\n")
+    sandbox = sandbox_helper(root, checkout)
     mount("proc", str(root / "proc"), "proc", MS_NOSUID | MS_NODEV | MS_NOEXEC)
     # Output layout stays canonical; no borrowed artifact/log tree is exposed.
     if shard_output is not None:
@@ -782,7 +829,7 @@ def main():
     require(not CLOSED, "native B workload admission closed")
     write_json(RECEIPT, {"version": "B-native-privileged-setup-v1", "uid": uid, "gid": gid,
                          "namespaces": current, "hostNamespaces": value["hostNamespaces"], "qualification": qualification,
-                         "capabilities": facts, "loopback": loopback, "resources": {"state": resources["state"],
+                         "capabilities": facts, "loopback": loopback, "sandboxHelper": sandbox, "resources": {"state": resources["state"],
                          "estimateDigest": resources["estimateDigest"], "localRunId": resources["localRunId"]},
                          "root": os.stat("/").st_ino,
                          "rootDevice": os.stat("/").st_dev}, uid, gid)

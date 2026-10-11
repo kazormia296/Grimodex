@@ -760,14 +760,15 @@ import {_electron} from ${JSON.stringify(import.meta.resolve("playwright"))};
 // the shim exits early; only that exact launch failure is tolerated.
 process.on('unhandledRejection', (error) => { if (!/^Process failed to launch!$/u.test(error?.message)) throw error; });
 const electronBin=${JSON.stringify(executable)}, electronArgs=['synthetic-main.cjs'], launchTimeoutMs=1500;
-for (const nativeBus of [true, false]) {
-  const capture=${JSON.stringify(root)}+'/'+(nativeBus?'native':'default')+'-args';
+for (const [nativeBus, nativeBRoot] of [[true, false], [false, true], [false, false]]) {
+  const sandboxed = nativeBus || nativeBRoot;
+  const capture=${JSON.stringify(root)}+'/'+(nativeBus?'bus':nativeBRoot?'root':'default')+'-args';
   const env={PATH:process.env.PATH,CAPTURE_ARGS:capture};
   const options=(${launch[1]});
   await assert.rejects(_electron.launch(options), /Process failed to launch!/u);
   const args=(await readFile(capture,'utf8')).trim().split('\\n');
   assert.ok(args.includes('--inspect=0') && args.includes('--remote-debugging-port=0'));
-  assert.equal(args.includes('--no-sandbox'), !nativeBus, 'effective Playwright argv, not just harness args');
+  assert.equal(args.includes('--no-sandbox'), !sandboxed, 'effective Playwright argv, not just harness args');
   assert.equal(args.filter(a=>a==='synthetic-main.cjs').length,1);
 }
 console.log('locked Playwright argv regression only; actual Electron/sandbox/native runtime NOTRUN');
@@ -849,6 +850,76 @@ print(json.dumps(result))
     assert.doesNotMatch(stderr, /AssertionError|SystemExit|not fresh|configuration unexpected|listing|ioctl failed/u, stderr);
   }
   t.skip("no network namespace route on this host; actual lo-up NOTRUN");
+});
+
+test("native B stages only Chromium's SUID sandbox helper and it works after the drop", async (t) => {
+  const initializer = fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url));
+  const source = await readFile(initializer, "utf8");
+  const main = source.slice(source.indexOf("def main():"), source.indexOf("def client_boundary():"));
+  const ordered = ["for source in admitted:", "sandbox = sandbox_helper(root, checkout)", "os.chroot(", "facts = drop(", '"sandboxHelper": sandbox'];
+  let cursor = -1;
+  for (const token of ordered) { const next = main.indexOf(token, cursor + 1); assert.ok(next > cursor, token); cursor = next; }
+  // Every other view keeps nosuid; only the staged helper's remount omits it.
+  assert.equal(source.match(/MS_BIND \| MS_REMOUNT \| MS_RDONLY \| MS_NODEV\)/gu).length, 1);
+  if (process.platform !== "linux") return t.skip("Linux SUID sandbox only");
+  const checkout = fileURLToPath(new URL("..", import.meta.url));
+  // Real root in a throwaway mount namespace: stage the helper into a private
+  // tmpfs root, chroot, drop exactly as PID1 does, then let the helper create
+  // its PID/network namespaces and exec a trivial target as the user.
+  const probe = `
+import ctypes, json, os, pathlib, runpy, stat, subprocess, sys
+g = runpy.run_path(sys.argv[1], run_name='probe')
+checkout = pathlib.Path(sys.argv[2]).resolve(strict=True)
+uid, gid = int(os.environ['SUDO_UID']), int(os.environ['SUDO_GID'])
+assert uid > 0 and gid > 0
+g['mount'](None, '/', flags=g['MS_REC'] | g['MS_PRIVATE'])
+root = pathlib.Path(sys.argv[3])
+g['mount']('tmpfs', str(root), 'tmpfs', g['MS_NOSUID'] | g['MS_NODEV'], 'mode=0755')
+for entry in g['RUNTIME']:
+    path = pathlib.Path(entry)
+    if path.is_symlink():
+        g['private_path'](root, entry).symlink_to(os.readlink(entry))
+    elif path.exists():
+        g['bind'](root, entry)
+g['bind'](root, str(checkout / 'node_modules'))
+for directory, mode in (('/tmp', 0o1777), ('/run', 0o755), ('/proc', 0o755)):
+    g['private_path'](root, directory).mkdir(parents=True, exist_ok=True)
+    os.chmod(g['private_path'](root, directory), mode)
+record = g['sandbox_helper'](root, checkout)
+g['mount']('proc', str(root / 'proc'), 'proc', g['MS_NOSUID'] | g['MS_NODEV'] | g['MS_NOEXEC'])
+helper = record['path']
+try:
+    g['sandbox_helper'](root, checkout)
+except FileExistsError:
+    pass
+else:
+    raise SystemExit('helper staged twice')
+os.chdir(root); os.chroot('.'); os.chdir('/')
+facts = g['drop'](uid, gid)
+assert int(facts['CapBnd'], 16) == g['SANDBOX_BOUNDING'] and int(facts['CapEff'], 16) == 0
+assert not os.access('/run/grimodex-chrome-sandbox', os.R_OK), 'root-only staging visible'
+mounts = [line.split() for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines()]
+options = {fields[4]: fields[5].split(',') for fields in mounts}
+assert 'nosuid' not in options[helper] and 'ro' in options[helper], options[helper]
+assert 'nosuid' in options[str(checkout / 'node_modules')]
+helped = subprocess.run([helper, '/usr/bin/true'], stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+assert helped.returncode == 0, helped.stderr.decode(errors='replace')
+print(json.dumps({'helper': record['sha256'], 'bounding': record['bounding']}))
+`;
+  const root = await fixture(t);
+  const sandboxRoot = path.join(root, "sandbox-root");
+  await mkdir(sandboxRoot);
+  const result = await runLocalCiCommand({ command: "/usr/bin/sudo",
+    args: ["-n", "/usr/bin/unshare", "--mount", "--fork", "python3", "-I", "-c", probe, initializer, checkout, sandboxRoot] },
+  { root, logDirectory: ".logs", taskId: "native-sandbox-helper", timeoutMs: 30_000 });
+  assert.equal(result.cleanup.complete, true);
+  const stderr = await readFile(path.join(root, result.logs.stderr.path), "utf8");
+  if (result.exitCode !== 0 && /^sudo: /mu.test(stderr) && !/Traceback/u.test(stderr)) {
+    return t.skip("no passwordless root route on this host; actual SUID sandbox NOTRUN");
+  }
+  assert.equal(result.exitCode, 0, stderr);
+  const facts = JSON.parse((await readFile(path.join(root, result.logs.stdout.path), "utf8")).trim());
+  assert.equal(facts.bounding, "0000000000240000");
 });
 
 test("native B canonical markers and exclusive output leaves reject redirected or duplicate ownership", async (t) => {
