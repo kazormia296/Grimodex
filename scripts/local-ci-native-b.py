@@ -874,7 +874,9 @@ def qualify_bus(mode):
         # Real pending-start client: no endpoint is supplied before this barrier.
         # Parent closes admission, signals us, then runs its delayed input path.
         def cancelled(_signal, _frame):
-            print("cancelled-before-input", flush=True)
+            # Unbuffered: the signal may land while the barrier print is still
+            # flushing, and a buffered write would reenter that BufferedWriter.
+            os.write(sys.stdout.fileno(), b"cancelled-before-input\n")
             sys.exit(0)
         signal.signal(signal.SIGTERM, cancelled)
         print("ready-for-input", flush=True)

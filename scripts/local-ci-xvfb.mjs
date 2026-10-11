@@ -343,7 +343,13 @@ async function runWithXvfb(command, args) {
             client: "/usr/bin/dbus-send", xvfb: "/usr/bin/Xvfb", xauth: "/usr/bin/xauth", node: process.execPath })) {
             const file = await realpath(executable);
             const metadata = await lstat(file);
-            if (!metadata.isFile() || metadata.mode & 0o022) throw new Error("native B binary identity unsafe");
+            // Never world-writable. Group write is tolerated only on a binary this
+            // runner user already owns (setup-node's toolcache node), since that
+            // owner could rewrite it anyway; root/foreign files stay strict.
+            if (!metadata.isFile() || metadata.mode & 0o002 ||
+                (metadata.mode & 0o020 && metadata.uid !== process.getuid())) {
+              throw new Error(`native B binary identity unsafe: ${id}`);
+            }
             identities[id] = { sha256: createHash("sha256").update(await readFile(file)).digest("hex"),
               uid: metadata.uid, mode: metadata.mode & 0o7777 };
           }

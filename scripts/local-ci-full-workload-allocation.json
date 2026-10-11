@@ -113,7 +113,7 @@
     },
     {
       "path": "scripts/local-ci-xvfb.mjs",
-      "sha256": "83049a07a0b392a796b592ce364f3d34b4b08741f9dd898aff0a7caa1616abd0"
+      "sha256": "468f320fc7128ab2fa35df69218307f952d114843dccd1b2825f3ed48b2cffb4"
     },
     {
       "path": "src/db/generated/schema-contract.json",
@@ -125,7 +125,7 @@
     },
     {
       "path": "scripts/local-ci-native-b.py",
-      "sha256": "51fa42bd6ad31c05b37cdfc78cf711cb033f4f15fb799488a9e5eaa48547c709"
+      "sha256": "808c0980f6f4ca6a9749176e9d114794b5d89601b0b24388c16a8b4967830591"
     },
     {
       "path": "electron/scripts/product-journey-native-b.mjs",
