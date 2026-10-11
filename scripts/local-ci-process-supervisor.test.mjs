@@ -672,7 +672,7 @@ mem = dict(membership='0::/synthetic\n', observedAt=int(time.time()*1000),
            host=dict(MemAvailable='201', MemTotal='300', SwapFree='100', SwapTotal='100'), pressure=psi,
            ancestors=[dict(path='.',state='kernel-root-no-controller-limit',pressure=psi)])
 host = dict(locations=[['workspace',str(checkout)]], uid=os.getuid(), gids=[os.getgid()],
-            filesystems=[host_fs], report=[dict(device='1',demandBytes='100',demandInodes='100')],
+            filesystems=[host_fs], report=[dict(device='1',demandBytes='100',demandInodes='100')], diskForecast='recorded-not-enforced', memoryForecast='recorded-not-enforced',
             memoryCgroup=mem['membership'], memory=dict(demand='200'), privateDemand=dict(bytes='50',inodes='50'),
             binding=dict(head='a'*40,base='b'*40,runId='200',attempt='1'),
             localRunId='00000000-0000-4000-8000-000000000001', estimateDigest='d'*64)
@@ -686,7 +686,8 @@ g = native['private_resource_gate'].__globals__
 g['runpy'] = SimpleNamespace(run_path=lambda _: dict(inspect=inspect,inspect_memory=lambda _:actual_mem,assess_memory=helpers['assess_memory']))
 g['os'] = SimpleNamespace(stat=lambda p:SimpleNamespace(st_dev=2 if p==private else 1))
 run = lambda:native['private_resource_gate'](checkout,private,value,host)
-assert run()['state']=='private-accepted'
+accepted = run()
+assert accepted['state']=='private-accepted' and accepted['hostDisk']==[dict(device='1',fits=True)]
 assert calls==['workspace','native-b-root-1']
 def reject():
     try: run()
@@ -695,11 +696,17 @@ def reject():
 for field,val in [('bytes','50'),('inodes','50'),('allocationUnit','8192'),('mount',str(checkout))]:
     actual_root[field]=val; reject(); actual_root=copy.deepcopy(root_fs)
 actual_root['quotas'][0]['state']='kernel-enabled'; reject(); actual_root=copy.deepcopy(root_fs)
-actual_host['bytes']='100'; reject(); actual_host=copy.deepcopy(host_fs)
+# The additive host disk forecast is recorded on the hosted VM, not enforced.
+actual_host['bytes']='100'; assert run()['hostDisk']==[dict(device='1',fits=False)]; actual_host=copy.deepcopy(host_fs)
+host['diskForecast']='enforced'; reject(); host['diskForecast']='recorded-not-enforced'
+del host['diskForecast']; reject(); host['diskForecast']='recorded-not-enforced'
 actual_host['device']='foreign'; reject(); actual_host=copy.deepcopy(host_fs)
 actual_host['quotas'][0]=dict(type=0,state='kernel-enabled',bytes='100',inodes=None)
-reject(); actual_host=copy.deepcopy(host_fs)
-actual_mem['host']['MemAvailable']='200'; reject(); actual_mem=copy.deepcopy(mem)
+assert run()['hostDisk']==[dict(device='1',fits=False)]; actual_host=copy.deepcopy(host_fs)
+actual_host['quotas'][0]=dict(type=0,state='unknown'); reject(); actual_host=copy.deepcopy(host_fs)
+# The additive memory ledger is recorded, not enforced; pressure still refuses.
+actual_mem['host']['MemAvailable']='200'; assert run()['memory']['fits'] is False; actual_mem=copy.deepcopy(mem)
+del host['memoryForecast']; reject(); host['memoryForecast']='recorded-not-enforced'
 actual_mem['membership']='0::/replacement\n'; reject(); actual_mem=copy.deepcopy(mem)
 actual_mem['observedAt']-=31000; reject(); actual_mem=copy.deepcopy(mem)
 actual_mem['pressure']['some']['avg10']='0.01'; reject(); actual_mem=copy.deepcopy(mem)

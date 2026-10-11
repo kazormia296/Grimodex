@@ -877,7 +877,7 @@ function validateTerms(terms, sources, kinds) {
   for (const kind of kinds) if (!terms.some((term) => term.kind === kind)) fail(`explicit ${kind} demand rather than an assumed zero`);
 }
 
-export function assessFullDemand(filesystems, terms) {
+export function assessFullDemand(filesystems, terms, { enforceCapacity = true } = {}) {
   const locations = new Map();
   const devices = new Map();
   for (const fs of filesystems) {
@@ -919,13 +919,15 @@ export function assessFullDemand(filesystems, terms) {
   }
   const report = [];
   for (const [device, fs] of devices) {
-    if (fs.bytes <= fs.demandBytes || fs.inodes <= fs.demandInodes) fail("workload-derived writable capacity/quota including separate root/home pressure");
-    report.push({ device, bytes: String(fs.bytes), inodes: String(fs.inodes), demandBytes: String(fs.demandBytes), demandInodes: String(fs.demandInodes), ...(terms.length ? { allocationUnit: "4096" } : {}) });
+    const fits = fs.bytes > fs.demandBytes && fs.inodes > fs.demandInodes;
+    if (enforceCapacity && !fits) fail("workload-derived writable capacity/quota including separate root/home pressure");
+    report.push({ device, bytes: String(fs.bytes), inodes: String(fs.inodes), demandBytes: String(fs.demandBytes), demandInodes: String(fs.demandInodes), ...(terms.length ? { allocationUnit: "4096" } : {}),
+      ...(enforceCapacity ? {} : { fits }) });
   }
   return report;
 }
 
-export function assessFullMemory(memory, estimate, plan, roots, { privatePending = false } = {}) {
+export function assessFullMemory(memory, estimate, plan, roots, { privatePending = false, enforceDemand = true } = {}) {
   if (!memory || !Number.isSafeInteger(memory.observedAt) || memory.observedAt > Date.now() ||
       Date.now() - memory.observedAt > 30_000 || !Array.isArray(memory.ancestors) || !memory.ancestors.length ||
       memory.membership !== estimate.memoryCgroup) fail("fresh actual same-owner host and all applicable memory cgroup ancestors");
@@ -960,8 +962,10 @@ export function assessFullMemory(memory, estimate, plan, roots, { privatePending
   let demand = validateFullMemoryRisk(estimate, plan);
   for (const term of estimate.nativeMemory) demand += amount(term.bytes);
   for (const term of estimate.residual.filter((term) => term.location === "native-b-root-1")) demand += amount(term.bytes);
-  if (roots.length !== (privatePending ? 0 : 1) || available <= demand) fail("same-host/cgroup remaining memory for all additive private-root and Full process risk (no sibling reservation or swap credit)");
-  return { available: String(available), demand: String(demand), swapFree: String(swapFree), swapTotal: String(swapTotal) };
+  if (roots.length !== (privatePending ? 0 : 1)) fail("same-host/cgroup remaining memory for all additive private-root and Full process risk (no sibling reservation or swap credit)");
+  const fits = available > demand;
+  if (enforceDemand && !fits) fail("same-host/cgroup remaining memory for all additive private-root and Full process risk (no sibling reservation or swap credit)");
+  return { available: String(available), demand: String(demand), swapFree: String(swapFree), swapTotal: String(swapTotal), ...(enforceDemand ? {} : { fits }) };
 }
 
 export function validateFullMemoryRisk(estimate, plan) {
@@ -1355,11 +1359,19 @@ export async function admitFullResources(options) {
     const observations = JSON.parse(await run("host-resources", { command: "sudo", args: ["-n", "python3", "scripts/local-ci-full-filesystems.py", JSON.stringify({ locations, uid, gids, memoryCgroup })], cwd: "." }));
     const { hostTerms, privateTerms } = fullStagedDemand(estimate);
     if (observations.filesystems.find(({ label }) => label === "ordinary-shm")?.mount !== "/dev/shm") fail("actual mounted ordinary host /dev/shm tmpfs, not a path forecast");
-    const report = assessFullDemand(observations.filesystems, hostTerms);
-    const memory = assessFullMemory(observations.memory, { ...estimate, memoryCgroup }, plan, [], { privatePending: true });
+    // The additive whole-Full disk forecast sums every term with no
+    // concurrency/release credit. On this fresh single-job hosted VM a real
+    // shortage can only fail this Full itself (fail-closed), so the forecast and
+    // observed capacity are recorded, not enforced. Geometry/quota/placement
+    // validation, memory/pressure and the sole private-root gate still refuse.
+    const report = assessFullDemand(observations.filesystems, hostTerms, { enforceCapacity: false });
+    // The additive memory ledger is likewise recorded, not enforced, on the
+    // hosted VM: an actual OOM fails this Full. Freshness, same-owner cgroup,
+    // ancestor state and zero current pressure still refuse.
+    const memory = assessFullMemory(observations.memory, { ...estimate, memoryCgroup }, plan, [], { privatePending: true, enforceDemand: false });
     options.signal?.throwIfAborted();
     const decision = { binding, localRunId: options.localRunId, estimateDigest: digest(estimate),
-      phase: "host", state: "host-admitted/private-pending", locations, uid, gids, memoryCgroup,
+      phase: "host", state: "host-admitted/private-pending", diskForecast: "recorded-not-enforced", memoryForecast: "recorded-not-enforced", locations, uid, gids, memoryCgroup,
       report, filesystems: observations.filesystems, memory, privateDemand: { bytes: String(privateTerms.reduce((n, term) => n + amount(term.bytes), 0n)),
         inodes: String(privateTerms.reduce((n, term) => n + amount(term.inodes), 0n)) } };
     await durableJson(path.join(directory, "decision.json"), decision);
@@ -1404,7 +1416,8 @@ export async function readFullHostAdmission(root, { head, base, tree, localRunId
   await validateWorkloadEstimate(estimate, binding, plan, fullPreparation(plan), root);
   if (decision.estimateDigest !== digest(estimate)) fail("unchanged complete risk at private admission");
   const { hostTerms, privateTerms } = fullStagedDemand(estimate);
-  if (digest(assessFullDemand(decision.filesystems, hostTerms)) !== digest(decision.report) ||
+  if (decision.diskForecast !== "recorded-not-enforced" || decision.memoryForecast !== "recorded-not-enforced" ||
+      digest(assessFullDemand(decision.filesystems, hostTerms, { enforceCapacity: false })) !== digest(decision.report) ||
       decision.memory?.demand !== String(validateFullMemoryRisk(estimate, plan) +
         estimate.nativeMemory.reduce((n, term) => n + amount(term.bytes), 0n) +
         estimate.residual.filter(({ location }) => location === "native-b-root-1").reduce((n, term) => n + amount(term.bytes), 0n))) fail("unchanged complete host/filesystem/memory risk at private admission");

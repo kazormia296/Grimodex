@@ -286,12 +286,16 @@ def private_resource_gate(checkout, root, value, host):
         prior = devices.setdefault(entry["device"], available)
         devices[entry["device"]] = [min(a, b) for a, b in zip(prior, available)]
     require(set(devices) == {entry["device"] for entry in host["report"]}, "native B host device set changed")
-    for entry in host["report"]:
-        available = devices[entry["device"]]
-        require(available[0] > int(entry["demandBytes"]) and available[1] > int(entry["demandInodes"]),
-                "native B fresh complete host filesystem/quota risk exceeds headroom")
+    # The host decision records, not enforces, the additive whole-Full disk
+    # forecast on the single-job hosted VM; refresh the same record here.
+    require(host.get("diskForecast") == "recorded-not-enforced", "native B host disk forecast mode unknown")
+    host_disk = [{"device": entry["device"], "fits": devices[entry["device"]][0] > int(entry["demandBytes"]) and
+                  devices[entry["device"]][1] > int(entry["demandInodes"])} for entry in host["report"]]
     memory_facts = functions["inspect_memory"](host["memoryCgroup"])
-    memory = functions["assess_memory"](memory_facts, host["memoryCgroup"], int(host["memory"]["demand"]))
+    # Recorded, not enforced, like the host decision; pressure/freshness/
+    # cgroup identity still refuse inside the helper.
+    require(host.get("memoryForecast") == "recorded-not-enforced", "native B host memory forecast mode unknown")
+    memory = functions["assess_memory"](memory_facts, host["memoryCgroup"], int(host["memory"]["demand"]), enforce=False)
     actual = functions["inspect"]([["native-b-root-1", str(root)]], host["uid"], [value["gid"]])[0]
     require(actual["mount"] == str(root) and actual["allocationUnit"] == "4096" and
             os.stat(root).st_dev != os.stat(root.parent).st_dev and
@@ -308,7 +312,7 @@ def private_resource_gate(checkout, root, value, host):
     memory_evidence["ancestors"] = [{**{key: val for key, val in entry.items() if key != "path"}, "depth": index}
                                     for index, entry in enumerate(memory_facts["ancestors"])]
     return {"state": "private-accepted", "binding": host["binding"], "localRunId": host["localRunId"],
-            "estimateDigest": host["estimateDigest"], "memory": memory,
+            "estimateDigest": host["estimateDigest"], "memory": memory, "hostDisk": host_disk,
             "root": {key: actual[key] for key in ("device", "bytes", "inodes", "allocationUnit", "quotas")},
             "observations": {"filesystems": fresh, "memory": memory_evidence},
             "hostFactsDigest": hashlib.sha256(json.dumps({"filesystems": fresh, "memory": memory_evidence}, sort_keys=True).encode()).hexdigest()}

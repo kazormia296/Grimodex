@@ -2031,6 +2031,13 @@ test("Full demand aggregates aliases, applicable quotas, failure coexistence and
   const fs = [syntheticFilesystem("workspace"), syntheticFilesystem("home"), syntheticFilesystem("root")];
   assert.deepEqual(assessFullDemand(fs, [syntheticTerm(), syntheticTerm("home")])[0], { device: "1", bytes: "1000", inodes: "100", demandBytes: "400", demandInodes: "20", allocationUnit: "4096" });
   assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "600"), syntheticTerm("home", "600")]), /capacity\/quota/u);
+  // Hosted host phase records the additive forecast without refusing on it,
+  // while placement/quota/geometry validation still applies.
+  assert.deepEqual(assessFullDemand(fs, [syntheticTerm("workspace", "600"), syntheticTerm("home", "600")], { enforceCapacity: false })[0],
+    { device: "1", bytes: "1000", inodes: "100", demandBytes: "1200", demandInodes: "20", allocationUnit: "4096", fits: false });
+  assert.equal(assessFullDemand(fs, [syntheticTerm(), syntheticTerm("home")], { enforceCapacity: false })[0].fits, true);
+  assert.throws(() => assessFullDemand(fs, [syntheticTerm("missing")], { enforceCapacity: false }), /effective storage/u);
+  assert.throws(() => assessFullDemand([{ ...fs[0], quotas: [] }], [], { enforceCapacity: false }), /quota/u);
   assert.throws(() => assessFullDemand(fs, [syntheticTerm("workspace", "1", "100")]), /capacity\/quota/u);
   assert.throws(() => assessFullDemand(fs, [syntheticTerm("missing")]), /effective storage/u);
   assert.throws(() => assessFullDemand([{ ...fs[0], quotas: [] }], []), /quota/u);
@@ -2390,6 +2397,16 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   assert.throws(() => assessFullMemory(pressured, memoryEstimate, plan, [], { privatePending: true }), /pressure/u);
   facts.host.MemAvailable = String(memoryDemand);
   assert.throws(() => assessFullMemory(facts, memoryEstimate, plan, [{}]), /remaining memory/u, "exact threshold rejects, not surface-only or host disk headroom");
+  // Hosted host phase records the additive ledger instead of refusing on it;
+  // pressure and the private-root ownership shape still refuse.
+  assert.equal(assessFullMemory(facts, memoryEstimate, plan, [], { privatePending: true, enforceDemand: false }).fits, false);
+  assert.throws(() => assessFullMemory(facts, memoryEstimate, plan, [{}], { privatePending: true, enforceDemand: false }), /remaining memory/u);
+  assert.throws(() => assessFullMemory(pressured, memoryEstimate, plan, [], { privatePending: true, enforceDemand: false }), /pressure/u);
+  // Hosted host phase records the additive ledger instead of refusing on it;
+  // pressure and the private-root ownership shape still refuse.
+  assert.equal(assessFullMemory(facts, memoryEstimate, plan, [], { privatePending: true, enforceDemand: false }).fits, false);
+  assert.throws(() => assessFullMemory(facts, memoryEstimate, plan, [{}], { privatePending: true, enforceDemand: false }), /remaining memory/u);
+  assert.throws(() => assessFullMemory(pressured, memoryEstimate, plan, [], { privatePending: true, enforceDemand: false }), /pressure/u);
   for (const mutate of [
     (value) => { delete value.fullMemoryRisk; },
     (value) => { value.fullMemoryRisk.components.pop(); },

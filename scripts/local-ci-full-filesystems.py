@@ -148,7 +148,7 @@ def inspect_tmpfs(label, resolved, mountpoint, options):
             "quotas": [{"type": kind, "state": "kernel-disabled"} for kind in (0, 1, 2)]}
 
 
-def assess_memory(memory, expected_cgroup, demand):
+def assess_memory(memory, expected_cgroup, demand, enforce=True):
     # Used only inside fixed INITIAL setup before chroot/drop, no child probe.
     if memory["membership"] != expected_cgroup or not 0 <= int(time.time() * 1000) - memory["observedAt"] <= 30_000:
         raise ValueError("fresh same-owner memory acquisition required")
@@ -171,9 +171,12 @@ def assess_memory(memory, expected_cgroup, demand):
                 available = min(available, max(0, int(entry[key]) - current))
         if int(entry["memory.swap.current"]) > swap_total:
             raise ValueError("inconsistent memory ancestor swap")
-    if demand <= 0 or available <= demand:
+    if demand <= 0 or (enforce and available <= demand):
         raise ValueError("complete reviewed Full memory risk exceeds same-owner headroom")
-    return {"available": str(available), "demand": str(demand), "swapFree": str(swap_free), "swapTotal": str(swap_total)}
+    result = {"available": str(available), "demand": str(demand), "swapFree": str(swap_free), "swapTotal": str(swap_total)}
+    if not enforce:
+        result["fits"] = available > demand
+    return result
 
 
 def inspect_memory(expected_cgroup, *, proc=pathlib.Path("/proc"), cgroups=pathlib.Path("/sys/fs/cgroup")):
