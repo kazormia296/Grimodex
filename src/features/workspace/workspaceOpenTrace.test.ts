@@ -4,9 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { EDITOR_INPUT_READY_EVENT } from "@/features/editor/editorInputReady";
 import {
   WORKSPACE_OPEN_TRACE_EVENT,
+  RUNTIME_PERFORMANCE_WORKSPACE_OPEN_TRACE_LIMIT,
   WORKSPACE_OPEN_TRACE_TIMEOUT_MS,
   beginWorkspaceOpenTrace,
   getActiveWorkspaceOpenTrace,
+  readRuntimePerformanceWorkspaceOpenTraces,
   recordActiveWorkspaceLauncherPaint,
   resetWorkspaceOpenTraceForTests,
   type WorkspaceOpenTraceSummary,
@@ -293,6 +295,55 @@ describe("workspaceOpenTrace", () => {
     expect(trace.getSummary()).toBeNull();
     expect(log).not.toHaveBeenCalled();
     expect(getActiveWorkspaceOpenTrace()).toBeNull();
+  });
+
+  it("enables the allowlisted trace for the runtime benchmark capability and retains a bounded copy", () => {
+    for (
+      let run = 0;
+      run < RUNTIME_PERFORMANCE_WORKSPACE_OPEN_TRACE_LIMIT + 2;
+      run += 1
+    ) {
+      const trace = beginWorkspaceOpenTrace("startup-auto", {
+        runtimePerformance: true,
+        now: sequenceClock(100 + run, 110 + run, 130 + run),
+        createRunId: () => `run-perf-${run}`,
+        eventTarget: window,
+        log: vi.fn(),
+      });
+      expect(trace.enabled).toBe(true);
+      trace.startSpan("native-ipc").finish();
+      trace.setTargetScopeKey(`scope-perf-${run}`);
+      dispatchEditorReady(`scope-perf-${run}`);
+    }
+
+    const records = readRuntimePerformanceWorkspaceOpenTraces();
+    expect(records).toHaveLength(
+      RUNTIME_PERFORMANCE_WORKSPACE_OPEN_TRACE_LIMIT,
+    );
+    expect(records.at(-1)).toMatchObject({
+      startedAtMs: 105,
+      summary: {
+        runId: "run-perf-5",
+        result: "ready",
+        spans: [{ name: "native-ipc", startOffsetMs: 10, durationMs: 20 }],
+      },
+    });
+  });
+
+  it("does not retain development-only traces for the runtime benchmark", () => {
+    const trace = beginWorkspaceOpenTrace("startup-auto", {
+      dev: true,
+      runtimePerformance: false,
+      now: sequenceClock(100, 120),
+      createRunId: () => "run-dev-only",
+      eventTarget: window,
+      log: vi.fn(),
+    });
+    trace.setTargetScopeKey("scope-dev-only");
+    dispatchEditorReady("scope-dev-only");
+
+    expect(trace.getSummary()).not.toBeNull();
+    expect(readRuntimePerformanceWorkspaceOpenTraces()).toEqual([]);
   });
 
   it("links a transient launcher paint to startup auto-open", () => {

@@ -3,9 +3,12 @@ import {
   type EditorInputReadyDetail,
 } from "@/features/editor/editorInputReady";
 import { debugLog } from "@/lib/debugLog";
+import { hasRuntimePerformanceCapability } from "@/lib/perfLog";
 
 export const WORKSPACE_OPEN_TRACE_EVENT = "grimodex:workspace-open-trace";
 export const WORKSPACE_OPEN_TRACE_TIMEOUT_MS = 30_000;
+/** Bounded terminal summaries retained only for the runtime benchmark. */
+export const RUNTIME_PERFORMANCE_WORKSPACE_OPEN_TRACE_LIMIT = 4;
 
 export const WORKSPACE_OPEN_TRACE_SOURCES = [
   "startup-auto",
@@ -98,6 +101,22 @@ export interface WorkspaceOpenTraceDependencies {
   createRunId?: () => string;
   eventTarget?: WorkspaceOpenTraceEventTarget | null;
   log?: (summary: WorkspaceOpenTraceSummary) => void;
+  /**
+   * Runtime benchmark capability (owner token issued by the harness). Enables
+   * the same allowlisted trace in production builds and retains a bounded
+   * copy for the harness. Defaults to the preload capability.
+   */
+  runtimePerformance?: boolean;
+}
+
+/**
+ * Retained terminal summary. `startedAtMs` is the renderer performance
+ * timeline origin of the trace so the harness can align spans with
+ * `grimodex.workspaceOpen.start`; it carries no workspace data.
+ */
+export interface RuntimePerformanceWorkspaceOpenTraceRecord {
+  startedAtMs: number;
+  summary: WorkspaceOpenTraceSummary;
 }
 
 interface MutableSpan {
@@ -126,6 +145,8 @@ const NOOP_TRACE: WorkspaceOpenTrace = Object.freeze({
 
 let activeTrace: WorkspaceOpenTraceImpl | null = null;
 let lastLauncherPaintAt: number | null = null;
+const runtimePerformanceTraceRecords: RuntimePerformanceWorkspaceOpenTraceRecord[] =
+  [];
 
 function defaultNow(): number {
   return performance.now();
@@ -203,6 +224,7 @@ class WorkspaceOpenTraceImpl implements WorkspaceOpenTrace {
   private readonly rawNow: () => number;
   private readonly eventTarget: WorkspaceOpenTraceEventTarget | null;
   private readonly log: (summary: WorkspaceOpenTraceSummary) => void;
+  private readonly retainForRuntimePerformance: boolean;
   private readonly spans: MutableSpan[] = [];
   private lastObservedAt: number;
   private targetScopeKey: string | null = null;
@@ -218,12 +240,14 @@ class WorkspaceOpenTraceImpl implements WorkspaceOpenTrace {
       Pick<WorkspaceOpenTraceDependencies, "now" | "createRunId" | "log">
     > & {
       eventTarget: WorkspaceOpenTraceEventTarget | null;
+      retainForRuntimePerformance: boolean;
     },
   ) {
     this.source = source;
     this.rawNow = dependencies.now;
     this.eventTarget = dependencies.eventTarget;
     this.log = dependencies.log;
+    this.retainForRuntimePerformance = dependencies.retainForRuntimePerformance;
     this.startedAt = dependencies.now();
     this.lastObservedAt = this.startedAt;
     this.runId = dependencies.createRunId();
@@ -378,6 +402,20 @@ class WorkspaceOpenTraceImpl implements WorkspaceOpenTrace {
     } catch {
       // Diagnostics must never alter Workspace-open recovery behavior.
     }
+    if (this.retainForRuntimePerformance) {
+      runtimePerformanceTraceRecords.push(
+        Object.freeze({
+          startedAtMs: roundMilliseconds(this.startedAt),
+          summary,
+        }),
+      );
+      while (
+        runtimePerformanceTraceRecords.length >
+        RUNTIME_PERFORMANCE_WORKSPACE_OPEN_TRACE_LIMIT
+      ) {
+        runtimePerformanceTraceRecords.shift();
+      }
+    }
     try {
       this.eventTarget?.dispatchEvent(
         new CustomEvent<WorkspaceOpenTraceSummary>(WORKSPACE_OPEN_TRACE_EVENT, {
@@ -408,8 +446,12 @@ export function beginWorkspaceOpenTrace(
   source: WorkspaceOpenTraceSource,
   dependencies: WorkspaceOpenTraceDependencies = {},
 ): WorkspaceOpenTrace {
+  const runtimePerformance =
+    dependencies.runtimePerformance ?? hasRuntimePerformanceCapability();
   const dev =
-    dependencies.dev ?? (import.meta.env.DEV && typeof window !== "undefined");
+    dependencies.dev ??
+    ((import.meta.env.DEV || runtimePerformance) &&
+      typeof window !== "undefined");
   if (!dev) return NOOP_TRACE;
 
   // A previous open can still be waiting for editor input-ready after its
@@ -424,6 +466,7 @@ export function beginWorkspaceOpenTrace(
         ? defaultEventTarget()
         : dependencies.eventTarget,
     log: dependencies.log ?? defaultLog,
+    retainForRuntimePerformance: runtimePerformance,
   });
   activeTrace = trace;
   return trace;
@@ -446,8 +489,25 @@ export function recordActiveWorkspaceLauncherPaint(
   activeTrace?.recordLauncherFirstPaintAt(paintedAt);
 }
 
+/** Bounded, allowlisted summaries for the runtime benchmark harness only. */
+export function readRuntimePerformanceWorkspaceOpenTraces(): RuntimePerformanceWorkspaceOpenTraceRecord[] {
+  return [...runtimePerformanceTraceRecords];
+}
+
+declare global {
+  interface Window {
+    readRuntimePerformanceWorkspaceOpenTraces?: () => RuntimePerformanceWorkspaceOpenTraceRecord[];
+  }
+}
+
+if (typeof window !== "undefined" && hasRuntimePerformanceCapability()) {
+  window.readRuntimePerformanceWorkspaceOpenTraces =
+    readRuntimePerformanceWorkspaceOpenTraces;
+}
+
 export function resetWorkspaceOpenTraceForTests(): void {
   activeTrace?.dispose();
   activeTrace = null;
   lastLauncherPaintAt = null;
+  runtimePerformanceTraceRecords.length = 0;
 }

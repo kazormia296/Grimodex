@@ -920,3 +920,31 @@ test("focused Map drag requires persisted movement and zero unrelated React node
     );
   }
 });
+
+test("open evidence is recorded alongside metrics without affecting budget verdicts", () => {
+  const baseline = passingMetrics();
+  const withEvidence = {
+    ...passingMetrics(),
+    openEvidence: {
+      schemaVersion: 1,
+      workspaceOpen: { status: "unavailable", reason: "trace-not-exposed" },
+      host: { beforeLaunch: null, afterMeasurement: null },
+    },
+  };
+  const expected = evaluateRuntimePerformance(baseline);
+  const actual = evaluateRuntimePerformance(withEvidence);
+  assert.equal(actual.ok, expected.ok);
+  assert.deepEqual(actual.checks, expected.checks);
+  assert.equal(
+    actual.checks.some((check) => check.name.startsWith("openEvidence")),
+    false,
+  );
+
+  const slow = { ...passingMetrics(), coldStartMs: 5_600 };
+  const slowWithEvidence = { ...slow, openEvidence: withEvidence.openEvidence };
+  assert.equal(evaluateRuntimePerformance(slow).ok, false);
+  assert.deepEqual(
+    evaluateRuntimePerformance(slowWithEvidence).checks,
+    evaluateRuntimePerformance(slow).checks,
+  );
+});

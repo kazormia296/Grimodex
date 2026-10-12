@@ -155,7 +155,7 @@ export function parseLinuxProcIo(contents) {
   };
 }
 
-function parsePressure(contents) {
+export function parsePressure(contents) {
   const result = {};
   for (const line of contents.split(/\r?\n/u)) {
     const [kind, ...values] = line.trim().split(/\s+/u);
