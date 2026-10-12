@@ -50,6 +50,9 @@ export default defineConfig({
       instances: [{ browser: "chromium" }],
     },
     setupFiles: ["./src/test-setup-browser.ts"],
-    include: ["src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx"],
+    include: [
+      "src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx",
+      "src/features/editor/zen/zenWebGlSupport.browser.test.ts",
+    ],
   },
 });
