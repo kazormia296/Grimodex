@@ -1,5 +1,9 @@
 # C-query Linux resource probe — proposal / HOLD
 
+> **2026-10-12 注記（G0。以下の本文は作成時のまま）:** 本文の「Fixed 8 ms」と「2,097,152 concurrent query-attributable bytes」は現行の契約ではない。2 MiB／8 ms は達成不能と判断した（[作業記録](nir1-continuation-2026-10.md) の U2）。C-query の現行の境界は [C-query 資源・lifecycle 境界](nir1-c-query-memory-enforcement-v1-draft.md) の「2026-10-04 現行の実装・受入れ境界」と [post-B §6.2](nir1-post-b-execution-plan.md#62-資源契約) で、100 ms result lease、512／513、100,000 SQL steps を維持し、aggregate physical-memory cap/proof は求めない。本書で確認された Linux 診断の範囲は診断に限られ、受入れ条件や製品の上限の根拠にしない。
+
+> **2026-10-12 注記（K1）:** 本文が「remains unapproved」とする `graph-query-memory-accounting/1` の worker／enforcement 設計は、一度も批准されないまま、2026-10-12 に確認された `nir1-l6-l9-contract-proposal/6#graph-limited-binding` で退役した。同じ方式をまた提案するときは、新しい draftRef で起案する。C-query の現行の固定値と実装上の防御上限は、[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の「graph-limited-binding (proposal/6 confirmed contract)」節を正本とする。
+
 Status: **user-confirmed Linux-only diagnostic boundary, not product enforcement or Graph acceptance**. `draftRef nir1-c-query-linux-resource-probe/3` / `contractId c-query-linux-resource-probe/3`. The user separately approved the v1 fixed-case diagnostic scope, the v2 **data-free benign parent-death supervisor only**, and the v3 **systemd-owned private runtime directory and benign empty-marker cleanup proof**. The v3 storage/owner proposal was explicitly presented before confirmation; implementation and checks within that scope do not require repeated confirmation. Fixed 8 ms, 100,000 VM steps, 512 query records, and 2,097,152 concurrent query-attributable bytes are unchanged. The existing `graph-query-memory-accounting/1` worker/enforcement design remains unapproved. A fixed-case Q513/Q2 worker must not start until benign systemd/owner-death/pipe/cgroup proof and independent code review succeed; no CI dispatch, artifact upload, product reader connection, or Graph activation is authorized.
 
 ## Why a probe, not another SQL change

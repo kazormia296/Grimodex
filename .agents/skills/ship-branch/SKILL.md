@@ -28,7 +28,12 @@ merge のために遅れた branch を安全に同期する作業は含む。新
 push のみでは手順2の PR／merge 用 Quick／Full を開始せず、手順3の remote HEAD 確認で完了する。
 PR 作成までなら、該当する Quick gate と手順4までで完了し、手順5以降の merge 用 gate へ進まない。
 
-## 2. ローカルCI gateを固定する
+## 2. canonical CI gateを固定する
+
+通常の PR／`master` push では `ci.yml` の checks が自動で走るが、canonical Quick／Full receipt の代わりにはならない。
+canonical Quick／Full は `canonical-ci.yml` の `workflow_dispatch`（`profile`、`candidate_base`、`candidate_head`）で hosted 実行でき、
+Full は hosted でだけ実行する。dispatch する ref の HEAD は `candidate_head` と一致していなければならないため、
+hosted の Quick／Full は手順3で push した branch の remote HEAD が `candidate_head` と一致することを確認してから dispatch する。
 
 1. 高リスク作業では、expensive Fullより前に high-effort review と candidate-untouched independent
    acceptance review を収束させ、P2+ findingを解消する。acceptance reviewerはread-onlyで候補を編集しない。
@@ -39,6 +44,8 @@ PR 作成までなら、該当する Quick gate と手順4までで完了し、�
    any fixed capacity/quota threshold（GB、percentage、inode、その他numericを含む）、host-specific cache deletion list、deletion automationは使わない。
    thresholdsはrisk/workload/filesystem stateから導出し、hardcodeしない。このpreflightはread-onlyであり、must not
    auto-delete artifacts, kill other jobs, or rewrite temp paths。competing jobはcoordination stopであり、kill authorityではない。
+   hosted Fullでは、各part jobのFull admissionがfresh VM上でworkspace/build-cache/temp、memory、pressureを観測し、
+   危険な配置やpressureを拒否する。dispatchする側は、同じmerge列で実行中のcanonical Fullがないことをread-onlyで確認してからdispatchする。
 3. PR作成だけがゴールの場合も、PR／releaseの証跡が依頼範囲に含まれ、CIが許可されている場合に限り、focused検証後のcleanなcommit済みHEADで
    候補base／headを一度だけ解決し、同じ値で次を実行してcompleteなQuick receiptを直後に確認する。CI明示除外の作業ではQuickを開始せず、
    候補commitを保持してmerge／release readinessを主張しない。候補変更後は旧receiptを再利用しない。
@@ -51,6 +58,13 @@ PR 作成までなら、該当する Quick gate と手順4までで完了し、�
    pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
    ```
 
+   同じQuickをhostedで行う場合は、手順3でpushしたbranchのremote HEADが`candidate_head`と一致することを確認してから、
+   同じ固定値で次をdispatchする。hosted Quickは同じjobの中で直後のverifyまで実行する。
+
+   ```bash
+   gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=quick -f candidate_base="$candidate_base" -f candidate_head="$candidate_head"
+   ```
+
 4. mergeまでがゴールでCIが許可されている場合、初回Fullの前提として`git fetch origin master`後のcurrent `origin/master`がcandidate HEADの
    祖先であることを確認する。branchが遅れていれば安全に更新してレビュー対象を取り直し、cleanなcommit済みHEADで最初のstageから
    やり直す。この前提を満たした後、shell-localの不変な`candidate_base`／`candidate_head`をそれぞれ
@@ -58,14 +72,21 @@ PR 作成までなら、該当する Quick gate と手順4までで完了し、�
    短縮refや別の記録値へ切り替えない。
 
    mergeまでが依頼されていてもCIが明示的に除外されている場合はFullとmergeを開始せず、merge readinessを主張しない。
-   上記のmerge／CI条件を満たす場合だけ、次の固定値でFullと直後のverifyを実行する。
+   FullはGitHub-hostedの`canonical-ci.yml`でだけ実行する。Full admissionは標準のGitHub-hosted job以外を拒否するため、
+   ローカル実行のFullはmerge証跡にならない。上記のmerge／CI条件を満たす場合だけ、手順3でpushしたbranchのremote HEADが
+   `candidate_head`と一致することを確認し、次の固定値でhosted Fullをdispatchして、Fullと直後のverifyを`full-aggregate`まで実行させる。
 
    ```bash
    candidate_base="$(git rev-parse 'origin/master^{commit}')"
    candidate_head="$(git rev-parse 'HEAD^{commit}')"
-   pnpm ci:local:full -- --base "$candidate_base" --head "$candidate_head"
-   pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"
+   gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$candidate_base" -f candidate_head="$candidate_head"
    ```
+
+   dispatchしたrunの`headSha`が`candidate_head`と一致することを確認する。各part jobは同じtupleで担当partを実行し、
+   `full-aggregate` jobが全partを集約してreceiptを作り、同じtupleで次の2つを実行する。
+   `pnpm ci:local:full -- --aggregate --base "$candidate_base" --head "$candidate_head"`
+   `pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"`
+   全part jobと`full-aggregate`が成功したrunだけをcompleteなFull receiptとする。失敗したrunは失敗jobだけでなく全jobを再実行する。
 
 5. candidate freeze時に、ledgerへ`resolvedBaseSha`、`resolvedHeadSha`、`currentHeadSha`、tree、clean状態、receipt directory、
    completenessのtupleを一度（once）だけ記録する。後続のFull receiptは同じtupleをbind／referenceし、pushとmergeの状態遷移では
@@ -77,7 +98,7 @@ PR 作成までなら、該当する Quick gate と手順4までで完了し、�
    `candidate_base`／`candidate_head`でだけ再verifyし、新baseに束縛されたreceiptとは扱わない。曖昧さまたはcandidate HEADの変更が
    あればreceiptを無効化し、Full-from-stage-1 + verifyをやり直す。`--from`によるpartial runと`--dry-run`は診断用であり、merge証跡にしない。
 7. command、toolchain、依存、host capabilityの不足、失敗、candidate不一致はgate failureとして
-   停止する。hosted PR checksが無いことや`no checks reported`をローカルFullの代替にしない。
+   停止する。通常のPR checks（`ci.yml`）のgreen、hosted PR checksが無いこと、`no checks reported`をcanonical Fullの代替にしない。
 
 ## 3. Branch を push する
 
@@ -111,8 +132,8 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 5. fail、cancelled、timed out があればマージしない。失敗 job とログを特定し、一般のPR CIは`/debug-issue`へ、Electron release workflow／tag build／署名／publishの失敗はversionを変更せず`/debug-release-ci`へ渡す。
 6. review decision、requested changes、未解決 inline thread、保留中の必須 reviewerを確認し、P2+ findingが残っていないことを確認する。
 
-チェックが本当に設定されていない repository では、required check が存在しないことと、
-手順2のcompleteなローカルFull receiptが有効であることを確認してから次へ進む。
+required check が設定されていない場合も、通常 PR checks（`ci.yml`）の結果と、
+手順2のcompleteなhosted Full receipt（同じtupleの`full-aggregate`成功）が有効であることを確認してから次へ進む。
 `no checks reported`だけを根拠にマージしない。
 
 ## 6. Merge 直前に再検証する
@@ -128,8 +149,8 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 - head branch が意図した branch
 - head SHA が push 前に記録してレビューした local SHA と一致
 - mergeable で競合がない
-- 通常pathでは、current fetched baseが`candidate_base`と一致し、candidate head SHAがPR HEADと一致し、初回Fullと同じpinを再利用した
-  `pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"`が成功している。
+- 通常pathでは、current fetched baseが`candidate_base`と一致し、candidate head SHAがPR HEADと一致し、初回Fullと同じpinでdispatchした
+  hosted Full runの`full-aggregate` jobで`pnpm ci:local:verify -- full --base "$candidate_base" --head "$candidate_head"`が成功している。
 - upstream baseがreceipt後に動いたexception pathでは、candidate HEAD／PR diff不変・editorial docs/ADR-only・executable／build／
   dependency／CI／policy／schema／manifest／generated-contractとratified decision／acceptance meaningに変更なしを記録し、旧receiptを
   同じ元の`candidate_base`／`candidate_head`に対して再verifyする。旧receiptを新baseに対する証跡とは扱わず、newer upstream deltaは別に分類する。
@@ -145,7 +166,8 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 1. マージまでがゴールなら、既定で squash merge する。明示されたnon-squash方式は、before mergeにmethod-specific
    actual-base/post-merge verification procedureがdefined and approvedであることを確認する。未定義・未承認ならstopし、
    squash用first-parent ruleを流用しない。このスキルは一般のnon-squash verification logicを追加しない。
-2. 可能なら expected head SHA を指定できる GitHub mutation を使う。`gh` では `--match-head-commit <sha>` を使う。
+2. 可能なら expected head SHA を指定できる GitHub mutation を使う。`gh` では `gh pr merge --squash --match-head-commit "$candidate_head"` のように
+   `--match-head-commit <sha>` を使う。
 3. merge 成功後、PR が `merged` になったことと merge commit SHA を取得する。
 4. `git fetch origin master` を実行し、merge commit が `origin/master` に含まれることを確認する。
 5. squash mergeの場合だけ、実際のsquash merge commitのfirst parent（`<merge-sha>^1`）を`approved_merge_base`と一度だけ比較する。

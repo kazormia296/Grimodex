@@ -1,5 +1,7 @@
 # NIR-1 C: typed authority for a Graph target Scene body (DRAFT)
 
+> **2026-10-12 注記（G0。以下の本文は作成時のまま）:** 本書は superseded である。後継は今後起案する K2（`nir1-c-body-disclosure-proposal/2`）とする。本文は作成時の履歴として保持し、現行の契約・方針・承認の根拠として読まない。2026-09-25/26 の off-master 承認と WIP も採用しない（[作業記録](nir1-continuation-2026-10.md) の U1）。
+
 Status: **threat-model draft; no implementation, activation, or user confirmation requested**
 
 Scope: a body excerpt for a Graph-added target Scene in Related Scenes. This is separate from the query Scene A3 proof and from the confirmed Option B `nir1.entity-relation@1` material contract.

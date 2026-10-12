@@ -1,5 +1,7 @@
 # NIR-1 B-close completion evidence
 
+> **2026-10-12 注記（G0。以下の本文は確認時のまま）:** 本文の「request-local Revision limit (512 records / 2 MiB)」は確認時点の記述である。#610（`13e3f6c6`）で単一 Revision validation の上限は 6 MiB（6,291,456 B）に変わったが、この変更は当時、確認台帳の形式では確認されていなかった。K1（`nir1-l6-l9-contract-proposal/6`）で確認済み（2026-10-12）であり、`512 records`／`6,291,456 B` が正式化された（[作業記録](nir1-continuation-2026-10.md) の §10.1）。本書の B full-set の確定値は変えない。
+
 Status: **B-close implementation and required focused boundary evidence complete**. Parent PR #604 is pinned at
 `ca05ae523e05668c4174c17a1a5fec544765b3c2`; the child branch is
 `codex/nir1-b-close-completion`. Numeric supported capacity was explicitly ratified in this session and passed the release boundary qualification.
@@ -23,6 +25,8 @@ and the three resource units remain unchanged. This confirmation supplies the
 previously pending numbers for the **B full-set unit** only. The request-local
 Revision limit (512 records / 2 MiB) and seed-local query contract are unchanged.
 Runtime constants live in `nir1_capacity.rs`.
+
+> **2026-10-12 注記（K1。上の段落は確認時のまま）:** 上の「Revision limit (512 records / 2 MiB)」と「seed-local query contract are unchanged」は、確認時点の記述として残す。2026-10-12 に確認された `nir1-l6-l9-contract-proposal/6#graph-limited-binding` で、単一 Revision validation の上限は `512 records`／`6,291,456 B`（6 MiB）に正式化され、seed-local query の固定値（per-Revision preflight `2,097,152 B`、parent admission→valid Native result lease `100 ms` など）も proposal/6 に改められた。現行の値は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の確認台帳と proposal/6 の節を正本とする。下の B full-set の確定値は proposal/6 でも変えない。成分が 6 MiB までの Revision で B full-set の上限を超えたときに、typed refusal で安全に失敗することだけを確かめ、容量は再認定しない。下の RSS・heap・一時ファイルの fixture 資格は、成分 2 MiB 未満で測った形状の記録として読み、それより大きい形状の保証とは読まない。
 
 | Dimension | Limit | Enforcement / meaning |
 |---|---:|---|

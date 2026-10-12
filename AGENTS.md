@@ -25,10 +25,15 @@ Electron + React 19 + TypeScript、TipTap、SQLite の小説執筆エディタ�
 再承認を求めない。調査・レビューだけの依頼は read-only とし、既存の無関係な差分を保持する。
 commit、push、merge、公開は依頼範囲に含まれる場合だけ行い、明示された停止点を守る。
 commit は作業ブランチで行い、変更ファイルを明示して stage する。master に直接 commit／push しない。
-#610 の C-query 作業では、worker／所有権／終了処理とその技術的脅威モデルの判断を
-ユーザーが事前委任している。既存の作業記録に具体的な判断と安全境界を残して進め、
-同じ範囲の個別確認を繰り返さない。製品認可の削除、秘密の外部送信、8 ms／2 MiB／Gold 等の
-受入れ条件の黙示変更、指定外の送信先は委任に含まれない。
+NIR-1 の残レーン（C-resource、C-body、C-product、D-final 追補、D-transport、D-dispatch、
+H-store／H-current、DI-1、E）では、worker／owner／終了処理／lifecycle の技術判断と、
+確認済みの actor・防御・受信先・受入れの範囲内での技術的脅威モデルの改訂をユーザーが事前委任している。
+mutation の前に判断と信頼境界をレーンの decisions 文書と PR 本文に残し、判断の ID と記録先を
+[作業記録](docs/plans/nir1-continuation-2026-10.md) に載せる。難しい判断は read-only advisor に諮り、
+同じ範囲の個別確認を繰り返さない。
+委任に含まれないもの: 秘密・データの新しい送信先、保存範囲の拡大、閾値の緩和
+（確認台帳の現行閾値と Gold の緩和・黙示変更）、製品公開、製品認可の削除、新しい契約・authority。
+この委任は NIR-1 の残レーンの外には適用しない。
 
 検証は変更内容とリスクで選ぶ。調査・レビューや通常文書だけの作業で Quick／Full を開始しない。
 AI指示・skills・品質規則は動作契約なので、通常文書と区別して品質ゲートを適用する。

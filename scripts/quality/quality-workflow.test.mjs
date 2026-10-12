@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -101,18 +102,476 @@ function commandBindings(section, command, label) {
   });
 }
 
-function extractGraphProposalSections(executionPlan) {
+// K1 (2026-10-12): proposal/6 was confirmed for `graph-limited-binding` and
+// for the new `nir1-defensive-resource-limits` row. The draft stays
+// byte-identical; its SHA-256 and the exact statements bind the ledger.
+const PROPOSAL6_DRAFT_PATH =
+  "docs/plans/nir1-l6-l9-contract-proposal-6-draft.md";
+const PROPOSAL6_DRAFT_SHA256 =
+  "5528f4e091ca087c0f1e071039c6bcede9d3d7cde1422ac1bfd852ee1d8d6b4b";
+const PROPOSAL6_DRAFT_COMMIT = "ba7ceb46306ec48383a70e52951288ed8c7e960b";
+const PROPOSAL6_GRAPH_STATEMENT =
+  "I confirm draftRef nir1-l6-l9-contract-proposal/6 for contractId graph-limited-binding.";
+const PROPOSAL6_RULE_STATEMENT =
+  "I confirm draftRef nir1-l6-l9-contract-proposal/6 for contractId nir1-defensive-resource-limits.";
+const PROPOSAL6_GRAPH_HEADING =
+  "#### graph-limited-binding (proposal/6 confirmed contract)";
+const PROPOSAL6_RULE_HEADING = "#### nir1-defensive-resource-limits";
+
+function r0ProposalSection(executionPlan) {
   const proposalSection = executionPlan
     .split("### R0 security contract proposal (draft)\n", 2)[1]
     ?.split("\n### R0 lane開始判定と評価manifest", 1)[0];
   assert.ok(proposalSection, "R0 security contract proposal must be present");
-  const graphStart = proposalSection.indexOf("#### graph-limited-binding\n");
-  const graphEnd = proposalSection.indexOf(
-    "\n#### native-generation-receipt",
-    graphStart,
+  return proposalSection;
+}
+
+// A `#### ` section runs to the next `#### ` heading; `##### ` subsections
+// stay inside it.
+function headedSection(markdown, heading) {
+  const start = markdown.indexOf(`${heading}\n`);
+  assert.ok(start >= 0, `${heading} must be present`);
+  const end = markdown.indexOf("\n#### ", start + 1);
+  return markdown.slice(start, end === -1 ? markdown.length : end);
+}
+
+// A top-level `- Label:` bullet keeps its indented sub-bullets and ends at the
+// next top-level bullet or blank line.
+function bulletBody(section, label, description) {
+  const marker = `\n- ${label}:`;
+  const start = section.indexOf(marker);
+  assert.ok(start >= 0, `${description} must define ${label}`);
+  const bodyStart = start + marker.length;
+  const ends = [
+    section.indexOf("\n- ", bodyStart),
+    section.indexOf("\n\n", bodyStart),
+  ].filter((offset) => offset !== -1);
+  return section.slice(
+    bodyStart,
+    ends.length === 0 ? section.length : Math.min(...ends),
   );
+}
+
+function tableRow(section, label, description) {
+  const row = section
+    .split("\n")
+    .find(
+      (line) => line.startsWith("|") && line.split("|")[1]?.trim() === label,
+    );
+  assert.ok(row, `${description} must define ${label}`);
+  return row;
+}
+
+function mutateExecutionPlanSection(executionPlan, heading, mutator) {
+  const start = executionPlan.indexOf(`${heading}\n`);
+  assert.ok(start >= 0, `mutation target ${heading} must be present`);
+  const end = executionPlan.indexOf("\n#### ", start + 1);
+  assert.ok(end > start, `mutation target ${heading} must be bounded`);
+  const section = executionPlan.slice(start, end);
+  const mutated = mutator(section);
+  assert.notEqual(
+    mutated,
+    section,
+    `${heading} mutation must change the bounded section`,
+  );
+  return `${executionPlan.slice(0, start)}${mutated}${executionPlan.slice(end)}`;
+}
+
+function validateProposal6Contract(executionPlan) {
+  const proposalSection = r0ProposalSection(executionPlan);
+  const graph = headedSection(proposalSection, PROPOSAL6_GRAPH_HEADING);
+  const rule = headedSection(proposalSection, PROPOSAL6_RULE_HEADING);
+  assert.ok(
+    proposalSection.indexOf(`${PROPOSAL6_GRAPH_HEADING}\n`) <
+      proposalSection.indexOf(`${PROPOSAL6_RULE_HEADING}\n`),
+    "the proposal/6 rule section must follow the proposal/6 Graph section",
+  );
+  for (const [label, section, statement] of [
+    ["proposal/6 Graph", graph, PROPOSAL6_GRAPH_STATEMENT],
+    ["nir1-defensive-resource-limits", rule, PROPOSAL6_RULE_STATEMENT],
+  ]) {
+    assert.match(
+      section,
+      new RegExp(
+        `^確認: 2026-10-12（JST 23:58受信、Session A）に、exact statement \`${escapeRegExp(statement)}\` で確認された。`,
+        "m",
+      ),
+      `${label} must record its exact confirmation`,
+    );
+    assert.match(
+      section,
+      new RegExp(
+        `^Required confirmation evidence is the exact statement: \`${escapeRegExp(statement)}\` 2026-10-12（JST 23:58受信、Session A）に記録した。draftのSHA-256は \`${PROPOSAL6_DRAFT_SHA256}\``,
+        "m",
+      ),
+      `${label} must keep its required confirmation evidence and draft digest`,
+    );
+    assert.match(
+      section,
+      /\[proposal\/6 draft\]\(nir1-l6-l9-contract-proposal-6-draft\.md\)/,
+      `${label} must link the byte-identical draft`,
+    );
+    assert.match(
+      section,
+      /本節とdraftが食い違うときはdraftに従う/,
+      `${label} must defer to the confirmed draft`,
+    );
+  }
+  assert.ok(
+    graph.includes(PROPOSAL6_DRAFT_COMMIT),
+    "the proposal/6 Graph section must name the confirmed draft commit",
+  );
+
+  const graphBullet = (label) => bulletBody(graph, label, "proposal/6 Graph");
+  const baseline = graphBullet("Baseline (approved; limited)");
+  assert.match(
+    baseline,
+    /`nir1-l6-l9-contract-proposal\/5#graph-limited-binding` の確認時点の本文/,
+  );
+  assert.match(
+    baseline,
+    /6 MiB・100 ms・aggregate capなしの文面は確認されていなかったので、baselineに含めない/,
+    "#610's unconfirmed rewrite must not become the proposal/6 baseline",
+  );
+  assert.match(baseline, /Graphの製品activationは承認されていない/);
+  const delta = graphBullet(
+    "Delta (L6-L9 resource limits; proposal/6 confirmed)",
+  );
+  assert.match(delta, /資源の値と、それに伴う受入れだけを改訂する/);
+  assert.match(
+    delta,
+    /新しいauthority、schema、consumer、persistent adjacencyは追加しない/,
+  );
+  assert.match(
+    delta,
+    /C-queryのper-Revision preflight（`2,097,152 B`）とPackingの入力上限（`2 MiB`）は変えない/,
+  );
+  for (const label of ["Trusted actors", "Untrusted actors"]) {
+    graphBullet(label);
+  }
+  assert.match(
+    graphBullet("Out-of-scope attacks"),
+    /query全体の物理メモリ上限とその証明は求めない/,
+  );
+  const fixedBounds = [
+    "`512 records`／`6,291,456 B`",
+    "`2,097,152 B`",
+    "admission `512`",
+    "batch `16x32`",
+    "SQL `100,000 VM steps`",
+    "cancellation every `1,000` steps",
+    "`100 ms`",
+    "reader／busy wait `0`",
+    "oversized row",
+    "allocation前",
+    "JSON／material processing中",
+  ];
+  for (const label of [
+    "In-scope attacks",
+    "Mandatory defenses",
+    "Acceptance implications",
+  ]) {
+    const body = graphBullet(label);
+    for (const bound of fixedBounds) {
+      assert.ok(
+        body.includes(bound),
+        `proposal/6 Graph ${label} must preserve ${bound}`,
+      );
+    }
+    assert.doesNotMatch(
+      body,
+      /`8ms`/,
+      `proposal/6 Graph ${label} must not restore the retired \`8ms\` query bound`,
+    );
+  }
+  const mandatory = graphBullet("Mandatory defenses");
+  assert.match(
+    mandatory,
+    /固定値の変更（方向を問わない）と実装上の防御上限の緩和は、再確認なしに行わない。proposal\/5の「Threshold changes require reconfirmation」を保持する/,
+    "proposal/6 threshold changes must require reconfirmation",
+  );
+  assert.match(
+    mandatory,
+    /超えたら全体を拒否し、部分Graph・partial generation・部分的なpackを出さない/,
+  );
+  assert.match(
+    mandatory,
+    /query全体の物理メモリ上限とその証明、Native fixed-area packing、B容量の再認定は求めない/,
+  );
+  const acceptance = graphBullet("Acceptance implications");
+  assert.match(
+    acceptance,
+    /Positive:.*Negative:.*Recovery:.*Lane unlocked if confirmed:/s,
+  );
+  for (const [pattern, label] of [
+    [
+      /Revisionの513 recordsと `6,291,457 B` はwriterが保存しない/,
+      "Revision N+1 refusal",
+    ],
+    [
+      /per-Revision preflightが `2,097,153 B` 以上のRevision[^。]*そのquery全体を拒否し、Graphの寄与0でR\+IRに戻る/,
+      "per-Revision preflight N+1 refusal",
+    ],
+    [
+      /Packingの入力の合計が `2 MiB` を超えたら、保存サイズにかかわらず準備全体がtyped refusalになる/,
+      "Packing total-input refusal",
+    ],
+    [/`100 ms` を過ぎた結果/, "late result refusal"],
+    [
+      /固定値の変更や防御上限の緩和を、再確認なしにmergeしない/,
+      "no unconfirmed threshold change",
+    ],
+    [
+      /Graphの製品公開には、A3 \+ B \+ C \+ D2aと公開時の承認がさらに要る/,
+      "product activation stays gated",
+    ],
+  ]) {
+    assert.match(acceptance, pattern, `proposal/6 acceptance: ${label}`);
+  }
+  const acceptanceImpact = graphBullet(
+    "受入れへの影響（下の「非目標と再確認条件」）",
+  );
+  assert.match(
+    acceptanceImpact,
+    /品質閾値: queryの期限は `8ms` から `100 ms` に変わる/,
+  );
+  assert.match(
+    acceptanceImpact,
+    /変えないもの: Gold、P、既存の24件、G-01〜G-08の判定/,
+  );
+
+  const unitsStart = graph.indexOf(
+    "##### Proposal/6 resource units (confirmed fixed values)\n",
+  );
+  const limitsStart = graph.indexOf(
+    "##### Proposal/6 implementation defensive limits\n",
+  );
+  const removalsStart = graph.indexOf("##### Proposal/6 removals\n");
+  assert.ok(
+    unitsStart >= 0 && limitsStart > unitsStart && removalsStart > limitsStart,
+    "proposal/6 resource units, defensive limits and removals must be ordered",
+  );
+  const units = graph.slice(unitsStart, limitsStart);
+  const limits = graph.slice(limitsStart, removalsStart);
+  const removals = graph.slice(removalsStart);
+  assert.match(
+    units,
+    /^固定値の変更は、方向を問わず再確認を要する。/m,
+    "proposal/6 fixed values must require reconfirmation in either direction",
+  );
+  const unitRow = (label) =>
+    tableRow(units, label, "proposal/6 resource units");
+  const revisionRow = unitRow("Entity／Relation Revision bundle");
+  assert.match(
+    revisionRow,
+    /\| proposal\/5と同じ数え方で `512 records`、`6,291,456 B` \|/,
+    "proposal/6 Revision bundle must stay at 512 records / 6,291,456 B",
+  );
+  assert.match(
+    revisionRow,
+    /writerは保存しない。readerは使わない。.*partial generationなし、旧sealedを維持/,
+  );
+  const preflightRow = unitRow("C-query per-Revision preflight");
+  assert.match(
+    preflightRow,
+    /bytesの合計が `2,097,152 B` 以下。JSONの解析より前に検査する/,
+    "proposal/6 per-Revision preflight must stay at 2,097,152 B",
+  );
+  assert.match(
+    preflightRow,
+    /そのquery全体を拒否する。部分Graphを出さず、Graphの寄与は0/,
+  );
+  const queryRow = unitRow("seed-local Graph query");
+  for (const bound of [
+    "read／admission `512`（513件目は拒否",
+    "batch `16x32`",
+    "SQL `100,000 VM steps`",
+    "`1,000` stepsごと",
+    "parent admission→valid Native result lease `100 ms`",
+    "reader／busy wait `0`",
+    "2hop／Entity 12／edge展開 144／Scene 8",
+    "query全体の物理メモリ上限とその証明は求めない",
+  ]) {
+    assert.ok(
+      queryRow.includes(bound),
+      `proposal/6 seed-local query row must keep ${bound}`,
+    );
+  }
+  assert.doesNotMatch(queryRow, /8ms|`2 MiB`/);
+  const buildRow = unitRow("whole-project B Index build");
+  for (const value of [
+    "qualified material `8,192`",
+    "current Revision `1,024`",
+    "scan候補 `2,064`",
+    "Source入力 `16 MiB`",
+    "roster `4 MiB`",
+    "`8,193` 行・`16 MiB`",
+    "SQL `600,000,000` progress counts",
+    "期限 `180 s`",
+  ]) {
+    assert.ok(
+      buildRow.includes(value),
+      `proposal/6 whole-project build must keep the B-close value ${value}`,
+    );
+  }
+  assert.match(buildRow, /容量は再認定しない/);
+  assert.match(
+    buildRow,
+    /typed capacity refusal。partial generationを公開せず、旧sealed generationを残す/,
+  );
+  const packingRow = unitRow("Packing（参考。この行では変えない）");
+  assert.match(packingRow, /`MAX_PACKING_INPUT_BYTES`（`2 MiB`）/);
+  assert.match(packingRow, /保存されたRevisionのbytesでは検査しない/);
+  const limitRow = (label) =>
+    tableRow(limits, label, "proposal/6 implementation defensive limits");
+  for (const [label, value] of [
+    ["C-queryのrequest", "| `8,192 B` |"],
+    ["workerから受け取るframe（NQG1）", "（`FRAME_BYTES`）"],
+    ["query全体の入力と保持見積り（論理会計）", "| それぞれ `6,291,456 B` |"],
+    [
+      "workerの固定allocator",
+      "| query `4,718,592 B`、registration scratch `64 MiB` |",
+    ],
+    ["Native領域", "| `1,572,864 B` |"],
+    ["同時に動くquery", "| process全体で1。使用中なら待たずにunavailable |"],
+    ["startupとcleanup", "| startup `30 s`、cleanup `500 ms`。"],
+  ]) {
+    assert.ok(
+      limitRow(label).includes(value),
+      `proposal/6 implementation defensive limit must keep ${label} at ${value}`,
+    );
+  }
+  assert.match(
+    limits,
+    /これらは現行値のまま維持する。緩める変更（容量を増やす、期限を延ばす、同時に動く数を増やす、上限を外す）は再確認を要する。/,
+    "relaxing an implementation defensive limit must require reconfirmation",
+  );
+  assert.match(
+    limits,
+    /どの容量もquery全体の物理メモリ上限の保証とは読まず、その証明も求めない/,
+  );
+  for (const removal of [
+    /^- query全体のメモリ上限とその証明/m,
+    /^- Native fixed-area packing/m,
+    /^- B容量の再認定/m,
+    /^- `graph-query-memory-accounting\/1`[^\n]*退役させる/m,
+    /^- `8ms` は契約値から外す（U2）/m,
+  ]) {
+    assert.match(removals, removal, "proposal/6 removals must stay recorded");
+  }
+
+  const ruleBullet = (label) =>
+    bulletBody(rule, label, "nir1-defensive-resource-limits");
+  const ruleDelta = ruleBullet(
+    "Delta (L6-L9 resource rule; proposal/6 confirmed)",
+  );
+  assert.match(
+    ruleDelta,
+    /上限ごとの確認を、この規則への適合と記録に置き換える/,
+  );
+  assert.match(
+    ruleDelta,
+    /何を読む・保存する・送るか（authority、保存範囲、送信先、同意、開示）は決めない。それらは各契約で確認する/,
+    "nir1-defensive-resource-limits must not decide authority, storage scope or recipients",
+  );
+  for (const label of [
+    "Baseline (approved; limited)",
+    "Trusted actors",
+    "Untrusted actors",
+    "In-scope attacks",
+    "Out-of-scope attacks",
+    "Mandatory defenses",
+  ]) {
+    ruleBullet(label);
+  }
+  const ruleAcceptance = ruleBullet("Acceptance implications");
+  assert.match(
+    ruleAcceptance,
+    /Positive:.*Negative:.*Recovery:.*Lane unlocked if confirmed: C-body、C-product、H-store／H-current、D-transport/s,
+  );
+  assert.match(
+    ruleAcceptance,
+    /値や実測の記録がない上限と、再確認のない緩和はmergeしない/,
+  );
+  const targetsStart = rule.indexOf("##### 対象と超えたときの扱い\n");
+  const rulesStart = rule.indexOf("##### 規則\n");
+  const exclusionsStart = rule.indexOf("##### 対象外\n");
+  assert.ok(
+    targetsStart >= 0 &&
+      rulesStart > targetsStart &&
+      exclusionsStart > rulesStart,
+    "nir1-defensive-resource-limits targets, rules and exclusions must be ordered",
+  );
+  const targets = rule.slice(targetsStart, rulesStart);
+  const rules = rule.slice(rulesStart, exclusionsStart);
+  const exclusions = rule.slice(exclusionsStart);
+  for (const lane of [
+    "C-body",
+    "C-product",
+    "H-store／H-current",
+    "D-transport",
+  ]) {
+    assert.match(
+      targets,
+      new RegExp(`^\\| [^|\\n]+ \\| ${escapeRegExp(lane)} \\|`, "m"),
+      `nir1-defensive-resource-limits must name the ${lane} target`,
+    );
+  }
+  for (const [index, rulePattern] of [
+    [1, /^1\. 有限: [^\n]*無期限の待ちや無制限の再試行を作らない/m],
+    [2, /^2\. 取消できる: [^\n]*待っている間も取消を観測する/m],
+    [3, /^3\. allocationの前に検査する: [^\n]*checked arithmetic/m],
+    [
+      4,
+      /^4\. fail-safe: [^\n]*打ち切った途中までの結果を完全な結果として使わず、その場で自動に再送・再試行しない/m,
+    ],
+    [
+      5,
+      /^5\. 数値の決め方: integratorが実測から選ぶ。[^\n]*PR本文と作業記録に残す/m,
+    ],
+    [
+      6,
+      /^6\. 厳しくする: 確認なしで行える。ただし、そのlaneの正例の受入れ[^\n]*を保つ範囲に限る/m,
+    ],
+    [7, /^7\. 緩める: mergeの後に[^\n]*ユーザーの再確認を得る/m],
+    [8, /^8\. 物理的な証明は求めない: [^\n]*論理的な会計/m],
+  ]) {
+    assert.match(
+      rules,
+      rulePattern,
+      `nir1-defensive-resource-limits rule ${index} must stay recorded`,
+    );
+  }
+  for (const fixedValue of [
+    "P（B=54.2 ms、D=10.84 ms、上限65.04 ms、T=2144.7 ms）",
+    "Gold",
+    "`graph-limited-binding` の固定値",
+    "Packingの `2 MiB`",
+    "B-closeの数値",
+  ]) {
+    assert.ok(
+      exclusions.includes(fixedValue),
+      `nir1-defensive-resource-limits must exclude ${fixedValue}`,
+    );
+  }
+  assert.match(exclusions, /これらを変えるには、従来どおり個別の確認を要する/);
+  assert.match(exclusions, /確定値を広げる根拠にならない/);
+  return true;
+}
+
+function extractGraphProposalSections(executionPlan) {
+  const proposalSection = r0ProposalSection(executionPlan);
+  // The plain heading holds the proposal/5 text restored to its confirmed
+  // wording (`13e3f6c6^`) as history; proposal/6 follows as its own section.
+  const graphStart = proposalSection.indexOf("#### graph-limited-binding\n");
+  const graphEnd = proposalSection.indexOf("\n#### ", graphStart + 1);
   assert.ok(graphStart >= 0, "bounded Graph proposal must be present");
   assert.ok(graphEnd > graphStart, "bounded Graph proposal must have an end");
+  assert.equal(
+    proposalSection.slice(graphEnd + 1).split("\n", 1)[0],
+    PROPOSAL6_GRAPH_HEADING,
+    "the proposal/6 Graph section must directly follow the proposal/5 history",
+  );
   const proposal = proposalSection.slice(graphStart, graphEnd);
   const lifecycleStart = proposal.indexOf(
     "##### B build owner/lifecycle (proposal/5 confirmed contract)",
@@ -159,7 +618,8 @@ function extractGraphProposalSections(executionPlan) {
     resourceEnd > resourceStart,
     "Graph resource-unit table must have a bounded end",
   );
-  const resourceRows = l7Graph.slice(resourceStart, resourceEnd).split("\n");
+  const resourceSection = l7Graph.slice(resourceStart, resourceEnd);
+  const resourceRows = resourceSection.split("\n");
 
   const l9Start = executionPlan.indexOf("## L9: 受入れと完了判定\n");
   const completionStart = executionPlan.indexOf("\n### 完了区分", l9Start);
@@ -182,6 +642,7 @@ function extractGraphProposalSections(executionPlan) {
     lifecycle,
     outsideValidation,
     acceptanceRows,
+    resourceSection,
     resourceRows,
     graphAcceptanceNarrative: l9Acceptance.slice(l9GraphAcceptanceStart),
   };
@@ -193,9 +654,23 @@ function validateGraphProposalContract(executionPlan) {
     lifecycle,
     outsideValidation,
     acceptanceRows,
+    resourceSection,
     resourceRows,
     graphAcceptanceNarrative,
   } = extractGraphProposalSections(executionPlan);
+  // K1 (2026-10-12): the proposal/5 section and the L7 resource-unit table are
+  // the confirmed `13e3f6c6^` wording kept as history; proposal/6 replaces
+  // their resource values. #610's unconfirmed rewrite must not come back.
+  assert.match(
+    proposal,
+    /^履歴（2026-10-12、K1）: この節（下の「Required confirmation evidence」の文まで）は、`nir1-l6-l9-contract-proposal\/5#graph-limited-binding` の確認時点（`13e3f6c6\^`）の文面に戻した履歴である。[^\n]*「graph-limited-binding \(proposal\/6 confirmed contract\)」の節が置き換える。[^\n]*現行のconfirmedRefは `nir1-l6-l9-contract-proposal\/6#graph-limited-binding`。$/m,
+    "the proposal/5 section must be marked as restored history",
+  );
+  assert.match(
+    resourceSection,
+    /^履歴（2026-10-12、K1）: 上表はproposal\/5の確認時点（`13e3f6c6\^`）の文面に戻した履歴で、Revision bundleの `2 MiB` とseed-local queryの `2 MiB`／Graph `8ms` は現行の値ではない。[^\n]*「graph-limited-binding \(proposal\/6 confirmed contract\)」節のresource unit表[^\n]*を正本とする。/m,
+    "the L7 resource-unit table must be marked as restored history",
+  );
   const resourceRow = (label) => {
     const row = resourceRows.find(
       (line) => line.startsWith("|") && line.split("|")[1]?.trim() === label,
@@ -204,10 +679,15 @@ function validateGraphProposalContract(executionPlan) {
     return row;
   };
   const revisionResourceRow = resourceRow("Entity／Relation Revision bundle");
-  assert.match(revisionResourceRow, /512 records.*6 MiB.*validation contract/);
+  assert.match(revisionResourceRow, /512 records.*2 MiB.*validation contract/);
   assert.doesNotMatch(
     revisionResourceRow,
     /whole-project|query totals|deadline/i,
+  );
+  assert.doesNotMatch(
+    revisionResourceRow,
+    /6 MiB|6,291,456/,
+    "the historical Revision row keeps the confirmed proposal/5 wording",
   );
   const queryResourceRow = resourceRow("seed-local Graph query");
   for (const queryBound of [
@@ -215,14 +695,17 @@ function validateGraphProposalContract(executionPlan) {
     "batch `16x32`",
     "SQL `100,000 VM steps`",
     "`1,000` steps",
-    "Graph `100ms`",
+    "`2 MiB`",
+    "Graph `8ms`",
     "reader／busy wait `0`",
   ]) {
     assert.match(queryResourceRow, new RegExp(escapeRegExp(queryBound)));
   }
-  assert.match(queryResourceRow, /input\/frame\/fixed-buffer limits/);
-  assert.match(queryResourceRow, /aggregate physical-memory cap\/proofなし/);
-  assert.doesNotMatch(queryResourceRow, /6 MiB|4\.5 MiB|1\.5 MiB/);
+  assert.doesNotMatch(
+    queryResourceRow,
+    /100\s?ms|6 MiB|4\.5 MiB|1\.5 MiB|aggregate physical-memory/,
+    "the historical query row keeps the confirmed proposal/5 wording",
+  );
   const buildResourceRow = resourceRow("whole-project B Index build");
   assert.match(
     buildResourceRow,
@@ -243,7 +726,7 @@ function validateGraphProposalContract(executionPlan) {
   );
   assert.doesNotMatch(
     buildResourceRow,
-    /(?:candidate count|compact roster count|cumulative bytes|cumulative SQL)[^|]*(?:512|100,000|6 MiB|100ms|deadline\s*[:=]|\d+ms)/i,
+    /(?:candidate count|compact roster count|cumulative bytes|cumulative SQL)[^|]*(?:512|100,000|2 MiB|8ms|deadline\s*[:=]|\d+ms)/i,
     "whole-project row must not impose a numeric build cap or deadline",
   );
   assert.doesNotMatch(
@@ -412,7 +895,7 @@ function validateGraphProposalContract(executionPlan) {
   }
   assert.match(
     proposal,
-    /supported work size\/build memory\/SQL\/deadlineはその結果から後で選ぶ/,
+    /supported work size／build memory／SQL／deadlineはその結果から後で選ぶ/,
     "whole-project capacity values remain unratified",
   );
   assert.match(
@@ -776,6 +1259,44 @@ test("validation scope preserves instruction gates and conditional CI without ro
   assert.match(agents, /承認済み.*可逆.*修正・検証.*再承認を求めない/s);
   assert.match(agents, /調査・レビューだけ.*read-only/s);
   assert.match(agents, /commit、push、merge、公開.*依頼範囲/s);
+
+  // U3 (2026-10-12): the entrypoint mirrors the bounded NIR-1 delegation.
+  const scope = normalizeSection(
+    sectionFromHeading(agents, "## 作業範囲と完了"),
+  );
+  assert.match(
+    scope,
+    /NIR-1 の残レーン（C-resource、C-body、C-product、D-final 追補、D-transport、D-dispatch、 ?H-store／H-current、DI-1、E）/,
+  );
+  assert.match(
+    scope,
+    /worker／owner／終了処理／lifecycle の技術判断と、 ?確認済みの actor・防御・受信先・受入れの範囲内での技術的脅威モデルの改訂/,
+  );
+  for (const exclusion of [
+    "秘密・データの新しい送信先",
+    "保存範囲の拡大",
+    "閾値の緩和",
+    "確認台帳の現行閾値と Gold の緩和・黙示変更",
+    "製品公開",
+    "製品認可の削除",
+    "新しい契約・authority",
+  ]) {
+    assert.ok(
+      scope.includes(exclusion),
+      `AGENTS.md delegation exclusion: ${exclusion}`,
+    );
+  }
+  // Same record structure as GDX-PRECHECK-001 and the work record's §3.2.
+  assert.match(
+    scope,
+    /mutation の前に判断と信頼境界をレーンの decisions 文書と PR 本文に残し、判断の ID と記録先を ?\[作業記録\]\(docs\/plans\/nir1-continuation-2026-10\.md\) に載せる/,
+  );
+  assert.match(scope, /この委任は NIR-1 の残レーンの外には適用しない/);
+  assert.doesNotMatch(scope, /8 ms|2 MiB|#610 の C-query 作業では/);
+  await assertLocalMarkdownLink(
+    "AGENTS.md",
+    "docs/plans/nir1-continuation-2026-10.md",
+  );
 });
 
 test("agent operation contracts keep candidate evidence and bounded identity checks aligned", async () => {
@@ -827,11 +1348,48 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   );
   assert.match(
     trace,
-    /Normal PR and branch pushes do not start hosted GitHub Actions runners/i,
+    /Pull requests.*`master` pushes.*nightly schedule run the ordinary `ci\.yml` checks automatically/i,
+  );
+  assert.doesNotMatch(
+    trace,
+    /do not start hosted GitHub Actions runners/i,
+    "GDX-TRACE-001 must describe the automatic ordinary CI added by #627",
+  );
+  assert.match(
+    trace,
+    /Ordinary checks are not a canonical Quick\/Full receipt/i,
   );
   assert.match(
     trace,
     /absence of hosted PR checks is not evidence of a passing gate/i,
+  );
+  assert.match(
+    trace,
+    /Canonical Quick and Full run as a hosted `canonical-ci\.yml` `workflow_dispatch` with `profile`, `candidate_base`, and `candidate_head`; the dispatched ref's head must equal `candidate_head`/i,
+  );
+  assert.match(
+    trace,
+    /hosted Quick runs its immediate verify in the same job/i,
+  );
+  assert.match(
+    trace,
+    /`full-aggregate` job, which assembles the single receipt and runs the immediate verify with the same tuple; a re-run re-runs all jobs, never only failed ones/i,
+  );
+  assert.match(
+    trace,
+    /Full admission refuses a local `pnpm ci:local:full` outside a standard GitHub-hosted job, so a local Full is never merge evidence/i,
+  );
+  assert.match(
+    trace,
+    /hosted Full, Full admission observes.*fresh part VM.*no other canonical Full for the same merge queue is in progress/i,
+  );
+  assert.match(
+    trace,
+    /squash merge through `gh` uses `gh pr merge --squash --match-head-commit` with the candidate head/i,
+  );
+  assert.match(
+    trace,
+    /Immediately before merge, fetch `origin\/master` and confirm the current base equals the recorded `approved_merge_base`/i,
   );
   assert.match(
     trace,
@@ -986,7 +1544,7 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   const ship = await read(".agents/skills/ship-branch/SKILL.md");
   const shipCiRawSection = sectionFromHeading(
     ship,
-    "## 2. ローカルCI gateを固定する",
+    "## 2. canonical CI gateを固定する",
   );
   const shipCiSection = normalizeSection(shipCiRawSection);
   const shipMergePrecheckRawSection = sectionFromHeading(
@@ -1131,6 +1689,55 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   assert.match(policySection, /never silently substitute/i);
   assert.match(policySection, /not blanket.*all repositories or logs/i);
 
+  // U3 (2026-10-12): the technical delegation covers only the remaining NIR-1
+  // lanes, keeps the six exclusions, and refers to the confirmation ledger
+  // instead of restating retired 8 ms / 2 MiB values.
+  assert.match(
+    policySection,
+    /remaining NIR-1 lanes \(C-resource, C-body, C-product, the D-final addendum, D-transport, D-dispatch, H-store\/H-current, DI-1 and E\)/,
+  );
+  assert.match(
+    policySection,
+    /delegated technical decisions on worker, owner, termination and lifecycle, and technical threat-model revisions within the already confirmed actors, defenses, recipients and acceptance/i,
+  );
+  // The decision itself lives in the lane's decision record and PR body; the
+  // work record only indexes it (same structure as the work record's §3.2).
+  assert.match(
+    policySection,
+    /records each decision and its trust boundary in the lane's decision record and the PR body, and indexes the decision ID and record location in the \[NIR-1 work record\]\(\.\.\/\.\.\/docs\/plans\/nir1-continuation-2026-10\.md\)/,
+  );
+  await assertLocalMarkdownLink(
+    "policies/quality/iron-laws.md",
+    "docs/plans/nir1-continuation-2026-10.md",
+  );
+  assert.match(
+    policySection,
+    /hard decision, obtain read-only advisor input and decide explicitly/i,
+  );
+  assert.match(
+    policySection,
+    /delegated technical decision, not a claim of individual user approval/i,
+  );
+  for (const exclusion of [
+    /New recipients of secrets or data/,
+    /expanded storage scope/,
+    /relaxed thresholds \(including any relaxation or silent change of the current confirmation-ledger thresholds and Gold\)/,
+    /product publication/,
+    /deleting product authorization/,
+    /new contracts or authorities fall outside this delegation and still fail the precheck/,
+  ]) {
+    assertPolicyContract("NIR-1 delegation exclusion", exclusion);
+  }
+  assert.match(
+    policySection,
+    /delegation does not apply outside the remaining NIR-1 lanes/i,
+  );
+  assert.doesNotMatch(
+    policySection,
+    /8 ms|2 MiB|PR #610's C-query worker|Astra Max/,
+    "the delegation must cite the confirmation ledger, not retired #610-only values",
+  );
+
   for (const phrase of [
     /acceptance evidence.*directly candidate-bound.*verified parent receipt.*candidate-bound/i,
     /metrics or artifacts.*independently.*parent receipt.*direct.*candidate identity.*commit\/tree\/run.*artifact digest/i,
@@ -1223,6 +1830,43 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
     );
   }
   assert.match(shipCiSection, /push.*merge.*expected-head/i);
+  // #627 / #610 reality: ordinary ci.yml checks are automatic, and the
+  // canonical Full is a hosted canonical-ci.yml dispatch of the same tuple.
+  assert.match(
+    shipCiSection,
+    /通常の PR／`master` push では `ci\.yml` の checks が自動で走るが、canonical Quick／Full receipt の代わりにはならない/,
+  );
+  assert.match(
+    shipCiSection,
+    /gh workflow run canonical-ci\.yml --ref "\$\(git branch --show-current\)" -f profile=full -f candidate_base="\$candidate_base" -f candidate_head="\$candidate_head"/,
+  );
+  assert.match(
+    shipCiSection,
+    /Full admissionは標準のGitHub-hosted job以外を拒否するため、 ?ローカル実行のFullはmerge証跡にならない/,
+  );
+  assert.match(
+    shipCiSection,
+    /全part jobと`full-aggregate`が成功したrunだけをcompleteなFull receiptとする。失敗したrunは失敗jobだけでなく全jobを再実行する/,
+  );
+  assert.doesNotMatch(
+    shipCiRawSection,
+    /^\s*pnpm ci:local:full -- --base/m,
+    "ship-branch must not run a local Full that Full admission refuses",
+  );
+  for (const binding of commandBindings(
+    shipCiRawSection,
+    "pnpm ci:local:full",
+    "Full aggregate",
+  )) {
+    assert.deepEqual(binding, {
+      base: '"$candidate_base"',
+      head: '"$candidate_head"',
+    });
+  }
+  assert.match(
+    shipCiRawSection,
+    /pnpm ci:local:full -- --aggregate --base "\$candidate_base"/,
+  );
   assert.doesNotMatch(shipCiSection, /patch.?digest/i);
   assert.match(
     shipMergeSection,
@@ -1379,6 +2023,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     "caller-profile-egress",
     "typed-revision-material",
     "graph-limited-binding",
+    "nir1-defensive-resource-limits",
     "native-generation-receipt",
     "history-reauthorization",
   ];
@@ -1430,17 +2075,25 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
 
   const proposal3Ref = "nir1-l6-l9-contract-proposal/3";
   const typedDraftRef = "nir1-l6-l9-contract-proposal/4";
-  const graphDraftRef = "nir1-l6-l9-contract-proposal/5";
+  // K1 (2026-10-12): the Graph row moved from proposal/5 to proposal/6, and
+  // proposal/6 added the common resource rule as a seventh row.
+  const graphHistoryRef = "nir1-l6-l9-contract-proposal/5";
+  const proposal6Ref = "nir1-l6-l9-contract-proposal/6";
+  const proposal6ContractIds = [
+    "graph-limited-binding",
+    "nir1-defensive-resource-limits",
+  ];
   const confirmedContractIds = [
     "scope-storage-authority",
     "caller-profile-egress",
     "typed-revision-material",
     "graph-limited-binding",
+    "nir1-defensive-resource-limits",
     "native-generation-receipt",
     "history-reauthorization",
   ];
   const confirmedRefFor = (contractId) =>
-    `${contractId === "typed-revision-material" ? typedDraftRef : contractId === "graph-limited-binding" ? graphDraftRef : proposal3Ref}#${contractId}`;
+    `${contractId === "typed-revision-material" ? typedDraftRef : proposal6ContractIds.includes(contractId) ? proposal6Ref : proposal3Ref}#${contractId}`;
   const ledgerSection = executionPlan
     .split("### 契約別の確認台帳\n", 2)[1]
     ?.split("\n### R0 security contract proposal (draft)", 1)[0];
@@ -1459,24 +2112,97 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     const confirmedRef = cells[2].replaceAll("`", "");
     if (confirmedContractIds.includes(contractId)) {
       assert.equal(confirmedRef, confirmedRefFor(contractId));
-      if (contractId === "graph-limited-binding") {
-        assert.equal(draftRef, graphDraftRef);
-        assert.match(
-          cells[3],
-          /proposal\/5 confirmed scope.*(?:three resource unit|三つのresource unit).*finalized P2 boundaries/,
-        );
+      if (proposal6ContractIds.includes(contractId)) {
+        assert.equal(draftRef, proposal6Ref);
+        // Each proposal/6 row carries its own verbatim statement, the
+        // confirmation date and the digest of the byte-identical draft.
+        const statement =
+          contractId === "graph-limited-binding"
+            ? PROPOSAL6_GRAPH_STATEMENT
+            : PROPOSAL6_RULE_STATEMENT;
+        for (const evidence of [
+          `\`confirmedRef=${confirmedRefFor(contractId)}\``,
+          `exact statement: \`${statement}\``,
+          "confirmed 2026-10-12 (Session A, received 23:58 JST)",
+          `draft \`${PROPOSAL6_DRAFT_PATH}\` at commit \`${PROPOSAL6_DRAFT_COMMIT}\`, SHA-256 \`${PROPOSAL6_DRAFT_SHA256}\``,
+          "this independently ratifies only this row",
+        ]) {
+          assert.ok(
+            cells[8].includes(evidence),
+            `${contractId} unblockingEvidence must record ${evidence}`,
+          );
+        }
         assert.match(
           cells[4],
-          /none.*proposal\/5 is explicitly confirmed.*B full-set numbers additionally ratified on 2026-09-22.*product activation is not ratified/,
+          /^none — proposal\/6 is explicitly confirmed;.*product activation is not ratified$/,
         );
+      }
+      if (contractId === "graph-limited-binding") {
+        assert.match(
+          cells[3],
+          /^proposal\/6 confirmed scope: proposal\/5の資源の値と受入れだけを改訂し、proposal\/5のその他の条項（三つのresource unit、whole-project build lifecycle、measurement／acceptance split、finalized P2 boundaries）とproposal\/3のGraph binding／query protectionsを保持する。/,
+        );
+        for (const fixedValue of [
+          "Revision `512 records`／`6,291,456 B`",
+          "C-query per-Revision preflight `2,097,152 B`",
+          "read／admission `512`",
+          "batch `16x32`",
+          "SQL `100,000 VM steps`",
+          "parent admission→valid Native result lease `100 ms`",
+          "reader／busy wait `0`",
+          "2hop／12／144／8",
+        ]) {
+          assert.ok(
+            cells[3].includes(fixedValue),
+            `graph-limited-binding confirmedScope must record ${fixedValue}`,
+          );
+        }
+        assert.match(
+          cells[3],
+          /query全体の物理メモリ上限とその証明、Native fixed-area packing、B容量の再認定は求めない/,
+        );
+        assert.doesNotMatch(cells[3], /`8ms`|Graph `100ms`/);
+        assert.match(
+          cells[4],
+          /B full-set numbers ratified on 2026-09-22 stay unchanged.*implementation defensive limits stay at their current values and relaxing them requires reconfirmation/,
+        );
+        assert.equal(cells[5], "B、C");
         assert.equal(cells[6], "b-close-complete");
         assert.match(
           cells[7],
-          /exact confirmation is recorded.*B implementation and required focused evidence are complete.*C remains gated.*product activation/,
+          /exact confirmation is recorded.*B implementation and required focused evidence are complete.*C-resource acceptance remains HOLD until CR-REC binds the CQ-1〜3 evidence and independent acceptance.*C remains gated.*product activation/,
+        );
+        assert.ok(
+          cells[8].includes("the proposal/5 record above is history"),
+          "the proposal/5 confirmation must stay recorded as history",
+        );
+        assert.doesNotMatch(
+          cells[8],
+          /contract-proposal\/5 for contractId|confirmedRef=nir1-l6-l9-contract-proposal\/5/,
+          "the current Graph row must not cite proposal/5 as its confirmation",
+        );
+      } else if (contractId === "nir1-defensive-resource-limits") {
+        assert.match(
+          cells[3],
+          /^proposal\/6 scope only: NIR-1の残レーンで今後追加する資源の上限（どれだけ読む・待つ・保持するか）に共通の規則1〜8/,
         );
         assert.match(
-          cells[8],
-          /I confirm draftRef nir1-l6-l9-contract-proposal\/5 for contractId graph-limited-binding\./,
+          cells[3],
+          /何を読む・保存する・送るか（authority、保存範囲、送信先、同意、開示）は決めない/,
+          "the common rule must not decide authority, storage scope or recipients",
+        );
+        assert.match(
+          cells[4],
+          /existing fixed values \(P, Gold, the `graph-limited-binding` fixed values, Packing `2 MiB`, B-close numbers\) are outside this rule and still need individual confirmation to change/,
+        );
+        assert.equal(
+          cells[5],
+          "C-body、C-product、H-store／H-current、D-transport",
+        );
+        assert.equal(cells[6], "rule-effective");
+        assert.match(
+          cells[7],
+          /each affected lane remains gated by its own contracts \(K2〜K5 are not confirmed\).*each new limit needs boundary tests and a recorded value／measurement in the PR body and the work record/,
         );
       } else if (contractId === "typed-revision-material") {
         assert.equal(draftRef, typedDraftRef);
@@ -1505,22 +2231,20 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       }
       if (
         contractId !== "typed-revision-material" &&
-        contractId !== "graph-limited-binding"
+        !proposal6ContractIds.includes(contractId)
       ) {
         assert.match(cells[7], /explicit user confirmation recorded/);
       }
-      if (contractId !== "graph-limited-binding") {
-        assert.match(
-          cells[8],
-          new RegExp(escapeRegExp(confirmedRefFor(contractId))),
-        );
-      }
+      assert.match(
+        cells[8],
+        new RegExp(escapeRegExp(confirmedRefFor(contractId))),
+      );
     } else {
       assert.fail(`${contractId} should be explicitly confirmed`);
     }
     return row;
   });
-  assert.equal(ledgerRows.length, 6);
+  assert.equal(ledgerRows.length, 7);
   assert.equal(
     ledgerRows.filter((row) => row.includes("ready-after-R0-merge")).length,
     5,
@@ -1530,6 +2254,65 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     ledgerRows.filter((row) => row.includes("b-close-complete")).length,
     1,
     "the graph row records B-close completion without activating Graph consumers",
+  );
+  assert.equal(
+    ledgerRows.filter((row) => row.includes("| rule-effective |")).length,
+    1,
+    "only the common resource rule is effective as a rule without a lane of its own",
+  );
+  // The proposal/5 confirmation stays in the ledger narrative as history.
+  for (const historyRecord of [
+    `\`confirmedRef=${graphHistoryRef}#graph-limited-binding\``,
+    "exact statement: `I confirm draftRef nir1-l6-l9-contract-proposal/5 for contractId graph-limited-binding.`",
+    "は履歴としてここに残す",
+  ]) {
+    assert.ok(
+      ledgerSection.includes(historyRecord),
+      `the ledger must keep the proposal/5 record as history: ${historyRecord}`,
+    );
+  }
+  assert.match(
+    ledgerSection,
+    /^2026-10-12補足（K1、proposal\/6）: `graph-limited-binding` の行を、proposal\/5からproposal\/6へ更新し、`nir1-defensive-resource-limits` の行を加えた。どちらも2026-10-12（JST 23:58受信、Session A）に、contractIdごとのユーザーのexact statementで確認された。/m,
+  );
+  assert.ok(
+    ledgerSection.includes(
+      `byte同一で取り込んだ [proposal/6 draft](nir1-l6-l9-contract-proposal-6-draft.md) のSHA-256は \`${PROPOSAL6_DRAFT_SHA256}\``,
+    ),
+    "the ledger must bind the byte-identical proposal/6 draft digest",
+  );
+  assert.match(
+    ledgerSection,
+    /`nir1-l6-l9-contract-proposal\/6` の `graph-limited-binding` row（proposal\/5の資源の値と受入れの改訂）と、新しい `nir1-defensive-resource-limits` rowも、ユーザーのexact statementにより `draftRef#contractId` の形式で明示確認済みとして記録する。proposal\/6の確認は固定値、削除する要件、今後の上限に共通の規則を契約化するが、Graphの製品公開、local送信、新しいauthority・保存先・送信先を許可しない。/,
+  );
+  // The confirmed draft is imported byte-identically; its "Status: draft"
+  // line stays and the ledger, not the draft, carries the confirmation.
+  const proposal6Draft = await readFile(
+    path.join(repoRoot, PROPOSAL6_DRAFT_PATH),
+  );
+  assert.equal(
+    createHash("sha256").update(proposal6Draft).digest("hex"),
+    PROPOSAL6_DRAFT_SHA256,
+    "the confirmed proposal/6 draft must stay byte-identical",
+  );
+  const proposal6DraftText = proposal6Draft.toString("utf8");
+  assert.match(
+    proposal6DraftText,
+    /^Status: draft／未確認。確認後はこの bytes の SHA-256 を台帳に記録し、本文は編集しない$/m,
+  );
+  for (const statement of [
+    PROPOSAL6_GRAPH_STATEMENT,
+    PROPOSAL6_RULE_STATEMENT,
+  ]) {
+    assert.match(
+      proposal6DraftText,
+      new RegExp(`^- ${escapeRegExp(statement)}$`, "m"),
+      `the confirmed draft must carry the statement: ${statement}`,
+    );
+  }
+  await assertLocalMarkdownLink(
+    "docs/plans/nir1-l6-l9-execution-plan.md",
+    PROPOSAL6_DRAFT_PATH,
   );
   assert.match(
     executionPlan,
@@ -1561,6 +2344,10 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     /Confirming one row does not confirm its dependencies/i,
     /user-selected Option B family is concrete.*independently ratified.*typed-revision-material.*nir1-l6-l9-contract-proposal\/4/is,
     /proposal\/5 graph capacity delta requires the separate exact statement.*nir1-l6-l9-contract-proposal\/5.*graph-limited-binding/is,
+    /The proposal\/6 resource delta and the new common resource rule were each confirmed on 2026-10-12 by a separate exact statement, recorded here: `I confirm draftRef nir1-l6-l9-contract-proposal\/6 for contractId graph-limited-binding\.` and `I confirm draftRef nir1-l6-l9-contract-proposal\/6 for contractId nir1-defensive-resource-limits\.`/,
+    /The first confirms only the proposal\/6 resource values, removals and acceptance changes while preserving the other proposal\/5 clauses and the proposal\/3 Graph protections; the proposal\/5 statement above is kept as history/,
+    /The second confirms only the common rule for limits that the remaining lanes add later and changes no existing fixed value/,
+    /Both bind the byte-identical draft `docs\/plans\/nir1-l6-l9-contract-proposal-6-draft\.md` with SHA-256 `5528f4e091ca087c0f1e071039c6bcede9d3d7cde1422ac1bfd852ee1d8d6b4b`; neither activates Graph or local send, nor adds an authority, a storage scope or a recipient/,
     /confirmation is limited to the Entity／Relation-only family.*never widens to a generic consumer／authority/is,
   ]) {
     assert.match(proposalSection, confirmationRule);
@@ -1569,10 +2356,16 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     proposalSection,
     /I confirm draftRef nir1-l6-l9-contract-proposal\/4 for contractId typed-revision-material\./,
   );
-  assert.match(
-    proposalSection,
-    /I confirm draftRef nir1-l6-l9-contract-proposal\/5 for contractId graph-limited-binding\./,
-  );
+  for (const statement of [
+    "I confirm draftRef nir1-l6-l9-contract-proposal/5 for contractId graph-limited-binding.",
+    PROPOSAL6_GRAPH_STATEMENT,
+    PROPOSAL6_RULE_STATEMENT,
+  ]) {
+    assert.ok(
+      proposalSection.includes(statement),
+      `the R0 proposal must keep the verbatim statement: ${statement}`,
+    );
+  }
   assert.match(
     proposalSection,
     /runtime(?:／consumer)? activation[^\n]*(?:追加しない|未完了)/i,
@@ -1645,12 +2438,15 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       );
     }
     if (contractId === "graph-limited-binding") {
+      // K1 (2026-10-12): this plain section is the proposal/5 text restored
+      // to its confirmed `13e3f6c6^` wording. Its bounds are history; the
+      // current fixed values live in the proposal/6 section validated below.
       const graphBounds = [
         "admission `512`",
         "batch `16x32`",
         "SQL `100,000 VM steps`",
         "cancellation every `1,000` steps",
-        "Graph `100ms`",
+        "Graph `8ms`",
         "reader／busy wait `0`",
         "oversized row",
         "allocation前",
@@ -1680,34 +2476,28 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
             `graph binding ${graphSection} must preserve ${bound}`,
           );
         }
+        if (graphSection !== "In-scope attacks") {
+          assert.match(
+            sectionBody,
+            /`2 MiB`/,
+            `proposal/5 history ${graphSection} must keep the confirmed query \`2 MiB\``,
+          );
+        }
       }
+      assert.doesNotMatch(
+        proposal,
+        /6 MiB|6,291,456|100\s?ms|aggregate physical-memory/,
+        "the proposal/5 history must not carry #610's unconfirmed rewrite",
+      );
       assert.match(proposal, /Threshold changes require reconfirmation/);
       validateGraphProposalContract(executionPlan);
-      const mutateBoundedGraphProposal = (mutator) => {
-        const graphStart = executionPlan.indexOf(
-          "#### graph-limited-binding\n",
+      validateProposal6Contract(executionPlan);
+      const mutateBoundedGraphProposal = (mutator) =>
+        mutateExecutionPlanSection(
+          executionPlan,
+          "#### graph-limited-binding",
+          mutator,
         );
-        const graphEnd = executionPlan.indexOf(
-          "\n#### native-generation-receipt",
-          graphStart,
-        );
-        assert.ok(
-          graphStart >= 0,
-          "mutation target Graph proposal must be present",
-        );
-        assert.ok(
-          graphEnd > graphStart,
-          "mutation target Graph proposal must be bounded",
-        );
-        const boundedProposal = executionPlan.slice(graphStart, graphEnd);
-        const mutatedProposal = mutator(boundedProposal);
-        assert.notEqual(
-          mutatedProposal,
-          boundedProposal,
-          "Graph mutation must change the bounded proposal section",
-        );
-        return `${executionPlan.slice(0, graphStart)}${mutatedProposal}${executionPlan.slice(graphEnd)}`;
-      };
       const graphMutationCases = [
         {
           label: "numeric supported capacity",
@@ -1878,6 +2668,214 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
           `${label} mutation must be rejected by the bounded Graph validator`,
         );
       }
+      // The restored proposal/5 history must not drift back to #610's
+      // unconfirmed wording.
+      for (const { label, expected, mutate } of [
+        {
+          label: "unconfirmed 6 MiB in the proposal/5 Revision row",
+          expected:
+            "the historical Revision row keeps the confirmed proposal/5 wording",
+          mutate: (l7) =>
+            l7.replace(
+              "object／edge／revision／evidence合計 `512 records`、`2 MiB`。",
+              "object／edge／revision／evidence合計 `512 records`、`2 MiB`（#610後は `6 MiB`）。",
+            ),
+        },
+        {
+          label: "unconfirmed 100ms in the proposal/5 query row",
+          expected:
+            "the historical query row keeps the confirmed proposal/5 wording",
+          mutate: (l7) =>
+            l7.replace(
+              "`2 MiB`、Graph `8ms`、reader／busy wait `0`。不適格行も",
+              "`2 MiB`、Graph `8ms`、Graph `100ms`、reader／busy wait `0`。不適格行も",
+            ),
+        },
+      ]) {
+        const start = executionPlan.indexOf(
+          "## L7: Entity/Relation入力とGraph\n",
+        );
+        const end = executionPlan.indexOf("\n## L8:", start);
+        assert.ok(start >= 0 && end > start, `${label}: L7 must be bounded`);
+        const l7 = executionPlan.slice(start, end);
+        const mutatedL7 = mutate(l7);
+        assert.notEqual(mutatedL7, l7, `${label} mutation must change L7`);
+        assert.throws(
+          () =>
+            validateGraphProposalContract(
+              `${executionPlan.slice(0, start)}${mutatedL7}${executionPlan.slice(end)}`,
+            ),
+          (error) => {
+            assert.match(error.message, new RegExp(escapeRegExp(expected)));
+            return true;
+          },
+          `${label} mutation must be rejected by the bounded Graph validator`,
+        );
+      }
+      // proposal/6: the confirmed fixed values, defensive limits and common
+      // rule must keep their bounds in every section, and any change or
+      // relaxation must stay behind a reconfirmation.
+      const proposal6MutationCases = [
+        {
+          label: "relaxed proposal/6 Revision bound",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "proposal/6 Revision bundle must stay at 512 records / 6,291,456 B",
+          mutate: (section) =>
+            section.replace(
+              "proposal/5と同じ数え方で `512 records`、`6,291,456 B` |",
+              "proposal/5と同じ数え方で `512 records`、`8,388,608 B` |",
+            ),
+        },
+        {
+          label: "relaxed proposal/6 per-Revision preflight",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "proposal/6 per-Revision preflight must stay at 2,097,152 B",
+          mutate: (section) =>
+            section.replace(
+              "bytesの合計が `2,097,152 B` 以下。JSONの解析より前に検査する",
+              "bytesの合計が `6,291,456 B` 以下。JSONの解析より前に検査する",
+            ),
+        },
+        {
+          label: "relaxed proposal/6 result lease",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "proposal/6 seed-local query row must keep parent admission→valid Native result lease `100 ms`",
+          mutate: (section) =>
+            section.replace(
+              "parent admission→valid Native result lease `100 ms`（registration",
+              "parent admission→valid Native result lease `250 ms`（registration",
+            ),
+        },
+        {
+          label: "aggregate physical-memory proof required again",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "proposal/6 seed-local query row must keep query全体の物理メモリ上限とその証明は求めない",
+          mutate: (section) =>
+            section.replace(
+              "Scene 8。query全体の物理メモリ上限とその証明は求めない |",
+              "Scene 8。query全体の物理メモリ上限 `6,291,456 B` を証明する |",
+            ),
+        },
+        {
+          label: "preflight bound dropped from the attacks",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "proposal/6 Graph In-scope attacks must preserve `2,097,152 B`",
+          mutate: (section) =>
+            section.replace(
+              "per-Revision preflight `2,097,152 B`、read／admission `512`、batch `16x32`、SQL `100,000 VM steps`、cancellation every `1,000` steps、result lease `100 ms`、reader／busy wait `0`、2hop／12／144／8（whole-project B buildはB-closeの数値）",
+              "read／admission `512`、batch `16x32`、SQL `100,000 VM steps`、cancellation every `1,000` steps、result lease `100 ms`、reader／busy wait `0`、2hop／12／144／8（whole-project B buildはB-closeの数値）",
+            ),
+        },
+        {
+          label: "retired 8ms restored in the acceptance",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "proposal/6 Graph Acceptance implications must not restore the retired `8ms` query bound",
+          mutate: (section) =>
+            section.replace(
+              "parent admissionから `100 ms` の内にvalidなresult leaseを返し",
+              "parent admissionから `100 ms` の内にvalidなresult leaseを返し、Graph `8ms` の内に完了し",
+            ),
+        },
+        {
+          label: "fixed values adjusted without reconfirmation",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "proposal/6 fixed values must require reconfirmation in either direction",
+          mutate: (section) =>
+            section.replace(
+              "固定値の変更は、方向を問わず再確認を要する。",
+              "固定値は実測に合わせて調整してよい。",
+            ),
+        },
+        {
+          label: "threshold reconfirmation dropped from the defenses",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected: "proposal/6 threshold changes must require reconfirmation",
+          mutate: (section) =>
+            section.replace(
+              "固定値の変更（方向を問わない）と実装上の防御上限の緩和は、再確認なしに行わない。",
+              "固定値の変更と実装上の防御上限の緩和は、integratorが判断する。",
+            ),
+        },
+        {
+          label: "relaxed implementation request limit",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "proposal/6 implementation defensive limit must keep C-queryのrequest at | `8,192 B` |",
+          mutate: (section) =>
+            section.replace(
+              "| C-queryのrequest | `8,192 B` |",
+              "| C-queryのrequest | `65,536 B` |",
+            ),
+        },
+        {
+          label: "defensive limits relaxed without reconfirmation",
+          heading: PROPOSAL6_GRAPH_HEADING,
+          expected:
+            "relaxing an implementation defensive limit must require reconfirmation",
+          mutate: (section) =>
+            section.replace(
+              "上限を外す）は再確認を要する。厳しくする変更と",
+              "上限を外す）はintegratorが判断する。厳しくする変更と",
+            ),
+        },
+        {
+          label: "common rule relaxed without user reconfirmation",
+          heading: PROPOSAL6_RULE_HEADING,
+          expected: "nir1-defensive-resource-limits rule 7 must stay recorded",
+          mutate: (section) =>
+            section.replace(
+              "理由、実測を示してユーザーの再確認を得る。",
+              "理由、実測を作業記録に残す。",
+            ),
+        },
+        {
+          label: "common rule widened to authority and recipients",
+          heading: PROPOSAL6_RULE_HEADING,
+          expected:
+            "nir1-defensive-resource-limits must not decide authority, storage scope or recipients",
+          mutate: (section) =>
+            section.replace(
+              "（authority、保存範囲、送信先、同意、開示）は決めない。それらは各契約で確認する。",
+              "（authority、保存範囲、送信先、同意、開示）もintegratorが決める。",
+            ),
+        },
+        {
+          label: "existing fixed value brought under the common rule",
+          heading: PROPOSAL6_RULE_HEADING,
+          expected:
+            "nir1-defensive-resource-limits must exclude Packingの `2 MiB`",
+          mutate: (section) =>
+            section.replace(
+              "、Packingの `2 MiB`、B-closeの数値。",
+              "、B-closeの数値。",
+            ),
+        },
+      ];
+      for (const {
+        label,
+        heading,
+        expected,
+        mutate,
+      } of proposal6MutationCases) {
+        assert.throws(
+          () =>
+            validateProposal6Contract(
+              mutateExecutionPlanSection(executionPlan, heading, mutate),
+            ),
+          (error) => {
+            assert.match(error.message, new RegExp(escapeRegExp(expected)));
+            return true;
+          },
+          `${label} mutation must be rejected by the proposal/6 validator`,
+        );
+      }
       assert.match(
         proposal,
         /No cumulative build SQL cap is ratified\.?[^\n]*Every prepare／page／publish complete-rescan statement is owned by the builder's connection-level progress hook.*bounded `1,000` VM-step cadence and at Rust boundaries/is,
@@ -1978,13 +2976,14 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       );
       for (const [pattern, label] of [
         [/三つのresource unit/, "three resource units"],
+        // proposal/5 history values (`13e3f6c6^`); proposal/6 replaces them.
         [
-          /512 records.*6 MiB.*validation contract/,
-          "Revision bundle validation limits",
+          /512 records.*2 MiB.*validation contract/,
+          "historical Revision bundle validation limits",
         ],
         [
-          /read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*Graph `100ms`.*reader／busy wait `0`.*aggregate physical-memory cap\/proof(?:なし|は要求しない)/,
-          "seed-local query limits and removed aggregate proof",
+          /read／admission `512`.*batch `16x32`.*SQL `100,000 VM steps`.*`2 MiB`.*Graph `8ms`.*reader／busy wait `0`/,
+          "historical seed-local query limits",
         ],
         [
           /whole-project B Index build.*現在の全候補.*qualified material.*atomic publish/,
@@ -2031,7 +3030,7 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
           "capacity benchmark memory accounting",
         ],
         [
-          /supported work size\/build memory\/SQL\/deadlineはその結果から後で選ぶ/,
+          /supported work size／build memory／SQL／deadlineはその結果から後で選ぶ/,
           "supported build values are selected after measurement",
         ],
       ]) {
@@ -2442,14 +3441,134 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     'pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"',
     "full_base=\"$(git rev-parse 'origin/master^{commit}')\"",
     "full_head=\"$(git rev-parse 'HEAD^{commit}')\"",
-    'pnpm ci:local:full -- --base "$full_base" --head "$full_head"',
+    'gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$full_base" -f candidate_head="$full_head"',
+    'pnpm ci:local:full -- --aggregate --base "$full_base" --head "$full_head"',
     'pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"',
+    'gh pr merge --squash --match-head-commit "$full_head"',
   ]) {
     assert.match(
       executionPlan,
       new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
+  // Full admission refuses non-hosted Full since #610, so merge gate M runs
+  // the hosted canonical Full and never a local `pnpm ci:local:full`.
+  const postBPlan = await read("docs/plans/nir1-post-b-execution-plan.md");
+  for (const [name, plan] of [
+    ["execution plan", executionPlan],
+    ["post-B plan", postBPlan],
+    ["integration plan", integrationPlan],
+  ]) {
+    assert.match(
+      plan,
+      /gh workflow run canonical-ci\.yml --ref "\$\(git branch --show-current\)" -f profile=full -f candidate_base="\$full_base" -f candidate_head="\$full_head"/,
+      `${name} must dispatch the hosted canonical Full`,
+    );
+    assert.doesNotMatch(
+      plan,
+      /^\s*pnpm ci:local:full -- --base "\$full_base" --head "\$full_head"\s*$/m,
+      `${name} must not run a local Full that Full admission refuses`,
+    );
+  }
+  assert.match(
+    executionPlan,
+    /\| post-#608の残HOLD \| 閉じる実装スライス・受入れ境界 \| 状態（2026-10-12） \|/,
+    "the remaining HOLD table must carry its current status",
+  );
+  for (const holdRow of [
+    "D2a activation",
+    "A3 consumer activation",
+    "AttemptBinding v2",
+    "D-final追補",
+    "DI-1（3分割）",
+    "P-12の最終request baseline",
+  ]) {
+    assert.match(
+      executionPlan,
+      new RegExp(`^\\| ${escapeRegExp(holdRow)} \\|[^\\n]*\\| HOLD`, "m"),
+      `${holdRow} must be tracked as an open HOLD`,
+    );
+  }
+  // #610's dated revisions stay as history; K1 records that proposal/6
+  // formalized them through the confirmation ledger.
+  for (const historyNote of [
+    /^2026-10-01 #610数値契約の明示改訂（当時の履歴）: /m,
+    /^2026-10-02 #610期限の明示改訂（当時の履歴）: /m,
+    /^2026-10-04 post-B current contract: /m,
+  ]) {
+    assert.match(executionPlan, historyNote);
+  }
+  assert.match(
+    executionPlan,
+    /^2026-10-12 K1追記（上の2026-10-01／10-02／10-04の改訂は当時の履歴としてそのまま残す）: [^\n]*`nir1-l6-l9-contract-proposal\/6` の `graph-limited-binding` と `nir1-defensive-resource-limits` が確認され[^\n]*次がproposal\/6で正式化された。単一Revision validationの `512 records`／`6,291,456 B`[^\n]*parent admission→valid Native result leaseの `100 ms`[^\n]*query全体の物理メモリ上限とその証明[^\n]*の削除/m,
+    "the K1 note must record what proposal/6 formalized from #610's revisions",
+  );
+  assert.match(
+    executionPlan,
+    /^2026-10-12追記（K1）: NIR-1の残レーン（C-body、C-product、H-store／H-current、D-transport）で今後追加する資源の上限は、確認済みの `nir1-l6-l9-contract-proposal\/6#nir1-defensive-resource-limits` の規則1〜8に適合し、値と実測をPR本文と作業記録に残せば、上限ごとの確認なしにmergeできる。merge後に緩める変更、既存の確定値[^\n]*の変更[^\n]*には、引き続き上の確認を要する。$/m,
+    "the reconfirmation conditions must carry the confirmed common resource rule",
+  );
+  // K1 bookkeeping outside the ledger: the B-close note, and the retirement
+  // of the never-ratified `graph-query-memory-accounting/1`.
+  const bClose = await read("docs/plans/nir1-b-close-completion-2026-09-22.md");
+  assert.match(
+    bClose,
+    /K1（`nir1-l6-l9-contract-proposal\/6`）で確認済み（2026-10-12）/,
+  );
+  assert.doesNotMatch(bClose, /K1[^\n]*で確認する予定/);
+  assert.match(
+    bClose,
+    /^> \*\*2026-10-12 注記（K1。上の段落は確認時のまま）:\*\* 上の「Revision limit \(512 records \/ 2 MiB\)」[^\n]*`512 records`／`6,291,456 B`（6 MiB）に正式化され/m,
+  );
+  assert.match(
+    bClose,
+    /The request-local\nRevision limit \(512 records \/ 2 MiB\) and seed-local query contract are unchanged\./,
+    "the B-close text itself stays as confirmed",
+  );
+  for (const retiredIn of [
+    "docs/plans/nir1-c-query-memory-enforcement-v1-draft.md",
+    "docs/plans/nir1-c-query-linux-resource-probe-draft.md",
+  ]) {
+    assert.match(
+      await read(retiredIn),
+      /^> \*\*2026-10-12 注記（K1[^\n]*`graph-query-memory-accounting\/1`[^\n]*`nir1-l6-l9-contract-proposal\/6#graph-limited-binding` で退役した/m,
+      `${retiredIn} must record the retirement of graph-query-memory-accounting/1`,
+    );
+  }
+  // K1 (2026-10-12) resolved the Revision limit; the C-resource acceptance
+  // HOLD is released only by CR-REC with the CR-1 lane evidence.
+  assert.match(
+    executionPlan,
+    /^\| Revision上限の整合 \|[^\n]*\| 解消（K1 確認）。2026-10-12に `nir1-l6-l9-contract-proposal\/6#graph-limited-binding` で `512 records`／`6,291,456 B` を確認し、確認台帳に記録した \|$/m,
+    "the Revision limit HOLD must be resolved by the K1 confirmation",
+  );
+  assert.match(
+    executionPlan,
+    /^\| C-queryのfunctional\/resource-safety・100 ms lease、SQL・cleanup \|[^\n]*\| HOLD。[^\n]*資源の固定値はK1（proposal\/6）で確認済みだが、受入れはCR-1[^\n]*とCR-REC[^\n]*で閉じる \|$/m,
+    "the C-resource acceptance HOLD stays open until CR-REC",
+  );
+  assert.match(
+    executionPlan,
+    /\| Open／Restoreの回復起動[^\n]*\| 完了（#609）/,
+  );
+  assert.match(
+    executionPlan,
+    /2026-10-12追記: DF-01／DF-04のP2 HOLDは、#611[^\n]*解消済み/,
+  );
+  assert.match(
+    executionPlan,
+    /#609（R-hook）のmerge証跡[\s\S]*005a8f33-d671-4ac0-8f2c-685cba06f872[\s\S]*299644165509a12e42eb5996db86f6941e62b8f4008615d471e065ebb65622fa[\s\S]*689261c3672963b5695a30df6d6a3b3691e35697/,
+    "the #609 Full evidence must stay transcribed with its receipt digest",
+  );
+  await assertLocalMarkdownLink(
+    "docs/plans/nir1-l6-l9-execution-plan.md",
+    "docs/plans/nir1-continuation-2026-10.md",
+  );
+  assert.doesNotMatch(
+    roadmap,
+    /hard同時2 MiB|次の実装PRはR-hook/,
+    "the roadmap current focus must not keep retired HOLDs or the merged R-hook as next",
+  );
 
   assert.match(roadmap, /PR-R0/);
   assert.match(roadmap, /81d0390fe7a935191753b41e5673503f99d51d16/);
@@ -2521,6 +3640,232 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       `${name} must not exempt future implementation candidates with a historical no-run note`,
     );
   }
+});
+
+test("NIR-1 continuation record keeps verbatim user decisions and the bounded delegation", async () => {
+  const recordPath = "docs/plans/nir1-continuation-2026-10.md";
+  const record = await read(recordPath);
+
+  // U1–U6 and the later U3 change are transcribed verbatim from the user's
+  // own answers.
+  for (const quote of [
+    "「使わずに計画し直す」",
+    "「2MiB/8ms はキツすぎてCodexでは達成できませんでした。何かいい案があれば挑戦してもいいかもしれませんが、現状は達成不可能です。」",
+    "「1でRalphを使ってやるかどうかは任せます。」",
+    "「merge まで進める」",
+    "「そもそもこんなにキチキチにメモリを制限している理由がよくわからん」",
+    "「防御用の上限だけに簡素化（推奨）」",
+    "「この計画では扱わない」",
+    "「Ralphの実行はPiではなくClaudeCodeにしてください」",
+    "「Workflow subagent で続ける（推奨）」",
+  ]) {
+    assert.ok(
+      record.includes(quote),
+      `verbatim decision must be kept: ${quote}`,
+    );
+  }
+  assert.match(record, /決定日は 2026-10-12/);
+  assert.match(record, /2026-10-12 にユーザーが承認済み/);
+  assert.match(
+    record,
+    /^\| U3 変更 \| 23:05 \|[^\n]*\| 「Workflow subagent で続ける（推奨）」 \|[^\n]*Workflow subagent/m,
+    "the 23:05 switch from Ralph to Workflow subagents must be a decision row",
+  );
+  // The plan file was revised after approval; the record keeps both digests.
+  assert.match(
+    record,
+    /承認時（21:51 JST）の本文の SHA-256 は `0bfb2a90a0b1b0e13b39b99de825674647d88621afe30855d5bed2151efb474e`/,
+  );
+  assert.match(
+    record,
+    /23:05 JST の改訂後は `f712102e78ca4e3dc217a6e6b1fc637e6a9085050d24e7b586fb6c179ee2e335`/,
+  );
+
+  const delegation = normalizeSection(
+    sectionFromHeading(record, "## 3. U3 の委任範囲と記録の形式"),
+  );
+  assert.match(
+    delegation,
+    /C-resource、C-body、C-product、D-final 追補、D-transport、D-dispatch、H-store／H-current、DI-1、E/,
+  );
+  assert.match(
+    delegation,
+    /worker／owner／終了処理／lifecycle の技術判断と、確認済みの actor・防御・受信先・受入れの範囲内での技術的脅威モデルの改訂/,
+  );
+  for (const exclusion of [
+    "秘密・データの新しい送信先",
+    "保存範囲の拡大",
+    "閾値の緩和（確認台帳の現行閾値と Gold の緩和・黙示変更を含む）",
+    "製品公開",
+    "製品認可の削除",
+    "新しい契約・authority",
+  ]) {
+    assert.ok(
+      delegation.includes(exclusion),
+      `delegation exclusion: ${exclusion}`,
+    );
+  }
+  assert.match(delegation, /NIR-1 の残レーンの外には適用しない/);
+  assert.match(
+    delegation,
+    /\| ID \| 日付 \| レーン／PR \| 判断 \| 信頼境界（actor・防御・受信先・受入れ） \| 代替案 \| advisor（requested／effective の model・effort、結論） \| 除外6項目への該当 \| owner\/lifecycle matrix \| 状態 \|/,
+    "lanes must share one delegated-decision record format",
+  );
+  assert.match(
+    delegation,
+    /記録先はレーンの decisions 文書と PR 本文で、本表には判断の ID と記録先を残す/,
+    "the record location must match GDX-PRECHECK-001",
+  );
+  assert.doesNotMatch(delegation, /8 ms|2 MiB/);
+
+  // Ralph only launched the first three lanes; later implementation runs as
+  // Workflow subagents after the 23:05 decision.
+  const laneTable = sectionFromHeading(record, "## 4. レーン表");
+  const ralphRows = laneTable
+    .split("\n")
+    .filter((line) => line.startsWith("| ") && line.includes("Ralph"))
+    .map((line) => line.split("|").map((cell) => cell.trim()));
+  assert.deepEqual(
+    ralphRows.map((cells) => cells[1]),
+    ["CR-1／CR-REC", "DT-1→DT-2→DT-3", "HP-1"],
+    "only the first three lanes may name Ralph",
+  );
+  for (const cells of ralphRows) {
+    assert.match(cells[3], /Ralph で起動（以後は Workflow subagent）/);
+  }
+  const execution = normalizeSection(
+    sectionFromHeading(record, "## 5. 実行方式と precheck の記録"),
+  );
+  assert.match(
+    execution,
+    /最初の3レーン（CR-1、DT-1、HP-1）は、Ralph を Claude Code の backend で起動した/,
+  );
+  assert.match(
+    execution,
+    /以後の実装は Workflow subagent で行う。進め方は builder → Fable による reviewer → fix の順/,
+  );
+  assert.doesNotMatch(execution, /Ralph は Claude Code の backend で動かす/);
+
+  for (const lane of [
+    "gov",
+    "cres",
+    "cp0",
+    "dt1",
+    "hp",
+    "spike",
+    "contracts",
+  ]) {
+    assert.match(
+      record,
+      new RegExp(
+        `\\| \`claude-nir1-${lane}\` \\| \`claude/nir1-${lane}\` \\| \`a153743b\` \\|`,
+      ),
+      `worktree ledger row for ${lane}`,
+    );
+  }
+  assert.match(
+    record,
+    /\| `claude-nir1-dt2` \| `claude\/nir1-dt2` \| `3688a063`（`claude\/nir1-dt1`） \| DT-2/,
+    "worktree ledger row for dt2, stacked on DT-1",
+  );
+  // Stacked worktrees created after G0 started (times from the branch reflog).
+  assert.match(
+    record,
+    /\| `claude-nir1-dt3` \| `claude\/nir1-dt3` \| `3688a063`（`claude\/nir1-dt1`） \| DT-3/,
+    "worktree ledger row for dt3, stacked on DT-1",
+  );
+  assert.match(
+    record,
+    /\| `claude-nir1-cp1` \| `claude\/nir1-cp1` \| `0e041537`（`claude\/nir1-cres`） \| CP-1/,
+    "worktree ledger row for cp1, stacked on CR-1",
+  );
+  assert.match(
+    record,
+    /`claude-nir1-dt3` は 2026-10-12 23:34 JST に、同じ DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った/,
+  );
+  assert.match(
+    record,
+    /`claude-nir1-cp1` は 2026-10-13 00:11 JST に、`claude\/nir1-cres` の CR-1b commit `0e041537e8c56c43be38afea490c26857bb488a7` から作った/,
+  );
+  assert.match(record, /a153743b3f672b7274bdd748f15ef9c216dc9961/);
+  assert.match(record, /3688a0633537818e80a88e40f056604ffa496e8a/);
+  // U3 追加 was the message that sent the first plan presentation back; the
+  // plan was approved on its second presentation at 21:51.
+  assert.match(
+    record,
+    /^\| U3 追加 \| 18:45 \| 問いへの回答ではない。最初の計画提示（ExitPlanMode）を差し戻したときのユーザーのメッセージ。計画の承認は、21:51 の2回目の提示に対するもの \| 「Ralphの実行はPiではなくClaudeCodeにしてください」 \|/m,
+    "U3 追加 must be recorded as the plan send-back message, not the approval",
+  );
+  assert.doesNotMatch(record, /\| U3 追加 \| 18:45 \| 計画の承認時の指示 \|/);
+  assert.match(
+    normalizeSection(
+      sectionFromHeading(
+        record,
+        "## 8. 2026-09-25/26 の off-master 承認と WIP（不採用・参照のみ）",
+      ),
+    ),
+    /U1 により採用しない。master の確認台帳には記録せず、承認の根拠にも文面の流用元にもしない/,
+  );
+  assert.match(record, /G0 → CR-1 → CR-REC → CP-0 → DT-1/);
+
+  // Session A (K1): the receipt time, the draft commit and digest, and the two
+  // statements transcribed exactly as the user typed them.
+  const sessionA = record.split("### 10.1. Session A（K1）\n", 2)[1];
+  assert.ok(sessionA, "the work record must keep the Session A record");
+  for (const evidence of [
+    "| 受信 | 2026-10-12T23:58+0900。",
+    `| draft | \`claude/nir1-contracts\` の commit \`${PROPOSAL6_DRAFT_COMMIT}\` の \`${PROPOSAL6_DRAFT_PATH}\` |`,
+    `| draft の SHA-256 | \`${PROPOSAL6_DRAFT_SHA256}\` |`,
+  ]) {
+    assert.ok(sessionA.includes(evidence), `Session A must record ${evidence}`);
+  }
+  assert.ok(
+    sessionA.includes(
+      `\n\`\`\`text\n${PROPOSAL6_GRAPH_STATEMENT}\n${PROPOSAL6_RULE_STATEMENT}\n\`\`\`\n`,
+    ),
+    "Session A must keep the two statements verbatim, one per line",
+  );
+  assert.match(
+    sessionA,
+    /C-resource の受入れの HOLD は、CR-REC（CR-1 の lane 証跡と独立受入れ）で解除するので、まだ解除しない/,
+  );
+  assert.match(
+    sessionA,
+    /Graph の製品公開、local 送信、新しい authority・保存先・送信先、K2〜K6 の内容を確認しない/,
+  );
+  assert.match(
+    record,
+    /^\| K1 \| `nir1-l6-l9-contract-proposal\/6`：`graph-limited-binding`、`nir1-defensive-resource-limits` \|[^\n]*\| 確認済み（2026-10-12、Session A。2行とも。§10\.1） \|$/m,
+  );
+  for (const k of ["K2", "K3", "K4", "K5", "K6"]) {
+    const row = record.match(new RegExp(`^\\| ${k} \\|[^\\n]*$`, "m"))?.[0];
+    assert.ok(row, `${k} must keep its contract row`);
+    assert.doesNotMatch(
+      row,
+      /確認済み|Session A/,
+      `${k} must not be recorded as confirmed by Session A`,
+    );
+  }
+  // The bump-version release Full still names a local Full; it is recorded as
+  // an open [policy] mismatch rather than edited from G0.
+  const openIssues = normalizeSection(
+    sectionFromHeading(record, "## 11. 未解決事項"),
+  );
+  assert.match(
+    openIssues,
+    /`\[policy\]` `\.agents\/skills\/bump-version\/SKILL\.md` の手順9（97行目）は、release commit の Full に、ローカルの `pnpm ci:local:full -- --base "\$release_base" --head "\$release_head"` を指示したままである。.*GDX-TRACE-001.*食い違う。.*G0 では skill を編集しない/,
+  );
+  await assertLocalMarkdownLink(recordPath, PROPOSAL6_DRAFT_PATH);
+  await assertLocalMarkdownLink(
+    recordPath,
+    "policies/quality/iron-laws.md",
+    "GDX-TRACE-001",
+  );
+  await assertLocalMarkdownLink(
+    recordPath,
+    "policies/quality/iron-laws.md",
+    "GDX-PRECHECK-001",
+  );
 });
 
 test("AI authoring delegates once to the conditional canonical quality gate", async () => {

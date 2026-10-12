@@ -26,6 +26,7 @@ requirements:
       - src/features/chat/modelRouting.ts
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/application/chat/chatTurnStoreActions.ts
+      - src/application/chat/chatTurnLifecycle.ts
       - src/application/chat/chatAgentToolHandlers.ts
       - src/features/chat/chatContentGeneration.ts
       - src/features/chat/turn/turnCoordinator.ts
@@ -138,6 +139,8 @@ requirements:
       - scripts/quality/nir1-retrieval/standard-build.mjs
       - scripts/local-ci-process-supervisor.mjs
       - docs/plans/nir1-standard-build-producer.md
+      - docs/plans/nir1-continuation-2026-10.md
+      - docs/plans/maintenance-transient-recovery-matrix.md
       - AGENTS.md
       - CLAUDE.md
       - GLOBAL_CLAUDE.md
@@ -152,6 +155,7 @@ requirements:
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
       - src/features/chat/turn/resolveTurnRoute.ts
       - src/application/chat/chatTurnStoreActions.ts
+      - src/application/chat/chatTurnLifecycle.ts
       - src/features/chat/turn/turnCoordinator.ts
       - src/features/chat/context/chatContextPlanner.ts
       - src/features/chat/semanticRerankerApply.ts
@@ -486,6 +490,10 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/input.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scenes.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/worker_frame.rs
+      - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs
       - policies/narrative/narrative-artifact-authority.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - policies/narrative/fixtures/artifact-authority.json
@@ -791,6 +799,10 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/input.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scenes.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/worker_frame.rs
+      - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - docs/adr/005-narrative-semantic-core-boundary.md
       - docs/adr/006-narrative-mutation-authority-routes.md
@@ -859,6 +871,7 @@ requirements:
       - docs/plans/narrative-c2zc-canonical-cutover-impact-matrix.md
       - docs/plans/narrative-semantic-core-roadmap.md
       - docs/plans/nir1-l6-l9-execution-plan.md
+      - docs/plans/nir1-post-b-execution-plan.md
       - docs/plans/nir0-d2-impact-matrix.md
       - docs/certification/nir0/NIR0-CERT.md
       - scripts/c2zc-product-journeys.test.mjs
@@ -1173,6 +1186,13 @@ requirements:
       - src-tauri/crates/grimodex-db/tests/nir1_capacity_boundaries.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs
       - src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs
+      - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-memory.rs
+      - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-linux-probe.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_allocation_cases.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_allocator.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_probe_frame.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_memory_diagnostics.rs
+      - scripts/quality/nir1-c-query-linux-host-smoke.py
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/eval-fixtures.test.mjs
@@ -1232,6 +1252,7 @@ requirements:
       - .agents/skills/debug-issue/SKILL.md
       - .agents/skills/test-feature/SKILL.md
       - docs/local-ci-runner.md
+      - scripts/nir1-c-query-worker-ci.sh
       - scripts/local-ci.mjs
       - scripts/local-ci-registry.json
       - scripts/local-ci-runner.mjs

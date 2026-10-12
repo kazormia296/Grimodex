@@ -4,7 +4,11 @@
 
 2026-09-08追記: [A5候補2](nir1-a5-candidate-2.md)のIR専用floor、Raw順序維持＋最大1件追加、復旧正例probeの別版実装とL5検証が承認された。以下の初回A5算法は比較履歴として残し、現候補は追加policy版に従う。固定Gold・B/D/T・安全境界・受入れ条件は維持する。
 
-## Current snapshot (2026-09-24, post-#608)
+## Current snapshot (2026-10-12, post-#629)
+
+R-hook（#609、`689261c3`）、D-final内部候補とcurrent-turn Human capture（#611、`902a7e79`）、C-query worker（#610、`13e3f6c6`）、通常CIの自動実行（#627）、自動maintenanceの一時失敗の正常解放（#628）はmasterに入った。C-resourceの受入れ、C-body、C-product、H-store／H-current、D-transport、D-dispatch、Eは未完了で、製品Graph入口とlocal送信は閉じている。残HOLDの状態は[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)の残HOLD表、ユーザー決定・委任範囲・レーン・merge列は[NIR-1続行計画の作業記録](nir1-continuation-2026-10.md)を正本とする。2026-09-25/26のoff-master承認とWIPは採用せず、契約はK1〜K6として最新master前提で起案し直す。2 MiB／8 msは前提にせず、資源契約は防御用の上限へ簡素化した（2026-10-12にK1、`nir1-l6-l9-contract-proposal/6` の2行を確認）。Graph公開とlocal生成公開のAND条件を維持する。downstream threat modelはdraft。NIR-1 overall acceptance remains incomplete.
+
+### Previous snapshot (2026-09-24, post-#608)
 
 #608の内部基盤はmaster `fb967eb9` にマージ済み。生成attempt／receipt／bounded recovery、canonical Graph reader、共通snapshot Packingと標準ビルド証跡producerは利用可能だが、実Open／Restore hook、最終request接続、履歴の実authority、Graphの同時資源上限・target-body開示・製品評価、local送信は未完了である。最初の実装PRはR-hook、並行してD-final（内部のみ）とC-resource（診断・既存契約内改善）を進める。[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)のpost-#608 HOLD対応表と[post-B実行計画](nir1-post-b-execution-plan.md)を参照。Graph公開とlocal生成公開のAND条件を維持し、Graph単独公開で送信を開かない。旧候補 `cdc2580` のQuickは#608 HEAD `27ae54e` の検証証跡ではない。
 
@@ -457,16 +461,17 @@ pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
 ```
 
 最終NIR-1受入れ、および別途承認されたmerge前は、最新origin/masterを含むcleanなcommit済みHEADで
-`full_base`／`full_head`を一度だけ解決し、同じ値でFullと直後のverifyを実行する。
+`full_base`／`full_head`を一度だけ解決し、同じ値でFullと直後のverifyを実行する。#610以降、Full admissionは
+GitHub-hosted job以外を拒否するため、branchをpushしてremote HEADが`full_head`と一致することを確認した後、hostedのcanonical Fullをdispatchする。
 
 ```sh
 full_base="$(git rev-parse 'origin/master^{commit}')"
 full_head="$(git rev-parse 'HEAD^{commit}')"
-pnpm ci:local:full -- --base "$full_base" --head "$full_head"
-pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"
+gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$full_base" -f candidate_head="$full_head"
 ```
 
-merge直前にも同じFull verify。base/HEADが変わればFullをstage 1から再実行する。
+`full-aggregate` jobが同じtupleで `pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"` まで成功したrunだけを証跡にする。
+merge直前のbase照合、`--match-head-commit`、first-parentの照合は[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)の全PR共通 merge gate Mに従う。base/HEADが変わればFullをstage 1から再実行する。
 release tagが別途承認された場合はmerge後release commit自身で同じFull/verifyを再実行する。
 P1/P2/P3の途中候補をmergeする場合も同じmerge gateを満たす。hosted PR checkが無いことをgreen根拠にしない。
 `--from`、`--dry-run`、古いreceipt、skipped/deferredを成功証跡としない。
