@@ -4120,8 +4120,18 @@ test("CI prepares candidate-bound C2-ZC product evidence before journeys", async
   );
   assert.equal(
     shardDownload.with.pattern,
-    "electron-product-journeys-shard-*-${{ github.run_id }}-${{ github.run_attempt }}",
+    "electron-product-journeys-shard-*-${{ github.run_id }}",
   );
+  // Re-running only failed jobs reuses the other jobs' run-scoped artifacts.
+  for (const [job, name] of [
+    [build, "Upload product journey build outputs"],
+    [c2zc, "Upload C2-ZC evidence"],
+    [shards, "Upload product journey shard artifacts"],
+  ]) {
+    const step = namedStep(job, name);
+    assert.doesNotMatch(step.with.name, /run_attempt/);
+    assert.equal(step.with.overwrite, true);
+  }
   assert.equal(shardDownload.with.path, ".artifacts/product-journeys");
   assert.equal(shardDownload.with["merge-multiple"], true);
 

@@ -792,7 +792,7 @@ jobs:
       - name: Download shared native module and production Electron app
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: electron-product-journeys-build-${{ github.run_id }}-${{ github.run_attempt }}
+          name: electron-product-journeys-build-${{ github.run_id }}
           path: ${{ runner.temp }}/product-journey-build
 
       - name: Restore shared native module and production Electron app
@@ -949,10 +949,11 @@ jobs:
         if: steps.product-journey-impact.outputs.should_run == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: electron-product-journeys-build-${{ github.run_id }}-${{ github.run_attempt }}
+          name: electron-product-journeys-build-${{ github.run_id }}
           path: ${{ runner.temp }}/product-journey-build.tar
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
       - name: Upload product journey impact report
         if: always()
@@ -1061,10 +1062,11 @@ jobs:
       - name: Upload C2-ZC evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: electron-product-journeys-c2zc-${{ github.run_id }}-${{ github.run_attempt }}
+          name: electron-product-journeys-c2zc-${{ github.run_id }}
           path: ${{ runner.temp }}/c2zc-evidence
           if-no-files-found: error
           retention-days: 1
+          overwrite: true
 
   electron-product-journeys:
     name: Electron product journeys (shard ${{ matrix.shard }}/7)
@@ -1106,13 +1108,13 @@ jobs:
       - name: Download product journey build outputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: electron-product-journeys-build-${{ github.run_id }}-${{ github.run_attempt }}
+          name: electron-product-journeys-build-${{ github.run_id }}
           path: ${{ runner.temp }}/product-journey-build
 
       - name: Download C2-ZC evidence
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: electron-product-journeys-c2zc-${{ github.run_id }}-${{ github.run_attempt }}
+          name: electron-product-journeys-c2zc-${{ github.run_id }}
           path: ${{ runner.temp }}/c2zc-evidence
 
       - name: Restore build outputs and C2-ZC evidence
@@ -1145,10 +1147,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: electron-product-journeys-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: electron-product-journeys-shard-${{ matrix.shard }}-${{ github.run_id }}
           path: .artifacts/product-journeys
           if-no-files-found: ignore
           retention-days: 14
+          overwrite: true
 
   electron-product-journeys-aggregate:
     name: Electron product journeys (persistence / workspace authority)
@@ -1185,19 +1188,19 @@ jobs:
       - name: Download product journey build outputs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: electron-product-journeys-build-${{ github.run_id }}-${{ github.run_attempt }}
+          name: electron-product-journeys-build-${{ github.run_id }}
           path: ${{ runner.temp }}/product-journey-build
 
       - name: Download C2-ZC evidence
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: electron-product-journeys-c2zc-${{ github.run_id }}-${{ github.run_attempt }}
+          name: electron-product-journeys-c2zc-${{ github.run_id }}
           path: ${{ runner.temp }}/c2zc-evidence
 
       - name: Download product journey shard results
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: electron-product-journeys-shard-*-${{ github.run_id }}-${{ github.run_attempt }}
+          pattern: electron-product-journeys-shard-*-${{ github.run_id }}
           path: .artifacts/product-journeys
           merge-multiple: true
 
