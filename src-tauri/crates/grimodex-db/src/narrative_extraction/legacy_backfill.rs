@@ -835,7 +835,20 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
 
     match transform_result {
         Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
-        Err(error) => Err(error),
+        Err(error) => {
+            // The finalize transaction above has committed the failed
+            // Run/Task/Attempt. Only now may the lifecycle owner drop this
+            // exact Run; a rolled-back terminalization returned earlier and
+            // leaves the ownership for recovery.
+            if let Some(mark_terminalized) = control.mark_run_terminalized {
+                if let Err(owner_error) = mark_terminalized(&run_id) {
+                    return Err(error.context(format!(
+                        "legacy dependency backfill: failed to release terminalized Run '{run_id}' ownership: {owner_error}"
+                    )));
+                }
+            }
+            Err(error)
+        }
     }
 }
 
@@ -2329,6 +2342,137 @@ mod tests {
             Ok(())
         })
         .expect("read owner-finalized Backfill Run");
+    }
+
+    /// Run the controlled Backfill owner with a transform that fails through
+    /// an ordinary SQL error after its Run was created, and record every
+    /// post-terminalization hook call with the connection's autocommit state.
+    fn run_controlled_backfill_with_failing_transform(
+        db: &Database,
+        reject_failed_terminalization: bool,
+    ) -> (
+        anyhow::Result<LegacyBackfillBootstrapOutcome>,
+        Vec<(String, bool, String)>,
+    ) {
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            // A TEMP table shadows the legacy Application source only for
+            // the transform query; finalization tables are untouched.
+            conn.execute_batch("CREATE TEMP TABLE narrative_proposal_applications (id TEXT);")?;
+            if reject_failed_terminalization {
+                conn.execute_batch(
+                    "CREATE TEMP TRIGGER reject_failed_terminalization
+                       BEFORE UPDATE OF status ON main.narrative_extraction_runs
+                       WHEN NEW.status = 'failed'
+                     BEGIN
+                       SELECT RAISE(ABORT, 'injected terminalization failure');
+                     END;",
+                )?;
+            }
+            Ok(())
+        })
+        .expect("prepare failing Backfill transform");
+
+        let hook_calls = std::sync::Mutex::new(Vec::<(String, bool, String)>::new());
+        let no_stop = || Ok::<_, anyhow::Error>(());
+        let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| Ok::<_, anyhow::Error>(());
+        let no_attach =
+            |_ownership: crate::workspace_lifecycle::RunOwnership| Ok::<_, anyhow::Error>(());
+        let mark_terminalized = |run_id: &str| -> anyhow::Result<()> {
+            let (autocommit, status) = db.with_conn(|conn| {
+                let status: String = conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )?;
+                Ok((conn.is_autocommit(), status))
+            })?;
+            hook_calls
+                .lock()
+                .expect("hook calls")
+                .push((run_id.to_owned(), autocommit, status));
+            Ok(())
+        };
+        let control = super::super::maintenance_runtime::MaintenanceCycleControl {
+            should_stop: &no_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+            attach_run: Some(&no_attach),
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: Some(&mark_terminalized),
+        };
+        let result = bootstrap_legacy_dependency_backfill_for_project_with_control(
+            db,
+            "project-1",
+            Some(&control),
+            LEGACY_BACKFILL_WORK_KEY,
+        );
+        let calls = hook_calls.into_inner().expect("hook calls");
+        (result, calls)
+    }
+
+    fn backfill_statuses(db: &Database) -> Vec<(String, String)> {
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id, status FROM narrative_extraction_runs
+                  WHERE project_id = 'project-1' AND run_kind = 'backfill'",
+            )?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .expect("read Backfill statuses")
+    }
+
+    #[test]
+    fn controlled_backfill_failure_invokes_terminalization_hook_after_commit() {
+        let db = test_db();
+        let (result, calls) = run_controlled_backfill_with_failing_transform(&db, false);
+        let error = result.expect_err("transform failure is returned to the cycle");
+        assert!(
+            !error.to_string().contains("failed to finalize"),
+            "the failure terminalization committed: {error:#}"
+        );
+        let runs = backfill_statuses(&db);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].1, "failed");
+        assert_eq!(
+            calls,
+            vec![(runs[0].0.clone(), true, "failed".to_string())],
+            "the hook runs once, outside any transaction, after the failed Run is durable"
+        );
+    }
+
+    #[test]
+    fn controlled_backfill_terminalization_rollback_does_not_invoke_hook() {
+        let db = test_db();
+        let (result, calls) = run_controlled_backfill_with_failing_transform(&db, true);
+        let error = result.expect_err("terminalization failure is returned");
+        assert!(
+            format!("{error:#}").contains("injected terminalization failure"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            calls.is_empty(),
+            "a rolled-back terminalization must not drop ownership"
+        );
+        let runs = backfill_statuses(&db);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].1, "running");
     }
 
     #[test]

@@ -6054,6 +6054,115 @@ fn run_narrative_freshness_cycle_inner(
     }
 }
 
+/// Evidence the automatic maintenance supervisor holds after the worker Join.
+struct AutomaticMaintenanceJoinEvidence<'a> {
+    failure_class: FailureClass,
+    lifecycle_work_started: bool,
+    cleanup_reusable: bool,
+    authority: Option<PinnedWorkspaceDb>,
+    attempt_id: Option<&'a str>,
+    workspace_binding: Option<&'a MaintenanceWorkspaceBinding>,
+}
+
+/// A failed automatic body may release its permit like the manual and
+/// foreground owners only when every structural proof holds: an ordinary
+/// error (never Panic/Join), no remaining exact Run ownership after any
+/// post-commit terminalization hook, the same attempt's cleanup receipt was
+/// clean and reusable, and the pinned connection is still reusable now.
+/// Anything else, including an unreadable ownership slot, transfers the
+/// execution to recovery.
+fn automatic_maintenance_error_releases_normally(
+    permit: &MaintenancePermit,
+    evidence: &AutomaticMaintenanceJoinEvidence<'_>,
+) -> bool {
+    evidence.failure_class == FailureClass::Error
+        && evidence.cleanup_reusable
+        && evidence
+            .authority
+            .as_ref()
+            .is_some_and(|authority| authority.db().connection_reusable())
+        && matches!(permit.has_run_ownership(), Ok(false))
+}
+
+/// Join-side finalizer for one automatic maintenance permit. A successful
+/// body, or a body that never started lifecycle work, releases normally. A
+/// failed started body releases only with the proofs checked by
+/// [`automatic_maintenance_error_releases_normally`]; it keeps its original
+/// error so main applies the bounded retry policy. Otherwise the pinned
+/// connection is retired and the exact execution is transferred to a
+/// recovery descriptor.
+fn finalize_automatic_maintenance_permit(
+    state: &AppState,
+    mut permit: MaintenancePermit,
+    mut evidence: AutomaticMaintenanceJoinEvidence<'_>,
+    operation_result: std::result::Result<String, AppError>,
+) -> Result<std::result::Result<String, AppError>> {
+    if !(evidence.lifecycle_work_started && operation_result.is_err()) {
+        permit
+            .mark_joined()
+            .and_then(|_| permit.release().map(|_| ()))
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        return Ok(operation_result);
+    }
+    permit
+        .mark_joined()
+        .map_err(|error| Error::from_reason(error.to_string()))?;
+    if automatic_maintenance_error_releases_normally(&permit, &evidence) {
+        if let Err(error) = &operation_result {
+            tracing::warn!(
+                target: "narrative.maintenance",
+                %error,
+                "maintenance body failed after lifecycle Join without Run ownership; releasing normally"
+            );
+        }
+        permit
+            .release()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        return Ok(operation_result);
+    }
+    if let Err(error) = &operation_result {
+        tracing::error!(
+            target: "narrative.maintenance",
+            %error,
+            "maintenance body failed after lifecycle Join; transferring ownership to recovery"
+        );
+    }
+    let connection_retired = retire_authority_for_recovery(state, evidence.authority.take());
+    if connection_retired {
+        permit
+            .mark_connection_retired()
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+    }
+    let failure_class = evidence.failure_class;
+    Ok(
+        match permit.transfer_to_recovery_diagnosed(|diagnostic| {
+            lifecycle_failure_diagnostics::handoff(
+                Producer::AutomaticMaintenance,
+                failure_class,
+                diagnostic,
+            )
+        }) {
+            Ok(descriptor_id) => {
+                record_maintenance_recovery_binding(
+                    state,
+                    descriptor_id,
+                    evidence.attempt_id,
+                    evidence.workspace_binding,
+                );
+                Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-recovery-required",
+                    "descriptorId": descriptor_id,
+                })
+                .to_string())
+            }
+            Err(error) => Err(AppError::Anyhow(anyhow::anyhow!(
+                "NEX_MAINTENANCE_LIFECYCLE_RECOVERY_TRANSFER_FAILED: {error}"
+            ))),
+        },
+    )
+}
+
 #[napi]
 pub struct Backend {
     state: Arc<AppState>,
@@ -6071,6 +6180,11 @@ struct NarrativeMaintenanceAttemptGuard {
     authority: Option<PinnedWorkspaceDb>,
     finalized: bool,
     cleanup_reusable: bool,
+    /// Optional supervisor-visible copy of the final cleanup proof. Drop
+    /// publishes the same receipt-derived value that gates the recovery-gate
+    /// release, so the async supervisor can decide after Join without
+    /// trusting the process-local connection flag alone.
+    cleanup_proof: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// Result returned by the blocking maintenance worker. The permit is moved
@@ -6081,6 +6195,10 @@ struct NarrativeMaintenanceWorkerOutcome {
     result: std::result::Result<String, AppError>,
     lifecycle_permit: Option<MaintenancePermit>,
     lifecycle_work_started: bool,
+    /// Same-attempt cleanup proof published by the attempt guard: its
+    /// settled receipt reported clean cleanup and a reusable connection.
+    /// False when no attempt guard existed or the worker did not return.
+    cleanup_reusable: bool,
     authority: Option<PinnedWorkspaceDb>,
     attempt_id: Option<String>,
     workspace_binding: Option<MaintenanceWorkspaceBinding>,
@@ -6142,7 +6260,13 @@ impl NarrativeMaintenanceAttemptGuard {
             authority: None,
             finalized: false,
             cleanup_reusable: false,
+            cleanup_proof: None,
         }
+    }
+
+    fn with_cleanup_proof(mut self, proof: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.cleanup_proof = Some(proof);
+        self
     }
 
     fn bind_authority(&mut self, authority: PinnedWorkspaceDb) {
@@ -6299,6 +6423,9 @@ impl Drop for NarrativeMaintenanceAttemptGuard {
                 }
                 Err(_) => false,
             };
+        }
+        if let Some(proof) = self.cleanup_proof.as_ref() {
+            proof.store(self.cleanup_reusable, std::sync::atomic::Ordering::Release);
         }
         if self.cleanup_reusable {
             self.state
@@ -7292,6 +7419,7 @@ impl Backend {
             let mut outcome_attempt_id: Option<String> = None;
             let mut outcome_binding: Option<MaintenanceWorkspaceBinding> = None;
             let mut failure_class = FailureClass::Error;
+            let cleanup_proof = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let operation_result = match catch_unwind(AssertUnwindSafe(|| {
                 (|| -> std::result::Result<String, AppError> {
                     let attempt_id = payload
@@ -7403,10 +7531,10 @@ impl Backend {
                             // workspace swap race that still-running owner.
                             return Err(AppError::Anyhow(error));
                         }
-                        Some(NarrativeMaintenanceAttemptGuard::new(
-                            Arc::clone(&state),
-                            attempt_id,
-                        ))
+                        Some(
+                            NarrativeMaintenanceAttemptGuard::new(Arc::clone(&state), attempt_id)
+                                .with_cleanup_proof(Arc::clone(&cleanup_proof)),
+                        )
                     } else {
                         None
                     };
@@ -8001,6 +8129,19 @@ impl Backend {
                                     anyhow::anyhow!("{error}")
                                 })
                         };
+                    // Owners invoke this only after the transaction that
+                    // durably terminalized the exact Run has committed. It
+                    // removes that Run from the permit, which is the proof a
+                    // failed body may be released without recovery.
+                    let mark_run_terminalized = |run_id: &str| -> anyhow::Result<()> {
+                        lifecycle_permit
+                            .as_ref()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("NEX_MAINTENANCE_LIFECYCLE_PERMIT_MISSING")
+                            })?
+                            .mark_run_terminalized(run_id)
+                            .map_err(|error| anyhow::anyhow!("{error}"))
+                    };
                     let attempt_control = MaintenanceCycleControl {
                         should_stop: &should_stop,
                         stop_signal: stop_signal_for_control.clone(),
@@ -8019,7 +8160,7 @@ impl Backend {
                         mark_run_reuse_selection_unknown: Some(&mark_run_reuse_selection_unknown),
                         mark_run_creation_outcome: Some(&mark_run_creation_outcome),
                         reset_run_creation_tracking: Some(&reset_run_creation_tracking),
-                        mark_run_terminalized: None,
+                        mark_run_terminalized: Some(&mark_run_terminalized),
                     };
                     let cycle_result = {
                         narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
@@ -8251,11 +8392,15 @@ impl Backend {
                 }
                 other => other,
             };
+            // The attempt guard was dropped when the body closure returned or
+            // unwound, so its receipt-derived proof is final here.
+            let cleanup_reusable = cleanup_proof.load(std::sync::atomic::Ordering::Acquire);
             Ok(NarrativeMaintenanceWorkerOutcome {
                 failure_class,
                 result: operation_result,
                 lifecycle_permit: lifecycle_permit.take(),
                 lifecycle_work_started,
+                cleanup_reusable,
                 authority: worker_authority,
                 attempt_id: outcome_attempt_id,
                 workspace_binding: outcome_binding,
@@ -8284,6 +8429,7 @@ impl Backend {
                         result: Err(error),
                         lifecycle_permit,
                         lifecycle_work_started: true,
+                        cleanup_reusable: false,
                         authority: active_database(&supervisor_state.ws).ok(),
                         attempt_id: requested_attempt_id.clone(),
                         workspace_binding: requested_binding.clone(),
@@ -8309,6 +8455,7 @@ impl Backend {
                         ))),
                         lifecycle_permit: orphaned_permit,
                         lifecycle_work_started: true,
+                        cleanup_reusable: false,
                         authority: active_database(&supervisor_state.ws).ok(),
                         attempt_id: requested_attempt_id.clone(),
                         workspace_binding: requested_binding.clone(),
@@ -8322,60 +8469,20 @@ impl Backend {
             let mut worker = worker;
             (|| {
                 let mut operation_result = worker.result;
-                if let Some(mut permit) = worker.lifecycle_permit {
-                    if worker.lifecycle_work_started && operation_result.is_err() {
-                        if let Err(error) = &operation_result {
-                            tracing::error!(
-                                target: "narrative.maintenance",
-                                %error,
-                                "maintenance body failed after lifecycle Join; transferring ownership to recovery"
-                            );
-                        }
-                        permit
-                            .mark_joined()
-                            .map_err(|error| Error::from_reason(error.to_string()))?;
-                        let connection_retired = retire_authority_for_recovery(
-                            &supervisor_state,
-                            worker.authority.take(),
-                        );
-                        if connection_retired {
-                            permit
-                                .mark_connection_retired()
-                                .map_err(|error| Error::from_reason(error.to_string()))?;
-                        }
-                        match permit.transfer_to_recovery_diagnosed(|evidence| {
-                            lifecycle_failure_diagnostics::handoff(
-                                Producer::AutomaticMaintenance,
-                                worker.failure_class,
-                                evidence,
-                            )
-                        }) {
-                            Ok(descriptor_id) => {
-                                record_maintenance_recovery_binding(
-                                    &supervisor_state,
-                                    descriptor_id,
-                                    worker.attempt_id.as_deref(),
-                                    worker.workspace_binding.as_ref(),
-                                );
-                                operation_result = Ok(serde_json::json!({
-                                    "status": "workspace-unavailable",
-                                    "reason": "maintenance-recovery-required",
-                                    "descriptorId": descriptor_id,
-                                })
-                                .to_string());
-                            }
-                            Err(error) => {
-                                operation_result = Err(AppError::Anyhow(anyhow::anyhow!(
-                                    "NEX_MAINTENANCE_LIFECYCLE_RECOVERY_TRANSFER_FAILED: {error}"
-                                )));
-                            }
-                        }
-                    } else {
-                        permit
-                            .mark_joined()
-                            .and_then(|_| permit.release().map(|_| ()))
-                            .map_err(|error| Error::from_reason(error.to_string()))?;
-                    }
+                if let Some(permit) = worker.lifecycle_permit {
+                    operation_result = finalize_automatic_maintenance_permit(
+                        &supervisor_state,
+                        permit,
+                        AutomaticMaintenanceJoinEvidence {
+                            failure_class: worker.failure_class,
+                            lifecycle_work_started: worker.lifecycle_work_started,
+                            cleanup_reusable: worker.cleanup_reusable,
+                            authority: worker.authority.take(),
+                            attempt_id: worker.attempt_id.as_deref(),
+                            workspace_binding: worker.workspace_binding.as_ref(),
+                        },
+                        operation_result,
+                    )?;
                 }
                 if let Some(sequence) = worker.admitted_delivery_sequence {
                     let terminal_result = match &operation_result {
@@ -16573,6 +16680,512 @@ mod narrative_maintenance_admission_unwind_tests {
             1_572_865,
         )
         .await;
+    }
+
+    fn admitted_started_permit(backend: &Backend) -> MaintenancePermit {
+        let mut permit = match backend
+            .state
+            .workspace_lifecycle
+            .begin_maintenance()
+            .expect("maintenance admission")
+        {
+            PermitAdmission::Admitted(permit) => permit,
+            PermitAdmission::NotAdmitted { .. } => panic!("maintenance must be admitted"),
+        };
+        permit.start().expect("start admitted execution");
+        permit
+    }
+
+    fn owned_backfill_run(
+        state: grimodex_db::workspace_lifecycle::RunCreationState,
+        run_id: &str,
+    ) -> grimodex_db::workspace_lifecycle::RunOwnership {
+        grimodex_db::workspace_lifecycle::RunOwnership {
+            state,
+            handle: grimodex_db::workspace_lifecycle::DurableRunHandle::new(
+                "project-finalizer",
+                run_id,
+                format!("{run_id}-task"),
+                format!("{run_id}-attempt"),
+                "backfill",
+                "epoch-finalizer",
+                LEGACY_BACKFILL_WORK_KEY,
+                1,
+                "{}",
+                "sha256:spec",
+            ),
+        }
+    }
+
+    fn join_evidence(
+        backend: &Backend,
+        failure_class: FailureClass,
+        cleanup_reusable: bool,
+    ) -> AutomaticMaintenanceJoinEvidence<'static> {
+        AutomaticMaintenanceJoinEvidence {
+            failure_class,
+            lifecycle_work_started: true,
+            cleanup_reusable,
+            authority: Some(active_database(&backend.state.ws).expect("active authority")),
+            attempt_id: None,
+            workspace_binding: None,
+        }
+    }
+
+    fn body_error() -> std::result::Result<String, AppError> {
+        Err(AppError::Anyhow(anyhow::anyhow!(
+            "NEX_MAINTENANCE_TRANSIENT: body failed after Join"
+        )))
+    }
+
+    fn assert_released_without_recovery(
+        backend: &Backend,
+        before: &grimodex_db::LifecycleSnapshot,
+        result: std::result::Result<String, AppError>,
+    ) {
+        let error = result.expect_err("released body keeps its original error");
+        assert!(
+            error.to_string().contains("NEX_MAINTENANCE_TRANSIENT"),
+            "main must receive the original error: {error}"
+        );
+        let after = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("lifecycle snapshot");
+        assert_eq!(
+            &after, before,
+            "normal release must not advance the lifecycle"
+        );
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptor ids")
+            .is_empty());
+        let authority = active_database(&backend.state.ws).expect("authority stays active");
+        assert!(authority.db().connection_reusable());
+        // The admission slot was actually released.
+        let next = admitted_started_permit(backend);
+        let mut next = next;
+        next.mark_joined().expect("join follow-up");
+        next.release().expect("release follow-up");
+    }
+
+    fn assert_transferred_to_recovery(
+        backend: &Backend,
+        before: &grimodex_db::LifecycleSnapshot,
+        result: std::result::Result<String, AppError>,
+    ) -> grimodex_db::workspace_lifecycle::RecoveryDescriptor {
+        let json: serde_json::Value =
+            serde_json::from_str(&result.expect("transfer returns the typed recovery result"))
+                .expect("recovery JSON");
+        assert_eq!(json["status"], "workspace-unavailable");
+        assert_eq!(json["reason"], "maintenance-recovery-required");
+        assert!(json["descriptorId"].is_number());
+        let after = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("lifecycle snapshot");
+        assert!(matches!(
+            after.state,
+            LifecycleState::RecoveryRequired { .. }
+        ));
+        assert!(after.revision > before.revision);
+        let ids = backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptor ids");
+        assert_eq!(ids.len(), 1);
+        backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor(ids[0])
+            .expect("descriptor")
+    }
+
+    #[tokio::test]
+    async fn automatic_error_without_run_ownership_and_clean_cleanup_releases_normally() {
+        let (backend, root) = backend_with_active_workspace("auto-release-clean");
+        let before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        let permit = admitted_started_permit(&backend);
+        let evidence = join_evidence(&backend, FailureClass::Error, true);
+        let result =
+            finalize_automatic_maintenance_permit(&backend.state, permit, evidence, body_error())
+                .expect("finalizer");
+        assert_released_without_recovery(&backend, &before, result);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn automatic_error_after_committed_run_terminalization_releases_normally() {
+        let (backend, root) = backend_with_active_workspace("auto-release-terminalized");
+        let before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        let permit = admitted_started_permit(&backend);
+        permit
+            .attach_run_ownership(owned_backfill_run(
+                grimodex_db::workspace_lifecycle::RunCreationState::Created,
+                "run-terminalized",
+            ))
+            .expect("attach created Run");
+        permit
+            .mark_run_terminalized("run-terminalized")
+            .expect("post-commit terminalization hook");
+        let evidence = join_evidence(&backend, FailureClass::Error, true);
+        let result =
+            finalize_automatic_maintenance_permit(&backend.state, permit, evidence, body_error())
+                .expect("finalizer");
+        assert_released_without_recovery(&backend, &before, result);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn automatic_error_with_creation_unknown_run_transfers_with_retired_connection() {
+        let (backend, root) = backend_with_active_workspace("auto-transfer-creation-unknown");
+        let before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        let permit = admitted_started_permit(&backend);
+        permit
+            .attach_run_ownership(owned_backfill_run(
+                grimodex_db::workspace_lifecycle::RunCreationState::CreationUnknown,
+                "run-creation-unknown",
+            ))
+            .expect("attach CreationUnknown Run");
+        let pinned = active_database(&backend.state.ws).expect("pinned authority");
+        let evidence = join_evidence(&backend, FailureClass::Error, true);
+        let result =
+            finalize_automatic_maintenance_permit(&backend.state, permit, evidence, body_error())
+                .expect("finalizer");
+        let descriptor = assert_transferred_to_recovery(&backend, &before, result);
+        let run = descriptor.run.expect("descriptor keeps the exact Run");
+        assert_eq!(run.handle.run_id, "run-creation-unknown");
+        assert_eq!(
+            run.state,
+            grimodex_db::workspace_lifecycle::RunCreationState::CreationUnknown
+        );
+        assert!(
+            run.handle.connection_retired,
+            "the closed connection must be recorded on the transferred Run"
+        );
+        assert!(!pinned.db().connection_reusable());
+        drop(pinned);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn automatic_error_with_quarantined_cleanup_transfers_without_run_ownership() {
+        // The attempt receipt reports failed cleanup even though the
+        // process-local flag still reads reusable.
+        let (backend, root) = backend_with_active_workspace("auto-transfer-receipt-quarantine");
+        let before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        let permit = admitted_started_permit(&backend);
+        let evidence = join_evidence(&backend, FailureClass::Error, false);
+        let result =
+            finalize_automatic_maintenance_permit(&backend.state, permit, evidence, body_error())
+                .expect("finalizer");
+        let descriptor = assert_transferred_to_recovery(&backend, &before, result);
+        assert!(descriptor.run.is_none());
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+
+        // A clean receipt is not enough when the pinned connection is no
+        // longer reusable at Join.
+        let (backend, root) = backend_with_active_workspace("auto-transfer-live-quarantine");
+        let before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        let permit = admitted_started_permit(&backend);
+        let evidence = join_evidence(&backend, FailureClass::Error, true);
+        evidence
+            .authority
+            .as_ref()
+            .expect("pinned authority")
+            .db()
+            .retire_connection_for_recovery()
+            .expect("quarantine the pinned connection");
+        let result =
+            finalize_automatic_maintenance_permit(&backend.state, permit, evidence, body_error())
+                .expect("finalizer");
+        assert_transferred_to_recovery(&backend, &before, result);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn automatic_panic_or_join_failure_transfers_unconditionally() {
+        for (label, failure_class) in [
+            ("auto-transfer-panic", FailureClass::Panic),
+            ("auto-transfer-join", FailureClass::Join),
+        ] {
+            let (backend, root) = backend_with_active_workspace(label);
+            let before = backend
+                .state
+                .workspace_lifecycle
+                .lifecycle_snapshot()
+                .expect("snapshot");
+            let permit = admitted_started_permit(&backend);
+            let evidence = join_evidence(&backend, failure_class, true);
+            let result = finalize_automatic_maintenance_permit(
+                &backend.state,
+                permit,
+                evidence,
+                body_error(),
+            )
+            .expect("finalizer");
+            let descriptor = assert_transferred_to_recovery(&backend, &before, result);
+            assert!(descriptor.run.is_none());
+            drop(backend);
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    /// Discover the canonical Backfill and run it through the public N-API
+    /// cycle under a fresh Native attempt.
+    async fn run_discovered_backfill_cycle(backend: &Backend, attempt_id: &str) -> Result<String> {
+        let discovery: serde_json::Value = serde_json::from_str(
+            &backend
+                .discover_narrative_maintenance_work("workspace-opened".to_string())
+                .await
+                .expect("public discovery"),
+        )
+        .expect("discovery JSON");
+        let work = discovery["pages"][0]["work"][0].clone();
+        assert_eq!(work["runKind"], "backfill");
+        let binding = discovery["workspaceBinding"].clone();
+        backend
+            .begin_narrative_maintenance_attempt(attempt_id.to_owned(), binding.clone())
+            .await
+            .expect("begin attempt");
+        backend
+            .run_narrative_maintenance_cycle(serde_json::json!({
+                "attemptId": attempt_id,
+                "work": [work],
+                "wakeProjectIds": [],
+                "workspaceBinding": binding,
+            }))
+            .await
+    }
+
+    fn backfill_runs(authority: &PinnedWorkspaceDb) -> Vec<(String, String)> {
+        authority
+            .db()
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, status FROM narrative_extraction_runs
+                      WHERE run_kind = 'backfill'
+                      ORDER BY created_at ASC, id ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("read Backfill runs")
+    }
+
+    #[tokio::test]
+    async fn napi_injected_transient_error_after_join_releases_without_workspace_recovery() {
+        let (backend, root) = backend_with_active_workspace("napi-transient-release");
+        backend
+            .state
+            .narrative_maintenance_ci_seam
+            .configure(NarrativeMaintenanceCiConfig {
+                is_packaged: false,
+                ci: "true".to_string(),
+                owner_token: grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+                fault: Some(NarrativeMaintenanceCiFault::TransientIo),
+                trigger: None,
+                setup: None,
+                freshness_hold_project_id: None,
+                product_journey_barrier_id: None,
+                correlation: None,
+            })
+            .expect("configure transient fault seam");
+        let before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        let attempt_id = "attempt-napi-transient-release";
+
+        let error = run_discovered_backfill_cycle(&backend, attempt_id)
+            .await
+            .expect_err("the injected transient fault reaches main as an error");
+        assert!(
+            error.to_string().contains("NEX_MAINTENANCE_TRANSIENT"),
+            "unexpected error: {error}"
+        );
+        let after = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        assert_eq!(after, before, "lifecycle revision must not change");
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptor ids")
+            .is_empty());
+        let receipt: serde_json::Value = serde_json::from_str(
+            &backend
+                .cancel_narrative_maintenance_attempt(attempt_id.to_owned(), "closed".to_owned())
+                .await
+                .expect("terminal receipt"),
+        )
+        .expect("receipt JSON");
+        assert_eq!(receipt["state"], "interrupted");
+        assert_eq!(receipt["stopReason"], serde_json::Value::Null);
+        assert_eq!(receipt["cleanup"]["status"], "clean");
+        assert_eq!(receipt["connectionReusable"], true);
+        let authority = active_database(&backend.state.ws).expect("authority stays active");
+        assert!(authority.db().connection_reusable());
+        let runs = backfill_runs(&authority);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].1, "failed");
+
+        // The released admission accepts the next supervised execution; the
+        // durable retry boundary keeps it from creating a Run early.
+        let follow_up: serde_json::Value = serde_json::from_str(
+            &run_discovered_backfill_cycle(&backend, "attempt-napi-transient-follow-up")
+                .await
+                .expect("follow-up cycle is admitted"),
+        )
+        .expect("follow-up JSON");
+        assert_eq!(follow_up["status"], "accepted");
+        assert_eq!(follow_up["hasMore"], true);
+        drop(authority);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Make the Backfill transform fail with an ordinary SQL error after its
+    /// Run was created, without touching the tables used by finalization.
+    fn shadow_legacy_applications(authority: &PinnedWorkspaceDb) {
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute_batch("CREATE TEMP TABLE narrative_proposal_applications (id TEXT);")?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("shadow legacy applications");
+    }
+
+    #[tokio::test]
+    async fn napi_backfill_failure_committed_before_hook_releases_normally() {
+        let (backend, root) = backend_with_active_workspace("napi-terminalized-release");
+        let authority = active_database(&backend.state.ws).expect("authority");
+        shadow_legacy_applications(&authority);
+        let before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+
+        let error = run_discovered_backfill_cycle(&backend, "attempt-napi-terminalized")
+            .await
+            .expect_err("the failed Backfill reaches main as an error");
+        assert!(
+            !error.to_string().contains("RECOVERY"),
+            "unexpected error: {error}"
+        );
+        let after = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        assert_eq!(
+            after, before,
+            "a committed terminalization must release normally"
+        );
+        assert!(backend
+            .state
+            .workspace_lifecycle
+            .recovery_descriptor_ids()
+            .expect("descriptor ids")
+            .is_empty());
+        assert!(authority.db().connection_reusable());
+        let runs = backfill_runs(&authority);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].1, "failed");
+        drop(authority);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn napi_backfill_terminalization_rollback_keeps_run_for_recovery() {
+        let (backend, root) = backend_with_active_workspace("napi-terminalization-rollback");
+        let authority = active_database(&backend.state.ws).expect("authority");
+        shadow_legacy_applications(&authority);
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TEMP TRIGGER reject_failed_terminalization
+                       BEFORE UPDATE OF status ON main.narrative_extraction_runs
+                       WHEN NEW.status = 'failed'
+                     BEGIN
+                       SELECT RAISE(ABORT, 'injected terminalization failure');
+                     END;",
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("install terminalization failure");
+        let before = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("snapshot");
+        drop(authority);
+
+        let result = run_discovered_backfill_cycle(&backend, "attempt-napi-rollback")
+            .await
+            .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")));
+        let descriptor = assert_transferred_to_recovery(&backend, &before, result);
+        let run = descriptor.run.expect("descriptor keeps the unfinished Run");
+        assert_eq!(run.handle.kind, "backfill");
+        let replacement_db =
+            Database::new(&root.join("workspace/grimodex.db")).expect("replacement database");
+        let status: String = replacement_db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    [&run.handle.run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read Run status");
+        assert_eq!(
+            status, "running",
+            "a rolled-back terminalization left the Run active"
+        );
+        drop(replacement_db);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn retain_maintenance_descriptor(backend: &Backend) -> grimodex_db::RecoveryDescriptorId {

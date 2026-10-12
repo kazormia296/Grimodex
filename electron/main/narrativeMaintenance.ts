@@ -1009,6 +1009,10 @@ const NARRATIVE_VERIFY_GRAPH_STATE_CHANGED_FAILURE_CODE =
   "NEX_VERIFY_GRAPH_STATE_CHANGED";
 const NARRATIVE_MAINTENANCE_ATTEMPT_CANCELLED_CODE =
   "NEX_MAINTENANCE_ATTEMPT_CANCELLED";
+// Native drains an automatic cycle for a Workspace transition with this code;
+// once its permit is released normally it reaches main as a rejection.
+const NARRATIVE_MAINTENANCE_LIFECYCLE_STOP_REQUESTED_CODE =
+  "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED";
 const NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE =
   "NEX_MAINTENANCE_CONNECTION_PREEMPTED";
 
@@ -1036,6 +1040,10 @@ function isControlledMaintenanceInterruption(error: unknown): boolean {
   const message = errorMessage(error);
   return (
     hasExactFailureCode(message, NARRATIVE_MAINTENANCE_ATTEMPT_CANCELLED_CODE) ||
+    hasExactFailureCode(
+      message,
+      NARRATIVE_MAINTENANCE_LIFECYCLE_STOP_REQUESTED_CODE,
+    ) ||
     message?.startsWith(NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE) ===
       true ||
     message?.includes("NEX_VALIDATION_TERMINATED:foreground-preempted") === true
@@ -4139,12 +4147,24 @@ export function createNarrativeMaintenanceScheduler(
             requeuedCount === 0 ||
             (!nativeCallStarted &&
               nativeTerminalReceipt === null &&
-              !nativeAttemptIds.has(cycleAttemptId ?? ""))
+              !nativeAttemptIds.has(cycleAttemptId ?? "")) ||
+            (!haltForProcessInterruption &&
+              nativeTerminalReceipt?.state === "interrupted" &&
+              nativeTerminalReceipt.stopReason === null &&
+              terminalReceiptAllowsDeliveryRetirement())
           ) {
             // Every claimed item has either been durably recorded as a
             // delivery failure or there was no item left to retry. The
             // transport record can retire; any Native recovery descriptor is
             // independent and remains owned by its root.
+            //
+            // A rejected Native call whose exact attempt already produced an
+            // uncancelled interrupted terminal receipt is not an ambiguous
+            // admission: Native released or transferred the execution after
+            // Join before rejecting. Its delivery record only holds the
+            // `maintenance-native-error` placeholder, so replaying it cannot
+            // resume the work. Retire it (Native ACKs terminal records only)
+            // and let the requeued work take a fresh supervised delivery.
             await retireCurrentDelivery();
           }
           if (haltForProcessInterruption) {

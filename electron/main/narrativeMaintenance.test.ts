@@ -4394,6 +4394,295 @@ describe("narrative maintenance scheduler", () => {
     expect(rendered).toMatch(/\b(?:error|errors|failed|failure)\b/i);
   });
 
+  it("retries a normally released Native transient error as a fresh supervised execution", async () => {
+    // Models the Native contract after a post-Join Err whose lifecycle permit
+    // was released normally: the delivery record is terminal with the
+    // `maintenance-native-error` placeholder, the attempt receipt is an
+    // uncancelled interruption with a clean reusable connection, and no
+    // recovery descriptor exists.
+    const binding = {
+      authorityId: "authority-transient-release",
+      generation: 3,
+    };
+    const workItem = work(
+      "project-transient-release",
+      "backfill",
+      "backfill:v2",
+      "opened",
+    );
+    const workKey = canonicalNarrativeMaintenanceWorkKey(workItem);
+    let highWater = 0;
+    const records = new Map<number, string>();
+    const fenced = new Set<number>();
+    const attemptOutcomes = new Map<string, "failed" | "succeeded">();
+    const freshExecutions: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      async (request: NarrativeMaintenanceCycleRequest) => {
+        const sequence = request.deliverySequence;
+        if (sequence === undefined)
+          throw new Error("delivery sequence required");
+        const replay = records.get(sequence);
+        if (replay !== undefined) return replay;
+        if (sequence !== highWater + 1) {
+          return JSON.stringify({
+            status: "workspace-unavailable",
+            reason: "maintenance-delivery-sequence-invalid",
+          });
+        }
+        highWater = sequence;
+        freshExecutions.push(request);
+        if (freshExecutions.length === 1) {
+          records.set(
+            sequence,
+            JSON.stringify({
+              status: "workspace-unavailable",
+              reason: "maintenance-native-error",
+            }),
+          );
+          if (request.attemptId)
+            attemptOutcomes.set(request.attemptId, "failed");
+          throw new Error(
+            "NEX_MAINTENANCE_TRANSIENT: injected maintenance fault",
+          );
+        }
+        const accepted = JSON.stringify(acceptedCycle());
+        records.set(sequence, accepted);
+        if (request.attemptId)
+          attemptOutcomes.set(request.attemptId, "succeeded");
+        return accepted;
+      },
+    );
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const succeeded = attemptOutcomes.get(attemptId) === "succeeded";
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: succeeded ? "succeeded" : "interrupted",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: succeeded ? binding.generation : null,
+        works: succeeded ? [{ workKey, status: "succeeded" }] : [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const resolveNarrativeMaintenanceDelivery = vi.fn(
+      async (sequence: number) => {
+        if (sequence === highWater + 1) {
+          highWater = sequence;
+          fenced.add(sequence);
+          return { Fenced: { sequence } };
+        }
+        return fenced.has(sequence)
+          ? { AlreadyFenced: { sequence } }
+          : { OutOfOrder: { expected: highWater + 1, received: sequence } };
+      },
+    );
+    const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+      fenced.delete(sequence);
+      records.delete(sequence);
+      return { status: "retired" as const };
+    });
+    const recordNarrativeMaintenanceDeliveryFailure = vi
+      .fn()
+      .mockResolvedValue({
+        status: "accepted",
+        receiptId: "unexpected-delivery-failure",
+      });
+    const { scheduler, warn } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+      resolveNarrativeMaintenanceDelivery,
+      ackNarrativeMaintenanceDelivery,
+      recordNarrativeMaintenanceDeliveryFailure,
+    });
+
+    scheduler.request(workItem);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(freshExecutions).toHaveLength(1);
+    for (
+      let step = 0;
+      step < NARRATIVE_MAINTENANCE_MAX_RETRIES + 2;
+      step += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    // The released transient error consumes one bounded retry and is then
+    // dispatched as a new supervised delivery and attempt. Replaying the
+    // terminal `maintenance-native-error` placeholder would park the work as
+    // an unresolved workspace completion instead.
+    expect(freshExecutions).toHaveLength(2);
+    expect(freshExecutions[1]?.deliverySequence).toBe(2);
+    expect(freshExecutions[1]?.attemptId).toBeTypeOf("string");
+    expect(freshExecutions[1]?.attemptId).not.toBe(
+      freshExecutions[0]?.attemptId,
+    );
+    expect(freshExecutions[1]?.work).toEqual(freshExecutions[0]?.work);
+    expect(ackNarrativeMaintenanceDelivery).toHaveBeenCalledWith(1);
+    expect(recordNarrativeMaintenanceDeliveryFailure).not.toHaveBeenCalled();
+    const rendered = renderedWarnings(warn).join("\n");
+    expect(rendered).toContain(
+      "NEX_MAINTENANCE_TRANSIENT retry scheduled (1 queued, attempt 1/",
+    );
+    expect(rendered).not.toContain("parking trigger");
+    expect(records.size).toBe(0);
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+  });
+
+  it("treats a released lifecycle stop request as a controlled interruption without spending retries", async () => {
+    // Models the Native contract after a post-Join Err whose lifecycle permit
+    // was released normally: the delivery record is terminal with the
+    // `maintenance-native-error` placeholder, the attempt receipt is an
+    // uncancelled interruption with a clean reusable connection, and no
+    // recovery descriptor exists.
+    const binding = {
+      authorityId: "authority-stop-release",
+      generation: 3,
+    };
+    const workItem = work(
+      "project-stop-release",
+      "backfill",
+      "backfill:v2",
+      "opened",
+    );
+    const workKey = canonicalNarrativeMaintenanceWorkKey(workItem);
+    // More consecutive transition drains than the bounded retry budget.
+    const stopRequestedCycles = NARRATIVE_MAINTENANCE_MAX_RETRIES + 1;
+    let highWater = 0;
+    const records = new Map<number, string>();
+    const fenced = new Set<number>();
+    const attemptOutcomes = new Map<string, "failed" | "succeeded">();
+    const freshExecutions: NarrativeMaintenanceCycleRequest[] = [];
+    const runNarrativeMaintenanceCycle = vi.fn(
+      async (request: NarrativeMaintenanceCycleRequest) => {
+        const sequence = request.deliverySequence;
+        if (sequence === undefined)
+          throw new Error("delivery sequence required");
+        const replay = records.get(sequence);
+        if (replay !== undefined) return replay;
+        if (sequence !== highWater + 1) {
+          return JSON.stringify({
+            status: "workspace-unavailable",
+            reason: "maintenance-delivery-sequence-invalid",
+          });
+        }
+        highWater = sequence;
+        freshExecutions.push(request);
+        if (freshExecutions.length <= stopRequestedCycles) {
+          records.set(
+            sequence,
+            JSON.stringify({
+              status: "workspace-unavailable",
+              reason: "maintenance-native-error",
+            }),
+          );
+          if (request.attemptId)
+            attemptOutcomes.set(request.attemptId, "failed");
+          throw new Error(
+            "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: workspace transition is draining maintenance",
+          );
+        }
+        const accepted = JSON.stringify(acceptedCycle());
+        records.set(sequence, accepted);
+        if (request.attemptId)
+          attemptOutcomes.set(request.attemptId, "succeeded");
+        return accepted;
+      },
+    );
+    const beginNarrativeMaintenanceAttempt = vi.fn(
+      (attemptId: string, receivedBinding: typeof binding) =>
+        JSON.stringify({
+          status: "open",
+          attemptId,
+          authorityId: receivedBinding.authorityId,
+          generation: receivedBinding.generation,
+        }),
+    );
+    const cancelNarrativeMaintenanceAttempt = vi.fn((attemptId: string) => {
+      const succeeded = attemptOutcomes.get(attemptId) === "succeeded";
+      return JSON.stringify({
+        schemaVersion: 1,
+        attemptId,
+        state: succeeded ? "succeeded" : "interrupted",
+        stopReason: null,
+        generation: binding.generation,
+        workspaceBinding: binding,
+        publishedGeneration: succeeded ? binding.generation : null,
+        works: succeeded ? [{ workKey, status: "succeeded" }] : [],
+        cleanup: { status: "clean" },
+        connectionReusable: true,
+      });
+    });
+    const resolveNarrativeMaintenanceDelivery = vi.fn(
+      async (sequence: number) => {
+        if (sequence === highWater + 1) {
+          highWater = sequence;
+          fenced.add(sequence);
+          return { Fenced: { sequence } };
+        }
+        return fenced.has(sequence)
+          ? { AlreadyFenced: { sequence } }
+          : { OutOfOrder: { expected: highWater + 1, received: sequence } };
+      },
+    );
+    const ackNarrativeMaintenanceDelivery = vi.fn(async (sequence: number) => {
+      fenced.delete(sequence);
+      records.delete(sequence);
+      return { status: "retired" as const };
+    });
+    const recordNarrativeMaintenanceDeliveryFailure = vi
+      .fn()
+      .mockResolvedValue({
+        status: "accepted",
+        receiptId: "unexpected-delivery-failure",
+      });
+    const { scheduler, warn } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+      beginNarrativeMaintenanceAttempt,
+      cancelNarrativeMaintenanceAttempt,
+      resolveNarrativeMaintenanceDelivery,
+      ackNarrativeMaintenanceDelivery,
+      recordNarrativeMaintenanceDeliveryFailure,
+    });
+
+    scheduler.request(workItem);
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(freshExecutions).toHaveLength(1);
+    for (let step = 0; step < stopRequestedCycles + 2; step += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    // A transition drain is a controlled interruption: each one requeues the
+    // work as a fresh delivery without consuming the bounded retry budget, so
+    // repeated drains never persist a "retry exhausted" delivery failure.
+    expect(freshExecutions).toHaveLength(stopRequestedCycles + 1);
+    expect(
+      new Set(freshExecutions.map((request) => request.attemptId)).size,
+    ).toBe(stopRequestedCycles + 1);
+    expect(recordNarrativeMaintenanceDeliveryFailure).not.toHaveBeenCalled();
+    const rendered = renderedWarnings(warn).join("\n");
+    expect(rendered).not.toContain("background cycle failed");
+    expect(rendered).not.toContain("parking trigger");
+    expect(records.size).toBe(0);
+    await expect(scheduler.dispose()).resolves.toBeUndefined();
+  });
+
   it("malformed native cycle JSON is retried instead of being treated as a successful drain", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
