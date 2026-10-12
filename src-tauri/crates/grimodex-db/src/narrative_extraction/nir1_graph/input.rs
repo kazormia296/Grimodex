@@ -1581,11 +1581,13 @@ mod disclosure_tests {
 mod plan_tests {
     use super::*;
 
-    // CQ-2 open gap: narrative_proposal_decisions has no revision/proposal
-    // index, so these three charges scan every Decision in the workspace.
-    // The pin fails once an index lands; then delete this list.
-    const UNINDEXED_DECISION_SCANS: &[&str] =
+    // CQ-2: these charges read the seed Revision's Decisions. They must seek
+    // SCHEMA 42's Revision index: a scan follows every workspace Decision, and
+    // the Proposal index would also read the seed Proposal's other Revisions.
+    const REVISION_DECISION_CHARGES: &[&str] =
         &["A2 length", "A3 global rows 7", "A3 global bytes 7"];
+    const REVISION_DECISION_SEEK: &str =
+        "INDEX idx_narrative_decisions_revision_proposal (revision_id=?";
 
     fn a2_a3_statements() -> Vec<(String, &'static str)> {
         let mut statements = vec![
@@ -1641,8 +1643,8 @@ mod plan_tests {
             .filter(|line| line.contains("TEMP B-TREE") || line.contains("AUTOMATIC"))
             .cloned()
             .collect::<Vec<_>>();
-        // Only one-row subqueries, the bounded Revision's json_each and the
-        // documented Decision gap may be scanned.
+        // Only one-row subqueries and the bounded Revision's json_each may be
+        // scanned.
         let mut derived = plan
             .iter()
             .filter_map(|line| {
@@ -1653,23 +1655,25 @@ mod plan_tests {
         if derived.contains(&"material") {
             derived.push("m");
         }
-        let gap = UNINDEXED_DECISION_SCANS.contains(&label);
-        let mut decision_scans = 0;
         for line in plan {
             let Some(scanned) = line.strip_prefix("SCAN ") else {
                 continue;
             };
-            if gap && line == "SCAN d" {
-                decision_scans += 1;
-            } else if !(scanned.contains(" VIRTUAL TABLE ")
+            if !(scanned.contains(" VIRTUAL TABLE ")
                 || scanned == "CONSTANT ROW"
                 || derived.contains(&scanned.split(' ').next().unwrap()))
             {
                 violations.push(line.clone());
             }
         }
-        if decision_scans != usize::from(gap) {
-            violations.push(format!("documented Decision scans: {decision_scans}"));
+        let decision_seeks = plan
+            .iter()
+            .filter(|line| {
+                line.starts_with("SEARCH d USING ") && line.contains(REVISION_DECISION_SEEK)
+            })
+            .count();
+        if decision_seeks != usize::from(REVISION_DECISION_CHARGES.contains(&label)) {
+            violations.push(format!("Revision index Decision seeks: {decision_seeks}"));
         }
         // JSON1 expansion is only allowed over the one seed Revision.
         if sql.contains("narrative_proposal_revisions")
@@ -1701,22 +1705,30 @@ mod plan_tests {
                 );
             }
             // Negative controls on the same schema: each regression is reported.
-            for (sql, expected) in [
+            for (label, sql, expected) in [
                 (
-                    "SELECT COUNT(*) FROM narrative_proposal_decisions d WHERE d.revision_id=?1",
+                    "negative control",
+                    "SELECT COUNT(*) FROM narrative_proposal_decisions d WHERE d.decision=?1",
                     vec!["SCAN d"],
                 ),
                 (
+                    "A2 length",
+                    "SELECT COUNT(*) FROM narrative_proposal_decisions d WHERE d.proposal_id=?1",
+                    vec!["Revision index Decision seeks: 0"],
+                ),
+                (
+                    "negative control",
                     "SELECT COUNT(*) FROM narrative_proposal_revisions v, json_each(v.payload_json)",
                     vec!["SCAN v", "Revision is not sought by id"],
                 ),
                 (
+                    "negative control",
                     "SELECT t.id FROM tree_nodes t WHERE t.project_id=?1 ORDER BY t.content",
                     vec!["USE TEMP B-TREE FOR ORDER BY"],
                 ),
             ] {
                 assert_eq!(
-                    plan_violations("negative control", sql, &query_plan(conn, sql)),
+                    plan_violations(label, sql, &query_plan(conn, sql)),
                     expected,
                     "{sql}"
                 );

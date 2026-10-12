@@ -1356,7 +1356,7 @@ mod tests {
         let schema_version: i32 = db
             .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
             .expect("read migrated version");
-        assert_eq!(schema_version, 41);
+        assert_eq!(schema_version, grimodex_core::SCHEMA_VERSION);
 
         let (_, empty_message) = seed_renderer_chat_message(&db, "empty");
         let codex_id = "renderer-cascade-codex-empty";

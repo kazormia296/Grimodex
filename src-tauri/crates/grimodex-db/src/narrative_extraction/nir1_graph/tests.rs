@@ -360,13 +360,39 @@ fn unrelated_payload_revisions_do_not_change_seed_a2_a3_steps_or_admission() -> 
     Ok(())
 }
 
-// Acceptance in waiting: narrative_proposal_decisions has no revision or
-// proposal index, so three A2/A3 charges scan every workspace Decision.
+// CQ-2 acceptance: SCHEMA 42's Decision Revision index keeps the three
+// Decision charges (A2 length, A3 global rows/bytes 7) on the seed Revision, so
+// decided unrelated Revisions never change admission and steps do not grow with
+// them. The one bounded difference is the B-tree end: a seek that stops at a
+// following unrelated key takes one more loop check than a seek that stops at
+// the end of the index, so the first unrelated Decision may add at most one
+// step per Decision seek, and 600 -> 6,000 adds none.
 #[test]
-#[ignore = "CQ-2 HOLD: needs a narrative_proposal_decisions revision index migration"]
 fn unrelated_decided_revisions_do_not_change_seed_a2_a3_steps() -> Result<()> {
+    const A2_DECISION_SEEKS: u64 = 1;
+    const A3_DECISION_SEEKS: u64 = 2;
     let decided = seed_usage_with_unrelated_revisions(true)?;
-    assert_eq!(decided, vec![decided[0]; UNRELATED_REVISION_STEPS.len()]);
+    let [none, some, many] = decided.as_slice() else {
+        panic!("three measurements: {decided:?}");
+    };
+    assert!(none.a2_steps > 0 && none.a3_steps > 0);
+    let admission =
+        |usage: &SeedAdmissionUsage| (usage.a2_rows, usage.a2_bytes, usage.a3_rows, usage.a3_bytes);
+    assert!(
+        decided
+            .iter()
+            .all(|usage| admission(usage) == admission(none)),
+        "{decided:?}"
+    );
+    assert_eq!(
+        some, many,
+        "Decision growth must not reach the seed's steps"
+    );
+    assert!(
+        (none.a2_steps..=none.a2_steps + A2_DECISION_SEEKS).contains(&some.a2_steps)
+            && (none.a3_steps..=none.a3_steps + A3_DECISION_SEEKS).contains(&some.a3_steps),
+        "only the index-end boundary may differ: {decided:?}"
+    );
     Ok(())
 }
 

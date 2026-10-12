@@ -128,6 +128,25 @@ pub const NIR1_CHAT_INPUT_SUBMISSION_KEY_DELETE_TRIGGER_SQL: &str =
          SELECT RAISE(ABORT, 'NIR1_CHAT_SUBMISSION_KEY_IMMUTABLE');
      END";
 
+/// SCHEMA 42 Decision lookup indexes as `(table, index, key columns)`.
+/// `narrative_proposal_decisions` had only its primary key, so reading the
+/// Decisions of one Revision, or the latest Decision of one Proposal, scanned
+/// every Decision in the workspace. The checkpoint and `migrate.rs` share this
+/// definition so the installed shape and the probed shape cannot drift. Both
+/// are plain lookups: a Revision or Proposal may carry several Decisions.
+pub const NARRATIVE_DECISION_LOOKUP_INDEXES: &[(&str, &str, &[&str])] = &[
+    (
+        "narrative_proposal_decisions",
+        "idx_narrative_decisions_revision_proposal",
+        &["revision_id", "proposal_id"],
+    ),
+    (
+        "narrative_proposal_decisions",
+        "idx_narrative_decisions_proposal_created_id",
+        &["proposal_id", "created_at", "id"],
+    ),
+];
+
 const AI_AUDIT_COLUMNS: &[(&str, &str, bool, i32)] = &[
     ("id", "INTEGER", false, 1),
     ("scope_id", "TEXT", true, 0),
@@ -703,9 +722,12 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// is inserted, including inserts from another WAL connection. Version 41
 /// replaces capture parent cascades with exact Native-owned delete triggers and
 /// RESTRICT foreign keys so ordinary renderer chat deletion cannot be denied
-/// by the protected capture authorizer.
+/// by the protected capture authorizer. Version 42 adds the plain
+/// [`NARRATIVE_DECISION_LOOKUP_INDEXES`] without changing any table, column
+/// or row, so Decision reads for one Revision or Proposal stop scanning the
+/// workspace.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 41
+    Ok(SCHEMA_VERSION == 42
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -752,6 +774,7 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v39_chat_input_submission_key_storage(conn)?
         && has_v40_chat_input_capture_new_human_trigger(conn)?
         && has_v41_chat_input_capture_lifecycle(conn)?
+        && has_plain_query_indexes(conn, NARRATIVE_DECISION_LOOKUP_INDEXES)?
         && has_current_query_indexes(conn)?
         // The durable wake outbox and the V2 pointer monotonicity guard ship
         // as an in-version repair of SCHEMA 34: their absence forces a full
@@ -1280,47 +1303,59 @@ fn has_v35_nir1_index_storage(conn: &Connection) -> anyhow::Result<bool> {
 /// checkpoint. Older workspaces repair them through the idempotent migrator
 /// instead of repeatedly scanning unrelated projects, Runs and Attempts.
 fn has_current_query_indexes(conn: &Connection) -> anyhow::Result<bool> {
-    for (table, name, expected_columns) in [
-        (
-            "change_events",
-            "idx_change_events_project_domain_op_entity_seq",
-            ["project_id", "domain", "op_type", "entity_id", "sequence"].as_slice(),
-        ),
-        (
-            "state_snapshots",
-            "idx_state_snap_project_domain_type_entity_seq",
-            [
-                "project_id",
-                "domain",
-                "entity_id",
-                "entity_type",
-                "anchor_sequence",
-            ]
-            .as_slice(),
-        ),
-        (
-            "narrative_extraction_tasks",
-            "idx_narrative_tasks_run_kind_status",
-            ["run_id", "task_kind", "status"].as_slice(),
-        ),
-        (
-            "narrative_extraction_attempts",
-            "idx_narrative_attempts_task_number_status",
-            ["task_id", "attempt_number", "status"].as_slice(),
-        ),
-        (
-            "narrative_extraction_artifacts",
-            "idx_narrative_artifacts_run_task_attempt_kind",
-            [
-                "run_id",
-                "task_id",
-                "attempt_id",
-                "artifact_kind",
-                "payload_storage",
-            ]
-            .as_slice(),
-        ),
-    ] {
+    has_plain_query_indexes(
+        conn,
+        &[
+            (
+                "change_events",
+                "idx_change_events_project_domain_op_entity_seq",
+                &["project_id", "domain", "op_type", "entity_id", "sequence"],
+            ),
+            (
+                "state_snapshots",
+                "idx_state_snap_project_domain_type_entity_seq",
+                &[
+                    "project_id",
+                    "domain",
+                    "entity_id",
+                    "entity_type",
+                    "anchor_sequence",
+                ],
+            ),
+            (
+                "narrative_extraction_tasks",
+                "idx_narrative_tasks_run_kind_status",
+                &["run_id", "task_kind", "status"],
+            ),
+            (
+                "narrative_extraction_attempts",
+                "idx_narrative_attempts_task_number_status",
+                &["task_id", "attempt_number", "status"],
+            ),
+            (
+                "narrative_extraction_artifacts",
+                "idx_narrative_artifacts_run_task_attempt_kind",
+                &[
+                    "run_id",
+                    "task_id",
+                    "attempt_id",
+                    "artifact_kind",
+                    "payload_storage",
+                ],
+            ),
+        ],
+    )
+}
+
+/// Every index exists on its own table as a plain (non-unique, non-partial)
+/// index over exactly these key columns, in order. `migrate.rs`'s
+/// `repair_query_indexes` replaces any other shape by the same criteria, so a
+/// repaired workspace always satisfies this probe instead of replaying forever.
+fn has_plain_query_indexes(
+    conn: &Connection,
+    indexes: &[(&str, &str, &[&str])],
+) -> anyhow::Result<bool> {
+    for &(table, name, expected_columns) in indexes {
         let properties = conn
             .query_row(
                 &format!(
