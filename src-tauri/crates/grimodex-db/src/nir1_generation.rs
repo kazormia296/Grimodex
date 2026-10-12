@@ -33,9 +33,12 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
+use crate::narrative_extraction::nir1_capacity::{
+    check_active_capacity, with_capacity_scope, CapacityBudget,
+};
 use crate::narrative_extraction::{
-    validation_terminated, with_immediate_transaction, ValidationTerminated,
-    ValidationTerminationReason,
+    validation_terminated, with_immediate_transaction, GraphWorkControl, GraphWorkStage,
+    ValidationTerminated, ValidationTerminationReason,
 };
 use crate::narrative_maintenance_connection::{
     ParticipantSqlControl, ParticipantSqlFence, ParticipantSqlOperationBudget,
@@ -390,6 +393,10 @@ pub struct ReadBudget {
 #[derive(Debug)]
 pub(crate) struct GenerationHistoryReadBudget {
     pub max_attempts: usize,
+    /// Caller-owned whole-turn SQLite VM-step, deadline, and busy-wait
+    /// ledger. `None` rejects every snapshot before SQL; storage has no
+    /// history SQL default.
+    pub sql: Option<GenerationHistorySqlLedger>,
     /// Caller-owned upper bound for one candidate page. The storage reader
     /// never chooses a product default; the adapter checks this before it
     /// opens a transaction or allocates traversal results.
@@ -397,6 +404,9 @@ pub(crate) struct GenerationHistoryReadBudget {
     pub max_reference_count: usize,
     pub max_reference_bytes: usize,
     pub max_resolved_body_bytes: usize,
+    /// Caller-owned whole-turn project-authority row allowance. Debit once
+    /// per tree, Scene-binding, and registry row; zero fails closed.
+    pub remaining_project_authority_rows: usize,
     /// Caller-owned whole-turn traversal limits. These counters are shared
     /// with the pure history walk; they are deliberately not defaults owned
     /// by storage and are never reset for a candidate or ancestor.
@@ -405,7 +415,110 @@ pub(crate) struct GenerationHistoryReadBudget {
     pub remaining_qualification_refs: usize,
 }
 
+/// Caller-selected SQL limits for one history turn. The numbers are measured
+/// by the owner; this storage layer never supplies defaults.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct GenerationHistorySnapshotSqlBudget {
+    pub max_vm_steps: u64,
+    pub deadline: Instant,
+    /// Upper bound for one SQLite busy wait; it is further clipped to the
+    /// remaining deadline. Zero refuses to wait.
+    pub busy_wait: Duration,
+}
+
+/// One turn's SQL counter. The VM-step counter is created with the ledger and
+/// shared by every snapshot call that receives it, so separate direct calls
+/// never replenish the caller's allowance.
+#[derive(Debug)]
+pub(crate) struct GenerationHistorySqlLedger {
+    limits: GenerationHistorySnapshotSqlBudget,
+    capacity: Arc<CapacityBudget>,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the turn owner that measures and supplies history SQL limits is not wired yet"
+    )
+)]
+impl GenerationHistorySqlLedger {
+    pub(crate) fn new(limits: GenerationHistorySnapshotSqlBudget) -> Self {
+        Self {
+            limits,
+            capacity: CapacityBudget::new(limits.max_vm_steps, limits.deadline),
+        }
+    }
+
+    pub(crate) fn sql_steps_used(&self) -> u64 {
+        self.capacity.sql_steps_used()
+    }
+}
+
+/// The SQL limits admitted for one snapshot call, checked before any SQL.
+struct AdmittedHistorySql {
+    capacity: Arc<CapacityBudget>,
+    deadline: Instant,
+    busy_wait: Duration,
+}
+
 impl GenerationHistoryReadBudget {
+    fn admit_sql(
+        &self,
+        cancellation: &GenerationHistorySnapshotCancellation,
+    ) -> Result<AdmittedHistorySql> {
+        cancellation.checkpoint()?;
+        let ledger = self
+            .sql
+            .as_ref()
+            .context("NIR1_GENERATION_HISTORY_SQL_BUDGET_MISSING")?;
+        ensure!(
+            ledger.limits.max_vm_steps > 0,
+            "NIR1_GENERATION_HISTORY_SQL_BUDGET_INVALID"
+        );
+        // Any SQL statement costs at least one VM step, so a fully used
+        // turn ledger is refused here instead of by an interrupt.
+        if ledger.capacity.sql_steps_used() >= ledger.limits.max_vm_steps {
+            return Err(validation_terminated(
+                ValidationTerminationReason::CapacityExceeded,
+                "generation history SQL budget exhausted",
+            ));
+        }
+        let deadline = cancellation
+            .deadline
+            .map_or(ledger.limits.deadline, |owner| {
+                owner.min(ledger.limits.deadline)
+            });
+        if Instant::now() >= deadline {
+            return Err(validation_terminated(
+                ValidationTerminationReason::TimedOut,
+                "generation history SQL deadline elapsed",
+            ));
+        }
+        Ok(AdmittedHistorySql {
+            capacity: Arc::clone(&ledger.capacity),
+            deadline,
+            busy_wait: ledger.limits.busy_wait,
+        })
+    }
+
+    /// Debit one caller-owned whole-turn project-authority row.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "bounded project authority stays unwired until K4 decides its scope"
+        )
+    )]
+    pub(crate) fn consume_project_authority_row(&mut self) -> Result<()> {
+        ensure!(
+            self.remaining_project_authority_rows > 0,
+            "NIR1_GENERATION_HISTORY_PROJECT_AUTHORITY_ROW_LIMIT"
+        );
+        self.remaining_project_authority_rows -= 1;
+        Ok(())
+    }
+
     fn child_reference_budget(&self) -> ReadBudget {
         ReadBudget {
             max_references: self.max_reference_count,
@@ -1863,6 +1976,7 @@ fn message_version_materialization_bytes_in_tx(conn: &Connection, id: &str) -> R
 pub(crate) struct GenerationHistorySnapshotReader<'connection> {
     connection: &'connection Connection,
     cancellation: GenerationHistorySnapshotCancellation,
+    capacity: Arc<CapacityBudget>,
     attempts: BTreeMap<String, std::result::Result<StoredAttempt, String>>,
     messages: BTreeMap<String, std::result::Result<GenerationHistoryMessage, String>>,
     terminals: BTreeMap<String, std::result::Result<Option<StoredTerminal>, String>>,
@@ -1873,10 +1987,12 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
     fn new(
         connection: &'connection Connection,
         cancellation: GenerationHistorySnapshotCancellation,
+        capacity: Arc<CapacityBudget>,
     ) -> Self {
         Self {
             connection,
             cancellation,
+            capacity,
             attempts: BTreeMap::new(),
             messages: BTreeMap::new(),
             terminals: BTreeMap::new(),
@@ -1884,8 +2000,11 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
         }
     }
 
+    /// Observe the owner stop/deadline and prove that this turn's exact SQL
+    /// capacity scope is still installed on the connection.
     pub(crate) fn checkpoint(&self) -> Result<()> {
-        self.cancellation.checkpoint()
+        self.cancellation.checkpoint()?;
+        check_active_capacity(self.connection, &self.capacity)
     }
 
     fn restore<T>(value: std::result::Result<T, String>) -> Result<T> {
@@ -2174,11 +2293,38 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
     }
 }
 
+/// The history snapshot's owner view for the capacity scope. `with_capacity_scope`
+/// consults only `check` (at scope entry/exit and result assembly); it does not
+/// install `stop_signal`/`progress_deadline` as a SQLite hook. Statement-level
+/// interruption comes from the participant hook on the direct path, or from the
+/// outer scope owner when a caller uses the `_in_tx` variant.
+struct GenerationHistorySqlWorkControl<'a> {
+    cancellation: &'a GenerationHistorySnapshotCancellation,
+}
+
+impl GraphWorkControl for GenerationHistorySqlWorkControl<'_> {
+    fn check(&mut self, _stage: GraphWorkStage) -> Result<()> {
+        self.cancellation.checkpoint()
+    }
+
+    fn stop_signal(&self) -> Option<Arc<AtomicBool>> {
+        Some(Arc::clone(&self.cancellation.stop))
+    }
+
+    fn progress_deadline(&self) -> Option<Instant> {
+        self.cancellation.deadline
+    }
+}
+
 /// Keep one participant-owned read transaction open until the callback
 /// returns. The callback receives only the typed reader and an owned
 /// cancellation view, so it cannot open a nested transaction, mutate the
 /// database, claim an attempt, or dispatch transport. Its result must be
 /// owned because the higher-ranked callback lifetime cannot escape.
+///
+/// The caller's turn SQL ledger is admitted before the participant mutex or
+/// any SQL. The bounded transaction applies its busy wait and deadline,
+/// restores the prior busy timeout, and rolls back on interrupt.
 pub(crate) fn with_generation_history_snapshot<T, F>(
     workspace: &ActiveWorkspaceSnapshot,
     control: ParticipantSqlControl,
@@ -2192,25 +2338,35 @@ where
         &GenerationHistorySnapshotCancellation,
     ) -> Result<T>,
 {
-    let cancellation = GenerationHistorySnapshotCancellation::from_control(&control);
-    let callback_cancellation = cancellation.clone();
-    workspace.db().with_participant_read_transaction_control(
+    let owner_cancellation = GenerationHistorySnapshotCancellation::from_control(&control);
+    let admitted = caller_budget.admit_sql(&owner_cancellation)?;
+    let cancellation = GenerationHistorySnapshotCancellation {
+        stop: Arc::clone(&control.stop),
+        deadline: Some(admitted.deadline),
+    };
+    let operation_budget = ParticipantSqlOperationBudget::new(
+        Arc::clone(&control.stop),
+        admitted.deadline,
+        admitted.busy_wait,
+    );
+    workspace.db().with_participant_read_transaction_bounded(
         workspace.participant(),
-        control,
+        operation_budget,
         move |connection| {
             with_generation_history_snapshot_in_tx(
                 connection,
-                &callback_cancellation,
+                &cancellation,
                 caller_budget,
-                |reader, budget| read_snapshot(reader, budget, &callback_cancellation),
+                |reader, budget| read_snapshot(reader, budget, &cancellation),
             )
         },
     )
 }
 
 /// Run a typed snapshot reader on an already-owned transaction. This helper
-/// never acquires the Database mutex or installs/resets a progress handler;
-/// its caller must already be inside the one outer participant scope.
+/// never acquires the Database mutex or owns the transaction. It installs the
+/// caller's exact turn capacity budget for the callback and restores the prior
+/// progress owner afterwards; its caller must own the outer participant scope.
 pub(crate) fn with_generation_history_snapshot_in_tx<T, F>(
     connection: &Connection,
     cancellation: &GenerationHistorySnapshotCancellation,
@@ -2223,9 +2379,30 @@ where
         &mut GenerationHistoryReadBudget,
     ) -> Result<T>,
 {
-    cancellation.checkpoint()?;
-    let mut reader = GenerationHistorySnapshotReader::new(connection, cancellation.clone());
-    read_snapshot(&mut reader, caller_budget)
+    let admitted = caller_budget.admit_sql(cancellation)?;
+    let cancellation = GenerationHistorySnapshotCancellation {
+        stop: Arc::clone(&cancellation.stop),
+        deadline: Some(admitted.deadline),
+    };
+    let mut owner = GenerationHistorySqlWorkControl {
+        cancellation: &cancellation,
+    };
+    with_capacity_scope(
+        connection,
+        Some(Arc::clone(&admitted.capacity)),
+        &mut owner,
+        |capacity, _| {
+            let mut reader = GenerationHistorySnapshotReader::new(
+                connection,
+                cancellation.clone(),
+                Arc::clone(capacity),
+            );
+            reader.checkpoint()?;
+            let value = read_snapshot(&mut reader, caller_budget)?;
+            reader.checkpoint()?;
+            Ok(value)
+        },
+    )
 }
 
 /// Unbounded test-support CAS (a stand-in for another claimer). Production

@@ -1,8 +1,16 @@
 use super::*;
+use crate::narrative_extraction::nir1_entity_relation_index::NeverStopGraphWorkControl;
+use crate::narrative_extraction::{ValidationTerminated, ValidationTerminationReason};
+use crate::recovery::SafeModeState;
+use crate::state::{
+    active_workspace_snapshot, ActiveWorkspace, ActiveWorkspaceSnapshot, WorkspaceAuthority,
+    WorkspaceState,
+};
+use crate::workspace_lifecycle::{LiveBinding, WorkspaceLifecycleCompatibilityView};
 use std::path::Path;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Barrier,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+    Arc, Barrier, Mutex,
 };
 
 fn budget() -> ReadBudget {
@@ -54,6 +62,95 @@ fn database(path: &Path) -> Database {
         Ok(())
     }).expect("fixture");
     db
+}
+
+fn history_sql_budget(max_vm_steps: u64) -> GenerationHistorySnapshotSqlBudget {
+    GenerationHistorySnapshotSqlBudget {
+        max_vm_steps,
+        deadline: Instant::now() + Duration::from_secs(30),
+        busy_wait: Duration::from_millis(25),
+    }
+}
+
+fn history_read_budget(
+    sql: Option<GenerationHistorySnapshotSqlBudget>,
+) -> GenerationHistoryReadBudget {
+    GenerationHistoryReadBudget {
+        max_attempts: 8,
+        sql: sql.map(GenerationHistorySqlLedger::new),
+        max_candidates: 8,
+        max_reference_count: 16,
+        max_reference_bytes: 16_384,
+        max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
+        remaining_nodes: 8,
+        remaining_edges: 8,
+        remaining_qualification_refs: 16,
+    }
+}
+
+fn workspace_snapshot() -> (WorkspaceState, ActiveWorkspaceSnapshot) {
+    let path = std::env::temp_dir().join(format!(
+        "grimodex-generation-sql-budget-{}",
+        uuid::Uuid::new_v4()
+    ));
+    let db = database(Path::new(":memory:"));
+    let authority = WorkspaceAuthority::from_database_for_test(db, path).expect("test authority");
+    let state = WorkspaceState {
+        inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
+        safe_mode: SafeModeState::default(),
+        switching: WorkspaceLifecycleCompatibilityView::new(false),
+        open_lock: Mutex::new(Default::default()),
+    };
+    state
+        .switching
+        .core()
+        .set_ready(LiveBinding::new(
+            authority.path().to_string_lossy(),
+            format!("test-workspace:{}", authority.identity()),
+            authority.identity(),
+            0,
+        ))
+        .expect("test lifecycle ready");
+    let snapshot = active_workspace_snapshot(&state).expect("workspace snapshot");
+    (state, snapshot)
+}
+
+fn termination_reason(error: &anyhow::Error) -> ValidationTerminationReason {
+    error
+        .downcast_ref::<ValidationTerminated>()
+        .unwrap_or_else(|| panic!("typed termination expected: {error:#}"))
+        .reason
+}
+
+/// The participant connection must be idle, out of any transaction, and able
+/// to serve a fresh bounded snapshot after a refused or interrupted read.
+fn assert_snapshot_connection_reusable(workspace: &ActiveWorkspaceSnapshot) {
+    let database = workspace.db().db();
+    assert!(database.connection_reusable());
+    database
+        .with_conn(|conn| {
+            assert!(conn.is_autocommit());
+            assert_eq!(
+                conn.query_row("SELECT 3", [], |row| row.get::<_, i64>(0))?,
+                3
+            );
+            Ok(())
+        })
+        .expect("connection reusable");
+    let mut fresh = history_read_budget(Some(history_sql_budget(1_000_000)));
+    let value = with_generation_history_snapshot(
+        workspace,
+        ParticipantSqlControl::default(),
+        &mut fresh,
+        |reader, _, _| {
+            Ok(reader
+                .connection
+                .query_row("SELECT 4", [], |row| row.get::<_, i64>(0))?)
+        },
+    )
+    .expect("a later bounded snapshot reuses the connection");
+    assert_eq!(value, 4);
 }
 
 fn with_snapshot<T, F>(
@@ -320,6 +417,518 @@ fn two_level_lineage_keeps_only_adopted_inputs_and_qualification_refs() {
     );
 }
 
+/// Two direct snapshot calls that share one caller-owned turn ledger. The
+/// first reads an attempt and the second its terminal; a third call is made
+/// only after the second was refused, to prove exhaustion persists.
+struct HistorySqlPhases {
+    first_used: u64,
+    total_used: u64,
+    result: Result<()>,
+    third_callback_started: bool,
+    third_error: Option<anyhow::Error>,
+    after_third_used: u64,
+}
+
+fn run_history_sql_phases(
+    workspace: &ActiveWorkspaceSnapshot,
+    attempt: &str,
+    limit: u64,
+) -> HistorySqlPhases {
+    let mut caller_budget = history_read_budget(Some(history_sql_budget(limit)));
+    let first = with_generation_history_snapshot(
+        workspace,
+        ParticipantSqlControl::default(),
+        &mut caller_budget,
+        |reader, budget, _| reader.read_attempt(budget, attempt).map(|_| ()),
+    );
+    let first_used = caller_budget.sql.as_ref().expect("ledger").sql_steps_used();
+    let result = first.and_then(|()| {
+        with_generation_history_snapshot(
+            workspace,
+            ParticipantSqlControl::default(),
+            &mut caller_budget,
+            |reader, budget, _| reader.read_terminal(budget, attempt).map(|_| ()),
+        )
+    });
+    let total_used = caller_budget.sql.as_ref().expect("ledger").sql_steps_used();
+    let third_started = AtomicBool::new(false);
+    let third = with_generation_history_snapshot(
+        workspace,
+        ParticipantSqlControl::default(),
+        &mut caller_budget,
+        |reader, _, _| {
+            third_started.store(true, Ordering::Relaxed);
+            Ok(reader
+                .connection
+                .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)
+        },
+    );
+    HistorySqlPhases {
+        first_used,
+        total_used,
+        result,
+        third_callback_started: third_started.load(Ordering::Relaxed),
+        third_error: third.err(),
+        after_third_used: caller_budget.sql.as_ref().expect("ledger").sql_steps_used(),
+    }
+}
+
+#[test]
+fn history_snapshot_sql_budget_is_shared_across_direct_calls_and_rejects_n_plus_one() {
+    let (_state, workspace) = workspace_snapshot();
+    let attempt = create_attempt(workspace.db().db(), request(vec![], vec![]))
+        .expect("attempt")
+        .id;
+
+    let measured = run_history_sql_phases(&workspace, &attempt, 1_000_000);
+    measured.result.expect("measure both SQL phases");
+    let exact_n = measured.total_used;
+    assert!(measured.first_used > 0 && measured.first_used < exact_n - 1);
+
+    // N: both direct calls fit exactly; the ledger is then fully used, so a
+    // third call is refused before its callback or any SQL.
+    let exact = run_history_sql_phases(&workspace, &attempt, exact_n);
+    exact
+        .result
+        .expect("exact combined SQL VM work is admitted");
+    assert_eq!(exact.total_used, exact_n);
+    assert!(!exact.third_callback_started);
+    assert_eq!(
+        termination_reason(&exact.third_error.expect("used ledger refuses")),
+        ValidationTerminationReason::CapacityExceeded
+    );
+    assert_eq!(exact.after_third_used, exact_n, "refusal must not run SQL");
+
+    // N+1: the first call alone fits, so only the shared, non-reset counter
+    // can stop the second call.
+    let over = run_history_sql_phases(&workspace, &attempt, exact_n - 1);
+    assert_eq!(over.first_used, measured.first_used);
+    let error = over
+        .result
+        .expect_err("the N+1st VM step across calls stops the read");
+    assert_eq!(
+        termination_reason(&error),
+        ValidationTerminationReason::CapacityExceeded
+    );
+    assert!(!over.third_callback_started);
+    assert_eq!(
+        over.after_third_used, over.total_used,
+        "refusal must not run SQL"
+    );
+    assert_eq!(
+        termination_reason(&over.third_error.expect("exhausted ledger refuses")),
+        ValidationTerminationReason::CapacityExceeded
+    );
+    assert_snapshot_connection_reusable(&workspace);
+}
+
+#[test]
+fn history_snapshot_in_tx_shares_sql_ledger_and_restores_outer_progress_owner() -> Result<()> {
+    let conn = Connection::open_in_memory()?;
+    // Load the schema first so every measured call runs the same VM program.
+    conn.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
+        row.get::<_, i64>(0)
+    })?;
+    conn.execute_batch("BEGIN")?;
+    let outer_calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&outer_calls);
+    crate::set_sqlite_progress_handler(
+        &conn,
+        1,
+        Some(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    )?;
+    let cancellation =
+        GenerationHistorySnapshotCancellation::from_control(&ParticipantSqlControl::default());
+    let select = |budget: &mut GenerationHistoryReadBudget, value: i64| {
+        with_generation_history_snapshot_in_tx(&conn, &cancellation, budget, |reader, _| {
+            Ok(reader
+                .connection
+                .query_row(&format!("SELECT {value}"), [], |row| row.get::<_, i64>(0))?)
+        })
+    };
+    let mut measured = history_read_budget(Some(history_sql_budget(1_000_000)));
+    select(&mut measured, 1)?;
+    let first = measured.sql.as_ref().expect("ledger").sql_steps_used();
+    select(&mut measured, 2)?;
+    let exact_n = measured.sql.as_ref().expect("ledger").sql_steps_used();
+    assert!(first > 0 && first < exact_n);
+
+    let mut exact = history_read_budget(Some(history_sql_budget(exact_n)));
+    assert_eq!(select(&mut exact, 1)?, 1);
+    assert_eq!(select(&mut exact, 2)?, 2);
+
+    let mut over = history_read_budget(Some(history_sql_budget(exact_n - 1)));
+    assert_eq!(select(&mut over, 1)?, 1);
+    let error = select(&mut over, 2).expect_err("N+1 across in-tx calls");
+    assert_eq!(
+        termination_reason(&error),
+        ValidationTerminationReason::CapacityExceeded
+    );
+
+    // The outer owner keeps observing SQL after each nested capacity scope.
+    let before = outer_calls.load(Ordering::Relaxed);
+    conn.query_row("SELECT 3", [], |row| row.get::<_, i64>(0))?;
+    assert!(outer_calls.load(Ordering::Relaxed) > before);
+    conn.execute_batch("ROLLBACK")?;
+    crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
+    Ok(())
+}
+
+fn assert_in_tx_rejects_before_sql(
+    budget: &mut GenerationHistoryReadBudget,
+    control: ParticipantSqlControl,
+) -> anyhow::Error {
+    let conn = Connection::open_in_memory().expect("open fixture db");
+    conn.execute_batch("BEGIN").expect("begin snapshot");
+    let progress_calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&progress_calls);
+    crate::set_sqlite_progress_handler(
+        &conn,
+        1,
+        Some(move || {
+            observed.fetch_add(1, Ordering::Relaxed);
+            false
+        }),
+    )
+    .expect("install test progress owner");
+    let cancellation = GenerationHistorySnapshotCancellation::from_control(&control);
+    let started = AtomicBool::new(false);
+    let error =
+        with_generation_history_snapshot_in_tx(&conn, &cancellation, budget, |reader, _| {
+            started.store(true, Ordering::Relaxed);
+            reader
+                .connection
+                .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+            Ok(())
+        })
+        .expect_err("invalid SQL budget must be refused");
+    assert!(!started.load(Ordering::Relaxed));
+    assert_eq!(progress_calls.load(Ordering::Relaxed), 0, "no SQL ran");
+    conn.execute_batch("ROLLBACK").expect("rollback fixture");
+    crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)
+        .expect("clear test progress owner");
+    error
+}
+
+fn assert_direct_rejects_before_sql(
+    workspace: &ActiveWorkspaceSnapshot,
+    budget: &mut GenerationHistoryReadBudget,
+    control: ParticipantSqlControl,
+) -> anyhow::Error {
+    let started = AtomicBool::new(false);
+    let before = budget
+        .sql
+        .as_ref()
+        .map(GenerationHistorySqlLedger::sql_steps_used);
+    let error = with_generation_history_snapshot(workspace, control, budget, |reader, _, _| {
+        started.store(true, Ordering::Relaxed);
+        reader
+            .connection
+            .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+        Ok(())
+    })
+    .expect_err("invalid SQL budget must be refused");
+    assert!(!started.load(Ordering::Relaxed));
+    assert_eq!(
+        budget
+            .sql
+            .as_ref()
+            .map(GenerationHistorySqlLedger::sql_steps_used),
+        before
+    );
+    error
+}
+
+#[test]
+fn history_snapshot_rejects_missing_zero_expired_or_used_sql_budget_before_sql() {
+    let (_state, workspace) = workspace_snapshot();
+    let expired_sql = GenerationHistorySnapshotSqlBudget {
+        max_vm_steps: 1_000,
+        deadline: Instant::now() - Duration::from_millis(1),
+        busy_wait: Duration::from_millis(25),
+    };
+    let expired_owner = || ParticipantSqlControl {
+        stop: Arc::new(AtomicBool::new(false)),
+        deadline: Some(Instant::now() - Duration::from_millis(1)),
+    };
+    for direct in [false, true] {
+        let reject = |budget: &mut GenerationHistoryReadBudget, control| {
+            if direct {
+                assert_direct_rejects_before_sql(&workspace, budget, control)
+            } else {
+                assert_in_tx_rejects_before_sql(budget, control)
+            }
+        };
+        let missing = reject(
+            &mut history_read_budget(None),
+            ParticipantSqlControl::default(),
+        );
+        assert!(missing
+            .to_string()
+            .contains("NIR1_GENERATION_HISTORY_SQL_BUDGET_MISSING"));
+
+        let zero = reject(
+            &mut history_read_budget(Some(history_sql_budget(0))),
+            ParticipantSqlControl::default(),
+        );
+        assert!(zero
+            .to_string()
+            .contains("NIR1_GENERATION_HISTORY_SQL_BUDGET_INVALID"));
+
+        let expired = reject(
+            &mut history_read_budget(Some(expired_sql)),
+            ParticipantSqlControl::default(),
+        );
+        assert_eq!(
+            termination_reason(&expired),
+            ValidationTerminationReason::TimedOut
+        );
+
+        // The owner's deadline is also enforced against a future SQL deadline.
+        let owner_expired = reject(
+            &mut history_read_budget(Some(history_sql_budget(1_000))),
+            expired_owner(),
+        );
+        assert_eq!(
+            termination_reason(&owner_expired),
+            ValidationTerminationReason::TimedOut
+        );
+
+        let stopped = ParticipantSqlControl::default();
+        stopped.stop.store(true, Ordering::Release);
+        let cancelled = reject(
+            &mut history_read_budget(Some(history_sql_budget(1_000))),
+            stopped,
+        );
+        assert_eq!(
+            termination_reason(&cancelled),
+            ValidationTerminationReason::Cancelled
+        );
+    }
+    assert_snapshot_connection_reusable(&workspace);
+}
+
+const HEAVY_HISTORY_SQL: &str = "WITH RECURSIVE x(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM x WHERE n<100000000) SELECT sum(n) FROM x";
+
+fn interrupted_snapshot(
+    workspace: &ActiveWorkspaceSnapshot,
+    sql: GenerationHistorySnapshotSqlBudget,
+    control: ParticipantSqlControl,
+    stop_before_heavy: bool,
+) -> anyhow::Error {
+    let mut caller_budget = history_read_budget(Some(sql));
+    let first_phase_returned = AtomicBool::new(false);
+    let stop = Arc::clone(&control.stop);
+    let result =
+        with_generation_history_snapshot(workspace, control, &mut caller_budget, |reader, _, _| {
+            let first = reader
+                .connection
+                .query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+            first_phase_returned.store(true, Ordering::Relaxed);
+            if stop_before_heavy {
+                stop.store(true, Ordering::Release);
+            }
+            let second = reader
+                .connection
+                .query_row(HEAVY_HISTORY_SQL, [], |row| row.get::<_, i64>(0))?;
+            Ok((first, second))
+        });
+    assert!(first_phase_returned.load(Ordering::Relaxed));
+    result.expect_err("the heavy phase must interrupt the whole snapshot")
+}
+
+#[test]
+fn history_snapshot_interrupts_roll_back_and_leave_connection_reusable() {
+    let (_state, workspace) = workspace_snapshot();
+
+    let capacity = interrupted_snapshot(
+        &workspace,
+        history_sql_budget(10_000),
+        ParticipantSqlControl::default(),
+        false,
+    );
+    assert_eq!(
+        termination_reason(&capacity),
+        ValidationTerminationReason::CapacityExceeded
+    );
+    assert_snapshot_connection_reusable(&workspace);
+
+    let cancelled = interrupted_snapshot(
+        &workspace,
+        history_sql_budget(u64::MAX),
+        ParticipantSqlControl::default(),
+        true,
+    );
+    assert_eq!(
+        termination_reason(&cancelled),
+        ValidationTerminationReason::Cancelled
+    );
+    assert_snapshot_connection_reusable(&workspace);
+
+    let deadline = interrupted_snapshot(
+        &workspace,
+        GenerationHistorySnapshotSqlBudget {
+            max_vm_steps: u64::MAX,
+            deadline: Instant::now() + Duration::from_millis(200),
+            busy_wait: Duration::from_millis(25),
+        },
+        ParticipantSqlControl::default(),
+        false,
+    );
+    assert_eq!(
+        termination_reason(&deadline),
+        ValidationTerminationReason::TimedOut
+    );
+    assert_snapshot_connection_reusable(&workspace);
+}
+
+#[test]
+fn history_snapshot_applies_and_restores_caller_busy_wait_bound() -> Result<()> {
+    let (_state, workspace) = workspace_snapshot();
+    let database = workspace.db().db();
+    let busy_timeout = |conn: &Connection| -> Result<i64> {
+        Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?)
+    };
+    let original = database.with_conn(busy_timeout)?;
+    let bounded_wait = Duration::from_millis(31);
+    assert_ne!(original, 31);
+    let mut caller_budget = history_read_budget(Some(GenerationHistorySnapshotSqlBudget {
+        max_vm_steps: 1_000_000,
+        deadline: Instant::now() + Duration::from_secs(5),
+        busy_wait: bounded_wait,
+    }));
+    let during_read = with_generation_history_snapshot(
+        &workspace,
+        ParticipantSqlControl::default(),
+        &mut caller_budget,
+        |reader, _, _| busy_timeout(reader.connection),
+    )?;
+    assert_eq!(during_read, 31);
+    assert_eq!(database.with_conn(busy_timeout)?, original);
+
+    // A failed read restores the prior timeout as well.
+    let mut zero_wait = history_read_budget(Some(GenerationHistorySnapshotSqlBudget {
+        max_vm_steps: 1_000_000,
+        deadline: Instant::now() + Duration::from_secs(5),
+        busy_wait: Duration::ZERO,
+    }));
+    let error = with_generation_history_snapshot(
+        &workspace,
+        ParticipantSqlControl::default(),
+        &mut zero_wait,
+        |reader, _, _| -> Result<()> {
+            assert_eq!(busy_timeout(reader.connection)?, 0);
+            anyhow::bail!("reader failed after observing busy wait")
+        },
+    )
+    .expect_err("callback failure");
+    assert!(error.to_string().contains("reader failed"));
+    assert_eq!(database.with_conn(busy_timeout)?, original);
+    assert_snapshot_connection_reusable(&workspace);
+    Ok(())
+}
+
+#[test]
+fn history_snapshot_reader_requires_its_exact_active_capacity_scope() -> Result<()> {
+    let conn = Connection::open_in_memory()?;
+    let owned = CapacityBudget::new(1_000_000, Instant::now() + Duration::from_secs(30));
+    let other = CapacityBudget::new(1_000_000, Instant::now() + Duration::from_secs(30));
+    let cancellation =
+        GenerationHistorySnapshotCancellation::from_control(&ParticipantSqlControl::default());
+    let mut caller_budget = history_read_budget(Some(history_sql_budget(1_000_000)));
+
+    // Holding the Arc alone is not proof that the scope is installed.
+    let mut outside =
+        GenerationHistorySnapshotReader::new(&conn, cancellation.clone(), Arc::clone(&owned));
+    let error = outside
+        .read_attempt(&mut caller_budget, "attempt")
+        .expect_err("reader outside its scope refuses");
+    assert!(
+        error.to_string().contains("scope is not active"),
+        "{error:#}"
+    );
+    assert_eq!(caller_budget.max_attempts, 8, "refused before any debit");
+
+    with_capacity_scope(
+        &conn,
+        Some(Arc::clone(&owned)),
+        &mut NeverStopGraphWorkControl,
+        |active, _| {
+            assert!(Arc::ptr_eq(active, &owned));
+            check_active_capacity(&conn, &owned)?;
+            // Another active scope on the connection is not this reader's.
+            let mut wrong = GenerationHistorySnapshotReader::new(
+                &conn,
+                cancellation.clone(),
+                Arc::clone(&other),
+            );
+            let error = wrong
+                .read_terminal(&mut caller_budget, "attempt")
+                .expect_err("a different capacity budget is not the active scope");
+            assert!(
+                error.to_string().contains("scope is not active"),
+                "{error:#}"
+            );
+            let exact = GenerationHistorySnapshotReader::new(
+                &conn,
+                cancellation.clone(),
+                Arc::clone(&owned),
+            );
+            exact.checkpoint()?;
+            Ok(())
+        },
+    )?;
+    // The scope's exit removes the exact budget from the connection.
+    assert!(check_active_capacity(&conn, &owned).is_err());
+
+    // An active but exhausted exact budget is refused at the checkpoint.
+    let tiny = CapacityBudget::new(1, Instant::now() + Duration::from_secs(30));
+    let error = with_capacity_scope(
+        &conn,
+        Some(Arc::clone(&tiny)),
+        &mut NeverStopGraphWorkControl,
+        |_, _| {
+            let _ = conn.query_row(HEAVY_HISTORY_SQL, [], |row| row.get::<_, i64>(0));
+            GenerationHistorySnapshotReader::new(&conn, cancellation.clone(), Arc::clone(&tiny))
+                .checkpoint()
+        },
+    )
+    .expect_err("exhausted exact scope");
+    assert_eq!(
+        termination_reason(&error),
+        ValidationTerminationReason::CapacityExceeded
+    );
+    Ok(())
+}
+
+#[test]
+fn history_project_authority_rows_share_one_turn_ledger_and_reject_n_plus_one() {
+    let mut budget = history_read_budget(Some(history_sql_budget(1_000_000)));
+    budget.remaining_project_authority_rows = 2;
+    budget
+        .consume_project_authority_row()
+        .expect("first authority row");
+    assert_eq!(budget.remaining_project_authority_rows, 1);
+    budget
+        .consume_project_authority_row()
+        .expect("second authority row in a later operation");
+    assert_eq!(budget.remaining_project_authority_rows, 0);
+    let error = budget
+        .consume_project_authority_row()
+        .expect_err("N+1 authority row must fail");
+    assert!(error
+        .to_string()
+        .contains("NIR1_GENERATION_HISTORY_PROJECT_AUTHORITY_ROW_LIMIT"));
+    assert_eq!(budget.remaining_project_authority_rows, 0);
+
+    // A zero allowance fails closed; there is no storage default.
+    let mut absent = history_read_budget(Some(history_sql_budget(1_000_000)));
+    assert!(absent.consume_project_authority_row().is_err());
+}
+
 #[test]
 fn history_snapshot_reader_returns_owned_rows_and_reuses_attempt_reads() {
     let db = database(Path::new(":memory:"));
@@ -328,10 +937,14 @@ fn history_snapshot_reader_returns_owned_rows_and_reuses_attempt_reads() {
         create_attempt(&db, request(vec![message_input(&input)], vec![])).expect("attempt");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 2,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -357,10 +970,14 @@ fn history_snapshot_reader_observes_owner_stop_between_typed_reads() {
     let stop = Arc::new(AtomicBool::new(false));
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 2,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -400,10 +1017,14 @@ fn history_snapshot_reader_shares_attempt_budget_across_rows() {
     let second = create_attempt(&db, request(vec![], vec![])).expect("second attempt");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 1,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -422,10 +1043,14 @@ fn history_snapshot_reader_negative_caches_missing_attempt_for_shared_candidates
     let valid = create_attempt(&db, request(vec![], vec![])).expect("valid attempt");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 2,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -452,10 +1077,14 @@ fn history_snapshot_reader_negative_caches_missing_terminal_for_shared_candidate
     let valid = create_attempt(&db, request(vec![], vec![])).expect("valid attempt");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 2,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -484,10 +1113,14 @@ fn history_snapshot_reader_rejects_body_before_materialization_budget() {
         create_attempt(&db, request(vec![message_input(&input)], vec![])).expect("attempt");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 1,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 1,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -513,10 +1146,14 @@ fn history_snapshot_reader_rejects_attempt_metadata_before_materialization() {
     let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 1,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 1,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -538,10 +1175,14 @@ fn history_snapshot_reader_rejects_terminal_and_version_before_materialization()
     assert!(terminal.message_version.is_some());
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 1,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 1,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -585,10 +1226,14 @@ fn history_snapshot_reader_rejects_oversized_version_identifier_before_fetch() {
     .expect("import oversized version identifier");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 1,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
@@ -608,10 +1253,14 @@ fn history_snapshot_reader_and_traversal_share_one_turn_ledger() {
     let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 1,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 1,
         remaining_edges: 1,
         remaining_qualification_refs: 1,
@@ -3048,10 +3697,14 @@ fn assert_error_code<T: std::fmt::Debug>(result: Result<T>, code: &str) {
 fn history_budget() -> GenerationHistoryReadBudget {
     GenerationHistoryReadBudget {
         max_attempts: 4,
+        sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
+            1_000_000,
+        ))),
         max_candidates: 8,
         max_reference_count: 8,
         max_reference_bytes: 16_384,
         max_resolved_body_bytes: 16_384,
+        remaining_project_authority_rows: 0,
         remaining_nodes: 8,
         remaining_edges: 8,
         remaining_qualification_refs: 16,
