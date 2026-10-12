@@ -1079,7 +1079,8 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7]
     env:
-      GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/product-journeys
+      # The local-CI Xvfb wrapper admits only this canonical output layout.
+      GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/local-ci/runs/ci-${{ github.run_id }}/product-journeys
       GRIMODEX_C2ZC_RUST_RECEIPT_PATH: .artifacts/local-ci/c2-zc-rust-acceptance.json
       GRIMODEX_C2ZC_RUST_REQUESTED_BASE: origin/master
       GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: HEAD
@@ -1138,8 +1139,16 @@ jobs:
           SHARD: ${{ matrix.shard }}
         run: |
           set -euo pipefail
-          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
-            node electron/scripts/product-journey-shards.mjs run \
+          # Shards 2-7 use the same private Xvfb wrapper as canonical Full, so
+          # the restore-reload GPU noise guard sees the runtime it was scoped
+          # to. Shard 1 owns editor-persistence, which the wrapper would route
+          # to native B; ordinary CI keeps that journey on plain Xvfb.
+          if [[ "$SHARD" == 1 ]]; then
+            xvfb=(xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24")
+          else
+            xvfb=(node scripts/local-ci-xvfb.mjs)
+          fi
+          "${xvfb[@]}" node electron/scripts/product-journey-shards.mjs run \
             --shard "$SHARD" \
             --output-dir "$GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR"
 
@@ -1148,7 +1157,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: electron-product-journeys-shard-${{ matrix.shard }}-${{ github.run_id }}
-          path: .artifacts/product-journeys
+          path: ${{ env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR }}
           if-no-files-found: ignore
           retention-days: 14
           overwrite: true
@@ -1165,7 +1174,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
-      GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/product-journeys
+      # The local-CI Xvfb wrapper admits only this canonical output layout.
+      GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/local-ci/runs/ci-${{ github.run_id }}/product-journeys
       GRIMODEX_C2ZC_RUST_RECEIPT_PATH: .artifacts/local-ci/c2-zc-rust-acceptance.json
       GRIMODEX_C2ZC_RUST_REQUESTED_BASE: origin/master
       GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: HEAD
@@ -1201,7 +1211,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: electron-product-journeys-shard-*-${{ github.run_id }}
-          path: .artifacts/product-journeys
+          path: ${{ env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR }}
           merge-multiple: true
 
       - name: Restore build outputs and C2-ZC evidence
@@ -1242,8 +1252,8 @@ jobs:
         with:
           name: electron-product-journeys-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            .artifacts/product-journeys/results.json
-            .artifacts/product-journeys/manifest.json
+            ${{ env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR }}/results.json
+            ${{ env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR }}/manifest.json
           if-no-files-found: ignore
           retention-days: 14
 
