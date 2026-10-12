@@ -9,8 +9,9 @@ import {
   ZenShaderSurface,
   type ZenShaderRendererStatus,
 } from "./zen/ZenShaderSurface";
+import { ZenStaticBackdrop } from "./zen/ZenStaticBackdrop";
 import { useZenShaderConfig } from "./zen/useZenShaderConfig";
-import { hasUsableZenWebGl2 } from "./zen/zenWebGlSupport";
+import { useZenWebGl2Support } from "./zen/useZenWebGl2Support";
 
 function isWindowActive() {
   if (typeof document === "undefined") return true;
@@ -51,22 +52,19 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
   const reduced = useReducedMotion();
   const windowActive = useWindowActive();
   const config = useZenShaderConfig();
-  const [webGlProbe, setWebGlProbe] = useState(() =>
-    config.enabled
-      ? { complete: true, supported: hasUsableZenWebGl2() }
-      : { complete: false, supported: false },
-  );
-  const [rendererStatus, setRendererStatus] = useState<ZenShaderRendererStatus>(
-    webGlProbe.supported ? "initializing" : "fallback-unsupported",
-  );
-  useEffect(() => {
-    if (!config.enabled || webGlProbe.complete) return;
-    const supported = hasUsableZenWebGl2();
-    setWebGlProbe({ complete: true, supported });
-    setRendererStatus(supported ? "initializing" : "fallback-unsupported");
-  }, [config.enabled, webGlProbe.complete]);
+  // The WebGL2 probe is deferred past first paint; until it answers, keep the
+  // cheap static gradient and report "initializing".
+  const webGlSupport = useZenWebGl2Support(config.enabled);
+  const [surfaceStatus, setSurfaceStatus] =
+    useState<ZenShaderRendererStatus>("initializing");
+  const rendererStatus: ZenShaderRendererStatus =
+    webGlSupport === "pending"
+      ? "initializing"
+      : webGlSupport === "unsupported"
+        ? "fallback-unsupported"
+        : surfaceStatus;
 
-  const webGlSupported = webGlProbe.supported;
+  const webGlSupported = webGlSupport === "supported";
   const playing =
     config.enabled &&
     webGlSupported &&
@@ -109,12 +107,15 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
         ease: EASINGS.easeOut,
       }}
     >
-      {config.enabled && webGlProbe.complete && (
+      {config.enabled && webGlSupport === "pending" && (
+        <ZenStaticBackdrop opacity={config.opacity} />
+      )}
+      {config.enabled && webGlSupport !== "pending" && (
         <ZenShaderSurface
           config={config}
           playing={playing}
           webGlSupported={webGlSupported}
-          onRendererStatusChange={setRendererStatus}
+          onRendererStatusChange={setSurfaceStatus}
         />
       )}
     </motion.div>
