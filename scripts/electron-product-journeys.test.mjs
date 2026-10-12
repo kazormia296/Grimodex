@@ -4105,9 +4105,27 @@ test("CI prepares candidate-bound C2-ZC product evidence before journeys", async
   );
   assert.equal(shards.strategy["fail-fast"], false);
   assert.match(runCommands(shards), /pnpm exec playwright install-deps chromium/);
+  // Shards 2-7 run inside the canonical private Xvfb wrapper; shard 1 keeps
+  // editor-persistence on plain Xvfb instead of the canonical-only native B.
   assert.match(
     shardRun.run,
-    /xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \\\n\s+node electron\/scripts\/product-journey-shards\.mjs run \\\n\s+--shard "\$SHARD"/,
+    /if \[\[ "\$SHARD" == 1 \]\]; then\n\s*xvfb=\(xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24"\)\n\s*else\n\s*xvfb=\(node scripts\/local-ci-xvfb\.mjs\)\n\s*fi/,
+  );
+  assert.match(
+    shardRun.run,
+    /"\$\{xvfb\[@\]\}" node electron\/scripts\/product-journey-shards\.mjs run \\\n\s+--shard "\$SHARD" \\\n\s+--output-dir "\$GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR"/,
+  );
+  // The wrapper admits only the canonical local-CI run layout.
+  for (const job of [shards, aggregate]) {
+    assert.equal(
+      job.env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR,
+      ".artifacts/local-ci/runs/ci-${{ github.run_id }}/product-journeys",
+    );
+  }
+  assert.match(
+    "ci-1234567890",
+    /^[A-Za-z0-9_-]+$/u,
+    "the run segment must satisfy the wrapper's output-dir pattern",
   );
   assert.equal(shardRun.env.SHARD, "${{ matrix.shard }}");
   assert.ok(aggregate.needs.includes("electron-product-journeys"));
@@ -4132,7 +4150,10 @@ test("CI prepares candidate-bound C2-ZC product evidence before journeys", async
     assert.doesNotMatch(step.with.name, /run_attempt/);
     assert.equal(step.with.overwrite, true);
   }
-  assert.equal(shardDownload.with.path, ".artifacts/product-journeys");
+  assert.equal(
+    shardDownload.with.path,
+    "${{ env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR }}",
+  );
   assert.equal(shardDownload.with["merge-multiple"], true);
 
   const upload = shards.steps.find(
@@ -4142,7 +4163,10 @@ test("CI prepares candidate-bound C2-ZC product evidence before journeys", async
   );
   assert.ok(upload, "product journey failures must upload artifacts");
   assert.equal(upload.if, "always()");
-  assert.equal(upload.with.path, ".artifacts/product-journeys");
+  assert.equal(
+    upload.with.path,
+    "${{ env.GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR }}",
+  );
   assert.equal(upload.with["retention-days"], 14);
   assert.match(
     runCommands(electronJob),
