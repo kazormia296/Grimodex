@@ -3236,12 +3236,11 @@ async function createFolderScopeAnchor(harness, page) {
       )
     ).map((row) => String(row.id)),
   );
-  await scenesPanelHeader(page)
-    .locator(`button[title="${CREATE_BUTTON_TITLE}"]`)
-    .click();
-  await page
-    .getByRole("menuitem", { name: "New folder", exact: true })
-    .evaluate((item) => item.click());
+  await clickCreateMenuItem(
+    scenesPanelHeader(page),
+    page,
+    NEW_FOLDER_MENU_ITEM,
+  );
   const renameInput = page.locator(
     '[data-droptarget-id="scenes-panel"] input:focus',
   );
