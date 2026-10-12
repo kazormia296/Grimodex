@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
 
@@ -212,6 +213,139 @@ impl LifecycleSnapshot {
             | LifecycleState::Transition { .. }
             | LifecycleState::RecoveryRequired { .. }
             | LifecycleState::Closed => None,
+        }
+    }
+}
+
+/// A lifecycle state edge published by the shared Core seam.
+///
+/// Edges are derived once per Core lock span from the state captured when the
+/// lock was taken and the state left when it is released. Revision-only
+/// changes (quarantine fences, background descriptor completion, stage
+/// changes) are not edges.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum LifecycleEdge {
+    /// An Open/Restore/Recover transition owns the Core at `revision`.
+    TransitionAdmitted {
+        operation_id: OperationId,
+        kind: AdmissionKind,
+        revision: StateRevision,
+    },
+    /// A new exact Ready entry: the Core entered `Ready(binding)` from any
+    /// other state or binding.
+    ReadyPublished {
+        binding: LiveBinding,
+        revision: StateRevision,
+    },
+    /// Any other state change: RecoveryRequired, NoWorkspace, Closed, or the
+    /// synthetic shutdown Finishing transition.
+    Unavailable { revision: StateRevision },
+    /// `shutdown_requested` changed from false to true. Emitted once.
+    ShutdownRequested { revision: StateRevision },
+}
+
+/// Typed lifecycle seam. Observers are called while the Core state mutex is
+/// held, so they see edges in Core order (lock order Core -> observer).
+/// Implementations must not call back into the Core, must not acquire
+/// Projection or database locks, must not block, and must not panic.
+pub trait WorkspaceLifecycleObserver: Send + Sync {
+    fn on_lifecycle_edge(&self, edge: &LifecycleEdge);
+}
+
+/// Bounds the work done under the Core mutex for every published edge.
+pub const MAX_LIFECYCLE_OBSERVERS: usize = 4;
+
+fn lifecycle_edge(
+    before_state: &LifecycleState,
+    before_shutdown_requested: bool,
+    after: &CoreState,
+) -> Option<LifecycleEdge> {
+    let revision = after.revision;
+    if !before_shutdown_requested && after.shutdown_requested {
+        return Some(LifecycleEdge::ShutdownRequested { revision });
+    }
+    if before_state == &after.state {
+        return None;
+    }
+    match &after.state {
+        LifecycleState::Ready(binding) => Some(LifecycleEdge::ReadyPublished {
+            binding: binding.clone(),
+            revision,
+        }),
+        LifecycleState::Transition { operation_id, .. }
+            if *operation_id != OperationId::new(0)
+                && matches!(
+                    before_state,
+                    LifecycleState::Transition { operation_id: before, .. } if before == operation_id
+                ) =>
+        {
+            None
+        }
+        LifecycleState::Transition { operation_id, .. } if *operation_id != OperationId::new(0) => {
+            Some(match after.admissions.get(operation_id) {
+                Some(ticket) => LifecycleEdge::TransitionAdmitted {
+                    operation_id: *operation_id,
+                    kind: ticket.kind,
+                    revision,
+                },
+                None => LifecycleEdge::Unavailable { revision },
+            })
+        }
+        LifecycleState::Transition { .. }
+        | LifecycleState::NoWorkspace
+        | LifecycleState::RecoveryRequired { .. }
+        | LifecycleState::Closed => Some(LifecycleEdge::Unavailable { revision }),
+    }
+}
+
+/// Core state guard. Its Drop is the single seam emission point: it runs
+/// before the inner mutex guard is released.
+struct CoreStateGuard<'a> {
+    inner: &'a CoreInner,
+    before_state: LifecycleState,
+    before_shutdown_requested: bool,
+    // Not named `state`: callers read `guard.state` through Deref.
+    locked: MutexGuard<'a, CoreState>,
+}
+
+impl fmt::Debug for CoreStateGuard<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&*self.locked, formatter)
+    }
+}
+
+impl Deref for CoreStateGuard<'_> {
+    type Target = CoreState;
+
+    fn deref(&self) -> &CoreState {
+        &self.locked
+    }
+}
+
+impl DerefMut for CoreStateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut CoreState {
+        &mut self.locked
+    }
+}
+
+impl Drop for CoreStateGuard<'_> {
+    fn drop(&mut self) {
+        let Some(edge) = lifecycle_edge(
+            &self.before_state,
+            self.before_shutdown_requested,
+            &self.locked,
+        ) else {
+            return;
+        };
+        // A poisoned registry cannot prove which observers exist; observers
+        // are fail-closed and treat a missed edge as staying closed.
+        let observers = match self.inner.observers.lock() {
+            Ok(observers) => observers.clone(),
+            Err(_) => return,
+        };
+        for observer in observers {
+            observer.on_lifecycle_edge(&edge);
         }
     }
 }
@@ -1155,6 +1289,8 @@ pub enum LifecycleError {
     DeliveryResultConflict(DeliverySequence),
     #[error("responsibility reservation failed: {0:?}")]
     Responsibility(ResponsibilityError),
+    #[error("workspace lifecycle observer capacity is exhausted")]
+    ObserverCapacity,
 }
 
 #[derive(Clone, Debug)]
@@ -1388,6 +1524,9 @@ struct CoreInner {
     /// code should use `snapshot()` and transition methods; the flag exists so
     /// old DB entry points fail closed while C2/C4 migrate them.
     compatibility_switching: AtomicBool,
+    /// Lifecycle seam observers. Lock order: `state` -> `observers`;
+    /// registration never holds `state`.
+    observers: Mutex<Vec<Arc<dyn WorkspaceLifecycleObserver>>>,
 }
 
 /// The shared lifecycle owner. It is deliberately cloneable: every clone
@@ -1459,6 +1598,7 @@ impl WorkspaceLifecycleCore {
             inner: Arc::new(CoreInner {
                 state: Mutex::new(CoreState::default()),
                 compatibility_switching: AtomicBool::new(false),
+                observers: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -1830,7 +1970,7 @@ impl WorkspaceLifecycleCore {
 
     fn abandon_transition_for_shutdown_locked(
         &self,
-        mut state: MutexGuard<'_, CoreState>,
+        mut state: CoreStateGuard<'_>,
         ticket: &AdmissionTicket,
     ) -> Result<(), LifecycleError> {
         self.require_ticket_locked(&state, ticket)?;
@@ -3754,7 +3894,7 @@ impl WorkspaceLifecycleCore {
 
     fn require_recovery_locked(
         &self,
-        mut state: MutexGuard<'_, CoreState>,
+        mut state: CoreStateGuard<'_>,
         ticket: &AdmissionTicket,
         expected_binding: Option<LiveBinding>,
         run: Option<RunOwnership>,
@@ -4639,11 +4779,36 @@ impl WorkspaceLifecycleCore {
         ))
     }
 
-    fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, CoreState>, LifecycleError> {
-        self.inner
+    fn lock_state(&self) -> Result<CoreStateGuard<'_>, LifecycleError> {
+        let locked = self
+            .inner
             .state
             .lock()
-            .map_err(|_| LifecycleError::Poisoned)
+            .map_err(|_| LifecycleError::Poisoned)?;
+        Ok(CoreStateGuard {
+            inner: &self.inner,
+            before_state: locked.state.clone(),
+            before_shutdown_requested: locked.shutdown_requested,
+            locked,
+        })
+    }
+
+    /// Register a lifecycle seam observer. Edges published after this call
+    /// returns are delivered in Core order; earlier edges are not replayed.
+    pub fn register_observer(
+        &self,
+        observer: Arc<dyn WorkspaceLifecycleObserver>,
+    ) -> Result<(), LifecycleError> {
+        let mut observers = self
+            .inner
+            .observers
+            .lock()
+            .map_err(|_| LifecycleError::Poisoned)?;
+        if observers.len() >= MAX_LIFECYCLE_OBSERVERS {
+            return Err(LifecycleError::ObserverCapacity);
+        }
+        observers.push(observer);
+        Ok(())
     }
 
     fn projected_state_locked(&self, state: &CoreState) -> LifecycleState {
@@ -7166,6 +7331,236 @@ mod tests {
                 .handle
                 .run_id,
             "selected-additional"
+        );
+    }
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        edges: Mutex<Vec<LifecycleEdge>>,
+    }
+
+    impl WorkspaceLifecycleObserver for RecordingObserver {
+        fn on_lifecycle_edge(&self, edge: &LifecycleEdge) {
+            self.edges.lock().expect("edge log").push(edge.clone());
+        }
+    }
+
+    impl RecordingObserver {
+        fn take(&self) -> Vec<LifecycleEdge> {
+            std::mem::take(&mut *self.edges.lock().expect("edge log"))
+        }
+    }
+
+    fn observed_core() -> (WorkspaceLifecycleCore, Arc<RecordingObserver>) {
+        let core = WorkspaceLifecycleCore::new();
+        let observer = Arc::new(RecordingObserver::default());
+        core.register_observer(Arc::clone(&observer) as Arc<dyn WorkspaceLifecycleObserver>)
+            .expect("register observer");
+        (core, observer)
+    }
+
+    fn admitted(outcome: AdmissionOutcome) -> AdmissionTicket {
+        match outcome {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { reason, .. } => panic!("not admitted: {reason:?}"),
+        }
+    }
+
+    #[test]
+    fn lifecycle_seam_publishes_admission_ready_and_unavailable_edges_in_core_order() {
+        let (core, observer) = observed_core();
+        let ready = core.set_ready(binding(1)).expect("Ready");
+        assert_eq!(
+            observer.take(),
+            vec![LifecycleEdge::ReadyPublished {
+                binding: binding(1),
+                revision: ready.revision,
+            }]
+        );
+
+        let ticket = admitted(core.begin_transition(AdmissionKind::Open).expect("Open"));
+        let admitted_revision = core.state_revision().expect("revision");
+        assert_eq!(
+            observer.take(),
+            vec![LifecycleEdge::TransitionAdmitted {
+                operation_id: ticket.operation_id,
+                kind: AdmissionKind::Open,
+                revision: admitted_revision,
+            }]
+        );
+        core.set_transition_stage(&ticket, TransitionStage::Replacing)
+            .expect("stage change");
+        core.mark_transition_joined(&ticket).expect("Join");
+        assert!(observer.take().is_empty(), "stage and Join are not edges");
+
+        let activated = core
+            .activate(&ticket, binding(2), ContentEffect::Retained)
+            .expect("activate");
+        let LifecycleResult::Activated { state_revision, .. } = activated else {
+            panic!("expected activation");
+        };
+        assert_eq!(
+            observer.take(),
+            vec![LifecycleEdge::ReadyPublished {
+                binding: binding(2),
+                revision: state_revision,
+            }]
+        );
+
+        let restore = admitted(
+            core.begin_transition(AdmissionKind::Restore)
+                .expect("Restore"),
+        );
+        assert!(matches!(
+            observer.take().as_slice(),
+            [LifecycleEdge::TransitionAdmitted { kind: AdmissionKind::Restore, operation_id, .. }]
+                if *operation_id == restore.operation_id
+        ));
+        core.mark_transition_joined(&restore).expect("Join");
+        let (_, result) = core
+            .require_recovery(&restore, Some(binding(2)), None)
+            .expect("RecoveryRequired");
+        let LifecycleResult::RecoveryRequired { state_revision, .. } = result else {
+            panic!("expected RecoveryRequired");
+        };
+        assert_eq!(
+            observer.take(),
+            vec![LifecycleEdge::Unavailable {
+                revision: state_revision,
+            }]
+        );
+    }
+
+    #[test]
+    fn lifecycle_seam_reports_unchanged_ready_entries_and_safe_mode_withdrawal() {
+        let (core, observer) = observed_core();
+        core.set_ready(binding(1)).expect("Ready");
+        let ticket = admitted(
+            core.begin_transition(AdmissionKind::Restore)
+                .expect("Restore"),
+        );
+        core.mark_transition_joined(&ticket).expect("Join");
+        observer.take();
+        let LifecycleResult::Unchanged { state_revision, .. } = core
+            .complete_unchanged(&ticket, binding(1))
+            .expect("unchanged")
+        else {
+            panic!("expected Unchanged");
+        };
+        assert_eq!(
+            observer.take(),
+            vec![LifecycleEdge::ReadyPublished {
+                binding: binding(1),
+                revision: state_revision,
+            }],
+            "the same binding at a new revision is a new Ready entry"
+        );
+
+        let withdrawn = core
+            .mark_safe_mode_recovery_required()
+            .expect("Safe Mode RecoveryRequired");
+        assert_eq!(
+            observer.take(),
+            vec![LifecycleEdge::Unavailable {
+                revision: withdrawn.revision,
+            }]
+        );
+        let safe_mode = admitted(
+            core.admit_recovery(SAFE_MODE_RECOVERY_DESCRIPTOR_ID)
+                .expect("Safe Mode recovery"),
+        );
+        assert!(matches!(
+            observer.take().as_slice(),
+            [LifecycleEdge::TransitionAdmitted { kind: AdmissionKind::Recover, operation_id, .. }]
+                if *operation_id == safe_mode.operation_id
+        ));
+        core.mark_transition_joined(&safe_mode).expect("Join");
+        let LifecycleResult::Activated { state_revision, .. } = core
+            .activate(&safe_mode, binding(3), ContentEffect::Retained)
+            .expect("Safe Mode Ready")
+        else {
+            panic!("expected Safe Mode activation");
+        };
+        assert_eq!(
+            observer.take(),
+            vec![LifecycleEdge::ReadyPublished {
+                binding: binding(3),
+                revision: state_revision,
+            }]
+        );
+    }
+
+    #[test]
+    fn lifecycle_seam_publishes_shutdown_once_and_retires_the_joined_transition() {
+        let (core, observer) = observed_core();
+        core.set_ready(binding(1)).expect("Ready");
+        let ticket = admitted(core.begin_transition(AdmissionKind::Open).expect("Open"));
+        observer.take();
+        let requested = core.request_shutdown().expect("shutdown");
+        assert_eq!(
+            observer.take(),
+            vec![LifecycleEdge::ShutdownRequested {
+                revision: requested.revision,
+            }]
+        );
+        core.request_shutdown().expect("idempotent shutdown");
+        assert!(observer.take().is_empty(), "shutdown is published once");
+
+        core.mark_transition_joined(&ticket).expect("Join");
+        assert_eq!(
+            core.resolve_joined_transition(&ticket).expect("resolve"),
+            JoinedTransitionOutcome::Shutdown
+        );
+        assert!(matches!(
+            observer.take().as_slice(),
+            [LifecycleEdge::Unavailable { .. }]
+        ));
+        core.close().expect("Closed");
+        assert!(matches!(
+            observer.take().as_slice(),
+            [LifecycleEdge::Unavailable { .. }]
+        ));
+    }
+
+    #[test]
+    fn lifecycle_seam_ignores_transient_maintenance_and_reports_recovery_transfer() {
+        let (core, observer) = observed_core();
+        core.set_ready(binding(1)).expect("Ready");
+        observer.take();
+        // #628: a transient automatic maintenance failure releases normally
+        // and must not look like a lifecycle edge to seam observers.
+        let mut permit = match core.admit_maintenance_permit().expect("admission") {
+            PermitAdmission::Admitted(permit) => permit,
+            _ => panic!("admission"),
+        };
+        permit.start().expect("Start");
+        permit.mark_joined().expect("Join");
+        permit.release().expect("release");
+        assert!(observer.take().is_empty());
+
+        let mut permit = match core.admit_maintenance_permit().expect("admission") {
+            PermitAdmission::Admitted(permit) => permit,
+            _ => panic!("admission"),
+        };
+        permit.start().expect("Start");
+        permit.mark_joined().expect("Join");
+        permit.transfer_to_recovery().expect("transfer");
+        assert!(matches!(
+            observer.take().as_slice(),
+            [LifecycleEdge::Unavailable { .. }]
+        ));
+    }
+
+    #[test]
+    fn lifecycle_seam_observer_registration_is_bounded() {
+        let core = WorkspaceLifecycleCore::new();
+        for _ in 0..MAX_LIFECYCLE_OBSERVERS {
+            core.register_observer(Arc::new(RecordingObserver::default()))
+                .expect("bounded registration");
+        }
+        assert_eq!(
+            core.register_observer(Arc::new(RecordingObserver::default())),
+            Err(LifecycleError::ObserverCapacity)
         );
     }
 }

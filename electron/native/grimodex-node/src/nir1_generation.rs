@@ -22,6 +22,7 @@ use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding, WorkspacePar
 use grimodex_db::{ParticipantSqlOperationBudget, PinnedWorkspaceDb};
 use serde_json::{json, Value};
 
+use crate::nir1_startup_barrier::NIR1_STARTUP_LEASE_DRAIN_LIMIT;
 use crate::profile_egress::{CallerIdentity, ProfileDispatchPermit};
 #[cfg(test)]
 use crate::state::GenerationRecoveryLaunchObservation;
@@ -513,15 +514,20 @@ fn schedule_generation_recovery<'a>(
 
     let scheduled = match ledger.entry.as_mut() {
         Some(entry) if &entry.binding == binding => match entry.state {
-            GenerationRecoveryHookState::Complete
-            | GenerationRecoveryHookState::Scheduled
-            | GenerationRecoveryHookState::Running => false,
-            GenerationRecoveryHookState::Incomplete if entry.ready_revision < ready_revision => {
+            GenerationRecoveryHookState::Scheduled | GenerationRecoveryHookState::Running => false,
+            // The startup gate opens only for the exact Ready entry whose own
+            // sweep completed, so a newer same-binding entry (an Unchanged
+            // re-Open) sweeps again even after an older Complete.
+            GenerationRecoveryHookState::Complete | GenerationRecoveryHookState::Incomplete
+                if entry.ready_revision < ready_revision =>
+            {
                 entry.state = GenerationRecoveryHookState::Scheduled;
                 entry.ready_revision = ready_revision;
                 true
             }
-            GenerationRecoveryHookState::Incomplete => false,
+            GenerationRecoveryHookState::Complete | GenerationRecoveryHookState::Incomplete => {
+                false
+            }
         },
         Some(_) => false,
         None => {
@@ -711,10 +717,53 @@ fn run_generation_recovery_after_ready(
             return;
         }
     };
+    // Recovering is entered only for this exact Ready entry, after leases
+    // from earlier entries have actually dropped (bounded). Dropping the
+    // owner without a sweep proof keeps the gate Closed for this entry.
+    let gate_recovery = state.workspace_lifecycle.nir1_startup_gate().begin_recovery(
+        &binding,
+        ready_revision,
+        NIR1_STARTUP_LEASE_DRAIN_LIMIT,
+    );
     match owner.recover_all_pending_attempts() {
-        Ok(_) => worker.complete(),
+        Ok(_) => {
+            worker.complete();
+            if let Some(gate_recovery) = gate_recovery {
+                gate_recovery.record_complete_sweep();
+            }
+        }
         Err(error) => tracing::debug!(error = %error, "NIR-1 generation recovery incomplete"),
     }
+}
+
+/// Open the NIR-1 startup gate for the exact Ready entry whose sweep task
+/// joined successfully, while the Core still publishes that same entry.
+/// Lock order: recovery ledger -> Core -> gate (never the reverse).
+fn open_startup_gate_after_join(
+    state: &AppState,
+    binding: &LiveBinding,
+    ready_revision: u64,
+) -> bool {
+    if state
+        .workspace_shutdown_requested
+        .load(std::sync::atomic::Ordering::Acquire)
+        || state
+            .ws
+            .lifecycle_core()
+            .shutdown_requested()
+            .unwrap_or(true)
+    {
+        return false;
+    }
+    let current = state.ws.lifecycle_core().snapshot().is_ok_and(|lifecycle| {
+        lifecycle.revision == ready_revision
+            && matches!(&lifecycle.state, LifecycleState::Ready(current) if current == binding)
+    });
+    current
+        && state
+            .workspace_lifecycle
+            .nir1_startup_gate()
+            .open_after_joined_sweep(binding, ready_revision)
 }
 
 #[cfg(test)]
@@ -831,6 +880,17 @@ async fn supervise_generation_recovery(
             // Failed Join is sticky: status/zero counters cannot release the
             // recovery slot, admit its pending replacement or unblock Closed.
             return;
+        }
+        let swept = ledger.latest_ready_revision == ready_revision
+            && ledger.entry.as_ref().is_some_and(|entry| {
+                entry.binding == binding
+                    && entry.ready_revision == ready_revision
+                    && entry.state == GenerationRecoveryHookState::Complete
+            });
+        // Decide before releasing the slot: an observer of `worker_active ==
+        // false` sees this Join's gate decision.
+        if swept {
+            open_startup_gate_after_join(&state, &binding, ready_revision);
         }
         ledger.worker_active = false;
         ledger.pending_ready_revision.take()
@@ -4168,5 +4228,543 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .expect("detached worker completed");
         worker.await.expect("actual blocking worker join");
+    }
+
+    fn startup_gate(state: &AppState) -> &crate::nir1_startup_barrier::Nir1StartupAdmissionGate {
+        state.workspace_lifecycle.nir1_startup_gate()
+    }
+
+    fn current_ready(state: &AppState) -> (LiveBinding, u64) {
+        let snapshot = state.ws.lifecycle_core().snapshot().expect("lifecycle");
+        let binding = snapshot.binding().expect("Ready binding").clone();
+        (binding, snapshot.revision)
+    }
+
+    /// Open the gate for the current Ready entry without a sweep, so the
+    /// publisher tests start from an Open gate with a live lease.
+    fn open_startup_gate_for_current_ready(state: &AppState) -> (LiveBinding, u64) {
+        let (binding, revision) = current_ready(state);
+        let recovery = startup_gate(state)
+            .begin_recovery(&binding, revision, Duration::ZERO)
+            .expect("exact Ready entry recovery");
+        assert!(recovery.record_complete_sweep());
+        assert!(startup_gate(state).open_after_joined_sweep(&binding, revision));
+        (binding, revision)
+    }
+
+    fn admitted_ticket(outcome: grimodex_db::AdmissionOutcome) -> grimodex_db::AdmissionTicket {
+        match outcome {
+            grimodex_db::AdmissionOutcome::Admitted(ticket) => ticket,
+            grimodex_db::AdmissionOutcome::NotAdmitted { reason, .. } => {
+                panic!("transition not admitted: {reason:?}")
+            }
+        }
+    }
+
+    /// Publish a new Ready entry through the real Native adapter publisher.
+    fn publish_new_ready_entry(state: &AppState, kind: AdmissionKind) -> (LiveBinding, u64) {
+        admitted_ticket(
+            state
+                .workspace_lifecycle
+                .try_begin_transition_kind(kind)
+                .expect("transition admission"),
+        );
+        let view = state
+            .workspace_lifecycle
+            .complete_transition_from_workspace(&state.ws)
+            .expect("Ready publication");
+        assert_eq!(
+            view.status,
+            crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::Ready
+        );
+        current_ready(state)
+    }
+
+    async fn wait_startup_gate_open(state: &AppState, binding: &LiveBinding, revision: u64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !startup_gate(state).is_open_for(binding, revision) {
+            assert!(
+                Instant::now() < deadline,
+                "startup gate did not open for the exact Ready entry"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    async fn wait_recovery_joined(state: &AppState) {
+        tokio::time::timeout(Duration::from_secs(10), state.wait_workspace_operations())
+            .await
+            .expect("recovery task joined");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn startup_gate_opens_after_exact_ready_sweep_for_empty_and_multi_page_workspaces() {
+        let (empty_root, _) = recovery_workspace(0);
+        let (many_root, many_attempts, project_ids) =
+            recovery_workspace_many(MAX_RECOVERY_PAGE_SIZE + 6, MAX_RECOVERY_PAGE_SIZE + 6);
+        assert!(project_ids.len() > MAX_RECOVERY_PAGE_SIZE);
+        assert!(many_attempts.len() > MAX_RECOVERY_PAGE_SIZE);
+        for (root, attempts) in [(empty_root, Vec::new()), (many_root, many_attempts)] {
+            let state = reopened_recovery_state(&root);
+            let (binding, revision) = current_ready(&state);
+            assert!(startup_gate(&state).try_lease(&binding, revision).is_none());
+            assert!(start_generation_recovery_after_ready(
+                Arc::clone(&state),
+                revision
+            ));
+            wait_recovery_joined(&state).await;
+            assert_eq!(
+                recovery_hook_state(&state, &binding),
+                Some(GenerationRecoveryHookState::Complete)
+            );
+            assert!(startup_gate(&state).is_open_for(&binding, revision));
+            let lease = startup_gate(&state)
+                .try_lease(&binding, revision)
+                .expect("exact Open entry lease");
+            assert!(lease.is_current());
+            let db = active_workspace_snapshot(&state.ws).expect("Ready workspace");
+            for attempt in &attempts {
+                assert!(storage::read_terminal(db.db(), &attempt.id)
+                    .expect("terminal read")
+                    .is_some());
+            }
+            drop(db);
+            drop(lease);
+            drop(state);
+            std::fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn incomplete_sweep_keeps_startup_gate_closed_until_a_new_ready_entry_sweeps() {
+        let (root, attempts) = recovery_workspace(1);
+        let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("fixture DB");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_generation_recovery
+                 BEFORE UPDATE OF terminal_json ON nir1_generation_attempts
+                 BEGIN SELECT RAISE(ABORT, 'injected recovery failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install recovery failpoint");
+        drop(db);
+        let state = reopened_recovery_state(&root);
+        let (binding, revision) = current_ready(&state);
+        assert!(start_generation_recovery_after_ready(
+            Arc::clone(&state),
+            revision
+        ));
+        wait_recovery_joined(&state).await;
+        assert_eq!(
+            recovery_hook_state(&state, &binding),
+            Some(GenerationRecoveryHookState::Incomplete)
+        );
+        assert!(startup_gate(&state).is_closed());
+        assert!(startup_gate(&state).try_lease(&binding, revision).is_none());
+        assert!(
+            startup_gate(&state)
+                .begin_recovery(&binding, revision, Duration::ZERO)
+                .is_none(),
+            "the incomplete Ready entry is consumed"
+        );
+        assert!(!open_startup_gate_after_join(&state, &binding, revision));
+
+        active_workspace_snapshot(&state.ws)
+            .expect("Ready workspace")
+            .db()
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER fail_generation_recovery")?;
+                Ok(())
+            })
+            .expect("remove recovery failpoint");
+        let (retry_binding, retry_revision) = publish_new_ready_entry(&state, AdmissionKind::Open);
+        assert!(retry_revision > revision);
+        assert!(start_generation_recovery_after_ready(
+            Arc::clone(&state),
+            retry_revision
+        ));
+        wait_recovery_joined(&state).await;
+        assert!(startup_gate(&state).is_open_for(&retry_binding, retry_revision));
+        assert!(startup_gate(&state).try_lease(&binding, revision).is_none());
+        let db = active_workspace_snapshot(&state.ws).expect("retried workspace");
+        assert!(storage::read_terminal(db.db(), &attempts[0].id)
+            .expect("terminal read")
+            .is_some());
+        drop(db);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_recovery_owner_cannot_open_and_pending_ready_entry_opens_after_join() {
+        let (root, attempts) = recovery_workspace(1);
+        let state = reopened_recovery_state(&root);
+        let (binding_a, revision_a) = current_ready(&state);
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *state
+            .nir1_generation_recovery_worker_probe
+            .lock()
+            .expect("worker probe") = Some((reached_tx, release_rx));
+        assert!(start_generation_recovery_after_ready(
+            Arc::clone(&state),
+            revision_a
+        ));
+        reached_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("A worker paused before capture");
+
+        let (binding_b, revision_b) = publish_new_ready_entry(&state, AdmissionKind::Restore);
+        assert!(revision_b > revision_a);
+        assert!(!start_generation_recovery_after_ready(
+            Arc::clone(&state),
+            revision_b
+        ));
+        assert_eq!(
+            state
+                .nir1_generation_recovery_statuses
+                .lock()
+                .expect("ledger")
+                .pending_ready_revision,
+            Some(revision_b)
+        );
+        assert!(startup_gate(&state).is_closed());
+        release_tx.send(()).expect("release stale A worker");
+
+        wait_startup_gate_open(&state, &binding_b, revision_b).await;
+        wait_recovery_joined(&state).await;
+        assert!(!startup_gate(&state).is_open_for(&binding_a, revision_a));
+        assert!(startup_gate(&state)
+            .try_lease(&binding_a, revision_a)
+            .is_none());
+        assert!(
+            !open_startup_gate_after_join(&state, &binding_a, revision_a),
+            "a stale owner cannot open the current gate"
+        );
+        assert!(startup_gate(&state).is_open_for(&binding_b, revision_b));
+        let db = active_workspace_snapshot(&state.ws).expect("B workspace");
+        assert!(storage::read_terminal(db.db(), &attempts[0].id)
+            .expect("terminal read")
+            .is_some());
+        drop(db);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn every_native_ready_publisher_closes_the_startup_gate() {
+        let (root, _) = recovery_workspace(0);
+        let state = reopened_recovery_state(&root);
+        let gate = startup_gate(&state);
+        let adapter = &state.workspace_lifecycle;
+        let core = state.ws.lifecycle_core();
+
+        // Open and Restore: admission closes, and the Ready publication is a
+        // new exact entry that is still Closed until its own sweep.
+        for kind in [AdmissionKind::Open, AdmissionKind::Restore] {
+            let (binding, revision) = open_startup_gate_for_current_ready(&state);
+            let lease = gate.try_lease(&binding, revision).expect("Open lease");
+            admitted_ticket(adapter.try_begin_transition_kind(kind).expect("admission"));
+            assert!(gate.is_closed(), "{kind:?} admission closes the gate");
+            assert!(!lease.is_current());
+            drop(lease);
+            adapter
+                .complete_transition_from_workspace(&state.ws)
+                .expect("Ready publication");
+            let (next_binding, next_revision) = current_ready(&state);
+            assert!(next_revision > revision);
+            assert!(gate.is_closed(), "{kind:?} Ready publication keeps it Closed");
+            assert!(
+                gate.awaits_recovery_for(&next_binding, next_revision),
+                "{kind:?} Ready publication is a new exact entry"
+            );
+            assert!(gate.try_lease(&next_binding, next_revision).is_none());
+            assert!(gate.try_lease(&binding, revision).is_none());
+        }
+
+        // Native Open target admission (begin_open_transition_for_target).
+        let (binding, revision) = open_startup_gate_for_current_ready(&state);
+        admitted_ticket(
+            adapter
+                .try_begin_open_transition_for_target(
+                    binding.locator.as_ref(),
+                    Some(binding.workspace_id.as_ref()),
+                    None,
+                    None,
+                )
+                .expect("Open target admission"),
+        );
+        assert!(gate.is_closed());
+        adapter
+            .complete_transition_from_workspace(&state.ws)
+            .expect("Open target Ready");
+        assert!(gate.try_lease(&binding, revision).is_none());
+        let (target_binding, target_revision) = current_ready(&state);
+        assert!(gate.awaits_recovery_for(&target_binding, target_revision));
+
+        // Safe Mode: withdrawing Ready closes, and the Safe Mode Recover
+        // admission and Ready publication close again.
+        let (binding, revision) = open_startup_gate_for_current_ready(&state);
+        core.mark_safe_mode_recovery_required()
+            .expect("Safe Mode RecoveryRequired");
+        assert!(gate.is_closed());
+        assert!(gate.try_lease(&binding, revision).is_none());
+        admitted_ticket(
+            adapter
+                .try_begin_recovery_transition(grimodex_db::RecoveryDescriptorId::new(0))
+                .expect("Safe Mode Recover admission"),
+        );
+        adapter
+            .complete_transition_from_workspace(&state.ws)
+            .expect("Safe Mode Ready");
+        let (safe_binding, safe_revision) = current_ready(&state);
+        assert!(gate.is_closed());
+        assert!(gate.try_lease(&safe_binding, safe_revision).is_none());
+        assert!(gate.awaits_recovery_for(&safe_binding, safe_revision));
+
+        // Maintenance Recover: the recovery transfer withdraws Ready, the
+        // descriptor-bound Recover admission closes, and its Ready is a new
+        // entry.
+        let (binding, revision) = open_startup_gate_for_current_ready(&state);
+        let mut permit = match core.admit_maintenance_permit().expect("maintenance") {
+            grimodex_db::PermitAdmission::Admitted(permit) => permit,
+            grimodex_db::PermitAdmission::NotAdmitted { reason, .. } => {
+                panic!("maintenance not admitted: {reason:?}")
+            }
+        };
+        permit.start().expect("start maintenance");
+        permit.mark_joined().expect("join maintenance");
+        let descriptor = permit.transfer_to_recovery().expect("recovery transfer");
+        assert!(gate.is_closed(), "recovery transfer closes the gate");
+        assert!(gate.try_lease(&binding, revision).is_none());
+        admitted_ticket(
+            adapter
+                .try_begin_recovery_transition_for_workspace(descriptor, &state.ws)
+                .expect("maintenance Recover admission"),
+        );
+        assert!(gate.is_closed());
+        let recovered = adapter
+            .complete_transition_from_workspace(&state.ws)
+            .expect("maintenance Recover Ready");
+        assert_eq!(
+            recovered.status,
+            crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::Ready
+        );
+        let (recovered_binding, recovered_revision) = current_ready(&state);
+        assert!(gate.is_closed());
+        assert!(gate
+            .try_lease(&recovered_binding, recovered_revision)
+            .is_none());
+        assert!(gate.awaits_recovery_for(&recovered_binding, recovered_revision));
+
+        // resolve_joined_transition with shutdown: no Ready, permanently Closed.
+        let (binding, revision) = open_startup_gate_for_current_ready(&state);
+        admitted_ticket(
+            adapter
+                .try_begin_transition_kind(AdmissionKind::Open)
+                .expect("Open admission"),
+        );
+        adapter.request_shutdown().expect("shutdown request");
+        let view = adapter
+            .complete_transition_from_workspace(&state.ws)
+            .expect("joined shutdown");
+        assert_eq!(
+            view.status,
+            crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::Transition
+        );
+        assert!(gate.is_closed());
+        assert!(gate.try_lease(&binding, revision).is_none());
+        assert!(gate
+            .begin_recovery(&binding, revision, Duration::ZERO)
+            .is_none());
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn startup_lease_drain_timeout_publishes_recovery_required_and_keeps_gate_closed() {
+        let (root, _) = recovery_workspace(0);
+        let state = reopened_recovery_state(&root);
+        let gate = startup_gate(&state);
+        let (binding, revision) = open_startup_gate_for_current_ready(&state);
+        let lease = gate.try_lease(&binding, revision).expect("prior lease");
+        admitted_ticket(
+            state
+                .workspace_lifecycle
+                .try_begin_transition_kind(AdmissionKind::Open)
+                .expect("Open admission"),
+        );
+        let started = Instant::now();
+        let view = state
+            .workspace_lifecycle
+            .complete_transition_from_workspace(&state.ws)
+            .expect("drain-timeout publication");
+        let elapsed = started.elapsed();
+        assert!(elapsed >= crate::nir1_startup_barrier::NIR1_STARTUP_LEASE_DRAIN_LIMIT);
+        assert!(elapsed < Duration::from_secs(2), "drain is bounded");
+        assert_eq!(
+            view.status,
+            crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::RecoveryRequired
+        );
+        assert!(matches!(
+            state.ws.lifecycle_core().snapshot().expect("lifecycle").state,
+            LifecycleState::RecoveryRequired { .. }
+        ));
+        assert_eq!(
+            state.workspace_lifecycle.take_last_terminal_kind().expect("terminal"),
+            Some(crate::workspace_lifecycle_view::LifecycleTerminalKind::RecoveryRequired)
+        );
+        assert!(gate.is_closed());
+        assert_eq!(gate.active_lease_count(), 1, "timeout is not retirement");
+        assert!(!lease.is_current());
+        drop(lease);
+        assert_eq!(gate.active_lease_count(), 0);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn startup_lease_drain_publishes_ready_only_after_the_actual_lease_drop() {
+        let (root, _) = recovery_workspace(0);
+        let state = reopened_recovery_state(&root);
+        let gate = startup_gate(&state);
+        let (binding, revision) = open_startup_gate_for_current_ready(&state);
+        let lease = gate.try_lease(&binding, revision).expect("prior lease");
+        admitted_ticket(
+            state
+                .workspace_lifecycle
+                .try_begin_transition_kind(AdmissionKind::Restore)
+                .expect("Restore admission"),
+        );
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let owner = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            drop(lease);
+            dropped_tx.send(Instant::now()).expect("lease dropped");
+        });
+        let view = state
+            .workspace_lifecycle
+            .complete_transition_from_workspace(&state.ws)
+            .expect("Ready after drain");
+        let published_at = Instant::now();
+        let dropped_at = dropped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("lease owner dropped");
+        owner.join().expect("lease owner joined");
+        assert!(dropped_at <= published_at);
+        assert_eq!(
+            view.status,
+            crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::Ready
+        );
+        assert_eq!(gate.active_lease_count(), 0);
+        let (ready_binding, ready_revision) = current_ready(&state);
+        assert!(ready_revision > revision);
+        assert!(gate.is_closed());
+        assert!(gate
+            .begin_recovery(&ready_binding, ready_revision, Duration::ZERO)
+            .is_some());
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn transient_maintenance_release_keeps_the_startup_gate_open() {
+        let (root, _) = recovery_workspace(0);
+        let state = reopened_recovery_state(&root);
+        let gate = startup_gate(&state);
+        let (binding, revision) = open_startup_gate_for_current_ready(&state);
+        let lease = gate.try_lease(&binding, revision).expect("Open lease");
+        // #628: a transient automatic maintenance failure releases normally;
+        // it is not a lifecycle edge and does not close the gate.
+        let mut permit = match state
+            .ws
+            .lifecycle_core()
+            .admit_maintenance_permit()
+            .expect("maintenance")
+        {
+            grimodex_db::PermitAdmission::Admitted(permit) => permit,
+            grimodex_db::PermitAdmission::NotAdmitted { reason, .. } => {
+                panic!("maintenance not admitted: {reason:?}")
+            }
+        };
+        permit.start().expect("start");
+        permit.mark_joined().expect("join");
+        permit.release().expect("transient release");
+        assert!(lease.is_current());
+        assert!(gate.is_open_for(&binding, revision));
+        drop(lease);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_open_restore_and_shutdown_drive_the_startup_gate() {
+        let (root, attempts) = recovery_workspace(1);
+        let state = Arc::new(
+            AppState::new(
+                root.join("native-app").to_str().expect("app path"),
+                root.join("resources").to_str().expect("resources path"),
+            )
+            .expect("native state"),
+        );
+        let backend = crate::Backend {
+            state: Arc::clone(&state),
+        };
+        assert!(startup_gate(&state).is_closed(), "restart starts Closed");
+        backend
+            .open_workspace(root.to_string_lossy().into_owned())
+            .await
+            .expect("real Open");
+        let (open_binding, open_revision) = current_ready(&state);
+        wait_startup_gate_open(&state, &open_binding, open_revision).await;
+        wait_recovery_joined(&state).await;
+        let lease = startup_gate(&state)
+            .try_lease(&open_binding, open_revision)
+            .expect("Open lease");
+        let db = active_workspace_snapshot(&state.ws).expect("Ready workspace");
+        assert!(storage::read_terminal(db.db(), &attempts[0].id)
+            .expect("terminal read")
+            .is_some());
+        let backups = root.join("backups");
+        std::fs::create_dir_all(&backups).expect("backups");
+        db.db()
+            .backup_to(&backups.join("grimodex-gate.db"))
+            .expect("backup");
+        drop(db);
+        drop(lease);
+
+        let restored = backend
+            .restore_backup("grimodex-gate.db".into())
+            .await
+            .expect("real Restore");
+        let restored: Value = serde_json::from_str(&restored).expect("Restore outcome");
+        assert_eq!(restored["status"], "restored");
+        assert!(startup_gate(&state)
+            .try_lease(&open_binding, open_revision)
+            .is_none());
+        let (restored_binding, restored_revision) = current_ready(&state);
+        assert!(restored_revision > open_revision);
+        wait_startup_gate_open(&state, &restored_binding, restored_revision).await;
+        wait_recovery_joined(&state).await;
+
+        let closed = backend
+            .shutdown_workspace_lifecycle()
+            .await
+            .expect("real shutdown");
+        let closed: Value = serde_json::from_str(&closed).expect("Closed view");
+        assert_eq!(closed["status"], "closed");
+        assert!(startup_gate(&state).is_closed());
+        assert!(startup_gate(&state)
+            .try_lease(&restored_binding, restored_revision)
+            .is_none());
+        assert!(!open_startup_gate_after_join(
+            &state,
+            &restored_binding,
+            restored_revision
+        ));
+        drop(backend);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
     }
 }
