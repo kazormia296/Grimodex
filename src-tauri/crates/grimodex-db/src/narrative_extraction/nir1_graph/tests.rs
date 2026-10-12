@@ -190,6 +190,204 @@ impl Fixture {
             Ok(())
         })
     }
+
+    /// Unrelated typed-family Revisions with their own payload and
+    /// reverse-index edge, optionally decided. None names a seed-local entity.
+    fn add_unrelated_payload_revisions(
+        &self,
+        start: usize,
+        count: usize,
+        decided: bool,
+    ) -> Result<()> {
+        self.authority.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let proposal_set: String = tx.query_row(
+                "SELECT proposal.proposal_set_id FROM narrative_proposal_revisions revision
+                   JOIN narrative_proposals proposal ON proposal.id=revision.proposal_id
+                  WHERE revision.id=?1",
+                [&self.revision],
+                |row| row.get(0),
+            )?;
+            for index in start..start + count {
+                let entity = format!("nir1-unrelated-payload-{index}");
+                let proposal = format!("graph-unrelated-proposal-{index}");
+                let revision = format!("graph-unrelated-revision-{index}");
+                let payload = serde_json::json!({
+                    "bundle": {
+                        "entities": [{
+                            "entityId": entity,
+                            "evidence": [{ "quote": "unrelated payload ".repeat(8) }],
+                        }],
+                        "relations": [],
+                    }
+                })
+                .to_string();
+                tx.execute(
+                    "INSERT INTO narrative_proposals
+                        (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                         current_revision_id, created_at, updated_at)
+                     VALUES (?1, ?2, ?1, 'graph-test-unrelated', 'accepted', '{}', ?3,
+                             '2026-09-22T00:00:00Z', '2026-09-22T00:00:00Z')",
+                    params![proposal, proposal_set, revision],
+                )?;
+                tx.execute(
+                    "INSERT INTO narrative_proposal_revisions
+                        (id, proposal_id, revision_number, payload_json, created_at, created_by)
+                     VALUES (?1, ?2, 1, ?3, '2026-09-22T00:00:00Z', 'graph-test')",
+                    params![revision, proposal, payload],
+                )?;
+                if decided {
+                    tx.execute(
+                        "INSERT INTO narrative_proposal_decisions
+                            (id, proposal_id, revision_id, decision, decision_json, created_at,
+                             created_by)
+                         VALUES (?1, ?2, ?3, 'approve', '{}', '2026-09-22T00:00:00Z',
+                                 'graph-test')",
+                        params![
+                            format!("graph-unrelated-decision-{index}"),
+                            proposal,
+                            revision
+                        ],
+                    )?;
+                }
+                tx.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                         read_set_json, created_at)
+                     VALUES (?1, ?2, 'proposal-revision', ?3, ?4, '[]', '2026-09-22T00:00:00Z')",
+                    params![
+                        format!("graph-unrelated-edge-{index}"),
+                        PROJECT,
+                        revision,
+                        format!("codex:{entity}")
+                    ],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Deterministic A2/A3 usage for the seed Revision: one progress callback
+    /// per SQLite VM instruction, the same unit charged against QUERY_SQL_STEPS.
+    fn seed_a2_a3_usage(&self) -> Result<SeedAdmissionUsage> {
+        let conn = rusqlite::Connection::open_with_flags(
+            self._directory.0.join("grimodex.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        let steps = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = Arc::clone(&steps);
+        crate::set_sqlite_progress_handler(
+            &conn,
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )?;
+        let a2 = super::input::preflight_revision(
+            &conn,
+            PROJECT,
+            &self.revision,
+            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_INPUT_BYTES,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("seed Revision did not pass A2"))?;
+        let a2_steps = steps.load(Ordering::Relaxed);
+        let a3 = super::input::preflight_disclosure_with_payload_bytes(
+            &conn,
+            PROJECT,
+            &self.revision,
+            "nir1",
+            a2.payload_bytes,
+            MAX_GRAPH_RECORDS - a2.rows,
+            MAX_GRAPH_INPUT_BYTES - a2.bytes,
+        )?;
+        let total_steps = steps.load(Ordering::Relaxed);
+        crate::set_sqlite_progress_handler(&conn, 0, None::<fn() -> bool>)?;
+        Ok(SeedAdmissionUsage {
+            a2_steps,
+            a3_steps: total_steps - a2_steps,
+            a2_rows: a2.rows,
+            a2_bytes: a2.bytes,
+            a3_rows: a3.rows,
+            a3_bytes: a3.bytes,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SeedAdmissionUsage {
+    a2_steps: u64,
+    a3_steps: u64,
+    a2_rows: usize,
+    a2_bytes: usize,
+    a3_rows: usize,
+    a3_bytes: usize,
+}
+
+const UNRELATED_REVISION_STEPS: [usize; 3] = [0, 600, 6_000];
+
+fn seed_usage_with_unrelated_revisions(decided: bool) -> Result<Vec<SeedAdmissionUsage>> {
+    let fixture = Fixture::new()?;
+    let mut added = 0;
+    let mut usage = Vec::new();
+    for target in UNRELATED_REVISION_STEPS {
+        fixture.add_unrelated_payload_revisions(added, target - added, decided)?;
+        added = target;
+        usage.push(fixture.seed_a2_a3_usage()?);
+    }
+    Ok(usage)
+}
+
+// CQ-2: seed-local A2/A3 cost must not follow unrelated workspace growth.
+#[test]
+fn unrelated_payload_revisions_do_not_change_seed_a2_a3_steps_or_admission() -> Result<()> {
+    let undecided = seed_usage_with_unrelated_revisions(false)?;
+    assert!(undecided[0].a2_steps > 0 && undecided[0].a3_steps > 0);
+    assert_eq!(
+        undecided,
+        vec![undecided[0]; UNRELATED_REVISION_STEPS.len()]
+    );
+
+    let decided = seed_usage_with_unrelated_revisions(true)?;
+    let admission =
+        |usage: &SeedAdmissionUsage| (usage.a2_rows, usage.a2_bytes, usage.a3_rows, usage.a3_bytes);
+    assert_eq!(admission(&decided[0]), admission(&undecided[0]));
+    assert!(decided
+        .iter()
+        .all(|usage| admission(usage) == admission(&decided[0])));
+    Ok(())
+}
+
+// Acceptance in waiting: narrative_proposal_decisions has no revision or
+// proposal index, so three A2/A3 charges scan every workspace Decision.
+#[test]
+#[ignore = "CQ-2 HOLD: needs a narrative_proposal_decisions revision index migration"]
+fn unrelated_decided_revisions_do_not_change_seed_a2_a3_steps() -> Result<()> {
+    let decided = seed_usage_with_unrelated_revisions(true)?;
+    assert_eq!(decided, vec![decided[0]; UNRELATED_REVISION_STEPS.len()]);
+    Ok(())
+}
+
+#[test]
+#[ignore = "CQ-2 wall measurement only; wall time is not asserted"]
+fn measure_seed_a2_a3_wall_with_unrelated_revisions() -> Result<()> {
+    for decided in [false, true] {
+        let fixture = Fixture::new()?;
+        let mut added = 0;
+        for target in UNRELATED_REVISION_STEPS {
+            fixture.add_unrelated_payload_revisions(added, target - added, decided)?;
+            added = target;
+            let started = Instant::now();
+            let usage = fixture.seed_a2_a3_usage()?;
+            eprintln!(
+                "CQ-2 seed A2/A3: unrelated={target}; decided={decided}; wall={:?}; {usage:?}",
+                started.elapsed()
+            );
+        }
+    }
+    Ok(())
 }
 
 fn graph_request(seed: &str) -> Nir1GraphRequest {
