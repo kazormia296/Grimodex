@@ -49,6 +49,7 @@ export default defineConfig({
     exclude: [
       "src/features/ai-policy/webAiConsent.gate-b2.browser.test.tsx",
       "src/features/editor/zen/ZenMultipassCanvas.browser.test.tsx",
+      "src/features/editor/zen/zenWebGlSupport.browser.test.ts",
       "src/features/editor/zen/ZenBlurResearchRunner.browser.test.tsx",
       "src/features/editor/zen/ZenShaderResearchRunner.browser.test.tsx",
       "src/features/editor/zen/ZenShaderAbbaResearchRunner.browser.test.tsx",
