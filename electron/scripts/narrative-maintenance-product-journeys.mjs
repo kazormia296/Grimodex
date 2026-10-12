@@ -810,7 +810,15 @@ export function assertForegroundRunMarker(
     );
   }
   const canonicalWorkKey = canonicalWorkKeyForRun(run);
-  if (marker.canonicalWorkKey !== canonicalWorkKey) {
+  // Native marks the WorkKey it dispatched. A first wake dispatches the
+  // epochless legacy Backfill key, while a requeued replacement (for example
+  // after a connection preemption) dispatches the epoch-normalized key of the
+  // same work; native accepts both for Backfill, so the journey does too.
+  const acceptedWorkKeys =
+    run.runKind === "backfill" && run.semanticEpochId
+      ? [canonicalWorkKey, `${canonicalWorkKey}/epoch/${run.semanticEpochId}`]
+      : [canonicalWorkKey];
+  if (!acceptedWorkKeys.includes(marker.canonicalWorkKey)) {
     throw new Error(
       `foreground Run systemWork.canonicalWorkKey did not match ${canonicalWorkKey}`,
     );
@@ -870,7 +878,38 @@ export function assertForegroundPatchRunObservation(
   assertImmutableForegroundMarker(run, expected, originalMarker, label);
   assertForegroundLifecycle(run, run.status, label);
   if (run.status === "completed") {
-    assertWallClockIntervalContains(
+    assertForegroundReleaseCoversPatch(
+      run,
+      expected,
+      patchStartedAt,
+      patchCompletedAt,
+      label,
+    );
+  }
+  return run;
+}
+
+/**
+ * Main schedules the exact foreground release as soon as tree_node_patch
+ * commits, before the reply reaches the journey. A completed Run therefore
+ * either encloses the client-observed patch interval, or carries native's
+ * durable release proof for this barrier and ended after the patch began.
+ */
+export function assertForegroundReleaseCoversPatch(
+  run,
+  expected,
+  patchStartedAt,
+  patchCompletedAt,
+  label,
+) {
+  const completedAt = parseInstant(run.completedAt, `${label} completedAt`);
+  if (
+    compareInstantValues(
+      completedAt,
+      wallClockInstant(patchCompletedAt, `${label} patch end`),
+    ) >= 0
+  ) {
+    return assertWallClockIntervalContains(
       patchStartedAt,
       patchCompletedAt,
       run.startedAt,
@@ -878,12 +917,47 @@ export function assertForegroundPatchRunObservation(
       label,
     );
   }
-  return run;
+  let outcome = null;
+  try {
+    outcome = JSON.parse(String(run.outcomeSummaryJson ?? ""));
+  } catch {
+    outcome = null;
+  }
+  if (
+    outcome?.foregroundBarrierReleased !== true ||
+    outcome.productJourneyBarrierId !== expected.barrierId ||
+    outcome.correlation !== expected.correlation
+  ) {
+    throw new Error(
+      `${label} wall-clock interval did not overlap the Run interval and carries no exact foreground release proof`,
+    );
+  }
+  return assertWallClockIntervalContains(
+    patchStartedAt,
+    patchStartedAt,
+    run.startedAt,
+    run.completedAt,
+    label,
+  );
 }
 
-export function foregroundMarkedRuns(rows, baselineRows, expected) {
+/**
+ * Native requeues a Run cancelled by a no-wait connection preemption as a
+ * fresh Run that inherits the barrier marker. Such a cancelled row never
+ * reached the hold, so it is excluded unless the caller is proving that no
+ * marker exists at all (`includePreempted`).
+ */
+export function foregroundMarkedRuns(
+  rows,
+  baselineRows,
+  expected,
+  { includePreempted = false } = {},
+) {
   const fresh = rowsAfter(rows, baselineRows);
   return fresh.filter((run) => {
+    if (!includePreempted && isRetryableMaintenancePreemption(run)) {
+      return false;
+    }
     const marker = foregroundSystemWorkMarker(run);
     return (
       marker?.productJourneyBarrierId === expected.barrierId ||
@@ -902,7 +976,9 @@ export function assertForegroundTargetBaseline(
   expected,
   label = "foreground target workspace",
 ) {
-  const oldMarked = foregroundMarkedRuns(baselineRows, [], expected);
+  const oldMarked = foregroundMarkedRuns(baselineRows, [], expected, {
+    includePreempted: true,
+  });
   if (oldMarked.length > 0) {
     throw new Error(
       `${label} baseline contains an old marked authority Run: ${JSON.stringify(
@@ -4450,6 +4526,7 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       primaryRows,
       primaryBaseline,
       markerExpectation,
+      { includePreempted: true },
     );
     if (primaryMarked.length !== 0) {
       throw new Error(
@@ -4644,11 +4721,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       "foreground completed lifecycle",
     );
     try {
-      assertWallClockIntervalContains(
+      assertForegroundReleaseCoversPatch(
+        completedSchedulerRun,
+        markerExpectation,
         foregroundPatchStartedAt,
         foregroundPatchCompletedAt,
-        completedSchedulerRun.startedAt,
-        completedSchedulerRun.completedAt,
         "foreground writer",
       );
     } catch (error) {

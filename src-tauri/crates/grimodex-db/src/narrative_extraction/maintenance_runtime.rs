@@ -49,7 +49,8 @@ use super::restore_rebuild::{
     validate_graph_state_digest, validate_graph_state_digest_with_control,
     validate_report_rebuild_required, validate_report_rebuild_required_with_control,
     validate_verify_check_coverage, DependencyGraphVerifyReport, RebuildDerivedStateSummary,
-    REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
+    MAINTENANCE_CONNECTION_PREEMPTED_CODE, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
+    VERIFY_RUN_KIND,
 };
 use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
@@ -562,7 +563,9 @@ pub fn find_running_foreground_system_work_run(
 
 /// Find the durable marker that reserves the foreground slot for the current
 /// authority, including an older recovery generation or terminalized phase
-/// row left by a prior cycle/process. This is intentionally not an ownership
+/// row left by a prior cycle/process. A Run cancelled by a no-wait connection
+/// preemption is the only exception: its requeued replacement carries the
+/// marker instead. This is intentionally not an ownership
 /// lookup: the caller must still use [`find_running_foreground_system_work_run`]
 /// and a process-local Run handle before suppressing recovery or releasing a
 /// Run.
@@ -595,7 +598,7 @@ fn find_running_foreground_system_work_scoped(
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
             "SELECT id, project_id, run_kind, work_key, semantic_epoch_id, spec_json, status,
-                    outcome_summary_json
+                    outcome_summary_json, terminal_reason_code
                FROM narrative_extraction_runs
               WHERE run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')
               ORDER BY created_at ASC, id ASC",
@@ -610,6 +613,7 @@ fn find_running_foreground_system_work_scoped(
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, String>(6)?,
                 row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })?;
         let mut matches = Vec::new();
@@ -623,8 +627,19 @@ fn find_running_foreground_system_work_scoped(
                 spec_json,
                 status,
                 outcome_summary_json,
+                terminal_reason_code,
             ) = row?;
             if require_running_status && status != "running" {
+                continue;
+            }
+            // A no-wait connection preemption cancels the Run before it
+            // produced any outcome, and the scheduler requeues the same
+            // WorkKey as a fresh Run. That cancelled row did not consume the
+            // barrier: the replacement inherits the marker so the journey
+            // still observes exactly one marked Run that can reach the hold.
+            if status == "cancelled"
+                && terminal_reason_code.as_deref() == Some(MAINTENANCE_CONNECTION_PREEMPTED_CODE)
+            {
                 continue;
             }
             let Some(spec_json) = spec_json else {
@@ -6058,6 +6073,106 @@ mod tests {
                 .is_none(),
             "a different barrier/correlation must not satisfy the foreground journey"
         );
+    }
+
+    #[test]
+    fn preempted_foreground_marker_does_not_consume_the_barrier_slot() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        let config = NarrativeMaintenanceCiConfig {
+            is_packaged: false,
+            ci: "true".to_string(),
+            owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+            fault: None,
+            trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
+            setup: None,
+            freshness_hold_project_id: None,
+            product_journey_barrier_id: Some("barrier-1".to_string()),
+            correlation: Some("correlation-1".to_string()),
+        };
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+        };
+        let work = DesiredWork::new(
+            "project-1",
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+            "workspace-opened",
+        )
+        .expect("desired work");
+        let marker = config
+            .foreground_marker(&work, &binding)
+            .expect("foreground marker");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed project authority");
+        let create_marked_run = || -> String {
+            with_system_work_marker(Some(marker.clone()), || {
+                db.with_conn(|conn| {
+                    create_system_run_in_tx(
+                        conn,
+                        "project-1",
+                        "backfill",
+                        "epoch-1",
+                        LEGACY_BACKFILL_WORK_KEY,
+                        &json!({ "phase": "foreground-test" }),
+                        "sha256:test",
+                        SystemRunWorkKeyReuse::None,
+                        None,
+                    )
+                })
+            })
+            .expect("insert marked Run")["runId"]
+                .as_str()
+                .expect("Run id")
+                .to_string()
+        };
+        let terminalize = |run_id: &str, status: &str, reason: &str| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET status = ?1, terminal_reason_code = ?2,
+                            completed_at = started_at
+                      WHERE id = ?3",
+                    params![status, reason, run_id],
+                )?;
+                Ok(())
+            })
+            .expect("terminalize marked Run");
+        };
+
+        let preempted = create_marked_run();
+        terminalize(
+            &preempted,
+            "cancelled",
+            MAINTENANCE_CONNECTION_PREEMPTED_CODE,
+        );
+        assert!(
+            find_running_foreground_system_work_slot(&db, &config, &binding)
+                .expect("slot lookup")
+                .is_none(),
+            "a Run cancelled by connection preemption must leave the marker for its replacement"
+        );
+
+        let interrupted = create_marked_run();
+        terminalize(&interrupted, "cancelled", "NEX_MAINTENANCE_INTERRUPTED");
+        let slot = find_running_foreground_system_work_slot(&db, &config, &binding)
+            .expect("slot lookup")
+            .expect("any other terminal marked Run still consumes the slot");
+        assert_eq!(slot.run_id, interrupted);
     }
 
     #[test]

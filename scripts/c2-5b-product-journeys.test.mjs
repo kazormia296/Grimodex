@@ -30,6 +30,7 @@ import {
   NARRATIVE_MAINTENANCE_SEAM_CONTRACT,
   NARRATIVE_MAINTENANCE_SETUP_ENV,
   NARRATIVE_FRESHNESS_DISABLE_ENV,
+  NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
   NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   NARRATIVE_MAINTENANCE_TRIGGERS,
@@ -392,6 +393,63 @@ test("foreground patch observation accepts only a running or interval-covering c
       ),
     /overlap/,
     "a completed Run that ended before the patch must remain rejected",
+  );
+  const releasedBeforeReply = {
+    completedAt: "2026-08-23T00:00:00.001800000Z",
+    taskCompletedAt: "2026-08-23T00:00:00.001800000Z",
+    lastAttemptCompletedAt: "2026-08-23T00:00:00.001800000Z",
+  };
+  assert.equal(
+    assertForegroundPatchRunObservation(
+      makeRun("completed", {
+        ...releasedBeforeReply,
+        outcomeSummaryJson: JSON.stringify({
+          foregroundBarrierReleased: true,
+          productJourneyBarrierId: expected.barrierId,
+          correlation: expected.correlation,
+        }),
+      }),
+      "foreground-run",
+      expected,
+      marker,
+      patchStartedAt,
+      patchCompletedAt,
+    ).status,
+    "completed",
+    "the release scheduled by the committed patch may finish before its reply",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("completed", releasedBeforeReply),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /no exact foreground release proof/,
+    "completion before the reply needs native's exact release proof",
+  );
+  assert.throws(
+    () =>
+      assertForegroundPatchRunObservation(
+        makeRun("completed", {
+          ...releasedBeforeReply,
+          outcomeSummaryJson: JSON.stringify({
+            foregroundBarrierReleased: true,
+            productJourneyBarrierId: "other-barrier",
+            correlation: expected.correlation,
+          }),
+        }),
+        "foreground-run",
+        expected,
+        marker,
+        patchStartedAt,
+        patchCompletedAt,
+      ),
+    /no exact foreground release proof/,
+    "a release proof for another barrier must remain rejected",
   );
   assert.throws(
     () =>
@@ -3011,6 +3069,74 @@ test("settled freshness cursor requires the canonical released reservation shape
   }
 });
 
+test("foreground marker transfers past a preempted Run to its requeued replacement", () => {
+  const expected = {
+    barrierId: "barrier-preempted",
+    correlation: "correlation-preempted",
+    trigger: "workspace-opened",
+  };
+  const replacement = {
+    id: "replacement-run",
+    projectId: "project-1",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v3",
+    semanticEpochId: "epoch-1",
+    status: "running",
+    terminalReasonCode: null,
+    specJson: JSON.stringify({
+      systemWork: {
+        trigger: "workspace-opened",
+        canonicalWorkKey:
+          "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3",
+        authorityId: "authority-1",
+        generation: 7,
+        productJourneyBarrierId: expected.barrierId,
+        correlation: expected.correlation,
+      },
+    }),
+  };
+  const preempted = {
+    ...replacement,
+    id: "preempted-run",
+    status: "cancelled",
+    terminalReasonCode: NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
+  };
+  assert.deepEqual(
+    foregroundMarkedRuns([preempted, replacement], [], expected).map(
+      (run) => run.id,
+    ),
+    ["replacement-run"],
+  );
+  assert.equal(
+    selectForegroundTargetMarker([preempted, replacement], [], expected).id,
+    "replacement-run",
+  );
+  assert.deepEqual(
+    foregroundMarkedRuns([preempted], [], expected, {
+      includePreempted: true,
+    }).map((run) => run.id),
+    ["preempted-run"],
+  );
+  assert.throws(
+    () => assertForegroundTargetBaseline([preempted], expected, "target A"),
+    /old marked authority/,
+    "a preempted marker in the pre-open baseline still belongs to an old authority",
+  );
+  assert.throws(
+    () =>
+      selectForegroundTargetMarker(
+        [
+          { ...preempted, terminalReasonCode: "NEX_MAINTENANCE_INTERRUPTED" },
+          replacement,
+        ],
+        [],
+        expected,
+      ),
+    /exactly one fresh target marker/,
+    "only a connection preemption may hand its marker to a replacement",
+  );
+});
+
 test("foreground marker selects one native Run by immutable barrier, not row order", () => {
   const expected = {
     barrierId: "barrier-unique",
@@ -3127,18 +3253,31 @@ test("foreground marker canonical keys follow native Backfill and epoch-bound ph
     assertForegroundRunMarker(backfill, expected).canonicalWorkKey,
     backfillKey,
   );
+  // A requeued Backfill delivery (for example after a connection preemption)
+  // dispatches the epoch-normalized key. Native accepts both forms for
+  // Backfill, but only for the Run's own Semantic Epoch.
+  assert.doesNotThrow(() =>
+    assertForegroundRunMarker(
+      makeRun(
+        "backfill",
+        "legacy-dependency-backfill:v3",
+        `${backfillKey}/epoch/epoch-1`,
+      ),
+      expected,
+    ),
+  );
   assert.throws(
     () =>
       assertForegroundRunMarker(
         makeRun(
           "backfill",
           "legacy-dependency-backfill:v3",
-          `${backfillKey}/epoch/epoch-1`,
+          `${backfillKey}/epoch/epoch-other`,
         ),
         expected,
       ),
     /canonicalWorkKey/,
-    "Backfill must remain epochless even when the durable Run has an epoch",
+    "Backfill must not accept a marker bound to another Semantic Epoch",
   );
 
   const verifyKey =
