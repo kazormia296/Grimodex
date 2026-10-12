@@ -47,6 +47,14 @@ const repoRoot = path.resolve(
   "..",
 );
 
+// The sharded product journey jobs share one ordinary guard.
+const PRODUCT_JOURNEY_JOB_IDS = [
+  "electron-product-journeys-build",
+  "electron-product-journeys-c2zc",
+  "electron-product-journeys",
+  "electron-product-journeys-aggregate",
+];
+
 async function readWorkflow(relativePath) {
   const source = await readFile(path.join(repoRoot, relativePath), "utf8");
   return yaml.load(source);
@@ -72,16 +80,35 @@ test("shared Rust masks inherited live-provider credentials without step overrid
   });
 });
 
-test("automatic hosted CI triggers are paused for the private source repo", async () => {
+test("hosted CI runs automatically on PRs, master pushes, and nightly", async () => {
   const ci = await readWorkflow(".github/workflows/ci.yml");
 
   assert.deepEqual(Object.keys(ci.on).sort(), [
+    "pull_request",
+    "push",
+    "schedule",
     "workflow_call",
     "workflow_dispatch",
   ]);
+  assert.deepEqual(ci.on.push, { branches: ["master"] });
+  assert.deepEqual(ci.on.pull_request, {
+    types: ["opened", "synchronize", "reopened"],
+  });
+  assert.deepEqual(ci.on.schedule, [{ cron: "17 18 * * *" }]);
   assert.ok(
     ci.on.workflow_call,
     "release reusable CI call must remain available",
+  );
+});
+
+test("only superseded PR runs are cancelled", async () => {
+  const ci = await readWorkflow(".github/workflows/ci.yml");
+
+  assert.match(ci.concurrency.group, /github\.event\.pull_request\.number/);
+  assert.match(ci.concurrency.group, /github\.run_id/);
+  assert.equal(
+    ci.concurrency["cancel-in-progress"],
+    "${{ github.event_name == 'pull_request' }}",
   );
 });
 
@@ -326,10 +353,10 @@ test("registered CI exposes only opt-in canonical source contracts without gener
   for (const [id, job] of Object.entries(ci.jobs)) {
     if (id === "electron" || id === "canonical" || id === "existing-os-suitability") continue;
     const canonicalExclusion = " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
-    const independentExclusion = ["electron-runtime-performance", "electron-product-journeys", "electron-native", "rust", "migration-recovery-gate"].includes(id)
+    const independentExclusion = ["electron-runtime-performance", ...PRODUCT_JOURNEY_JOB_IDS, "electron-native", "rust", "migration-recovery-gate"].includes(id)
       ? " && !inputs.independent_gates" : "";
     const ordinaryCondition = `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`;
-    assert.equal(job.if, id === "electron-product-journeys"
+    assert.equal(job.if, PRODUCT_JOURNEY_JOB_IDS.includes(id)
       ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
       : id === "electron-native"
         ? `\${{ inputs.canonical_profile == 'native-development-build' || inputs.canonical_profile == 'native-development-tests' || inputs.canonical_profile == 'native-release-static' || inputs.canonical_profile == 'native-release-tests' || inputs.canonical_profile == 'native-licensed-mcp' || (${ordinaryCondition}) }}`
@@ -417,7 +444,7 @@ test("registered canonical reuse excludes ordinary jobs for every valid or malfo
     .replace(/(inputs\.\w+|github\.\w+)\s*([!=]=)\s*('[^']*')/gu, "String($1 ?? '').toLowerCase() $2 $3")});`)(inputs, { event_name: event }, (value, prefix) => String(value ?? "").toLowerCase().startsWith(prefix));
   const defaults = Object.fromEntries(Object.entries(dispatch).map(([name, input]) => [name, input.default ?? ""]));
   const ordinary = Object.keys(ci.jobs).filter((id) => id !== "canonical" && id !== "existing-os-suitability");
-  assert.equal(ordinary.length, 15);
+  assert.equal(ordinary.length, 18);
   const admitted = (inputs, event) => Object.entries(ci.jobs).filter(([, job]) => value(job.if, inputs, event)).map(([id]) => id);
   assert.deepEqual(admitted(defaults), ordinary);
   assert.deepEqual(admitted({ product_journey_mode: "all" }, "workflow_call"), ordinary);

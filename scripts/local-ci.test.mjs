@@ -464,10 +464,23 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
   assert.equal(Object.hasOwn(registry.hostedJobs, "existing-os-suitability"), false);
   assert.equal(Object.hasOwn(registry.stages, "existing-os-suitability"), false);
   assert.equal(registry.profiles.full.includes("existing-os-suitability"), false);
+  // The hosted product journey build, C2-ZC evidence and aggregate jobs only
+  // split the one electron-product-journeys stage across runners.
+  const productJourneySplitJobs = [
+    "electron-product-journeys-build",
+    "electron-product-journeys-c2zc",
+    "electron-product-journeys-aggregate",
+  ];
   const ordinaryJobs = Object.keys(workflow.jobs).filter(
-    (id) => id !== "canonical" && id !== "existing-os-suitability",
+    (id) =>
+      id !== "canonical" &&
+      id !== "existing-os-suitability" &&
+      !productJourneySplitJobs.includes(id),
   );
   assert.equal(ordinaryJobs.length, 15);
+  for (const id of productJourneySplitJobs) {
+    assert.ok(Object.hasOwn(workflow.jobs, id), id);
+  }
   assert.deepEqual(Object.keys(registry.hostedJobs).sort(), ordinaryJobs.sort());
 
   const workerScript = "scripts/nir1-c-query-worker-ci.sh";

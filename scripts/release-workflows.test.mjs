@@ -705,12 +705,7 @@ describe("release workflow boundary", () => {
       ["ci.yml", "electron", "Electron production build"],
       [
         "ci.yml",
-        "electron-runtime-performance",
-        "Build development native module and production Electron app",
-      ],
-      [
-        "ci.yml",
-        "electron-product-journeys",
+        "electron-product-journeys-build",
         "Build native module and production Electron app",
       ],
       [

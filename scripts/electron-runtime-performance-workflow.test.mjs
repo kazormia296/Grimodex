@@ -231,8 +231,13 @@ test("CI runs a fixed Linux Electron runtime gate and always publishes its evide
   const commands = allRunCommands(job);
   assert.match(commands, /pnpm test:electron-perf/);
   assert.match(commands, /pnpm exec playwright install-deps chromium/);
-  assert.match(commands, /pnpm napi:build/);
-  assert.match(commands, /pnpm electron:build/);
+  // The N-API module and app bundle come from the shared journey build.
+  assert.equal(job.needs, "electron-product-journeys-build");
+  assert.doesNotMatch(commands, /napi:build|electron:build|cargo /);
+  assert.match(
+    commands,
+    /tar -xf "\$RUNNER_TEMP\/product-journey-build\/product-journey-build\.tar"/,
+  );
   assert.match(
     commands,
     /xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:perf:ci/,

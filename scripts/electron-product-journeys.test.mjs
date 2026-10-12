@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 
 import { closeElectronAppWithDiagnostics } from "../electron/scripts/close-electron-app.mjs";
+import { FIXED_PRODUCT_JOURNEY_SHARDS } from "../electron/scripts/product-journey-shards.mjs";
 import {
   digestProductJourneyCatalog,
   PRODUCT_JOURNEY_CATALOG,
@@ -3909,97 +3910,124 @@ test("production launch ignores consumed stdout but rejects any receipt file", a
   }
 });
 
-test("CI prepares candidate-bound C2-ZC product evidence before journeys", async () => {
-  const workflow = yaml.load(await read(".github/workflows/ci.yml"));
-  const job = workflow.jobs["electron-product-journeys"];
-  const electronJob = workflow.jobs.electron;
+const PRODUCT_JOURNEY_GUARD =
+  "${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}";
 
-  assert.ok(job, "electron-product-journeys job is required");
-  assert.equal(job["runs-on"], "ubuntu-24.04");
-  const checkout = job.steps.find((step) =>
-    step.uses?.startsWith("actions/checkout@"),
+function namedStep(job, name) {
+  const step = job.steps.find((candidate) => candidate.name === name);
+  assert.ok(step, `${name} step is required`);
+  return step;
+}
+
+function assertRestoresSharedEvidence(job, label) {
+  const restore = namedStep(job, "Restore build outputs and C2-ZC evidence");
+  const evidence = namedStep(
+    job,
+    "Bind candidate-bound product journey evidence",
   );
-  const receipt = job.steps.find(
-    (step) => step.name === "Candidate-bound C2-ZC Rust acceptance gate",
+  assert.match(
+    restore.run,
+    /tar -xf "\$RUNNER_TEMP\/product-journey-build\/product-journey-build\.tar"/,
   );
-  const fixture = job.steps.find(
-    (step) =>
-      step.name === "Build and verify candidate-bound C2-ZC restore fixture",
+  assert.match(
+    restore.run,
+    /mv "\$RUNNER_TEMP\/c2zc-evidence\/fixture" "\$RUNNER_TEMP\/grimodex-c2zc-restore-fixture"/,
   );
-  const evidence = job.steps.find(
-    (step) => step.name === "Bind candidate-bound product journey evidence",
+  assert.match(
+    restore.run,
+    /test -z "\$\(git status --porcelain\)"/,
+    `${label} must bind a clean candidate`,
   );
-  const gate = job.steps.find((step) => step.name === "Product journey gate");
-  const shouldRunCondition =
-    "steps.product-journey-impact.outputs.should_run == 'true'";
-  assert.ok(checkout, "product journey checkout is required");
-  assert.equal(checkout.with["fetch-depth"], 0);
-  assert.notEqual(checkout.with.clean, false, "checkout must be clean");
+  assert.equal(
+    evidence.env.GRIMODEX_C2ZC_RESTORE_FIXTURE_BUILD_DIR,
+    "${{ runner.temp }}/grimodex-c2zc-restore-fixture",
+  );
+  assert.match(
+    evidence.run,
+    /node scripts\/prepare-electron-product-journey-evidence\.mjs/,
+  );
+  assert.ok(
+    job.steps.indexOf(restore) < job.steps.indexOf(evidence),
+    `${label} must restore outputs before binding evidence`,
+  );
+  for (const name of [
+    "electron-product-journeys-build",
+    "electron-product-journeys-c2zc",
+  ]) {
+    assert.ok(job.needs.includes(name), `${label} must need ${name}`);
+  }
   assert.equal(
     job.env.GRIMODEX_C2ZC_RUST_RECEIPT_PATH,
     ".artifacts/local-ci/c2-zc-rust-acceptance.json",
   );
-  assert.equal(job.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE, "origin/master");
-  assert.equal(job.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, "HEAD");
-  assert.ok(
-    receipt,
-    "the real candidate-bound Rust receipt producer is required",
-  );
-  assert.ok(fixture, "the real candidate-bound restore fixture is required");
-  assert.ok(evidence, "verified build and fixture evidence must be bound");
-  for (const step of [receipt, fixture, evidence]) {
-    assert.equal(step.if, shouldRunCondition);
-  }
-  assert.equal(fixture.id, "c2zc-restore-fixture");
-  assert.equal(fixture.env.CARGO_BUILD_JOBS, "2");
-  assert.match(
-    fixture.run,
-    /printf 'output_dir=%s\\n' "\$output_dir" >> "\$GITHUB_OUTPUT"/,
-  );
-  assert.equal(
-    evidence.env.GRIMODEX_C2ZC_RESTORE_FIXTURE_BUILD_DIR,
-    "${{ steps.c2zc-restore-fixture.outputs.output_dir }}",
-  );
-  assert.ok(
-    job.steps.indexOf(receipt) < job.steps.indexOf(fixture) &&
-      job.steps.indexOf(fixture) < job.steps.indexOf(evidence) &&
-      job.steps.indexOf(evidence) < job.steps.indexOf(gate),
-    "Rust acceptance, fixture validation and evidence binding must precede journeys",
-  );
-  const appBuild = job.steps.find(
-    (step) => step.name === "Build native module and production Electron app",
-  );
-  const mcpBuild = job.steps.find(
-    (step) => step.name === "Build selected MCP journey dependency",
-  );
-  assert.ok(appBuild && mcpBuild);
-  assert.ok(
-    job.steps.indexOf(appBuild) < job.steps.indexOf(evidence) &&
-      job.steps.indexOf(mcpBuild) < job.steps.indexOf(evidence),
-    "the build receipt must follow all selected artifact builds",
-  );
-  for (const variable of [
-    "GRIMODEX_C2ZC_RUST_RECEIPT_PATH",
-    "GRIMODEX_C2ZC_RUST_REQUESTED_BASE",
-    "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD",
-    "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT",
-    "GRIMODEX_C2ZC_RESTORE_FIXTURE",
-  ]) {
-    assert.equal(
-      gate.env?.[variable],
-      undefined,
-      `${variable} must stay shared and consumer-verified`,
+  return evidence;
+}
+
+test("CI prepares candidate-bound C2-ZC product evidence before journeys", async () => {
+  const workflow = yaml.load(await read(".github/workflows/ci.yml"));
+  const build = workflow.jobs["electron-product-journeys-build"];
+  const c2zc = workflow.jobs["electron-product-journeys-c2zc"];
+  const shards = workflow.jobs["electron-product-journeys"];
+  const aggregate = workflow.jobs["electron-product-journeys-aggregate"];
+  const electronJob = workflow.jobs.electron;
+
+  for (const job of [build, c2zc, shards, aggregate]) {
+    assert.ok(job, "every product journey job is required");
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    const checkout = job.steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@"),
     );
+    assert.ok(checkout, "product journey checkout is required");
+    assert.equal(checkout.with["fetch-depth"], 0);
+    assert.notEqual(checkout.with.clean, false, "checkout must be clean");
   }
+
+  // N-API, app and MCP are built once and shipped with their modes intact.
+  const appBuild = namedStep(
+    build,
+    "Build native module and production Electron app",
+  );
+  const mcpBuild = namedStep(build, "Build selected MCP journey dependency");
+  const packageStep = namedStep(build, "Package product journey build outputs");
+  assert.match(appBuild.run, /pnpm napi:build/);
+  assert.match(appBuild.run, /pnpm electron:build/);
+  assert.equal(mcpBuild.run, "pnpm mcp:build");
+  for (const output of [
+    "dist",
+    "dist-electron",
+    "electron/native/grimodex-node/grimodex-node.node",
+    "src-tauri/target/debug/grimodex-mcp",
+  ]) {
+    assert.ok(packageStep.run.includes(output), output);
+  }
+  assert.match(packageStep.run, /tar -cf "\$RUNNER_TEMP\/product-journey-build\.tar"/);
+  assert.ok(
+    build.steps.indexOf(appBuild) < build.steps.indexOf(packageStep) &&
+      build.steps.indexOf(mcpBuild) < build.steps.indexOf(packageStep),
+    "packaging must follow all selected artifact builds",
+  );
+  for (const job of [shards, aggregate]) {
+    assert.doesNotMatch(runCommands(job), /napi:build|electron:build|mcp:build|cargo /);
+  }
+
+  assert.equal(c2zc.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE, "origin/master");
+  assert.equal(c2zc.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, "HEAD");
+  const receipt = namedStep(c2zc, "Candidate-bound C2-ZC Rust acceptance gate");
+  const fixture = namedStep(
+    c2zc,
+    "Build and verify candidate-bound C2-ZC restore fixture",
+  );
+  const stage = namedStep(c2zc, "Stage C2-ZC evidence");
   assert.equal(receipt.env.CARGO_BUILD_JOBS, "2");
   assert.equal(receipt.env.RUST_TEST_THREADS, "2");
   assert.match(receipt.run, /node scripts\/c2zc-rust-acceptance-receipt\.mjs/);
   assert.match(receipt.run, /--base "\$GRIMODEX_C2ZC_RUST_REQUESTED_BASE"/);
   assert.match(receipt.run, /--head "\$GRIMODEX_C2ZC_RUST_REQUESTED_HEAD"/);
   assert.match(receipt.run, /--output "\$GRIMODEX_C2ZC_RUST_RECEIPT_PATH"/);
+  assert.equal(fixture.env.CARGO_BUILD_JOBS, "2");
   assert.match(
     fixture.run,
-    /mktemp -d "\$RUNNER_TEMP\/grimodex-c2zc-restore-fixture/,
+    /output_dir="\$RUNNER_TEMP\/grimodex-c2zc-restore-fixture"/,
   );
   assert.match(fixture.run, /--features c2zc-fixture-builder/);
   assert.match(fixture.run, /--bin c2zc-restore-fixture/);
@@ -4017,9 +4045,38 @@ test("CI prepares candidate-bound C2-ZC product evidence before journeys", async
   );
   assert.match(fixture.run, /--candidate HEAD/);
   assert.match(
-    evidence.run,
-    /node scripts\/prepare-electron-product-journey-evidence\.mjs/,
+    stage.run,
+    /"\$GRIMODEX_C2ZC_RUST_RECEIPT_PATH" "\$GRIMODEX_C2ZC_RUST_RECEIPT_PATH\.sha256"/,
   );
+  assert.ok(
+    c2zc.steps.indexOf(receipt) < c2zc.steps.indexOf(fixture) &&
+      c2zc.steps.indexOf(fixture) < c2zc.steps.indexOf(stage),
+    "Rust acceptance and fixture validation must precede staging",
+  );
+
+  const shardEvidence = assertRestoresSharedEvidence(shards, "each shard");
+  const aggregateEvidence = assertRestoresSharedEvidence(aggregate, "aggregate");
+  const shardRun = namedStep(shards, "Product journey shard");
+  const gate = namedStep(aggregate, "Product journey gate");
+  assert.ok(shards.steps.indexOf(shardEvidence) < shards.steps.indexOf(shardRun));
+  assert.ok(
+    aggregate.steps.indexOf(aggregateEvidence) < aggregate.steps.indexOf(gate),
+  );
+  for (const step of [shardRun, gate]) {
+    for (const variable of [
+      "GRIMODEX_C2ZC_RUST_RECEIPT_PATH",
+      "GRIMODEX_C2ZC_RUST_REQUESTED_BASE",
+      "GRIMODEX_C2ZC_RUST_REQUESTED_HEAD",
+      "GRIMODEX_PRODUCT_JOURNEY_BUILD_RECEIPT",
+      "GRIMODEX_C2ZC_RESTORE_FIXTURE",
+    ]) {
+      assert.equal(
+        step.env?.[variable],
+        undefined,
+        `${variable} must stay shared and consumer-verified`,
+      );
+    }
+  }
   const evidenceScript = await read(
     "scripts/prepare-electron-product-journey-evidence.mjs",
   );
@@ -4040,16 +4097,45 @@ test("CI prepares candidate-bound C2-ZC product evidence before journeys", async
   ]) {
     assert.ok(evidenceScript.includes(requiredSource), requiredSource);
   }
-  const commands = runCommands(job);
-  assert.match(commands, /pnpm exec playwright install-deps chromium/);
-  assert.match(commands, /pnpm napi:build/);
-  assert.match(commands, /pnpm electron:build/);
-  assert.match(
-    commands,
-    /xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys/,
-  );
 
-  const upload = job.steps.find(
+  // Seven fixed shards run in parallel and merge in the aggregate.
+  assert.deepEqual(
+    shards.strategy.matrix.shard,
+    FIXED_PRODUCT_JOURNEY_SHARDS.map((_, index) => index + 1),
+  );
+  assert.equal(shards.strategy["fail-fast"], false);
+  assert.match(runCommands(shards), /pnpm exec playwright install-deps chromium/);
+  assert.match(
+    shardRun.run,
+    /xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \\\n\s+node electron\/scripts\/product-journey-shards\.mjs run \\\n\s+--shard "\$SHARD"/,
+  );
+  assert.equal(shardRun.env.SHARD, "${{ matrix.shard }}");
+  assert.ok(aggregate.needs.includes("electron-product-journeys"));
+  assert.match(
+    gate.run,
+    /node electron\/scripts\/product-journey-shards\.mjs aggregate/,
+  );
+  const shardDownload = aggregate.steps.find(
+    (step) => step.name === "Download product journey shard results",
+  );
+  assert.equal(
+    shardDownload.with.pattern,
+    "electron-product-journeys-shard-*-${{ github.run_id }}",
+  );
+  // Re-running only failed jobs reuses the other jobs' run-scoped artifacts.
+  for (const [job, name] of [
+    [build, "Upload product journey build outputs"],
+    [c2zc, "Upload C2-ZC evidence"],
+    [shards, "Upload product journey shard artifacts"],
+  ]) {
+    const step = namedStep(job, name);
+    assert.doesNotMatch(step.with.name, /run_attempt/);
+    assert.equal(step.with.overwrite, true);
+  }
+  assert.equal(shardDownload.with.path, ".artifacts/product-journeys");
+  assert.equal(shardDownload.with["merge-multiple"], true);
+
+  const upload = shards.steps.find(
     (step) =>
       typeof step.uses === "string" &&
       step.uses.startsWith("actions/upload-artifact@"),
@@ -4064,11 +4150,11 @@ test("CI prepares candidate-bound C2-ZC product evidence before journeys", async
   );
 });
 
-test("CI pauses automatic triggers while preserving manual and reusable controls", async () => {
+test("CI keeps automatic triggers alongside manual and reusable controls", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const input = workflow.on.workflow_call.inputs.product_journey_mode;
   const manualInput = workflow.on.workflow_dispatch.inputs.product_journey_mode;
-  const job = workflow.jobs["electron-product-journeys"];
+  const job = workflow.jobs["electron-product-journeys-build"];
   const checkoutIndex = job.steps.findIndex((step) =>
     step.uses?.startsWith("actions/checkout@"),
   );
@@ -4092,9 +4178,9 @@ test("CI pauses automatic triggers while preserving manual and reusable controls
     default: "all",
     options: ["all", "shadow"],
   });
-  assert.equal(workflow.on.push, undefined);
-  assert.equal(workflow.on.pull_request, undefined);
-  assert.equal(workflow.on.schedule, undefined);
+  assert.deepEqual(workflow.on.push, { branches: ["master"] });
+  assert.ok(workflow.on.pull_request);
+  assert.ok(workflow.on.schedule);
   assert.ok(checkoutIndex >= 0, "product journey checkout is required");
   assert.equal(job.steps[checkoutIndex].with["fetch-depth"], 0);
   assert.equal(
@@ -4105,6 +4191,10 @@ test("CI pauses automatic triggers while preserving manual and reusable controls
   assert.ok(
     selectorIndex < nativeDependenciesIndex,
     "selector must run before native dependency setup",
+  );
+  assert.equal(
+    job.outputs.catalog_digest,
+    "${{ steps.product-journey-impact.outputs.catalog_digest }}",
   );
 
   const selector = job.steps[selectorIndex];
@@ -4144,11 +4234,13 @@ test("CI pauses automatic triggers while preserving manual and reusable controls
     /--report "\$GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR\/impact\.json"/,
   );
 
-  const gate = job.steps.find((step) => step.name === "Product journey gate");
   const shouldRunCondition =
     "steps.product-journey-impact.outputs.should_run == 'true'";
-  const gateIndex = job.steps.indexOf(gate);
-  for (const step of job.steps.slice(nativeDependenciesIndex, gateIndex + 1)) {
+  const uploadIndex = job.steps.findIndex(
+    (step) => step.name === "Upload product journey build outputs",
+  );
+  assert.ok(uploadIndex > nativeDependenciesIndex);
+  for (const step of job.steps.slice(nativeDependenciesIndex, uploadIndex + 1)) {
     if (step.name === "Build selected MCP journey dependency") continue;
     assert.equal(
       step.if,
@@ -4156,19 +4248,6 @@ test("CI pauses automatic triggers while preserving manual and reusable controls
       `${step.name ?? step.uses ?? step.run} must skip expensive setup when no journey is selected`,
     );
   }
-  assert.equal(gate.if, shouldRunCondition);
-  assert.equal(gate.env.GRIMODEX_PRODUCT_JOURNEY_IDS, undefined);
-  assert.equal(gate.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL, "true");
-  assert.match(
-    gate.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
-    /steps\.product-journey-impact\.outputs\.catalog_digest/,
-  );
-  assert.match(gate.run, /GRIMODEX_PRODUCT_JOURNEY_IDS/);
-  assert.match(gate.run, /GRIMODEX_PRODUCT_JOURNEY_SET/);
-  assert.match(
-    gate.run,
-    /xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" pnpm electron:product-journeys/,
-  );
 
   const mcpBuild = job.steps.find(
     (step) => step.name === "Build selected MCP journey dependency",
@@ -4181,28 +4260,47 @@ test("CI pauses automatic triggers while preserving manual and reusable controls
 
 test("Full CI product journey gate cannot receive a subset and binds the catalog", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
-  const gate = workflow.jobs["electron-product-journeys"].steps.find(
+  const gate = workflow.jobs["electron-product-journeys-aggregate"].steps.find(
     (step) => step.name === "Product journey gate",
+  );
+  const shard = workflow.jobs["electron-product-journeys"].steps.find(
+    (step) => step.name === "Product journey shard",
   );
 
   assert.equal(gate.env.GRIMODEX_PRODUCT_JOURNEY_IDS, undefined);
   assert.equal(gate.env.GRIMODEX_PRODUCT_JOURNEY_REQUIRE_ALL, "true");
-  assert.match(
-    gate.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
-    /steps\.product-journey-impact\.outputs\.catalog_digest/,
-  );
+  for (const step of [gate, shard]) {
+    assert.equal(step.env.GRIMODEX_PRODUCT_JOURNEY_IDS, undefined);
+    assert.equal(step.env.GRIMODEX_PRODUCT_JOURNEY_SET, undefined);
+    assert.equal(
+      step.env.GRIMODEX_PRODUCT_JOURNEY_CATALOG_DIGEST,
+      "${{ needs.electron-product-journeys-build.outputs.catalog_digest }}",
+    );
+  }
   assert.match(gate.run, /GRIMODEX_PRODUCT_JOURNEY_IDS/);
   assert.match(gate.run, /subset|must not be set/i);
 });
 
 test("paused CI keeps every product journey job definition available", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
-  const productJourneyJobId = "electron-product-journeys";
+  const productJourneyJobIds = [
+    "electron-product-journeys-build",
+    "electron-product-journeys-c2zc",
+    "electron-product-journeys",
+    "electron-product-journeys-aggregate",
+  ];
   const jobEntries = Object.entries(workflow.jobs);
 
-  assert.ok(
-    jobEntries.some(([jobId]) => jobId === productJourneyJobId),
-    "electron-product-journeys job is required",
+  for (const id of productJourneyJobIds) {
+    assert.ok(
+      jobEntries.some(([jobId]) => jobId === id),
+      `${id} job is required`,
+    );
+  }
+  assert.equal(
+    workflow.jobs["electron-product-journeys-aggregate"].name,
+    "Electron product journeys (persistence / workspace authority)",
+    "the Gate B2 required job name stays on the aggregate",
   );
   const canonicalExclusion =
     " && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks";
@@ -4216,21 +4314,21 @@ test("paused CI keeps every product journey job definition available", async () 
       assert.equal(job.if, "${{ startsWith(inputs.canonical_profile, 'os-') }}");
       continue;
     }
-    const independentExclusion = ["electron-runtime-performance", productJourneyJobId, "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
+    if (productJourneyJobIds.includes(jobId)) {
+      assert.equal(job.if, PRODUCT_JOURNEY_GUARD, jobId);
+      continue;
+    }
+    const independentExclusion = ["electron-runtime-performance", "electron-native", "rust", "migration-recovery-gate"].includes(jobId)
       ? " && !inputs.independent_gates" : "";
     // A job may additionally be selected by its own exact canonical profiles;
     // its ordinary guard must still be the exact grouped alternative.
     const selected = /^\$\{\{ ((?:inputs\.canonical_profile == '[a-z0-9-]+' \|\| )+)\((.+)\) \}\}$/u.exec(job.if ?? "");
-    const ordinaryGuard = selected
-      ? (jobId === productJourneyJobId ? `\${{ ${selected[2]} }}` : selected[2])
-      : job.if;
+    const ordinaryGuard = selected ? selected[2] : job.if;
     assert.equal(
       ordinaryGuard,
-      jobId === productJourneyJobId
-        ? `\${{ !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion} }}`
-        : jobId === "electron"
-          ? `github.event_name != 'schedule'${canonicalExclusion}`
-          : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
+      jobId === "electron"
+        ? `github.event_name != 'schedule'${canonicalExclusion}`
+        : `github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts${canonicalExclusion}${independentExclusion}`,
       `${jobId} must retain its ordinary execution guard and exact canonical/independent exclusions`,
     );
   }
