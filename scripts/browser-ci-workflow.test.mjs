@@ -116,7 +116,13 @@ test("browser configs isolate deterministic WebGL from the normal suite", async 
 
   assert.match(
     webglConfig,
-    /include:\s*\[\s*"src\/features\/editor\/zen\/ZenMultipassCanvas\.browser\.test\.tsx",?\s*\]/,
+    /include:\s*\[\s*"src\/features\/editor\/zen\/ZenMultipassCanvas\.browser\.test\.tsx",\s*"src\/features\/editor\/zen\/zenWebGlSupport\.browser\.test\.ts",?\s*\]/,
+  );
+  // The WebGL2 probe browser test needs SwiftShader, so only the WebGL
+  // suite runs it.
+  assert.match(
+    normalSuiteExclusions,
+    /src\/features\/editor\/zen\/zenWebGlSupport\.browser\.test\.ts/,
   );
   assert.match(webglConfig, /--enable-unsafe-swiftshader/);
   assert.match(webglConfig, /--use-angle=swiftshader/);
