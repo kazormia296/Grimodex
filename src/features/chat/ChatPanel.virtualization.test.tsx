@@ -58,6 +58,7 @@ const perfCapture = vi.hoisted(() => ({
   runtimeControl: null as null | ((payload: unknown) => unknown),
 }));
 vi.mock("@/lib/perfLog", () => ({
+  hasRuntimePerformanceCapability: () => false,
   markStart: () => {},
   markEnd: () => {},
   recordMark: (name: string) => {
