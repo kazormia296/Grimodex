@@ -206,11 +206,17 @@ if [[ "${1:-}" == lifecycle ]]; then
     assert_closed_fixture "$source"
   }
 
-  # A host core-dump pipe can delay the Rust OOM child's SIGABRT exit past the
-  # owner's cleanup deadline; the case still requires an observed SIGABRT.
-  ulimit -c 0
+  # A host core-dump pipe (systemd-coredump, apport) ignores a zero
+  # RLIMIT_CORE and can delay the Rust OOM child's SIGABRT exit past the
+  # owner's cleanup deadline. RLIMIT_CORE=1 is the kernel's documented value
+  # that skips a pipe core dump; children inherit it. The case still requires
+  # an observed SIGABRT.
+  prlimit --pid "$$" --core=1:1
+  test "$(prlimit --pid "$$" --core --output SOFT,HARD --noheadings | tr -s ' ' | sed 's/^ //')" = "1 1"
 
   run_lifecycle_case production_query_has_an_available_100ms_success_path \
+    "$q2_fixture_file" "$q2_fixture_checksum"
+  run_lifecycle_case ordinary_reader_registers_and_queries_fixed_q2_fixture \
     "$q2_fixture_file" "$q2_fixture_checksum"
 
   cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
