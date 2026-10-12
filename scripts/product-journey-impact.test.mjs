@@ -56,16 +56,16 @@ test("the current catalog has complete journey, contract, and interaction covera
   assert.deepEqual(result.journeyIds, [
     "editor-persistence",
     "chat-authority-isolation",
+    "chat-stream-folder-switch",
+    "chat-stream-snippet-switch",
+    "chat-stream-codex-switch",
     "workspace-switch-authority",
     "external-write-conflict",
     "cross-feature-authoring",
     "chat-stream-project-switch",
-    "chat-stream-workspace-switch",
     "agent-stream-project-switch",
+    "chat-stream-workspace-switch",
     "agent-stream-workspace-switch",
-    "chat-stream-folder-scope",
-    "chat-stream-codex-scope",
-    "chat-stream-snippet-scope",
     "editor-pending-project-switch",
     "mcp-external-write-conflict",
     "chronicle-native-roundtrip",
@@ -280,6 +280,18 @@ test("each newly classified lifecycle or MCP domain selects its declared journey
   }
 });
 
+test("anchored chat scope changes select their scope-switch journeys", () => {
+  const selection = selectProductJourneys({
+    catalog: PRODUCT_JOURNEY_CATALOG,
+    domainRules: PRODUCT_DOMAIN_RULES,
+    changedPaths: ["src/application/chat/chatScopeStoreActions.ts"],
+  });
+
+  assert.ok(selection.journeyIds.includes("chat-stream-folder-switch"));
+  assert.ok(selection.journeyIds.includes("chat-stream-snippet-switch"));
+  assert.equal(selection.fallback, false);
+});
+
 test("only exact Rust sinks select native-command roundtrip journeys", () => {
   const cases = [
     [
@@ -385,8 +397,8 @@ test("one changed domain selects every declared journey that can be affected", (
 
   assert.deepEqual(selection.affectedDomains, ["codex"]);
   assert.deepEqual(selection.journeyIds, [
+    "chat-stream-codex-switch",
     "cross-feature-authoring",
-    "chat-stream-codex-scope",
     "codex-entity-relation-review-apply-reopen",
   ]);
   assert.equal(selection.fallback, false);
@@ -598,8 +610,8 @@ test("shadow mode records affected recommendations but executes the full catalog
   });
 
   assert.deepEqual(execution.selectedJourneyIds, [
+    "chat-stream-codex-switch",
     "cross-feature-authoring",
-    "chat-stream-codex-scope",
     "codex-entity-relation-review-apply-reopen",
   ]);
   assert.deepEqual(
@@ -687,6 +699,7 @@ test("impact Markdown distinguishes recommendation from execution", () => {
   assert.match(summary, /Shadow: yes/);
   assert.match(summary, /cross-feature-authoring/);
   assert.match(summary, /chronicle-ui-roundtrip/);
+  assert.match(summary, /chat-stream-codex-switch/);
   assert.match(summary, /No active coverage exemptions/);
   assert.match(summary, /affected execution remains locked/i);
 });
@@ -728,8 +741,8 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
   assert.equal(report.catalogDigest, PRODUCT_JOURNEY_CATALOG_DIGEST);
   assert.equal(report.execution.catalogDigest, PRODUCT_JOURNEY_CATALOG_DIGEST);
   assert.deepEqual(report.execution.selectedJourneyIds, [
+    "chat-stream-codex-switch",
     "cross-feature-authoring",
-    "chat-stream-codex-scope",
     "codex-entity-relation-review-apply-reopen",
   ]);
   assert.deepEqual(
@@ -753,7 +766,7 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
   );
   assert.match(
     githubOutput,
-    /selected_journey_ids=\["cross-feature-authoring","chat-stream-codex-scope","codex-entity-relation-review-apply-reopen"\]/,
+    /selected_journey_ids=\["chat-stream-codex-switch","cross-feature-authoring","codex-entity-relation-review-apply-reopen"\]/,
   );
   assert.match(
     githubOutput,

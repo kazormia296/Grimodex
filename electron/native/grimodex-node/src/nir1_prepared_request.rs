@@ -471,7 +471,7 @@ fn prepare_local_chat_request_inner(
         "NIR1_CHAT_CAPTURE_OWNER_MISMATCH"
     );
     ensure!(
-        caller.workspace_id.as_deref() == Some(live_binding.locator.as_str()),
+        caller.workspace_id.as_deref() == Some(live_binding.locator.as_ref()),
         "NIR1_PREPARED_CALLER_WORKSPACE_MISMATCH"
     );
     let (route, route_revocation_generation) =
@@ -603,8 +603,8 @@ fn capture_owner(
             .clone()
             .context("NIR1_CHAT_CAPTURE_CALLER_WORKSPACE_MISSING")?,
         caller.session_id.clone(),
-        workspace_binding.workspace_id.clone(),
-        workspace_binding.locator.clone(),
+        workspace_binding.workspace_id.to_string(),
+        workspace_binding.locator.to_string(),
         workspace_binding.authority_instance,
         workspace_binding.recovery_generation,
         revocation_generation,

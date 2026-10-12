@@ -208,7 +208,7 @@ mod tests {
                 inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
                 safe_mode: SafeModeState::default(),
                 switching: grimodex_db::WorkspaceLifecycleCompatibilityView::default(),
-                open_lock: Mutex::new(()),
+                open_lock: Mutex::new(Default::default()),
             },
             expected_workspace_path,
             workspace_path,

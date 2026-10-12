@@ -264,7 +264,7 @@ describe("CodexAppServerProcess", () => {
     await vi.waitFor(() =>
       expect(child.kill).toHaveBeenCalledWith("SIGKILL"),
     );
-    expect(isProcessTreeAlive).toHaveBeenCalled();
+    await vi.waitFor(() => expect(isProcessTreeAlive).toHaveBeenCalled());
     await disposing;
   });
 

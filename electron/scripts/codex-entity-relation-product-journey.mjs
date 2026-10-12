@@ -212,10 +212,21 @@ async function createFolderThroughUi(harness, page, title) {
     '[data-panel-header]:has(span[role="heading"]:text-is("シーン"))',
   );
   await header.waitFor({ state: "visible", timeout: 60_000 });
-  await header.locator('button[title="新規作成"]').click();
-  await page
-    .getByRole("menuitem", { name: "New folder", exact: true })
-    .click();
+  // A background re-render can detach the freshly opened menu; reopen it
+  // rather than wait 30 s on a detached item.
+  for (let attempt = 1; ; attempt += 1) {
+    await header.locator('button[title="新規作成"]').click();
+    const clicked = await page
+      .getByRole("menuitem", { name: "New folder", exact: true })
+      .click({ timeout: 5_000 })
+      .then(() => true)
+      .catch((error) => {
+        if (attempt >= 4) throw error;
+        return false;
+      });
+    if (clicked) break;
+    await page.keyboard.press("Escape");
+  }
   const renameInput = page.locator(
     '[data-droptarget-id="scenes-panel"] input:focus',
   );
@@ -256,8 +267,13 @@ async function createSceneInFolderThroughUi(
       .then(() => true)
       .catch(() => false)
   ) {
-    await renameInput.fill(title);
-    await page.keyboard.press("Enter");
+    // The scene title is cosmetic and persistence below is keyed on the
+    // folder: a re-render can blur the input between waitFor and fill.
+    const renamed = await renameInput
+      .fill(title, { timeout: 5_000 })
+      .then(() => true)
+      .catch(() => false);
+    if (renamed) await page.keyboard.press("Enter");
   }
 
   const scene = await harness.waitUntil(

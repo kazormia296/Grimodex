@@ -331,7 +331,7 @@ fn restore_fixture_through_production_path(
         inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
         switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
-        open_lock: Mutex::new(()),
+        open_lock: Mutex::new(Default::default()),
     };
     assert_c2zc_marker_count(&state, 0);
     restore_backup_core(&state, RESTORE_BACKUP_NAME, || {})

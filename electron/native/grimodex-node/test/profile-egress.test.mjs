@@ -101,10 +101,17 @@ test("D2a startup stays dormant until explicit activation, then survives restart
   }
 });
 
+// Retain failed cleanup and its workspace fences; GC is not Native teardown.
+let rebindCleanupOwner;
+
 test("D2a accepts one registered identity, persists settings, then rejects it after workspace rebind", async () => {
+  if (rebindCleanupOwner) throw new Error("previous rebind cleanup owner is unresolved");
   const root = mkdtempSync(join(tmpdir(), "grimodex-node-d2a-rebind-"));
+  const owner = { root, backend: undefined };
+  rebindCleanupOwner = owner;
   try {
     const backend = new Backend(join(root, "app-data"));
+    owner.backend = backend;
     await backend.initializeProfileEgress();
     const status = JSON.parse(await backend.activateProfileEgress());
     const firstWorkspace = join(root, "workspace-a");
@@ -149,6 +156,11 @@ test("D2a accepts one registered identity, persists settings, then rejects it af
       /D2A_EGRESS_DENIED:.*stale/,
     );
   } finally {
+    if (owner.backend) {
+      const wire = await owner.backend.shutdownWorkspaceLifecycle();
+      assert.equal(JSON.parse(wire).status, "closed", "Native cleanup must prove Closed");
+    }
     rmSync(root, { recursive: true, force: true });
+    rebindCleanupOwner = undefined;
   }
 });

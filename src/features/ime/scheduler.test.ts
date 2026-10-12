@@ -9,18 +9,21 @@ import {
   IME_EXPORT_DEBOUNCE_MS,
   cancelScheduledImeExports,
   scheduleImeExportRefresh,
+  setImeExportRefreshPaused,
 } from "./scheduler";
 import { setCurrentImeWorkspaceIdentity } from "./workspaceScope";
 
 describe("IME export refresh scheduler", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    setImeExportRefreshPaused(false);
     refreshImeExportMock.mockReset().mockResolvedValue(undefined);
     setCurrentImeWorkspaceIdentity({ path: "/workspaces/a", openRevision: 1 });
   });
 
   afterEach(() => {
     cancelScheduledImeExports();
+    setImeExportRefreshPaused(false);
     vi.useRealTimers();
   });
 
@@ -68,6 +71,31 @@ describe("IME export refresh scheduler", () => {
     scheduleImeExportRefresh("p2");
 
     cancelScheduledImeExports();
+    await vi.advanceTimersByTimeAsync(IME_EXPORT_DEBOUNCE_MS);
+
+    expect(refreshImeExportMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks a late Codex write completion after workspace-switch cancellation", async () => {
+    let finishWrite!: () => void;
+    const write = new Promise<void>((resolve) => {
+      finishWrite = resolve;
+    }).then(() => scheduleImeExportRefresh("p1"));
+
+    scheduleImeExportRefresh("p1");
+    cancelScheduledImeExports();
+    setImeExportRefreshPaused(true);
+    finishWrite();
+    await write;
+    await vi.advanceTimersByTimeAsync(IME_EXPORT_DEBOUNCE_MS);
+
+    expect(refreshImeExportMock).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch a pending refresh if a workspace switch starts before its debounce", async () => {
+    scheduleImeExportRefresh("p1");
+    setImeExportRefreshPaused(true);
+
     await vi.advanceTimersByTimeAsync(IME_EXPORT_DEBOUNCE_MS);
 
     expect(refreshImeExportMock).not.toHaveBeenCalled();

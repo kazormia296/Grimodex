@@ -89,7 +89,7 @@ fn run() -> anyhow::Result<()> {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
         switching: WorkspaceLifecycleCompatibilityView::new(false),
-        open_lock: Mutex::new(()),
+        open_lock: Mutex::new(Default::default()),
     };
     let session = SafeModeSession::from_workspace(
         args.workspace.clone(),

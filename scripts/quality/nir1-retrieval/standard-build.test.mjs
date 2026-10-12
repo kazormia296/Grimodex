@@ -477,10 +477,14 @@ test(
   async (t) => {
     const { root } = await fixture(t);
     const output = receiptPath(root);
-    const { promise: lateClose, resolve: resolveLateClose } =
-      Promise.withResolvers();
-    const { promise: failureWritten, resolve: resolveFailureWritten } =
-      Promise.withResolvers();
+    let resolveLateClose;
+    const lateClose = new Promise((resolve) => {
+      resolveLateClose = resolve;
+    });
+    let resolveFailureWritten;
+    const failureWritten = new Promise((resolve) => {
+      resolveFailureWritten = resolve;
+    });
     const lateResult = {
       termination: "late-close-and-group-exit-observed",
       exitCode: 0,

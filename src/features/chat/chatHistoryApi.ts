@@ -7,7 +7,7 @@ import {
   codexEntries,
   snippets,
 } from "@/db/schema";
-import { eq, desc, inArray } from "drizzle-orm";
+import { and, eq, desc, inArray } from "drizzle-orm";
 
 export interface SessionExtractions {
   codex: Array<{ id: string; name: string; type: string }>;
@@ -49,6 +49,42 @@ function toSession(row: typeof chatSessions.$inferSelect): ChatSession {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+function createSessionTitleUpdate(
+  id: string,
+  title: string,
+  markManual: boolean,
+) {
+  return db
+    .update(chatSessions)
+    .set({
+      title,
+      ...(markManual ? { titleManual: 1 } : {}),
+      updatedAt: new Date().toISOString(),
+    })
+    .where(
+      markManual
+        ? eq(chatSessions.id, id)
+        : and(eq(chatSessions.id, id), eq(chatSessions.titleManual, 0)),
+    );
+}
+
+export async function updateSessionTitle(
+  id: string,
+  title: string,
+): Promise<void> {
+  await createSessionTitleUpdate(id, title, true);
+}
+
+export async function updateSessionTitleIfAutomatic(
+  id: string,
+  title: string,
+): Promise<boolean> {
+  const updated = await createSessionTitleUpdate(id, title, false).returning({
+    id: chatSessions.id,
+  });
+  return updated.length > 0;
 }
 
 /**

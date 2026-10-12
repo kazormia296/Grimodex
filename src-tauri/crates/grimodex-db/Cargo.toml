@@ -22,6 +22,7 @@ uuid = { version = "1", features = ["v4"] }
 unicode-normalization = "0.1"
 grimodex-core = { path = "../grimodex-core" }
 libc = "0.2"
+talc = { version = "=5.1.1", features = ["counters"] }
 
 [features]
 default = []
@@ -31,12 +32,14 @@ native-current-human-capture = []
 # must not be linked into Electron/N-API or other default production builds.
 c2zc-fixture-builder = []
 # Opt-in, read-only NIR-1 feasibility diagnostics; no product IPC or writers.
-nir1-material-diagnostics = ["rusqlite/trace"]
+nir1-material-diagnostics = ["rusqlite/trace", "rusqlite/backup"]
 # CI-only failpoints for migration supervisor crash injection. Must never be
 # enabled in production / release Electron builds.
 test-failpoints = []
 # Cross-crate Native tests can hold the DB path claim through fixture cleanup.
 workspace-maintenance-test-support = []
+# Test-only worker exit seam. Never enable in production builds.
+nir1-c-query-test-seam = []
 
 [[bin]]
 name = "migration-crash-harness"
@@ -66,6 +69,20 @@ required-features = ["nir1-material-diagnostics"]
 [[bin]]
 name = "nir1-material-capacity"
 path = "src/bin/nir1-material-capacity.rs"
+required-features = ["nir1-material-diagnostics"]
+
+[[bin]]
+name = "nir1-c-query-memory"
+path = "src/bin/nir1-c-query-memory.rs"
+required-features = ["nir1-material-diagnostics"]
+
+[[bin]]
+name = "nir1-c-query-worker"
+path = "src/bin/nir1-c-query-worker.rs"
+
+[[bin]]
+name = "nir1-c-query-linux-probe"
+path = "src/bin/nir1-c-query-linux-probe.rs"
 required-features = ["nir1-material-diagnostics"]
 
 [dev-dependencies]

@@ -10,7 +10,7 @@
 
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { createServer } from "node:http";
+import { closeMockServer as closeServer, startMockServer } from "./mock-http.mjs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -55,22 +55,6 @@ async function withTimeout(promise, label, timeoutMs = 5000) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function startMockServer(handler) {
-  return new Promise((resolve, reject) => {
-    const server = createServer(handler);
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      const { port } = server.address();
-      resolve({ server, baseUrl: `http://127.0.0.1:${port}` });
-    });
-  });
-}
-
-function closeServer(server) {
-  return new Promise((resolve) => server.close(resolve));
 }
 
 async function readBody(req) {
@@ -735,26 +719,26 @@ test("cache missのrequired providerでsecret lookupが失敗するとHTTP送信
 test("role effectだけがoverride endpoint+keyを使い、default effectはrequest内overrideを無視する", async () => {
   const defaultRequests = [];
   const roleRequests = [];
-  const [defaultMock, roleMock] = await Promise.all([
-    startMockServer(async (req, res) => {
-      defaultRequests.push({
-        url: req.url,
-        authorization: req.headers.authorization,
-        body: JSON.parse(await readBody(req)),
-      });
-      writeTypoResponse(res);
-    }),
-    startMockServer(async (req, res) => {
+  const defaultMock = await startMockServer(async (req, res) => {
+    defaultRequests.push({
+      url: req.url,
+      authorization: req.headers.authorization,
+      body: JSON.parse(await readBody(req)),
+    });
+    writeTypoResponse(res);
+  });
+  let roleMock;
+
+  try {
+    // Own the first listener before starting the second; a failed start still drains it.
+    roleMock = await startMockServer(async (req, res) => {
       roleRequests.push({
         url: req.url,
         authorization: req.headers.authorization,
         body: JSON.parse(await readBody(req)),
       });
       writeReviewResponse(res, "-role");
-    }),
-  ]);
-
-  try {
+    });
     const { backend, events, workspace } = makeBackend();
     await backend.openWorkspace(workspace);
     await insertScene(backend, "pe-route-review");
@@ -813,10 +797,11 @@ test("role effectだけがoverride endpoint+keyを使い、default effectはrequ
     assert.equal(defaultRequests[0].authorization, "Bearer sk-default-only");
     assert.equal(defaultRequests[0].body.model, "mock-review-model");
   } finally {
-    await Promise.all([
-      closeServer(defaultMock.server),
-      closeServer(roleMock.server),
-    ]);
+    try {
+      if (roleMock) await closeServer(roleMock.server);
+    } finally {
+      await closeServer(defaultMock.server);
+    }
   }
 });
 

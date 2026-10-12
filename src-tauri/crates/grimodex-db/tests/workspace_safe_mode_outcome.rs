@@ -59,7 +59,7 @@ fn workspace_state() -> WorkspaceState {
         inner: Mutex::new(None),
         safe_mode: grimodex_db::recovery::SafeModeState::default(),
         switching: grimodex_db::WorkspaceLifecycleCompatibilityView::new(false),
-        open_lock: Mutex::new(()),
+        open_lock: Mutex::new(Default::default()),
     }
 }
 

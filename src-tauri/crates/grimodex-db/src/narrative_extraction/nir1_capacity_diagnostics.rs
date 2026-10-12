@@ -2509,7 +2509,7 @@ fn run_real_restore_mode(
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: Mutex::new(()),
+            open_lock: Mutex::new(Default::default()),
         };
         let install_started = Instant::now();
         let restore_result = restore_backup_core(&state, "grimodex-capacity-restore.db", || {});

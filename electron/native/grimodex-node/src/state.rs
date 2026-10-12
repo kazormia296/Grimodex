@@ -344,7 +344,7 @@ fn process_narrative_maintenance_generation_seed() -> u64 {
 fn cursor_narrative_maintenance_generation() -> u64 {
     let seed = process_narrative_maintenance_generation_seed();
     let previous = NARRATIVE_MAINTENANCE_GENERATION_CURSOR
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+        .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             Some(if current == 0 {
                 seed
             } else {
@@ -1418,7 +1418,7 @@ impl Drop for NarrativeMaintenanceWaiterAdmission {
     fn drop(&mut self) {
         let _ = self
             .waiter_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_sub(1)
             });
     }
@@ -2598,12 +2598,18 @@ pub struct AppState {
     pub workspace_operation_active: Arc<AtomicUsize>,
     pub workspace_operation_notify: Arc<Notify>,
     pub workspace_shutdown_requested: Arc<AtomicBool>,
+    /// One retained shutdown task; cancelling a response only drops its borrowed
+    /// waiter, never the task or its DB path fences.
+    pub(crate) workspace_shutdown: OnceLock<tokio::sync::Mutex<WorkspaceShutdownTask>>,
     /// Exact-binding single-flight keys for unpublished NIR-1 cold recovery.
     pub(crate) nir1_generation_recovery_bindings: Mutex<Vec<LiveBinding>>,
     /// Monotonic, single-binding ledger for best-effort post-Ready recovery.
     pub(crate) nir1_generation_recovery_statuses: Mutex<GenerationRecoveryHookLedger>,
     #[cfg(test)]
     pub(crate) nir1_generation_recovery_worker_probe:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
+    #[cfg(test)]
+    pub(crate) nir1_generation_recovery_completion_probe:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     #[cfg(test)]
     pub(crate) nir1_generation_recovery_launch_probe:
@@ -2653,8 +2659,20 @@ pub(crate) struct GenerationRecoveryLaunchObservation {
     pub(crate) participant_count: usize,
 }
 
+pub(crate) enum WorkspaceShutdownTask {
+    Pending(tokio::task::JoinHandle<std::result::Result<(), String>>),
+    /// Actual cleanup Join is sticky; a later ACK may unblock only publication.
+    Joined(std::result::Result<(), String>),
+    Closed(String),
+}
+
 #[derive(Default)]
 pub(crate) struct GenerationRecoveryHookLedger {
+    /// Reserved before spawn and released only after a successful blocking-task
+    /// Join. Failed/lost Join keeps this fence sticky, even with zero counters.
+    pub(crate) worker_active: bool,
+    /// Latest admitted Ready callback deferred while the actual worker lives.
+    pub(crate) pending_ready_revision: Option<u64>,
     pub(crate) latest_ready_revision: u64,
     pub(crate) entry: Option<GenerationRecoveryHookEntry>,
 }
@@ -2725,7 +2743,7 @@ impl AppState {
                 inner: Mutex::new(None),
                 safe_mode: grimodex_db::recovery::SafeModeState::default(),
                 switching,
-                open_lock: Mutex::new(()),
+                open_lock: Mutex::new(Default::default()),
             },
             workspace_lifecycle:
                 crate::workspace_lifecycle_view::WorkspaceLifecycleViewAdapter::new(lifecycle_core),
@@ -2763,10 +2781,13 @@ impl AppState {
             workspace_operation_active: Arc::new(AtomicUsize::new(0)),
             workspace_operation_notify: Arc::new(Notify::new()),
             workspace_shutdown_requested: Arc::new(AtomicBool::new(false)),
+            workspace_shutdown: OnceLock::new(),
             nir1_generation_recovery_bindings: Mutex::new(Vec::new()),
             nir1_generation_recovery_statuses: Mutex::new(GenerationRecoveryHookLedger::default()),
             #[cfg(test)]
             nir1_generation_recovery_worker_probe: Mutex::new(None),
+            #[cfg(test)]
+            nir1_generation_recovery_completion_probe: Mutex::new(None),
             #[cfg(test)]
             nir1_generation_recovery_launch_probe: Mutex::new(None),
             narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
@@ -2809,7 +2830,12 @@ impl AppState {
             // guard can decrement to zero and notify between the read and
             // `notified()`, leaving shutdown asleep until its outer deadline.
             let notified = self.workspace_operation_notify.notified();
-            if self.workspace_operation_active.load(Ordering::Acquire) == 0 {
+            let recovery_active = self
+                .nir1_generation_recovery_statuses
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .worker_active;
+            if self.workspace_operation_active.load(Ordering::Acquire) == 0 && !recovery_active {
                 return;
             }
             notified.await;

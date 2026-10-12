@@ -67,6 +67,8 @@ rules:
       - src/features/chat/modelRouting.ts
       - src/features/chat/modelRouting.test.ts
       - src/application/chat/chatTurnStoreActions.ts
+      - src/application/chat/chatAgentToolHandlers.ts
+      - src/features/chat/chatContentGeneration.ts
       - src/features/chat/turn/**
       - electron/preload/index.test.ts
       - src/features/chat/types.ts
@@ -89,6 +91,8 @@ rules:
       - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/features/chat/singleShotTransport.ts
       - src/features/chat/chatApi.ts
+      - src/features/chat/chatContentGeneration.ts
+      - src/application/chat/chatAgentToolHandlers.ts
       - src/features/chat/chatStreamTransport.ts
       - src/features/chat/semanticRecall.ts
       - src/features/chat/semanticRerankerApply.ts

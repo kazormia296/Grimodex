@@ -801,6 +801,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     chatScope,
     scopeAnchorId,
     activeSessionId,
+    isStreaming,
     includeBodies,
     includeMapBoard,
     mapBoardId: mapBoardIdFromStore,

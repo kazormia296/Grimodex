@@ -73,12 +73,12 @@ export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
     "chat-stream-project-switch",
   ]),
   Object.freeze([
-    "chat-stream-workspace-switch",
+    "chat-stream-folder-switch",
     "agent-stream-project-switch",
+    "chat-stream-workspace-switch",
     "agent-stream-workspace-switch",
-    "chat-stream-folder-scope",
   ]),
-  Object.freeze(["chat-stream-codex-scope", "chat-stream-snippet-scope"]),
+  Object.freeze(["chat-stream-snippet-switch", "chat-stream-codex-switch"]),
   Object.freeze([
     "editor-pending-project-switch",
     "mcp-external-write-conflict",

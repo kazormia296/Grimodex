@@ -323,9 +323,24 @@ mod tests {
     #[test]
     fn requested_limit_cannot_exceed_the_graph_contract() {
         assert_eq!(
+            grimodex_core::narrative_nir1::MAX_GRAPH_INPUT_BYTES,
+            6_291_456
+        );
+        assert_eq!(
             RetainedLedger::new(usize::MAX).limit(),
             grimodex_core::narrative_nir1::MAX_GRAPH_INPUT_BYTES
         );
+    }
+
+    #[test]
+    fn graph_capacity_accepts_n_and_rejects_n_plus_one() {
+        let mut ledger = RetainedLedger::new(usize::MAX);
+        ledger
+            .admit(RetainedPart::Request, 6_291_456)
+            .expect("the complete Graph capacity is admitted");
+        assert_eq!(ledger.remaining(), 0);
+        assert!(ledger.admit(RetainedPart::Response, 1).is_err());
+        assert_eq!(ledger.used(), 6_291_456);
     }
 
     #[test]

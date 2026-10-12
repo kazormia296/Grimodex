@@ -157,8 +157,8 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
   },
   {
     pathId: "agent_research_subagent",
-    sourceRef: "src/application/chat/chatTurnStoreActions.ts",
-    dispatchCall: "chatApi.sendAgentMessage",
+    sourceRef: "src/application/chat/chatAgentToolHandlers.ts",
+    dispatchCall: "sendAgentMessage",
     auditProperty: "pathId",
   },
   {
@@ -169,13 +169,13 @@ export const AI_AUDIT_RENDERER_CALLSITES: readonly AiAuditRendererCallsite[] = [
   },
   {
     pathId: "synopsis",
-    sourceRef: "src/features/chat/chatApi.ts",
+    sourceRef: "src/features/chat/chatContentGeneration.ts",
     dispatchCall: "invokeSingleShotChat",
     auditProperty: "pathId",
   },
   {
     pathId: "session_title",
-    sourceRef: "src/features/chat/chatApi.ts",
+    sourceRef: "src/features/chat/chatContentGeneration.ts",
     dispatchCall: "invokeSingleShotChat",
     auditProperty: "pathId",
   },
@@ -532,7 +532,7 @@ export const AI_PATHS: AiPathEntry[] = [
   {
     id: "agent_research_subagent",
     label: "run_research サブエージェント（depth=1）",
-    surface: "chatStore.ts guardedExecuteTool → 子 runAgentLoop",
+    surface: "chatAgentToolHandlers.ts createChatResearchSubagentHandler",
     layer: "agent",
     transport: "send_agent_message",
     auditOwner: "renderer-agent",
@@ -577,7 +577,7 @@ export const AI_PATHS: AiPathEntry[] = [
   {
     id: "synopsis",
     label: "あらすじ生成",
-    surface: "chatApi.ts generateSynopsisFromContent",
+    surface: "chatContentGeneration.ts generateSynopsisFromContent",
     layer: "single-shot",
     transport: "send_chat_message",
     auditOwner: "renderer-single-shot",
@@ -592,7 +592,7 @@ export const AI_PATHS: AiPathEntry[] = [
   {
     id: "session_title",
     label: "セッションタイトル自動生成",
-    surface: "chatApi.ts generateSessionTitle",
+    surface: "chatContentGeneration.ts generateSessionTitle",
     layer: "single-shot",
     transport: "send_chat_message",
     auditOwner: "renderer-single-shot",

@@ -144,6 +144,8 @@ pub enum PolarValidateOutcome {
 }
 
 /// Small async seam used by the orchestrator and deterministic race tests.
+// `async_trait` adds `#[must_use]` to boxed futures that are already `must_use`.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait PolarLicenseClient: Send + Sync {
     async fn activate(&self, key: &str) -> anyhow::Result<PolarActivation>;

@@ -6,6 +6,7 @@ const refreshImeExportMock = vi.fn();
 const setActiveImeProjectMock = vi.fn();
 const clearImeExportsMock = vi.fn();
 const cancelScheduledImeExportsMock = vi.fn();
+const setImeExportRefreshPausedMock = vi.fn();
 const listenMock = vi.fn();
 const workspaceEventHandlers = new Map<string, (payload: unknown) => void>();
 
@@ -46,6 +47,8 @@ vi.mock("@/lib/tauri", () => ({
 vi.mock("./scheduler", () => ({
   cancelScheduledImeExports: (...args: unknown[]) =>
     cancelScheduledImeExportsMock(...args),
+  setImeExportRefreshPaused: (...args: unknown[]) =>
+    setImeExportRefreshPausedMock(...args),
 }));
 
 vi.mock("@/features/layout/multiwindow/panelWindow", () => ({
@@ -59,7 +62,10 @@ vi.mock("./api", () => ({
 }));
 
 import { useImeExportSync } from "./useImeExportSync";
-import { getCurrentImeWorkspaceIdentity } from "./workspaceScope";
+import {
+  getCurrentImeWorkspaceIdentity,
+  setCurrentImeWorkspaceIdentity,
+} from "./workspaceScope";
 
 describe("useImeExportSync", () => {
   beforeEach(() => {
@@ -78,6 +84,7 @@ describe("useImeExportSync", () => {
       workspaceSwitchInProgress: false,
       workspaceHydrated: true,
     };
+    setCurrentImeWorkspaceIdentity(null);
     workspaceEventHandlers.clear();
     listenMock
       .mockReset()
@@ -88,6 +95,7 @@ describe("useImeExportSync", () => {
         },
       );
     cancelScheduledImeExportsMock.mockReset();
+    setImeExportRefreshPausedMock.mockReset();
     refreshImeExportMock.mockReset().mockResolvedValue({});
     setActiveImeProjectMock.mockReset().mockResolvedValue({});
     clearImeExportsMock.mockReset().mockResolvedValue(undefined);
@@ -128,7 +136,7 @@ describe("useImeExportSync", () => {
     );
   });
 
-  it("deactivates and cancels pending refreshes as soon as workspace switching starts", async () => {
+  it("deactivates IME work but preserves the old DB binding while workspace quiescence drains", async () => {
     const { rerender } = renderHook(() => useImeExportSync());
     await waitFor(() => expect(refreshImeExportMock).toHaveBeenCalled());
     expect(getCurrentImeWorkspaceIdentity()).toEqual({
@@ -138,22 +146,34 @@ describe("useImeExportSync", () => {
     refreshImeExportMock.mockClear();
     setActiveImeProjectMock.mockClear();
     cancelScheduledImeExportsMock.mockClear();
+    setImeExportRefreshPausedMock.mockClear();
 
     workspaceState.workspaceSwitchInProgress = true;
     workspaceState.workspaceHydrated = false;
     rerender();
 
     await waitFor(() => {
+      expect(setImeExportRefreshPausedMock).toHaveBeenCalledWith(true);
       expect(cancelScheduledImeExportsMock).toHaveBeenCalled();
       expect(setActiveImeProjectMock).toHaveBeenCalledWith(null);
     });
-    expect(refreshImeExportMock).not.toHaveBeenCalled();
-    // The old identity belongs to in-flight turns until strict quiescence
-    // finishes; the workspace open lifecycle then clears it for the swap.
     expect(getCurrentImeWorkspaceIdentity()).toEqual({
       path: "/workspaces/a",
       openRevision: 1,
     });
+    expect(refreshImeExportMock).not.toHaveBeenCalled();
+    expect(
+      setImeExportRefreshPausedMock.mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      cancelScheduledImeExportsMock.mock.invocationCallOrder.at(-1) ?? 0,
+    );
+
+    workspaceState.workspaceSwitchInProgress = false;
+    workspaceState.workspaceHydrated = true;
+    rerender();
+    await waitFor(() =>
+      expect(setImeExportRefreshPausedMock).toHaveBeenLastCalledWith(false),
+    );
   });
 
   it("keeps the active pointer null when the replacement project refresh fails", async () => {

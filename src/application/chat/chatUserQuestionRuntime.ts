@@ -60,15 +60,13 @@ export function createChatUserQuestionStoreActions(
     },
 
     _cancelPendingUserQuestion: () => {
-      ports.abortTurn();
       const pending = get().pendingUserQuestion;
+      if (!pending) return;
+      ports.abortTurn();
       runtime.cancel(
-        dismissedAskUserResult(
-          pending?.toolCallId ?? "ask_user_cancelled",
-          pending?.dismissNote ?? "",
-        ),
+        dismissedAskUserResult(pending.toolCallId, pending.dismissNote),
       );
-      if (pending) set({ pendingUserQuestion: null });
+      set({ pendingUserQuestion: null });
     },
   };
 }

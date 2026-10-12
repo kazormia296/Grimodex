@@ -219,11 +219,11 @@ pub fn restore_backup_core(
 /// replacement without recursively locking `restore_backup_core`.
 pub fn restore_backup_core_with_open_lock(
     ws_state: &WorkspaceState,
-    _open_guard: &std::sync::MutexGuard<'_, ()>,
+    open_guard: &std::sync::MutexGuard<'_, crate::open::WorkspaceMaintenanceOwner>,
     file_name: &str,
     on_reopened: impl FnOnce(),
 ) -> AppResult<()> {
-
+    open_guard.check_admission()?;
     let ws_path = {
         let inner = ws_state.inner.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         inner
@@ -1434,6 +1434,36 @@ fn park_restore_failpoint_if_requested(point: RestoreFailpoint) -> AppResult<()>
     }
 }
 
+#[cfg(feature = "test-failpoints")]
+thread_local! {
+    static RESTORE_HANDOFF_PATHS: std::cell::RefCell<Option<(PathBuf, PathBuf)>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+/// Bind the test rendezvous only to this synchronous restore thread. Other
+/// tests and child processes must not inherit its paths through global env.
+#[cfg(feature = "test-failpoints")]
+#[doc(hidden)]
+pub fn with_restore_handoff_for_test<T>(
+    ready_path: &Path,
+    continue_path: &Path,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct ClearHandoff;
+    impl Drop for ClearHandoff {
+        fn drop(&mut self) {
+            RESTORE_HANDOFF_PATHS.with(|paths| *paths.borrow_mut() = None);
+        }
+    }
+    RESTORE_HANDOFF_PATHS.with(|paths| {
+        assert!(paths.borrow().is_none(), "restore handoff already bound");
+        *paths.borrow_mut() = Some((ready_path.to_path_buf(), continue_path.to_path_buf()));
+    });
+    let _clear = ClearHandoff;
+    operation()
+}
+
 /// Test-only rendezvous directly after the exclusive→shared handoff, before
 /// authority publication: writes the ready file, then blocks until the
 /// continue file appears. The subprocess handoff journey uses this window to
@@ -1441,14 +1471,11 @@ fn park_restore_failpoint_if_requested(point: RestoreFailpoint) -> AppResult<()>
 #[cfg(feature = "test-failpoints")]
 fn wait_after_shared_handoff_if_requested() -> AppResult<()> {
     use std::time::{Duration, Instant};
-    let Some(ready_path) = std::env::var_os("GRIMODEX_RESTORE_HANDOFF_READY_PATH") else {
+    let Some((ready_path, continue_path)) =
+        RESTORE_HANDOFF_PATHS.with(|paths| paths.borrow().clone())
+    else {
         return Ok(());
     };
-    let Some(continue_path) = std::env::var_os("GRIMODEX_RESTORE_HANDOFF_CONTINUE_PATH") else {
-        return Ok(());
-    };
-    let ready_path = PathBuf::from(ready_path);
-    let continue_path = PathBuf::from(continue_path);
     std::fs::write(&ready_path, "after-shared-handoff\n").map_err(anyhow::Error::from)?;
     sync_path(&ready_path)?;
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -1890,7 +1917,7 @@ mod tests {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         };
         (dir, state)
     }
@@ -1938,7 +1965,7 @@ mod tests {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         }
     }
 
@@ -2056,7 +2083,7 @@ mod tests {
             inner: std::sync::Mutex::new(None),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         };
         assert!(list_backups(&state)
             .expect_err("list without workspace")
@@ -2147,7 +2174,7 @@ mod tests {
             inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(mismatch_authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
-            open_lock: std::sync::Mutex::new(()),
+            open_lock: std::sync::Mutex::new(Default::default()),
         };
         set_marker(&mismatch_state, "mismatch-live");
         let mismatch_source = mismatch_dir.join("backups/mismatch-source.db");

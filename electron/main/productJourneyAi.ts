@@ -9,6 +9,10 @@ export const PRODUCT_JOURNEY_AUTHORING_OUTPUT = "AUTHORING-AI-OUTPUT";
 export const PRODUCT_JOURNEY_CODEX_MARKER = "CODEX-CONTEXT-JOURNEY";
 export const PRODUCT_JOURNEY_AGENT_MARKER = "AGENT-AUTHORITY-JOURNEY";
 export const PRODUCT_JOURNEY_AGENT_OUTPUT = "AGENT-OLD-SCOPE-OUTPUT";
+export const PRODUCT_JOURNEY_AGENT_PROJECT_SWITCH_OUTPUT =
+  "AGENT-PROJECT-SWITCH-OUTPUT";
+export const PRODUCT_JOURNEY_AGENT_WORKSPACE_SWITCH_OUTPUT =
+  "AGENT-WORKSPACE-SWITCH-OUTPUT";
 
 const STREAM_BOUNDARY_DELAY_MS = 4_000;
 
@@ -116,22 +120,28 @@ export function wrapBackendForProductJourneyAi(
     },
 
     async sendAgentMessage(args) {
-      const authorityJourney = messageText(args).includes(
-        PRODUCT_JOURNEY_AGENT_MARKER,
-      );
-      if (authorityJourney) await wait(STREAM_BOUNDARY_DELAY_MS);
+      const input = messageText(args);
+      const authorityJourney = input.includes(PRODUCT_JOURNEY_AGENT_MARKER);
+      const projectSwitch = input.includes("AGENT-PROJECT-SWITCH-PROMPT");
+      const workspaceSwitch = input.includes("AGENT-WORKSPACE-SWITCH-PROMPT");
+      if (authorityJourney || projectSwitch || workspaceSwitch)
+        await wait(STREAM_BOUNDARY_DELAY_MS);
       return JSON.stringify({
         blocks: [
           {
             type: "text",
             content: authorityJourney
               ? PRODUCT_JOURNEY_AGENT_OUTPUT
-              : "Product Journey",
+              : projectSwitch
+                ? PRODUCT_JOURNEY_AGENT_PROJECT_SWITCH_OUTPUT
+                : workspaceSwitch
+                  ? PRODUCT_JOURNEY_AGENT_WORKSPACE_SWITCH_OUTPUT
+                  : "Product Journey Agent",
           },
         ],
         stopReason: "end_turn",
         inputTokens: 1,
-        outputTokens: 4,
+        outputTokens: authorityJourney ? 4 : 2,
       });
     },
 

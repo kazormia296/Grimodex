@@ -2052,10 +2052,21 @@ async function createForegroundSceneThroughUi(context, marker) {
     [context.projectId],
   );
   const existingSceneIds = new Set(before.map((row) => String(row.id)));
-  await header.locator('button[title="新規作成"]').click();
-  await context.page
-    .getByRole("menuitem", { name: "New scene", exact: true })
-    .click();
+  // A background re-render can detach the freshly opened menu; reopen it
+  // rather than wait 30 s on a detached item.
+  for (let attempt = 1; ; attempt += 1) {
+    await header.locator('button[title="新規作成"]').click();
+    const clicked = await context.page
+      .getByRole("menuitem", { name: "New scene", exact: true })
+      .click({ timeout: 5_000 })
+      .then(() => true)
+      .catch((error) => {
+        if (attempt >= 4) throw error;
+        return false;
+      });
+    if (clicked) break;
+    await context.page.keyboard.press("Escape");
+  }
 
   const renameInput = context.page.locator(
     '[data-droptarget-id="scenes-panel"] input:focus',

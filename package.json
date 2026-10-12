@@ -192,7 +192,7 @@
     "prosemirror-markdown": "^1.13.4",
     "prosemirror-model": "^1.25.11",
     "prosemirror-state": "^1.4.4",
-    "prosemirror-view": "^1.42.1",
+    "prosemirror-view": "^1.42.3",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "react-force-graph-2d": "^1.29.1",

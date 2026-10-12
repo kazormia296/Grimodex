@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
 
 pub const DELIVERY_CAPACITY: usize = 256;
@@ -95,23 +95,39 @@ pub struct LifecycleDiagnostic {
     pub root_operation_id: Option<OperationId>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LiveBinding {
     /// The canonical workspace locator captured at admission time.
-    pub locator: String,
+    pub locator: Arc<str>,
     /// Durable workspace identity. A path or display name is not sufficient.
-    pub workspace_id: String,
+    pub workspace_id: Arc<str>,
     /// Process-local authority instance. Reopening the same file creates a new
     /// value, so a reopened authority is never an `Unchanged` binding.
     pub authority_instance: u64,
     /// Monotonic generation for restore/recovery handoff.
     pub recovery_generation: u64,
+    /// Native-only identity of the opened main DB; never part of the wire shape.
+    #[serde(skip)]
+    database_file_identity: Option<Arc<str>>,
+}
+
+impl fmt::Debug for LiveBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LiveBinding")
+            .field("locator", &self.locator)
+            .field("workspace_id", &self.workspace_id)
+            .field("authority_instance", &self.authority_instance)
+            .field("recovery_generation", &self.recovery_generation)
+            .finish()
+    }
 }
 
 fn same_binding_identity(left: &LiveBinding, right: &LiveBinding) -> bool {
     left.locator == right.locator
         && left.workspace_id == right.workspace_id
         && left.authority_instance == right.authority_instance
+        && left.database_file_identity == right.database_file_identity
 }
 
 impl LiveBinding {
@@ -122,11 +138,37 @@ impl LiveBinding {
         recovery_generation: u64,
     ) -> Self {
         Self {
-            locator: locator.into(),
-            workspace_id: workspace_id.into(),
+            locator: Arc::<str>::from(locator.into()),
+            workspace_id: Arc::<str>::from(workspace_id.into()),
             authority_instance,
             recovery_generation,
+            database_file_identity: None,
         }
+    }
+
+    /// Attach Native-only main-DB identity without changing serialized bindings.
+    #[doc(hidden)]
+    pub fn with_main_database_file_identity(mut self, identity: String) -> Self {
+        self.database_file_identity = Some(Arc::from(identity));
+        self
+    }
+
+    /// Test whether this internal binding came from the supplied opened DB file.
+    #[doc(hidden)]
+    pub fn matches_main_database_file_identity(&self, identity: &str) -> bool {
+        self.database_file_identity.as_deref() == Some(identity)
+    }
+
+    /// Whether both internal bindings identify the same opened main DB file.
+    #[doc(hidden)]
+    pub fn same_main_database_file(&self, other: &Self) -> bool {
+        matches!(
+            (
+                self.database_file_identity.as_deref(),
+                other.database_file_identity.as_deref()
+            ),
+            (Some(left), Some(right)) if left == right
+        )
     }
 }
 
@@ -321,7 +363,52 @@ struct WorkspaceParticipantLease {
     released: AtomicBool,
 }
 
+/// Process-local fence for one cleanup-unproved C-query. Dropping it reopens
+/// admission, so production detachment deliberately keeps it process-lifetime;
+/// only a future owner with exit+EOF+reader-join proof may release it.
+#[must_use]
+pub(crate) struct WorkspaceQuarantineFence {
+    core: WorkspaceLifecycleCore,
+    binding: Arc<LiveBinding>,
+}
+
+impl Drop for WorkspaceQuarantineFence {
+    fn drop(&mut self) {
+        self.core.release_c_query_quarantine(&self.binding);
+    }
+}
+
 impl WorkspaceParticipant {
+    /// Atomically replace this unique participant with a process-local C-query
+    /// quarantine fence. The caller transfers child/storage ownership together.
+    pub(crate) fn detach_c_query_quarantine(
+        &self,
+        binding: &LiveBinding,
+    ) -> Option<WorkspaceQuarantineFence> {
+        self.lease.core.detach_c_query_quarantine(self, binding)
+    }
+
+    /// Transfer this exact participant as the fail-closed drain barrier after
+    /// its owner drops the authority pin. The check and every
+    /// physical-exclusive admission use the same lifecycle mutex; refusal
+    /// returns the unchanged participant to its caller.
+    pub(crate) fn try_retain_for_c_query_fallback(self) -> Result<Self, Self> {
+        let safe_to_retain = {
+            let Ok(state) = self.lease.core.lock_state() else {
+                return Err(self);
+            };
+            !self.lease.released.load(Ordering::Acquire)
+                && state.workspace_participants > 0
+                && state.physical_exclusive_operations.is_empty()
+                && state.c_query_quarantine.is_none()
+        };
+        if safe_to_retain {
+            Ok(self)
+        } else {
+            Err(self)
+        }
+    }
+
     /// Keep the exact current authority stable through a short final claim.
     ///
     /// The caller must acquire its DB connection before entering this guard.
@@ -347,6 +434,9 @@ impl WorkspaceParticipant {
             || !matches!(&state.state, LifecycleState::Ready(current) if current == expected)
         {
             return Err(LifecycleError::InvalidState);
+        }
+        if quarantines_workspace(&state, expected) {
+            return Err(LifecycleError::ActiveOperations);
         }
         Ok(operation())
     }
@@ -713,6 +803,13 @@ pub enum LifecycleResult {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JoinedTransitionOutcome {
+    Continue,
+    RecoveryRequired,
+    Shutdown,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DurableRunHandle {
     pub project_id: String,
@@ -1031,6 +1128,8 @@ pub enum LifecycleError {
     InvalidState,
     #[error("workspace lifecycle has active owners or unacknowledged work")]
     ActiveOperations,
+    #[error("workspace transition {operation_id} was vetoed by a C-query quarantine")]
+    TransitionVetoed { operation_id: OperationId },
     #[error("workspace operation {0} has not confirmed worker Join")]
     NotJoined(OperationId),
     #[error("execution {0} is unknown or already terminal")]
@@ -1156,6 +1255,14 @@ struct CoreState {
     work_executions: BTreeMap<WorkExecutionId, WorkExecutionMembership>,
     physical_exclusive_operations: BTreeSet<OperationId>,
     workspace_participants: usize,
+    /// Single process-local fence: matching locator or workspace ID cannot be
+    /// admitted or activated while a detached C-query remains unproved.
+    c_query_quarantine: Option<Arc<LiveBinding>>,
+    /// Whether the active transition conflicts with quarantine; false means a
+    /// known-distinct Open target.
+    open_transition_conflict: Option<(OperationId, bool)>,
+    /// Exact transition cancelled by a cleanup-unproved quarantine handoff.
+    vetoed_transition: Option<OperationId>,
     shutdown_requested: bool,
     descriptors: BTreeMap<RecoveryDescriptorId, RecoveryDescriptor>,
     control_slots: BTreeMap<RecoveryDescriptorId, ControlSlot>,
@@ -1177,6 +1284,9 @@ impl Default for CoreState {
             work_executions: BTreeMap::new(),
             physical_exclusive_operations: BTreeSet::new(),
             workspace_participants: 0,
+            c_query_quarantine: None,
+            open_transition_conflict: None,
+            vetoed_transition: None,
             shutdown_requested: false,
             descriptors: BTreeMap::new(),
             control_slots: BTreeMap::new(),
@@ -1184,6 +1294,92 @@ impl Default for CoreState {
             responsibilities: ResponsibilityLedger::default(),
         }
     }
+}
+
+fn clear_transition_metadata_locked(state: &mut CoreState, operation_id: OperationId) {
+    if state
+        .open_transition_conflict
+        .as_ref()
+        .is_some_and(|(owner, _)| *owner == operation_id)
+    {
+        state.open_transition_conflict = None;
+    }
+    if state.vetoed_transition == Some(operation_id) {
+        state.vetoed_transition = None;
+    }
+}
+
+fn quarantines_workspace(state: &CoreState, binding: &LiveBinding) -> bool {
+    let Some(quarantined) = state.c_query_quarantine.as_ref() else {
+        return false;
+    };
+    if quarantined.locator == binding.locator || quarantined.workspace_id == binding.workspace_id {
+        return true;
+    }
+    match (
+        quarantined.database_file_identity.as_deref(),
+        binding.database_file_identity.as_deref(),
+    ) {
+        (Some(quarantined), Some(candidate)) => quarantined == candidate,
+        // With an active quarantine, unknown physical identity cannot prove
+        // that a differently named binding refers to a different workspace.
+        _ => true,
+    }
+}
+
+fn open_target_conflicts_with_binding(
+    binding: &LiveBinding,
+    locator: &str,
+    workspace_id: Option<&str>,
+    database_file_identity: Option<&str>,
+) -> bool {
+    if binding.locator.as_ref() == locator
+        || workspace_id == Some(binding.workspace_id.as_ref())
+    {
+        return true;
+    }
+    match (
+        binding.database_file_identity.as_deref(),
+        database_file_identity,
+    ) {
+        (Some(binding), Some(candidate)) => binding == candidate,
+        // A quarantine requires positive identity evidence that an Open
+        // target is different before admission or handoff may proceed.
+        _ => true,
+    }
+}
+
+/// Missing target or identity evidence stays conflicting. The caller computes
+/// this while holding the admission mutex, against the ticket's captured binding.
+fn open_transition_conflicts_with_original(
+    ticket: &AdmissionTicket,
+    open_target: Option<(&str, Option<&str>, Option<&str>)>,
+) -> bool {
+    let (AdmissionKind::Open, Some(binding), Some((locator, workspace_id, identity))) =
+        (ticket.kind, ticket.original_binding.as_ref(), open_target)
+    else {
+        return true;
+    };
+    open_target_conflicts_with_binding(binding, locator, workspace_id, identity)
+}
+
+fn quarantines_open_target(
+    state: &CoreState,
+    locator: &str,
+    workspace_id: Option<&str>,
+    database_file_identity: Option<&str>,
+) -> bool {
+    state
+        .c_query_quarantine
+        .as_ref()
+        .is_some_and(|quarantined| {
+            open_target_conflicts_with_binding(
+                quarantined,
+                locator,
+                workspace_id,
+                database_file_identity,
+            )
+        })
 }
 
 struct CoreInner {
@@ -1345,6 +1541,9 @@ impl WorkspaceLifecycleCore {
         if matches!(
             state.state,
             LifecycleState::Transition { .. } | LifecycleState::RecoveryRequired { .. }
+        ) || matches!(
+            &state.state,
+            LifecycleState::Ready(binding) if quarantines_workspace(&state, binding)
         ) {
             let evidence = lifecycle_diagnostic_locked(&state);
             drop(state);
@@ -1374,8 +1573,88 @@ impl WorkspaceLifecycleCore {
         Ok(())
     }
 
+    fn detach_c_query_quarantine(
+        &self,
+        participant: &WorkspaceParticipant,
+        binding: &LiveBinding,
+    ) -> Option<WorkspaceQuarantineFence> {
+        if binding.database_file_identity.is_none()
+            || Arc::strong_count(&participant.lease) != 1
+            || participant.lease.released.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        let mut state = self.lock_state().ok()?;
+        if state.c_query_quarantine.is_some() || state.workspace_participants == 0 {
+            return None;
+        }
+        let transition_handoff = match &state.state {
+            LifecycleState::Transition { operation_id, .. } => state
+                .admissions
+                .get(operation_id)
+                .filter(|ticket| {
+                    matches!(ticket.kind, AdmissionKind::Open | AdmissionKind::Restore)
+                        && ticket.original_binding.as_ref() == Some(binding)
+                })
+                .map(|ticket| {
+                    let conflicts = match ticket.kind {
+                        AdmissionKind::Restore => true,
+                        AdmissionKind::Open => state
+                            .open_transition_conflict
+                            .as_ref()
+                            .filter(|(owner, _)| owner == operation_id)
+                            .is_none_or(|(_, conflicts)| *conflicts),
+                        _ => true,
+                    };
+                    (*operation_id, conflicts)
+                }),
+            _ => None,
+        };
+        let exact_live_binding = match &state.state {
+            LifecycleState::Ready(current) => current == binding,
+            LifecycleState::Transition { .. } => transition_handoff.is_some(),
+            _ => false,
+        };
+        if !exact_live_binding
+            || !state.physical_exclusive_operations.is_empty()
+            || (self.inner.compatibility_switching.load(Ordering::SeqCst)
+                && transition_handoff.is_none())
+        {
+            return None;
+        }
+
+        let binding = Arc::new(binding.clone());
+        state.c_query_quarantine = Some(Arc::clone(&binding));
+        if let Some((operation_id, true)) = transition_handoff {
+            state.vetoed_transition = Some(operation_id);
+        }
+        state.workspace_participants -= 1;
+        state.revision = state.revision.saturating_add(1);
+        participant.lease.released.store(true, Ordering::Release);
+        Some(WorkspaceQuarantineFence {
+            core: self.clone(),
+            binding,
+        })
+    }
+
+    fn release_c_query_quarantine(&self, binding: &Arc<LiveBinding>) {
+        if let Ok(mut state) = self.inner.state.lock() {
+            if state
+                .c_query_quarantine
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, binding))
+            {
+                state.c_query_quarantine = None;
+                state.revision = state.revision.saturating_add(1);
+            }
+        }
+    }
+
     pub fn set_ready(&self, binding: LiveBinding) -> Result<LifecycleSnapshot, LifecycleError> {
         let mut state = self.lock_state()?;
+        if quarantines_workspace(&state, &binding) {
+            return Err(LifecycleError::ActiveOperations);
+        }
         match &state.state {
             LifecycleState::Closed => return Err(LifecycleError::Closed),
             LifecycleState::NoWorkspace | LifecycleState::Ready(_) => {}
@@ -1450,6 +1729,7 @@ impl WorkspaceLifecycleCore {
             || !state.delivery.fenced.is_empty()
             || !state.responsibilities.general.is_empty()
             || state.responsibilities.emergency.is_some()
+            || state.c_query_quarantine.is_some()
         {
             return Err(LifecycleError::ActiveOperations);
         }
@@ -1501,6 +1781,38 @@ impl WorkspaceLifecycleCore {
         Ok(LifecycleSnapshot::new(state.state.clone(), state.revision))
     }
 
+    /// Resolve shutdown and a joined quarantine veto in one core-lock order.
+    /// The Native publisher must not read these conditions separately before
+    /// choosing RecoveryRequired versus Finishing.
+    pub fn resolve_joined_transition(
+        &self,
+        ticket: &AdmissionTicket,
+    ) -> Result<JoinedTransitionOutcome, LifecycleError> {
+        let state = self.lock_state()?;
+        self.require_ticket_locked(&state, ticket)?;
+        if !ticket.kind.is_transition() {
+            return Err(LifecycleError::InvalidState);
+        }
+        if !state.joined_operations.contains(&ticket.operation_id)
+            || !matches!(
+                state.state,
+                LifecycleState::Transition { operation_id, .. }
+                    if operation_id == ticket.operation_id
+            )
+        {
+            return Err(LifecycleError::NotJoined(ticket.operation_id));
+        }
+        if state.shutdown_requested {
+            self.abandon_transition_for_shutdown_locked(state, ticket)?;
+            return Ok(JoinedTransitionOutcome::Shutdown);
+        }
+        if state.vetoed_transition == Some(ticket.operation_id) {
+            self.require_recovery_locked(state, ticket, ticket.original_binding.clone(), None)?;
+            return Ok(JoinedTransitionOutcome::RecoveryRequired);
+        }
+        Ok(JoinedTransitionOutcome::Continue)
+    }
+
     pub fn shutdown_requested(&self) -> Result<bool, LifecycleError> {
         Ok(self.lock_state()?.shutdown_requested)
     }
@@ -1513,7 +1825,14 @@ impl WorkspaceLifecycleCore {
         &self,
         ticket: &AdmissionTicket,
     ) -> Result<(), LifecycleError> {
-        let mut state = self.lock_state()?;
+        self.abandon_transition_for_shutdown_locked(self.lock_state()?, ticket)
+    }
+
+    fn abandon_transition_for_shutdown_locked(
+        &self,
+        mut state: MutexGuard<'_, CoreState>,
+        ticket: &AdmissionTicket,
+    ) -> Result<(), LifecycleError> {
         self.require_ticket_locked(&state, ticket)?;
         if !ticket.kind.is_transition()
             || !state.joined_operations.contains(&ticket.operation_id)
@@ -1527,6 +1846,7 @@ impl WorkspaceLifecycleCore {
         }
         state.admissions.remove(&ticket.operation_id);
         state.joined_operations.remove(&ticket.operation_id);
+        clear_transition_metadata_locked(&mut state, ticket.operation_id);
         if let Some(reservation) = &ticket.responsibility {
             Self::release_responsibility_locked(&mut state, reservation);
         }
@@ -1575,6 +1895,7 @@ impl WorkspaceLifecycleCore {
         }
         state.admissions.remove(&ticket.operation_id);
         state.joined_operations.remove(&ticket.operation_id);
+        clear_transition_metadata_locked(&mut state, ticket.operation_id);
         if let Some(reservation) = &ticket.responsibility {
             Self::release_responsibility_locked(&mut state, reservation);
         }
@@ -1625,7 +1946,9 @@ impl WorkspaceLifecycleCore {
             LifecycleState::Transition { .. } => binding.clone(),
             _ => return Err(LifecycleError::ActiveOperations),
         };
-        if !same_binding_identity(&current_binding, &binding) {
+        if !same_binding_identity(&current_binding, &binding)
+            || quarantines_workspace(&state, &binding)
+        {
             return Err(LifecycleError::BindingChanged {
                 operation_id: ticket.operation_id,
             });
@@ -1676,6 +1999,7 @@ impl WorkspaceLifecycleCore {
                 state.state,
                 LifecycleState::Ready(ref current) if same_binding_identity(current, &binding)
             ) || shutdown_finishing)
+            || quarantines_workspace(&state, &binding)
             || state.physical_exclusive_operations.contains(&ticket.operation_id)
         {
             return Err(LifecycleError::ActiveOperations);
@@ -2234,7 +2558,7 @@ impl WorkspaceLifecycleCore {
         &self,
         kind: AdmissionKind,
     ) -> Result<AdmissionOutcome, LifecycleError> {
-        self.begin_transition_with_recovery_descriptor(kind, None)
+        self.begin_transition_with_recovery_descriptor(kind, None, None)
     }
 
     /// Begin an Open/Restore transition that is an exact retry of an existing
@@ -2245,13 +2569,31 @@ impl WorkspaceLifecycleCore {
         kind: AdmissionKind,
         descriptor_id: RecoveryDescriptorId,
     ) -> Result<AdmissionOutcome, LifecycleError> {
-        self.begin_transition_with_recovery_descriptor(kind, Some(descriptor_id))
+        self.begin_transition_with_recovery_descriptor(kind, Some(descriptor_id), None)
+    }
+
+    /// Admit Native Open only after proving that its target is not the database
+    /// held by a detached C-query quarantine. The check and transition write
+    /// share one lock so quarantine cannot appear between them.
+    pub fn begin_open_transition_for_target(
+        &self,
+        locator: &str,
+        workspace_id: Option<&str>,
+        database_file_identity: Option<&str>,
+        recovery_descriptor_id: Option<RecoveryDescriptorId>,
+    ) -> Result<AdmissionOutcome, LifecycleError> {
+        self.begin_transition_with_recovery_descriptor(
+            AdmissionKind::Open,
+            recovery_descriptor_id,
+            Some((locator, workspace_id, database_file_identity)),
+        )
     }
 
     fn begin_transition_with_recovery_descriptor(
         &self,
         kind: AdmissionKind,
         recovery_descriptor_id: Option<RecoveryDescriptorId>,
+        open_target: Option<(&str, Option<&str>, Option<&str>)>,
     ) -> Result<AdmissionOutcome, LifecycleError> {
         if !kind.is_transition() {
             return self.admit(kind);
@@ -2261,7 +2603,26 @@ impl WorkspaceLifecycleCore {
         // two concurrent Open/Restore requests both observe Ready and both
         // become exclusive owners.
         let mut state = self.lock_state()?;
-        let outcome = self.admit_locked(&mut state, kind, recovery_descriptor_id, false)?;
+        let outcome = if open_target.is_some_and(|(locator, workspace_id, identity)| {
+            quarantines_open_target(&state, locator, workspace_id, identity)
+        }) {
+            AdmissionOutcome::NotAdmitted {
+                reason: AdmissionRejection::ActiveOperation,
+                snapshot: LifecycleSnapshot::new(
+                    self.projected_state_locked(&state),
+                    state.revision,
+                ),
+            }
+        } else {
+            self.admit_locked(&mut state, kind, recovery_descriptor_id, false)?
+        };
+        if let AdmissionOutcome::Admitted(ticket) = &outcome {
+            state.open_transition_conflict = Some((
+                ticket.operation_id,
+                open_transition_conflicts_with_original(ticket, open_target),
+            ));
+            state.vetoed_transition = None;
+        }
         if let AdmissionOutcome::Admitted(ticket) = &outcome {
             let draining_operations = state
                 .admissions
@@ -3165,6 +3526,21 @@ impl WorkspaceLifecycleCore {
                 operation_id: ticket.operation_id,
             });
         }
+        if state.vetoed_transition == Some(ticket.operation_id) {
+            return Err(LifecycleError::TransitionVetoed {
+                operation_id: ticket.operation_id,
+            });
+        }
+        // Restore targets its admitted W1 binding even if the caller supplies
+        // an exclusive file lease that bypasses the retained shared lease.
+        if ticket.kind == AdmissionKind::Restore
+            && ticket
+                .original_binding
+                .as_ref()
+                .is_some_and(|binding| quarantines_workspace(&state, binding))
+        {
+            return Err(LifecycleError::ActiveOperations);
+        }
         if state.admissions.values().any(|admission| {
             admission.operation_id != ticket.operation_id
                 && !admission.kind.is_capacity_independent()
@@ -3186,6 +3562,12 @@ impl WorkspaceLifecycleCore {
             return Err(LifecycleError::ActiveOperations);
         }
         Ok(())
+    }
+
+    pub fn transition_vetoed(&self, ticket: &AdmissionTicket) -> Result<bool, LifecycleError> {
+        let state = self.lock_state()?;
+        self.require_ticket_locked(&state, ticket)?;
+        Ok(state.vetoed_transition == Some(ticket.operation_id))
     }
 
     /// Acquire the core-side physical exclusion for a Native supervisor that
@@ -3224,6 +3606,11 @@ impl WorkspaceLifecycleCore {
         if !ticket.kind.is_transition() {
             return Err(LifecycleError::InvalidState);
         }
+        if state.vetoed_transition == Some(ticket.operation_id) {
+            return Err(LifecycleError::TransitionVetoed {
+                operation_id: ticket.operation_id,
+            });
+        }
         let exact_original_binding = ticket.original_binding.as_ref() == Some(&binding);
         let joined = state.joined_operations.contains(&ticket.operation_id);
         let exact = exact_original_binding
@@ -3232,7 +3619,7 @@ impl WorkspaceLifecycleCore {
                 LifecycleState::Transition { operation_id, .. }
                     if operation_id == ticket.operation_id && joined
             );
-        if state.shutdown_requested || !exact {
+        if state.shutdown_requested || !exact || quarantines_workspace(&state, &binding) {
             return Err(LifecycleError::BindingChanged {
                 operation_id: ticket.operation_id,
             });
@@ -3265,6 +3652,7 @@ impl WorkspaceLifecycleCore {
         if let Some(reservation) = &ticket.responsibility {
             Self::release_responsibility_locked(&mut state, reservation);
         }
+        clear_transition_metadata_locked(&mut state, ticket.operation_id);
         state.revision = state.revision.saturating_add(1);
         self.inner
             .compatibility_switching
@@ -3287,11 +3675,19 @@ impl WorkspaceLifecycleCore {
         if !ticket.kind.is_transition() {
             return Err(LifecycleError::InvalidState);
         }
+        if state.vetoed_transition == Some(ticket.operation_id) {
+            return Err(LifecycleError::TransitionVetoed {
+                operation_id: ticket.operation_id,
+            });
+        }
         if matches!(state.state, LifecycleState::Closed) {
             return Err(LifecycleError::Closed);
         }
         if state.shutdown_requested {
             return Err(LifecycleError::Closed);
+        }
+        if quarantines_workspace(&state, &binding) {
+            return Err(LifecycleError::ActiveOperations);
         }
         if !matches!(
             state.state,
@@ -3333,6 +3729,7 @@ impl WorkspaceLifecycleCore {
         if let Some(reservation) = &ticket.responsibility {
             Self::release_responsibility_locked(&mut state, reservation);
         }
+        clear_transition_metadata_locked(&mut state, ticket.operation_id);
         state.revision = state.revision.saturating_add(1);
         self.inner
             .compatibility_switching
@@ -3352,11 +3749,26 @@ impl WorkspaceLifecycleCore {
         expected_binding: Option<LiveBinding>,
         run: Option<RunOwnership>,
     ) -> Result<(RecoveryDescriptorId, LifecycleResult), LifecycleError> {
-        let mut state = self.lock_state()?;
+        self.require_recovery_locked(self.lock_state()?, ticket, expected_binding, run)
+    }
+
+    fn require_recovery_locked(
+        &self,
+        mut state: MutexGuard<'_, CoreState>,
+        ticket: &AdmissionTicket,
+        expected_binding: Option<LiveBinding>,
+        run: Option<RunOwnership>,
+    ) -> Result<(RecoveryDescriptorId, LifecycleResult), LifecycleError> {
         self.require_ticket_locked(&state, ticket)?;
         if !ticket.kind.is_transition() {
             return Err(LifecycleError::InvalidState);
         }
+        let vetoed = state.vetoed_transition == Some(ticket.operation_id);
+        let expected_binding = if vetoed {
+            ticket.original_binding.clone()
+        } else {
+            expected_binding
+        };
         if !matches!(
             state.state,
             LifecycleState::Transition { operation_id, .. }
@@ -3384,6 +3796,7 @@ impl WorkspaceLifecycleCore {
                 state.state = LifecycleState::RecoveryRequired {
                     descriptor_id: existing_id,
                 };
+                clear_transition_metadata_locked(&mut state, ticket.operation_id);
                 state.admissions.remove(&ticket.operation_id);
                 state.joined_operations.remove(&ticket.operation_id);
                 if let Some(reservation) = &ticket.responsibility {
@@ -3431,6 +3844,7 @@ impl WorkspaceLifecycleCore {
             state.state = LifecycleState::RecoveryRequired {
                 descriptor_id: existing_id,
             };
+            clear_transition_metadata_locked(&mut state, ticket.operation_id);
             state.admissions.remove(&ticket.operation_id);
             state.joined_operations.remove(&ticket.operation_id);
             state.revision = state.revision.saturating_add(1);
@@ -3475,6 +3889,7 @@ impl WorkspaceLifecycleCore {
             },
         );
         state.state = LifecycleState::RecoveryRequired { descriptor_id };
+        clear_transition_metadata_locked(&mut state, ticket.operation_id);
         state.admissions.remove(&ticket.operation_id);
         state.joined_operations.remove(&ticket.operation_id);
         // The descriptor now carries the recovery responsibility. Its cell is
@@ -4324,6 +4739,7 @@ mod tests {
 
     fn binding(instance: u64) -> LiveBinding {
         LiveBinding::new("/tmp/workspace", "workspace-1", instance, 1)
+            .with_main_database_file_identity(format!("test-db-{instance}"))
     }
 
     fn run_handle(run_id: &str, work_key: &str) -> DurableRunHandle {
@@ -4467,6 +4883,693 @@ mod tests {
                 .expect("no acquired memberships"),
             0
         );
+    }
+
+    #[test]
+    fn c_query_quarantine_rejects_alias_before_open_transition_admission() {
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        core.lock_state().expect("state").c_query_quarantine = Some(Arc::new(original.clone()));
+        let before = core.snapshot().expect("pre-open snapshot");
+
+        for (locator, workspace_id, identity) in [
+            (
+                "/tmp/workspace-alias",
+                Some("edited-workspace-id"),
+                Some("test-db-1"),
+            ),
+            ("/tmp/workspace-alias", None, None),
+            (
+                "/tmp/workspace",
+                Some("edited-workspace-id"),
+                Some("different-db"),
+            ),
+            (
+                "/tmp/workspace-alias",
+                Some("workspace-1"),
+                Some("different-db"),
+            ),
+        ] {
+            let outcome = core
+                .begin_open_transition_for_target(locator, workspace_id, identity, None)
+                .expect("checked Open admission");
+            assert!(matches!(
+                outcome,
+                AdmissionOutcome::NotAdmitted {
+                    reason: AdmissionRejection::ActiveOperation,
+                    ..
+                }
+            ));
+            assert_eq!(core.snapshot().expect("unchanged snapshot"), before);
+        }
+
+        let other = match core
+            .begin_open_transition_for_target(
+                "/tmp/other",
+                Some("workspace-2"),
+                Some("test-db-2"),
+                None,
+            )
+            .expect("unrelated Open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("identified other DB is admissible"),
+        };
+        core.mark_transition_joined(&other)
+            .expect("unrelated Open joined");
+        core.activate(
+            &other,
+            LiveBinding::new("/tmp/other", "workspace-2", 2, 1)
+                .with_main_database_file_identity("test-db-2".to_owned()),
+            ContentEffect::Retained,
+        )
+        .expect("unrelated Open activation");
+    }
+
+    #[test]
+    fn c_query_quarantine_fences_same_file_alias_until_token_drop() {
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        let alias = LiveBinding::new("/tmp/workspace-alias", "edited-workspace-id", 2, 2)
+            .with_main_database_file_identity("test-db-1".to_owned());
+        assert_ne!(original.locator, alias.locator);
+        assert_ne!(original.workspace_id, alias.workspace_id);
+        assert!(original.same_main_database_file(&alias));
+        assert!(!format!("{original:?}").contains("test-db-1"));
+        let serialized = serde_json::to_value(&original).expect("serialize binding");
+        assert_eq!(
+            serialized,
+            serde_json::json!({
+                "locator": "/tmp/workspace",
+                "workspace_id": "workspace-1",
+                "authority_instance": 1,
+                "recovery_generation": 1
+            })
+        );
+        let deserialized: LiveBinding =
+            serde_json::from_value(serialized).expect("deserialize binding");
+        assert!(deserialized.database_file_identity.is_none());
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("participant");
+        let participant_clone = participant.clone();
+        assert!(participant.detach_c_query_quarantine(&original).is_none());
+        drop(participant_clone);
+        let quarantine = participant
+            .detach_c_query_quarantine(&original)
+            .expect("unique exact participant transfers to quarantine");
+        assert_eq!(core.workspace_participant_count().expect("count"), 0);
+
+        assert!(core.set_ready(alias.clone()).is_err());
+        {
+            // Exercise participant admission independently of Ready publication:
+            // this is the stale Ready state the publication guard must prevent.
+            core.lock_state().expect("state").state = LifecycleState::Ready(alias.clone());
+        }
+        assert!(core.begin_workspace_participant().is_err());
+        {
+            core.lock_state().expect("state").state = LifecycleState::Ready(original);
+        }
+        assert!(core.close().is_err(), "close cannot claim terminal proof");
+
+        let ticket = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("switch away admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("switch away admitted"),
+        };
+        core.mark_transition_joined(&ticket)
+            .expect("transition joined");
+        assert!(core
+            .activate(&ticket, alias.clone(), ContentEffect::Retained)
+            .is_err());
+        let other = LiveBinding::new("/tmp/other-workspace", "workspace-2", 3, 1)
+            .with_main_database_file_identity("test-db-2".to_owned());
+        core.activate(&ticket, other, ContentEffect::Retained)
+            .expect("unrelated identified workspace remains usable");
+
+        drop(quarantine);
+        let ticket = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("same file can be reopened after proof")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("reopen admitted"),
+        };
+        core.mark_transition_joined(&ticket)
+            .expect("transition joined");
+        core.activate(&ticket, alias, ContentEffect::Retained)
+            .expect("released quarantine permits aliased authority");
+    }
+
+    #[test]
+    fn c_query_quarantine_retains_16k_w1_id_until_fence_drop() {
+        let core = WorkspaceLifecycleCore::new();
+        let original = LiveBinding::new("/tmp/workspace-w1", "w".repeat(16_384), 1, 1)
+            .with_main_database_file_identity("test-db-w1".to_owned());
+        assert_eq!(original.workspace_id.len(), 16_384);
+        let original_id = Arc::downgrade(&original.workspace_id);
+        drop(core.set_ready(original.clone()).expect("W1 ready snapshot"));
+
+        let participant = core.begin_workspace_participant().expect("W1 participant");
+        let quarantine = participant
+            .detach_c_query_quarantine(&original)
+            .expect("W1 participant transfers to quarantine");
+        let ticket = match core
+            .begin_open_transition_for_target(
+                "/tmp/workspace-w2",
+                Some("workspace-w2"),
+                Some("test-db-w2"),
+                None,
+            )
+            .expect("positively distinct W2 Open")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("identified W2 must be admitted"),
+        };
+        core.mark_transition_joined(&ticket)
+            .expect("W2 Open joined");
+        let w2 = LiveBinding::new("/tmp/workspace-w2", "workspace-w2", 2, 1)
+            .with_main_database_file_identity("test-db-w2".to_owned());
+        assert_ne!(original.locator, w2.locator);
+        assert_ne!(original.workspace_id, w2.workspace_id);
+        assert!(!original.same_main_database_file(&w2));
+        let activation = core
+            .activate(&ticket, w2.clone(), ContentEffect::Retained)
+            .expect("W2 activation");
+        assert!(matches!(
+            &activation,
+            LifecycleResult::Activated { binding, .. } if binding == &w2
+        ));
+
+        drop(activation);
+        drop(ticket);
+        drop(w2);
+        drop(participant);
+        drop(original);
+        assert!(
+            original_id.upgrade().is_some(),
+            "the live quarantine fence must retain W1's workspace ID"
+        );
+
+        drop(quarantine);
+        assert!(
+            original_id.upgrade().is_none(),
+            "dropping the fence must release the final W1 workspace-ID owner"
+        );
+    }
+
+    #[test]
+    fn c_query_handoff_vetoes_only_conflicting_transition_before_physical_io() {
+        for kind in [AdmissionKind::Open, AdmissionKind::Restore] {
+            let core = WorkspaceLifecycleCore::new();
+            let original = binding(1);
+            core.set_ready(original.clone()).expect("ready");
+            let participant = core.begin_workspace_participant().expect("W1 participant");
+            let ticket = match kind {
+                AdmissionKind::Open => core
+                    .begin_open_transition_for_target(
+                        "/tmp/workspace-alias",
+                        Some("edited-workspace-id"),
+                        Some("test-db-1"),
+                        None,
+                    )
+                    .expect("Open admission"),
+                AdmissionKind::Restore => core
+                    .begin_transition(AdmissionKind::Restore)
+                    .expect("Restore admission"),
+                _ => unreachable!(),
+            };
+            let ticket = match ticket {
+                AdmissionOutcome::Admitted(ticket) => ticket,
+                AdmissionOutcome::NotAdmitted { .. } => panic!("transition must be admitted"),
+            };
+            if kind == AdmissionKind::Open {
+                let debug = format!("{:?}", core.lock_state().expect("state"));
+                assert!(!debug.contains("workspace-alias"));
+                assert!(!debug.contains("test-db-1"));
+            }
+
+            let quarantine = participant
+                .detach_c_query_quarantine(&original)
+                .expect("conflicting W1 operation is atomically quarantined");
+            assert_eq!(core.workspace_participant_count().expect("participant"), 0);
+            assert!(core.transition_vetoed(&ticket).expect("veto state"));
+            assert!(matches!(
+                core.physical_exclusive_for_ticket(&ticket),
+                Err(LifecycleError::TransitionVetoed { operation_id })
+                    if operation_id == ticket.operation_id
+            ));
+
+            core.mark_transition_joined(&ticket)
+                .expect("Native owner observed Join");
+            assert!(matches!(
+                core.complete_unchanged(&ticket, original.clone()),
+                Err(LifecycleError::TransitionVetoed { .. })
+            ));
+            assert!(matches!(
+                core.activate(&ticket, binding(2), ContentEffect::Retained),
+                Err(LifecycleError::TransitionVetoed { .. })
+            ));
+            assert_eq!(
+                core.resolve_joined_transition(&ticket)
+                    .expect("joined transition resolution"),
+                JoinedTransitionOutcome::RecoveryRequired
+            );
+            let descriptor_id = match core.snapshot().expect("recovery snapshot").state {
+                LifecycleState::RecoveryRequired { descriptor_id } => descriptor_id,
+                state => panic!("expected RecoveryRequired, got {state:?}"),
+            };
+            assert_eq!(
+                core.descriptor(descriptor_id)
+                    .expect("recovery descriptor")
+                    .expected_binding,
+                Some(original)
+            );
+            assert!(matches!(
+                core.snapshot().expect("lifecycle snapshot").state,
+                LifecycleState::RecoveryRequired { .. }
+            ));
+            drop(quarantine);
+        }
+
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("W1 participant");
+        let ticket = match core
+            .begin_open_transition_for_target(
+                "/tmp/workspace-2",
+                Some("workspace-2"),
+                Some("test-db-2"),
+                None,
+            )
+            .expect("known-distinct W2 Open")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("W2 Open must be admitted"),
+        };
+        let quarantine = participant
+            .detach_c_query_quarantine(&original)
+            .expect("W1 may be fenced while known-distinct W2 proceeds");
+        assert!(!core.transition_vetoed(&ticket).expect("no veto"));
+        let exclusive = core
+            .physical_exclusive_for_ticket(&ticket)
+            .expect("known-distinct W2 may cross the protected boundary");
+        drop(exclusive);
+        core.mark_transition_joined(&ticket)
+            .expect("W2 Open joined");
+        core.activate(
+            &ticket,
+            LiveBinding::new("/tmp/workspace-2", "workspace-2", 2, 1)
+                .with_main_database_file_identity("test-db-2".to_owned()),
+            ContentEffect::Retained,
+        )
+        .expect("known-distinct W2 activation");
+        drop(quarantine);
+    }
+
+    #[test]
+    fn c_query_quarantine_blocks_w1_restore_exclusion_but_allows_distinct_w2() {
+        let w1_core = WorkspaceLifecycleCore::new();
+        let w1 = binding(1);
+        w1_core.set_ready(w1.clone()).expect("W1 ready");
+        let w1_participant = w1_core
+            .begin_workspace_participant()
+            .expect("W1 participant");
+        let _w1_quarantine = w1_participant
+            .detach_c_query_quarantine(&w1)
+            .expect("fence W1");
+        let restore = match w1_core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("Restore admission remains logical")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("Restore ticket admitted"),
+        };
+        assert!(matches!(
+            w1_core.physical_exclusive_for_ticket(&restore),
+            Err(LifecycleError::ActiveOperations)
+        ));
+
+        let w2_core = WorkspaceLifecycleCore::new();
+        let w1 = binding(1);
+        w2_core.set_ready(w1.clone()).expect("W1 ready");
+        let participant = w2_core
+            .begin_workspace_participant()
+            .expect("W1 participant");
+        let _quarantine = participant
+            .detach_c_query_quarantine(&w1)
+            .expect("fence W1");
+        let w2 = match w2_core
+            .begin_open_transition_for_target(
+                "/tmp/workspace-w2",
+                Some("workspace-w2"),
+                Some("test-db-w2"),
+                None,
+            )
+            .expect("distinct W2 Open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("distinct W2 admitted"),
+        };
+        let exclusive = w2_core
+            .physical_exclusive_for_ticket(&w2)
+            .expect("distinct W2 may acquire physical exclusion");
+        drop(exclusive);
+    }
+
+    #[test]
+    fn c_query_fallback_retains_participant_through_open_restore_and_shutdown_drain() {
+        for kind in [AdmissionKind::Open, AdmissionKind::Restore] {
+            let core = WorkspaceLifecycleCore::new();
+            core.set_ready(binding(1)).expect("ready");
+            let participant = core
+                .begin_workspace_participant()
+                .expect("participant admission")
+                .try_retain_for_c_query_fallback()
+                .unwrap_or_else(|_| panic!("counted participant must be retainable"));
+            let ticket = match core.begin_transition(kind).expect("transition admission") {
+                AdmissionOutcome::Admitted(ticket) => ticket,
+                AdmissionOutcome::NotAdmitted { .. } => panic!("transition must be admitted"),
+            };
+            assert!(matches!(
+                core.physical_exclusive_for_ticket(&ticket),
+                Err(LifecycleError::ActiveOperations)
+            ));
+            assert_eq!(core.workspace_participant_count().expect("count"), 1);
+            drop(participant);
+            let exclusive = core
+                .physical_exclusive_for_ticket(&ticket)
+                .expect("retired participant permits protected transition");
+            drop(exclusive);
+        }
+
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let participant = core
+            .begin_workspace_participant()
+            .expect("participant admission");
+        let participant_clone = participant.clone();
+        let participant = participant
+            .try_retain_for_c_query_fallback()
+            .unwrap_or_else(|_| panic!("shared counted participant must be retainable"));
+        assert_eq!(core.workspace_participant_count().expect("count"), 1);
+        drop(participant);
+        assert_eq!(core.workspace_participant_count().expect("count"), 1);
+        drop(participant_clone);
+        assert_eq!(core.workspace_participant_count().expect("count"), 0);
+
+        let participant = core
+            .begin_workspace_participant()
+            .expect("participant admission")
+            .try_retain_for_c_query_fallback()
+            .unwrap_or_else(|_| panic!("counted participant must be retainable"));
+        core.request_shutdown().expect("shutdown request");
+        assert!(matches!(
+            core.close(),
+            Err(LifecycleError::ActiveOperations)
+        ));
+        drop(participant);
+        assert!(matches!(
+            core.close().expect("close after participant drain").state,
+            LifecycleState::Closed
+        ));
+    }
+
+    #[test]
+    fn c_query_fallback_refuses_zero_count_marker_fence_and_poisoned_state() {
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let participant = core
+            .begin_workspace_participant()
+            .expect("participant admission");
+        core.lock_state().expect("state").workspace_participants = 0;
+        let participant = match participant.try_retain_for_c_query_fallback() {
+            Err(participant) => participant,
+            Ok(_) => panic!("uncounted participant must not be retained"),
+        };
+        drop(participant);
+
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core
+            .begin_workspace_participant()
+            .expect("participant admission");
+        let ticket = match core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("Restore admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("Restore must be admitted"),
+        };
+        core.lock_state()
+            .expect("state")
+            .physical_exclusive_operations
+            .insert(ticket.operation_id);
+        let participant = match participant.try_retain_for_c_query_fallback() {
+            Err(participant) => participant,
+            Ok(_) => panic!("marker-won participant must not be retained"),
+        };
+        drop(participant);
+
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core
+            .begin_workspace_participant()
+            .expect("participant admission");
+        let fence = participant
+            .detach_c_query_quarantine(&original)
+            .expect("install existing fence");
+        let participant = match participant.try_retain_for_c_query_fallback() {
+            Err(participant) => participant,
+            Ok(_) => panic!("released participant must not be retained"),
+        };
+        drop(participant);
+        let other = LiveBinding::new("/tmp/other", "workspace-other", 2, 1)
+            .with_main_database_file_identity("other-db".to_owned());
+        core.set_ready(other).expect("distinct workspace ready");
+        let participant = core
+            .begin_workspace_participant()
+            .expect("distinct workspace participant");
+        let participant = match participant.try_retain_for_c_query_fallback() {
+            Err(participant) => participant,
+            Ok(_) => panic!("unrelated existing fence must not be credited"),
+        };
+        drop(participant);
+        drop(fence);
+
+        let core = WorkspaceLifecycleCore::new();
+        core.set_ready(binding(1)).expect("ready");
+        let participant = core
+            .begin_workspace_participant()
+            .expect("participant admission");
+        let poisoned_core = core.clone();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _state = poisoned_core.inner.state.lock().expect("state lock");
+            panic!("poison lifecycle mutex for test");
+        }));
+        let participant = match participant.try_retain_for_c_query_fallback() {
+            Err(participant) => participant,
+            Ok(_) => panic!("poisoned lifecycle mutex must fail closed"),
+        };
+        drop(participant);
+    }
+
+    #[test]
+    fn shutdown_wins_joined_c_query_veto_completion_for_open_and_restore() {
+        for kind in [AdmissionKind::Open, AdmissionKind::Restore] {
+            let core = WorkspaceLifecycleCore::new();
+            let original = binding(1);
+            core.set_ready(original.clone()).expect("ready");
+            let participant = core.begin_workspace_participant().expect("W1 participant");
+            let ticket = match kind {
+                AdmissionKind::Open => core
+                    .begin_open_transition_for_target(
+                        "/tmp/workspace-alias",
+                        Some("edited-workspace-id"),
+                        Some("test-db-1"),
+                        None,
+                    )
+                    .expect("Open admission"),
+                AdmissionKind::Restore => core
+                    .begin_transition(AdmissionKind::Restore)
+                    .expect("Restore admission"),
+                _ => unreachable!(),
+            };
+            let ticket = match ticket {
+                AdmissionOutcome::Admitted(ticket) => ticket,
+                AdmissionOutcome::NotAdmitted { .. } => panic!("transition must be admitted"),
+            };
+            let quarantine = participant
+                .detach_c_query_quarantine(&original)
+                .expect("conflicting W1 operation is atomically quarantined");
+            core.mark_transition_joined(&ticket)
+                .expect("Native owner observed Join");
+
+            // Reproduce the former gap: shutdown=false and veto=true were
+            // independently observed, then shutdown acquired the core lock.
+            assert!(!core.shutdown_requested().expect("shutdown status"));
+            assert!(core.transition_vetoed(&ticket).expect("veto status"));
+            core.request_shutdown()
+                .expect("shutdown wins before publish");
+            assert_eq!(
+                core.resolve_joined_transition(&ticket)
+                    .expect("atomic terminal choice"),
+                JoinedTransitionOutcome::Shutdown
+            );
+            assert!(matches!(
+                core.snapshot().expect("shutdown snapshot").state,
+                LifecycleState::Transition {
+                    operation_id: OperationId(0),
+                    stage: TransitionStage::Finishing,
+                }
+            ));
+            assert!(
+                core.compatibility_view().load(Ordering::SeqCst),
+                "shutdown must keep switching closed"
+            );
+            assert!(
+                matches!(core.close(), Err(LifecycleError::ActiveOperations)),
+                "the quarantine fence remains owned until released"
+            );
+            drop(quarantine);
+            assert!(matches!(
+                core.close().expect("close after quarantine release").state,
+                LifecycleState::Closed
+            ));
+        }
+    }
+
+    #[test]
+    fn c_query_handoff_vetoes_targetless_open() {
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("W1 participant");
+        let ticket = match core
+            .begin_transition(AdmissionKind::Open)
+            .expect("targetless Open admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => {
+                panic!("Open must be admitted before quarantine")
+            }
+        };
+        let quarantine = participant
+            .detach_c_query_quarantine(&original)
+            .expect("targetless Open conservatively conflicts");
+        assert!(core.transition_vetoed(&ticket).expect("veto state"));
+        assert!(matches!(
+            core.physical_exclusive_for_ticket(&ticket),
+            Err(LifecycleError::TransitionVetoed { .. })
+        ));
+        drop(quarantine);
+    }
+
+    #[test]
+    fn c_query_handoff_vetoes_open_when_target_identity_is_unknown() {
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("W1 participant");
+        let ticket = match core
+            .begin_open_transition_for_target("/tmp/unknown-target", None, None, None)
+            .expect("Open admission with unknown target identity")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => {
+                panic!("Open must be admitted before quarantine")
+            }
+        };
+        let quarantine = participant
+            .detach_c_query_quarantine(&original)
+            .expect("unknown target fails closed as conflict");
+        assert!(core.transition_vetoed(&ticket).expect("veto state"));
+        assert!(matches!(
+            core.physical_exclusive_for_ticket(&ticket),
+            Err(LifecycleError::TransitionVetoed { .. })
+        ));
+        drop(quarantine);
+    }
+
+    #[test]
+    fn c_query_handoff_refuses_when_physical_exclusive_marker_won_first() {
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("W1 participant");
+        let ticket = match core
+            .begin_transition(AdmissionKind::Restore)
+            .expect("Restore admission")
+        {
+            AdmissionOutcome::Admitted(ticket) => ticket,
+            AdmissionOutcome::NotAdmitted { .. } => panic!("Restore must be admitted"),
+        };
+
+        // A real physical owner cannot acquire while the participant is live;
+        // seed the marker under the same mutex to isolate the inverse lock order.
+        core.lock_state()
+            .expect("state")
+            .physical_exclusive_operations
+            .insert(ticket.operation_id);
+        assert!(participant.detach_c_query_quarantine(&original).is_none());
+        assert_eq!(core.workspace_participant_count().expect("participant"), 1);
+        assert!(!core.transition_vetoed(&ticket).expect("no veto"));
+    }
+
+    #[test]
+    fn quarantine_fails_closed_when_file_identity_is_missing() {
+        let unidentified_core = WorkspaceLifecycleCore::new();
+        let unidentified = LiveBinding::new("/tmp/unidentified", "workspace-unknown", 1, 1);
+        unidentified_core
+            .set_ready(unidentified.clone())
+            .expect("legacy binding ready without quarantine");
+        let unidentified_participant = unidentified_core
+            .begin_workspace_participant()
+            .expect("unidentified participant");
+        assert!(unidentified_participant
+            .detach_c_query_quarantine(&unidentified)
+            .is_none());
+        assert_eq!(
+            unidentified_core
+                .workspace_participant_count()
+                .expect("participant count"),
+            1
+        );
+        drop(unidentified_participant);
+
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("participant");
+        let quarantine = participant
+            .detach_c_query_quarantine(&original)
+            .expect("identified participant transfers to quarantine");
+        let unknown = LiveBinding::new("/tmp/other", "other-id", 2, 1);
+        assert!(core.set_ready(unknown).is_err());
+        drop(quarantine);
+    }
+
+    #[test]
+    fn c_query_quarantine_blocks_terminal_shutdown_until_fence_drop() {
+        let core = WorkspaceLifecycleCore::new();
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("participant");
+        let quarantine = participant
+            .detach_c_query_quarantine(&original)
+            .expect("exact participant transfers to quarantine");
+
+        core.request_shutdown()
+            .expect("shutdown request is recorded");
+        assert!(core.close().is_err(), "unproved child cannot be closed");
+        drop(quarantine);
+        core.close()
+            .expect("terminal close is allowed after quarantine proof");
     }
 
     #[test]

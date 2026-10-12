@@ -97,7 +97,7 @@ pub fn run() {
                 inner: Mutex::new(None),
                 safe_mode: grimodex_db::recovery::SafeModeState::default(),
                 switching: grimodex_db::WorkspaceLifecycleCompatibilityView::default(),
-                open_lock: Mutex::new(()),
+                open_lock: Mutex::new(Default::default()),
             });
 
             // Codex matcher state (rebuilt on demand via codex_rebuild_matcher)

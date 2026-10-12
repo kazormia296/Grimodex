@@ -221,10 +221,10 @@ export const useChatStore = create<ChatState>()((set, get) => ({
     set,
     get,
     runtime: {
-      hasPendingCompletedTurnPersistence: () =>
-        turnRuntime.hasPendingCompletedTurnPersistence(),
+      turnRuntime,
       notifyPendingCompletedTurnPersistence: () =>
         toast.error(i18next.t("chat.pendingCompletedTurnPersistence")),
+
       resetRecallPromote: () => resetRecallPromote(recallPromoteTracker),
     },
   }),

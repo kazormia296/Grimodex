@@ -6,7 +6,10 @@ import { isPanelWindow } from "@/features/layout/multiwindow/panelWindow";
 import { listen } from "@/lib/tauri";
 import { clearImeExports, refreshImeExport, setActiveImeProject } from "./api";
 import { isJapaneseProjectLanguage } from "./language";
-import { cancelScheduledImeExports } from "./scheduler";
+import {
+  cancelScheduledImeExports,
+  setImeExportRefreshPaused,
+} from "./scheduler";
 import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
@@ -87,8 +90,8 @@ export function useImeExportSync(): void {
   // Each renderer has its own scheduler module, so both main and panel publish
   // their local binding. Pointer ownership below remains main-only.
   useEffect(() => {
-    // Keep the old database identity valid while strict quiescence drains
-    // admitted turns. Workspace open clears it explicitly after that drain.
+    // A workspace transition pauses IME work immediately. Keep the old DB
+    // binding authoritative until strict quiescence drains it.
     if (workspaceSwitchInProgress) return;
     setCurrentImeWorkspaceIdentity(workspaceIdentity);
   }, [workspaceIdentity, workspaceSwitchInProgress]);
@@ -96,6 +99,7 @@ export function useImeExportSync(): void {
   // Project open/switch/language change: deactivate first. If refresh fails,
   // the previous workspace/project can never remain active by accident.
   useEffect(() => {
+    setImeExportRefreshPaused(workspaceSwitchInProgress);
     const sequence = ++operationSequenceRef.current;
     cancelScheduledImeExports();
     if (panel) return;
@@ -153,6 +157,7 @@ export function useImeExportSync(): void {
     excludeHidden,
     includeProfile,
     workspaceIdentity,
+    workspaceSwitchInProgress,
   ]);
 
   useEffect(() => {

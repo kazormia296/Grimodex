@@ -4,6 +4,8 @@ import type { NapiBackendLike } from "../shared/ipcContract.js";
 import {
   PRODUCT_JOURNEY_AI_ENV,
   PRODUCT_JOURNEY_AI_VERSION,
+  PRODUCT_JOURNEY_AGENT_PROJECT_SWITCH_OUTPUT,
+  PRODUCT_JOURNEY_AGENT_WORKSPACE_SWITCH_OUTPUT,
   PRODUCT_JOURNEY_AUTHORITY_EARLY,
   PRODUCT_JOURNEY_AUTHORITY_LATE,
   PRODUCT_JOURNEY_AGENT_MARKER,
@@ -18,14 +20,16 @@ function backendStub() {
   const dbExecute = vi.fn(function (this: { identity: string }) {
     return Promise.resolve(this.identity);
   });
+  const sendAgentMessage = vi.fn(async () => "native-agent-response");
   const backend = {
     identity: "native-backend",
     dbExecute,
+    sendAgentMessage,
     onEvent: vi.fn((sink: (...args: unknown[]) => unknown) => {
       events.mockImplementation(sink);
     }),
   } as unknown as NapiBackendLike & { identity: string };
-  return { backend, dbExecute, events };
+  return { backend, dbExecute, events, sendAgentMessage };
 }
 
 describe("product journey AI backend", () => {
@@ -73,6 +77,67 @@ describe("product journey AI backend", () => {
       ).blocks[0].content,
     ).toBe("Product Journey");
   });
+
+  it.each([
+    [
+      "project",
+      "AGENT-PROJECT-SWITCH-PROMPT",
+      PRODUCT_JOURNEY_AGENT_PROJECT_SWITCH_OUTPUT,
+    ],
+    [
+      "workspace",
+      "AGENT-WORKSPACE-SWITCH-PROMPT",
+      PRODUCT_JOURNEY_AGENT_WORKSPACE_SWITCH_OUTPUT,
+    ],
+  ])(
+    "delays the deterministic Agent %s-switch response",
+    async (_scope, prompt, output) => {
+      vi.useFakeTimers();
+      try {
+        const { backend, sendAgentMessage } = backendStub();
+        const wrapped = wrapBackendForProductJourneyAi(backend, true)!;
+        const [model] = JSON.parse(
+          await wrapped.listAiModels!({}, {}, ""),
+        ) as Array<{ id: string; supportedParameters: string[] }>;
+        expect(model).toMatchObject({
+          id: "product-journey-model",
+          supportedParameters: ["tools"],
+        });
+        let settled = false;
+        const response = wrapped.sendAgentMessage!(
+          {
+            messages: [
+              {
+                role: "user",
+                content: prompt,
+              },
+            ],
+          },
+          {},
+          "",
+        ).then((wire) => {
+          settled = true;
+          return JSON.parse(wire);
+        });
+
+        await vi.advanceTimersByTimeAsync(3_999);
+        expect(settled).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await expect(response).resolves.toMatchObject({
+          blocks: [
+            {
+              type: "text",
+              content: output,
+            },
+          ],
+          stopReason: "end_turn",
+        });
+        expect(sendAgentMessage).not.toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("is limited to an exact non-packaged runner environment", () => {
     expect(

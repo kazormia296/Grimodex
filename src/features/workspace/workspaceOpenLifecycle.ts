@@ -17,6 +17,7 @@ import {
   getCurrentImeWorkspaceIdentity,
   setCurrentImeWorkspaceIdentity,
 } from "@/features/ime/workspaceScope";
+import { setImeExportRefreshPaused } from "@/features/ime/scheduler";
 import { flushStrictQuiescence } from "@/application/lifecycle/quiescenceCoordinator";
 import { type QuiescenceLease } from "@/application/lifecycle/quiescenceLease";
 import { guardInlineAiPending } from "@/features/editor/inlineAi/pendingGuard";
@@ -114,6 +115,11 @@ export function createWorkspaceOpenHandler(
           ),
         },
       );
+      // The hook observes this state in a passive effect, too late to prevent
+      // a write completion between cancellation and that effect from queuing
+      // another old-scope IME refresh. Close scheduler admission synchronously
+      // before canceling timers or publishing the transition.
+      setImeExportRefreshPaused(true);
       // Debounced snapshot writes carry the old Project id. Stop them before
       // any await so they cannot wake up against the replacement database.
       cancelWorkspaceScopedSchedules();
@@ -440,6 +446,9 @@ export function createWorkspaceOpenHandler(
         get().workspaceLifecycleStatus !== "transition"
       ) {
         set({ workspaceSwitchInProgress: false });
+      }
+      if (!get().workspaceSwitchInProgress) {
+        setImeExportRefreshPaused(false);
       }
       openWorkspaceInFlight = false;
     }

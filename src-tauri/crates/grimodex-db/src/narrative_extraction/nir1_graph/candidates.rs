@@ -368,6 +368,10 @@ pub(super) fn verify_complete_source_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grimodex_core::narrative_nir1::{
+        validate_entity_relation_bundle, EntityInput, EntityRelationBundle, EvidenceInput,
+        ScopeBinding, ScopeValue,
+    };
 
     fn fixture() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -379,6 +383,99 @@ mod tests {
                 ON narrative_dependency_edges(project_id, source_object_identity);",
         )
         .unwrap();
+        conn
+    }
+
+    fn source_index_fixture() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE narrative_dependency_edges (
+                project_id TEXT, source_object_identity TEXT, consumer_kind TEXT, consumer_key TEXT);
+             CREATE TABLE narrative_proposal_revisions (
+                id TEXT, proposal_id TEXT, origin_kind TEXT, payload_json TEXT);
+             CREATE TABLE narrative_proposals (
+                id TEXT, proposal_set_id TEXT, status TEXT, current_revision_id TEXT, kind TEXT);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT, run_id TEXT, project_id TEXT, set_kind TEXT);
+             CREATE TABLE narrative_extraction_runs (
+                id TEXT, project_id TEXT, surface_path_id TEXT);",
+        )
+        .unwrap();
+        let bundle = EntityRelationBundle {
+            project_id: "project".into(),
+            revision_id: "revision".into(),
+            producer: ENTITY_RELATION_PRODUCER.into(),
+            entities: vec![EntityInput {
+                entity_id: "entity".into(),
+                entity_type: "character".into(),
+                label: "Entity".into(),
+                source_token: "v1:entity".into(),
+                scope: ScopeBinding {
+                    reading: ScopeValue::Exact {
+                        value: "scene:s1".into(),
+                    },
+                    story: ScopeValue::NotApplicable {
+                        reason: "reader-reference-purpose".into(),
+                    },
+                    auto: ScopeValue::NotApplicable {
+                        reason: "reader-reference-purpose".into(),
+                    },
+                    phase: "draft".into(),
+                    reveal: "reader".into(),
+                    pov: None,
+                    authority_revision:
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                            .into(),
+                },
+                evidence: vec![EvidenceInput {
+                    evidence_id: "evidence:entity".into(),
+                    source_ref: "scene:s1".into(),
+                    quote: "Entity appears".into(),
+                    start_utf16: 0,
+                    end_utf16: 14,
+                }],
+            }],
+            relations: vec![],
+        };
+        validate_entity_relation_bundle(&bundle).expect("typed fixture bundle must be valid");
+        let payload = serde_json::json!({
+            "schemaVersion": 1,
+            "kind": NIR1_ENTITY_RELATION_PROPOSAL_KIND,
+            "producer": ENTITY_RELATION_PRODUCER,
+            "projectId": "project",
+            "revisionId": "revision",
+            "bundle": bundle,
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs VALUES ('run','project',?1)",
+            [NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO narrative_proposal_sets VALUES ('set','run','project',?1)",
+            [NIR1_ENTITY_RELATION_SET_KIND],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO narrative_proposals VALUES (
+                'proposal','set','approved','revision',?1
+            )",
+            [NIR1_ENTITY_RELATION_PROPOSAL_KIND],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO narrative_proposal_revisions VALUES ('revision','proposal',?1,?2)",
+            params![NIR1_ENTITY_RELATION_REVISION_ORIGIN, payload],
+        )
+        .unwrap();
+        insert(
+            &conn,
+            "project",
+            "codex:entity",
+            "proposal-revision",
+            "revision",
+        );
         conn
     }
 
@@ -423,6 +520,113 @@ mod tests {
             "{plan}"
         );
         assert!(!plan.contains("TEMP B-TREE"), "{plan}");
+    }
+
+    #[test]
+    fn complete_source_index_requires_one_proposal_revision_edge_per_entity() {
+        let conn = source_index_fixture();
+        let mut control =
+            crate::narrative_extraction::nir1_entity_relation_index::NeverStopGraphWorkControl;
+
+        assert!(verify_complete_source_index(&conn, "project", &mut control).unwrap());
+
+        conn.execute(
+            "DELETE FROM narrative_dependency_edges
+              WHERE project_id='project' AND source_object_identity='codex:entity'
+                AND consumer_kind='proposal-revision' AND consumer_key='revision'",
+            [],
+        )
+        .unwrap();
+        assert!(!verify_complete_source_index(&conn, "project", &mut control).unwrap());
+
+        insert(
+            &conn,
+            "project",
+            "codex:entity",
+            "proposal-revision",
+            "revision",
+        );
+        assert!(verify_complete_source_index(&conn, "project", &mut control).unwrap());
+        insert(
+            &conn,
+            "project",
+            "codex:entity",
+            "proposal-revision",
+            "revision",
+        );
+        assert!(!verify_complete_source_index(&conn, "project", &mut control).unwrap());
+    }
+
+    #[test]
+    fn complete_source_index_rejects_unexpected_proposal_revision_edges() {
+        let conn = source_index_fixture();
+        let mut control =
+            crate::narrative_extraction::nir1_entity_relation_index::NeverStopGraphWorkControl;
+
+        assert!(verify_complete_source_index(&conn, "project", &mut control).unwrap());
+        insert(
+            &conn,
+            "other-project",
+            "codex:unlisted",
+            "proposal-revision",
+            "revision",
+        );
+        insert(
+            &conn,
+            "project",
+            "codex:unlisted",
+            "other-consumer",
+            "revision",
+        );
+        assert!(verify_complete_source_index(&conn, "project", &mut control).unwrap());
+
+        insert(
+            &conn,
+            "project",
+            "codex:unlisted",
+            "proposal-revision",
+            "revision",
+        );
+        assert!(!verify_complete_source_index(&conn, "project", &mut control).unwrap());
+    }
+
+    #[test]
+    fn complete_source_index_rejects_malformed_revision_payloads() {
+        let conn = source_index_fixture();
+        let mut control =
+            crate::narrative_extraction::nir1_entity_relation_index::NeverStopGraphWorkControl;
+        let valid_payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM narrative_proposal_revisions WHERE id='revision'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(verify_complete_source_index(&conn, "project", &mut control).unwrap());
+
+        conn.execute(
+            "UPDATE narrative_proposal_revisions SET payload_json='{' WHERE id='revision'",
+            [],
+        )
+        .unwrap();
+        assert!(!verify_complete_source_index(&conn, "project", &mut control).unwrap());
+
+        conn.execute(
+            "UPDATE narrative_proposal_revisions SET payload_json=?1 WHERE id='revision'",
+            [&valid_payload],
+        )
+        .unwrap();
+        assert!(verify_complete_source_index(&conn, "project", &mut control).unwrap());
+
+        let mut blank_entity_id: serde_json::Value = serde_json::from_str(&valid_payload).unwrap();
+        blank_entity_id["bundle"]["entities"][0]["entityId"] = String::new().into();
+        conn.execute(
+            "UPDATE narrative_proposal_revisions SET payload_json=?1 WHERE id='revision'",
+            [blank_entity_id.to_string()],
+        )
+        .unwrap();
+        assert!(!verify_complete_source_index(&conn, "project", &mut control).unwrap());
     }
 
     #[test]

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import childProcess, { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import fs, { existsSync, readFileSync } from "node:fs";
+import { once } from "node:events";
+import { get } from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import {
   access,
   chmod,
@@ -24,6 +27,10 @@ import { promisify } from "node:util";
 import yaml from "js-yaml";
 
 import { runLocalCiTasks } from "./local-ci-runner.mjs";
+import {
+  closeMockServer,
+  startMockServer,
+} from "../electron/native/grimodex-node/test/mock-http.mjs";
 
 import {
   PRODUCT_JOURNEY_CATALOG,
@@ -31,6 +38,7 @@ import {
 } from "../electron/scripts/product-journey-catalog.mjs";
 
 import {
+  assertOutsideRepository,
   buildLocalCiPlan,
   captureC2ZcRestoreFixtureEvidence,
   collectProductJourneyEvidence,
@@ -276,15 +284,275 @@ function passedStagesForPlan(plan) {
   }));
 }
 
+test("native test bootstrap keeps exhausted cleanup strict without spawning a worker", async () => {
+  const originalRmSync = fs.rmSync;
+  const originalMkdtempSync = fs.mkdtempSync;
+  const originalSpawn = childProcess.spawn;
+  const calls = [];
+  let removalError;
+  let spawnCalls = 0;
+  let root;
+  fs.rmSync = (...args) => {
+    calls.push(args);
+    if (removalError) throw removalError;
+    return "removed";
+  };
+  childProcess.spawn = () => {
+    spawnCalls += 1;
+    assert.fail("fixture cleanup must not start a child");
+  };
+  syncBuiltinESMExports();
+  try {
+    await import("../electron/native/grimodex-node/test/test-bootstrap.mjs");
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "grimodex-bootstrap-"));
+    const { rmSync } = await import("node:fs");
+    const recursive = { recursive: true, force: true };
+    assert.equal(rmSync(root, recursive), "removed");
+    assert.deepEqual(calls.at(-1), [root, {
+      maxRetries: 20, retryDelay: 50, ...recursive,
+    }]);
+    for (const code of ["EBUSY", "EMFILE", "ENFILE", "ENOTEMPTY", "EPERM", "EACCES"]) {
+      removalError = Object.assign(new Error("synthetic removal failure"), { code });
+      for (const target of [root, path.join(root, "nested"), "unregistered-root"]) {
+        assert.throws(() => rmSync(target, recursive), (error) => error === removalError);
+      }
+    }
+    removalError = undefined;
+    const override = { ...recursive, maxRetries: 0, retryDelay: 1 };
+    assert.equal(rmSync(root, override), "removed");
+    assert.deepEqual(calls.at(-1), [root, override]);
+    const nonrecursive = { force: true };
+    assert.equal(rmSync(root, nonrecursive), "removed");
+    assert.equal(calls.at(-1)[1], nonrecursive);
+    removalError = new Error("synthetic nonrecursive failure");
+    assert.throws(() => rmSync(root), (error) => error === removalError);
+    assert.equal(calls.at(-1)[1], undefined);
+    assert.equal(spawnCalls, 0);
+  } finally {
+    fs.rmSync = originalRmSync;
+    fs.mkdtempSync = originalMkdtempSync;
+    childProcess.spawn = originalSpawn;
+    syncBuiltinESMExports();
+    if (root) originalRmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("native chat mock reports bind failure without closing its existing owner", async () => {
+  const controller = new AbortController();
+  const { server } = await startMockServer((_req, res) => res.end(), {
+    signal: controller.signal,
+  });
+  try {
+    const { port } = server.address();
+    await assert.rejects(startMockServer((_req, res) => res.end(), { port }), {
+      code: "EADDRINUSE",
+    });
+    controller.abort();
+    assert.equal(server.listening, true, "startup cancellation detaches after readiness");
+  } finally {
+    await closeMockServer(server);
+  }
+  assert.equal(server.listening, false);
+});
+
+test("native chat mock drains pre-aborted and pending startup before port reuse", async () => {
+  const handler = (_req, res) => res.end();
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(startMockServer(handler, { signal: preAborted.signal }), {
+    name: "AbortError",
+  });
+  const { server } = await startMockServer(handler);
+  const { port } = server.address();
+  await closeMockServer(server);
+  const pendingAbort = new AbortController();
+  const pending = startMockServer(handler, { port, signal: pendingAbort.signal });
+  pendingAbort.abort();
+  await assert.rejects(pending, { name: "AbortError" });
+  const replacement = await startMockServer(handler, { port });
+  await closeMockServer(replacement.server);
+  assert.equal(replacement.server.listening, false);
+});
+
+test("native chat mock awaits listener and unfinished HTTP connection close", async () => {
+  const { server, baseUrl } = await startMockServer((_req, res) => {
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    res.write("data: first\n\n");
+    // Deliberately leave the response unfinished, as in the Native abort fixture.
+  });
+  let request;
+  try {
+    request = get(baseUrl);
+    const [response] = await once(request, "response", {
+      signal: AbortSignal.timeout(5000),
+    });
+    let responseError;
+    response.on("error", (error) => { responseError = error; });
+    const closed = new Promise((resolve) => response.once("close", resolve));
+    await closeMockServer(server);
+    await closed;
+    assert.equal(server.listening, false);
+    assert.equal(response.destroyed, true);
+    assert.equal(response.complete, false);
+    if (responseError) assert.equal(responseError.code, "ECONNRESET");
+  } finally {
+    request?.destroy();
+    await closeMockServer(server);
+  }
+});
+
+test("native HTTP fixtures share startup and close ownership without losing stream failures", async () => {
+  for (const file of ["ai-batch3b", "post-effect-run"]) {
+    const source = await read(`electron/native/grimodex-node/test/${file}.test.mjs`);
+    assert.ok(source.includes('import { closeMockServer as closeServer, startMockServer } from "./mock-http.mjs";'));
+    assert.equal(source.includes("function startMockServer("), false);
+    assert.equal(source.includes("function closeServer("), false);
+    assert.equal(source.includes("createServer"), false);
+  }
+  const inline = await read("electron/native/grimodex-node/test/ai-batch3b.test.mjs");
+  assert.equal(inline.includes("bothStarted"), false);
+  assert.match(inline, /await waitForEvent\(events, "chat:stream-chunk"\);\s*await waitForEvent\(events, "inline-ai:stream-chunk"\);/);
+  assert.match(inline, /await closeServer\(server\);\s*} finally {\s*await Promise\.all\(streams\);\s*if \(streamFailure\) throw streamFailure\.error;/);
+  const paired = await read("electron/native/grimodex-node/test/post-effect-run.test.mjs");
+  assert.match(paired, /try {\s*\/\/[^\n]*\n\s*roleMock = await startMockServer/);
+  assert.match(paired, /if \(roleMock\) await closeServer\(roleMock\.server\);\s*} finally {\s*await closeServer\(defaultMock\.server\);/);
+});
+
+// Exercise the same sequential owner boundary without loading the native module.
+test("native paired mocks drain the first listener when the second startup fails", async () => {
+  const first = await startMockServer((_req, res) => res.end());
+  const { port } = first.server.address();
+  let second;
+  await assert.rejects(async () => {
+    try {
+      second = await startMockServer((_req, res) => res.end(), { port });
+    } finally {
+      try {
+        if (second) await closeMockServer(second.server);
+      } finally {
+        await closeMockServer(first.server);
+      }
+    }
+  }, { code: "EADDRINUSE" });
+  assert.equal(first.server.listening, false);
+});
+
+// Keep the intentionally pinned close-failure case last among real mock starts.
+test("native chat mock retains a failed close and refuses replacement startup", async () => {
+  const error = new Error("synthetic close failure");
+  const owner = {
+    close: (callback) => queueMicrotask(() => callback(error)),
+    closeAllConnections: () => {},
+  };
+  await assert.rejects(closeMockServer(owner), (actual) => actual === error);
+  await assert.rejects(startMockServer(() => {}), (actual) => actual === error);
+});
+
 test("local CI registry accounts for every hosted Full CI job", async () => {
   const registry = await readRegistry();
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
 
   validateLocalCiRegistry(registry);
-  assert.deepEqual(
-    Object.keys(registry.hostedJobs).sort(),
-    Object.keys(workflow.jobs).sort(),
+  // The adapter reuses these profiles; the OS owner is separately opt-in, not Full.
+  assert.equal(workflow.jobs.canonical.uses, "./.github/workflows/canonical-ci.yml");
+  assert.equal(
+    workflow.jobs["existing-os-suitability"].if,
+    "${{ startsWith(inputs.canonical_profile, 'os-') }}",
   );
+  assert.equal(workflow.on.workflow_dispatch.inputs.canonical_profile.default, "");
+  assert.equal(workflow.on.workflow_call.inputs.canonical_profile, undefined);
+  assert.equal(Object.hasOwn(registry.hostedJobs, "existing-os-suitability"), false);
+  assert.equal(Object.hasOwn(registry.stages, "existing-os-suitability"), false);
+  assert.equal(registry.profiles.full.includes("existing-os-suitability"), false);
+  const ordinaryJobs = Object.keys(workflow.jobs).filter(
+    (id) => id !== "canonical" && id !== "existing-os-suitability",
+  );
+  assert.equal(ordinaryJobs.length, 15);
+  assert.deepEqual(Object.keys(registry.hostedJobs).sort(), ordinaryJobs.sort());
+
+  const workerScript = "scripts/nir1-c-query-worker-ci.sh";
+  const allocatorTest =
+    "q_s_origins_no_fallback_failed_realloc_and_zero_live_seal";
+  const workerScriptBody = await read(workerScript);
+  const allocatorSource = await read(
+    "src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs",
+  );
+  assert.ok(
+    workerScriptBody.includes(`--bin nir1-c-query-worker ${allocatorTest}`),
+  );
+  assert.match(allocatorSource, new RegExp(`fn ${allocatorTest}\\(`));
+  assert.ok(
+    workerScriptBody.includes(
+      '"id":"Q512/R2/A3-eligible-shared","qualifiedMaterials":140,"qualifiedRevisions":1,"ineligibleCandidates":0',
+    ),
+  );
+  assert.ok(
+    workerScriptBody.includes(
+      'fixture "$manifest_path" Q512/R2/A3-eligible-shared "$q512_fixture_builder_path"',
+    ),
+  );
+  const q512Test =
+    "native_worker_returns_canonical_512_a3_eligible_seed_local_graph";
+  const q513Test =
+    "native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge";
+  // Practical invokes Q512 earlier on a different copy; check DEFAULT ordering.
+  const defaultWorkerScriptBody = workerScriptBody.match(
+    /^q2_fixture_checksum=[\s\S]*$/m,
+  )?.[0];
+  assert.ok(defaultWorkerScriptBody, "worker gate omits the default branch");
+  for (const testName of [q512Test, q513Test]) {
+    assert.ok(
+      defaultWorkerScriptBody.includes(testName),
+      `worker gate omits ${testName}`,
+    );
+  }
+  assert.ok(
+    defaultWorkerScriptBody.includes(
+      'NIR1_Q2_FIXTURE_PATH="$q512_worker_fixture_path"',
+    ) &&
+      defaultWorkerScriptBody.indexOf(
+        'NIR1_Q2_FIXTURE_PATH="$q512_worker_fixture_path"',
+      ) < defaultWorkerScriptBody.indexOf(q512Test),
+    "Q512 Gold test must use its private copy of the canonical fixture",
+  );
+  assert.ok(
+    defaultWorkerScriptBody.includes(
+      'NIR1_Q2_FIXTURE_PATH="$q513_worker_fixture_path"',
+    ) &&
+      defaultWorkerScriptBody.indexOf(
+        'NIR1_Q2_FIXTURE_PATH="$q513_worker_fixture_path"',
+      ) < defaultWorkerScriptBody.indexOf(q513Test),
+    "Q513 test must use a separate disposable copy",
+  );
+  assert.ok(
+    workerScriptBody.includes(
+      'cp -- "$q512_fixture_file" "$q512_test_fixture_file"',
+    ),
+  );
+  assert.ok(
+    workerScriptBody.includes(
+      'cp -- "$q512_fixture_file" "$q513_test_fixture_file"',
+    ),
+  );
+  assert.ok(workerScriptBody.includes("-wal -shm -journal"));
+  assert.equal(
+    (workerScriptBody.match(/^assert_q512_source_unchanged$/gm) ?? []).length,
+    2,
+  );
+  assert.ok(workerScriptBody.includes("trap cleanup_fixture EXIT"));
+  assert.ok(workerScriptBody.includes('rm -rf -- "$fixture_dir"'));
+  const workerStep = workflow.jobs["nir1-c-query-worker"].steps.find(
+    ({ name }) =>
+      name ===
+      "Build private Q2/Q512 fixtures and run focused real-worker tests",
+  );
+  const workerTask = registry.stages.rust.commands.find(
+    ({ id }) => id === "rust.c-query-worker",
+  );
+  assert.equal(workerStep.shell, "bash");
+  assert.equal(workerStep.run, `bash ${workerScript}`);
+  assert.equal(workerTask.command, "bash");
+  assert.deepEqual(workerTask.args, [workerScript]);
 
   for (const [jobId, coverage] of Object.entries(registry.hostedJobs)) {
     if (coverage.releaseOnly) {
@@ -606,6 +874,25 @@ test("local Full orders the candidate-bound Rust gate before Electron journeys a
   assert.equal(
     C2ZC_RUST_ACCEPTANCE_GATES[2].contract.proof,
     "direct persisted Rebuild evidence corruption blocks readiness",
+  );
+});
+
+test("C2-ZC fixture output boundary accepts external paths and rejects repository paths", () => {
+  const temporaryRoot = path.resolve(os.tmpdir(), "grimodex-c2zc-boundary");
+  const repository = path.join(temporaryRoot, "repository");
+  const external = path.join(temporaryRoot, "runner-temp");
+
+  assert.doesNotThrow(() =>
+    assertOutsideRepository(repository, external, "C2-ZC fixture output"),
+  );
+  assert.throws(
+    () =>
+      assertOutsideRepository(
+        repository,
+        path.join(repository, "fixture"),
+        "C2-ZC fixture output",
+      ),
+    /must be outside the candidate repository/u,
   );
 });
 
@@ -3926,6 +4213,7 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
     plan.stages.find(({ id }) => id === "rust").commands.map(({ id }) => id),
     [
       "rust.supervisor-failpoints",
+      "rust.c-query-worker",
       "rust.tests-db-integrations",
       "rust.tests-db-lib",
       "rust.tests-db-nir1-capacity",
@@ -3939,6 +4227,18 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "rust.license",
     ],
   );
+  const cQueryWorkerTask = tasksById.get("rust.c-query-worker");
+  assert.equal(cQueryWorkerTask.command.command, "bash");
+  assert.deepEqual(cQueryWorkerTask.command.args, [
+    "scripts/nir1-c-query-worker-ci.sh",
+  ]);
+  assert.equal(cQueryWorkerTask.command.cwd, ".");
+  assert.deepEqual(cQueryWorkerTask.after, ["bootstrap.install"]);
+  assert.equal(cQueryWorkerTask.lane, "cargo-shared");
+  assert.equal(cQueryWorkerTask.slots, 2);
+  assert.equal(cQueryWorkerTask.timeoutMs, 2700000);
+  assert.equal(cQueryWorkerTask.command.env.CARGO_BUILD_JOBS, "2");
+  assert.deepEqual(cQueryWorkerTask.obligations, []);
   assert.deepEqual(
     plan.stages
       .find(({ id }) => id === "frontend")
@@ -4019,8 +4319,8 @@ test("Full task plan preserves obligations across Cargo-native Rust shards", asy
       "journeys.run",
     ],
   );
-  assert.equal(plan.tasks.length, 67);
-  assert.equal(tasksById.size, 67);
+  assert.equal(plan.tasks.length, 68);
+  assert.equal(tasksById.size, 68);
   assert.equal(obligations.length, 52);
   assert.equal(new Set(obligations).size, 52);
   assert.equal(
@@ -5269,4 +5569,133 @@ test("AI workflow authorities require local Quick and complete Full evidence", a
   assert.match(bumpVersion, /release commit/);
   assert.match(policy, /clean candidate run local Quick.*immediately verified/s);
   assert.match(policy, /Partial `--from` runs.*never\s+converted into merge or release passes/s);
+});
+
+// Split canonical Full: parts on separate hosted VMs, one aggregate receipt.
+const fullParts = await import("./local-ci-full-parts.mjs");
+
+async function splitFullPlan() {
+  const registry = JSON.parse(await fs.promises.readFile(path.join(repoRoot, "scripts/local-ci-registry.json"), "utf8"));
+  const config = JSON.parse(await fs.promises.readFile(path.join(repoRoot, fullParts.FULL_PARTS_PATH), "utf8"));
+  const plan = buildLocalCiPlan(registry, { profile: "full", base: "a".repeat(40), head: "b".repeat(40), maxParallelTasks: 1 });
+  return { config, plan };
+}
+
+test("split Full parts partition every task once and keep the private gate with all journeys", async () => {
+  const { config, plan } = await splitFullPlan();
+  const { owner, privateGatePart } = fullParts.validateFullParts(config, plan);
+  assert.equal(privateGatePart, "journeys");
+  assert.equal(owner.size, plan.tasks.length);
+  for (const { id } of plan.tasks) if (/^(journeys|c2zc)\./u.test(id)) assert.equal(owner.get(id), "journeys", id);
+  const reject = (mutate, pattern) => {
+    const changed = structuredClone(config);
+    mutate(changed);
+    assert.throws(() => fullParts.validateFullParts(changed, plan), pattern);
+  };
+  reject((c) => c.parts[0].owned.pop(), /not owned by any part/u);
+  reject((c) => c.parts[1].owned.push(c.parts[0].owned[0]), /more than one part/u);
+  reject((c) => c.parts[1].support.push(c.parts[1].owned[0]), /distinct task owned elsewhere/u);
+  reject((c) => { c.parts[0].owned.push("journeys.run"); c.parts[2].owned = c.parts[2].owned.filter((id) => id !== "journeys.run"); }, /share the private-gate part/u);
+  reject((c) => { c.parts[1].id = c.parts[0].id; }, /unique/u);
+  reject((c) => { c.version = "local-ci-full-parts/0"; }, /local-ci-full-parts\/1/u);
+});
+
+test("a split Full part schedules owned and support tasks and drops ordering-only dependencies", async () => {
+  const { config, plan } = await splitFullPlan();
+  const { tasks, owned, support } = fullParts.buildFullPartTasks(plan, config, "journeys");
+  const ids = new Set(tasks.map(({ id }) => id));
+  assert.deepEqual([...ids].sort(), [...owned, ...support].sort());
+  const shard = tasks.find(({ id }) => id === "journeys.shard-1");
+  assert.ok(shard.after.includes("journeys.mcp-build") && shard.after.includes("c2zc.fixture-verify"));
+  assert.ok(!shard.after.includes("webgl.tests") && !shard.after.includes("native.public-tests"), "ordering-only edges are verified by the aggregate");
+  for (const task of tasks) for (const dependency of task.after) assert.ok(ids.has(dependency), `${task.id} -> ${dependency}`);
+  assert.throws(() => fullParts.buildFullPartTasks(plan, config, "missing"), /Unknown Full part/u);
+});
+
+test("split Full shares one deterministic UUIDv4 per hosted workflow attempt", () => {
+  const env = { RUNNER_ENVIRONMENT: "github-hosted", GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "1", GITHUB_REPOSITORY: "owner/repo" };
+  const runId = fullParts.canonicalGithubRunId(env);
+  assert.match(runId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
+  assert.equal(fullParts.canonicalGithubRunId({ ...env }), runId);
+  assert.notEqual(fullParts.canonicalGithubRunId({ ...env, GITHUB_RUN_ATTEMPT: "2" }), runId);
+  for (const change of [{ RUNNER_ENVIRONMENT: "self-hosted" }, { GITHUB_RUN_ID: "" }, { GITHUB_RUN_ATTEMPT: "0" }]) {
+    assert.throws(() => fullParts.canonicalGithubRunId({ ...env, ...change }), /GitHub-hosted/u);
+  }
+});
+
+test("split Full aggregate binds every part to one candidate, plan and run in plan order", async () => {
+  const { config, plan } = await splitFullPlan();
+  const planDescriptor = createLocalCiPlanDescriptor(plan);
+  const runId = fullParts.canonicalGithubRunId({ RUNNER_ENVIRONMENT: "github-hosted", GITHUB_RUN_ID: "9", GITHUB_RUN_ATTEMPT: "1" });
+  const candidate = { requestedBase: "a".repeat(40), requestedHead: "b".repeat(40), resolvedBaseSha: "a".repeat(40), resolvedHeadSha: "b".repeat(40),
+    resolvedHeadTreeSha: "c".repeat(40), currentHeadSha: "b".repeat(40), worktreeClean: true, worktreeFingerprint: "f", worktreeStatusHash: "s" };
+  const digest = (value) => `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
+  const { owner, privateGatePart } = fullParts.validateFullParts(config, plan);
+  const makeReports = () => new Map(config.parts.map((part, index) => {
+    const ids = plan.tasks.filter(({ id }) => owner.get(id) === part.id).map(({ id }) => id);
+    return [part.id, {
+      version: fullParts.FULL_PART_REPORT_VERSION, part: part.id, partsDigest: fullParts.fullPartsDigest(config),
+      registryDigest: plan.registryDigest, planDigest: digest(planDescriptor), runId, status: "passed", candidate, candidateAfter: candidate,
+      startedAt: new Date(1_000 + index).toISOString(), finishedAt: new Date(5_000 + index).toISOString(),
+      tasks: ids.map((id) => ({ id, status: "passed", durationMs: 1 })),
+      commands: Object.fromEntries(ids.map((id) => [id, { id, label: id }])),
+      ...(part.id === privateGatePart ? { fullResourceAdmission: { state: "private-accepted" }, productJourneyEvidence: { journeys: true }, c2zcRestoreFixture: { fixture: true } } : {}),
+    }];
+  }));
+  const assembled = fullParts.assembleFullFromParts({ plan, config, reports: makeReports(), candidate, runId, planDescriptor });
+  assert.deepEqual(assembled.tasks.map(({ id }) => id), plan.tasks.map(({ id }) => id));
+  assert.deepEqual(assembled.stages.map(({ id }) => id), plan.stages.map(({ id }) => id));
+  assert.ok(assembled.stages.every(({ status }) => status === "passed"));
+  assert.deepEqual(assembled.fullResourceAdmission, { state: "private-accepted" });
+  assert.equal(assembled.executionDurationMs, 5_000 + config.parts.length - 1 - 1_000);
+  const reject = (mutate, pattern) => {
+    const reports = makeReports();
+    mutate(reports);
+    assert.throws(() => fullParts.assembleFullFromParts({ plan, config, reports, candidate, runId, planDescriptor }), pattern);
+  };
+  reject((r) => r.delete("rust"), /missing, failed or bound/u);
+  reject((r) => { r.get("rust").status = "failed"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("rust").runId = randomUUID(); }, /missing, failed or bound/u);
+  reject((r) => { r.get("rust").planDigest = "sha256:other"; }, /missing, failed or bound/u);
+  reject((r) => { r.get("native").candidateAfter = { ...candidate, worktreeClean: false }; }, /worktreeClean/u);
+  reject((r) => { r.get("frontend").tasks.pop(); }, /exactly its owned tasks/u);
+  reject((r) => { r.get("frontend").tasks.push({ id: "journeys.run", status: "passed" }); }, /exactly its owned tasks/u);
+  reject((r) => { r.get("rust").fullResourceAdmission = { state: "private-accepted" }; }, /private-gate or journey evidence/u);
+});
+
+test("split Full staged artifacts compare bare host and prefixed evidence digests", async () => {
+  const { stagedArtifactMatches } = await import("./local-ci.mjs");
+  const hex = "a".repeat(64);
+  const current = { size: 7, sha256: `sha256:${hex}` };
+  assert.equal(stagedArtifactMatches(current, { path: "decision.json", sha256: hex }), true);
+  assert.equal(stagedArtifactMatches(current, { path: "outcome.json", size: 7, sha256: `sha256:${hex}` }), true);
+  assert.equal(stagedArtifactMatches(current, { size: 8, sha256: hex }), false);
+  assert.equal(stagedArtifactMatches(current, { sha256: "b".repeat(64) }), false);
+  assert.equal(stagedArtifactMatches(current, { sha256: "sha256:" }), false);
+  assert.equal(stagedArtifactMatches({ size: 7, sha256: undefined }, {}), false);
+});
+
+test("split Full CLI roles and hosted aggregate job keep one tuple and the unchanged verify", async () => {
+  assert.equal(parseLocalCiArgs(["full", "--part", "rust"]).part, "rust");
+  assert.equal(parseLocalCiArgs(["full", "--aggregate"]).aggregate, true);
+  assert.equal(parseLocalCiArgs(["full"]).part, undefined);
+  const workflow = yaml.load(await fs.promises.readFile(path.join(repoRoot, ".github/workflows/canonical-ci.yml"), "utf8"));
+  const { config } = await splitFullPlan();
+  assert.equal(workflow.jobs.canonical.strategy["fail-fast"], false);
+  assert.ok(workflow.jobs.canonical.strategy.matrix.part.includes(JSON.stringify(config.parts.map(({ id }) => id))),
+    "workflow part list equals the reviewed partition");
+  const aggregate = workflow.jobs["full-aggregate"];
+  assert.equal(aggregate.if, "inputs.profile == 'full'");
+  assert.equal(aggregate.needs, "canonical");
+  assert.equal(aggregate["runs-on"], "ubuntu-24.04");
+  const download = aggregate.steps.find(({ uses }) => uses?.startsWith("actions/download-artifact@"));
+  assert.deepEqual(download.with, { pattern: "canonical-full-part-*-${{ github.run_id }}-${{ github.run_attempt }}", path: ".artifacts", "merge-multiple": true });
+  const run = aggregate.steps.find(({ id }) => id === "aggregate").run;
+  const tuple = '--base "$candidate_base" --head "$candidate_head" --max-parallel-tasks "$MAX_PARALLEL_TASKS"';
+  assert.ok(run.indexOf("git merge-base --is-ancestor") < run.indexOf(`pnpm ci:local:full -- --aggregate ${tuple}`));
+  assert.ok(run.indexOf(`pnpm ci:local:full -- --aggregate ${tuple}`) < run.indexOf(`pnpm ci:local:verify -- full ${tuple}`));
+  assert.match(run, /git status --porcelain --untracked-files=all/u);
+  const upload = workflow.jobs.canonical.steps.find(({ name }) => name === "Upload Full part evidence");
+  assert.match(upload.with.path, /\.artifacts\/\.canonical-full-part-\$\{\{ matrix\.part \}\}/u);
+  assert.match(upload.with.path, /matrix\.part == 'journeys' && '\.artifacts\/local-ci\/full-admission\/\*-host\/decision\.json'/u);
 });

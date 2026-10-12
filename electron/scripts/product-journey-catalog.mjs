@@ -163,6 +163,33 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     capabilities: ["electron", "napi"],
   },
   {
+    id: "chat-stream-folder-switch",
+    domains: ["chat", "scene-scope"],
+    interactions: ["scene-scope->chat", "chat->sqlite"],
+    contracts: ["scope-transition:chat-stream:folder"],
+    capabilities: ["electron", "napi"],
+    description:
+      "real folder picker -> pending regular chat stream -> captured folder session and correlated terminal audit persist without new-folder leakage",
+  },
+  {
+    id: "chat-stream-snippet-switch",
+    domains: ["chat", "snippet"],
+    interactions: ["snippet->chat", "chat->sqlite"],
+    contracts: ["scope-transition:chat-stream:snippet"],
+    capabilities: ["electron", "napi"],
+    description:
+      "real snippet picker -> pending regular chat stream -> captured snippet session and correlated terminal audit persist without new-snippet leakage",
+  },
+  {
+    id: "chat-stream-codex-switch",
+    domains: ["chat", "codex"],
+    interactions: ["codex->chat", "chat->sqlite"],
+    contracts: ["scope-transition:chat-stream:codex"],
+    capabilities: ["electron", "napi"],
+    description:
+      "real Codex picker -> pending regular chat stream -> Codex A transcript, prompt and audit ownership persist without Codex B leakage",
+  },
+  {
     id: "workspace-switch-authority",
     domains: ["workspace-lifecycle", "editor", "scene-persistence"],
     interactions: [
@@ -218,17 +245,19 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     capabilities: ["electron", "napi"],
   },
   {
-    id: "chat-stream-workspace-switch",
-    domains: ["chat", "workspace-lifecycle"],
-    interactions: ["workspace-lifecycle->chat"],
-    contracts: ["scope-transition:chat-stream:workspace"],
-    capabilities: ["electron", "napi"],
-  },
-  {
     id: "agent-stream-project-switch",
     domains: ["chat", "project-lifecycle"],
     interactions: ["project-lifecycle->chat"],
     contracts: ["scope-transition:agent-stream:project"],
+    capabilities: ["electron", "napi"],
+    description:
+      "Agent-mode send_agent_message -> strict project quiescence -> old-project transcript/audit persistence",
+  },
+  {
+    id: "chat-stream-workspace-switch",
+    domains: ["chat", "workspace-lifecycle"],
+    interactions: ["workspace-lifecycle->chat"],
+    contracts: ["scope-transition:chat-stream:workspace"],
     capabilities: ["electron", "napi"],
   },
   {
@@ -237,27 +266,8 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     interactions: ["workspace-lifecycle->chat"],
     contracts: ["scope-transition:agent-stream:workspace"],
     capabilities: ["electron", "napi"],
-  },
-  {
-    id: "chat-stream-folder-scope",
-    domains: ["chat", "scene-scope"],
-    interactions: [],
-    contracts: ["scope-transition:chat-stream:folder"],
-    capabilities: ["electron", "napi"],
-  },
-  {
-    id: "chat-stream-codex-scope",
-    domains: ["chat", "codex"],
-    interactions: [],
-    contracts: ["scope-transition:chat-stream:codex"],
-    capabilities: ["electron", "napi"],
-  },
-  {
-    id: "chat-stream-snippet-scope",
-    domains: ["chat", "snippet"],
-    interactions: [],
-    contracts: ["scope-transition:chat-stream:snippet"],
-    capabilities: ["electron", "napi"],
+    description:
+      "Agent-mode send_agent_message -> strict workspace quiescence -> old-workspace transcript/audit persistence",
   },
   {
     id: "editor-pending-project-switch",
@@ -737,12 +747,12 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
     domains: ["chat", "project-lifecycle"],
   },
   {
-    id: "scope-transition:chat-stream:workspace",
-    domains: ["chat", "workspace-lifecycle"],
-  },
-  {
     id: "scope-transition:agent-stream:project",
     domains: ["chat", "project-lifecycle"],
+  },
+  {
+    id: "scope-transition:chat-stream:workspace",
+    domains: ["chat", "workspace-lifecycle"],
   },
   {
     id: "scope-transition:agent-stream:workspace",
@@ -878,6 +888,7 @@ export const PRODUCT_INTERACTION_REQUIREMENTS = freezeEntries([
   { id: "editor->sqlite", domains: ["editor", "sqlite"] },
   { id: "sqlite->editor", domains: ["sqlite", "editor"] },
   { id: "scene-scope->chat", domains: ["scene-scope", "chat"] },
+  { id: "snippet->chat", domains: ["snippet", "chat"] },
   { id: "chat->sqlite", domains: ["chat", "sqlite"] },
   {
     id: "editor->workspace-lifecycle",

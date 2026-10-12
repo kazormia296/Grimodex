@@ -10,7 +10,7 @@
 //
 // 実行: pnpm napi:build 後に `pnpm --dir electron/native/grimodex-node test`。
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -27,6 +27,13 @@ process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 
 const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project";
+
+// Background workspace maintenance can still be writing under ws/ when the
+// exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(JSON.parse(wire).status, "closed", "Native cleanup must prove Closed");
+});
 
 test("workspace 未オープンの listAnnotationsForProject は 'No workspace is open' で reject", async () => {
   await assert.rejects(

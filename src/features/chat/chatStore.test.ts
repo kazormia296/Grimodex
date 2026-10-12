@@ -16,6 +16,7 @@ import {
 import type { ChatMessage, ChatSession } from "./chatTypes";
 import type { AiModel } from "./types";
 import { toast } from "sonner";
+import { collectQuiescenceProviderRecovery } from "@/lib/quiescenceProviders";
 import { registerChatContextPreparation } from "@/application/chat/chatContextPreparation";
 import { chatContextPreparationComposition } from "@/application/composition/chatContextPreparationComposition";
 import { IpcInvokeError } from "@/lib/tauri";
@@ -36,6 +37,7 @@ import {
   isQuiescenceLeaseActive,
 } from "@/application/lifecycle/quiescenceLease";
 import {
+  isChatSceneTransitionBlocked,
   tryAcquireChatAnchorDeletionLease,
   tryAcquireTreeCreationLease,
   tryAcquireTreeNavigationLease,
@@ -100,6 +102,7 @@ vi.mock("./chatApi", () => ({
   saveMessagePrompt: vi.fn(() => Promise.resolve()),
   getMessagePrompt: vi.fn(() => Promise.resolve(null)),
   updateSessionTitle: vi.fn(),
+  updateSessionTitleIfAutomatic: vi.fn(),
   generateSessionTitle: vi.fn(() => Promise.resolve(null)),
   listPinnedCodexEntries: vi.fn(() => Promise.resolve([])),
   listPinnedSnippetEntries: vi.fn(() => Promise.resolve([])),
@@ -325,6 +328,9 @@ const mockAdvanceCodexHistoryRevision = vi.mocked(
 const mockSendAgentMessage = vi.mocked(chatApi.sendAgentMessage);
 const mockGenerateSessionTitle = vi.mocked(chatApi.generateSessionTitle);
 const mockUpdateSessionTitle = vi.mocked(chatApi.updateSessionTitle);
+const mockUpdateSessionTitleIfAutomatic = vi.mocked(
+  chatApi.updateSessionTitleIfAutomatic,
+);
 const mockBuildSystemPrompt = vi.mocked(contextBuilder.buildSystemPrompt);
 const mockCountTokens = vi.mocked(contextBuilder.countTokens);
 const mockRecordAiUsage = vi.mocked(recordAiUsage);
@@ -562,6 +568,39 @@ function captureAcceptedEnvelope(args?: Record<string, unknown>) {
       messageId: submission.messageId,
     },
   };
+}
+
+function registerChatTurnContextFixture(prompt = "Codex turn context") {
+  return registerChatContextPreparation({
+    prepare: async (input) => ({
+      privacy: input.privacy,
+      prompt,
+      totalTokens: 1,
+      layers: [],
+      contextPlan: {
+        requestId: input.requestId,
+        items: [],
+        decisions: [],
+        usage: {
+          candidateTokens: 0,
+          selectedTokens: 0,
+          trimmedTokens: 0,
+          budgetTokens: null,
+        },
+        digest: "chat-store-test-context",
+      },
+      detectedEntries: [],
+      alwaysEntries: [],
+      fullyInjectedIds: [],
+      stableContextIds: [],
+      recalledMessages: [],
+      scopeAnchor: null,
+      projectOutline: undefined,
+      chapterOutlines: [],
+      authority: { chronicleRevision: 0 },
+    }),
+    isAuthorityCurrent: () => true,
+  });
 }
 
 describe("useChatStore", () => {
@@ -4020,10 +4059,11 @@ describe("useChatStore", () => {
       const titleGeneration = deferred<string | null>();
       const titleUpdateWorkspacePaths: Array<string | null> = [];
       mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
-      mockUpdateSessionTitle.mockImplementationOnce(async () => {
+      mockUpdateSessionTitleIfAutomatic.mockImplementationOnce(async () => {
         titleUpdateWorkspacePaths.push(
           getCurrentImeWorkspaceIdentity()?.path ?? null,
         );
+        return true;
       });
       mockSendChatMessageStream.mockImplementation(
         async (_messages, _params, streamCallbacks: StreamCallbacks) => {
@@ -4070,13 +4110,14 @@ describe("useChatStore", () => {
         titleGeneration.resolve("Scoped title");
         await switching;
 
-        expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+        expect(mockUpdateSessionTitleIfAutomatic).toHaveBeenCalledWith(
           session1.id,
           "Scoped title",
         );
         expect(titleUpdateWorkspacePaths).toEqual([
           "/workspace/chat-store-test",
         ]);
+        expect(useChatStore.getState().sessions[0]?.title).toBe("Scoped title");
       } finally {
         titleGeneration.resolve("Scoped title");
         await switching;
@@ -4647,6 +4688,171 @@ describe("useChatStore", () => {
         mockAdvanceCodexHistoryRevision.mock.calls[0]?.[0].nextHistoryRevision,
       ).not.toBe(startPayload?.historyRevision);
       useAiSettingsStore.setState({ settings: null });
+    });
+
+    it("does not publish a generated title after a manual rename wins during Codex generation", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      const titleGeneration = deferred<string | null>();
+      const manualSession = {
+        ...session1,
+        title: "Manual title",
+        titleManual: 1,
+      };
+      mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
+      mockUpdateSessionTitleIfAutomatic.mockResolvedValueOnce(false);
+      mockSendCodexAppTurn.mockImplementationOnce(
+        async (_payload, callbacks) => {
+          callbacks.onTurnStarted?.({
+            threadId: "codex-title-race",
+            turnId: "codex-title-race-turn",
+          });
+          callbacks.onTextDelta("Codex response");
+          callbacks.onDone({ stopReason: "completed" });
+          return () => {};
+        },
+      );
+      mockAdvanceCodexHistoryRevision.mockResolvedValueOnce({
+        status: "advanced",
+      });
+
+      try {
+        const send = useChatStore.getState().sendMessage("Codex question");
+        await send;
+        await vi.waitFor(() =>
+          expect(mockGenerateSessionTitle).toHaveBeenCalledOnce(),
+        );
+
+        await chatApi.updateSessionTitle(session1.id, manualSession.title);
+        useChatStore.setState({ sessions: [manualSession] });
+        titleGeneration.resolve("Stale generated title");
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        expect(mockUpdateSessionTitleIfAutomatic).toHaveBeenCalledWith(
+          session1.id,
+          "Stale generated title",
+        );
+        expect(useChatStore.getState().sessions).toEqual([manualSession]);
+        expect(codexAppApi.setCodexSessionThreadName).not.toHaveBeenCalled();
+      } finally {
+        titleGeneration.resolve("Stale generated title");
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
+    it("does not publish or sync a generated Codex title when a manual rename commits before session reload", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        agentMode: false,
+        ragEnabled: false,
+      });
+      const titleGeneration = deferred<string | null>();
+      const titleUpdate = deferred<boolean>();
+      const persistedRead = deferred<ChatSession | null>();
+      const persistedReadStarted = deferred<void>();
+      const manualSession = {
+        ...session1,
+        title: "Manual title during IPC",
+        titleManual: 1,
+      };
+      mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
+      mockUpdateSessionTitleIfAutomatic.mockReturnValueOnce(
+        titleUpdate.promise,
+      );
+      mockSendCodexAppTurn.mockImplementationOnce(
+        async (_payload, callbacks) => {
+          callbacks.onTurnStarted?.({
+            threadId: "codex-title-pending",
+            turnId: "codex-title-pending-turn",
+          });
+          callbacks.onTextDelta("Codex response");
+          callbacks.onDone({ stopReason: "completed" });
+          return () => {};
+        },
+      );
+      mockAdvanceCodexHistoryRevision.mockResolvedValueOnce({
+        status: "advanced",
+      });
+
+      try {
+        await useChatStore.getState().sendMessage("Codex question");
+        await vi.waitFor(() =>
+          expect(mockGenerateSessionTitle).toHaveBeenCalledOnce(),
+        );
+
+        titleGeneration.resolve("Stale generated title");
+        await vi.waitFor(() =>
+          expect(mockUpdateSessionTitleIfAutomatic).toHaveBeenCalledOnce(),
+        );
+        mockGetSessionForProject.mockImplementationOnce(() => {
+          persistedReadStarted.resolve();
+          return persistedRead.promise;
+        });
+        titleUpdate.resolve(true);
+        await persistedReadStarted.promise;
+
+        await chatApi.updateSessionTitle(session1.id, manualSession.title);
+        mockListSessions.mockResolvedValueOnce([manualSession]);
+        await expect(
+          useChatStore.getState().loadSessions("scene-1"),
+        ).resolves.toBe(true);
+        expect(useChatStore.getState().sessions).toEqual([manualSession]);
+
+        // The query started before the manual commit and resolves with its
+        // captured titleManual=0 snapshot after loadSessions publishes 1.
+        persistedRead.resolve({
+          ...session1,
+          title: "Stale generated title",
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+          session1.id,
+          manualSession.title,
+        );
+        expect(useChatStore.getState().sessions).toEqual([manualSession]);
+        expect(mockGetSessionForProject).toHaveBeenLastCalledWith(
+          session1.id,
+          session1.projectId,
+        );
+        expect(codexAppApi.setCodexSessionThreadName).not.toHaveBeenCalled();
+      } finally {
+        titleGeneration.resolve("Stale generated title");
+        titleUpdate.resolve(true);
+        persistedRead.resolve(manualSession);
+        useAiSettingsStore.setState({ settings: null });
+      }
     });
 
     it("keeps the current user message out of App Server bootstrap after summarization", async () => {
@@ -6557,10 +6763,11 @@ describe("useChatStore", () => {
       const titleUpdateWorkspacePaths: Array<string | null> = [];
       mockSendAgentMessage.mockImplementationOnce(() => agentResponse.promise);
       mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
-      mockUpdateSessionTitle.mockImplementationOnce(async () => {
+      mockUpdateSessionTitleIfAutomatic.mockImplementationOnce(async () => {
         titleUpdateWorkspacePaths.push(
           getCurrentImeWorkspaceIdentity()?.path ?? null,
         );
+        return true;
       });
 
       const send = useChatStore
@@ -6598,16 +6805,153 @@ describe("useChatStore", () => {
         titleGeneration.resolve("Scoped Agent title");
         await switching;
 
-        expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+        expect(mockUpdateSessionTitleIfAutomatic).toHaveBeenCalledWith(
           session1.id,
           "Scoped Agent title",
         );
         expect(titleUpdateWorkspacePaths).toEqual([
           "/workspace/chat-store-test",
         ]);
+        expect(useChatStore.getState().sessions[0]?.title).toBe(
+          "Scoped Agent title",
+        );
       } finally {
         titleGeneration.resolve("Scoped Agent title");
         await switching;
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
+    it("does not publish a generated Agent title after a manual rename wins", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        agentMode: true,
+        ragEnabled: false,
+      });
+      const titleGeneration = deferred<string | null>();
+      const manualSession = {
+        ...session1,
+        title: "Manual Agent title",
+        titleManual: 1,
+      };
+      mockSendAgentMessage.mockResolvedValueOnce({
+        blocks: [{ type: "text", content: "first Agent response" }],
+        stopReason: "end_turn",
+      });
+      mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
+      mockUpdateSessionTitleIfAutomatic.mockResolvedValueOnce(false);
+
+      try {
+        await useChatStore.getState().sendMessage("Agent question");
+        await vi.waitFor(() =>
+          expect(mockGenerateSessionTitle).toHaveBeenCalledOnce(),
+        );
+
+        await chatApi.updateSessionTitle(session1.id, manualSession.title);
+        useChatStore.setState({ sessions: [manualSession] });
+        titleGeneration.resolve("Stale Agent title");
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        expect(mockUpdateSessionTitleIfAutomatic).toHaveBeenCalledWith(
+          session1.id,
+          "Stale Agent title",
+        );
+        expect(useChatStore.getState().sessions).toEqual([manualSession]);
+      } finally {
+        titleGeneration.resolve("Stale Agent title");
+        useChatStore.setState({ agentMode: false, ragEnabled: false });
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
+    it("does not publish a generated Agent title when a manual rename commits before session reload", async () => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      useChatStore.setState({
+        sessions: [session1],
+        activeSessionId: session1.id,
+        messages: [],
+        agentMode: true,
+        ragEnabled: false,
+      });
+      const titleGeneration = deferred<string | null>();
+      const titleUpdate = deferred<boolean>();
+      const persistedRead = deferred<ChatSession | null>();
+      const persistedReadStarted = deferred<void>();
+      const manualSession = {
+        ...session1,
+        title: "Manual Agent title during IPC",
+        titleManual: 1,
+      };
+      mockSendAgentMessage.mockResolvedValueOnce({
+        blocks: [{ type: "text", content: "first Agent response" }],
+        stopReason: "end_turn",
+      });
+      mockGenerateSessionTitle.mockReturnValueOnce(titleGeneration.promise);
+      mockUpdateSessionTitleIfAutomatic.mockReturnValueOnce(
+        titleUpdate.promise,
+      );
+
+      try {
+        await useChatStore.getState().sendMessage("Agent question");
+        await vi.waitFor(() =>
+          expect(mockGenerateSessionTitle).toHaveBeenCalledOnce(),
+        );
+
+        titleGeneration.resolve("Stale Agent title");
+        await vi.waitFor(() =>
+          expect(mockUpdateSessionTitleIfAutomatic).toHaveBeenCalledOnce(),
+        );
+        mockGetSessionForProject.mockImplementationOnce(() => {
+          persistedReadStarted.resolve();
+          return persistedRead.promise;
+        });
+        titleUpdate.resolve(true);
+        await persistedReadStarted.promise;
+
+        await chatApi.updateSessionTitle(session1.id, manualSession.title);
+        mockListSessions.mockResolvedValueOnce([manualSession]);
+        await expect(
+          useChatStore.getState().loadSessions("scene-1"),
+        ).resolves.toBe(true);
+        expect(useChatStore.getState().sessions).toEqual([manualSession]);
+
+        // The query started before the manual commit and resolves with its
+        // captured titleManual=0 snapshot after loadSessions publishes 1.
+        persistedRead.resolve({
+          ...session1,
+          title: "Stale Agent title",
+        });
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+        expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+          session1.id,
+          manualSession.title,
+        );
+        expect(useChatStore.getState().sessions).toEqual([manualSession]);
+        expect(mockGetSessionForProject).toHaveBeenLastCalledWith(
+          session1.id,
+          session1.projectId,
+        );
+      } finally {
+        titleGeneration.resolve("Stale Agent title");
+        titleUpdate.resolve(true);
+        persistedRead.resolve(manualSession);
         useChatStore.setState({ agentMode: false, ragEnabled: false });
         useAiSettingsStore.setState({ settings: null });
       }
@@ -7042,6 +7386,580 @@ describe("useChatStore", () => {
       useChatStore.getState().clearMessages();
 
       expect(useChatStore.getState().messages).toHaveLength(0);
+    });
+
+    it("preserves a manually renamed folder title after a stream switches scope", async () => {
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      vi.mocked(useTreeStore.getState).mockReturnValue({
+        nodes: [
+          {
+            id: "folder-a",
+            parentId: null,
+            nodeType: "folder",
+            title: "Folder A",
+            sortOrder: "a0",
+            synopsis: null,
+            charCount: 0,
+          },
+          {
+            id: "folder-b",
+            parentId: null,
+            nodeType: "folder",
+            title: "Folder B",
+            sortOrder: "a1",
+            synopsis: null,
+            charCount: 0,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
+      let callbacks: StreamCallbacks | undefined;
+      const folderSession = {
+        ...session1,
+        id: "folder-a-session",
+        nodeId: "folder-a",
+        title: "Manually renamed A",
+        titleManual: 1,
+      };
+      await chatApi.updateSessionTitle(folderSession.id, folderSession.title);
+      mockSendChatMessageStream.mockImplementation(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: folderSession.id,
+        sessions: [folderSession],
+        chatScope: "folder",
+        scopeAnchorId: "folder-a",
+      });
+
+      const send = useChatStore.getState().sendMessage("folder A prompt");
+      await vi.waitFor(() => expect(callbacks).toBeDefined());
+      callbacks?.onTextDelta("FOLDER-EARLY-");
+      await vi.waitFor(() =>
+        expect(useChatStore.getState().streamingDraft?.content).toBe(
+          "FOLDER-EARLY-",
+        ),
+      );
+
+      useChatStore.getState().setChatScope("folder", "folder-b");
+      expect(useChatStore.getState()).toMatchObject({
+        chatScope: "folder",
+        scopeAnchorId: "folder-b",
+        activeSessionId: null,
+        sessions: [],
+        messages: [],
+        streamingDraft: null,
+        isStreaming: true,
+      });
+
+      callbacks?.onTextDelta("FOLDER-LATE");
+      callbacks?.onDone({ stopReason: "end_turn" });
+      await send;
+      vi.mocked(useTreeStore.getState).mockReturnValue({ nodes: [] } as never);
+
+      expect(mockAddMessage.mock.calls).toEqual(
+        expect.arrayContaining([
+          [folderSession.id, "user", "folder A prompt", expect.any(Object)],
+          [
+            folderSession.id,
+            "assistant",
+            "FOLDER-EARLY-FOLDER-LATE",
+            expect.any(Object),
+          ],
+        ]),
+      );
+      expect(mockGenerateSessionTitle).not.toHaveBeenCalled();
+      expect(mockUpdateSessionTitle).toHaveBeenCalledWith(
+        folderSession.id,
+        "Manually renamed A",
+      );
+      expect(mockUpdateSessionTitleIfAutomatic).not.toHaveBeenCalled();
+      expect(useChatStore.getState()).toMatchObject({
+        chatScope: "folder",
+        scopeAnchorId: "folder-b",
+        sessions: [],
+        messages: [],
+        streamingDraft: null,
+        isStreaming: false,
+      });
+    });
+
+    it("persists a snippet stream switch only to its captured snippet A", async () => {
+      const { getSnippet } = await import("@/features/snippets/api");
+      vi.mocked(getSnippet).mockResolvedValueOnce({
+        id: "snippet-a",
+        projectId: "proj-1",
+        title: "Snippet A",
+        content: "snippet A content",
+      } as never);
+      let callbacks: StreamCallbacks | undefined;
+      const snippetSession: ChatSession = {
+        ...session1,
+        id: "snippet-a-session",
+        nodeId: null,
+        snippetAnchorId: "snippet-a",
+        title: "Manually renamed snippet A",
+        titleManual: 1,
+      };
+      await chatApi.updateSessionTitle(snippetSession.id, snippetSession.title);
+      mockSendChatMessageStream.mockImplementationOnce(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: snippetSession.id,
+        sessions: [snippetSession],
+        chatScope: "snippet",
+        scopeAnchorId: "snippet-a",
+      });
+
+      const send = useChatStore.getState().sendMessage("snippet A prompt");
+      await vi.waitFor(() => expect(callbacks).toBeDefined());
+      callbacks?.onTextDelta("SNIPPET-EARLY-");
+      await vi.waitFor(() =>
+        expect(useChatStore.getState().streamingDraft?.content).toBe(
+          "SNIPPET-EARLY-",
+        ),
+      );
+
+      useChatStore.getState().setChatScope("snippet", "snippet-b");
+      expect(useChatStore.getState()).toMatchObject({
+        chatScope: "snippet",
+        scopeAnchorId: "snippet-b",
+        activeSessionId: null,
+        sessions: [],
+        messages: [],
+        streamingDraft: null,
+        isStreaming: true,
+      });
+
+      // The active request still owns A; a second switch or cross-kind change
+      // must not reuse the exception after the live anchor has become B.
+      useChatStore.getState().setChatScope("snippet", "snippet-c");
+      useChatStore.getState().setChatScope("folder", "folder-b");
+      expect(useChatStore.getState()).toMatchObject({
+        chatScope: "snippet",
+        scopeAnchorId: "snippet-b",
+        isStreaming: true,
+      });
+
+      callbacks?.onTextDelta("SNIPPET-LATE");
+      callbacks?.onDone({ stopReason: "end_turn" });
+      await send;
+
+      expect(mockAddMessage.mock.calls).toEqual(
+        expect.arrayContaining([
+          [snippetSession.id, "user", "snippet A prompt", expect.any(Object)],
+          [
+            snippetSession.id,
+            "assistant",
+            "SNIPPET-EARLY-SNIPPET-LATE",
+            expect.any(Object),
+          ],
+        ]),
+      );
+      expect(mockGenerateSessionTitle).not.toHaveBeenCalled();
+      expect(mockUpdateSessionTitleIfAutomatic).not.toHaveBeenCalled();
+      expect(useChatStore.getState()).toMatchObject({
+        chatScope: "snippet",
+        scopeAnchorId: "snippet-b",
+        sessions: [],
+        messages: [],
+        streamingDraft: null,
+        isStreaming: false,
+      });
+    });
+
+    it("retains a failed anchored stream for its captured scope after switching", async () => {
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      vi.mocked(useTreeStore.getState).mockReturnValue({
+        nodes: [
+          {
+            id: "folder-a",
+            parentId: null,
+            nodeType: "folder",
+            title: "Folder A",
+            sortOrder: "a0",
+            synopsis: null,
+            charCount: 0,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
+      const folderSession = {
+        ...session1,
+        id: "folder-a-failed-session",
+        nodeId: "folder-a",
+        titleManual: 1,
+      };
+      const persistenceFailure = new Error("old-scope assistant write failed");
+      mockAddMessage.mockImplementation(
+        async (sessionId, role, content, extra) => {
+          if (role === "assistant") throw persistenceFailure;
+          return {
+            id: extra?.id ?? crypto.randomUUID(),
+            sessionId,
+            role,
+            content,
+            model: extra?.model ?? null,
+            tokensIn: extra?.tokensIn ?? null,
+            tokensOut: extra?.tokensOut ?? null,
+            durationMs: extra?.durationMs ?? null,
+            metadata: extra?.metadata ?? null,
+            createdAt: extra?.createdAt ?? "2026-01-01T00:00:00.000Z",
+          };
+        },
+      );
+      let callbacks: StreamCallbacks | undefined;
+      mockSendChatMessageStream.mockImplementationOnce(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        activeSceneId: "scene-a",
+        activeProjectId: "proj-1",
+        activeSessionId: folderSession.id,
+        sessions: [folderSession],
+        chatScope: "folder",
+        scopeAnchorId: "folder-a",
+      });
+
+      try {
+        const send = useChatStore
+          .getState()
+          .sendMessage("folder A failed prompt");
+        await vi.waitFor(() => expect(callbacks).toBeDefined());
+        callbacks?.onTextDelta("PARTIAL-OLD-ANSWER");
+        await vi.waitFor(() =>
+          expect(useChatStore.getState().streamingDraft?.content).toBe(
+            "PARTIAL-OLD-ANSWER",
+          ),
+        );
+
+        useChatStore.getState().setChatScope("folder", "folder-b");
+        expect(useChatStore.getState()).toMatchObject({
+          chatScope: "folder",
+          scopeAnchorId: "folder-b",
+          isStreaming: true,
+        });
+        expect(isChatSceneTransitionBlocked()).toBe(false);
+        useChatStore.getState().setActiveSceneId("scene-c");
+        expect(useChatStore.getState()).toMatchObject({
+          activeSceneId: "scene-c",
+          chatScope: "folder",
+          scopeAnchorId: "folder-b",
+          isStreaming: true,
+        });
+        callbacks?.onError("network connection failed");
+        await send;
+
+        expect(mockAddMessage.mock.calls).toEqual([
+          [
+            folderSession.id,
+            "user",
+            "folder A failed prompt",
+            expect.any(Object),
+          ],
+          [
+            folderSession.id,
+            "assistant",
+            "PARTIAL-OLD-ANSWER",
+            expect.any(Object),
+          ],
+        ]);
+        expect(useChatStore.getState()).toMatchObject({
+          chatScope: "folder",
+          scopeAnchorId: "folder-b",
+          activeSessionId: null,
+          messages: [],
+          streamingDraft: null,
+          isStreaming: false,
+          error: null,
+        });
+        expect(collectQuiescenceProviderRecovery()).toContainEqual(
+          expect.objectContaining({
+            kind: "chat-completed-turn",
+            projectId: "proj-1",
+            sessionId: folderSession.id,
+            userMessage: expect.objectContaining({
+              content: "folder A failed prompt",
+            }),
+            assistantMessage: expect.objectContaining({
+              content: "PARTIAL-OLD-ANSWER",
+              metadata: expect.stringContaining("network connection failed"),
+            }),
+          }),
+        );
+        expect(toast.error).toHaveBeenCalled();
+      } finally {
+        __discardPendingCompletedChatTurnsForTests();
+        mockAddMessage.mockReset();
+        mockSendChatMessageStream.mockReset();
+        vi.mocked(useTreeStore.getState).mockReturnValue({
+          nodes: [],
+        } as never);
+      }
+    });
+
+    it("persists a Codex stream switch only to its captured Codex A", async () => {
+      const restoreContext = registerChatTurnContextFixture();
+      const previousSettings = useAiSettingsStore.getState().settings;
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      let callbacks: StreamCallbacks | undefined;
+      const codexSession: ChatSession = {
+        ...session1,
+        id: "codex-a-session",
+        nodeId: null,
+        codexAnchorId: "codex-a",
+        titleManual: 1,
+      };
+      mockSendChatMessageStream.mockImplementationOnce(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: codexSession.id,
+        sessions: [codexSession],
+        chatScope: "codex",
+        scopeAnchorId: "codex-a",
+      });
+
+      let send: Promise<void> | undefined;
+      let streamFinished = false;
+      try {
+        send = useChatStore.getState().sendMessage("Codex A prompt");
+        await vi.waitFor(() => expect(callbacks).toBeDefined());
+        callbacks?.onTextDelta("CODEX-EARLY-");
+        await vi.waitFor(() =>
+          expect(useChatStore.getState().streamingDraft?.content).toBe(
+            "CODEX-EARLY-",
+          ),
+        );
+
+        useChatStore.getState().setChatScope("codex", "codex-b");
+        expect(useChatStore.getState()).toMatchObject({
+          chatScope: "codex",
+          scopeAnchorId: "codex-b",
+          activeSessionId: null,
+          sessions: [],
+          messages: [],
+          streamingDraft: null,
+          isStreaming: true,
+        });
+
+        useChatStore.getState().setChatScope("codex", "codex-c");
+        useChatStore.getState().setChatScope("snippet", "snippet-b");
+        expect(useChatStore.getState()).toMatchObject({
+          chatScope: "codex",
+          scopeAnchorId: "codex-b",
+          isStreaming: true,
+        });
+
+        callbacks?.onTextDelta("CODEX-LATE");
+        callbacks?.onDone({ stopReason: "end_turn" });
+        streamFinished = true;
+        await send;
+
+        const userWrite = mockAddMessage.mock.calls.find(
+          ([sessionId, role, content]) =>
+            sessionId === codexSession.id &&
+            role === "user" &&
+            content === "Codex A prompt",
+        );
+        expect(userWrite).toBeDefined();
+        expect(mockAddMessage.mock.calls).toEqual(
+          expect.arrayContaining([
+            [codexSession.id, "user", "Codex A prompt", expect.any(Object)],
+            [
+              codexSession.id,
+              "assistant",
+              "CODEX-EARLY-CODEX-LATE",
+              expect.any(Object),
+            ],
+          ]),
+        );
+        expect(chatApi.saveMessagePrompt).toHaveBeenCalledWith(
+          userWrite?.[3]?.id,
+          expect.objectContaining({ systemPrompt: expect.any(String) }),
+        );
+        expect(mockSendChatMessageStream.mock.calls[0]?.[3]).toMatchObject({
+          pathId: "chat_stream_non_agent",
+        });
+        expect(mockGenerateSessionTitle).not.toHaveBeenCalled();
+        expect(useChatStore.getState()).toMatchObject({
+          chatScope: "codex",
+          scopeAnchorId: "codex-b",
+          sessions: [],
+          messages: [],
+          streamingDraft: null,
+          isStreaming: false,
+        });
+      } finally {
+        if (!streamFinished && callbacks && send) {
+          callbacks.onDone({ stopReason: "end_turn" });
+          await send;
+        }
+        restoreContext();
+        useAiSettingsStore.setState({ settings: previousSettings });
+      }
+    });
+
+    it("blocks a Codex-scope switch during Codex App Server streaming", async () => {
+      const restoreContext = registerChatTurnContextFixture();
+      const previousSettings = useAiSettingsStore.getState().settings;
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "cli",
+          model: "gpt-5",
+          cli: {
+            kind: "codex",
+            binaryPath: "/usr/bin/codex",
+            model: "gpt-5",
+            codexTransport: "app-server",
+          },
+        },
+      });
+      let callbacks:
+        | Parameters<typeof codexAppApi.sendCodexAppTurn>[1]
+        | undefined;
+      mockSendCodexAppTurn.mockImplementationOnce(async (_payload, stream) => {
+        callbacks = stream;
+        stream.onTextDelta("Codex App Server early");
+        return () => {};
+      });
+      const codexSession: ChatSession = {
+        ...session1,
+        id: "codex-app-server-session",
+        nodeId: null,
+        codexAnchorId: "codex-a",
+        titleManual: 1,
+      };
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: codexSession.id,
+        sessions: [codexSession],
+        chatScope: "codex",
+        scopeAnchorId: "codex-a",
+      });
+
+      const send = useChatStore
+        .getState()
+        .sendMessage("Codex App Server prompt");
+      try {
+        await vi.waitFor(() =>
+          expect(mockSendCodexAppTurn).toHaveBeenCalledOnce(),
+        );
+        await vi.waitFor(() =>
+          expect(useChatStore.getState().streamingDraft?.content).toBe(
+            "Codex App Server early",
+          ),
+        );
+        useChatStore.getState().setChatScope("codex", "codex-b");
+        expect(useChatStore.getState()).toMatchObject({
+          isStreaming: true,
+          chatScope: "codex",
+          scopeAnchorId: "codex-a",
+          activeSessionId: codexSession.id,
+        });
+      } finally {
+        callbacks?.onDone({ stopReason: "completed" });
+        await send;
+        restoreContext();
+        useAiSettingsStore.setState({ settings: previousSettings });
+      }
+    });
+
+    it("blocks a snippet switch during an Agent turn", async () => {
+      const { getSnippet } = await import("@/features/snippets/api");
+      vi.mocked(getSnippet).mockResolvedValueOnce({
+        id: "snippet-a",
+        projectId: "proj-1",
+        title: "Snippet A",
+        content: "snippet A content",
+      } as never);
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-sonnet-4.6",
+        },
+      });
+      const snippetSession: ChatSession = {
+        ...session1,
+        id: "agent-snippet-session",
+        nodeId: null,
+        snippetAnchorId: "snippet-a",
+      };
+      useChatStore.setState({
+        activeSceneId: "",
+        activeProjectId: "proj-1",
+        activeSessionId: snippetSession.id,
+        sessions: [snippetSession],
+        chatScope: "snippet",
+        scopeAnchorId: "snippet-a",
+        agentMode: true,
+      });
+      const agentResponse =
+        deferred<Awaited<ReturnType<typeof chatApi.sendAgentMessage>>>();
+      mockSendAgentMessage.mockImplementationOnce(() => agentResponse.promise);
+      const send = useChatStore.getState().sendMessage("Agent snippet turn");
+
+      try {
+        await vi.waitFor(() => expect(mockSendAgentMessage).toHaveBeenCalled());
+        useChatStore.getState().setChatScope("snippet", "snippet-b");
+        expect(useChatStore.getState()).toMatchObject({
+          isStreaming: true,
+          chatScope: "snippet",
+          scopeAnchorId: "snippet-a",
+          activeSessionId: snippetSession.id,
+        });
+      } finally {
+        agentResponse.resolve({
+          blocks: [{ type: "text", content: "Agent response" }],
+          stopReason: "end_turn",
+        });
+        await send;
+        useAiSettingsStore.setState({ settings: null });
+      }
+    });
+
+    it("blocks a folder switch without an active folder chat turn", () => {
+      useChatStore.setState({
+        isStreaming: true,
+        chatScope: "folder",
+        scopeAnchorId: "folder-a",
+      });
+
+      useChatStore.getState().setChatScope("folder", "folder-b");
+
+      expect(useChatStore.getState()).toMatchObject({
+        isStreaming: true,
+        chatScope: "folder",
+        scopeAnchorId: "folder-a",
+      });
     });
 
     it("preserves destructive scope and history mutations during a stream", () => {

@@ -13,7 +13,15 @@ const { Backend } = require(join(here, "..", "grimodex-node.node"));
 const root = mkdtempSync(join(tmpdir(), "grimodex-node-sample-seed-"));
 const appDataDir = join(root, "app-data");
 const backend = new Backend(appDataDir);
-process.on("exit", () => rmSync(root, { recursive: true, force: true }));
+// Best-effort temp cleanup: the native backend may still be writing app-data
+// at process exit, and a leftover temp dir must not fail the test file.
+process.on("exit", () => {
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch {
+    // Left for the OS temp cleanup.
+  }
+});
 
 test("seedSampleWorkspace creates a complete sample and exposes its active path after open", async () => {
   await assert.rejects(

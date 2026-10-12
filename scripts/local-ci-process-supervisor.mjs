@@ -107,6 +107,7 @@ export async function runLocalCiCommand(
     closeGraceMs = null,
     killGraceMs = 2_000,
     logDirectory,
+    openFile = open,
     root,
     signal = null,
     spawnProcess = spawn,
@@ -136,10 +137,10 @@ export async function runLocalCiCommand(
   await mkdir(absoluteLogDirectory, { recursive: true });
   const stdoutPath = path.join(absoluteLogDirectory, `${taskId}.stdout.log`);
   const stderrPath = path.join(absoluteLogDirectory, `${taskId}.stderr.log`);
-  const stdout = await open(stdoutPath, "wx");
+  const stdout = await openFile(stdoutPath, "wx");
   let stderr;
   try {
-    stderr = await open(stderrPath, "wx");
+    stderr = await openFile(stderrPath, "wx");
   } catch (error) {
     await stdout.close();
     throw error;
@@ -158,6 +159,8 @@ export async function runLocalCiCommand(
   });
 
   try {
+    // Log setup awaits must not admit a child after cancellation closes admission.
+    if (signal?.aborted) throw signal.reason ?? new Error("local CI interrupted");
     child = spawnProcess(commandExecutable(entry.command), entry.args, {
       cwd: path.resolve(root, entry.cwd ?? "."),
       detached: true,
