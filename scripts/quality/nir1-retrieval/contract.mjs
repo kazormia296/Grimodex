@@ -282,6 +282,104 @@ export function validateRawIpcTrace(calls) {
   }
 }
 
+// R+IR+Graph arm scaffold (C-product CP-0). The Graph runtime is not wired
+// into this harness: the arm is recorded as unavailable, schedules no call and
+// can never pass. Existing raw/hybrid measurement, gates and budgets are
+// untouched by these helpers.
+export const RETRIEVAL_ARMS = Object.freeze({
+  raw: "R",
+  hybrid: "R+IR",
+  graph: "R+IR+Graph",
+});
+export const GRAPH_ARM_WIRING = "not-wired";
+export const GRAPH_ARM_UNAVAILABLE_REASON = "graph-runtime-not-wired";
+export const GRAPH_CASE_MANIFEST_PATH = "evals/nir1-graph/manifest.v1.json";
+
+/** Declared seed policy for the frozen 24 queries: no seed, Graph contribution 0. */
+export async function loadGraphSeedPolicy(root, contract) {
+  const bytes = await readFile(`${root}/${GRAPH_CASE_MANIFEST_PATH}`);
+  const policy = JSON.parse(bytes).existingRetrievalSeedPolicy;
+  assert.ok(
+    policy,
+    "[precheck] Graph seed policy for existing queries is missing",
+  );
+  assert.equal(
+    policy.manualSeed,
+    "none",
+    "[precheck] existing retrieval queries must not carry a Graph seed",
+  );
+  assert.equal(policy.graphStatus, "not-requested");
+  assert.equal(policy.expectedGraphContribution, 0);
+  assert.equal(policy.rPlusIrPlusGraphEqualsRPlusIr, true);
+  assert.equal(policy.queryCount, 24);
+  if (contract) {
+    assert.equal(
+      policy.retrievalManifestScope,
+      contract.manifest.scope,
+      "[precheck] retrieval manifest scope differs from the declared seed policy",
+    );
+    assert.equal(contract.queries.length, policy.queryCount);
+  }
+  return {
+    policyId: policy.policyId,
+    manualSeed: policy.manualSeed,
+    graphStatus: policy.graphStatus,
+    expectedGraphContribution: policy.expectedGraphContribution,
+    manifestPath: GRAPH_CASE_MANIFEST_PATH,
+    manifestSha256: sha256(bytes),
+  };
+}
+
+/** The frozen 24 queries never receive a manual Graph seed. */
+export function graphSeedForExistingQuery(policy, query) {
+  assert.ok(query?.id, "[precheck] query identity is required");
+  assert.equal(
+    policy?.manualSeed,
+    "none",
+    "[precheck] existing retrieval queries declare no Graph seed",
+  );
+  return null;
+}
+
+/** Refuses any request to measure the Graph arm before it is wired. */
+export function assertGraphArmRequestable(requested = GRAPH_ARM_WIRING) {
+  if (requested !== GRAPH_ARM_WIRING)
+    throw new Error(
+      `[precheck] the ${RETRIEVAL_ARMS.graph} arm is ${GRAPH_ARM_WIRING}; Graph runtime is not connected to this harness`,
+    );
+}
+
+export function describeGraphArm({ seedPolicy = null } = {}) {
+  return {
+    arm: "graph",
+    label: RETRIEVAL_ARMS.graph,
+    comparedAgainst: "hybrid",
+    wiring: GRAPH_ARM_WIRING,
+    status: "unavailable",
+    reason: GRAPH_ARM_UNAVAILABLE_REASON,
+    scheduledCalls: 0,
+    seedPolicy,
+    gate: "hold",
+    pass: false,
+  };
+}
+
+/**
+ * Graph-integrated recheck verdict. A not-wired or unavailable arm stays Hold;
+ * this scaffold has no evaluation path that could return a pass.
+ */
+export function summarizeGraphArm(graphArm) {
+  return {
+    status: "hold",
+    reason:
+      graphArm?.wiring === GRAPH_ARM_WIRING
+        ? GRAPH_ARM_UNAVAILABLE_REASON
+        : "graph-arm-evaluation-not-implemented",
+    arm: graphArm?.label ?? RETRIEVAL_ARMS.graph,
+    pass: false,
+  };
+}
+
 export async function loadContract(root, { requireFreeze = false } = {}) {
   const manifestBytes = await readFile(
     `${root}/evals/nir1-retrieval/manifest.json`,

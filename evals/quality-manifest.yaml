@@ -379,6 +379,19 @@ requirements:
     implementedBy:
       - evals/nir1-g01/fixture.v1.json
       - src/features/related-scenes/nir1G01Feasibility.test.ts
+      - evals/nir1-graph/manifest.v1.json
+      - evals/nir1-graph/schema.v1.json
+      - evals/nir1-graph/g02-directed-relation.v1.json
+      - evals/nir1-graph/g03-bounded-two-hop.v1.json
+      - evals/nir1-graph/g04-scope-exact-unknown.v1.json
+      - evals/nir1-graph/g05-current-revision-freshness.v1.json
+      - evals/nir1-graph/g06-evidence-anchor-path.v1.json
+      - evals/nir1-graph/g07-reading-before-reveal.v1.json
+      - evals/nir1-graph/g08-graph-index-fallback.v1.json
+      - evals/nir1-graph/independent-expectation-review.v1.json
+      - evals/nir1-graph/freeze.v1.json
+      - scripts/quality/nir1-graph/contract.mjs
+      - scripts/quality/nir1-graph/porter.mjs
       - test-fixtures/nir1-df06-plain-chat.json
       - src/prompts/ja/chatSystem.ts
       - src/prompts/ja/chatSystemBase.txt
@@ -431,6 +444,7 @@ requirements:
     lightTests:
       - src/features/related-scenes/nir1G01Feasibility.test.ts
       - src/features/related-scenes/nir1RelatedScenesFusion.test.ts
+      - scripts/quality/nir1-graph/contract.test.mjs
       - scripts/quality/nir1-retrieval/contract.test.mjs
       - scripts/quality/nir1-retrieval/standard-build.test.mjs
       - scripts/quality/nir1-retrieval/candidate-policy.test.mjs
@@ -1054,6 +1068,7 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleV2Evaluator.ts
       - src/features/narrative-extraction/eval/chronicleV2Diagnostics.ts
       - src/features/narrative-extraction/eval/chronicleLlmJudgeOffline.ts
+      - evals/nir1-graph/manifest.v1.json
     lightTests:
       - src/features/narrative-extraction/eval/caseSchema.test.ts
       - src/features/narrative-extraction/eval/scorer.test.ts
@@ -1063,6 +1078,7 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleV2Alignment.test.ts
       - src/features/narrative-extraction/eval/chronicleV2Evaluator.test.ts
       - src/features/narrative-extraction/eval/chronicleV2Diagnostics.test.ts
+      - scripts/quality/nir1-graph/contract.test.mjs
     heavyTests:
       - src/features/narrative-extraction/eval/chronicleLegacy.live.test.ts
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
@@ -1169,6 +1185,8 @@ requirements:
       - evals/fixtures/routing.yaml
       - evals/nir1-packing/fixtures.json
       - scripts/quality/nir1-packing/runner.mjs
+      - evals/nir1-graph/manifest.v1.json
+      - scripts/quality/nir1-graph/contract.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
@@ -1199,6 +1217,7 @@ requirements:
       - scripts/quality/nir1-packing/contract.test.mjs
       - scripts/quality/nir1-packing/runner.test.mjs
       - scripts/quality/nir1-packing/scorer.test.mjs
+      - scripts/quality/nir1-graph/contract.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py

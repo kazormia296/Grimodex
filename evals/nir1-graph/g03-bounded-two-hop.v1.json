@@ -1,0 +1,1005 @@
+{
+  "schemaVersion": "nir1-graph-case/1",
+  "status": "predeclared-design-fixture",
+  "caseId": "G-03",
+  "fixtureId": "nir1-g03-bounded-two-hop/1",
+  "sourceDocument": "docs/plans/nir1-l6-l9-execution-plan.md",
+  "sourceSection": "G-01〜G-08 表（G-03）",
+  "designReferences": [
+    "docs/plans/nir1-l6-l9-execution-plan.md#L7: Entity/Relation入力とGraph",
+    "docs/plans/nir1-l6-l9-execution-plan.md#graph-limited-binding",
+    "docs/plans/nir1-c-scene-connection-candidate.md#6. 候補選択・融合の事前規則",
+    "docs/plans/nir1-c-scene-connection-candidate.md#7. G-01 fixture提案: 出力観察前の固定v1",
+    "docs/plans/nir1-post-b-execution-plan.md#7. C-productとP：Related Scenes統合",
+    "docs/plans/narrative-ir-nir1-implementation-plan.md#A6に含める後続の材料開示・Graph authority"
+  ],
+  "observationPolicy": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result.",
+  "language": "en",
+  "caseClass": {
+    "queryClass": "bounded 2-hop path",
+    "expectedJudgement": "`R+IR` から非回帰、最大2hop内",
+    "positive": "2hop以内の全qualified path",
+    "negative": "3hop以上・frontier超過"
+  },
+  "slotClass": "raw-full",
+  "goldDefinition": "Gold 3 marks the earlier Scene in which the healer reached two stored hops from the selected keeper Wren (Wren has-sister Ivy, Ivy treated-by Hollis) appears. Controls only copy the question; Corin is three hops away and is not a healer of the sister.",
+  "answerEntityIds": ["g03-hollis"],
+  "query": {
+    "sceneId": "g03-query",
+    "readingOrder": 100,
+    "title": "Open question",
+    "body": "Which earlier scene shows a healer treating my chosen keeper's sister?"
+  },
+  "scenes": [
+    {
+      "id": "g03-review",
+      "readingOrder": 0,
+      "title": "Pinned list",
+      "body": "Gray ink dried on a list of names nailed to a wall.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g03-c1",
+      "readingOrder": 10,
+      "title": "Plank",
+      "body": "A fisher scratched a line on a plank: Which earlier scene shows a healer treating my chosen keeper's sister? No answer followed.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g03-c2",
+      "readingOrder": 12,
+      "title": "Door chalk",
+      "body": "Someone chalked a line on a door: Which earlier scene shows a healer treating my chosen keeper's sister? It stayed unanswered.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g03-c3",
+      "readingOrder": 14,
+      "title": "Tavern slate",
+      "body": "A tavern slate held a line: Which earlier scene shows a healer treating my chosen keeper's sister? Nobody replied.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g03-c4",
+      "readingOrder": 16,
+      "title": "Bell rope tag",
+      "body": "A tag tied to a bell rope read: Which earlier scene shows a healer treating my chosen keeper's sister? The space below was left blank.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g03-c5",
+      "readingOrder": 18,
+      "title": "Net shed",
+      "body": "Inside a net shed, a board asked: Which earlier scene shows a healer treating my chosen keeper's sister? No one had written back.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g03-c6",
+      "readingOrder": 20,
+      "title": "Pier post",
+      "body": "A pier post bore a carved line: Which earlier scene shows a healer treating my chosen keeper's sister? Gulls had fouled the rest.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g03-c7",
+      "readingOrder": 22,
+      "title": "Ferry bench",
+      "body": "On a ferry bench lay a folded card: Which earlier scene shows a healer treating my chosen keeper's sister? Its back was empty.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g03-c8",
+      "readingOrder": 24,
+      "title": "Chapel step",
+      "body": "A card on a chapel step asked: Which earlier scene shows a healer treating my chosen keeper's sister? Rain had blurred any reply.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g03-hollis-ward",
+      "readingOrder": 60,
+      "title": "Cool cloth",
+      "body": "Hollis pressed a cool cloth to Ivy's brow and mixed bitter herbs in a cup.",
+      "gold": 3,
+      "role": "answer"
+    },
+    {
+      "id": "g03-corin-shed",
+      "readingOrder": 70,
+      "title": "Root shelf",
+      "body": "Corin stacked dried roots on a shelf in a crooked hut.",
+      "gold": 0,
+      "role": "decoy"
+    },
+    {
+      "id": "g03-gull",
+      "readingOrder": 80,
+      "title": "Mooring ring",
+      "body": "A gull tugged at a loose rope on a mooring ring.",
+      "gold": 0,
+      "role": "filler"
+    }
+  ],
+  "eligibleSceneIds": [
+    "g03-review",
+    "g03-c1",
+    "g03-c2",
+    "g03-c3",
+    "g03-c4",
+    "g03-c5",
+    "g03-c6",
+    "g03-c7",
+    "g03-c8",
+    "g03-hollis-ward",
+    "g03-corin-shed",
+    "g03-gull"
+  ],
+  "scope": {
+    "registry": {
+      "timelineRefs": ["tl-main"],
+      "worldlineRefs": ["wl-main"],
+      "narrativeLayerRefs": ["layer-story"]
+    },
+    "default": {
+      "marker": "explicit",
+      "queryIdentity": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "materialConstraint": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "knowledgeHolder": {
+        "kind": "reader"
+      },
+      "audience": {
+        "kind": "reader"
+      }
+    },
+    "overrides": {}
+  },
+  "entities": [
+    {
+      "id": "g03-wren",
+      "kind": "character",
+      "label": "Wren",
+      "summary": "Wren keeps the lighthouse on Gull Point."
+    },
+    {
+      "id": "g03-ivy",
+      "kind": "character",
+      "label": "Ivy",
+      "summary": "Ivy is Wren's younger sister."
+    },
+    {
+      "id": "g03-hollis",
+      "kind": "character",
+      "label": "Hollis",
+      "summary": "Hollis is the village healer."
+    },
+    {
+      "id": "g03-corin",
+      "kind": "character",
+      "label": "Corin",
+      "summary": "Corin learned herb lore from Hollis."
+    },
+    {
+      "id": "g03-n01",
+      "kind": "character",
+      "label": "Abel",
+      "summary": "Abel lives near Gull Point."
+    },
+    {
+      "id": "g03-n02",
+      "kind": "character",
+      "label": "Brina",
+      "summary": "Brina lives near Gull Point."
+    },
+    {
+      "id": "g03-n03",
+      "kind": "character",
+      "label": "Cato",
+      "summary": "Cato lives near Gull Point."
+    },
+    {
+      "id": "g03-n04",
+      "kind": "character",
+      "label": "Dara",
+      "summary": "Dara lives near Gull Point."
+    },
+    {
+      "id": "g03-n05",
+      "kind": "character",
+      "label": "Emrys",
+      "summary": "Emrys lives near Gull Point."
+    },
+    {
+      "id": "g03-n06",
+      "kind": "character",
+      "label": "Faye",
+      "summary": "Faye lives near Gull Point."
+    },
+    {
+      "id": "g03-n07",
+      "kind": "character",
+      "label": "Gideon",
+      "summary": "Gideon lives near Gull Point."
+    },
+    {
+      "id": "g03-n08",
+      "kind": "character",
+      "label": "Hesper",
+      "summary": "Hesper lives near Gull Point."
+    },
+    {
+      "id": "g03-n09",
+      "kind": "character",
+      "label": "Iona",
+      "summary": "Iona lives near Gull Point."
+    },
+    {
+      "id": "g03-n10",
+      "kind": "character",
+      "label": "Jory",
+      "summary": "Jory lives near Gull Point."
+    },
+    {
+      "id": "g03-n11",
+      "kind": "character",
+      "label": "Kestrel",
+      "summary": "Kestrel lives near Gull Point."
+    },
+    {
+      "id": "g03-n12",
+      "kind": "character",
+      "label": "Lorne",
+      "summary": "Lorne lives near Gull Point."
+    },
+    {
+      "id": "g03-n13",
+      "kind": "character",
+      "label": "Maren",
+      "summary": "Maren lives near Gull Point."
+    },
+    {
+      "id": "g03-n14",
+      "kind": "character",
+      "label": "Nell",
+      "summary": "Nell lives near Gull Point."
+    }
+  ],
+  "relations": [
+    {
+      "id": "g03-has-sister",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-ivy",
+      "type": "has-sister",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-treated-by",
+      "fromEntityId": "g03-ivy",
+      "toEntityId": "g03-hollis",
+      "type": "treated-by",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-taught",
+      "fromEntityId": "g03-hollis",
+      "toEntityId": "g03-corin",
+      "type": "taught",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-01",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n01",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-02",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n02",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-03",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n03",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-04",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n04",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-05",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n05",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-06",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n06",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-07",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n07",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-08",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n08",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-09",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n09",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-10",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n10",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-11",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n11",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-12",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n12",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-13",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n13",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-14",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n14",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    }
+  ],
+  "manualSeed": {
+    "entityId": "g03-wren",
+    "manualSeed": true
+  },
+  "pins": [
+    {
+      "sceneId": "g03-c1",
+      "entryId": "g03-ivy",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g03-c2",
+      "entryId": "g03-hollis",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g03-c3",
+      "entryId": "g03-corin",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g03-hollis-ward",
+      "entryId": "g03-hollis",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g03-corin-shed",
+      "entryId": "g03-corin",
+      "source": "scene_codex_pins"
+    }
+  ],
+  "foreshadows": [],
+  "qualifiedIr": [
+    {
+      "sceneId": "g03-c5",
+      "summary": "A board in a net shed asked, without any reply, which healer had treated a keeper's sister.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    }
+  ],
+  "revisions": [
+    {
+      "id": "g03-r-path",
+      "reviewSceneId": "g03-review",
+      "entityIds": ["g03-wren", "g03-ivy", "g03-hollis"],
+      "relationIds": ["g03-has-sister", "g03-treated-by"],
+      "decision": "approved"
+    },
+    {
+      "id": "g03-r-third",
+      "reviewSceneId": "g03-review",
+      "entityIds": ["g03-hollis", "g03-corin"],
+      "relationIds": ["g03-taught"],
+      "decision": "approved"
+    },
+    {
+      "id": "g03-r-frontier",
+      "reviewSceneId": "g03-review",
+      "entityIds": [
+        "g03-wren",
+        "g03-n01",
+        "g03-n02",
+        "g03-n03",
+        "g03-n04",
+        "g03-n05",
+        "g03-n06",
+        "g03-n07",
+        "g03-n08",
+        "g03-n09",
+        "g03-n10",
+        "g03-n11",
+        "g03-n12",
+        "g03-n13",
+        "g03-n14"
+      ],
+      "relationIds": [
+        "g03-knows-01",
+        "g03-knows-02",
+        "g03-knows-03",
+        "g03-knows-04",
+        "g03-knows-05",
+        "g03-knows-06",
+        "g03-knows-07",
+        "g03-knows-08",
+        "g03-knows-09",
+        "g03-knows-10",
+        "g03-knows-11",
+        "g03-knows-12",
+        "g03-knows-13",
+        "g03-knows-14"
+      ],
+      "decision": "approved",
+      "onlyInVariants": ["frontier-exceeded"]
+    }
+  ],
+  "mutations": [],
+  "setupTimeline": [
+    {
+      "kind": "revision",
+      "id": "g03-r-path"
+    },
+    {
+      "kind": "revision",
+      "id": "g03-r-third"
+    },
+    {
+      "kind": "revision",
+      "id": "g03-r-frontier"
+    },
+    {
+      "kind": "qualified-ir",
+      "id": "g03-ir"
+    }
+  ],
+  "variants": [
+    {
+      "id": "base",
+      "description": "Steady state with the two-hop path and the qualified third hop; the fourteen extra Relations exist only in Codex and have no Revision.",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      },
+      "preconditions": [
+        {
+          "id": "b-sealed-binding",
+          "scope": "variant"
+        },
+        {
+          "id": "maintenance-enabled",
+          "scope": "variant"
+        },
+        {
+          "id": "raw-membership",
+          "scope": "variant"
+        }
+      ],
+      "expectations": {
+        "arms": {
+          "raw": {
+            "sceneIds": [
+              "g03-c1",
+              "g03-c2",
+              "g03-c3",
+              "g03-c4",
+              "g03-c5",
+              "g03-c6",
+              "g03-c7",
+              "g03-c8"
+            ],
+            "orderPredeclared": false
+          },
+          "rPlusIr": {
+            "sceneIds": [
+              "g03-c1",
+              "g03-c2",
+              "g03-c3",
+              "g03-c4",
+              "g03-c5",
+              "g03-c6",
+              "g03-c7",
+              "g03-c8"
+            ],
+            "orderPredeclared": false,
+            "irSupplementSceneId": null,
+            "resultKind": "fused"
+          },
+          "rPlusIrPlusGraph": {
+            "baseline": "rPlusIr",
+            "sceneIds": [
+              "g03-c1",
+              "g03-c2",
+              "g03-c3",
+              "g03-c4",
+              "g03-c5",
+              "g03-c6",
+              "g03-c7",
+              "g03-c8"
+            ],
+            "appendedSceneId": null,
+            "orderPredeclared": false
+          }
+        },
+        "graph": {
+          "status": "available",
+          "reasonClass": null,
+          "nodes": [
+            {
+              "entityId": "g03-wren",
+              "hop": 0
+            },
+            {
+              "entityId": "g03-ivy",
+              "hop": 1
+            },
+            {
+              "entityId": "g03-hollis",
+              "hop": 2
+            }
+          ],
+          "edgeIds": ["g03-has-sister", "g03-treated-by"],
+          "qualifiedRevisionIds": ["g03-r-path", "g03-r-third"],
+          "excludedRevisions": [],
+          "excludedEdges": [
+            {
+              "edgeId": "g03-taught",
+              "reason": "beyond-max-hops"
+            },
+            {
+              "edgeId": "g03-knows-01",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-02",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-03",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-04",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-05",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-06",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-07",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-08",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-09",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-10",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-11",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-12",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-13",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-14",
+              "reason": "no-revision"
+            }
+          ],
+          "excludedEntities": [
+            {
+              "entityId": "g03-corin",
+              "reason": "beyond-max-hops"
+            },
+            {
+              "entityId": "g03-n01",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n02",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n03",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n04",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n05",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n06",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n07",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n08",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n09",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n10",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n11",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n12",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n13",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n14",
+              "reason": "no-revision"
+            }
+          ],
+          "frontier": {
+            "discoveredEntities": 2,
+            "limit": 12
+          }
+        },
+        "pathAttachments": [
+          {
+            "sceneId": "g03-c1",
+            "path": {
+              "seedEntityId": "g03-wren",
+              "edgeIds": ["g03-has-sister"],
+              "targetEntityId": "g03-ivy",
+              "hop": 1
+            }
+          },
+          {
+            "sceneId": "g03-c2",
+            "path": {
+              "seedEntityId": "g03-wren",
+              "edgeIds": ["g03-has-sister", "g03-treated-by"],
+              "targetEntityId": "g03-hollis",
+              "hop": 2
+            }
+          }
+        ],
+        "addedScene": null,
+        "blockedCandidates": [
+          {
+            "sceneId": "g03-hollis-ward",
+            "entityId": "g03-hollis",
+            "reason": "raw-full"
+          }
+        ],
+        "scenesWithoutPath": [
+          "g03-c3",
+          "g03-c4",
+          "g03-c5",
+          "g03-c6",
+          "g03-c7",
+          "g03-c8"
+        ],
+        "forbiddenSceneIds": ["g03-corin-shed"],
+        "evidence": {
+          "pathEvidenceValidity": 1,
+          "requirements": [
+            "edge-relation-evidence",
+            "node-entity-evidence",
+            "revision-decision-binding",
+            "explicit-pin-association",
+            "raw-excerpt-unchanged"
+          ],
+          "assertions": [
+            {
+              "kind": "edge-sequence-preserved",
+              "sceneId": "g03-c2",
+              "edgeIds": ["g03-has-sister", "g03-treated-by"],
+              "forbiddenCollapsedRelation": "Wren treated-by Hollis"
+            }
+          ]
+        },
+        "metrics": {
+          "raw": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIr": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIrPlusGraph": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          }
+        }
+      }
+    },
+    {
+      "id": "frontier-exceeded",
+      "description": "Same corpus plus an approved Revision for fourteen more Wren knows-Relations, so qualified discovery exceeds twelve Entities under either counting convention.",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      },
+      "preconditions": [
+        {
+          "id": "b-sealed-binding",
+          "scope": "variant"
+        },
+        {
+          "id": "maintenance-enabled",
+          "scope": "variant"
+        },
+        {
+          "id": "raw-membership",
+          "scope": "variant"
+        }
+      ],
+      "expectations": {
+        "arms": {
+          "raw": {
+            "sceneIds": [
+              "g03-c1",
+              "g03-c2",
+              "g03-c3",
+              "g03-c4",
+              "g03-c5",
+              "g03-c6",
+              "g03-c7",
+              "g03-c8"
+            ],
+            "orderPredeclared": false
+          },
+          "rPlusIr": {
+            "sceneIds": [
+              "g03-c1",
+              "g03-c2",
+              "g03-c3",
+              "g03-c4",
+              "g03-c5",
+              "g03-c6",
+              "g03-c7",
+              "g03-c8"
+            ],
+            "orderPredeclared": false,
+            "irSupplementSceneId": null,
+            "resultKind": "fused"
+          },
+          "rPlusIrPlusGraph": {
+            "baseline": "rPlusIr",
+            "sceneIds": [
+              "g03-c1",
+              "g03-c2",
+              "g03-c3",
+              "g03-c4",
+              "g03-c5",
+              "g03-c6",
+              "g03-c7",
+              "g03-c8"
+            ],
+            "appendedSceneId": null,
+            "orderPredeclared": false
+          }
+        },
+        "graph": {
+          "status": "unavailable",
+          "reasonClass": "graph-limit-exceeded",
+          "nodes": [],
+          "edgeIds": [],
+          "frontier": {
+            "discoveredEntities": 16,
+            "limit": 12
+          }
+        },
+        "pathAttachments": [],
+        "addedScene": null,
+        "blockedCandidates": [],
+        "scenesWithoutPath": [
+          "g03-c1",
+          "g03-c2",
+          "g03-c3",
+          "g03-c4",
+          "g03-c5",
+          "g03-c6",
+          "g03-c7",
+          "g03-c8"
+        ],
+        "forbiddenSceneIds": ["g03-corin-shed", "g03-hollis-ward"],
+        "evidence": {
+          "pathEvidenceValidity": 1,
+          "requirements": [],
+          "assertions": []
+        },
+        "metrics": {
+          "raw": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIr": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIrPlusGraph": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          }
+        }
+      }
+    }
+  ],
+  "positive": [
+    {
+      "id": "G-03-P1",
+      "materials": ["g03-r-path", "g03-has-sister", "g03-c1"],
+      "expectation": "The one-hop Wren→Ivy path is a Graph node/edge and is attached to the existing R+IR Scene g03-c1.",
+      "rule": "l6-l9 L7: 最大2hop; post-B §7.2: path attachment keeps R+IR."
+    },
+    {
+      "id": "G-03-P2",
+      "materials": ["g03-r-path", "g03-treated-by", "g03-c2"],
+      "expectation": "The two-hop Wren→Ivy→Hollis path is returned as its exact edge sequence and attached to g03-c2; it is never collapsed into one derived Relation.",
+      "rule": "l6-l9 G-03 positive: 2hop以内の全qualified path; post-B §6.3: 2hop pathは既存edge列のまま."
+    }
+  ],
+  "negative": [
+    {
+      "id": "G-03-N1",
+      "materials": [
+        "g03-r-third",
+        "g03-taught",
+        "g03-corin",
+        "g03-c3",
+        "g03-corin-shed"
+      ],
+      "expectation": "The qualified Hollis→Corin edge is a third hop: Corin is not a node, g03-c3 gets no path and g03-corin-shed is never returned.",
+      "rule": "l6-l9 L7 and graph-limited-binding: 3 hop => Graph contribution 0."
+    },
+    {
+      "id": "G-03-N2",
+      "materials": ["g03-r-frontier", "g03-c1", "g03-c2"],
+      "expectation": "With sixteen qualified discovered Entities the query refuses the whole Graph: no node, edge or path is returned, including the otherwise valid one- and two-hop paths, and the result is exactly R+IR.",
+      "rule": "graph-limited-binding: limit超過 => Graph寄与0; post-B §6.2: partial Graphを返さない."
+    },
+    {
+      "id": "G-03-N3",
+      "materials": ["g03-hollis-ward"],
+      "expectation": "Raw is full, so the qualified Hollis Scene is blocked and never displaces or follows the eight R+IR Scenes.",
+      "rule": "candidate §6 / post-B §7.2: Raw満杯は既存結果を押し出さない."
+    }
+  ],
+  "measurementBoundary": {
+    "contractBaseline": "The isolated validator recomputes Graph traversal, Scene association, one-slot fusion and scorer arithmetic from these predeclared rows; it never runs Raw, IR or Graph.",
+    "runtimeSetup": "Requires normal Scene/Scope/registry/Entity/Relation/pin/foreshadow writers, normal Chronicle provider/Proposal/child/Decision setup for qualifiedIr, and the normal typed Entity/Relation prepare plus Human Decision route for every revision. Runtime IDs issued by writers are mapped to these logical IDs in a setup receipt; Gold never stores runtime IDs.",
+    "setupOrder": "Create the project and every Scene (including S2) in reading order; then Codex entities and relations; then the Scope registry and every explicit Scene Scope; then foreshadows, foreshadow Codex links and pins. Before the first setupTimeline step, enable maintenance through the real runtime-policy setting (the product default is maintenance_enabled=0; never through SQL or injected state; precondition maintenance-enabled). Then follow setupTimeline in order: each revision is prepared against its review Scene and receives its declared decision, each mutation uses its normal writer, and the qualified-ir step creates every qualifiedIr through the normal fixture provider/Proposal/child/Decision route with optional story inputs disabled only through real planner settings. Do not change tree order, registry or Scene Scope after the first typed revision is prepared. Then wait for the variant measurementPoint, record whether each declared precondition holds, and compare only the expectations that no unmet precondition blocks.",
+    "graphConnection": "No Graph-only Scene can be appended in this slot class, so the case is measurable through Graph DTO nodes/edges and path attachments to existing R+IR Scenes without target-Scene body disclosure.",
+    "goldOrigin": "Predeclared for this case before any Graph runtime observation; not selected from observed output and not a human author measurement.",
+    "setupRefusal": "If a normal writer refuses to prepare or approve a negative material, record refused-at-setup; that negative still expects Graph contribution 0. A refused positive material makes the case Hold. A declared precondition that does not hold (such as a Raw membership or an ir-only IR admission that differs from the arms) records the affected variant as blocked:<precondition> instead; any other R or R+IR difference from the arms is Hold. Nothing is tuned and rerun.",
+    "rawPrediction": "R is predicted as the eight control Scenes that quote S2 verbatim, filling the eight-Scene cap in an order that is not predeclared; all have Gold 0. Non-control Scenes share no Raw-visible token with S2 and rank below every control even if one were admitted. This prediction is the precondition raw-membership: a different Raw membership records the variant as blocked:raw-membership, not Hold. IR is not assumed to attach to a control Scene; the R+IR result kind is recorded only."
+  }
+}

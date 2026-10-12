@@ -1,0 +1,244 @@
+{
+  "schemaVersion": "nir1-graph-freeze/1",
+  "status": "frozen-after-independent-expectation-review",
+  "frozenAt": "2026-10-12T23:09:04Z",
+  "baselineHead": "a153743b3f672b7274bdd748f15ef9c216dc9961",
+  "graphRuntimeObservedBeforeFreeze": false,
+  "reviewedBy": "independent-expectation-reviewer",
+  "reviewVerdict": "approve",
+  "reviewReceipt": "evals/nir1-graph/independent-expectation-review.v1.json",
+  "reviewReceiptSha256": "188a679a0bd132df3c990e808e9be9c882b6372cbff412d89c8c844183ac34fd",
+  "manifestSha256": "76ca8040ca9162604cba9f0b376dc7c46e5a17879e892b468bb3321f2463dd3a",
+  "schemaSha256": "d012e662ba2d8b3bf91a12ca08c44a782faa4fde045d00f1dc076e2e6de96921",
+  "readmeSha256": "26fe153a71c3d27b26662324bcc893ab3106fafb7dbf81a6eab24993ef33eef9",
+  "irSupplementAdmissionProbe": {
+    "status": "not-run",
+    "reason": "No integrator decision to run the optional model-only cosine probe before this freeze; see manifest irSupplementedCoverage."
+  },
+  "cases": [
+    {
+      "caseId": "G-01",
+      "path": "evals/nir1-g01/fixture.v1.json",
+      "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+    },
+    {
+      "caseId": "G-02",
+      "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+      "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c"
+    },
+    {
+      "caseId": "G-03",
+      "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+      "sha256": "50270567e373145362f70b1106ee9fdb8dbfe6660561f42da45ccfdd1ddc68a2"
+    },
+    {
+      "caseId": "G-04",
+      "path": "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+      "sha256": "4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf"
+    },
+    {
+      "caseId": "G-05",
+      "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+      "sha256": "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28"
+    },
+    {
+      "caseId": "G-06",
+      "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+      "sha256": "acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a"
+    },
+    {
+      "caseId": "G-07",
+      "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+      "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0"
+    },
+    {
+      "caseId": "G-08",
+      "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+      "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9"
+    }
+  ],
+  "independentExpectationReview": {
+    "reviewer": {
+      "role": "independent-expectation-reviewer",
+      "model": "claude-fable-5-1",
+      "effort": "high",
+      "distinctFromFixtureAuthor": true,
+      "readOnly": true,
+      "graphRuntimeOutputObserved": false,
+      "independence": "Each round ran as its own reviewer instance, neither the fixture author nor the agent that applied the required changes. It re-derived the expectations from the documented rules and the fixtures, checking some rules against product code. It did not modify the candidate worktree (reads, hashing, pnpm eval:fixtures and node --test only), did not run the Graph runtime, and read no Graph output (worker frames, Related Scenes results with Graph, Graph output under any .artifacts) and not the CP-1 worktree."
+    },
+    "rounds": [
+      {
+        "round": 1,
+        "verdict": "changes-required",
+        "receipt": "evals/nir1-graph/independent-expectation-review.v1.json",
+        "receiptSha256": "188a679a0bd132df3c990e808e9be9c882b6372cbff412d89c8c844183ac34fd",
+        "resolution": "All ten required changes were applied before round 2; fixture bodies changed only by the added precondition fields and the measurementBoundary wording."
+      },
+      {
+        "round": 2,
+        "verdict": "approve",
+        "requiredChanges": [],
+        "filesAtReview": [
+          {
+            "path": "evals/nir1-graph/manifest.v1.json",
+            "sha256": "2a0d1c9c31bc1b1f92adc31dfe3ffbb7eb792b6414673794ac5fe3ece65633e0"
+          },
+          {
+            "path": "evals/nir1-graph/schema.v1.json",
+            "sha256": "d012e662ba2d8b3bf91a12ca08c44a782faa4fde045d00f1dc076e2e6de96921"
+          },
+          {
+            "path": "evals/nir1-graph/README.md",
+            "sha256": "48599807dc57b352e831464d4c0580d604f73ceed7b29d265abae37d1ac60242"
+          },
+          {
+            "path": "evals/nir1-graph/independent-expectation-review.v1.json",
+            "sha256": "188a679a0bd132df3c990e808e9be9c882b6372cbff412d89c8c844183ac34fd"
+          },
+          {
+            "path": "evals/nir1-g01/fixture.v1.json",
+            "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+          },
+          {
+            "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+            "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c"
+          },
+          {
+            "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+            "sha256": "50270567e373145362f70b1106ee9fdb8dbfe6660561f42da45ccfdd1ddc68a2"
+          },
+          {
+            "path": "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+            "sha256": "4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf"
+          },
+          {
+            "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+            "sha256": "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28"
+          },
+          {
+            "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+            "sha256": "acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a"
+          },
+          {
+            "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+            "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0"
+          },
+          {
+            "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+            "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9"
+          }
+        ],
+        "unboundFilesAtReview": [
+          {
+            "path": "scripts/quality/nir1-graph/contract.mjs",
+            "sha256": "09c9e5335b2f793c2743f7e1e3ed9568cb9022a5f7ceaa2fd93b50c5799be927"
+          },
+          {
+            "path": "scripts/quality/nir1-graph/contract.test.mjs",
+            "sha256": "837e826d4c2e733c884d3acb3ad9264d11b4437208d7f6a6f1c37ec07ce1ac2b"
+          },
+          {
+            "path": "scripts/quality/nir1-graph/porter.mjs",
+            "sha256": "21c418de4ee17d6e337a7dd6fcc3791d4824394e70a13bf6802c43844ceb5026"
+          }
+        ],
+        "supersededFreezeSha256": "85486f738d6cb82c88b407d65e15600474db6d01999d07f1fd0ce70d138cf6aa",
+        "supersededFreeze": "The freeze written after the round 1 changes, which round 2 checked against the files above; this record replaces it.",
+        "recordedAs": "verdict, requiredChanges, cases and interpretations are the reviewer's result, unedited.",
+        "cases": [
+          {
+            "id": "G-02",
+            "verdict": "approve",
+            "notes": "独立再導出（規則のみ）: timeline で m-dace-type が r-dace の relationIds に触れ stale。資格 Revision = r-tamsin, r-rook, r-sela。Orla から trained-tamsin（directed 保存方向）と works-beside（symmetric の to 側）を辿り nodes {Orla0, Sela1, Tamsin1}、edges 2 本。trained-orla は Rook 未到達・to=Orla で reverse-direction、dace-link は revision-excluded、Dace revision-excluded、Rook unreached。到達 Entity の pin は tamsin-first(Tamsin)、attach(Sela) の 2 件 ≤ 8（K1 の N_F 切り詰め非依存）。attach は R+IR 内なので path 付加、tamsin-first は R+IR 外で hop1 唯一の新規候補、R+IR 2<8 かつ IR 補完なしで末尾に追加。excerpt [0,78) は UTF-16 長 78 と一致。nDCG@8 = (7/log2 4)/7 = 0.5、Recall 1。宣言と全て一致。前提条件 b/m/raw + cb4-inputs(tamsin-first) は validator の requiredPreconditions と一致。README 2 の「型編集拒否なら寄与 0 のまま」は期待値の不変を言うもので、拒否時は Dace が hop1 で到達し dace-decoy が同 hop の競合候補になるため観測は Hold になる（一般の Hold 規則で足り、fixture 変更不要）。"
+          },
+          {
+            "id": "G-03",
+            "verdict": "approve",
+            "notes": "base: r-path, r-third が資格、knows-* は Revision なし。Wren→Ivy(1)→Hollis(2)、taught は Hollis(hop2) 発なので beyond-max-hops、Corin も beyond-max-hops。pin 総数 3（c1/Ivy, c2/Hollis, hollis-ward/Hollis）≤ 8。c1 に 1hop、c2 に 2hop の edge 列 [has-sister, treated-by] を付加、hollis-ward は Raw 8 件満杯で blocked、c3 は Corin 未到達で path なし。arms は 8 control 不変、指標 0。frontier-exceeded: r-frontier 承認で hop1 = Ivy + 14 = 15、hop2 = Hollis、発見 16（seed 込み 17）で両数え方とも 12 超。製品 MAX_GRAPH_NODES=12（narrative_nir1.rs:30）と `ensure!(hops.len() < MAX_GRAPH_NODES)`（nir1_graph.rs:1879）は Err で切り詰めないので Graph 全体 unavailable、R+IR のまま、path 0、hollis-ward/corin-shed 禁止。discoveredEntities=16 と reasonClass は recordedOnly で runtime 比較外。r-frontier が setup で拒否された場合は超過状態を作れず観測は Hold（期待値は変えない）。宣言と一致。"
+          },
+          {
+            "id": "G-04",
+            "verdict": "approve",
+            "notes": "前回の変更要求（IR admission の前提条件化）が反映されたので approve。導出: r-lio だけが資格（rv-match は default explicit、全軸 exact が query identity と一致、holder/audience reader）。r-kit は worldline exact wl-alt ≠ wl-main で scope-mismatch、r-ora は unresolved で fail closed、r-tam は marker unknown、r-sel は holder=character(Mott) で holder-not-reader。Mott は Revision なし。製品の query 経路は Disclosure Unavailable の Revision を `None` として skip する（nir1_graph.rs:1816-1821）ので「個別除外・Graph 全体は available」の読みは製品コードと整合。nodes {Bren0, Lio1}、pin 総数 2（lio-landing, lio-market）。lio-landing は R+IR 内なので path 付加、lio-market は IR が共通枠を使用済みで blocked。control の pin（Kit/Ora/Tam/Sel）は未到達。R=[control]、R+IR=[control, lio-landing]、Graph は membership/順序/excerpt を変えない。Recall 0.5、nDCG = (7/log2 3)/(7+3/log2 3) = 0.49664 で一致。前提条件 ir-supplement-admission(lio-landing) が宣言され、不成立なら blocked（Hold ではない）、全 variant blocked なら CP-4 不 PASS が manifest.irSupplementedCoverage に明記されている。"
+          },
+          {
+            "id": "G-05",
+            "verdict": "approve",
+            "notes": "前回の変更要求が反映されたので approve。導出: timeline 順に r-pia 資格、r-xan-1 → m-xan で stale、r-xan-2（編集後に新規・承認）資格、r-yara → m-yara で stale、r-zeb-1 → m-zeb で stale、r-zeb-2 は decision-missing、r-wynn は decision-rejected。どの mutation も seed Hale に触れない。nodes {Hale0, Pia1, Xan1}、edges supplied-pia/supplied-xan、pin 総数 2。xan-watch は R+IR 内で path 付加（Entity Evidence は現行要約 silver、copper を含まない assertion）、pia-ridge は IR 補完済みで blocked、control の pin（Yara/Zeb/Wynn）は未到達。R=[control]、R+IR=[control, xan-watch]、指標 0.5/0.49664 で一致。前提条件 ir-supplement-admission(xan-watch) 宣言済み。「旧Epoch」= 同一 material の置換前 Revision の具体化と、literal semantic epoch が coverage gap であることが README「対象外」と manifest.coverageGaps に記載されている。"
+          },
+          {
+            "id": "G-06",
+            "verdict": "approve",
+            "notes": "r-path（Maro, Ines, Bram + 2 edge）、r-bram-2（Entity のみ）、r-lute（Entity のみ）が資格。Maro→Ines(1)→Bram(2)。lute-hired は Revision なしで橋にしない（no-revision）、Lute/Bram-2 は資格 Entity だが unreached。pin 総数 3（c1/Ines, c2/Bram, bram-galley/Bram）≤ 8。c1 に 1hop、c2 に 2hop の edge 列を保持して付加（「Maro hired Bram」へ畳まない assertion）、bram-galley は Raw 満杯で blocked、c3(Lute)/c5(Bram-2) は path なし、c4 は本文で Bram を名指しするが pin がないので対応付けない（homonym-not-merged / no-name-inferred-association）。8 control 不変、指標 0。宣言と一致。"
+          },
+          {
+            "id": "G-07",
+            "verdict": "approve",
+            "notes": "製品 read_a3_reveal_state（nir1_entity_relation.rs:2852-）を直接確認: secret かつ非 abandoned で payoff Scene あり → reading 軸で order != Greater（Equal 含む）なら開示、confirmed 不問；payoff Scene なし → payoff_confirmed のみ。validator の foreshadowDisclosedAtQuery はこれと同じ分岐で、payoff Scene の explicit Scope も要求する（製品は authority mapping が無ければ None=未開示）。導出: r-pell/r-rhea は rv-early(0) < 100 で資格、fs-rhea は payoff 30 < 100 で開示済み。r-fenn は rv-future(110) で reading-future、r-quin は review=S2 で same-boundary、r-hask は payoff g07-late(120) > 100 で未開示、r-nim は payoff なし・未確定で未開示。nodes {Vesna0, Pell1, Rhea1}、pin 総数 2。pell-dock は hop1 唯一の新規候補で追加（excerpt [0,70) は UTF-16 長 70 と一致）、attach(Rhea) に付加、probe の pin は全員除外 Entity。R+IR 2 件不変、追加後 nDCG 0.5、Recall 1。不適格 Revision の個別除外は製品 query 経路（Unavailable → skip）と整合。"
+          },
+          {
+            "id": "G-08",
+            "verdict": "approve",
+            "notes": "base-usable: r-cass/r-juno 資格、nodes {Odile0, Cass1, Juno1}、pin 総数 2、cass-attic 追加（excerpt [0,64) 一致）、attach(Juno) 付加、nDCG 0.5。graph-index-unusable: m-juno（variant 限定）commit 後・再 build 前で Graph 全体 unavailable、R+IR に戻り、無関係な Cass path も使わず cass-attic 禁止。graph-recovered: 再 build 後は r-juno が stale で除外、nodes {Odile0, Cass1}、pin 総数 1、attach に旧 generation の Juno path は付かず、Cass だけ追加。chronicle-index-unusable / both: m-ir-withdraw で Chronicle unusable → Graph も停止、baseline raw、exact R、cass-attic 禁止、both は Chronicle 理由を優先。5 variant とも A6 状態表（実装計画 :161-170）と一致。Juno は IR 付き control に pin されず IR 文でも名指しされないので IR 材料から独立。unusable 3 variant の index-state-holding、追加 2 variant の cb4-inputs、全 variant の maintenance-enabled（setupOrder に実設定有効化を追記済み）が宣言されている。"
+          }
+        ],
+        "interpretations": [
+          {
+            "point": "修正報告の検証（hash・freeze・レビュー記録）",
+            "decision": "確認済み。freeze.v1.json の 7 fixture・manifest・schema・README・レビュー記録の sha256 は現物と一致。independent-expectation-review.v1.json の result は wf_3dcce1e9-33f の expect-review:cp0（agent a428883cfbbff470d）の結果と deepEqual で一致（タスクに引用された前回結果と同一）。wf_c24debcf-c97 の review:cp0（P3 4 件）は別の差分レビューであり freeze に束縛する対象ではない。scratchpad cp0fix/before の 12 ファイルはレビュー記録の worktreeFilesAtReview の hash と一致し、7 fixture は variants[].preconditions と measurementBoundary を除いて deepStrictEqual。変更された measurementBoundary の key は報告どおり（setupOrder/setupRefusal/rawPrediction 全件、graphConnection は G-02/G-07/G-08、indexStateHolding は G-08）。"
+          },
+          {
+            "point": "検証コマンドの再実行",
+            "decision": "Node 22（v22.23.3）で pnpm eval:fixtures は errors [] かつ nir1Graph.freeze.status=frozen（frozenAt 2026-10-12T22:44:20Z）、node --test の 4 ファイルは 73/73 pass を再現。Graph runtime は実行せず、Graph 出力・CP-1 worktree・同 journal の expect-rereview1 結果は読んでいない。"
+          },
+          {
+            "point": "requiredChanges 10 件の反映",
+            "decision": "全件反映を確認。(1) schema $defs.precondition（閉集合 6 種・scope enum）と manifest.preconditions、validator の requiredPreconditions/checkPreconditions/resolveVariantOutcome（未宣言前提での blocked 化を throw、variant scope は pass 不可、cb4-inputs は追加 1 件の部分期待値のみ）。(2) resultKind は recordedOnlyFields、checkArms は ir-only がある場合だけ fused を要求、README 6 改訂、CP-3a の raw 基底依存を manifest.dependencies に記載。(3) probe は not-run を freeze と manifest 両方に記録し、全 blocked 時の CP-4 不 PASS を明記。(4) reveal 規則を製品に揃え、分岐試験あり。(5) runtimeComparison を 17/3/8 に分類し schema の expectation field を過不足なく覆う検査あり、reasonClass は status-only。(6) validateFreeze は両方向（freeze あり→frozen+reviewed、なし→pending）、README/schema/レビュー記録の hash を束縛。(7) README「CP-0 で行わなかった作業」に 4 点目・S1 harness・B-ROUTE 前提を記載。(8) K1 既定規則の表行・pin 総数 ≤ 8 の validator 検査・§2.5 判別 fixture 不採用。(9) README (i)〜(iv)。(10) freeze record に baselineHead 全 40 桁、graphRuntimeObservedBeforeFreeze=false。"
+          },
+          {
+            "point": "不適格 Revision の個別除外（README 10）",
+            "decision": "製品コードで裏付けた。nir1_graph.rs:1816-1821 は evaluate_nir1_entity_relation_disclosure が Unavailable を返した Revision を None として skip し continue する（Graph 全体の Err ではない）。G-04/G-05/G-07 の「available で path 付加」はこの読みに依存しており、一致する。"
+          },
+          {
+            "point": "G-07 の reveal 規則の正本",
+            "decision": "read_a3_reveal_state の disclosed 判定（secret==0||abandoned → true；payoff_scene_id None → payoff_confirmed；それ以外 → payoff_order != Greater、reading 軸は reading_rank 比較）を validator が再現していることを確認。Vesna（seed）は全 Revision に含まれるが秘密を持たないため、除外 Revision が seed の資格に影響しない。"
+          },
+          {
+            "point": "K1 既定規則の非依存性",
+            "decision": "全 fixture の到達 Entity pin 総数を独立に数え、G-02 2、G-03 3、G-04 2、G-05 2、G-06 3、G-07 2、G-08 2/1 で README の内訳と一致。追加候補は各 case で最小 hop の 1 件に限られ、tuple の ID 順に依存しない。"
+          },
+          {
+            "point": "setup 拒否時の扱い（G-02 型編集、G-03 r-frontier）",
+            "decision": "期待値は変えないという方針で妥当。G-02 で型編集が拒否されれば Dace が hop1 で到達し dace-decoy が同 hop の競合候補となるため観測は Hold、G-03 で r-frontier が拒否されれば超過状態を作れず観測は Hold。いずれも setupRefusal と「Hold：製品を測ったうえで比較する期待値と違った」の既存規則で処理でき、fixture の改版や requiredChange にはしない。"
+          },
+          {
+            "point": "未実施の gate と記録先",
+            "decision": "grimodex-impact-gate Light（pnpm eval:impact -- --run）の実行、PR 本文・計画の作業記録への P3-4 の転記は integrator の merge 前作業として openIssues に残っており、fixture の期待値や freeze には影響しない。今回の verdict は fixture・期待値・freeze の整合に対するもので、merge readiness を主張しない。"
+          }
+        ]
+      }
+    ],
+    "changesAfterApproval": [
+      {
+        "path": "evals/nir1-graph/manifest.v1.json",
+        "scope": {
+          "kind": "json-keys",
+          "keys": ["independentExpectationReview"]
+        },
+        "approvedSha256OutsideScope": "2f2a51b28ade3c88bfb9299de676535e92c967dacc1ca58284b135a5ec0f65af",
+        "change": "Records the round 2 approval: verdict approve, the round history (resolution, afterApproval), the approvalRecord pointer, the reviewer description and what the freeze binds. status and independentExpectationReview.status keep their frozen values."
+      },
+      {
+        "path": "evals/nir1-graph/README.md",
+        "scope": {
+          "kind": "markdown-sections",
+          "headings": ["CP-0 で行わなかった作業", "独立期待値レビューと freeze"]
+        },
+        "approvedSha256OutsideScope": "d3d51ba8f86187c103f994d711ec3cabd96852a42212db31e17a3e2730360cd1",
+        "change": "Moves the same-host R/R+IR baseline re-measurement (with the PR-P receipt) to the CP-4 measurement window and the SPIKE S1 harness import to CP-4, naming where they are and the S1 §8 import conditions; describes both review rounds, the changes after the approval and the validator's approval checks."
+      }
+    ],
+    "validatorChangesAfterApproval": "validateFreeze also requires the approving manifest verdict, its agreement with reviewVerdict and the manifest freezeRecord pointer; validateApprovingReview checks this record (reviewer, rounds, the approved hash of every bound file and the declared scope of each later change); validateReviewReceipt returns the receipt it read. porter.mjs is unchanged."
+  }
+}

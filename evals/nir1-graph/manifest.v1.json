@@ -1,0 +1,238 @@
+{
+  "schemaVersion": "nir1-graph-manifest/1",
+  "status": "frozen-after-independent-expectation-review",
+  "scope": "C-product fixed Graph case population G-01..G-08 compared as R / R+IR / R+IR+Graph; design expectations only, no runtime result, no product or Graph publication acceptance",
+  "canonicalPlan": "docs/plans/nir1-l6-l9-execution-plan.md",
+  "caseSchema": "evals/nir1-graph/schema.v1.json",
+  "observationPolicy": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result.",
+  "graphRuntimeObservedBeforeFreeze": false,
+  "isolation": "Every case and every variant runs in its own fresh workspace and project built from its fixture; no Scene, Codex row, pin, Revision, Decision, Index generation, query history or artifact is shared between cases or variants. Logical IDs are namespaced by case.",
+  "cases": [
+    {
+      "caseId": "G-01",
+      "path": "evals/nir1-g01/fixture.v1.json",
+      "fixtureId": "nir1-g01-explicit-pin-design/1",
+      "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79",
+      "slotClass": "supplementable",
+      "predeclaredImprovement": true
+    },
+    {
+      "caseId": "G-02",
+      "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+      "fixtureId": "nir1-g02-directed-relation/1",
+      "slotClass": "supplementable",
+      "predeclaredImprovement": false
+    },
+    {
+      "caseId": "G-03",
+      "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+      "fixtureId": "nir1-g03-bounded-two-hop/1",
+      "slotClass": "raw-full",
+      "predeclaredImprovement": false
+    },
+    {
+      "caseId": "G-04",
+      "path": "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+      "fixtureId": "nir1-g04-scope-exact-unknown/1",
+      "slotClass": "ir-supplemented",
+      "predeclaredImprovement": false
+    },
+    {
+      "caseId": "G-05",
+      "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+      "fixtureId": "nir1-g05-current-revision-freshness/1",
+      "slotClass": "ir-supplemented",
+      "predeclaredImprovement": false
+    },
+    {
+      "caseId": "G-06",
+      "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+      "fixtureId": "nir1-g06-evidence-anchor-path/1",
+      "slotClass": "raw-full",
+      "predeclaredImprovement": false
+    },
+    {
+      "caseId": "G-07",
+      "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+      "fixtureId": "nir1-g07-reading-before-reveal/1",
+      "slotClass": "supplementable",
+      "predeclaredImprovement": false
+    },
+    {
+      "caseId": "G-08",
+      "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+      "fixtureId": "nir1-g08-graph-index-fallback/1",
+      "slotClass": "supplementable",
+      "predeclaredImprovement": false
+    }
+  ],
+  "arms": {
+    "raw": "R",
+    "hybrid": "R+IR",
+    "graph": "R+IR+Graph",
+    "graphComparedAgainst": "hybrid",
+    "seedOnly": "diagnostic-only"
+  },
+  "comparison": {
+    "sameInputs": "Every arm of a case uses the same query, corpus, manual seed, Scope, sealed setup and context.",
+    "graphImprovement": "Judged against R+IR only; G-01 is the single predeclared improvement case.",
+    "separateMetrics": "Scene discovery/rank change and path Evidence attachment are recorded separately.",
+    "required": [
+      "G-01 predeclared improvement over R+IR",
+      "macro non-regression against R+IR",
+      "path Evidence validity 100%",
+      "forbidden contribution 0",
+      "R+IR membership, order and excerpts unchanged for raw-full and ir-supplemented cases",
+      "Graph unusable falls back to R+IR and Chronicle unusable to exact R with no mixed set"
+    ],
+    "alwaysUnavailable": "HOLD; an always-unavailable or never-wired Graph arm is never a PASS",
+    "failure": "A runtime result that differs from the compared expectations is retained as Hold; fixtures, Gold and metrics are not edited after observation. A variant whose declared precondition does not hold is recorded as blocked:<precondition> instead (see preconditions), which is neither Hold nor PASS.",
+    "unverifiedRequirement": "A required item whose every applicable variant is blocked is unverified, and CP-4 cannot PASS with an unverified required item."
+  },
+  "runtimeComparison": {
+    "policyId": "nir1-graph-runtime-comparison/1",
+    "fieldsRelativeTo": "variants[].expectations",
+    "comparedFields": [
+      "arms.raw.sceneIds",
+      "arms.rPlusIr.sceneIds",
+      "arms.rPlusIr.irSupplementSceneId",
+      "arms.rPlusIrPlusGraph.baseline",
+      "arms.rPlusIrPlusGraph.sceneIds",
+      "arms.rPlusIrPlusGraph.appendedSceneId",
+      "graph.status",
+      "graph.nodes",
+      "graph.edgeIds",
+      "pathAttachments",
+      "addedScene",
+      "blockedCandidates[].sceneId",
+      "blockedCandidates[].entityId",
+      "scenesWithoutPath",
+      "forbiddenSceneIds",
+      "evidence",
+      "metrics"
+    ],
+    "comparisonControlFields": [
+      "arms.raw.orderPredeclared",
+      "arms.rPlusIr.orderPredeclared",
+      "arms.rPlusIrPlusGraph.orderPredeclared"
+    ],
+    "recordedOnlyFields": [
+      "arms.rPlusIr.resultKind",
+      "graph.reasonClass",
+      "graph.qualifiedRevisionIds",
+      "graph.excludedRevisions",
+      "graph.excludedEdges",
+      "graph.excludedEntities",
+      "graph.frontier",
+      "blockedCandidates[].reason"
+    ],
+    "order": "A Scene list is compared in order only when its orderPredeclared is true, otherwise by membership. R+IR+Graph keeps the observed R+IR as its unchanged prefix whatever its result kind (raw or fused).",
+    "recordedOnlyMeaning": "Rule-derived explanations and design predictions: recorded beside the runtime result for review, never compared and never a reason for Hold. Runtime labels may differ (for example a superseded Revision instead of stale-after-approval), and a runtime that stops at its node limit never reports the rule-derived discovery count.",
+    "reasonClass": "status-only",
+    "reasonClassRationale": "The runtime reason allowlist is fixed by CP-1 after this freeze (the DSN §1.5 table is a proposal), so no mapping is fixed here and only graph.status is compared. The cause of an unavailable variant is established by its preconditions (index-state-holding for the G-08 unusable variants) and by the G-03 variant pair that differs only in g03-r-frontier; the runtime reason is recorded."
+  },
+  "preconditions": {
+    "policyId": "nir1-graph-preconditions/1",
+    "outcomes": ["pass", "hold", "blocked:<preconditionId>"],
+    "definitions": [
+      {
+        "id": "b-sealed-binding",
+        "scope": "variant",
+        "appliesTo": "Every variant of G-02..G-08.",
+        "check": "Setup establishes the B Entity/Relation Index (nir1-reviewed-entity-relation:v1) sealed generation through the product-owned B build route (the B-ROUTE maintenance entry, which its test and journey launch path may trigger, or the CP-2a owner), never through a test-only or diagnostic publisher, SQL or injected state, and the setup receipt records that generation.",
+        "source": "SPIKE S1 §5: at a153743b no product route publishes the B sealed binding; graph-limited-binding; plan B-ROUTE and CP-2a."
+      },
+      {
+        "id": "maintenance-enabled",
+        "scope": "variant",
+        "appliesTo": "Every variant of G-02..G-08.",
+        "check": "Maintenance is enabled through the real runtime-policy setting (the product default is maintenance_enabled=0), and the canonical usability probe reports the sealed Chronicle and Graph generations that follow every applicable setupTimeline step; for an unusable variant this holds before its declared mutation commits.",
+        "source": "SPIKE S1 §5 (maintenance_enabled=0 by default); independent expectation review, G-08."
+      },
+      {
+        "id": "raw-membership",
+        "scope": "variant",
+        "appliesTo": "Every variant of G-02..G-08.",
+        "check": "The observed R membership equals expectations.arms.raw.sceneIds: the two controls of a supplementable case, exactly eight controls of a Raw-full case, the single control of an IR-supplemented case (order only where orderPredeclared).",
+        "source": "measurementBoundary.rawPrediction; dense similarity cannot be checked statically (SPIKE S1)."
+      },
+      {
+        "id": "ir-supplement-admission",
+        "scope": "variant",
+        "appliesTo": "Variants with a usable Chronicle Index in a case that declares an ir-only Scene: G-04 (g04-lio-landing) and G-05 (g05-xan-watch).",
+        "check": "The ir-only Scene's qualified IR scores at or above the language IR floor (policies/narrative/nir1-related-scenes-ranking.json), is admitted, and the observed R+IR is R followed by that Scene in the shared slot.",
+        "source": "SPIKE S1 §3.1: the G-01 control IR scored cosine 0.61294, below the en IR floor 0.66, and R+IR stayed raw."
+      },
+      {
+        "id": "index-state-holding",
+        "scope": "variant",
+        "appliesTo": "Variants measured while an Index is unusable: G-08 graph-index-unusable, chronicle-index-unusable and both-indexes-unusable.",
+        "check": "At query time the canonical usability probe reports the variant's declared indexState after the declared mutation commit, reached and held only with normal writers and lifecycle controls (no SQL edit or injected state).",
+        "source": "G-08 measurementBoundary.indexStateHolding."
+      },
+      {
+        "id": "cb4-inputs",
+        "scope": "added-scene",
+        "appliesTo": "Variants that declare an appended Graph-only Scene: G-02 base, G-07 base, G-08 base-usable and graph-recovered.",
+        "check": "The CB-4 target-Scene reader judges the appended Scene without an explicit POV or story position, which these fixtures do not set. If CB-4 reports that such an input is required, only the appended-Scene sub-expectation is blocked.",
+        "source": "SPIKE S1 §8 (K2: CB-4 v1 may require POV or story position); independent expectation review, G-02.",
+        "notEvaluated": [
+          "addedScene",
+          "arms.rPlusIrPlusGraph.appendedSceneId",
+          "arms.rPlusIrPlusGraph.sceneIds[appended]",
+          "evidence.requirements[added-scene-body-anchor]",
+          "metrics.rPlusIrPlusGraph"
+        ]
+      }
+    ],
+    "declaration": "Each variant lists exactly the preconditions that apply to it (fixture variants[].preconditions; the validator derives the required set). Preconditions are checked from setup receipts, the canonical usability probe, the R and R+IR arms and CB-4's typed result before any expectation is compared.",
+    "variantScope": "An unmet variant-scope precondition records the variant as blocked:<id>, naming the first unmet precondition in definition order and recording all of them. Its expectations are not evaluated, it is excluded from macro aggregates (non-regression, path Evidence validity and forbidden-contribution denominators) and it never counts as PASS.",
+    "addedSceneScope": "An unmet added-scene precondition records blocked:<id> for the appended-Scene sub-expectation only: the notEvaluated fields above are not compared, and that variant's R+IR+Graph metrics stay out of macro aggregates. Everything else is still compared, including an R+IR+Graph list that equals the observed R+IR with no other Scene.",
+    "holdVersusBlocked": "Hold means the product was measured and differs from a compared expectation, or a positive material was refused at setup. Blocked means the declared measurement condition was not produced, so nothing behind it was measured; a blocked variant can only be measured by a new fixture version after a new independent expectation review.",
+    "closedSet": "Only these six preconditions can block, and only where a variant declares them. None is added, removed or reinterpreted after a runtime observation, and an unmet precondition never changes an expectation."
+  },
+  "irSupplementedCoverage": {
+    "cases": ["G-04", "G-05"],
+    "dependsOn": "ir-supplement-admission",
+    "consequence": "If every IR-supplemented variant is blocked:ir-supplement-admission, l6-l9 L7's requirement that the IR-supplemented group keeps R+IR membership, order and excerpts is unverified, and CP-4 cannot PASS.",
+    "admissionProbe": "not-run",
+    "probeOption": "Before a freeze, and only if the integrator judges it within observationPolicy, a model-only cosine probe (the pinned model and the ordered-json/1 statement serialization; no Related Scenes runtime, no Graph) may check the ir-only IR floor and the Raw prediction, and the IR summaries may be revised before freezing; the probe and its result are then recorded in the freeze record. It was not run for this freeze."
+  },
+  "dependencies": [
+    "CP-3a appends the Graph-only Scene on a raw R+IR basis too: control IR may stay below the IR floor, the observed R+IR is then of kind raw (SPIKE S1 §5), and 'IR did not use the shared slot' means that no IR-kind row was admitted.",
+    "b-sealed-binding needs a product-owned route that publishes the B sealed generation (B-ROUTE before CP-4, or the CP-2a owner); SPIKE S1 §5 found that enabling maintenance alone calls no B publisher, so maintenance-enabled does not imply it.",
+    "An appended Graph-only Scene needs C-body (CB-1..CB-4). While that authority is Hold the appended Scene cannot be returned and the case stays Hold.",
+    "Scene association follows the K1 default rule of DSN §2.2-§2.3 (CP-1): the first 8 Scenes in tuple order, eligibility judged from the front, then path attachment and the one shared slot."
+  ],
+  "coverageGaps": [
+    "No G-case measures a literal semantic epoch boundary (restore, Scope authority change), which invalidates every material at once; G-05 measures the superseded Revision of one material and G-08 old-generation mixing.",
+    "graph.reasonClass is compared by status only until a later fixture version fixes a runtime reason mapping after CP-1.",
+    "No fixture discriminates the K1 default from the DSN §2.5 deviation (N_F above 8): K1 was confirmed without the deviation, and every fixture keeps the pins of reached Entities (including pins on ineligible Scenes) at or below 8.",
+    "The IR-supplemented class depends on ir-supplement-admission (see irSupplementedCoverage)."
+  ],
+  "existingRetrievalSeedPolicy": {
+    "policyId": "nir1-retrieval-24-graph-seed/1",
+    "population": "evals/nir1-retrieval/manifest.json",
+    "queryCount": 24,
+    "manualSeed": "none",
+    "graphStatus": "not-requested",
+    "expectedGraphContribution": 0,
+    "rPlusIrPlusGraphEqualsRPlusIr": true,
+    "retrievalManifestScope": "L0-L5 first Related Scenes product path; not Graph, Packing, general retrieval quality or author value acceptance",
+    "meaning": "The frozen 24 retrieval cases declare no Codex Entity, Relation, pin or typed Revision, so the R+IR+Graph arm runs them without a manual seed. Graph is not requested, contributes nothing and must leave R+IR membership, order, excerpts and Evidence unchanged; any Graph node, path or Scene on these queries is a forbidden contribution.",
+    "notMeasured": "These 24 runs do not measure Graph quality, Graph availability or Graph latency; G-01..G-08 carry the Graph semantics. A not-requested Graph is not counted as unavailable."
+  },
+  "independentExpectationReview": {
+    "status": "reviewed",
+    "verdict": "approve",
+    "resolution": "Round 1 was changes-required (receipt). All ten of its required changes were applied: observation-time preconditions with blocked outcomes, IR-independent R+IR (resultKind recorded only), the IR-supplemented coverage consequence, the product reveal rule, the runtime comparison classes, freeze and manifest consistency, the record of work not done in CP-0, the K1 default rule with its pin bound, the README interpretations and the freeze procedure. Fixture bodies changed only by the added precondition fields and the measurementBoundary wording. Round 2 re-derived every G-02..G-08 expectation and approved all of them with no required change (approvalRecord).",
+    "afterApproval": "Only this block and two README sections changed after the round 2 approval, and the validator gained the approval checks. The fixtures, schema.v1.json and the round 1 receipt keep the bytes round 2 approved.",
+    "requiredBefore": "The first Graph runtime observation of any G-02..G-08 case.",
+    "reviewer": "A read-only reviewer other than the fixture author and the agent that applied the required changes, without access to Graph runtime output.",
+    "receipt": "evals/nir1-graph/independent-expectation-review.v1.json",
+    "approvalRecord": "evals/nir1-graph/freeze.v1.json independentExpectationReview (round 2, verbatim)",
+    "freezeRecord": "evals/nir1-graph/freeze.v1.json",
+    "freezeBinds": "sha256 of this manifest, of every G-01..G-08 fixture, of schema.v1.json and of README.md; the round 1 receipt and its sha256; the approving round 2 record with the sha256 of every bound file at approval and the declared scope of each later change; reviewedBy, reviewVerdict, frozenAt, baselineHead, the IR admission probe status and graphRuntimeObservedBeforeFreeze=false."
+  },
+  "authorValue": "not-measured"
+}

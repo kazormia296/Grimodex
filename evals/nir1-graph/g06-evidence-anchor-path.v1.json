@@ -1,0 +1,578 @@
+{
+  "schemaVersion": "nir1-graph-case/1",
+  "status": "predeclared-design-fixture",
+  "caseId": "G-06",
+  "fixtureId": "nir1-g06-evidence-anchor-path/1",
+  "sourceDocument": "docs/plans/nir1-l6-l9-execution-plan.md",
+  "sourceSection": "G-01〜G-08 表（G-06）",
+  "designReferences": [
+    "docs/plans/nir1-l6-l9-execution-plan.md#L7: Entity/Relation入力とGraph",
+    "docs/plans/nir1-l6-l9-execution-plan.md#graph-limited-binding",
+    "docs/plans/nir1-c-scene-connection-candidate.md#6. 候補選択・融合の事前規則",
+    "docs/plans/nir1-c-scene-connection-candidate.md#7. G-01 fixture提案: 出力観察前の固定v1",
+    "docs/plans/nir1-post-b-execution-plan.md#7. C-productとP：Related Scenes統合",
+    "docs/plans/narrative-ir-nir1-implementation-plan.md#A6に含める後続の材料開示・Graph authority"
+  ],
+  "observationPolicy": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result.",
+  "language": "en",
+  "caseClass": {
+    "queryClass": "Evidence anchor／path",
+    "expectedJudgement": "path Evidenceを100%保持",
+    "positive": "Source range・revision anchor",
+    "negative": "Evidence欠落・名前からの推定"
+  },
+  "slotClass": "raw-full",
+  "goldDefinition": "Gold 3 marks the earlier Scene in which the cook reached from the selected captain Maro through his first mate (Maro has-first-mate Ines, Ines hired Bram) appears and cooks. A muttered name, the inland stable hand who shares the label Bram, and Lute (a Codex-only hired Relation without a Revision) are Gold 0.",
+  "answerEntityIds": ["g06-bram"],
+  "query": {
+    "sceneId": "g06-query",
+    "readingOrder": 100,
+    "title": "Open question",
+    "body": "Which earlier scene shows a cook hired by my chosen captain's first mate?"
+  },
+  "scenes": [
+    {
+      "id": "g06-review",
+      "readingOrder": 0,
+      "title": "Logbook",
+      "body": "Ink blotted the margin of a damp logbook.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g06-c1",
+      "readingOrder": 10,
+      "title": "Mast note",
+      "body": "A note was nailed to the mast: Which earlier scene shows a cook hired by my chosen captain's first mate? Nobody answered it.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g06-c2",
+      "readingOrder": 12,
+      "title": "Hold crate",
+      "body": "Stenciled on a crate in the hold: Which earlier scene shows a cook hired by my chosen captain's first mate? The rest was blank.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g06-c3",
+      "readingOrder": 14,
+      "title": "Rope locker",
+      "body": "A slip in the rope locker asked: Which earlier scene shows a cook hired by my chosen captain's first mate? No reply was added.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g06-c4",
+      "readingOrder": 16,
+      "title": "Muttered name",
+      "body": "A deckhand muttered the name Bram while copying a line: Which earlier scene shows a cook hired by my chosen captain's first mate? He wrote nothing more.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g06-c5",
+      "readingOrder": 18,
+      "title": "Bunk card",
+      "body": "A card above a bunk read: Which earlier scene shows a cook hired by my chosen captain's first mate? Salt had stained it.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g06-c6",
+      "readingOrder": 20,
+      "title": "Lantern hook",
+      "body": "A tag on a lantern hook asked: Which earlier scene shows a cook hired by my chosen captain's first mate? It swung unanswered.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g06-c7",
+      "readingOrder": 22,
+      "title": "Chart table",
+      "body": "Scratched into a chart table: Which earlier scene shows a cook hired by my chosen captain's first mate? No one finished it.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g06-c8",
+      "readingOrder": 24,
+      "title": "Water cask",
+      "body": "A water cask bore a chalked line: Which earlier scene shows a cook hired by my chosen captain's first mate? Spray washed the reply away.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g06-bram-galley",
+      "readingOrder": 60,
+      "title": "Bean stew",
+      "body": "Bram stirred a pot of bean stew while gulls screamed above the galley hatch.",
+      "gold": 3,
+      "role": "answer"
+    },
+    {
+      "id": "g06-bram2-stable",
+      "readingOrder": 70,
+      "title": "Gray mare",
+      "body": "Bram brushed a gray mare in a stable far inland.",
+      "gold": 0,
+      "role": "decoy"
+    },
+    {
+      "id": "g06-lute-docks",
+      "readingOrder": 80,
+      "title": "Rope stall",
+      "body": "Lute coiled rope on a dock post and haggled over prices.",
+      "gold": 0,
+      "role": "decoy"
+    }
+  ],
+  "eligibleSceneIds": [
+    "g06-review",
+    "g06-c1",
+    "g06-c2",
+    "g06-c3",
+    "g06-c4",
+    "g06-c5",
+    "g06-c6",
+    "g06-c7",
+    "g06-c8",
+    "g06-bram-galley",
+    "g06-bram2-stable",
+    "g06-lute-docks"
+  ],
+  "scope": {
+    "registry": {
+      "timelineRefs": ["tl-main"],
+      "worldlineRefs": ["wl-main"],
+      "narrativeLayerRefs": ["layer-story"]
+    },
+    "default": {
+      "marker": "explicit",
+      "queryIdentity": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "materialConstraint": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "knowledgeHolder": {
+        "kind": "reader"
+      },
+      "audience": {
+        "kind": "reader"
+      }
+    },
+    "overrides": {}
+  },
+  "entities": [
+    {
+      "id": "g06-maro",
+      "kind": "character",
+      "label": "Maro",
+      "summary": "Maro captains a merchant brig."
+    },
+    {
+      "id": "g06-ines",
+      "kind": "character",
+      "label": "Ines",
+      "summary": "Ines is first mate aboard Maro's brig."
+    },
+    {
+      "id": "g06-bram",
+      "kind": "character",
+      "label": "Bram",
+      "summary": "Bram cooks for the brig's crew."
+    },
+    {
+      "id": "g06-bram-2",
+      "kind": "character",
+      "label": "Bram",
+      "summary": "Bram tends horses at an inland stable."
+    },
+    {
+      "id": "g06-lute",
+      "kind": "character",
+      "label": "Lute",
+      "summary": "Lute sells rope at the docks."
+    }
+  ],
+  "relations": [
+    {
+      "id": "g06-has-first-mate",
+      "fromEntityId": "g06-maro",
+      "toEntityId": "g06-ines",
+      "type": "has-first-mate",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g06-hired",
+      "fromEntityId": "g06-ines",
+      "toEntityId": "g06-bram",
+      "type": "hired",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g06-lute-hired",
+      "fromEntityId": "g06-maro",
+      "toEntityId": "g06-lute",
+      "type": "hired",
+      "direction": "directed",
+      "authorDeclared": true
+    }
+  ],
+  "manualSeed": {
+    "entityId": "g06-maro",
+    "manualSeed": true
+  },
+  "pins": [
+    {
+      "sceneId": "g06-c1",
+      "entryId": "g06-ines",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g06-c2",
+      "entryId": "g06-bram",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g06-c3",
+      "entryId": "g06-lute",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g06-c5",
+      "entryId": "g06-bram-2",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g06-bram-galley",
+      "entryId": "g06-bram",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g06-bram2-stable",
+      "entryId": "g06-bram-2",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g06-lute-docks",
+      "entryId": "g06-lute",
+      "source": "scene_codex_pins"
+    }
+  ],
+  "foreshadows": [],
+  "qualifiedIr": [
+    {
+      "sceneId": "g06-c6",
+      "summary": "A lantern tag asked, unanswered, which cook a captain's first mate had hired.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    }
+  ],
+  "revisions": [
+    {
+      "id": "g06-r-path",
+      "reviewSceneId": "g06-review",
+      "entityIds": ["g06-maro", "g06-ines", "g06-bram"],
+      "relationIds": ["g06-has-first-mate", "g06-hired"],
+      "decision": "approved"
+    },
+    {
+      "id": "g06-r-bram-2",
+      "reviewSceneId": "g06-review",
+      "entityIds": ["g06-bram-2"],
+      "relationIds": [],
+      "decision": "approved"
+    },
+    {
+      "id": "g06-r-lute",
+      "reviewSceneId": "g06-review",
+      "entityIds": ["g06-lute"],
+      "relationIds": [],
+      "decision": "approved"
+    }
+  ],
+  "mutations": [],
+  "setupTimeline": [
+    {
+      "kind": "revision",
+      "id": "g06-r-path"
+    },
+    {
+      "kind": "revision",
+      "id": "g06-r-bram-2"
+    },
+    {
+      "kind": "revision",
+      "id": "g06-r-lute"
+    },
+    {
+      "kind": "qualified-ir",
+      "id": "g06-ir"
+    }
+  ],
+  "variants": [
+    {
+      "id": "base",
+      "description": "Steady state; Raw fills the cap, so Graph contributes only path Evidence on existing Scenes.",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      },
+      "preconditions": [
+        {
+          "id": "b-sealed-binding",
+          "scope": "variant"
+        },
+        {
+          "id": "maintenance-enabled",
+          "scope": "variant"
+        },
+        {
+          "id": "raw-membership",
+          "scope": "variant"
+        }
+      ],
+      "expectations": {
+        "arms": {
+          "raw": {
+            "sceneIds": [
+              "g06-c1",
+              "g06-c2",
+              "g06-c3",
+              "g06-c4",
+              "g06-c5",
+              "g06-c6",
+              "g06-c7",
+              "g06-c8"
+            ],
+            "orderPredeclared": false
+          },
+          "rPlusIr": {
+            "sceneIds": [
+              "g06-c1",
+              "g06-c2",
+              "g06-c3",
+              "g06-c4",
+              "g06-c5",
+              "g06-c6",
+              "g06-c7",
+              "g06-c8"
+            ],
+            "orderPredeclared": false,
+            "irSupplementSceneId": null,
+            "resultKind": "fused"
+          },
+          "rPlusIrPlusGraph": {
+            "baseline": "rPlusIr",
+            "sceneIds": [
+              "g06-c1",
+              "g06-c2",
+              "g06-c3",
+              "g06-c4",
+              "g06-c5",
+              "g06-c6",
+              "g06-c7",
+              "g06-c8"
+            ],
+            "appendedSceneId": null,
+            "orderPredeclared": false
+          }
+        },
+        "graph": {
+          "status": "available",
+          "reasonClass": null,
+          "nodes": [
+            {
+              "entityId": "g06-maro",
+              "hop": 0
+            },
+            {
+              "entityId": "g06-ines",
+              "hop": 1
+            },
+            {
+              "entityId": "g06-bram",
+              "hop": 2
+            }
+          ],
+          "edgeIds": ["g06-has-first-mate", "g06-hired"],
+          "qualifiedRevisionIds": ["g06-r-bram-2", "g06-r-lute", "g06-r-path"],
+          "excludedRevisions": [],
+          "excludedEdges": [
+            {
+              "edgeId": "g06-lute-hired",
+              "reason": "no-revision"
+            }
+          ],
+          "excludedEntities": [
+            {
+              "entityId": "g06-bram-2",
+              "reason": "unreached"
+            },
+            {
+              "entityId": "g06-lute",
+              "reason": "unreached"
+            }
+          ]
+        },
+        "pathAttachments": [
+          {
+            "sceneId": "g06-c1",
+            "path": {
+              "seedEntityId": "g06-maro",
+              "edgeIds": ["g06-has-first-mate"],
+              "targetEntityId": "g06-ines",
+              "hop": 1
+            }
+          },
+          {
+            "sceneId": "g06-c2",
+            "path": {
+              "seedEntityId": "g06-maro",
+              "edgeIds": ["g06-has-first-mate", "g06-hired"],
+              "targetEntityId": "g06-bram",
+              "hop": 2
+            }
+          }
+        ],
+        "addedScene": null,
+        "blockedCandidates": [
+          {
+            "sceneId": "g06-bram-galley",
+            "entityId": "g06-bram",
+            "reason": "raw-full"
+          }
+        ],
+        "scenesWithoutPath": [
+          "g06-c3",
+          "g06-c4",
+          "g06-c5",
+          "g06-c6",
+          "g06-c7",
+          "g06-c8"
+        ],
+        "forbiddenSceneIds": ["g06-bram2-stable", "g06-lute-docks"],
+        "evidence": {
+          "pathEvidenceValidity": 1,
+          "requirements": [
+            "edge-relation-evidence",
+            "node-entity-evidence",
+            "revision-decision-binding",
+            "explicit-pin-association",
+            "raw-excerpt-unchanged"
+          ],
+          "assertions": [
+            {
+              "kind": "edge-sequence-preserved",
+              "sceneId": "g06-c2",
+              "edgeIds": ["g06-has-first-mate", "g06-hired"],
+              "forbiddenCollapsedRelation": "Maro hired Bram"
+            },
+            {
+              "kind": "no-name-inferred-association",
+              "sceneId": "g06-c4",
+              "nameMentioned": "Bram"
+            },
+            {
+              "kind": "homonym-not-merged",
+              "entityIds": ["g06-bram", "g06-bram-2"],
+              "label": "Bram"
+            }
+          ]
+        },
+        "metrics": {
+          "raw": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIr": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIrPlusGraph": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          }
+        }
+      }
+    }
+  ],
+  "positive": [
+    {
+      "id": "G-06-P1",
+      "materials": ["g06-r-path", "g06-has-first-mate", "g06-c1"],
+      "expectation": "The attached one-hop path carries Relation Evidence bound to the exact current Relation and approved Revision/Decision, and Entity Evidence whose quote is an exact UTF-16 range of the current name or summary Source.",
+      "rule": "l6-l9 G-06 positive: Source range・revision anchor; graph-limited-binding: Evidence path保持."
+    },
+    {
+      "id": "G-06-P2",
+      "materials": ["g06-r-path", "g06-hired", "g06-c2"],
+      "expectation": "The attached two-hop path keeps both edges and every endpoint Evidence; it is never shown as a collapsed Maro hired Bram Relation, and the Raw excerpt of g06-c2 is unchanged.",
+      "rule": "post-B §6.3: 2hop pathは既存edge列と各Evidenceとして返す; candidate §2."
+    }
+  ],
+  "negative": [
+    {
+      "id": "G-06-N1",
+      "materials": ["g06-lute-hired", "g06-r-lute", "g06-c3", "g06-lute-docks"],
+      "expectation": "The Codex-only Maro→Lute hired Relation has no typed Revision and no Evidence, so it is never a bridge even though Lute is a qualified Entity; g06-c3 gets no path.",
+      "rule": "implementation plan A6: 既存Entity/Relationの存在だけではGraphへ参加させない; post-B §6.2: no non-disclosed bridge."
+    },
+    {
+      "id": "G-06-N2",
+      "materials": ["g06-c4"],
+      "expectation": "A Scene that only mentions the name Bram without a pin gets no Graph association or path.",
+      "rule": "candidate §1: 名前一致や本文mentionから対応を推定しない."
+    },
+    {
+      "id": "G-06-N3",
+      "materials": ["g06-r-bram-2", "g06-bram-2", "g06-c5", "g06-bram2-stable"],
+      "expectation": "The homonym Bram (inland stable hand) is never merged with the reached cook; g06-c5 gets no path and g06-bram2-stable is never returned.",
+      "rule": "L7: 名前類似からIDやRelationを作らない; typed-revision-material: exact IDs only."
+    },
+    {
+      "id": "G-06-N4",
+      "materials": ["g06-bram-galley"],
+      "expectation": "Raw is full, so the qualified galley Scene is blocked and never displaces an R+IR Scene.",
+      "rule": "post-B §7.2: Raw満杯は既存結果を押し出さない."
+    }
+  ],
+  "measurementBoundary": {
+    "contractBaseline": "The isolated validator recomputes Graph traversal, Scene association, one-slot fusion and scorer arithmetic from these predeclared rows; it never runs Raw, IR or Graph.",
+    "runtimeSetup": "Requires normal Scene/Scope/registry/Entity/Relation/pin/foreshadow writers, normal Chronicle provider/Proposal/child/Decision setup for qualifiedIr, and the normal typed Entity/Relation prepare plus Human Decision route for every revision. Runtime IDs issued by writers are mapped to these logical IDs in a setup receipt; Gold never stores runtime IDs.",
+    "setupOrder": "Create the project and every Scene (including S2) in reading order; then Codex entities and relations; then the Scope registry and every explicit Scene Scope; then foreshadows, foreshadow Codex links and pins. Before the first setupTimeline step, enable maintenance through the real runtime-policy setting (the product default is maintenance_enabled=0; never through SQL or injected state; precondition maintenance-enabled). Then follow setupTimeline in order: each revision is prepared against its review Scene and receives its declared decision, each mutation uses its normal writer, and the qualified-ir step creates every qualifiedIr through the normal fixture provider/Proposal/child/Decision route with optional story inputs disabled only through real planner settings. Do not change tree order, registry or Scene Scope after the first typed revision is prepared. Then wait for the variant measurementPoint, record whether each declared precondition holds, and compare only the expectations that no unmet precondition blocks.",
+    "graphConnection": "No Graph-only Scene can be appended in this slot class, so the case is measurable through Graph DTO nodes/edges and path attachments to existing R+IR Scenes without target-Scene body disclosure.",
+    "goldOrigin": "Predeclared for this case before any Graph runtime observation; not selected from observed output and not a human author measurement.",
+    "setupRefusal": "If a normal writer refuses to prepare or approve a negative material, record refused-at-setup; that negative still expects Graph contribution 0. A refused positive material makes the case Hold. A declared precondition that does not hold (such as a Raw membership or an ir-only IR admission that differs from the arms) records the affected variant as blocked:<precondition> instead; any other R or R+IR difference from the arms is Hold. Nothing is tuned and rerun.",
+    "rawPrediction": "R is predicted as the eight control Scenes that quote S2 verbatim, filling the eight-Scene cap in an order that is not predeclared; all have Gold 0. Non-control Scenes share no Raw-visible token with S2 and rank below every control even if one were admitted. This prediction is the precondition raw-membership: a different Raw membership records the variant as blocked:raw-membership, not Hold. IR is not assumed to attach to a control Scene; the R+IR result kind is recorded only."
+  }
+}

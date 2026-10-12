@@ -355,6 +355,8 @@ rules:
       - src/prompts/ja/chatSystemDataBoundaryReminder.txt
       - evals/nir1-packing/**
       - evals/nir1-g01/**
+      - evals/nir1-graph/**
+      - scripts/quality/nir1-graph/**
       - docs/plans/nir1-c-scene-connection-candidate.md
       - docs/plans/nir1-d1-snapshot-candidate.md
       - docs/plans/nir1-d2b-dispatch-candidate.md

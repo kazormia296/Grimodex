@@ -1,0 +1,589 @@
+{
+  "schemaVersion": "nir1-graph-case/1",
+  "status": "predeclared-design-fixture",
+  "caseId": "G-05",
+  "fixtureId": "nir1-g05-current-revision-freshness/1",
+  "sourceDocument": "docs/plans/nir1-l6-l9-execution-plan.md",
+  "sourceSection": "G-01〜G-08 表（G-05）",
+  "designReferences": [
+    "docs/plans/nir1-l6-l9-execution-plan.md#L7: Entity/Relation入力とGraph",
+    "docs/plans/nir1-l6-l9-execution-plan.md#graph-limited-binding",
+    "docs/plans/nir1-c-scene-connection-candidate.md#6. 候補選択・融合の事前規則",
+    "docs/plans/nir1-c-scene-connection-candidate.md#7. G-01 fixture提案: 出力観察前の固定v1",
+    "docs/plans/nir1-post-b-execution-plan.md#7. C-productとP：Related Scenes統合",
+    "docs/plans/narrative-ir-nir1-implementation-plan.md#A6に含める後続の材料開示・Graph authority"
+  ],
+  "observationPolicy": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result.",
+  "language": "en",
+  "caseClass": {
+    "queryClass": "current Revision／Freshness",
+    "expectedJudgement": "stale・旧EpochはGraph寄与0",
+    "positive": "current・明示承認・Fresh",
+    "negative": "stale、approval違い、旧Epoch"
+  },
+  "slotClass": "ir-supplemented",
+  "goldDefinition": "Gold marks earlier Scenes in which a person supplied by the selected quartermaster Hale appears: Xan's night-bell Scene is Gold 3 and Pia's ridge Scene Gold 2. Yara, Zeb and Wynn appear in no eligible Scene.",
+  "answerEntityIds": ["g05-xan", "g05-pia"],
+  "query": {
+    "sceneId": "g05-query",
+    "readingOrder": 100,
+    "title": "Open question",
+    "body": "Which earlier scene shows someone my chosen quartermaster supplied?"
+  },
+  "scenes": [
+    {
+      "id": "g05-review",
+      "readingOrder": 0,
+      "title": "Store tallies",
+      "body": "Chalk tallies covered a plank wall in a cold store room.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g05-control",
+      "readingOrder": 10,
+      "title": "Gate notice",
+      "body": "A gate notice repeated a line: Which earlier scene shows someone my chosen quartermaster supplied? Nobody had answered.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g05-xan-watch",
+      "readingOrder": 20,
+      "title": "Night bell",
+      "body": "Snow crusted the parapet and a dog barked at the gate. Hale pressed a bundle of oil, flint and dry bread into Xan's hands before the night bell. Far below, torches moved along the road.",
+      "gold": 3,
+      "role": "ir-only"
+    },
+    {
+      "id": "g05-pia-ridge",
+      "readingOrder": 30,
+      "title": "Ridge boots",
+      "body": "Pia knelt on the ridge and laced new boots beside a full water skin.",
+      "gold": 2,
+      "role": "answer"
+    }
+  ],
+  "eligibleSceneIds": [
+    "g05-review",
+    "g05-control",
+    "g05-xan-watch",
+    "g05-pia-ridge"
+  ],
+  "scope": {
+    "registry": {
+      "timelineRefs": ["tl-main"],
+      "worldlineRefs": ["wl-main"],
+      "narrativeLayerRefs": ["layer-story"]
+    },
+    "default": {
+      "marker": "explicit",
+      "queryIdentity": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "materialConstraint": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "knowledgeHolder": {
+        "kind": "reader"
+      },
+      "audience": {
+        "kind": "reader"
+      }
+    },
+    "overrides": {}
+  },
+  "entities": [
+    {
+      "id": "g05-hale",
+      "kind": "character",
+      "label": "Hale",
+      "summary": "Hale is the quartermaster of a hill fort."
+    },
+    {
+      "id": "g05-pia",
+      "kind": "character",
+      "label": "Pia",
+      "summary": "Pia scouts the northern ridge."
+    },
+    {
+      "id": "g05-xan",
+      "kind": "character",
+      "label": "Xan",
+      "summary": "Xan carries a copper lamp on night watch."
+    },
+    {
+      "id": "g05-yara",
+      "kind": "character",
+      "label": "Yara",
+      "summary": "Yara drives a supply cart."
+    },
+    {
+      "id": "g05-zeb",
+      "kind": "character",
+      "label": "Zeb",
+      "summary": "Zeb stitches tents for the garrison."
+    },
+    {
+      "id": "g05-wynn",
+      "kind": "character",
+      "label": "Wynn",
+      "summary": "Wynn guards a store room."
+    }
+  ],
+  "relations": [
+    {
+      "id": "g05-supplied-pia",
+      "fromEntityId": "g05-hale",
+      "toEntityId": "g05-pia",
+      "type": "supplied",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g05-supplied-xan",
+      "fromEntityId": "g05-hale",
+      "toEntityId": "g05-xan",
+      "type": "supplied",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g05-supplied-yara",
+      "fromEntityId": "g05-hale",
+      "toEntityId": "g05-yara",
+      "type": "supplied",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g05-supplied-zeb",
+      "fromEntityId": "g05-hale",
+      "toEntityId": "g05-zeb",
+      "type": "supplied",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g05-supplied-wynn",
+      "fromEntityId": "g05-hale",
+      "toEntityId": "g05-wynn",
+      "type": "supplied",
+      "direction": "directed",
+      "authorDeclared": true
+    }
+  ],
+  "manualSeed": {
+    "entityId": "g05-hale",
+    "manualSeed": true
+  },
+  "pins": [
+    {
+      "sceneId": "g05-xan-watch",
+      "entryId": "g05-xan",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g05-pia-ridge",
+      "entryId": "g05-pia",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g05-control",
+      "entryId": "g05-yara",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g05-control",
+      "entryId": "g05-zeb",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g05-control",
+      "entryId": "g05-wynn",
+      "source": "scene_codex_pins"
+    }
+  ],
+  "foreshadows": [],
+  "qualifiedIr": [
+    {
+      "sceneId": "g05-control",
+      "summary": "A gate notice repeated an unanswered question about whom a quartermaster had supplied.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    },
+    {
+      "sceneId": "g05-xan-watch",
+      "summary": "Hale, the fort's quartermaster, supplied Xan with oil, flint and bread before the night watch.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    }
+  ],
+  "revisions": [
+    {
+      "id": "g05-r-pia",
+      "reviewSceneId": "g05-review",
+      "entityIds": ["g05-hale", "g05-pia"],
+      "relationIds": ["g05-supplied-pia"],
+      "decision": "approved"
+    },
+    {
+      "id": "g05-r-xan-1",
+      "reviewSceneId": "g05-review",
+      "entityIds": ["g05-hale", "g05-xan"],
+      "relationIds": ["g05-supplied-xan"],
+      "decision": "approved"
+    },
+    {
+      "id": "g05-r-xan-2",
+      "reviewSceneId": "g05-review",
+      "entityIds": ["g05-hale", "g05-xan"],
+      "relationIds": ["g05-supplied-xan"],
+      "decision": "approved"
+    },
+    {
+      "id": "g05-r-yara",
+      "reviewSceneId": "g05-review",
+      "entityIds": ["g05-hale", "g05-yara"],
+      "relationIds": ["g05-supplied-yara"],
+      "decision": "approved"
+    },
+    {
+      "id": "g05-r-zeb-1",
+      "reviewSceneId": "g05-review",
+      "entityIds": ["g05-hale", "g05-zeb"],
+      "relationIds": ["g05-supplied-zeb"],
+      "decision": "approved"
+    },
+    {
+      "id": "g05-r-zeb-2",
+      "reviewSceneId": "g05-review",
+      "entityIds": ["g05-hale", "g05-zeb"],
+      "relationIds": ["g05-supplied-zeb"],
+      "decision": "none"
+    },
+    {
+      "id": "g05-r-wynn",
+      "reviewSceneId": "g05-review",
+      "entityIds": ["g05-hale", "g05-wynn"],
+      "relationIds": ["g05-supplied-wynn"],
+      "decision": "rejected"
+    }
+  ],
+  "mutations": [
+    {
+      "id": "g05-m-xan",
+      "kind": "codex-entry-summary-edit",
+      "entityId": "g05-xan",
+      "from": "Xan carries a copper lamp on night watch.",
+      "to": "Xan carries a silver lamp on night watch."
+    },
+    {
+      "id": "g05-m-yara",
+      "kind": "codex-entry-summary-edit",
+      "entityId": "g05-yara",
+      "from": "Yara drives a supply cart.",
+      "to": "Yara drives a mule cart."
+    },
+    {
+      "id": "g05-m-zeb",
+      "kind": "codex-entry-summary-edit",
+      "entityId": "g05-zeb",
+      "from": "Zeb stitches tents for the garrison.",
+      "to": "Zeb stitches sails for the garrison."
+    }
+  ],
+  "setupTimeline": [
+    {
+      "kind": "revision",
+      "id": "g05-r-pia"
+    },
+    {
+      "kind": "revision",
+      "id": "g05-r-xan-1"
+    },
+    {
+      "kind": "mutation",
+      "id": "g05-m-xan"
+    },
+    {
+      "kind": "revision",
+      "id": "g05-r-xan-2"
+    },
+    {
+      "kind": "revision",
+      "id": "g05-r-yara"
+    },
+    {
+      "kind": "mutation",
+      "id": "g05-m-yara"
+    },
+    {
+      "kind": "revision",
+      "id": "g05-r-zeb-1"
+    },
+    {
+      "kind": "mutation",
+      "id": "g05-m-zeb"
+    },
+    {
+      "kind": "revision",
+      "id": "g05-r-zeb-2"
+    },
+    {
+      "kind": "revision",
+      "id": "g05-r-wynn"
+    },
+    {
+      "kind": "qualified-ir",
+      "id": "g05-ir"
+    }
+  ],
+  "variants": [
+    {
+      "id": "base",
+      "description": "Steady state after maintenance has published the generation that follows every declared summary edit and decision.",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      },
+      "preconditions": [
+        {
+          "id": "b-sealed-binding",
+          "scope": "variant"
+        },
+        {
+          "id": "maintenance-enabled",
+          "scope": "variant"
+        },
+        {
+          "id": "raw-membership",
+          "scope": "variant"
+        },
+        {
+          "id": "ir-supplement-admission",
+          "scope": "variant",
+          "sceneId": "g05-xan-watch"
+        }
+      ],
+      "expectations": {
+        "arms": {
+          "raw": {
+            "sceneIds": ["g05-control"],
+            "orderPredeclared": true
+          },
+          "rPlusIr": {
+            "sceneIds": ["g05-control", "g05-xan-watch"],
+            "orderPredeclared": true,
+            "irSupplementSceneId": "g05-xan-watch",
+            "resultKind": "fused"
+          },
+          "rPlusIrPlusGraph": {
+            "baseline": "rPlusIr",
+            "sceneIds": ["g05-control", "g05-xan-watch"],
+            "appendedSceneId": null,
+            "orderPredeclared": true
+          }
+        },
+        "graph": {
+          "status": "available",
+          "reasonClass": null,
+          "nodes": [
+            {
+              "entityId": "g05-hale",
+              "hop": 0
+            },
+            {
+              "entityId": "g05-pia",
+              "hop": 1
+            },
+            {
+              "entityId": "g05-xan",
+              "hop": 1
+            }
+          ],
+          "edgeIds": ["g05-supplied-pia", "g05-supplied-xan"],
+          "qualifiedRevisionIds": ["g05-r-pia", "g05-r-xan-2"],
+          "excludedRevisions": [
+            {
+              "revisionId": "g05-r-xan-1",
+              "reasons": ["stale-after-approval"]
+            },
+            {
+              "revisionId": "g05-r-yara",
+              "reasons": ["stale-after-approval"]
+            },
+            {
+              "revisionId": "g05-r-zeb-1",
+              "reasons": ["stale-after-approval"]
+            },
+            {
+              "revisionId": "g05-r-zeb-2",
+              "reasons": ["decision-missing"]
+            },
+            {
+              "revisionId": "g05-r-wynn",
+              "reasons": ["decision-rejected"]
+            }
+          ],
+          "excludedEdges": [
+            {
+              "edgeId": "g05-supplied-yara",
+              "reason": "revision-excluded"
+            },
+            {
+              "edgeId": "g05-supplied-zeb",
+              "reason": "revision-excluded"
+            },
+            {
+              "edgeId": "g05-supplied-wynn",
+              "reason": "revision-excluded"
+            }
+          ],
+          "excludedEntities": [
+            {
+              "entityId": "g05-yara",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g05-zeb",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g05-wynn",
+              "reason": "revision-excluded"
+            }
+          ]
+        },
+        "pathAttachments": [
+          {
+            "sceneId": "g05-xan-watch",
+            "path": {
+              "seedEntityId": "g05-hale",
+              "edgeIds": ["g05-supplied-xan"],
+              "targetEntityId": "g05-xan",
+              "hop": 1
+            }
+          }
+        ],
+        "addedScene": null,
+        "blockedCandidates": [
+          {
+            "sceneId": "g05-pia-ridge",
+            "entityId": "g05-pia",
+            "reason": "ir-supplement-used"
+          }
+        ],
+        "scenesWithoutPath": ["g05-control"],
+        "forbiddenSceneIds": [],
+        "evidence": {
+          "pathEvidenceValidity": 1,
+          "requirements": [
+            "edge-relation-evidence",
+            "node-entity-evidence",
+            "revision-decision-binding",
+            "explicit-pin-association",
+            "raw-excerpt-unchanged"
+          ],
+          "assertions": [
+            {
+              "kind": "current-entity-evidence",
+              "entityId": "g05-xan",
+              "currentText": "Xan carries a silver lamp on night watch.",
+              "supersededText": "Xan carries a copper lamp on night watch.",
+              "mustNotContain": ["copper"]
+            }
+          ]
+        },
+        "metrics": {
+          "raw": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIr": {
+            "recallAt8": 0.5,
+            "ndcgAt8": 0.4966392596877323
+          },
+          "rPlusIrPlusGraph": {
+            "recallAt8": 0.5,
+            "ndcgAt8": 0.4966392596877323
+          }
+        }
+      }
+    }
+  ],
+  "positive": [
+    {
+      "id": "G-05-P1",
+      "materials": ["g05-r-pia", "g05-supplied-pia", "g05-pia"],
+      "expectation": "A current, explicitly approved and Fresh Revision qualifies Pia as a Graph node; her Scene is blocked only because IR used the shared slot.",
+      "rule": "typed-revision-material: exact current Revision plus approved human Decision and canonical Freshness."
+    },
+    {
+      "id": "G-05-P2",
+      "materials": ["g05-r-xan-2", "g05-xan-watch"],
+      "expectation": "After the summary edit, only the newly prepared and approved g05-r-xan-2 qualifies Xan; the attached path carries Evidence from the current summary.",
+      "rule": "typed-revision-material Recovery: a new immutable Revision plus a new Human Decision is required."
+    }
+  ],
+  "negative": [
+    {
+      "id": "G-05-N1",
+      "materials": ["g05-r-yara", "g05-m-yara", "g05-yara"],
+      "expectation": "An approved Revision whose Entity Source changed afterwards is stale and contributes nothing.",
+      "rule": "graph-limited-binding: stale edge => Graph contribution 0."
+    },
+    {
+      "id": "G-05-N2",
+      "materials": ["g05-r-zeb-1", "g05-r-zeb-2", "g05-zeb"],
+      "expectation": "Approval exists only for the superseded Revision; the current Revision has no Decision, so Zeb contributes nothing.",
+      "rule": "typed-revision-material: approval of a parent/older Revision never qualifies the current one."
+    },
+    {
+      "id": "G-05-N3",
+      "materials": ["g05-r-wynn", "g05-wynn"],
+      "expectation": "A rejected Revision contributes nothing.",
+      "rule": "typed-revision-material: only an approved human Decision qualifies."
+    },
+    {
+      "id": "G-05-N4",
+      "materials": ["g05-r-xan-1", "g05-m-xan"],
+      "expectation": "The superseded Revision of the same material (the old epoch of Xan's Source) contributes no Evidence: the text copper never appears in returned Evidence.",
+      "rule": "l6-l9 G-05 negative 旧Epoch, interpreted as the superseded Source/approval epoch of one material (see README)."
+    }
+  ],
+  "measurementBoundary": {
+    "contractBaseline": "The isolated validator recomputes Graph traversal, Scene association, one-slot fusion and scorer arithmetic from these predeclared rows; it never runs Raw, IR or Graph.",
+    "runtimeSetup": "Requires normal Scene/Scope/registry/Entity/Relation/pin/foreshadow writers, normal Chronicle provider/Proposal/child/Decision setup for qualifiedIr, and the normal typed Entity/Relation prepare plus Human Decision route for every revision. Runtime IDs issued by writers are mapped to these logical IDs in a setup receipt; Gold never stores runtime IDs.",
+    "setupOrder": "Create the project and every Scene (including S2) in reading order; then Codex entities and relations; then the Scope registry and every explicit Scene Scope; then foreshadows, foreshadow Codex links and pins. Before the first setupTimeline step, enable maintenance through the real runtime-policy setting (the product default is maintenance_enabled=0; never through SQL or injected state; precondition maintenance-enabled). Then follow setupTimeline in order: each revision is prepared against its review Scene and receives its declared decision, each mutation uses its normal writer, and the qualified-ir step creates every qualifiedIr through the normal fixture provider/Proposal/child/Decision route with optional story inputs disabled only through real planner settings. Do not change tree order, registry or Scene Scope after the first typed revision is prepared. Then wait for the variant measurementPoint, record whether each declared precondition holds, and compare only the expectations that no unmet precondition blocks.",
+    "graphConnection": "No Graph-only Scene can be appended in this slot class, so the case is measurable through Graph DTO nodes/edges and path attachments to existing R+IR Scenes without target-Scene body disclosure.",
+    "goldOrigin": "Predeclared for this case before any Graph runtime observation; not selected from observed output and not a human author measurement.",
+    "setupRefusal": "If a normal writer refuses to prepare or approve a negative material, record refused-at-setup; that negative still expects Graph contribution 0. A refused positive material makes the case Hold. A declared precondition that does not hold (such as a Raw membership or an ir-only IR admission that differs from the arms) records the affected variant as blocked:<precondition> instead; any other R or R+IR difference from the arms is Hold. Nothing is tuned and rerun.",
+    "rawPrediction": "R is predicted from the single control Scene that quotes S2 verbatim; every other Scene shares no Raw-visible token with S2 (validator check). This prediction is the precondition raw-membership: a different Raw membership records the variant as blocked:raw-membership, not Hold. The ir-only Scene embeds the supply hand-off in unrelated fort detail so that only its qualified interpretation is expected to reach the query. That IR's admission above the IR floor is the precondition ir-supplement-admission; a variant whose ir-only IR is not admitted is blocked:ir-supplement-admission, not Hold. IR is not assumed to attach to the control Scene."
+  }
+}
