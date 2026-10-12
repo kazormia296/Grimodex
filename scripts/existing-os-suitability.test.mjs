@@ -48,8 +48,8 @@ test("existing OS suitability is the sole fail-closed owner before setup for mal
     await assert.rejects(validate({ ...defaults, canonical_profile: value }));
     await assert.rejects(validate({ ...defaults, canonical_profile: value, candidate_head: "b".repeat(40), independent_gates: true }));
   }
-  assert.equal(admitted(defaults).length, 15);
-  assert.equal(admitted({ product_journey_mode: "all" }).length, 15);
+  assert.equal(admitted(defaults).length, 18);
+  assert.equal(admitted({ product_journey_mode: "all" }).length, 18);
   assert.deepEqual(admitted({ ...defaults, canonical_profile: "contracts" }), ["canonical"]);
 });
 
