@@ -3176,6 +3176,16 @@ mod tests {
             .is_some());
         assert_eq!(state.workspace_operation_active.load(Ordering::Acquire), 0);
         drop(db);
+        // Close the workspace before deleting it: background lifecycle work
+        // may still write into the root after the retried recovery completes.
+        let closed: Value = serde_json::from_str(
+            &backend
+                .shutdown_workspace_lifecycle()
+                .await
+                .expect("shutdown workspace lifecycle"),
+        )
+        .expect("shutdown view JSON");
+        assert_eq!(closed["status"], "closed");
         drop(backend);
         drop(state);
         std::fs::remove_dir_all(root).expect("cleanup");

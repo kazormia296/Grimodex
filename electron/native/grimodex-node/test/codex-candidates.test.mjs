@@ -3,7 +3,7 @@
 // shared grimodex-semantic core が workspace DB を読み、UniDic 解析を DB lock 外で
 // 実行して camelCase CodexCandidate[] を返す NAPI 境界を検証する。
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -27,6 +27,17 @@ process.on("exit", () => {
 });
 
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 const workspace = join(root, "workspace");
 
 function mutationIdentity(

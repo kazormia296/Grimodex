@@ -11,7 +11,7 @@
 //       (= `node --test test/`)。trash-bin.test.mjs と同様、共有 Backend の
 //       状態遷移に依存するため宣言順に直列実行される（順序を変えないこと）。
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -27,6 +27,17 @@ const root = mkdtempSync(join(tmpdir(), "grimodex-node-plot-"));
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 
 // plot_threads.project_id は projects(id) への FK。migrate が seed する
 // default-project を主プロジェクトに使う。
