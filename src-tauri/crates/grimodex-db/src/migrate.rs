@@ -31,14 +31,20 @@ impl Database {
     pub(crate) const C2_ZC_CUTOVER_CONTRACT_VERSION: i64 = 1;
 
     pub(crate) fn read_c2zc_cutover_marker(conn: &Connection) -> anyhow::Result<Option<i64>> {
-        let table_exists: bool = conn.query_row(
-            "SELECT EXISTS(
+        // Inside the Graph C-query's pinned snapshot the schema cache answers
+        // without VM steps; every other caller keeps the SQL check.
+        let table_exists: bool =
+            match crate::nir1_pinned_snapshot::table_exists(conn, "schema_data_migrations")? {
+                Some(present) => present,
+                None => conn.query_row(
+                    "SELECT EXISTS(
                  SELECT 1 FROM sqlite_master
                   WHERE type = 'table' AND name = 'schema_data_migrations'
              )",
-            [],
-            |row| row.get(0),
-        )?;
+                    [],
+                    |row| row.get(0),
+                )?,
+            };
         if !table_exists {
             anyhow::bail!("NEX_C2ZC_CUTOVER_MARKER_MISSING: schema_data_migrations is unavailable");
         }

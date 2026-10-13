@@ -33,6 +33,8 @@ use std::{
 const PROJECT: &str = "default-project";
 const STARTUP_REFUSAL_PROJECT_ID: &str = "nir1-project-that-does-not-exist";
 
+mod cq_opt;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Q2WorkerScenario {
     ReaderOnly,
@@ -407,6 +409,9 @@ fn seed_usage_with_unrelated_revisions(decided: bool) -> Result<Vec<SeedAdmissio
 }
 
 // CQ-2: seed-local A2/A3 cost must not follow unrelated workspace growth.
+// The CQ-2 tests here fix the preflights, which neither CQ-OPT shortcut changes
+// (J moves the seed's A2 by 2 steps); `cq_opt` fixes the A3 evaluation and the
+// whole query the same way, at their lower levels.
 #[test]
 fn unrelated_payload_revisions_do_not_change_seed_a2_a3_steps_or_admission() -> Result<()> {
     let undecided = seed_usage_with_unrelated_revisions(false)?;

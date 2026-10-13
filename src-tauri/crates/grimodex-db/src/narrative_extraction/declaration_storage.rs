@@ -866,6 +866,11 @@ fn is_digest(value: &str) -> bool {
 }
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
+    // Inside the Graph C-query's pinned snapshot the schema cache answers
+    // without VM steps; every other caller keeps the SQL check below.
+    if let Some(present) = crate::nir1_pinned_snapshot::table_exists(conn, table)? {
+        return Ok(present);
+    }
     Ok(conn.query_row(
         "SELECT EXISTS(
              SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1

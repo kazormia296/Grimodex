@@ -254,9 +254,9 @@ fn preflight_revision_inner(
     // Include persisted authorities even if A2 will later reject them. Live
     // bodies are joined from payload IDs, not potentially tampered basis IDs.
     #[cfg(feature = "nir1-material-diagnostics")]
-    let related_queries = RELATED_BYTES_SQL.iter().enumerate();
+    let related_queries = related_bytes_sql().iter().enumerate();
     #[cfg(not(feature = "nir1-material-diagnostics"))]
-    let related_queries = RELATED_BYTES_SQL.iter().map(|sql| ((), sql));
+    let related_queries = related_bytes_sql().iter().map(|sql| ((), sql));
     for (_related_index, sql) in related_queries {
         #[cfg(feature = "nir1-material-diagnostics")]
         let related_started = start_a2_sql_timer(&observation);
@@ -467,7 +467,35 @@ const RELATED_BYTES_SQL: &[&str] = &[
              WHERE v.id=?2 AND e.project_id=?1
                AND e.id=CASE WHEN material.type='object'
                     THEN json_extract(material.value, '$.entityId') END",
-    "SELECT COALESCE(SUM(COALESCE(octet_length(e.id), 0) +
+    RELATION_BYTES_SQL,
+];
+
+/// Live Relation bodies named by the Revision's payload, each counted once per
+/// payload entry that names it. The Revision's own `json_each` drives primary
+/// key lookups of `codex_relations`: the planner would otherwise put the
+/// project's Relations in the outer loop and expand the payload once per
+/// Relation, so the cost followed the product of the two counts. `CROSS JOIN`
+/// fixes the order, as in the Entity statement above.
+const RELATION_BYTES_SQL: &str = "SELECT COALESCE(SUM(COALESCE(octet_length(e.id), 0) +
+                    COALESCE(octet_length(e.from_codex_id), 0) +
+                    COALESCE(octet_length(e.to_codex_id), 0) +
+                    COALESCE(octet_length(e.relation_type), 0) +
+                    COALESCE(octet_length(e.directionality), 0) +
+                    COALESCE(octet_length(e.version), 0) +
+                    COALESCE(octet_length(e.updated_at), 0)), 0) FROM narrative_proposal_revisions v
+             CROSS JOIN json_each(CASE WHEN json_valid(v.payload_json)
+                  THEN CASE WHEN json_type(v.payload_json, '$.bundle.relations')='array'
+                       THEN json_extract(v.payload_json, '$.bundle.relations') ELSE '[]' END
+                  ELSE '[]' END) material
+             CROSS JOIN codex_relations e
+             WHERE v.id=?2 AND e.project_id=?1
+               AND e.id=CASE WHEN material.type='object'
+                    THEN json_extract(material.value, '$.edgeId') END";
+
+/// The statement above before CQ-OPT: the same (Relation, payload entry) pairs,
+/// joined with the project's Relations outermost. Test oracle only.
+#[cfg(test)]
+const LEGACY_RELATION_BYTES_SQL: &str = "SELECT COALESCE(SUM(COALESCE(octet_length(e.id), 0) +
                     COALESCE(octet_length(e.from_codex_id), 0) +
                     COALESCE(octet_length(e.to_codex_id), 0) +
                     COALESCE(octet_length(e.relation_type), 0) +
@@ -481,8 +509,52 @@ const RELATED_BYTES_SQL: &[&str] = &[
                   ELSE '[]' END) material
                ON e.id=CASE WHEN material.type='object'
                     THEN json_extract(material.value, '$.edgeId') END
-             WHERE e.project_id=?1"
-];
+             WHERE e.project_id=?1";
+
+/// [`RELATED_BYTES_SQL`] as it was before CQ-OPT: the same statements with the
+/// Relation byte count put back. Test oracle only.
+#[cfg(test)]
+const LEGACY_RELATED_BYTES_SQL: [&str; RELATED_BYTES_SQL.len()] = {
+    let mut statements = [""; RELATED_BYTES_SQL.len()];
+    let mut index = 0;
+    while index < RELATED_BYTES_SQL.len() {
+        statements[index] = RELATED_BYTES_SQL[index];
+        index += 1;
+    }
+    statements[RELATED_BYTES_SQL.len() - 1] = LEGACY_RELATION_BYTES_SQL;
+    statements
+};
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only: the preflight counts Relation bytes with
+    /// [`LEGACY_RELATION_BYTES_SQL`], to compare responses and steps with the
+    /// statement before CQ-OPT.
+    static LEGACY_RELATION_BYTES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The statements the preflight runs for the authorities a Revision names.
+fn related_bytes_sql() -> &'static [&'static str] {
+    #[cfg(test)]
+    if LEGACY_RELATION_BYTES.get() {
+        return &LEGACY_RELATED_BYTES_SQL;
+    }
+    RELATED_BYTES_SQL
+}
+
+/// Run `operation` with the preflight counting Relation bytes by
+/// [`LEGACY_RELATION_BYTES_SQL`] (J put back to its statement before CQ-OPT).
+#[cfg(test)]
+pub(super) fn with_legacy_relation_bytes<T>(operation: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            LEGACY_RELATION_BYTES.set(self.0);
+        }
+    }
+    let _restore = Restore(LEGACY_RELATION_BYTES.replace(true));
+    operation()
+}
 
 #[cfg(test)]
 mod tests {
@@ -649,7 +721,7 @@ mod tests {
             "FROM narrative_consumer_freshness f",
             "FROM narrative_extraction_runs r",
             "CROSS JOIN codex_entries e",
-            "FROM codex_relations e",
+            "CROSS JOIN codex_relations e",
         ]) {
             assert!(
                 sql.contains(source),
@@ -1733,6 +1805,312 @@ mod plan_tests {
                     "{sql}"
                 );
             }
+            Ok(())
+        })
+        .unwrap();
+    }
+}
+
+// CQ-OPT (J): the Relation byte count joins the Revision's payload entries to
+// `codex_relations` by primary key. These tests fix that it counts exactly the
+// pairs it counted before, and that its cost no longer follows the number of
+// Relations in the project.
+#[cfg(test)]
+mod relation_bytes_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+
+    const PROJECT: &str = "p1";
+    const REVISION: &str = "revision";
+    const UPDATED_AT: &str = "2026-09-12T00:00:00Z";
+
+    /// The migrated schema, so the primary key and the project index are the
+    /// production ones. Foreign keys are off: only the two tables the statement
+    /// reads are filled.
+    fn migrated() -> crate::Database {
+        let db = crate::Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+            Ok(())
+        })
+        .unwrap();
+        db
+    }
+
+    /// Insert a Relation and return the bytes the statement counts for it.
+    fn add_relation(conn: &Connection, project: &str, id: &str) -> i64 {
+        let from = format!("from-of-{id}");
+        let to = format!("to-of-{id}");
+        conn.execute(
+            "INSERT INTO codex_relations
+                (id, project_id, from_codex_id, to_codex_id, relation_type,
+                 directionality, version, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'knows', 'directed', 7, ?5, ?5)",
+            params![id, project, from, to, UPDATED_AT],
+        )
+        .unwrap();
+        // `version` is the one-digit integer 7, counted by its text rendering.
+        [id, &from, &to, "knows", "directed", "7", UPDATED_AT]
+            .iter()
+            .map(|value| value.len() as i64)
+            .sum()
+    }
+
+    fn set_payload(conn: &Connection, payload: &str) {
+        conn.execute(
+            "INSERT OR REPLACE INTO narrative_proposal_revisions
+                (id, proposal_id, revision_number, payload_json, created_at, created_by)
+             VALUES (?1, 'proposal', 1, ?2, ?3, 'test')",
+            params![REVISION, payload, UPDATED_AT],
+        )
+        .unwrap();
+    }
+
+    fn payload_naming(edge_ids: impl IntoIterator<Item = String>) -> String {
+        serde_json::json!({
+            "bundle": {
+                "relations": edge_ids
+                    .into_iter()
+                    .map(|edge_id| serde_json::json!({ "edgeId": edge_id }))
+                    .collect::<Vec<_>>(),
+            }
+        })
+        .to_string()
+    }
+
+    fn relation_bytes(conn: &Connection, sql: &str, revision: &str) -> i64 {
+        conn.query_row(sql, params![PROJECT, revision], |row| row.get(0))
+            .unwrap()
+    }
+
+    /// VM steps of one statement, counted per instruction like the Graph budget.
+    fn steps_of(conn: &Connection, sql: &str) -> (i64, u64) {
+        let steps = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&steps);
+        crate::set_sqlite_progress_handler(
+            conn,
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+        let value = relation_bytes(conn, sql, REVISION);
+        crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>).unwrap();
+        (value, steps.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn relation_bytes_count_the_same_pairs_as_the_project_wide_join() {
+        let db = migrated();
+        db.with_conn(|conn| {
+            let mut sizes = std::collections::BTreeMap::new();
+            for id in ["e1", "e2", "e3", "7", "日本", "kebab-case_ID"] {
+                sizes.insert(id, add_relation(conn, PROJECT, id));
+            }
+            // Named by the payload but owned by another project.
+            add_relation(conn, "other", "foreign");
+            let many_e1 = payload_naming(std::iter::repeat_n("e1".to_owned(), 50));
+            // (case, payload, the Relations counted, one per payload entry)
+            let cases: Vec<(&str, String, Vec<&str>)> = vec![
+                ("empty array", r#"{"bundle":{"relations":[]}}"#.into(), vec![]),
+                (
+                    "each Relation once",
+                    r#"{"bundle":{"relations":[{"edgeId":"e1"},{"edgeId":"e2"},{"edgeId":"e3"}]}}"#
+                        .into(),
+                    vec!["e1", "e2", "e3"],
+                ),
+                (
+                    "a repeated edge is counted once per entry",
+                    r#"{"bundle":{"relations":[{"edgeId":"e1"},{"edgeId":"e2"},{"edgeId":"e1"}]}}"#
+                        .into(),
+                    vec!["e1", "e1", "e2"],
+                ),
+                (
+                    "absent and foreign-project edges add nothing",
+                    r#"{"bundle":{"relations":[{"edgeId":"missing"},{"edgeId":"foreign"},{"edgeId":"e3"}]}}"#
+                        .into(),
+                    vec!["e3"],
+                ),
+                (
+                    "only object entries name an edge",
+                    r#"{"bundle":{"relations":["e1",7,null,[],true,{"noEdge":"e1"},{"edgeId":null},{"edgeId":["e1"]},{"edgeId":{"id":"e1"}},{"edgeId":"e2","extra":1}]}}"#
+                        .into(),
+                    vec!["e2"],
+                ),
+                (
+                    "a numeric edge id meets a TEXT id through column affinity",
+                    r#"{"bundle":{"relations":[{"edgeId":7},{"edgeId":7.0},{"edgeId":"7"}]}}"#
+                        .into(),
+                    vec!["7", "7"],
+                ),
+                (
+                    "non-ASCII edge ids",
+                    r#"{"bundle":{"relations":[{"edgeId":"日本"},{"edgeId":"kebab-case_ID"}]}}"#
+                        .into(),
+                    vec!["日本", "kebab-case_ID"],
+                ),
+                ("fifty entries naming one Relation", many_e1, vec!["e1"; 50]),
+                (
+                    "relations is an object",
+                    r#"{"bundle":{"relations":{"edgeId":"e1"}}}"#.into(),
+                    vec![],
+                ),
+                (
+                    "relations is a string",
+                    r#"{"bundle":{"relations":"e1"}}"#.into(),
+                    vec![],
+                ),
+                ("no relations", r#"{"bundle":{}}"#.into(), vec![]),
+                ("no bundle", "{}".into(), vec![]),
+                ("bundle is null", r#"{"bundle":null}"#.into(),
+                 vec![]),
+                ("not JSON", "not json".into(), vec![]),
+                ("empty payload", String::new(), vec![]),
+            ];
+            for (case, payload, counted) in &cases {
+                set_payload(conn, payload);
+                let legacy = relation_bytes(conn, LEGACY_RELATION_BYTES_SQL, REVISION);
+                let current = relation_bytes(conn, RELATION_BYTES_SQL, REVISION);
+                let expected: i64 = counted.iter().map(|id| sizes[id]).sum();
+                assert_eq!(legacy, expected, "{case}: the oracle counts the pairs");
+                assert_eq!(current, legacy, "{case}");
+            }
+            // A Revision that does not exist adds nothing in either form.
+            assert_eq!(relation_bytes(conn, LEGACY_RELATION_BYTES_SQL, "absent"), 0);
+            assert_eq!(relation_bytes(conn, RELATION_BYTES_SQL, "absent"), 0);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn relation_bytes_cost_follows_the_payload_not_the_project() {
+        const PAYLOAD: usize = 10;
+        let db = migrated();
+        db.with_conn(|conn| {
+            set_payload(
+                conn,
+                &payload_naming((0..PAYLOAD).map(|index| format!("rel-{index:04}"))),
+            );
+            let mut project = 0;
+            let mut measured = Vec::new();
+            for size in [10usize, 100, 1_000] {
+                while project < size {
+                    add_relation(conn, PROJECT, &format!("rel-{project:04}"));
+                    project += 1;
+                }
+                let (current, current_steps) = steps_of(conn, RELATION_BYTES_SQL);
+                let (legacy, legacy_steps) = steps_of(conn, LEGACY_RELATION_BYTES_SQL);
+                assert_eq!(current, legacy, "{size} project Relations");
+                measured.push((size, current_steps, legacy_steps));
+            }
+            let [(_, small, legacy_small), (_, medium, _), (_, large, legacy_large)] =
+                measured.as_slice()
+            else {
+                unreachable!("three sizes");
+            };
+            // The payload names the same ten Relations at every size.
+            assert_eq!(small, medium);
+            assert_eq!(small, large);
+            // The oracle shows what the statement used to cost: its steps
+            // follow the product of the project's and the payload's counts.
+            assert!(legacy_large > &(legacy_small * 20), "{measured:?}");
+            assert!(legacy_large > &(large * 20), "{measured:?}");
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn relation_bytes_cost_is_linear_in_the_payload_relations() {
+        let db = migrated();
+        db.with_conn(|conn| {
+            for index in 0..1_000 {
+                add_relation(conn, PROJECT, &format!("rel-{index:04}"));
+            }
+            let mut steps = Vec::new();
+            for count in [10usize, 70, 144] {
+                set_payload(
+                    conn,
+                    &payload_naming((0..count).map(|index| format!("rel-{index:04}"))),
+                );
+                steps.push((count as u64, steps_of(conn, RELATION_BYTES_SQL).1));
+            }
+            let [(n10, s10), (n70, s70), (n144, s144)] = steps.as_slice() else {
+                unreachable!("three sizes");
+            };
+            // The same cost per payload Relation across the whole range.
+            assert_eq!(
+                (s70 - s10) * (n144 - n70),
+                (s144 - s70) * (n70 - n10),
+                "{steps:?}"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn the_test_switch_puts_back_only_the_relation_byte_count() {
+        let current = related_bytes_sql();
+        assert_eq!(current.last().copied(), Some(RELATION_BYTES_SQL));
+        with_legacy_relation_bytes(|| {
+            let legacy = related_bytes_sql();
+            assert_eq!(legacy.len(), current.len());
+            assert_eq!(legacy.last().copied(), Some(LEGACY_RELATION_BYTES_SQL));
+            assert_eq!(legacy[..legacy.len() - 1], current[..current.len() - 1]);
+        });
+        assert_eq!(
+            related_bytes_sql().last().copied(),
+            Some(RELATION_BYTES_SQL)
+        );
+    }
+
+    fn plan_of(conn: &Connection, sql: &str) -> Vec<String> {
+        let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let parameters = statement.parameter_count();
+        statement
+            .query_map(
+                rusqlite::params_from_iter(std::iter::repeat_n("x", parameters)),
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn relation_bytes_plan_looks_up_each_payload_edge_by_primary_key() {
+        let db = migrated();
+        db.with_conn(|conn| {
+            let current = plan_of(conn, RELATION_BYTES_SQL);
+            assert!(
+                current
+                    .iter()
+                    .any(|line| line
+                        == "SEARCH e USING INDEX sqlite_autoindex_codex_relations_1 (id=?)"),
+                "{current:?}"
+            );
+            assert!(
+                !current
+                    .iter()
+                    .any(|line| line.contains("idx_codex_relations_project")
+                        || line.starts_with("SCAN e")),
+                "{current:?}"
+            );
+            // Negative control: the statement before CQ-OPT put the project's
+            // Relations in the outer loop.
+            let legacy = plan_of(conn, LEGACY_RELATION_BYTES_SQL);
+            assert!(
+                legacy
+                    .iter()
+                    .any(|line| line.contains("idx_codex_relations_project")),
+                "{legacy:?}"
+            );
             Ok(())
         })
         .unwrap();
