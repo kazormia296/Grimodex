@@ -13,7 +13,7 @@
 // 実行: pnpm napi:build 後に `pnpm --dir electron/native/grimodex-node test`。
 // 宣言順に直列実行される (共有 Backend の状態に依存。順序を変えないこと)。
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -29,6 +29,17 @@ const root = mkdtempSync(join(tmpdir(), "grimodex-node-fore-"));
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 const PROJECT = "default-project"; // migrate seed
 
 function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {

@@ -488,7 +488,9 @@ describe("VivliostyleManager build / output token", () => {
         h.events.some((event) => event.channel === "vivliostyle:error"),
       ).toBe(true),
     );
-    expect(existsSync(failedDir ?? "")).toBe(false);
+    // The error event precedes the finally-block temp cleanup; Windows rm
+    // can finish later, so wait for the cleanup itself.
+    await vi.waitFor(() => expect(existsSync(failedDir ?? "")).toBe(false));
 
     const missing = h.runner.enqueue();
     await h.manager.handlers.vivliostyle_build(buildArgs());
@@ -505,7 +507,9 @@ describe("VivliostyleManager build / output token", () => {
         message: expect.stringContaining("生成されませんでした"),
       }),
     );
-    expect(existsSync(missingDir ?? "")).toBe(false);
+    // The error event precedes the finally-block temp cleanup; Windows rm
+    // can finish later, so wait for the cleanup itself.
+    await vi.waitFor(() => expect(existsSync(missingDir ?? "")).toBe(false));
 
     h.runner.startError = new Error("spawn boom");
     await h.manager.handlers.vivliostyle_build(buildArgs("epub"));

@@ -2,7 +2,7 @@
 // the bounded-list regression; this file proves serde, workspace routing, and
 // camelCase JSON serialization through the generated Node binding.
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -24,6 +24,17 @@ process.on("exit", () => {
 });
 
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 const payload = {
   runId: "run-review-resumable",
   projectId: "default-project",
