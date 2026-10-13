@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Instant;
 
+#[derive(Debug)]
 pub(crate) struct CapacityBudget {
     steps: AtomicU64,
     step_limit: u64,
@@ -153,6 +154,25 @@ fn state_for(conn: &Connection) -> SharedProgress {
 /// requirement as when SQLite invokes their progress callback.
 pub(crate) fn check_active_work(conn: &Connection) -> anyhow::Result<()> {
     check_progress_state(&state_for(conn))
+}
+
+/// Prove that this exact budget is installed on this connection right now.
+/// Holding the `Arc` alone does not show that `with_capacity_scope` is still
+/// active, so a reader checks the registry before Rust-side work and SQL.
+pub(crate) fn check_active_capacity(
+    conn: &Connection,
+    budget: &Arc<CapacityBudget>,
+) -> anyhow::Result<()> {
+    let active = state_for(conn)
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .budgets
+        .iter()
+        .find(|active| Arc::ptr_eq(&active.budget, budget))
+        .cloned();
+    let active =
+        active.ok_or_else(|| anyhow::anyhow!("NIR1 Graph SQL capacity scope is not active"))?;
+    active.check()
 }
 
 fn check_progress_state(state: &SharedProgress) -> anyhow::Result<()> {

@@ -1392,7 +1392,8 @@ mod generation_storage_adapter {
         use crate::narrative_extraction::{ValidationTerminated, ValidationTerminationReason};
         use crate::nir1_generation::{
             create_attempt, read_attempt_scene_binding_in_tx, AttemptBinding,
-            AttemptBindingVersion, AttemptCallerBinding, GenerationPurpose, NewAttempt, ReadBudget,
+            AttemptBindingVersion, AttemptCallerBinding, GenerationHistorySnapshotSqlBudget,
+            GenerationHistorySqlLedger, GenerationPurpose, NewAttempt, ReadBudget,
         };
         use crate::recovery::SafeModeState;
         use crate::state::{
@@ -1482,10 +1483,18 @@ mod generation_storage_adapter {
         fn budget() -> GenerationHistoryReadBudget {
             GenerationHistoryReadBudget {
                 max_attempts: 8,
+                sql: Some(GenerationHistorySqlLedger::new(
+                    GenerationHistorySnapshotSqlBudget {
+                        max_vm_steps: 1_000_000,
+                        deadline: Instant::now() + Duration::from_secs(30),
+                        busy_wait: Duration::from_millis(25),
+                    },
+                )),
                 max_candidates: 8,
                 max_reference_count: 16,
                 max_reference_bytes: 16_384,
                 max_resolved_body_bytes: 16_384,
+                remaining_project_authority_rows: 0,
                 remaining_nodes: 8,
                 remaining_edges: 8,
                 remaining_qualification_refs: 16,
