@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
 import {
   ZEN_WEBGL2_WORKER_PROBE_TIMEOUT_MS,
   _resetZenWebGl2SupportForTests,
@@ -7,6 +8,12 @@ import {
   readCachedZenWebGl2Support,
   subscribeZenWebGl2Support,
 } from "./zenWebGlSupport";
+
+const gpuBlocklist = vi.hoisted(() => ({ blocked: false }));
+
+vi.mock("@/lib/gpuFeatureStatus", () => ({
+  isWebGl2GpuBlocked: () => Promise.resolve(gpuBlocklist.blocked),
+}));
 
 class FakeWorker {
   static instances: FakeWorker[] = [];
@@ -54,6 +61,7 @@ describe("deferred Zen WebGL2 probe", () => {
     vi.useFakeTimers();
     FakeWorker.instances = [];
     FakeWorker.throwOnConstruct = false;
+    gpuBlocklist.blocked = false;
     vi.stubGlobal("Worker", FakeWorker);
     vi.stubGlobal("OffscreenCanvas", class {});
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
@@ -243,5 +251,30 @@ describe("deferred Zen WebGL2 probe", () => {
     expect(FakeWorker.instances).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(2);
     expect(FakeWorker.instances).toHaveLength(1);
+  });
+
+  it("reports unsupported without creating a Worker or context when the GPU blocklists WebGL2", async () => {
+    gpuBlocklist.blocked = true;
+    const getContext = stubMainThreadContext(null);
+    const listener = vi.fn();
+    const unsubscribe = subscribeZenWebGl2Support(listener);
+
+    acquireZenWebGl2Probe();
+    await passFirstFrameAndIdle();
+
+    expect(FakeWorker.instances).toHaveLength(0);
+    expect(getContext).not.toHaveBeenCalled();
+    expect(readCachedZenWebGl2Support()).toBe(false);
+    expect(listener).toHaveBeenCalledOnce();
+    unsubscribe();
+  });
+
+  it("keeps probing with the worker when the GPU status is enabled or unknown", async () => {
+    gpuBlocklist.blocked = false;
+    acquireZenWebGl2Probe();
+    await passFirstFrameAndIdle();
+
+    expect(FakeWorker.instances).toHaveLength(1);
+    expect(readCachedZenWebGl2Support()).toBeNull();
   });
 });

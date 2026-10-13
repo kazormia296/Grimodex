@@ -1,3 +1,4 @@
+import { isWebGl2GpuBlocked } from "@/lib/gpuFeatureStatus";
 import {
   ZEN_WEBGL2_PROBE_ATTRIBUTES,
   type ZenWebGl2ProbeMessage,
@@ -84,6 +85,10 @@ export function acquireZenWebGl2Probe(): () => void {
 
 async function runProbe(signal: AbortSignal): Promise<boolean> {
   if (typeof document === "undefined") return false;
+  // A GPU blocklist that already rules out WebGL2 is decided by main, so skip
+  // the Worker and the context creation that would only wait for GPU refusal.
+  if (await isWebGl2GpuBlocked()) return false;
+  if (signal.aborted) return false;
   await waitForFirstFrame(signal);
   await waitForIdle(signal);
   if (signal.aborted) return false;
