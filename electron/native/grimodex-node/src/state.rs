@@ -2605,6 +2605,8 @@ pub struct AppState {
     pub(crate) nir1_generation_recovery_bindings: Mutex<Vec<LiveBinding>>,
     /// Monotonic, single-binding ledger for best-effort post-Ready recovery.
     pub(crate) nir1_generation_recovery_statuses: Mutex<GenerationRecoveryHookLedger>,
+    /// Process-local in-flight attempt slots, one per chat session (DT-2).
+    pub(crate) nir1_generation_registry: crate::nir1_generation_owner::Nir1GenerationRegistry,
     #[cfg(test)]
     pub(crate) nir1_generation_recovery_worker_probe:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -2614,6 +2616,8 @@ pub struct AppState {
     #[cfg(test)]
     pub(crate) nir1_generation_recovery_launch_probe:
         Mutex<Option<std::sync::mpsc::Sender<GenerationRecoveryLaunchObservation>>>,
+    #[cfg(test)]
+    pub(crate) nir1_generation_recovery_try_probe: Mutex<Option<GenerationRecoveryTryProbe>>,
     /// Lease-only baton for a retired maintenance authority. The SQLite
     /// handle inside the pinned authority has already been closed and marked
     /// unusable; retaining this Arc keeps the shared lease continuous until a
@@ -2658,6 +2662,11 @@ pub(crate) struct GenerationRecoveryLaunchObservation {
     pub(crate) active_operation_count: usize,
     pub(crate) participant_count: usize,
 }
+
+/// Test-only hook run before each recovery write try of the sweep, with the
+/// try number of the current pending attempt.
+#[cfg(test)]
+pub(crate) type GenerationRecoveryTryProbe = Box<dyn FnMut(usize) + Send>;
 
 pub(crate) enum WorkspaceShutdownTask {
     Pending(tokio::task::JoinHandle<std::result::Result<(), String>>),
@@ -2784,12 +2793,15 @@ impl AppState {
             workspace_shutdown: OnceLock::new(),
             nir1_generation_recovery_bindings: Mutex::new(Vec::new()),
             nir1_generation_recovery_statuses: Mutex::new(GenerationRecoveryHookLedger::default()),
+            nir1_generation_registry: Default::default(),
             #[cfg(test)]
             nir1_generation_recovery_worker_probe: Mutex::new(None),
             #[cfg(test)]
             nir1_generation_recovery_completion_probe: Mutex::new(None),
             #[cfg(test)]
             nir1_generation_recovery_launch_probe: Mutex::new(None),
+            #[cfg(test)]
+            nir1_generation_recovery_try_probe: Mutex::new(None),
             narrative_maintenance_recovery_batons: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_bindings: Mutex::new(HashMap::new()),
             narrative_maintenance_recovery_receipts: Mutex::new(BTreeMap::new()),

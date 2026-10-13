@@ -1464,35 +1464,1153 @@ fn insert_replace_and_update_replace_do_not_revive_displaced_versions() {
     assert!(read_message_version(&db, &displaced.id).is_err());
 }
 
-#[test]
-fn prepared_claim_rolls_back_denial_and_panic_then_commits_under_callback() {
-    let db = database(Path::new(":memory:"));
-    let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
-    let denied = with_prepared_claim(&db, &attempt.id, &attempt.binding, budget(), |_prepared| {
-        anyhow::bail!("authority revoked before final claim")
-    });
-    assert!(denied.is_err());
-    assert!(read_attempt(&db, &attempt.id, budget())
-        .expect("rollback")
-        .claimed_at_ms
+// ---------------------------------------------------------------------------
+// DT-2 bounded writers (D1-D12).
+// ---------------------------------------------------------------------------
+
+mod bounded {
+    use super::*;
+    use crate::recovery::SafeModeState;
+    use crate::state::{
+        active_workspace_snapshot, ActiveWorkspace, ActiveWorkspaceSnapshot, WorkspaceAuthority,
+        WorkspaceState,
+    };
+    use crate::workspace_lifecycle::{
+        AdmissionKind, LiveBinding, WorkspaceLifecycleCompatibilityView,
+    };
+    use std::path::PathBuf;
+    use std::sync::{mpsc, Mutex};
+    use std::thread;
+
+    pub(super) struct BoundedWorkspace {
+        pub(super) state: WorkspaceState,
+        path: PathBuf,
+    }
+
+    /// A Ready workspace over the database file under `path`, served by a new
+    /// authority instance.
+    fn ready_state(path: &Path) -> WorkspaceState {
+        let db = database(&path.join("workspace.db"));
+        let authority =
+            WorkspaceAuthority::from_database_for_test(db, path.to_path_buf()).expect("authority");
+        let state = WorkspaceState {
+            inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
+            safe_mode: SafeModeState::default(),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: Mutex::new(Default::default()),
+        };
+        state
+            .lifecycle_core()
+            .set_ready(LiveBinding::new(
+                path.to_string_lossy(),
+                format!("bounded-test:{}", authority.identity()),
+                authority.identity(),
+                1,
+            ))
+            .expect("Ready");
+        state
+    }
+
+    impl BoundedWorkspace {
+        /// File-backed so a second `Database` can contend for the SQLite lock.
+        pub(super) fn new() -> Self {
+            let path = std::env::temp_dir().join(format!("nir1-bounded-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&path).expect("workspace directory");
+            Self {
+                state: ready_state(&path),
+                path,
+            }
+        }
+
+        /// The same path and database file re-opened as a new authority
+        /// instance (the locator stays, the authority identity changes). Drop
+        /// it before this workspace, which removes the directory.
+        #[cfg(feature = "native-current-human-capture")]
+        pub(super) fn reopened_state(&self) -> WorkspaceState {
+            ready_state(&self.path)
+        }
+
+        pub(super) fn snapshot(&self) -> ActiveWorkspaceSnapshot {
+            active_workspace_snapshot(&self.state).expect("workspace snapshot")
+        }
+
+        pub(super) fn db(&self) -> crate::state::PinnedWorkspaceDb {
+            Arc::clone(self.snapshot().db())
+        }
+
+        fn db_path(&self) -> PathBuf {
+            self.path.join("workspace.db")
+        }
+    }
+
+    impl Drop for BoundedWorkspace {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    pub(super) fn open_probe() -> Nir1AdmissionProbe {
+        Arc::new(|| true)
+    }
+
+    pub(super) fn admission() -> Nir1AdmissionSqlBudget {
+        Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), open_probe())
+    }
+
+    pub(super) fn now_request() -> NewAttempt {
+        let now = wall_clock_ms().expect("clock");
+        NewAttempt {
+            created_at_ms: now,
+            expires_at_ms: now + 60_000,
+            ..request(vec![], vec![])
+        }
+    }
+
+    fn no_check() -> impl FnMut() -> Result<()> {
+        || Ok(())
+    }
+
+    pub(super) fn create(
+        workspace: &ActiveWorkspaceSnapshot,
+        id: &str,
+    ) -> std::result::Result<StoredAttempt, Nir1GenerationStoreError> {
+        create_attempt_with_id_bounded(workspace, id, now_request(), &admission(), &mut no_check())
+    }
+
+    pub(super) fn expected(attempt: &StoredAttempt) -> Nir1ExpectedAttempt {
+        Nir1ExpectedAttempt::from_stored(attempt, budget())
+    }
+
+    fn claim(
+        workspace: &ActiveWorkspaceSnapshot,
+        attempt: &StoredAttempt,
+        budget: &Nir1AdmissionSqlBudget,
+    ) -> std::result::Result<Nir1ClaimOutcome, Nir1GenerationStoreError> {
+        claim_attempt_bounded(workspace, &expected(attempt), budget, &mut no_check())
+    }
+
+    fn zero_send(
+        workspace: &ActiveWorkspaceSnapshot,
+        attempt: &StoredAttempt,
+        claim: Nir1ExpectedClaim,
+        completion: Nir1ZeroSendCompletion,
+    ) -> std::result::Result<StoredTerminal, Nir1GenerationStoreError> {
+        finish_pretransport_attempt_bounded(
+            workspace,
+            &expected(attempt),
+            claim,
+            completion,
+            &Nir1PinnedSqlBudget::new(),
+        )
+    }
+
+    fn row_counts(db: &Database) -> (i64, i64) {
+        db.with_conn(|conn| {
+            Ok((
+                conn.query_row("SELECT count(*) FROM nir1_generation_attempts", [], |r| {
+                    r.get(0)
+                })?,
+                conn.query_row("SELECT count(*) FROM nir1_generation_input_refs", [], |r| {
+                    r.get(0)
+                })?,
+            ))
+        })
+        .expect("row counts")
+    }
+
+    fn busy_timeout_ms(db: &Database) -> i64 {
+        db.with_conn(|conn| Ok(conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?))
+            .expect("busy timeout")
+    }
+
+    fn assert_failure(
+        error: &Nir1GenerationStoreError,
+        failure: Nir1StoreFailure,
+        commit: Nir1CommitState,
+    ) {
+        assert_eq!(error.failure(), failure, "{error}: {:#}", error.source);
+        assert_eq!(error.commit(), commit, "{error}");
+    }
+
+    /// D1: the connection mutex wait is bounded and typed.
+    #[test]
+    fn d1_create_reports_connection_busy_after_the_mutex_limit_and_retries_cleanly() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        let id = test_digest("d1-attempt");
+        {
+            let _held = db.lock().expect("hold the connection mutex");
+            let started = Instant::now();
+            let error = create(&snapshot, &id).expect_err("held mutex");
+            let elapsed = started.elapsed();
+            assert_failure(
+                &error,
+                Nir1StoreFailure::ConnectionBusy,
+                Nir1CommitState::NotCommitted,
+            );
+            assert!(
+                elapsed >= NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT,
+                "{elapsed:?}"
+            );
+            assert!(elapsed < NIR1_GENERATION_OPERATION_LIMIT, "{elapsed:?}");
+        }
+        assert_eq!(row_counts(db.db()), (0, 0));
+        assert!(db.connection_reusable());
+        assert_eq!(create(&snapshot, &id).expect("retry after release").id, id);
+    }
+
+    /// D2: another SQLite writer is waited on for at most the busy limit.
+    #[test]
+    fn d2_sqlite_busy_is_bounded_and_restores_the_connection_busy_timeout() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        let other = Database::new(&workspace.db_path()).expect("second connection");
+        other
+            .with_conn(|conn| {
+                conn.execute_batch("BEGIN IMMEDIATE")?;
+                Ok(())
+            })
+            .expect("other writer holds the SQLite write lock");
+        let id = test_digest("d2-attempt");
+        let started = Instant::now();
+        let error = create(&snapshot, &id).expect_err("SQLite busy");
+        let elapsed = started.elapsed();
+        assert_failure(
+            &error,
+            Nir1StoreFailure::SqliteBusy,
+            Nir1CommitState::NotCommitted,
+        );
+        assert!(elapsed >= NIR1_GENERATION_SQLITE_BUSY_LIMIT, "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+        other
+            .with_conn(|conn| {
+                conn.execute_batch("ROLLBACK")?;
+                Ok(())
+            })
+            .expect("release the SQLite write lock");
+        assert_eq!(
+            busy_timeout_ms(db.db()),
+            5_000,
+            "connection default restored"
+        );
+        assert!(db.connection_reusable());
+        assert_eq!(create(&snapshot, &id).expect("retry").id, id);
+    }
+
+    pub(super) fn install_slow_insert_trigger(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TEMP TABLE nir1_slow(x INTEGER);
+                 WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 400)
+                 INSERT INTO nir1_slow SELECT x FROM c;
+                 CREATE TEMP TRIGGER nir1_slow_attempt AFTER INSERT ON nir1_generation_attempts
+                 BEGIN SELECT count(*) FROM nir1_slow a, nir1_slow b, nir1_slow c; END;",
+            )?;
+            Ok(())
+        })
+        .expect("slow TEMP trigger");
+    }
+
+    pub(super) fn remove_slow_insert_trigger(db: &Database) {
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER nir1_slow_attempt")?;
+            Ok(())
+        })
+        .expect("drop slow trigger");
+    }
+
+    /// D3: a long statement is interrupted at the per-op limit; nothing stays.
+    #[test]
+    fn d3_long_sql_times_out_at_the_operation_limit_without_partial_rows() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        install_slow_insert_trigger(db.db());
+        let id = test_digest("d3-attempt");
+        let started = Instant::now();
+        let error = create(&snapshot, &id).expect_err("per-op timeout");
+        let elapsed = started.elapsed();
+        assert_failure(
+            &error,
+            Nir1StoreFailure::TimedOut,
+            Nir1CommitState::NotCommitted,
+        );
+        assert!(elapsed >= NIR1_GENERATION_OPERATION_LIMIT, "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+        assert_eq!(row_counts(db.db()), (0, 0), "attempt and refs rolled back");
+        assert!(db.connection_reusable());
+        // The progress handler is gone: a statement longer than the old
+        // deadline now runs to completion on the same connection.
+        let count: i64 = db
+            .db()
+            .with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM nir1_slow a, nir1_slow b", [], |row| {
+                        row.get(0)
+                    })?,
+                )
+            })
+            .expect("unbounded follow-up statement");
+        assert_eq!(count, 160_000);
+        assert_eq!(busy_timeout_ms(db.db()), 5_000);
+        remove_slow_insert_trigger(db.db());
+        assert_eq!(create(&snapshot, &id).expect("reuse").id, id);
+    }
+
+    /// D4: a refused or panicking pre-commit check rolls back; the panic
+    /// reaches the caller while the connection stays reusable.
+    #[test]
+    fn d4_pre_commit_refusal_and_panic_roll_back_and_keep_the_connection() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        let attempt = create(&snapshot, &test_digest("d4-attempt")).expect("attempt");
+        let mut refuse = || -> Result<()> { anyhow::bail!("authority revoked before commit") };
+        let error =
+            claim_attempt_bounded(&snapshot, &expected(&attempt), &admission(), &mut refuse)
+                .expect_err("pre-commit refusal");
+        assert_eq!(error.commit(), Nir1CommitState::NotCommitted);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut explode = || -> Result<()> { panic!("pre-commit owner panic") };
+            let _ =
+                claim_attempt_bounded(&snapshot, &expected(&attempt), &admission(), &mut explode);
+        }));
+        assert!(panic.is_err(), "the panic reaches the caller");
+        assert!(
+            db.connection_reusable(),
+            "a clean rollback keeps the connection"
+        );
+        assert!(read_attempt(db.db(), &attempt.id, budget())
+            .expect("attempt")
+            .claimed_at_ms
+            .is_none());
+        assert!(matches!(
+            claim(&snapshot, &attempt, &admission()),
+            Ok(Nir1ClaimOutcome::Claimed { .. })
+        ));
+    }
+
+    /// D5: claim outcomes and the in-transaction pairing check.
+    #[test]
+    fn d5_claim_reports_claimed_already_claimed_and_already_terminal() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let attempt = create(&snapshot, &test_digest("d5-attempt")).expect("attempt");
+        let mut swapped = expected(&attempt);
+        swapped.payload_digest = test_digest("another payload");
+        let error = claim_attempt_bounded(&snapshot, &swapped, &admission(), &mut no_check())
+            .expect_err("pairing mismatch");
+        assert_failure(
+            &error,
+            Nir1StoreFailure::Conflict,
+            Nir1CommitState::NotCommitted,
+        );
+        let Ok(Nir1ClaimOutcome::Claimed { claimed_at_ms }) =
+            claim(&snapshot, &attempt, &admission())
+        else {
+            panic!("first claim wins");
+        };
+        assert_eq!(
+            claim(&snapshot, &attempt, &admission()).expect("second claim"),
+            Nir1ClaimOutcome::AlreadyClaimed { claimed_at_ms }
+        );
+        zero_send(
+            &snapshot,
+            &attempt,
+            Nir1ExpectedClaim::ClaimedAt(claimed_at_ms),
+            Nir1ZeroSendCompletion::DispatchFailure,
+        )
+        .expect("terminal");
+        assert_eq!(
+            claim(&snapshot, &attempt, &admission()).expect("terminal claim"),
+            Nir1ClaimOutcome::AlreadyTerminal
+        );
+    }
+
+    /// D6: an ambiguous COMMIT is classified Unknown and carries the claim
+    /// time this writer used; the exact reread resolves it.
+    #[test]
+    fn d6_unknown_commit_is_resolved_by_the_exact_reread() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let vetoed = create(&snapshot, &test_digest("d6-vetoed")).expect("attempt");
+        let error = claim(
+            &snapshot,
+            &vetoed,
+            &admission().with_failpoint(Nir1GenerationFailpoint::VetoCommit),
+        )
+        .expect_err("vetoed COMMIT");
+        assert_eq!(error.commit(), Nir1CommitState::Unknown);
+        assert!(
+            error.claim_written_at_ms().is_some(),
+            "claim Unknown has its time"
+        );
+        let reread = read_attempt_exact_bounded(
+            &snapshot,
+            &vetoed.id,
+            budget(),
+            &Nir1PinnedSqlBudget::new(),
+        )
+        .expect("reread")
+        .expect("row");
+        assert!(
+            reread.claimed_at_ms.is_none(),
+            "the vetoed claim is not durable"
+        );
+        assert!(workspace.db().connection_reusable());
+
+        let applied = create(&snapshot, &test_digest("d6-applied")).expect("attempt");
+        let error = claim(
+            &snapshot,
+            &applied,
+            &admission().with_failpoint(Nir1GenerationFailpoint::ErrorAfterCommit),
+        )
+        .expect_err("error after COMMIT");
+        assert_eq!(error.commit(), Nir1CommitState::Unknown);
+        let reread = read_attempt_exact_bounded(
+            &snapshot,
+            &applied.id,
+            budget(),
+            &Nir1PinnedSqlBudget::new(),
+        )
+        .expect("reread")
+        .expect("row");
+        assert_eq!(reread.claimed_at_ms, error.claim_written_at_ms());
+        assert!(read_attempt_exact_bounded(
+            &snapshot,
+            &test_digest("never-created"),
+            budget(),
+            &Nir1PinnedSqlBudget::new(),
+        )
+        .expect("confirmed absence")
         .is_none());
-    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _ = with_prepared_claim(&db, &attempt.id, &attempt.binding, budget(), |_prepared| {
-            panic!("authority owner panic before claim")
+    }
+
+    /// D7: admission writers stop on a lifecycle edge or the owner's cancel;
+    /// the pinned zero-send writer still completes, exactly once.
+    #[test]
+    fn d7_admission_writers_are_fenced_while_pinned_zero_send_completes() {
+        for shutdown in [false, true] {
+            let workspace = BoundedWorkspace::new();
+            let snapshot = workspace.snapshot();
+            let attempt = create(&snapshot, &test_digest("d7-attempt")).expect("attempt");
+            let core = workspace.state.lifecycle_core();
+            let _transition = if shutdown {
+                core.request_shutdown().expect("shutdown");
+                None
+            } else {
+                Some(
+                    core.begin_transition(AdmissionKind::Open)
+                        .expect("transition"),
+                )
+            };
+            let error = claim(&snapshot, &attempt, &admission()).expect_err("fenced claim");
+            assert_failure(
+                &error,
+                Nir1StoreFailure::Fenced,
+                Nir1CommitState::NotCommitted,
+            );
+            let error = create(&snapshot, &test_digest("d7-other")).expect_err("fenced create");
+            assert_failure(
+                &error,
+                Nir1StoreFailure::Fenced,
+                Nir1CommitState::NotCommitted,
+            );
+            let cancel = Arc::new(AtomicBool::new(true));
+            let cancelled = Nir1AdmissionSqlBudget::new(Arc::clone(&cancel), open_probe());
+            let error = claim(&snapshot, &attempt, &cancelled).expect_err("cancelled claim");
+            assert_failure(
+                &error,
+                Nir1StoreFailure::Cancelled,
+                Nir1CommitState::NotCommitted,
+            );
+
+            let first = zero_send(
+                &snapshot,
+                &attempt,
+                Nir1ExpectedClaim::Unclaimed,
+                Nir1ZeroSendCompletion::Cancelled,
+            )
+            .expect("pinned zero-send ignores the stop");
+            assert_eq!(
+                first.failure_classification,
+                Some(FailureClassification::Cancelled)
+            );
+            let again = zero_send(
+                &snapshot,
+                &attempt,
+                Nir1ExpectedClaim::Unclaimed,
+                Nir1ZeroSendCompletion::Cancelled,
+            )
+            .expect("idempotent rewrite");
+            assert_eq!(again, first);
+            let error = zero_send(
+                &snapshot,
+                &attempt,
+                Nir1ExpectedClaim::Unclaimed,
+                Nir1ZeroSendCompletion::DispatchFailure,
+            )
+            .expect_err("different terminal");
+            assert_failure(
+                &error,
+                Nir1StoreFailure::TerminalConflict,
+                Nir1CommitState::NotCommitted,
+            );
+        }
+    }
+
+    /// D8: the zero-send writer only produces not-attempted terminals and
+    /// never a message body or version.
+    #[test]
+    fn d8_zero_send_terminals_carry_no_body_and_no_provider_observation() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        for (completion, status, classification) in [
+            (
+                Nir1ZeroSendCompletion::Cancelled,
+                "cancelled",
+                FailureClassification::Cancelled,
+            ),
+            (
+                Nir1ZeroSendCompletion::DispatchFailure,
+                "failed",
+                FailureClassification::DispatchUnavailable,
+            ),
+        ] {
+            let attempt =
+                create(&snapshot, &test_digest(&format!("d8-{status}"))).expect("attempt");
+            let terminal = zero_send(
+                &snapshot,
+                &attempt,
+                Nir1ExpectedClaim::Unclaimed,
+                completion,
+            )
+            .expect("zero-send");
+            assert!(terminal.message_version.is_none());
+            assert_eq!(terminal.failure_classification, Some(classification));
+            assert_eq!(
+                terminal.retry_classification,
+                RetryClassification::NewAttemptRequired
+            );
+            assert_eq!(terminal.observation["terminalStatus"], status);
+            assert_eq!(terminal.observation["parseStatus"], "not-attempted");
+            assert!(terminal.observation["providerTerminal"].is_null());
+            assert!(terminal.observation["responseDigest"].is_null());
+        }
+        let assistant_rows: i64 = workspace
+            .db()
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT count(*) FROM chat_messages WHERE role='assistant'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("assistant rows");
+        assert_eq!(assistant_rows, 0);
+    }
+
+    /// D10: COMMIT runs without the Core, a participant or this thread's
+    /// lifecycle state held: another thread uses them during COMMIT.
+    #[test]
+    fn d10_commit_runs_without_lifecycle_guards() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let attempt = create(&snapshot, &test_digest("d10-attempt")).expect("attempt");
+        let core = workspace.state.lifecycle_core();
+        let (during_tx, during_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        let probe = Arc::new(move || {
+            during_tx.send(()).expect("announce COMMIT");
+            release_rx
+                .lock()
+                .expect("release receiver")
+                .recv_timeout(Duration::from_secs(5))
+                .expect("release COMMIT");
         });
-    }));
-    assert!(panic.is_err());
-    assert!(db.connection_reusable());
-    assert!(
-        with_prepared_claim(&db, &attempt.id, &attempt.binding, budget(), |prepared| {
-            prepared.commit(1_200)
-        })
-        .expect("commit")
-    );
-    assert!(
-        !with_prepared_claim(&db, &attempt.id, &attempt.binding, budget(), |prepared| {
-            prepared.commit(1_300)
-        })
-        .expect("consumed")
-    );
+        thread::scope(|scope| {
+            let owner = scope.spawn(|| {
+                claim(
+                    &snapshot,
+                    &attempt,
+                    &admission().with_failpoint(Nir1GenerationFailpoint::ProbeDuringCommit(probe)),
+                )
+            });
+            during_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("owner reached COMMIT");
+            let (done_tx, done_rx) = mpsc::channel();
+            let other_core = core.clone();
+            scope.spawn(move || {
+                other_core.snapshot().expect("Core snapshot during COMMIT");
+                drop(
+                    other_core
+                        .begin_workspace_participant()
+                        .expect("participant during COMMIT"),
+                );
+                done_tx.send(()).expect("done");
+            });
+            done_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("lifecycle use during COMMIT finished within 1 s");
+            release_tx.send(()).expect("release");
+            assert!(matches!(
+                owner.join().expect("owner"),
+                Ok(Nir1ClaimOutcome::Claimed { .. })
+            ));
+        });
+    }
+
+    /// D11: a nested SQL owner is refused before the connection mutex.
+    #[test]
+    fn d11_nested_sql_owner_is_refused_before_the_connection_mutex() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        let attempt = create(&snapshot, &test_digest("d11-attempt")).expect("attempt");
+        let participant = workspace
+            .state
+            .lifecycle_core()
+            .begin_workspace_participant()
+            .expect("participant");
+        let assert_refused = |result: Option<Nir1GenerationStoreError>| {
+            let error = result.expect("refused");
+            assert_failure(
+                &error,
+                Nir1StoreFailure::SqlOwnerActive,
+                Nir1CommitState::NotCommitted,
+            );
+        };
+        let checks = |assert_refused: &dyn Fn(Option<Nir1GenerationStoreError>)| {
+            let started = Instant::now();
+            assert_refused(create(&snapshot, &test_digest("d11-nested")).err());
+            assert_refused(claim(&snapshot, &attempt, &admission()).err());
+            assert_refused(
+                zero_send(
+                    &snapshot,
+                    &attempt,
+                    Nir1ExpectedClaim::Unclaimed,
+                    Nir1ZeroSendCompletion::Cancelled,
+                )
+                .err(),
+            );
+            assert_refused(
+                finish_attempt_bounded(
+                    &snapshot,
+                    &expected(&attempt),
+                    &OutputObserver::new().finish(Completion::Cancelled),
+                    None,
+                    1_000,
+                    &Nir1PinnedSqlBudget::new(),
+                )
+                .err(),
+            );
+            assert_refused(
+                recover_claimed_attempt_bounded(
+                    &snapshot,
+                    &expected(&attempt),
+                    &Nir1PinnedSqlBudget::new(),
+                )
+                .err(),
+            );
+            assert_refused(
+                read_attempt_exact_bounded(
+                    &snapshot,
+                    &attempt.id,
+                    budget(),
+                    &Nir1PinnedSqlBudget::new(),
+                )
+                .err(),
+            );
+            // The connection mutex is held by this very scope: a writer that
+            // waited for it would have taken at least the mutex limit.
+            assert!(started.elapsed() < NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT);
+        };
+        db.db()
+            .with_participant_sql_scope(&participant, |_conn| {
+                checks(&assert_refused);
+                Ok(())
+            })
+            .expect("participant scope");
+        db.db()
+            .with_conn(|conn| {
+                crate::narrative_maintenance_connection::with_capacity_connection(
+                    db.db(),
+                    conn,
+                    |_| {
+                        checks(&assert_refused);
+                        Ok(())
+                    },
+                )
+            })
+            .expect("capacity attempt");
+        assert!(matches!(
+            claim(&snapshot, &attempt, &admission()),
+            Ok(Nir1ClaimOutcome::Claimed { .. })
+        ));
+    }
+
+    /// D12: the zero-send writer checks the claim state before any terminal.
+    #[test]
+    fn d12_zero_send_never_terminalizes_another_claim_or_mistakes_a_sweep_terminal() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+
+        let swept = create(&snapshot, &test_digest("d12-swept")).expect("attempt");
+        recover_attempt(db.db(), &swept.id, wall_clock_ms().expect("clock")).expect("sweep");
+        let error = zero_send(
+            &snapshot,
+            &swept,
+            Nir1ExpectedClaim::Unclaimed,
+            Nir1ZeroSendCompletion::DispatchFailure,
+        )
+        .expect_err("InterruptedUnknown is not this writer's DispatchFailure");
+        assert_eq!(error.failure(), Nir1StoreFailure::TerminalConflict);
+
+        let other = create(&snapshot, &test_digest("d12-other")).expect("attempt");
+        let other_time = other.expires_at_ms - 1;
+        assert!(
+            claim_attempt(db.db(), &other.id, &other.binding, other_time, budget())
+                .expect("another claimer")
+        );
+        for claim in [
+            Nir1ExpectedClaim::Unclaimed,
+            Nir1ExpectedClaim::ClaimedAt(other_time - 1),
+        ] {
+            let error = zero_send(&snapshot, &other, claim, Nir1ZeroSendCompletion::Cancelled)
+                .expect_err("claim mismatch");
+            assert_eq!(error.failure(), Nir1StoreFailure::ClaimMismatch);
+        }
+        assert!(read_terminal(db.db(), &other.id)
+            .expect("terminal")
+            .is_none());
+
+        // Another claimer's own DispatchFailure terminal is not mistaken for
+        // this writer's idempotent rewrite: the claim check comes first.
+        finish_attempt(
+            db.db(),
+            &other.id,
+            &OutputObserver::new().finish(Completion::DispatchFailure),
+            None,
+            other_time,
+        )
+        .expect("other claimer terminal");
+        let error = zero_send(
+            &snapshot,
+            &other,
+            Nir1ExpectedClaim::ClaimedAt(other_time - 1),
+            Nir1ZeroSendCompletion::DispatchFailure,
+        )
+        .expect_err("claim mismatch before the terminal comparison");
+        assert_eq!(error.failure(), Nir1StoreFailure::ClaimMismatch);
+    }
+
+    /// D14: claim and every terminal writer compare the immutable fields in
+    /// their own transaction, so another same-binding attempt cannot be
+    /// swapped in by ID (the claim, terminal and recover paths alike).
+    #[test]
+    fn d14_claim_and_terminal_writers_refuse_a_swapped_same_binding_attempt() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        let paired = create(&snapshot, &test_digest("d14-paired")).expect("attempt");
+        let mut other_request = now_request();
+        other_request.payload_digest = test_digest("d14 other payload");
+        let other = create_attempt_with_id_bounded(
+            &snapshot,
+            &test_digest("d14-other"),
+            other_request,
+            &admission(),
+            &mut no_check(),
+        )
+        .expect("another same-binding attempt");
+        assert_eq!(other.binding, paired.binding);
+        let mut swapped = expected(&paired);
+        swapped.id = other.id.clone();
+        let observation = OutputObserver::new().finish(Completion::Cancelled);
+        let refused = |error: Option<Nir1GenerationStoreError>, path: &str| {
+            let error = error.unwrap_or_else(|| panic!("{path}: the swapped attempt is refused"));
+            assert_failure(
+                &error,
+                Nir1StoreFailure::Conflict,
+                Nir1CommitState::NotCommitted,
+            );
+            assert!(
+                error_chain_contains(&error.source, "NIR1_GENERATION_ATTEMPT_CONFLICT"),
+                "{path}: {:#}",
+                error.source
+            );
+        };
+        let terminal_paths = |claim: Nir1ExpectedClaim| {
+            refused(
+                finish_pretransport_attempt_bounded(
+                    &snapshot,
+                    &swapped,
+                    claim,
+                    Nir1ZeroSendCompletion::DispatchFailure,
+                    &Nir1PinnedSqlBudget::new(),
+                )
+                .err(),
+                "zero-send",
+            );
+            refused(
+                finish_attempt_bounded(
+                    &snapshot,
+                    &swapped,
+                    &observation,
+                    None,
+                    wall_clock_ms().expect("clock"),
+                    &Nir1PinnedSqlBudget::new(),
+                )
+                .err(),
+                "finish",
+            );
+            refused(
+                recover_claimed_attempt_bounded(&snapshot, &swapped, &Nir1PinnedSqlBudget::new())
+                    .err(),
+                "recover",
+            );
+        };
+        refused(
+            claim_attempt_bounded(&snapshot, &swapped, &admission(), &mut no_check()).err(),
+            "claim",
+        );
+        terminal_paths(Nir1ExpectedClaim::Unclaimed);
+        let Ok(Nir1ClaimOutcome::Claimed { claimed_at_ms }) =
+            claim(&snapshot, &other, &admission())
+        else {
+            panic!("the other attempt's own claim");
+        };
+        terminal_paths(Nir1ExpectedClaim::ClaimedAt(claimed_at_ms));
+        let current = read_attempt(db.db(), &other.id, budget()).expect("other attempt");
+        assert_eq!(current.claimed_at_ms, Some(claimed_at_ms));
+        assert!(current.terminal.is_none(), "no swapped write reached it");
+        let untouched = read_attempt(db.db(), &paired.id, budget()).expect("paired attempt");
+        assert!(untouched.claimed_at_ms.is_none() && untouched.terminal.is_none());
+        assert!(db.connection_reusable());
+        // The exact expected fields still finish the other attempt.
+        let terminal = finish_attempt_bounded(
+            &snapshot,
+            &expected(&other),
+            &observation,
+            None,
+            wall_clock_ms().expect("clock"),
+            &Nir1PinnedSqlBudget::new(),
+        )
+        .expect("the exact attempt finishes");
+        assert_eq!(
+            terminal.failure_classification,
+            Some(FailureClassification::Cancelled)
+        );
+    }
+
+    /// D15: the sweep retries a recovery only on its connection mutex
+    /// timeout (no SQL ran); a lapsed operation deadline is not one.
+    #[test]
+    fn d15_recovery_reports_only_a_connection_mutex_timeout_as_connection_busy() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        let attempt = create(&snapshot, &test_digest("d15-attempt")).expect("attempt");
+        let recover = |operation: Duration| {
+            recover_attempt_bounded(
+                &snapshot,
+                &attempt.id,
+                wall_clock_ms().expect("clock"),
+                ParticipantSqlOperationBudget::new(
+                    Arc::new(AtomicBool::new(false)),
+                    Instant::now() + operation,
+                    NIR1_GENERATION_SQLITE_BUSY_LIMIT,
+                ),
+            )
+        };
+        {
+            let _held = db.lock().expect("hold the connection mutex");
+            let started = Instant::now();
+            let busy = recover(NIR1_GENERATION_OPERATION_LIMIT).expect_err("held mutex");
+            assert!(is_recovery_connection_busy(&busy), "{busy:#}");
+            assert!(started.elapsed() >= NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT);
+            // A deadline shorter than the mutex limit lapses first.
+            let lapsed = recover(NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT / 2).expect_err("deadline");
+            assert!(!is_recovery_connection_busy(&lapsed), "{lapsed:#}");
+        }
+        assert!(read_terminal(db.db(), &attempt.id)
+            .expect("terminal")
+            .is_none());
+        let terminal = recover(NIR1_GENERATION_OPERATION_LIMIT).expect("recovery after release");
+        assert_eq!(
+            terminal.failure_classification,
+            Some(FailureClassification::InterruptedUnknown)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "may only be tightened")]
+    fn limits_can_only_be_tightened() {
+        let _ = admission().tightened(
+            NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT * 2,
+            NIR1_GENERATION_SQLITE_BUSY_LIMIT,
+            NIR1_GENERATION_OPERATION_LIMIT,
+        );
+    }
+}
+
+/// D9, D13: the capture form uses one deterministic attempt per submission,
+/// requires the exact current capture, and serves only its owner's caller
+/// and workspace incarnation.
+#[cfg(feature = "native-current-human-capture")]
+mod capture {
+    use super::bounded::{admission, BoundedWorkspace};
+    use super::*;
+
+    const SESSION: &str = "generation-session";
+    const SCENE: &str = "generation-scene";
+
+    fn owner(workspace: &crate::state::ActiveWorkspaceSnapshot) -> ChatInputCaptureOwner {
+        let locator = workspace.path().to_string_lossy().into_owned();
+        ChatInputCaptureOwner::new(
+            "profile".into(),
+            "main-caller".into(),
+            3,
+            1,
+            locator.clone(),
+            "caller-session".into(),
+            "bounded-workspace".into(),
+            locator,
+            workspace.db().identity(),
+            1,
+            0,
+        )
+        .expect("owner")
+    }
+
+    fn accept(
+        workspace: &crate::state::ActiveWorkspaceSnapshot,
+        key: &str,
+    ) -> AcceptedChatInputCapture {
+        let submission = NewChatInputSubmission::new(
+            format!("submission-{key}"),
+            format!("message-{key}"),
+            SESSION.into(),
+            SCENE.into(),
+            format!("body {key}"),
+            "2026-10-13T00:00:00.000Z".into(),
+        )
+        .expect("submission");
+        accept_current_human_chat_input(
+            workspace,
+            &owner(workspace),
+            &submission,
+            ParticipantSqlOperationBudget::new(
+                Arc::new(AtomicBool::new(false)),
+                Instant::now() + Duration::from_secs(5),
+                Duration::from_millis(100),
+            ),
+        )
+        .expect("accepted capture")
+    }
+
+    fn capture_request(capture: &AcceptedChatInputCapture) -> NewAttempt {
+        let mut request = super::bounded::now_request();
+        request.inputs = vec![InputReference {
+            role: InputRole::User,
+            target: InputTarget::Message {
+                version_id: capture.message_version_id().into(),
+                parent_attempt_id: None,
+            },
+        }];
+        request
+    }
+
+    fn create_for(
+        workspace: &crate::state::ActiveWorkspaceSnapshot,
+        capture: &AcceptedChatInputCapture,
+        request: NewAttempt,
+    ) -> std::result::Result<StoredAttempt, Nir1GenerationStoreError> {
+        create_attempt_for_capture_bounded(
+            workspace,
+            capture,
+            request,
+            &admission(),
+            &mut || Ok(()),
+        )
+    }
+
+    fn bind_scene(snapshot: &crate::state::ActiveWorkspaceSnapshot) {
+        snapshot
+            .db()
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
+                     VALUES (?1, 'generation-project', 'scene', 'Scene', '')",
+                    [SCENE],
+                )?;
+                conn.execute(
+                    "UPDATE chat_sessions SET node_id=?1 WHERE id=?2",
+                    [SCENE, SESSION],
+                )?;
+                Ok(())
+            })
+            .expect("scene-bound session");
+    }
+
+    fn attempt_count(snapshot: &crate::state::ActiveWorkspaceSnapshot) -> i64 {
+        snapshot
+            .db()
+            .db()
+            .with_conn(|conn| {
+                Ok(
+                    conn.query_row("SELECT count(*) FROM nir1_generation_attempts", [], |r| {
+                        r.get(0)
+                    })?,
+                )
+            })
+            .expect("attempt count")
+    }
+
+    /// D13: before any transaction, the capture form refuses a binding whose
+    /// profile, caller or caller epoch is not the capture owner's, and a
+    /// pinned workspace whose locator or authority instance is not the
+    /// owner's (the same path re-opened as a new authority instance, or
+    /// another locator under the same instance). Nothing is written.
+    #[test]
+    fn d13_capture_create_requires_the_owner_caller_and_workspace_incarnation() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        bind_scene(&snapshot);
+        let capture = accept(&snapshot, "d13");
+        let refused = |pinned: &crate::state::ActiveWorkspaceSnapshot,
+                       capture: &AcceptedChatInputCapture,
+                       request: NewAttempt,
+                       failure: Nir1StoreFailure,
+                       code: &str| {
+            let error = create_for(pinned, capture, request).expect_err(code);
+            assert_eq!(error.failure(), failure, "{error}: {:#}", error.source);
+            assert_eq!(error.commit(), Nir1CommitState::NotCommitted, "{code}");
+            assert!(
+                error_chain_contains(&error.source, code),
+                "{code}: {:#}",
+                error.source
+            );
+        };
+        for name in ["profile", "caller", "caller epoch"] {
+            let mut request = capture_request(&capture);
+            match name {
+                "profile" => request.binding.profile_id = "another-profile".into(),
+                "caller" => request.binding.caller_id = "another-caller".into(),
+                _ => request.binding.caller_epoch += 1,
+            }
+            refused(
+                &snapshot,
+                &capture,
+                request,
+                Nir1StoreFailure::Conflict,
+                "NIR1_GENERATION_CAPTURE_BINDING_MISMATCH",
+            );
+            assert_eq!(attempt_count(&snapshot), 0, "{name}");
+        }
+
+        // The same path re-opened as a new authority instance: the capture
+        // row and its owner still match, only the pinned incarnation differs.
+        let reopened = workspace.reopened_state();
+        let reopened_snapshot =
+            crate::state::active_workspace_snapshot(&reopened).expect("reopened snapshot");
+        assert_eq!(reopened_snapshot.path(), snapshot.path());
+        assert_ne!(reopened_snapshot.db().identity(), snapshot.db().identity());
+        refused(
+            &reopened_snapshot,
+            &capture,
+            capture_request(&capture),
+            Nir1StoreFailure::NotCurrent,
+            "NIR1_GENERATION_CAPTURE_WORKSPACE_MISMATCH",
+        );
+        drop(reopened_snapshot);
+        drop(reopened);
+        // Another locator under the same authority instance.
+        let mut moved = capture.clone();
+        moved.owner.workspace_locator = format!("{}-moved", moved.owner.workspace_locator);
+        moved.owner.caller_workspace_id = moved.owner.workspace_locator.clone();
+        refused(
+            &snapshot,
+            &moved,
+            capture_request(&moved),
+            Nir1StoreFailure::NotCurrent,
+            "NIR1_GENERATION_CAPTURE_WORKSPACE_MISMATCH",
+        );
+        assert_eq!(attempt_count(&snapshot), 0, "no refusal wrote an attempt");
+
+        // The owner's own caller and workspace incarnation still create.
+        create_for(&snapshot, &capture, capture_request(&capture)).expect("owner create");
+        assert_eq!(attempt_count(&snapshot), 1);
+    }
+
+    #[test]
+    fn d9_capture_create_is_deterministic_and_requires_the_current_capture() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        bind_scene(&snapshot);
+        let first = accept(&snapshot, "first");
+        let attempt = create_for(&snapshot, &first, capture_request(&first)).expect("create");
+        assert_eq!(
+            attempt.id,
+            attempt_id_for_capture(&first).expect("deterministic id")
+        );
+        let error = create_for(&snapshot, &first, capture_request(&first)).expect_err("resend");
+        assert_eq!(error.failure(), Nir1StoreFailure::AlreadyExists);
+        assert_eq!(error.commit(), Nir1CommitState::NotCommitted);
+        assert_eq!(
+            attempt_count(&snapshot),
+            1,
+            "a resend never creates a second attempt"
+        );
+
+        let second = accept(&snapshot, "second");
+        let mut wrong_session = capture_request(&second);
+        wrong_session.binding.session_id = "another-session".into();
+        assert_eq!(
+            create_for(&snapshot, &second, wrong_session)
+                .expect_err("session mismatch")
+                .failure(),
+            Nir1StoreFailure::Conflict
+        );
+        let mut without_human = capture_request(&second);
+        without_human.inputs.clear();
+        assert_eq!(
+            create_for(&snapshot, &second, without_human)
+                .expect_err("no Human input")
+                .failure(),
+            Nir1StoreFailure::Conflict
+        );
+        // Accepting `third` in the same chat session supersedes `second`.
+        let third = accept(&snapshot, "third");
+        assert_eq!(
+            create_for(&snapshot, &second, capture_request(&second))
+                .expect_err("superseded capture")
+                .failure(),
+            Nir1StoreFailure::NotCurrent
+        );
+        cancel_current_human_chat_input(
+            &snapshot,
+            &third,
+            &owner(&snapshot),
+            ParticipantSqlOperationBudget::new(
+                Arc::new(AtomicBool::new(false)),
+                Instant::now() + Duration::from_secs(5),
+                Duration::from_millis(100),
+            ),
+        )
+        .expect("cancel capture");
+        assert_eq!(
+            create_for(&snapshot, &third, capture_request(&third))
+                .expect_err("cancelled capture")
+                .failure(),
+            Nir1StoreFailure::NotCurrent
+        );
+    }
 }

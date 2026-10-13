@@ -1,9 +1,13 @@
 //! Native-only durable generation observations and reference lineage.
 //!
 //! These operations do not authorize a model call or qualify history. In
-//! particular, `claim_attempt` is only a durable one-shot CAS. Its caller must
-//! serialize the current profile, workspace, route and material authorization
-//! with the claim before invoking its transport. No operation here resends.
+//! particular, a claim is only a durable one-shot CAS. The writers below are
+//! bounded (connection mutex, SQLite busy and per-operation limits) and run
+//! COMMIT without any Core, profile or participant guard held. The Native
+//! owner fences create/claim with its startup lease and the profile permit
+//! (atomic pre-commit checks plus an admission probe), then revalidates the
+//! profile, route, workspace, lease and cancel after COMMIT and before it
+//! starts a transport. No operation here resends.
 
 use anyhow::{ensure, Context, Result};
 use grimodex_core::narrative_nir1_receipt::{
@@ -11,22 +15,26 @@ use grimodex_core::narrative_nir1_receipt::{
     ProviderTerminal, TerminalObservation, TerminalStatus, OUTPUT_DIGEST_VERSION,
 };
 use grimodex_core::{canonical_json_digest, canonical_json_string};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::time::Instant;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::narrative_extraction::{
-    validation_terminated, with_immediate_transaction, ValidationTerminationReason,
+    validation_terminated, with_immediate_transaction, ValidationTerminated,
+    ValidationTerminationReason,
 };
 use crate::narrative_maintenance_connection::{
-    ParticipantSqlControl, ParticipantSqlOperationBudget,
+    ParticipantSqlControl, ParticipantSqlFence, ParticipantSqlOperationBudget,
+    NIR1_SQL_CONNECTION_LOCK_TIMEOUT,
 };
 use crate::state::ActiveWorkspaceSnapshot;
 use crate::Database;
@@ -872,40 +880,105 @@ fn validate_refs(
     Ok(())
 }
 
+/// Unbounded test-support writer. Production creates use
+/// [`create_attempt_for_capture_bounded`] with a deterministic identity.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn create_attempt(db: &Database, request: NewAttempt) -> Result<StoredAttempt> {
+    validate_new_attempt(&request)?;
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            require_session(
+                conn,
+                &request.binding.project_id,
+                &request.binding.session_id,
+            )?;
+            validate_refs(
+                conn,
+                &request.binding,
+                &request.inputs,
+                &request.qualifications,
+                request.budget,
+            )?;
+            insert_attempt_in_tx(conn, &Uuid::new_v4().to_string(), &request)
+        })
+    })
+}
+
+// Production creates exist only in the Native capture build.
+#[cfg_attr(not(feature = "native-current-human-capture"), allow(dead_code))]
+fn validate_new_attempt(request: &NewAttempt) -> Result<()> {
     validate_binding(&request.binding)?;
     digest(&request.payload_digest)?;
     ensure!(
         request.created_at_ms >= 0 && request.expires_at_ms > request.created_at_ms,
         "NIR1_GENERATION_INVALID_EXPIRY"
     );
-    db.with_conn(|conn| with_immediate_transaction(conn, |conn| {
-        require_session(conn, &request.binding.project_id, &request.binding.session_id)?;
-        validate_refs(conn, &request.binding, &request.inputs, &request.qualifications, request.budget)?;
-        let id = Uuid::new_v4().to_string();
-        let input_digest = input_digest(&request.inputs, &request.qualifications)?;
-        let binding_json = canonical_json_string(&serde_json::to_value(&request.binding)?)?;
-        ensure!(
-            binding_json.len() <= MAX_BINDING_JSON_BYTES,
-            "NIR1_GENERATION_BINDING_LIMIT"
-        );
-        conn.execute("INSERT INTO nir1_generation_attempts
-            (id,project_id,session_id,binding_json,payload_digest,input_digest,created_at_ms,expires_at_ms)
-            VALUES (?1,?2,?3,?4,?5,?6,?7,?8)", params![id,request.binding.project_id,
-            request.binding.session_id,binding_json,
-            request.payload_digest,input_digest,request.created_at_ms,request.expires_at_ms])?;
-        for (ordinal, reference) in request.inputs.iter().enumerate() {
-            conn.execute("INSERT INTO nir1_generation_input_refs VALUES (?1,?2,?3)",
-                params![id,i64::try_from(ordinal)?,canonical_json_string(&serde_json::to_value(reference)?)?])?;
-        }
-        for (ordinal, reference) in request.qualifications.iter().enumerate() {
-            conn.execute("INSERT INTO nir1_generation_qualification_refs VALUES (?1,?2,?3)",
-                params![id,i64::try_from(ordinal)?,canonical_json_string(&serde_json::to_value(reference)?)?])?;
-        }
-        Ok(StoredAttempt { id,binding:request.binding,payload_digest:request.payload_digest,
-            input_digest,inputs:request.inputs,qualifications:request.qualifications,
-            created_at_ms:request.created_at_ms,expires_at_ms:request.expires_at_ms,claimed_at_ms:None,terminal:None })
-    }))
+    Ok(())
+}
+
+// Production creates exist only in the Native capture build.
+#[cfg_attr(not(feature = "native-current-human-capture"), allow(dead_code))]
+/// Insert one already validated attempt and its ordered reference rows. The
+/// caller owns the immediate transaction and has validated the references.
+fn insert_attempt_in_tx(
+    conn: &Connection,
+    id: &str,
+    request: &NewAttempt,
+) -> Result<StoredAttempt> {
+    identity(id)?;
+    let input_digest = input_digest(&request.inputs, &request.qualifications)?;
+    let binding_json = canonical_json_string(&serde_json::to_value(&request.binding)?)?;
+    ensure!(
+        binding_json.len() <= MAX_BINDING_JSON_BYTES,
+        "NIR1_GENERATION_BINDING_LIMIT"
+    );
+    conn.execute(
+        "INSERT INTO nir1_generation_attempts
+        (id,project_id,session_id,binding_json,payload_digest,input_digest,created_at_ms,expires_at_ms)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        params![
+            id,
+            request.binding.project_id,
+            request.binding.session_id,
+            binding_json,
+            request.payload_digest,
+            input_digest,
+            request.created_at_ms,
+            request.expires_at_ms
+        ],
+    )?;
+    for (ordinal, reference) in request.inputs.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO nir1_generation_input_refs VALUES (?1,?2,?3)",
+            params![
+                id,
+                i64::try_from(ordinal)?,
+                canonical_json_string(&serde_json::to_value(reference)?)?
+            ],
+        )?;
+    }
+    for (ordinal, reference) in request.qualifications.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO nir1_generation_qualification_refs VALUES (?1,?2,?3)",
+            params![
+                id,
+                i64::try_from(ordinal)?,
+                canonical_json_string(&serde_json::to_value(reference)?)?
+            ],
+        )?;
+    }
+    Ok(StoredAttempt {
+        id: id.to_owned(),
+        binding: request.binding.clone(),
+        payload_digest: request.payload_digest.clone(),
+        input_digest,
+        inputs: request.inputs.clone(),
+        qualifications: request.qualifications.clone(),
+        created_at_ms: request.created_at_ms,
+        expires_at_ms: request.expires_at_ms,
+        claimed_at_ms: None,
+        terminal: None,
+    })
 }
 
 /// Scalar-only reference admission. Limits apply jointly to both lists when
@@ -1234,6 +1307,8 @@ fn read_attempt_in_tx(conn: &Connection, id: &str, budget: ReadBudget) -> Result
     read_attempt_in_tx_with_remaining(conn, id, &mut remaining)
 }
 
+/// Unbounded test-support reader. Owners use [`read_attempt_exact_bounded`].
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn read_attempt(db: &Database, id: &str, budget: ReadBudget) -> Result<StoredAttempt> {
     db.with_read_transaction(|conn| read_attempt_in_tx(conn, id, budget))
 }
@@ -1790,8 +1865,10 @@ where
     read_snapshot(&mut reader, caller_budget)
 }
 
-/// Only a durable CAS, never full dispatch authorization. The coordinator must
-/// use the same exact immutable request and serialize its external authorities.
+/// Unbounded test-support CAS (a stand-in for another claimer). Production
+/// claims use [`claim_attempt_bounded`], which runs COMMIT without any Core,
+/// profile or participant guard held.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn claim_attempt(
     db: &Database,
     id: &str,
@@ -1801,135 +1878,30 @@ pub fn claim_attempt(
 ) -> Result<bool> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            claim_attempt_in_tx(conn, id, binding, now_ms, budget)
-        })
-    })
-}
-
-/// Nonserializable proof of validation in the still-owned fresh write
-/// transaction. It cannot be moved to another connection or transaction.
-/// Dropping it without commit rolls back; it never dispatches a transport.
-pub struct PreparedClaim<'connection> {
-    transaction: Transaction<'connection>,
-    attempt_id: String,
-    created_at_ms: i64,
-    expires_at_ms: i64,
-}
-
-impl PreparedClaim<'_> {
-    /// Invoke only inside the coordinator's final profile/workspace/current
-    /// route guards. Only a constant-size conditional UPDATE and COMMIT run
-    /// here; reference/body reads happened before those guards were acquired.
-    pub fn commit(self, now_ms: i64) -> Result<bool> {
-        ensure!(
-            now_ms >= self.created_at_ms && now_ms < self.expires_at_ms,
-            "NIR1_GENERATION_EXPIRED"
-        );
-        let won = self.transaction.execute(
-            "UPDATE nir1_generation_attempts SET claimed_at_ms=?2
-            WHERE id=?1 AND claimed_at_ms IS NULL AND terminal_json IS NULL",
-            params![self.attempt_id, now_ms],
-        )? == 1;
-        self.transaction.commit()?;
-        Ok(won)
-    }
-}
-
-/// Pin and validate the final DB inputs before taking profile/lifecycle locks.
-/// The callback owns their exact ordering and consumes the claim while they
-/// remain held. A participant SQL/capacity owner is rejected before DB locking
-/// because its progress hook could re-enter those authority locks.
-pub fn with_prepared_claim(
-    db: &Database,
-    id: &str,
-    binding: &AttemptBinding,
-    budget: ReadBudget,
-    authorize: impl FnOnce(PreparedClaim<'_>) -> Result<bool>,
-) -> Result<bool> {
-    ensure!(
-        !crate::narrative_extraction::nir1_capacity::attempt_active()
-            && !crate::narrative_maintenance_connection::any_sql_owner_scope_active(),
-        "NIR1_GENERATION_CLAIM_SQL_OWNER_ACTIVE"
-    );
-    let result = db.with_conn(|conn| {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-            let attempt = read_attempt_in_tx(&transaction, id, budget)?;
+            let attempt = read_attempt_in_tx(conn, id, budget)?;
             ensure!(
                 &attempt.binding == binding,
                 "NIR1_GENERATION_BINDING_MISMATCH"
             );
-            require_session(&transaction, &binding.project_id, &binding.session_id)?;
+            ensure!(
+                now_ms >= attempt.created_at_ms && now_ms < attempt.expires_at_ms,
+                "NIR1_GENERATION_EXPIRED"
+            );
+            require_session(conn, &binding.project_id, &binding.session_id)?;
             validate_refs(
-                &transaction,
+                conn,
                 binding,
                 &attempt.inputs,
                 &attempt.qualifications,
                 budget,
             )?;
-            authorize(PreparedClaim {
-                transaction,
-                attempt_id: id.to_owned(),
-                created_at_ms: attempt.created_at_ms,
-                expires_at_ms: attempt.expires_at_ms,
-            })
-        }));
-        if !conn.is_autocommit() {
-            db.quarantine_connection("generation claim transaction cleanup unproven");
-            if result.is_ok() {
-                anyhow::bail!("NIR1_GENERATION_CLAIM_CLEANUP_UNPROVEN");
-            }
-        }
-        Ok(result)
-    })?;
-    // Resume only after Database::with_conn has dropped its mutex normally.
-    // A clean transaction rollback must not poison the reusable DB mutex.
-    match result {
-        Ok(result) => result,
-        Err(panic) => std::panic::resume_unwind(panic),
-    }
-}
-
-/// The coordinator owns this fresh transaction, the external authority guards,
-/// and its commit. A stale read snapshot is not a latest dispatch check.
-pub fn claim_attempt_in_tx(
-    conn: &Connection,
-    id: &str,
-    binding: &AttemptBinding,
-    now_ms: i64,
-    budget: ReadBudget,
-) -> Result<bool> {
-    ensure!(
-        !crate::narrative_extraction::nir1_capacity::attempt_active()
-            && !crate::narrative_maintenance_connection::any_sql_owner_scope_active(),
-        "NIR1_GENERATION_CLAIM_SQL_OWNER_ACTIVE"
-    );
-    ensure!(
-        !conn.is_autocommit(),
-        "NIR1_GENERATION_TRANSACTION_REQUIRED"
-    );
-    let attempt = read_attempt_in_tx(conn, id, budget)?;
-    ensure!(
-        &attempt.binding == binding,
-        "NIR1_GENERATION_BINDING_MISMATCH"
-    );
-    ensure!(
-        now_ms >= attempt.created_at_ms && now_ms < attempt.expires_at_ms,
-        "NIR1_GENERATION_EXPIRED"
-    );
-    require_session(conn, &binding.project_id, &binding.session_id)?;
-    validate_refs(
-        conn,
-        binding,
-        &attempt.inputs,
-        &attempt.qualifications,
-        budget,
-    )?;
-    Ok(conn.execute(
-        "UPDATE nir1_generation_attempts SET claimed_at_ms=?2
-            WHERE id=?1 AND claimed_at_ms IS NULL AND terminal_json IS NULL",
-        params![id, now_ms],
-    )? == 1)
+            Ok(conn.execute(
+                "UPDATE nir1_generation_attempts SET claimed_at_ms=?2
+                    WHERE id=?1 AND claimed_at_ms IS NULL AND terminal_json IS NULL",
+                params![id, now_ms],
+            )? == 1)
+        })
+    })
 }
 
 fn message_digest_in_tx(
@@ -3014,6 +2986,7 @@ where
 /// Read and authenticate one persisted receipt and its output object. A
 /// generated-parent lineage check uses `read_attempt_in_tx_with_remaining`
 /// instead so the parent's stored reference rows are authenticated too.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn read_terminal(db: &Database, id: &str) -> Result<Option<StoredTerminal>> {
     db.with_read_transaction(|conn| read_terminal_in_tx(conn, id))
 }
@@ -3283,6 +3256,9 @@ fn verify_body_observation(body: &NewMessageBody, observation: &TerminalObservat
     Ok(())
 }
 
+/// Unbounded test-support terminal writer. Owners use
+/// [`finish_attempt_bounded`] or [`finish_pretransport_attempt_bounded`].
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn finish_attempt(
     db: &Database,
     id: &str,
@@ -3299,6 +3275,8 @@ pub fn finish_attempt(
 
 /// Recovery owns one exact durable unfinished attempt. It never reconstructs a
 /// transport request, resumes a claim, or asserts that no bytes were sent.
+/// Unbounded test-support form; the sweep uses [`recover_attempt_bounded`].
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn recover_attempt(db: &Database, id: &str, now_ms: i64) -> Result<StoredTerminal> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| recover_attempt_in_tx(conn, id, now_ms))
@@ -3326,9 +3304,1050 @@ pub fn recover_attempt_bounded(
     workspace
         .authority
         .db()
-        .with_participant_immediate_transaction_bounded(workspace.participant(), budget, |conn| {
-            recover_attempt_in_tx(conn, id, now_ms)
+        .with_participant_immediate_transaction_bounded(
+            workspace.participant(),
+            budget.with_connection_lock_timeout(NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT),
+            |conn| recover_attempt_in_tx(conn, id, now_ms),
+        )
+}
+
+/// Whether a [`recover_attempt_bounded`] error is only its connection mutex
+/// wait exceeding [`NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT`] (`ConnectionBusy`).
+/// No SQL ran, so the sweep may try the same exact recovery again; the
+/// recovery is idempotent in any case.
+pub fn is_recovery_connection_busy(error: &anyhow::Error) -> bool {
+    error_chain_contains(error, NIR1_SQL_CONNECTION_LOCK_TIMEOUT)
+}
+
+// ---------------------------------------------------------------------------
+// Bounded attempt create / claim / terminal writers (DT-2).
+//
+// Every writer below waits at most NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT for the
+// process-local connection mutex, at most NIR1_GENERATION_SQLITE_BUSY_LIMIT
+// for one SQLite busy wait, and at most NIR1_GENERATION_OPERATION_LIMIT from
+// its start (mutex wait included). A writer that exceeds a limit returns a
+// typed error; its IMMEDIATE transaction is rolled back and the connection is
+// restored by the participant scope before it can be reused. COMMIT runs
+// without any Core, profile or participant guard held.
+// ---------------------------------------------------------------------------
+
+/// Upper bound for waiting on the process-local Database connection mutex.
+pub const NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT: Duration = Duration::from_millis(100);
+/// Upper bound for one SQLite busy wait, clipped to the remaining op budget.
+pub const NIR1_GENERATION_SQLITE_BUSY_LIMIT: Duration = Duration::from_millis(100);
+/// Upper bound for one bounded generation operation, measured from its start
+/// and including the connection mutex wait.
+pub const NIR1_GENERATION_OPERATION_LIMIT: Duration = Duration::from_millis(250);
+
+/// True only while the caller is still inside its admission. It must read
+/// atomics only: it runs from the SQLite progress hook while the connection
+/// mutex is held, so it may not take any lock.
+pub type Nir1AdmissionProbe = Arc<dyn Fn() -> bool + Send + Sync>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Nir1SqlLimits {
+    mutex: Duration,
+    busy: Duration,
+    operation: Duration,
+}
+
+impl Nir1SqlLimits {
+    const DEFAULT: Self = Self {
+        mutex: NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT,
+        busy: NIR1_GENERATION_SQLITE_BUSY_LIMIT,
+        operation: NIR1_GENERATION_OPERATION_LIMIT,
+    };
+
+    /// Tests may only tighten the plan defaults, never relax them.
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    fn tightened(mutex: Duration, busy: Duration, operation: Duration) -> Self {
+        assert!(
+            mutex <= Self::DEFAULT.mutex
+                && busy <= Self::DEFAULT.busy
+                && operation <= Self::DEFAULT.operation,
+            "NIR1 generation SQL limits may only be tightened"
+        );
+        Self {
+            mutex,
+            busy,
+            operation,
+        }
+    }
+
+    fn operation_budget(&self, stop: Arc<AtomicBool>) -> ParticipantSqlOperationBudget {
+        ParticipantSqlOperationBudget::new(stop, Instant::now() + self.operation, self.busy)
+            .with_connection_lock_timeout(self.mutex)
+    }
+}
+
+/// Test-only fault injection at the COMMIT boundary of one bounded writer.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+#[derive(Clone)]
+pub enum Nir1GenerationFailpoint {
+    /// COMMIT is applied, then the writer reports an ambiguous error.
+    ErrorAfterCommit,
+    /// A commit hook vetoes COMMIT; the writer reports an ambiguous error.
+    VetoCommit,
+    /// The commit hook runs this probe (connection mutex held) and commits.
+    ProbeDuringCommit(Arc<dyn Fn() + Send + Sync>),
+}
+
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+impl fmt::Debug for Nir1GenerationFailpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::ErrorAfterCommit => "ErrorAfterCommit",
+            Self::VetoCommit => "VetoCommit",
+            Self::ProbeDuringCommit(_) => "ProbeDuringCommit",
         })
+    }
+}
+
+/// Budget for create and claim. These writers are interrupted by the owner's
+/// cancel, the participant stop and a false admission probe.
+#[derive(Clone)]
+pub struct Nir1AdmissionSqlBudget {
+    cancel: Arc<AtomicBool>,
+    probe: Nir1AdmissionProbe,
+    limits: Nir1SqlLimits,
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    failpoint: Option<Nir1GenerationFailpoint>,
+}
+
+impl Nir1AdmissionSqlBudget {
+    /// Plan defaults (mutex 100 ms, busy 100 ms, per-op 250 ms).
+    pub fn new(cancel: Arc<AtomicBool>, probe: Nir1AdmissionProbe) -> Self {
+        Self {
+            cancel,
+            probe,
+            limits: Nir1SqlLimits::DEFAULT,
+            #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+            failpoint: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    pub fn tightened(mut self, mutex: Duration, busy: Duration, operation: Duration) -> Self {
+        self.limits = Nir1SqlLimits::tightened(mutex, busy, operation);
+        self
+    }
+
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    pub fn with_failpoint(mut self, failpoint: Nir1GenerationFailpoint) -> Self {
+        self.failpoint = Some(failpoint);
+        self
+    }
+
+    fn sql_budget(&self) -> ParticipantSqlOperationBudget {
+        self.limits.operation_budget(Arc::clone(&self.cancel))
+    }
+
+    fn fence(&self) -> ParticipantSqlFence {
+        ParticipantSqlFence::Admission {
+            probe: Some(Arc::clone(&self.probe)),
+        }
+    }
+
+    fn cancel_requested(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+    }
+
+    fn failpoint(&self) -> WriteFailpoint {
+        #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+        {
+            self.failpoint.clone()
+        }
+        #[cfg(not(any(test, feature = "workspace-maintenance-test-support")))]
+        {
+            WriteFailpoint
+        }
+    }
+}
+
+/// Budget for an existing owner's own cleanup: the zero-send terminal, the
+/// post-transport terminal and recover, and the exact reread. It carries no
+/// stop and no probe, so it cannot be handed the owner's cancel by mistake;
+/// the three limits alone keep it finite.
+#[derive(Clone, Debug)]
+pub struct Nir1PinnedSqlBudget {
+    limits: Nir1SqlLimits,
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    failpoint: Option<Nir1GenerationFailpoint>,
+}
+
+impl Default for Nir1PinnedSqlBudget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Nir1PinnedSqlBudget {
+    /// Plan defaults (mutex 100 ms, busy 100 ms, per-op 250 ms).
+    pub fn new() -> Self {
+        Self {
+            limits: Nir1SqlLimits::DEFAULT,
+            #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+            failpoint: None,
+        }
+    }
+
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    pub fn tightened(mut self, mutex: Duration, busy: Duration, operation: Duration) -> Self {
+        self.limits = Nir1SqlLimits::tightened(mutex, busy, operation);
+        self
+    }
+
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    pub fn with_failpoint(mut self, failpoint: Nir1GenerationFailpoint) -> Self {
+        self.failpoint = Some(failpoint);
+        self
+    }
+
+    fn sql_budget(&self) -> ParticipantSqlOperationBudget {
+        // A private flag nothing sets: a Pinned scope never observes a stop.
+        self.limits
+            .operation_budget(Arc::new(AtomicBool::new(false)))
+    }
+
+    fn failpoint(&self) -> WriteFailpoint {
+        #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+        {
+            self.failpoint.clone()
+        }
+        #[cfg(not(any(test, feature = "workspace-maintenance-test-support")))]
+        {
+            WriteFailpoint
+        }
+    }
+}
+
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+type WriteFailpoint = Option<Nir1GenerationFailpoint>;
+
+/// Production builds carry no failpoint.
+#[cfg(not(any(test, feature = "workspace-maintenance-test-support")))]
+#[derive(Clone, Copy)]
+struct WriteFailpoint;
+
+/// Whether a bounded writer's COMMIT may have been applied.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Nir1CommitState {
+    /// Failed before the transaction was ready to commit; nothing is durable.
+    NotCommitted,
+    /// Failed at or after COMMIT; the caller must reread the exact row.
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum Nir1StoreFailure {
+    /// The connection mutex wait exceeded its limit.
+    ConnectionBusy,
+    /// SQLite reported BUSY/LOCKED after its busy limit.
+    SqliteBusy,
+    /// The per-operation limit elapsed.
+    TimedOut,
+    /// The participant stopped or the admission probe turned false.
+    Fenced,
+    /// The owner's cancel was observed.
+    Cancelled,
+    /// The connection is quarantined or its cleanup was not proven.
+    ConnectionUnavailable,
+    /// A participant SQL or capacity owner is already active on this thread.
+    SqlOwnerActive,
+    /// The deterministic attempt identity is already durable.
+    AlreadyExists,
+    /// The stored immutable fields differ from the expected ones.
+    Conflict,
+    /// A different terminal is already durable.
+    TerminalConflict,
+    /// The stored claim state differs from the one the writer expected.
+    ClaimMismatch,
+    Expired,
+    /// The capture or workspace binding is no longer current.
+    NotCurrent,
+    Missing,
+    Invalid,
+}
+
+impl Nir1StoreFailure {
+    fn code(self) -> &'static str {
+        match self {
+            Self::ConnectionBusy => "connection-busy",
+            Self::SqliteBusy => "sqlite-busy",
+            Self::TimedOut => "timed-out",
+            Self::Fenced => "fenced",
+            Self::Cancelled => "cancelled",
+            Self::ConnectionUnavailable => "connection-unavailable",
+            Self::SqlOwnerActive => "sql-owner-active",
+            Self::AlreadyExists => "already-exists",
+            Self::Conflict => "conflict",
+            Self::TerminalConflict => "terminal-conflict",
+            Self::ClaimMismatch => "claim-mismatch",
+            Self::Expired => "expired",
+            Self::NotCurrent => "not-current",
+            Self::Missing => "missing",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+/// Typed result of a bounded writer. `Display` prints only the stable code.
+#[derive(Debug)]
+pub struct Nir1GenerationStoreError {
+    failure: Nir1StoreFailure,
+    commit: Nir1CommitState,
+    claim_written_at_ms: Option<i64>,
+    source: anyhow::Error,
+}
+
+impl Nir1GenerationStoreError {
+    pub fn failure(&self) -> Nir1StoreFailure {
+        self.failure
+    }
+
+    pub fn commit(&self) -> Nir1CommitState {
+        self.commit
+    }
+
+    /// The `claimed_at_ms` this claim wrote inside its transaction. Present
+    /// only when a claim reached COMMIT with an unknown outcome.
+    pub fn claim_written_at_ms(&self) -> Option<i64> {
+        self.claim_written_at_ms
+    }
+
+    fn not_committed(failure: Nir1StoreFailure, source: anyhow::Error) -> Self {
+        Self {
+            failure,
+            commit: Nir1CommitState::NotCommitted,
+            claim_written_at_ms: None,
+            source,
+        }
+    }
+}
+
+impl fmt::Display for Nir1GenerationStoreError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "NIR1_GENERATION_STORE:{}:{}",
+            self.failure.code(),
+            match self.commit {
+                Nir1CommitState::NotCommitted => "not-committed",
+                Nir1CommitState::Unknown => "commit-unknown",
+            }
+        )
+    }
+}
+
+impl std::error::Error for Nir1GenerationStoreError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(AsRef::<dyn std::error::Error + 'static>::as_ref(
+            &self.source,
+        ))
+    }
+}
+
+/// Domain refusal raised inside a writer; classified before generic markers.
+#[derive(Debug)]
+struct Nir1DomainFailure {
+    failure: Nir1StoreFailure,
+    code: &'static str,
+}
+
+impl fmt::Display for Nir1DomainFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.code)
+    }
+}
+
+impl std::error::Error for Nir1DomainFailure {}
+
+fn domain_failure(failure: Nir1StoreFailure, code: &'static str) -> anyhow::Error {
+    anyhow::Error::new(Nir1DomainFailure { failure, code })
+}
+
+/// Immutable fields a claim/terminal writer compares inside its own
+/// transaction, so another same-binding attempt cannot be substituted.
+#[derive(Clone, Debug)]
+pub struct Nir1ExpectedAttempt {
+    pub id: String,
+    pub binding: AttemptBinding,
+    pub payload_digest: String,
+    pub input_digest: String,
+    pub inputs: Vec<InputReference>,
+    pub qualifications: Vec<QualificationReference>,
+    pub read_budget: ReadBudget,
+}
+
+impl Nir1ExpectedAttempt {
+    pub fn from_stored(attempt: &StoredAttempt, read_budget: ReadBudget) -> Self {
+        Self {
+            id: attempt.id.clone(),
+            binding: attempt.binding.clone(),
+            payload_digest: attempt.payload_digest.clone(),
+            input_digest: attempt.input_digest.clone(),
+            inputs: attempt.inputs.clone(),
+            qualifications: attempt.qualifications.clone(),
+            read_budget,
+        }
+    }
+
+    /// Whether a reread attempt still carries exactly these immutable fields.
+    pub fn matches(&self, attempt: &StoredAttempt) -> bool {
+        attempt.id == self.id
+            && attempt.binding == self.binding
+            && attempt.payload_digest == self.payload_digest
+            && attempt.input_digest == self.input_digest
+            && attempt.inputs == self.inputs
+            && attempt.qualifications == self.qualifications
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Nir1ClaimOutcome {
+    /// This writer consumed the one-shot right at `claimed_at_ms`.
+    Claimed { claimed_at_ms: i64 },
+    /// Some claimer already consumed it; this writer changed nothing.
+    AlreadyClaimed { claimed_at_ms: i64 },
+    /// A terminal is already durable; this writer changed nothing.
+    AlreadyTerminal,
+}
+
+/// The claim state a zero-send writer requires inside its transaction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Nir1ExpectedClaim {
+    Unclaimed,
+    ClaimedAt(i64),
+}
+
+/// The only terminals a transport-less (zero-send) owner may write.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Nir1ZeroSendCompletion {
+    /// Cancelled before the start decision: `Cancelled`/`not-attempted`.
+    Cancelled,
+    /// Any other pre-transport stop: `Failed`/`not-attempted`
+    /// (`DispatchUnavailable`).
+    DispatchFailure,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Nir1WritePhase {
+    Preparing,
+    ReadyToCommit,
+}
+
+fn ensure_no_nested_sql_owner() -> Result<(), Nir1GenerationStoreError> {
+    // Checked before the participant scope and its mutex: inside a scope the
+    // writer itself is on the thread-local stack, and a nested scope would not
+    // own its own limits.
+    if crate::narrative_extraction::nir1_capacity::attempt_active()
+        || crate::narrative_maintenance_connection::any_sql_owner_scope_active()
+    {
+        return Err(Nir1GenerationStoreError::not_committed(
+            Nir1StoreFailure::SqlOwnerActive,
+            anyhow::anyhow!("NIR1_GENERATION_CLAIM_SQL_OWNER_ACTIVE"),
+        ));
+    }
+    Ok(())
+}
+
+fn wall_clock_ms() -> Result<i64> {
+    Ok(i64::try_from(
+        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+    )?)
+}
+
+fn error_chain_contains(error: &anyhow::Error, marker: &str) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains(marker))
+}
+
+fn is_sqlite_busy(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .and_then(rusqlite::Error::sqlite_error_code)
+            .is_some_and(|code| matches!(code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked))
+    })
+}
+
+/// Map a writer error to its typed failure. A stop observed while the owner's
+/// cancel is set is `Cancelled`; otherwise a participant stop or a false probe
+/// is `Fenced`.
+fn classify_store_error(error: &anyhow::Error, cancel_requested: bool) -> Nir1StoreFailure {
+    let stopped = |failure| {
+        if cancel_requested {
+            Nir1StoreFailure::Cancelled
+        } else {
+            failure
+        }
+    };
+    if error_chain_contains(error, NIR1_SQL_CONNECTION_LOCK_TIMEOUT)
+        || error_chain_contains(error, "NEX_MAINTENANCE_CONNECTION_PREEMPTED")
+    {
+        return stopped(Nir1StoreFailure::ConnectionBusy);
+    }
+    if let Some(terminated) = error.downcast_ref::<ValidationTerminated>() {
+        return match terminated.reason {
+            ValidationTerminationReason::TimedOut => stopped(Nir1StoreFailure::TimedOut),
+            ValidationTerminationReason::CleanupFailed => Nir1StoreFailure::ConnectionUnavailable,
+            ValidationTerminationReason::CapacityExceeded => Nir1StoreFailure::Invalid,
+            ValidationTerminationReason::ContextUnavailable
+            | ValidationTerminationReason::Cancelled
+            | ValidationTerminationReason::Closed
+            | ValidationTerminationReason::WorkspaceGenerationChanged
+            | ValidationTerminationReason::ForegroundPreempted => stopped(Nir1StoreFailure::Fenced),
+        };
+    }
+    // The participant scope's own cleanup verdict is authoritative for the
+    // connection; a transaction helper's rollback note (for example after
+    // SQLite already rolled back an interrupted statement) is not.
+    if [
+        "NIR1_MAINTENANCE_CONNECTION_UNUSABLE",
+        "NIR1_MAINTENANCE_CONNECTION_CLEANUP_FAILED",
+        "NEX_MAINTENANCE_CONNECTION_RETIREMENT",
+    ]
+    .iter()
+    .any(|marker| error_chain_contains(error, marker))
+    {
+        return Nir1StoreFailure::ConnectionUnavailable;
+    }
+    if is_sqlite_busy(error) {
+        return Nir1StoreFailure::SqliteBusy;
+    }
+    if let Some(domain) = error.downcast_ref::<Nir1DomainFailure>() {
+        return domain.failure;
+    }
+    if error_chain_contains(error, ATTEMPT_MISSING_ERROR) {
+        return Nir1StoreFailure::Missing;
+    }
+    if error_chain_contains(error, "NIR1_GENERATION_EXPIRED") {
+        return Nir1StoreFailure::Expired;
+    }
+    if error_chain_contains(error, "NIR1_CHAT_CAPTURE_") {
+        return Nir1StoreFailure::NotCurrent;
+    }
+    Nir1StoreFailure::Invalid
+}
+
+/// Run one bounded IMMEDIATE transaction and classify its commit state: an
+/// error before the operation returned `Ok` is `NotCommitted`; one at or
+/// after COMMIT is `Unknown`.
+fn bounded_write<T>(
+    workspace: &ActiveWorkspaceSnapshot,
+    fence: ParticipantSqlFence,
+    sql_budget: ParticipantSqlOperationBudget,
+    failpoint: WriteFailpoint,
+    operation: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<T, (anyhow::Error, Nir1CommitState)> {
+    let phase = Cell::new(Nir1WritePhase::Preparing);
+    let panic_payload = Cell::new(None);
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    let commit_failpoint = failpoint.clone();
+    #[cfg(not(any(test, feature = "workspace-maintenance-test-support")))]
+    let _ = failpoint;
+    let result = workspace
+        .authority
+        .db()
+        .with_participant_immediate_transaction_bounded_in(
+            workspace.participant(),
+            fence,
+            sql_budget,
+            |conn| {
+                // A panic (for example in the caller's pre-commit check) is
+                // turned into an ordinary error so the scope rolls back and
+                // keeps the connection reusable; it resumes after the scope.
+                let value = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    operation(conn)
+                })) {
+                    Ok(value) => value?,
+                    Err(payload) => {
+                        panic_payload.set(Some(payload));
+                        anyhow::bail!("NIR1_GENERATION_WRITER_PANICKED");
+                    }
+                };
+                #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+                install_commit_failpoint(conn, commit_failpoint.as_ref())?;
+                phase.set(Nir1WritePhase::ReadyToCommit);
+                Ok(value)
+            },
+        );
+    if let Some(payload) = panic_payload.take() {
+        std::panic::resume_unwind(payload);
+    }
+    let commit = match phase.get() {
+        Nir1WritePhase::Preparing => Nir1CommitState::NotCommitted,
+        Nir1WritePhase::ReadyToCommit => Nir1CommitState::Unknown,
+    };
+    match result {
+        #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+        Ok(_) if matches!(failpoint, Some(Nir1GenerationFailpoint::ErrorAfterCommit)) => Err((
+            anyhow::anyhow!("NIR1_GENERATION_FAILPOINT_ERROR_AFTER_COMMIT"),
+            Nir1CommitState::Unknown,
+        )),
+        Ok(value) => Ok(value),
+        Err(error) => Err((error, commit)),
+    }
+}
+
+/// Install a one-shot commit hook for a test failpoint. The participant scope
+/// removes any hook after the transaction returns.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+fn install_commit_failpoint(
+    conn: &Connection,
+    failpoint: Option<&Nir1GenerationFailpoint>,
+) -> Result<()> {
+    match failpoint {
+        Some(Nir1GenerationFailpoint::VetoCommit) => {
+            let fired = AtomicBool::new(false);
+            conn.commit_hook(Some(move || !fired.swap(true, Ordering::AcqRel)))?;
+        }
+        Some(Nir1GenerationFailpoint::ProbeDuringCommit(probe)) => {
+            let probe = Arc::clone(probe);
+            let fired = AtomicBool::new(false);
+            conn.commit_hook(Some(move || {
+                if !fired.swap(true, Ordering::AcqRel) {
+                    probe();
+                }
+                false
+            }))?;
+        }
+        Some(Nir1GenerationFailpoint::ErrorAfterCommit) | None => {}
+    }
+    Ok(())
+}
+
+fn store_error(
+    error: anyhow::Error,
+    commit: Nir1CommitState,
+    cancel_requested: bool,
+) -> Nir1GenerationStoreError {
+    Nir1GenerationStoreError {
+        failure: classify_store_error(&error, cancel_requested),
+        commit,
+        claim_written_at_ms: None,
+        source: error,
+    }
+}
+
+fn validate_expected_attempt(
+    expected: &Nir1ExpectedAttempt,
+) -> Result<(), Nir1GenerationStoreError> {
+    identity(&expected.id)
+        .and_then(|()| validate_binding(&expected.binding))
+        .and_then(|()| digest(&expected.payload_digest))
+        .and_then(|()| digest(&expected.input_digest))
+        .map_err(|error| Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error))
+}
+
+/// Read the attempt and require exactly the expected immutable fields.
+fn read_expected_attempt_in_tx(
+    conn: &Connection,
+    expected: &Nir1ExpectedAttempt,
+) -> Result<StoredAttempt> {
+    let stored = read_attempt_in_tx(conn, &expected.id, expected.read_budget)?;
+    if !expected.matches(&stored) {
+        return Err(domain_failure(
+            Nir1StoreFailure::Conflict,
+            "NIR1_GENERATION_ATTEMPT_CONFLICT",
+        ));
+    }
+    Ok(stored)
+}
+
+/// Deterministic attempt identity of one accepted Human submission. The same
+/// submission always resolves to the same attempt; a resend never creates a
+/// second one, and an unknown create outcome is reread by this exact ID.
+#[cfg(feature = "native-current-human-capture")]
+pub fn attempt_id_for_capture(capture: &AcceptedChatInputCapture) -> Result<String> {
+    Ok(canonical_json_digest(&json!({
+        "domain": "nir1-generation-attempt-id@1",
+        "captureId": capture.capture_id,
+        "submissionId": capture.submission_id,
+        "submissionDigest": capture.submission_digest,
+    }))?)
+}
+
+/// Create the attempt of one exact current Human capture. The binding must
+/// carry the capture's project, chat session and caller; the inputs must
+/// include its Human message version; and the capture row must still be the
+/// exact current one inside the same transaction.
+#[cfg(feature = "native-current-human-capture")]
+pub fn create_attempt_for_capture_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    capture: &AcceptedChatInputCapture,
+    request: NewAttempt,
+    budget: &Nir1AdmissionSqlBudget,
+    pre_commit: &mut dyn FnMut() -> Result<()>,
+) -> Result<StoredAttempt, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    let owner = &capture.owner;
+    let human_input = request.inputs.iter().any(|input| {
+        input.role == InputRole::User
+            && matches!(
+                &input.target,
+                InputTarget::Message { version_id, parent_attempt_id: None }
+                    if version_id == &capture.message_version_id
+            )
+    });
+    if request.binding.project_id != capture.project_id
+        || request.binding.session_id != capture.chat_session_id
+        || request.binding.profile_id != owner.profile_id
+        || request.binding.caller_id != owner.caller_id
+        || request.binding.caller_epoch != owner.caller_epoch
+        || !human_input
+    {
+        return Err(Nir1GenerationStoreError::not_committed(
+            Nir1StoreFailure::Conflict,
+            domain_failure(
+                Nir1StoreFailure::Conflict,
+                "NIR1_GENERATION_CAPTURE_BINDING_MISMATCH",
+            ),
+        ));
+    }
+    if owner.workspace_locator.as_str() != workspace.path().to_string_lossy().as_ref()
+        || owner.workspace_authority_instance != workspace.authority.identity()
+    {
+        return Err(Nir1GenerationStoreError::not_committed(
+            Nir1StoreFailure::NotCurrent,
+            domain_failure(
+                Nir1StoreFailure::NotCurrent,
+                "NIR1_GENERATION_CAPTURE_WORKSPACE_MISMATCH",
+            ),
+        ));
+    }
+    let id = attempt_id_for_capture(capture).map_err(|error| {
+        Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
+    })?;
+    create_attempt_with_id_bounded_checked(workspace, &id, request, budget, pre_commit, |conn| {
+        read_current_chat_input_capture_in_tx(conn, capture, owner, |_, _| Ok(()))
+            .map(|_| ())
+            .map_err(|error| {
+                if is_sqlite_busy(&error) {
+                    error
+                } else {
+                    error.context(Nir1DomainFailure {
+                        failure: Nir1StoreFailure::NotCurrent,
+                        code: "NIR1_GENERATION_CAPTURE_NOT_CURRENT",
+                    })
+                }
+            })
+    })
+}
+
+/// Capture-independent bounded create (the same core as the capture form),
+/// for storage tests that run without the capture feature.
+#[cfg(test)]
+pub(crate) fn create_attempt_with_id_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    id: &str,
+    request: NewAttempt,
+    budget: &Nir1AdmissionSqlBudget,
+    pre_commit: &mut dyn FnMut() -> Result<()>,
+) -> Result<StoredAttempt, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    create_attempt_with_id_bounded_checked(workspace, id, request, budget, pre_commit, |_| Ok(()))
+}
+
+// Production creates exist only in the Native capture build.
+#[cfg_attr(not(feature = "native-current-human-capture"), allow(dead_code))]
+fn create_attempt_with_id_bounded_checked(
+    workspace: &ActiveWorkspaceSnapshot,
+    id: &str,
+    request: NewAttempt,
+    budget: &Nir1AdmissionSqlBudget,
+    pre_commit: &mut dyn FnMut() -> Result<()>,
+    current_in_tx: impl FnOnce(&Connection) -> Result<()>,
+) -> Result<StoredAttempt, Nir1GenerationStoreError> {
+    identity(id)
+        .and_then(|()| validate_new_attempt(&request))
+        .map_err(|error| {
+            Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
+        })?;
+    bounded_write(
+        workspace,
+        budget.fence(),
+        budget.sql_budget(),
+        budget.failpoint(),
+        |conn| {
+            current_in_tx(conn)?;
+            let exists: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM nir1_generation_attempts WHERE id=?1)",
+                [id],
+                |row| row.get(0),
+            )?;
+            if exists {
+                return Err(domain_failure(
+                    Nir1StoreFailure::AlreadyExists,
+                    "NIR1_GENERATION_ATTEMPT_EXISTS",
+                ));
+            }
+            require_session(
+                conn,
+                &request.binding.project_id,
+                &request.binding.session_id,
+            )?;
+            validate_refs(
+                conn,
+                &request.binding,
+                &request.inputs,
+                &request.qualifications,
+                request.budget,
+            )?;
+            let stored = insert_attempt_in_tx(conn, id, &request)?;
+            pre_commit()?;
+            Ok(stored)
+        },
+    )
+    .map_err(|(error, commit)| store_error(error, commit, budget.cancel_requested()))
+}
+
+/// Consume the durable one-shot right of the exact expected attempt. This is a
+/// CAS only, never transport permission: the caller revalidates its external
+/// authorities after COMMIT and before it starts a transport.
+pub fn claim_attempt_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected: &Nir1ExpectedAttempt,
+    budget: &Nir1AdmissionSqlBudget,
+    pre_commit: &mut dyn FnMut() -> Result<()>,
+) -> Result<Nir1ClaimOutcome, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    validate_expected_attempt(expected)?;
+    let written_at_ms = Cell::new(None);
+    bounded_write(
+        workspace,
+        budget.fence(),
+        budget.sql_budget(),
+        budget.failpoint(),
+        |conn| {
+            let stored = read_expected_attempt_in_tx(conn, expected)?;
+            if stored.terminal.is_some() {
+                return Ok(Nir1ClaimOutcome::AlreadyTerminal);
+            }
+            if let Some(claimed_at_ms) = stored.claimed_at_ms {
+                return Ok(Nir1ClaimOutcome::AlreadyClaimed { claimed_at_ms });
+            }
+            let now_ms = wall_clock_ms()?;
+            if now_ms < stored.created_at_ms || now_ms >= stored.expires_at_ms {
+                return Err(domain_failure(
+                    Nir1StoreFailure::Expired,
+                    "NIR1_GENERATION_EXPIRED",
+                ));
+            }
+            require_session(conn, &stored.binding.project_id, &stored.binding.session_id)?;
+            validate_refs(
+                conn,
+                &stored.binding,
+                &stored.inputs,
+                &stored.qualifications,
+                expected.read_budget,
+            )?;
+            let updated = conn.execute(
+                "UPDATE nir1_generation_attempts SET claimed_at_ms=?2
+                  WHERE id=?1 AND claimed_at_ms IS NULL AND terminal_json IS NULL",
+                params![expected.id, now_ms],
+            )?;
+            if updated != 1 {
+                return Err(domain_failure(
+                    Nir1StoreFailure::Conflict,
+                    "NIR1_GENERATION_CLAIM_CONFLICT",
+                ));
+            }
+            // Recorded before COMMIT, so an unknown outcome always carries the
+            // exact time this writer used.
+            written_at_ms.set(Some(now_ms));
+            pre_commit()?;
+            Ok(Nir1ClaimOutcome::Claimed {
+                claimed_at_ms: now_ms,
+            })
+        },
+    )
+    .map_err(|(error, commit)| {
+        let mut error = store_error(error, commit, budget.cancel_requested());
+        if commit == Nir1CommitState::Unknown {
+            error.claim_written_at_ms = written_at_ms.get();
+        }
+        error
+    })
+}
+
+/// Write the transport-less terminal of an exact attempt, exactly once. The
+/// claim state is compared before any existing terminal, inside the same
+/// transaction, so an attempt claimed by another claimer is never
+/// terminalized here. An identical earlier write of this terminal (same
+/// observation and classification) is returned unchanged.
+pub fn finish_pretransport_attempt_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected: &Nir1ExpectedAttempt,
+    claim: Nir1ExpectedClaim,
+    completion: Nir1ZeroSendCompletion,
+    budget: &Nir1PinnedSqlBudget,
+) -> Result<StoredTerminal, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    validate_expected_attempt(expected)?;
+    let (observation, classification) = match completion {
+        Nir1ZeroSendCompletion::Cancelled => (
+            OutputObserver::new().finish(Completion::Cancelled),
+            FailureClassification::Cancelled,
+        ),
+        Nir1ZeroSendCompletion::DispatchFailure => (
+            OutputObserver::new().finish(Completion::DispatchFailure),
+            FailureClassification::DispatchUnavailable,
+        ),
+    };
+    let observation_value = serde_json::to_value(&observation).map_err(|error| {
+        Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error.into())
+    })?;
+    bounded_write(
+        workspace,
+        ParticipantSqlFence::Pinned,
+        budget.sql_budget(),
+        budget.failpoint(),
+        |conn| {
+            let stored = read_expected_attempt_in_tx(conn, expected)?;
+            let claim_matches = match claim {
+                Nir1ExpectedClaim::Unclaimed => stored.claimed_at_ms.is_none(),
+                Nir1ExpectedClaim::ClaimedAt(claimed_at_ms) => {
+                    stored.claimed_at_ms == Some(claimed_at_ms)
+                }
+            };
+            if !claim_matches {
+                return Err(domain_failure(
+                    Nir1StoreFailure::ClaimMismatch,
+                    "NIR1_GENERATION_ZERO_SEND_CLAIM_MISMATCH",
+                ));
+            }
+            if let Some(existing) = stored.terminal {
+                if existing.message_version.is_none()
+                    && existing.observation == observation_value
+                    && existing.failure_classification.as_ref() == Some(&classification)
+                {
+                    return Ok(existing);
+                }
+                return Err(domain_failure(
+                    Nir1StoreFailure::TerminalConflict,
+                    "NIR1_GENERATION_TERMINAL_CONFLICT",
+                ));
+            }
+            // No provider event happened: like recovery, never place this
+            // terminal before the durable create/claim on a regressed clock.
+            let now_ms = wall_clock_ms()?
+                .max(stored.created_at_ms)
+                .max(stored.claimed_at_ms.unwrap_or(stored.created_at_ms));
+            finish_in_tx(conn, &expected.id, &observation, None, now_ms, false)
+        },
+    )
+    .map_err(|(error, commit)| store_error(error, commit, false))
+}
+
+/// Write the post-transport terminal of the exact claimed attempt.
+pub fn finish_attempt_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected: &Nir1ExpectedAttempt,
+    observation: &TerminalObservation,
+    body: Option<NewMessageBody>,
+    now_ms: i64,
+    budget: &Nir1PinnedSqlBudget,
+) -> Result<StoredTerminal, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    validate_expected_attempt(expected)?;
+    bounded_write(
+        workspace,
+        ParticipantSqlFence::Pinned,
+        budget.sql_budget(),
+        budget.failpoint(),
+        |conn| {
+            read_expected_attempt_in_tx(conn, expected)?;
+            finish_in_tx(
+                conn,
+                &expected.id,
+                observation,
+                body.as_ref(),
+                now_ms,
+                false,
+            )
+        },
+    )
+    .map_err(|(error, commit)| store_error(error, commit, false))
+}
+
+/// Conservatively terminalize the exact claimed attempt whose transport owner
+/// ended without a terminal (`InterruptedUnknown`). An existing terminal is
+/// returned unchanged; nothing is resent.
+pub fn recover_claimed_attempt_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected: &Nir1ExpectedAttempt,
+    budget: &Nir1PinnedSqlBudget,
+) -> Result<StoredTerminal, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    validate_expected_attempt(expected)?;
+    bounded_write(
+        workspace,
+        ParticipantSqlFence::Pinned,
+        budget.sql_budget(),
+        budget.failpoint(),
+        |conn| {
+            read_expected_attempt_in_tx(conn, expected)?;
+            recover_attempt_in_tx(conn, &expected.id, wall_clock_ms()?)
+        },
+    )
+    .map_err(|(error, commit)| store_error(error, commit, false))
+}
+
+/// Clean bounded reread of one exact attempt in a fresh read transaction.
+/// `Ok(None)` is a confirmed absence, never a timeout or error.
+pub fn read_attempt_exact_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    id: &str,
+    read_budget: ReadBudget,
+    budget: &Nir1PinnedSqlBudget,
+) -> Result<Option<StoredAttempt>, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    identity(id).map_err(|error| {
+        Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
+    })?;
+    workspace
+        .authority
+        .db()
+        .with_participant_read_transaction_bounded_in(
+            workspace.participant(),
+            ParticipantSqlFence::Pinned,
+            budget.sql_budget(),
+            |conn| match read_attempt_in_tx(conn, id, read_budget) {
+                Ok(attempt) => Ok(Some(attempt)),
+                Err(error) if is_confirmed_missing_attempt(&error) => Ok(None),
+                Err(error) => Err(error),
+            },
+        )
+        .map_err(|error| store_error(error, Nir1CommitState::NotCommitted, false))
+}
+
+/// The pinned workspace is still the exact Ready binding, not quarantined and
+/// not switching. Takes the lifecycle lock briefly; never the DB mutex.
+pub fn ensure_attempt_workspace_current(
+    workspace: &ActiveWorkspaceSnapshot,
+) -> Result<(), Nir1GenerationStoreError> {
+    workspace.check_current_binding().map_err(|error| {
+        Nir1GenerationStoreError::not_committed(Nir1StoreFailure::NotCurrent, error)
+    })
+}
+
+/// Test-support: hold a C-query style quarantine of the exact Ready workspace
+/// (a revision-only lifecycle change). Dropping the value releases it.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub struct Nir1WorkspaceQuarantineForTest {
+    _fence: crate::workspace_lifecycle::WorkspaceQuarantineFence,
+}
+
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub fn quarantine_workspace_for_test(
+    workspace: ActiveWorkspaceSnapshot,
+) -> Option<Nir1WorkspaceQuarantineForTest> {
+    workspace
+        .detach_c_query_quarantine()
+        .map(|fence| Nir1WorkspaceQuarantineForTest { _fence: fence })
 }
 
 /// Exact ascending keyset page of projects with pending attempts in this workspace.
@@ -3389,6 +4408,8 @@ pub fn pending_project_id_page_bounded(
 
 /// Keyset pages are scoped before LIMIT. The recovery owner exhausts pages;
 /// an empty global sample is never evidence that this project's work is absent.
+/// Unbounded test-support form of [`pending_attempt_id_page_bounded`].
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
 pub fn pending_attempt_ids(
     db: &Database,
     project: &str,

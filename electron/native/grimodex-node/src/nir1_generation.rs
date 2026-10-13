@@ -1,58 +1,36 @@
-//! Internal D2b control-plane claim owner. No N-API entry or production transport exists.
+//! Internal NIR-1 generation helpers and the post-Ready recovery sweep.
 //!
-//! This composes real profile/workspace/route revocation with a durable claim.
-//! It is not a material, Scope, history or product-send authorization grant.
-//! Those canonical readers must be integrated before any production transport is exposed.
+//! The bounded attempt owner lives in `nir1_generation_owner`. No N-API entry
+//! or production transport exists. The final request below is not a
+//! material, Scope, history or product-send authorization grant; those
+//! canonical readers must be integrated before any production transport is
+//! exposed.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{ensure, Context, Result};
-use grimodex_core::narrative_nir1_receipt::TerminalObservation;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::nir1_generation::{
-    self as storage, AttemptBinding, GenerationPurpose, InputReference, NewAttempt, NewMessageBody,
-    QualificationReference, ReadBudget, StoredAttempt, StoredTerminal,
+    self as storage, GenerationPurpose, InputReference, QualificationReference, ReadBudget,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
-use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding, WorkspaceParticipant};
-use grimodex_db::{ParticipantSqlOperationBudget, PinnedWorkspaceDb};
+use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
+use grimodex_db::ParticipantSqlOperationBudget;
 use serde_json::{json, Value};
 
-use crate::nir1_startup_barrier::NIR1_STARTUP_LEASE_DRAIN_LIMIT;
-use crate::profile_egress::{CallerIdentity, ProfileDispatchPermit};
+use crate::nir1_startup_barrier::{
+    Nir1StartupRecovery, Nir1SweepProof, NIR1_STARTUP_LEASE_DRAIN_LIMIT,
+};
 #[cfg(test)]
 use crate::state::GenerationRecoveryLaunchObservation;
 use crate::state::{
     AppState, GenerationRecoveryHookEntry, GenerationRecoveryHookLedger, GenerationRecoveryHookState,
     WorkspaceOperationGuard,
 };
-
-// No production entry constructs an owner until all D2b publication gates
-// pass. Tests exercise these same primitives with a private recorder only.
-pub(crate) struct GenerationClaimOwner {
-    state: Arc<AppState>,
-    db: PinnedWorkspaceDb,
-    participant: WorkspaceParticipant,
-    permit: ProfileDispatchPermit,
-    caller: CallerIdentity,
-    live_binding: LiveBinding,
-    workspace_digest: String,
-    route_revision: String,
-    cancellation: Mutex<GenerationOwnerCancellation>,
-}
-
-#[derive(Default)]
-struct GenerationOwnerCancellation {
-    cancelled: bool,
-    #[cfg(test)]
-    test_transport_started: bool,
-    #[cfg(test)]
-    test_stream: Option<std::net::TcpStream>,
-}
 
 /// The final request is assembled by an unpublished Native coordinator after
 /// Packing and all material readers have finished.  It is deliberately not a
@@ -82,29 +60,6 @@ pub(crate) struct FinalDispatchRequest {
     pub budget: ReadBudget,
 }
 
-/// Private immutable pairing metadata.  The DB remains the owner of the
-/// durable reference list and terminal matrix; Native retains a copy of every
-/// immutable field solely so a later operation cannot substitute a different
-/// same-binding attempt behind the payload handle.
-#[derive(Clone, Debug)]
-struct FinalizedAttemptSnapshot {
-    id: String,
-    binding: AttemptBinding,
-    payload_digest: String,
-    input_digest: String,
-    inputs: Vec<InputReference>,
-    qualifications: Vec<QualificationReference>,
-    budget: ReadBudget,
-}
-
-/// In-process pairing of canonical payload bytes and the exact durable
-/// attempt.  All fields stay private; callers use the guarded methods below.
-#[derive(Clone, Debug)]
-pub(crate) struct FinalizedAttempt {
-    snapshot: FinalizedAttemptSnapshot,
-    canonical_payload: String,
-}
-
 /// Native-only cold-reopen owner for unfinished generation attempts. The
 /// pinned workspace snapshot retains the lifecycle participant and authority
 /// together; no renderer handle or old dispatch owner is accepted here.
@@ -129,8 +84,15 @@ const MAX_RECOVERY_PAGE_SIZE: usize = 64;
 const MAX_RECOVERY_SWEEP_PAGES: usize = 4_096;
 const MAX_RECOVERY_SWEEP_ITEMS: usize = 2_048;
 const MAX_RECOVERY_SWEEP_TIME: Duration = Duration::from_secs(5);
-const MAX_RECOVERY_OPERATION_TIME: Duration = Duration::from_millis(250);
-const RECOVERY_SQL_BUSY_TIMEOUT: Duration = Duration::from_millis(100);
+// A recovery write that only timed out on the connection mutex ran no SQL.
+// One pending attempt is tried at most this many times, back to back after a
+// sweep checkpoint: it waits for the mutex at most this many mutex limits and
+// never past the sweep deadline.
+const MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS: usize = 3;
+// One sweep operation uses the same per-op and busy limits as the bounded
+// attempt writers; the values live once, in grimodex-db.
+const MAX_RECOVERY_OPERATION_TIME: Duration = storage::NIR1_GENERATION_OPERATION_LIMIT;
+const RECOVERY_SQL_BUSY_TIMEOUT: Duration = storage::NIR1_GENERATION_SQLITE_BUSY_LIMIT;
 
 #[cfg(test)]
 fn recovery_error_chain_categories(error: &anyhow::Error) -> String {
@@ -304,14 +266,23 @@ impl GenerationRecoveryCoordinator {
             Ok(lifecycle) => lifecycle,
             Err(_) => return Ok(None),
         };
-        let ready_revision = lifecycle.revision;
         let live_binding = match lifecycle.state {
             LifecycleState::Ready(binding) => binding,
             _ => return Ok(None),
         };
-        if expected_revision.is_some_and(|expected| expected != ready_revision)
-            || expected_binding.is_some_and(|expected| expected != &live_binding)
-        {
+        if expected_binding.is_some_and(|expected| expected != &live_binding) {
+            return Ok(None);
+        }
+        // The sweep is pinned to one Ready entry, identified by its exact
+        // binding and the entry revision (not by later revision-only changes).
+        let ready_revision = match expected_revision {
+            Some(revision) => revision,
+            None => match current_entry_revision(&state, &live_binding, lifecycle.revision) {
+                Some(revision) => revision,
+                None => return Ok(None),
+            },
+        };
+        if !same_ready_entry(&state, &live_binding, ready_revision) {
             return Ok(None);
         }
         let workspace_operation = match state.begin_workspace_operation() {
@@ -322,18 +293,7 @@ impl GenerationRecoveryCoordinator {
             Ok(workspace) => workspace,
             Err(_) => return Ok(None),
         };
-        let lifecycle = match state.ws.lifecycle_core().snapshot() {
-            Ok(lifecycle) => lifecycle,
-            Err(_) => return Ok(None),
-        };
-        let live_binding = match lifecycle.state {
-            LifecycleState::Ready(binding) => binding,
-            _ => return Ok(None),
-        };
-        if lifecycle.revision != ready_revision
-            || expected_revision.is_some_and(|expected| expected != lifecycle.revision)
-            || expected_binding.is_some_and(|expected| expected != &live_binding)
-        {
+        if !same_ready_entry(&state, &live_binding, ready_revision) {
             return Ok(None);
         }
         ensure!(
@@ -415,19 +375,7 @@ impl GenerationRecoveryCoordinator {
                     }
                     for attempt_id in attempts {
                         budget.begin_item(&self)?;
-                        storage::recover_attempt_bounded(
-                            &self.workspace,
-                            &attempt_id,
-                            now_ms()?,
-                            budget.operation(),
-                        )
-                        .inspect_err(|_error| {
-                            #[cfg(test)]
-                            eprintln!(
-                                "NIR1_RECOVERY_BOUNDED_OP=recover-attempt error-chain={}",
-                                recovery_error_chain_categories(_error)
-                            );
-                        })?;
+                        self.recover_pending_attempt(&budget, &attempt_id)?;
                         summary.recovered += 1;
                         after_attempt_id = Some(attempt_id);
                     }
@@ -439,6 +387,49 @@ impl GenerationRecoveryCoordinator {
         Ok(summary)
     }
 
+    /// Recover one pending attempt. A try that only timed out on the
+    /// connection mutex ran no SQL: it is tried again right after a sweep
+    /// checkpoint (shutdown, the same Ready entry, the sweep deadline), with a
+    /// fresh operation deadline clipped to the sweep deadline, at most
+    /// `MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS` times. Any other error, and the
+    /// last timeout, leave the sweep incomplete.
+    fn recover_pending_attempt(
+        &self,
+        budget: &GenerationRecoveryBudget,
+        attempt_id: &str,
+    ) -> Result<()> {
+        let mut tries = 0;
+        loop {
+            tries += 1;
+            #[cfg(test)]
+            observe_generation_recovery_try(&self.state, tries);
+            let result = storage::recover_attempt_bounded(
+                &self.workspace,
+                attempt_id,
+                now_ms()?,
+                budget.operation(),
+            )
+            .inspect_err(|_error| {
+                #[cfg(test)]
+                eprintln!(
+                    "NIR1_RECOVERY_BOUNDED_OP=recover-attempt error-chain={}",
+                    recovery_error_chain_categories(_error)
+                );
+            });
+            let error = match result {
+                Ok(_) => return Ok(()),
+                Err(error) => error,
+            };
+            if !storage::is_recovery_connection_busy(&error) {
+                return Err(error);
+            }
+            if tries >= MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS {
+                return Err(error.context("NIR1_GENERATION_RECOVERY_CONNECTION_BUSY_LIMIT"));
+            }
+            budget.checkpoint(self)?;
+        }
+    }
+
     fn ensure_current_binding(&self) -> Result<()> {
         ensure!(
             !self
@@ -448,22 +439,65 @@ impl GenerationRecoveryCoordinator {
                 && !self.state.ws.lifecycle_core().shutdown_requested()?,
             "NIR1_GENERATION_RECOVERY_SHUTDOWN"
         );
-        let lifecycle = self.state.ws.lifecycle_core().snapshot()?;
         ensure!(
-            lifecycle.revision == self.ready_revision
-                && matches!(
-                    &lifecycle.state,
-                    LifecycleState::Ready(binding) if binding == &self.live_binding
-                ),
+            same_ready_entry(&self.state, &self.live_binding, self.ready_revision),
             "NIR1_GENERATION_RECOVERY_BINDING_CHANGED"
         );
         Ok(())
     }
 }
 
-fn spawn_generation_recovery(
-    worker: impl FnOnce() + Send + 'static,
-) -> napi::tokio::task::JoinHandle<()> {
+/// The exact Ready entry `(binding, entry_revision)` is still current: the
+/// Core publishes `binding` at or after the entry revision, and no lifecycle
+/// edge has replaced the entry. Revision-only Core changes (C-query
+/// quarantine set/release, background descriptor completion) keep the entry;
+/// they change neither the binding nor the authority, and every edge closes
+/// the startup gate. When the gate cannot identify entries (poisoned, or it
+/// never observed an edge) this falls back to the exact Core revision, and the
+/// gate stays Closed regardless.
+pub(crate) fn same_ready_entry(
+    state: &AppState,
+    binding: &LiveBinding,
+    entry_revision: u64,
+) -> bool {
+    let Ok(lifecycle) = state.ws.lifecycle_core().snapshot() else {
+        return false;
+    };
+    if !matches!(&lifecycle.state, LifecycleState::Ready(current) if current == binding) {
+        return false;
+    }
+    let gate = state.workspace_lifecycle.nir1_startup_gate();
+    if gate.observes_lifecycle() {
+        lifecycle.revision >= entry_revision && gate.is_current_ready_entry(binding, entry_revision)
+    } else {
+        lifecycle.revision == entry_revision
+    }
+}
+
+/// Entry revision of the latest Ready entry for `binding`, or the Core
+/// revision when the gate cannot identify entries.
+fn current_entry_revision(
+    state: &AppState,
+    binding: &LiveBinding,
+    core_revision: u64,
+) -> Option<u64> {
+    let gate = state.workspace_lifecycle.nir1_startup_gate();
+    if !gate.observes_lifecycle() {
+        return Some(core_revision);
+    }
+    match gate.current_ready_entry() {
+        Some((entry_binding, entry_revision))
+            if &entry_binding == binding && entry_revision <= core_revision =>
+        {
+            Some(entry_revision)
+        }
+        _ => None,
+    }
+}
+
+fn spawn_generation_recovery<T: Send + 'static>(
+    worker: impl FnOnce() -> T + Send + 'static,
+) -> napi::tokio::task::JoinHandle<T> {
     napi::tokio::task::spawn_blocking(worker)
 }
 
@@ -595,7 +629,6 @@ struct GenerationRecoveryHookWorker {
 
 impl GenerationRecoveryHookWorker {
     fn start(state: Arc<AppState>, binding: LiveBinding, ready_revision: u64) -> Option<Self> {
-        let lifecycle = state.ws.lifecycle_core().snapshot().ok();
         if state
             .workspace_shutdown_requested
             .load(std::sync::atomic::Ordering::Acquire)
@@ -604,13 +637,7 @@ impl GenerationRecoveryHookWorker {
                 .lifecycle_core()
                 .shutdown_requested()
                 .unwrap_or(true)
-            || !lifecycle.as_ref().is_some_and(|lifecycle| {
-                lifecycle.revision == ready_revision
-                    && matches!(
-                        &lifecycle.state,
-                        LifecycleState::Ready(current) if current == &binding
-                    )
-            })
+            || !same_ready_entry(&state, &binding, ready_revision)
         {
             retire_scheduled_generation_recovery(&state, &binding, ready_revision);
             return None;
@@ -679,6 +706,18 @@ fn observe_generation_recovery_worker_probe(state: &AppState) {
 }
 
 #[cfg(test)]
+fn observe_generation_recovery_try(state: &AppState, tries: usize) {
+    if let Some(probe) = state
+        .nir1_generation_recovery_try_probe
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_mut()
+    {
+        probe(tries);
+    }
+}
+
+#[cfg(test)]
 fn observe_generation_recovery_completion_probe(state: &AppState) {
     let probe = state
         .nir1_generation_recovery_completion_probe
@@ -693,16 +732,16 @@ fn observe_generation_recovery_completion_probe(state: &AppState) {
     }
 }
 
+/// Sweep the exact Ready entry. The returned one-shot proof travels through
+/// the blocking task's JoinHandle to the supervisor, which alone may open the
+/// startup gate with it after a successful Join.
 fn run_generation_recovery_after_ready(
     state: Arc<AppState>,
     binding: LiveBinding,
     ready_revision: u64,
-) {
-    let Some(worker) =
-        GenerationRecoveryHookWorker::start(Arc::clone(&state), binding.clone(), ready_revision)
-    else {
-        return;
-    };
+) -> Option<Nir1SweepProof> {
+    let worker =
+        GenerationRecoveryHookWorker::start(Arc::clone(&state), binding.clone(), ready_revision)?;
     #[cfg(test)]
     observe_generation_recovery_worker_probe(&state);
     let owner = match GenerationRecoveryCoordinator::capture_for_binding(
@@ -711,10 +750,10 @@ fn run_generation_recovery_after_ready(
         Some(ready_revision),
     ) {
         Ok(Some(owner)) => owner,
-        Ok(None) => return,
+        Ok(None) => return None,
         Err(error) => {
             tracing::debug!(error = %error, "NIR-1 generation recovery incomplete");
-            return;
+            return None;
         }
     };
     // Recovering is entered only for this exact Ready entry, after leases
@@ -728,21 +767,24 @@ fn run_generation_recovery_after_ready(
     match owner.recover_all_pending_attempts() {
         Ok(_) => {
             worker.complete();
-            if let Some(gate_recovery) = gate_recovery {
-                gate_recovery.record_complete_sweep();
-            }
+            gate_recovery.and_then(Nir1StartupRecovery::record_complete_sweep)
         }
-        Err(error) => tracing::debug!(error = %error, "NIR-1 generation recovery incomplete"),
+        Err(error) => {
+            tracing::debug!(error = %error, "NIR-1 generation recovery incomplete");
+            None
+        }
     }
 }
 
-/// Open the NIR-1 startup gate for the exact Ready entry whose sweep task
-/// joined successfully, while the Core still publishes that same entry.
+/// Open the NIR-1 startup gate with the one-shot proof that the joined sweep
+/// task returned, while the Core still publishes that same Ready entry. An
+/// unused proof closes and consumes only its own entry when it drops.
 /// Lock order: recovery ledger -> Core -> gate (never the reverse).
 fn open_startup_gate_after_join(
     state: &AppState,
     binding: &LiveBinding,
     ready_revision: u64,
+    proof: Nir1SweepProof,
 ) -> bool {
     if state
         .workspace_shutdown_requested
@@ -755,15 +797,11 @@ fn open_startup_gate_after_join(
     {
         return false;
     }
-    let current = state.ws.lifecycle_core().snapshot().is_ok_and(|lifecycle| {
-        lifecycle.revision == ready_revision
-            && matches!(&lifecycle.state, LifecycleState::Ready(current) if current == binding)
-    });
-    current
+    same_ready_entry(state, binding, ready_revision)
         && state
             .workspace_lifecycle
             .nir1_startup_gate()
-            .open_after_joined_sweep(binding, ready_revision)
+            .open_after_joined_sweep(proof)
 }
 
 #[cfg(test)]
@@ -801,7 +839,7 @@ fn observe_generation_recovery_launch(
 /// completion; no workspace participant is captured before the worker starts.
 pub(crate) fn start_generation_recovery_after_ready(
     state: Arc<AppState>,
-    ready_revision: u64,
+    view_revision: u64,
 ) -> bool {
     if state
         .workspace_shutdown_requested
@@ -810,7 +848,7 @@ pub(crate) fn start_generation_recovery_after_ready(
         return false;
     }
     let lifecycle = match state.ws.lifecycle_core().snapshot() {
-        Ok(lifecycle) if lifecycle.revision == ready_revision => lifecycle,
+        Ok(lifecycle) => lifecycle,
         _ => return false,
     };
     if state
@@ -821,9 +859,16 @@ pub(crate) fn start_generation_recovery_after_ready(
     {
         return false;
     }
+    let core_revision = lifecycle.revision;
     let binding = match lifecycle.state {
         LifecycleState::Ready(binding) => binding,
         _ => return false,
+    };
+    // The publisher's view may trail revision-only Core changes. Schedule the
+    // gate's Ready entry Re when Re <= view <= Core; an older view is stale.
+    let Some(ready_revision) = ready_entry_for_view(&state, &binding, view_revision, core_revision)
+    else {
+        return false;
     };
     let Some(mut ledger) = schedule_generation_recovery(&state, &binding, ready_revision) else {
         return false;
@@ -835,13 +880,14 @@ pub(crate) fn start_generation_recovery_after_ready(
     let worker_state = Arc::clone(&state);
     let worker_binding = binding.clone();
     let worker = spawn_generation_recovery(move || {
-        run_generation_recovery_after_ready(
+        let proof = run_generation_recovery_after_ready(
             Arc::clone(&worker_state),
             worker_binding,
             ready_revision,
         );
         #[cfg(test)]
         observe_generation_recovery_completion_probe(&worker_state);
+        proof
     });
     // Dropping this supervisor's handle cannot abort the blocking task. Its
     // exclusive JoinHandle stays here; a lost supervisor leaves the slot pinned.
@@ -854,11 +900,29 @@ pub(crate) fn start_generation_recovery_after_ready(
     true
 }
 
+/// The Ready entry revision to schedule for a publisher view, or None for a
+/// stale view. Falls back to the exact view == Core rule when the gate cannot
+/// identify entries.
+fn ready_entry_for_view(
+    state: &AppState,
+    binding: &LiveBinding,
+    view_revision: u64,
+    core_revision: u64,
+) -> Option<u64> {
+    let gate = state.workspace_lifecycle.nir1_startup_gate();
+    if !gate.observes_lifecycle() {
+        return (view_revision == core_revision).then_some(view_revision);
+    }
+    let (entry_binding, entry_revision) = gate.current_ready_entry()?;
+    (&entry_binding == binding && entry_revision <= view_revision && view_revision <= core_revision)
+        .then_some(entry_revision)
+}
+
 async fn supervise_generation_recovery(
     state: Arc<AppState>,
     binding: LiveBinding,
     ready_revision: u64,
-    worker: napi::tokio::task::JoinHandle<()>,
+    worker: napi::tokio::task::JoinHandle<Option<Nir1SweepProof>>,
 ) {
     let joined = worker.await;
     let pending_revision = {
@@ -866,21 +930,25 @@ async fn supervise_generation_recovery(
             .nir1_generation_recovery_statuses
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(error) = joined {
-            tracing::debug!(
-                cancelled = error.is_cancelled(),
-                panicked = error.is_panic(),
-                "NIR-1 generation recovery join failed"
-            );
-            if let Some(entry) = ledger.entry.as_mut().filter(|entry| {
-                entry.binding == binding && entry.ready_revision == ready_revision
-            }) {
-                entry.state = GenerationRecoveryHookState::Incomplete;
+        let proof = match joined {
+            Ok(proof) => proof,
+            Err(error) => {
+                tracing::debug!(
+                    cancelled = error.is_cancelled(),
+                    panicked = error.is_panic(),
+                    "NIR-1 generation recovery join failed"
+                );
+                if let Some(entry) = ledger.entry.as_mut().filter(|entry| {
+                    entry.binding == binding && entry.ready_revision == ready_revision
+                }) {
+                    entry.state = GenerationRecoveryHookState::Incomplete;
+                }
+                // Failed Join is sticky: status/zero counters cannot release
+                // the recovery slot, admit its pending replacement or unblock
+                // Closed.
+                return;
             }
-            // Failed Join is sticky: status/zero counters cannot release the
-            // recovery slot, admit its pending replacement or unblock Closed.
-            return;
-        }
+        };
         let swept = ledger.latest_ready_revision == ready_revision
             && ledger.entry.as_ref().is_some_and(|entry| {
                 entry.binding == binding
@@ -888,9 +956,10 @@ async fn supervise_generation_recovery(
                     && entry.state == GenerationRecoveryHookState::Complete
             });
         // Decide before releasing the slot: an observer of `worker_active ==
-        // false` sees this Join's gate decision.
-        if swept {
-            open_startup_gate_after_join(&state, &binding, ready_revision);
+        // false` sees this Join's gate decision. Without a swept status the
+        // proof (if any) drops here and consumes only its own entry.
+        if let (true, Some(proof)) = (swept, proof) {
+            open_startup_gate_after_join(&state, &binding, ready_revision, proof);
         }
         ledger.worker_active = false;
         ledger.pending_ready_revision.take()
@@ -903,6 +972,39 @@ async fn supervise_generation_recovery(
     }
 }
 
+/// Test-only synchronous form of the hook and its supervisor: sweep the
+/// current Ready entry with the real worker, then open the gate with the
+/// returned proof under the same ledger. Returns whether the gate opened.
+#[cfg(test)]
+pub(crate) fn sweep_and_open_ready_entry_for_test(state: &Arc<AppState>) -> bool {
+    let Ok(lifecycle) = state.ws.lifecycle_core().snapshot() else {
+        return false;
+    };
+    let core_revision = lifecycle.revision;
+    let LifecycleState::Ready(binding) = lifecycle.state else {
+        return false;
+    };
+    let Some(ready_revision) = ready_entry_for_view(state, &binding, core_revision, core_revision)
+    else {
+        return false;
+    };
+    let Some(mut ledger) = schedule_generation_recovery(state, &binding, ready_revision) else {
+        return false;
+    };
+    ledger.worker_active = true;
+    drop(ledger);
+    let proof =
+        run_generation_recovery_after_ready(Arc::clone(state), binding.clone(), ready_revision);
+    let mut ledger = state
+        .nir1_generation_recovery_statuses
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let opened = proof
+        .is_some_and(|proof| open_startup_gate_after_join(state, &binding, ready_revision, proof));
+    ledger.worker_active = false;
+    opened
+}
+
 pub(crate) fn final_payload_digest(payload: &Value) -> Result<String> {
     Ok(canonical_json_digest(&json!({
         "domain": "nir1-generation-payload@1",
@@ -910,7 +1012,7 @@ pub(crate) fn final_payload_digest(payload: &Value) -> Result<String> {
     }))?)
 }
 
-fn canonical_final_payload(payload: &Value) -> Result<(String, String)> {
+pub(crate) fn canonical_final_payload(payload: &Value) -> Result<(String, String)> {
     ensure!(
         payload.is_object(),
         "NIR1_GENERATION_FINAL_PAYLOAD_OBJECT_REQUIRED"
@@ -931,46 +1033,15 @@ pub(crate) fn final_input_digest(
     }))?)
 }
 
-fn finalized_snapshot(attempt: &StoredAttempt, budget: ReadBudget) -> FinalizedAttemptSnapshot {
-    FinalizedAttemptSnapshot {
-        id: attempt.id.clone(),
-        binding: attempt.binding.clone(),
-        payload_digest: attempt.payload_digest.clone(),
-        input_digest: attempt.input_digest.clone(),
-        inputs: attempt.inputs.clone(),
-        qualifications: attempt.qualifications.clone(),
-        budget,
-    }
-}
-
-fn verify_finalized_attempt(finalized: &FinalizedAttempt) -> Result<()> {
-    let payload: Value = serde_json::from_str(&finalized.canonical_payload)
-        .context("NIR1_GENERATION_FINAL_PAYLOAD_INVALID")?;
-    ensure!(
-        canonical_json_string(&payload)? == finalized.canonical_payload,
-        "NIR1_GENERATION_FINAL_PAYLOAD_NOT_CANONICAL"
-    );
-    ensure!(
-        final_payload_digest(&payload)? == finalized.snapshot.payload_digest,
-        "NIR1_GENERATION_FINAL_PAYLOAD_DIGEST_MISMATCH"
-    );
-    ensure!(
-        final_input_digest(
-            &finalized.snapshot.inputs,
-            &finalized.snapshot.qualifications,
-        )? == finalized.snapshot.input_digest,
-        "NIR1_GENERATION_FINAL_INPUT_DIGEST_MISMATCH"
-    );
-    Ok(())
-}
-
-fn now_ms() -> Result<i64> {
+pub(crate) fn now_ms() -> Result<i64> {
     Ok(i64::try_from(
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
     )?)
 }
 
-fn route_revision(state: &AppState) -> Result<String> {
+/// Digest of the current normalized AI route settings. A change between two
+/// reads means the route this request was prepared for is no longer current.
+pub(crate) fn route_revision(state: &AppState) -> Result<String> {
     let mut settings: grimodex_ai::AiSettings =
         match std::fs::read_to_string(&state.ai_settings_path) {
             Ok(contents) => {
@@ -983,1303 +1054,23 @@ fn route_revision(state: &AppState) -> Result<String> {
     Ok(canonical_json_digest(&serde_json::to_value(settings)?)?)
 }
 
-impl GenerationClaimOwner {
-    pub(crate) fn capture(state: Arc<AppState>, caller: CallerIdentity) -> Result<Self> {
-        let permit = state.profile_egress.begin_dispatch(Some(&caller))?;
-        let participant = state.ws.lifecycle_core().begin_workspace_participant()?;
-        let workspace = active_workspace_snapshot(&state.ws)?;
-        let snapshot = state.ws.lifecycle_core().snapshot()?;
-        let live_binding = snapshot
-            .binding()
-            .context("NIR1_GENERATION_WORKSPACE_NOT_READY")?
-            .clone();
-        ensure!(
-            live_binding.authority_instance == workspace.db().identity(),
-            "NIR1_GENERATION_WORKSPACE_CHANGED"
-        );
-        let workspace_digest = canonical_json_digest(&serde_json::to_value(&live_binding)?)?;
-        let route_revision = state.profile_egress.with_authorized_dispatch(
-            &permit,
-            Some(&caller),
-            Some(&live_binding.locator),
-            || route_revision(&state),
-        )?;
-        Ok(Self {
-            state,
-            db: Arc::clone(workspace.db()),
-            participant,
-            permit,
-            caller,
-            live_binding,
-            workspace_digest,
-            route_revision,
-            cancellation: Mutex::new(GenerationOwnerCancellation::default()),
-        })
-    }
-
-    /// Cancel may win while the claim worker is waiting for its DB connection.
-    /// Never acquire a DB connection while retaining this cancellation lock.
-    pub(crate) fn cancel(&self) -> Result<()> {
-        #[cfg(test)]
-        let active_test_stream = {
-            let mut cancellation = self
-                .cancellation
-                .lock()
-                .map_err(|_| anyhow::anyhow!("NIR1_GENERATION_OWNER_POISONED"))?;
-            cancellation.cancelled = true;
-            cancellation
-                .test_stream
-                .as_ref()
-                .map(std::net::TcpStream::try_clone)
-                .transpose()?
-        };
-        #[cfg(not(test))]
-        {
-            self.cancellation
-                .lock()
-                .map_err(|_| anyhow::anyhow!("NIR1_GENERATION_OWNER_POISONED"))?
-                .cancelled = true;
-        }
-        #[cfg(test)]
-        if let Some(stream) = active_test_stream {
-            stream.shutdown(std::net::Shutdown::Both)?;
-        }
-        Ok(())
-    }
-
-    /// Test-only start gate. Cancellation and transport start linearize on the
-    /// same short lock; the returned stream clone lets `cancel` close an active
-    /// local fixture after releasing that lock. No socket I/O happens in this method.
-    #[cfg(test)]
-    fn begin_test_transport(&self, stream: &std::net::TcpStream) -> Result<bool> {
-        let mut cancellation = self
-            .cancellation
-            .lock()
-            .map_err(|_| anyhow::anyhow!("NIR1_GENERATION_OWNER_POISONED"))?;
-        if cancellation.cancelled {
-            return Ok(false);
-        }
-        ensure!(
-            !cancellation.test_transport_started,
-            "NIR1_GENERATION_TEST_TRANSPORT_ALREADY_STARTED"
-        );
-        cancellation.test_stream = Some(stream.try_clone()?);
-        cancellation.test_transport_started = true;
-        Ok(true)
-    }
-
-    #[cfg(test)]
-    fn finish_test_transport(&self) -> Result<()> {
-        self.cancellation
-            .lock()
-            .map_err(|_| anyhow::anyhow!("NIR1_GENERATION_OWNER_POISONED"))?
-            .test_stream = None;
-        Ok(())
-    }
-
-    /// Persist the final request before dispatch.  This is the only Native
-    /// helper that derives the payload digest: a caller cannot provide a
-    /// digest that disagrees with the canonical request bytes.  Storage then
-    /// validates the session, message/artifact references and qualification
-    /// rows in its own short transaction.  This does not certify the missing
-    /// typed Scope/material/D1 authority; that remains a fail-closed caller
-    /// responsibility until the current readers are integrated.
-    pub(crate) fn persist_final_request(
-        &self,
-        request: FinalDispatchRequest,
-    ) -> Result<FinalizedAttempt> {
-        self.permit.ensure_open()?;
-        {
-            let cancellation = self
-                .cancellation
-                .lock()
-                .map_err(|_| anyhow::anyhow!("NIR1_GENERATION_OWNER_POISONED"))?;
-            ensure!(!cancellation.cancelled, "NIR1_GENERATION_CANCELLED");
-        }
-        ensure!(
-            request.route_revision == self.route_revision,
-            "NIR1_GENERATION_ROUTE_CHANGED"
-        );
-        let (canonical_payload, payload_digest) = canonical_final_payload(&request.payload)?;
-        let binding = AttemptBinding {
-            project_id: request.project_id,
-            session_id: self.caller.session_id.clone(),
-            profile_id: self.caller.profile_id.clone(),
-            caller_id: self.caller.caller_id.clone(),
-            caller_epoch: self.caller.caller_epoch,
-            workspace_binding_digest: self.workspace_digest.clone(),
-            purpose: request.purpose,
-            scope_digest: request.scope_digest,
-            material_digest: request.material_digest,
-            d1_digest: request.d1_digest,
-            route_revision: self.route_revision.clone(),
-            provider: request.provider,
-            model: request.model,
-            api: request.api,
-            endpoint_identity: request.endpoint_identity,
-        };
-        let attempt = storage::create_attempt(
-            self.db.db(),
-            NewAttempt {
-                binding,
-                payload_digest,
-                inputs: request.inputs,
-                qualifications: request.qualifications,
-                created_at_ms: request.created_at_ms,
-                expires_at_ms: request.expires_at_ms,
-                budget: request.budget,
-            },
-        )?;
-        Ok(FinalizedAttempt {
-            snapshot: finalized_snapshot(&attempt, request.budget),
-            canonical_payload,
-        })
-    }
-
-    /// Re-read the immutable attempt fields before every claim/terminal
-    /// operation.  The storage CAS intentionally checks only its binding; the
-    /// Native pairing therefore checks id, payload/input digests and ordered
-    /// references as well.  Claimed/terminal timestamps may change, but no
-    /// other field may be rebound to this handle.
-    fn read_exact_finalized_attempt(
-        &self,
-        finalized: &FinalizedAttempt,
-        budget: ReadBudget,
-    ) -> Result<StoredAttempt> {
-        let current = storage::read_attempt(self.db.db(), &finalized.snapshot.id, budget)?;
-        ensure!(
-            current.id == finalized.snapshot.id
-                && current.binding == finalized.snapshot.binding
-                && current.payload_digest == finalized.snapshot.payload_digest
-                && current.input_digest == finalized.snapshot.input_digest
-                && current.inputs == finalized.snapshot.inputs
-                && current.qualifications == finalized.snapshot.qualifications,
-            "NIR1_GENERATION_FINAL_ATTEMPT_PAIRING_MISMATCH"
-        );
-        Ok(current)
-    }
-
-    /// Claim only the request whose canonical payload was durably prepared.
-    /// This keeps the payload/reference pairing intact while reusing the
-    /// existing profile/workspace/route guarded one-shot CAS.
-    pub(crate) fn consume_finalized_claim(
-        &self,
-        finalized: &FinalizedAttempt,
-        budget: ReadBudget,
-    ) -> Result<bool> {
-        verify_finalized_attempt(finalized)?;
-        let attempt = self.read_exact_finalized_attempt(finalized, budget)?;
-        self.consume_claim(&attempt, budget)
-    }
-
-    /// Finish the exact pinned attempt after transport observation.  This
-    /// method intentionally does not reacquire lifecycle admission: an owner
-    /// that already passed the claim may complete durable terminal cleanup
-    /// after new admissions close.  `finish_attempt` remains the DB writer for
-    /// body/version/receipt atomicity and terminal conflict handling.
-    pub(crate) fn persist_terminal(
-        &self,
-        finalized: &FinalizedAttempt,
-        observation: &TerminalObservation,
-        body: Option<NewMessageBody>,
-        now_ms: i64,
-    ) -> Result<StoredTerminal> {
-        verify_finalized_attempt(finalized)?;
-        self.read_exact_finalized_attempt(finalized, finalized.snapshot.budget)?;
-        storage::finish_attempt(
-            self.db.db(),
-            &finalized.snapshot.id,
-            observation,
-            body,
-            now_ms,
-        )
-    }
-
-    /// Recover the exact unfinished attempt without reconstructing a request
-    /// or invoking transport.  The DB recovery writer records the conservative
-    /// interrupted/unknown terminal and never makes the old handle reusable.
-    pub(crate) fn recover_terminal(
-        &self,
-        finalized: &FinalizedAttempt,
-        now_ms: i64,
-    ) -> Result<StoredTerminal> {
-        verify_finalized_attempt(finalized)?;
-        self.read_exact_finalized_attempt(finalized, finalized.snapshot.budget)?;
-        storage::recover_attempt(self.db.db(), &finalized.snapshot.id, now_ms)
-    }
-
-    /// Consume the durable right under the existing control-plane authorities.
-    /// A true return is not permission to use any product transport.
-    fn consume_claim(&self, attempt: &StoredAttempt, budget: ReadBudget) -> Result<bool> {
-        let binding = &attempt.binding;
-        ensure!(
-            binding.profile_id == self.caller.profile_id
-                && binding.caller_id == self.caller.caller_id
-                && binding.caller_epoch == self.caller.caller_epoch
-                && binding.session_id == self.caller.session_id
-                && binding.workspace_binding_digest == self.workspace_digest
-                && binding.route_revision == self.route_revision,
-            "NIR1_GENERATION_OWNER_BINDING_MISMATCH"
-        );
-        // Deliberate D2b-1 boundary: this owner does not derive provider,
-        // model, API, endpoint, payload, material, Scope, or history
-        // currentness from a trusted final request. The attempt's immutable
-        // fields are storage-validated only; no transport permission follows.
-        // Validation and body hashing happen before the profile/core guards
-        // in one fresh IMMEDIATE transaction. PreparedClaim rejects nested
-        // SQL progress scopes; COMMIT remains inside both guards.
-        storage::with_prepared_claim(self.db.db(), &attempt.id, binding, budget, |prepared| {
-            let cancellation = self
-                .cancellation
-                .lock()
-                .map_err(|_| anyhow::anyhow!("NIR1_GENERATION_OWNER_POISONED"))?;
-            ensure!(!cancellation.cancelled, "NIR1_GENERATION_CANCELLED");
-            self.state.profile_egress.with_authorized_dispatch(
-                &self.permit,
-                Some(&self.caller),
-                Some(&self.live_binding.locator),
-                || {
-                    ensure!(
-                        route_revision(&self.state)? == self.route_revision,
-                        "NIR1_GENERATION_ROUTE_CHANGED"
-                    );
-                    self.participant
-                        .with_current_binding(&self.live_binding, || prepared.commit(now_ms()?))?
-                },
-            )
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use grimodex_core::narrative_nir1_receipt::{
-        Completion, OutputObserver, ParseStatus, ProviderTerminal, TerminalStatus,
-    };
     use grimodex_db::nir1_generation::{
-        AttemptBinding, FailureClassification, GenerationPurpose, NewAttempt,
+        AttemptBinding, FailureClassification, GenerationPurpose, NewAttempt, StoredAttempt,
     };
     use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
     use grimodex_db::workspace_lifecycle::AdmissionKind;
-    use std::io::Read;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc;
     use std::thread;
-
-    /// A fixed, test-only framed protocol over 127.0.0.1. It sends no HTTP,
-    /// accepts no configurable destination/provider, and owns no retry,
-    /// redirect, proxy, background task, or recovery callback. Its evidence is
-    /// limited to exact local request bytes, separated raw output observations,
-    /// explicit fixture terminal frames, and peer close behavior. It does not
-    /// prove any provider protocol, remote receipt, product route, real
-    /// provider termination bound, or D2b publication readiness.
-    mod loopback {
-        use grimodex_core::narrative_nir1_receipt::{
-            Completion, OutputChannel, OutputObserver, ProviderTerminal, TerminalObservation,
-        };
-        use std::io::{self, Read, Write};
-        use std::net::{SocketAddr, TcpListener, TcpStream};
-        use std::thread;
-        use std::time::{Duration, Instant};
-
-        use anyhow::{ensure, Result};
-
-        pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(5);
-        const MAX_FRAME_BYTES: usize = 64 * 1024;
-        const TEXT: u8 = 1;
-        const THINKING: u8 = 2;
-        const TERMINAL: u8 = 3;
-        const COMPLETE: u8 = 1;
-        const LENGTH_LIMIT: u8 = 2;
-        const INELIGIBLE: u8 = 3;
-
-        pub(super) struct Response {
-            pub(super) observation: TerminalObservation,
-            pub(super) text: Vec<u8>,
-            pub(super) thinking: Vec<u8>,
-            pub(super) saw_terminal: bool,
-            pub(super) peer_closed: bool,
-        }
-
-        pub(super) fn listener() -> Result<TcpListener> {
-            let listener = TcpListener::bind(("127.0.0.1", 0))?;
-            listener.set_nonblocking(true)?;
-            Ok(listener)
-        }
-
-        pub(super) fn connect(listener: &TcpListener) -> Result<TcpStream> {
-            let address: SocketAddr = listener.local_addr()?;
-            let stream = TcpStream::connect_timeout(&address, IO_TIMEOUT)?;
-            configure(&stream)?;
-            Ok(stream)
-        }
-
-        pub(super) fn accept(listener: &TcpListener) -> io::Result<TcpStream> {
-            let deadline = Instant::now() + IO_TIMEOUT;
-            loop {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        stream.set_read_timeout(Some(IO_TIMEOUT))?;
-                        stream.set_write_timeout(Some(IO_TIMEOUT))?;
-                        return Ok(stream);
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        if Instant::now() >= deadline {
-                            return Err(io::Error::new(
-                                io::ErrorKind::TimedOut,
-                                "loopback fixture accept timed out",
-                            ));
-                        }
-                        thread::sleep(Duration::from_millis(1));
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-
-        pub(super) fn assert_no_pending_connection(listener: &TcpListener) -> Result<()> {
-            match listener.accept() {
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
-                Ok((stream, _)) => {
-                    drop(stream);
-                    anyhow::bail!("fixture observed a second connection")
-                }
-                Err(error) => Err(error.into()),
-            }
-        }
-
-        fn configure(stream: &TcpStream) -> io::Result<()> {
-            stream.set_read_timeout(Some(IO_TIMEOUT))?;
-            stream.set_write_timeout(Some(IO_TIMEOUT))
-        }
-
-        pub(super) fn send_request(stream: &mut TcpStream, body: &[u8]) -> Result<()> {
-            ensure!(
-                body.len() <= MAX_FRAME_BYTES,
-                "test request exceeds fixture bound"
-            );
-            let length = u32::try_from(body.len())?.to_be_bytes();
-            stream.write_all(&length)?;
-            stream.write_all(body)?;
-            Ok(())
-        }
-
-        pub(super) fn read_request(stream: &mut TcpStream) -> Result<Vec<u8>> {
-            let mut header = [0; 4];
-            stream.read_exact(&mut header)?;
-            let length = usize::try_from(u32::from_be_bytes(header))?;
-            ensure!(
-                length <= MAX_FRAME_BYTES,
-                "test request exceeds fixture bound"
-            );
-            let mut body = vec![0; length];
-            stream.read_exact(&mut body)?;
-            Ok(body)
-        }
-
-        pub(super) fn write_response(
-            stream: &mut TcpStream,
-            text: &[u8],
-            thinking: &[u8],
-            terminal: u8,
-        ) -> Result<()> {
-            write_output(stream, text, thinking)?;
-            stream.write_all(&[TERMINAL, terminal])?;
-            Ok(())
-        }
-
-        pub(super) fn write_output(
-            stream: &mut TcpStream,
-            text: &[u8],
-            thinking: &[u8],
-        ) -> Result<()> {
-            ensure!(
-                text.len() <= MAX_FRAME_BYTES && thinking.len() <= MAX_FRAME_BYTES - text.len(),
-                "test response exceeds fixture bound"
-            );
-            for index in 0..text.len().max(thinking.len()) {
-                if let Some(byte) = text.get(index) {
-                    write_data_frame(stream, TEXT, std::slice::from_ref(byte))?;
-                }
-                if let Some(byte) = thinking.get(index) {
-                    write_data_frame(stream, THINKING, std::slice::from_ref(byte))?;
-                }
-            }
-            Ok(())
-        }
-
-        fn write_data_frame(stream: &mut TcpStream, channel: u8, bytes: &[u8]) -> Result<()> {
-            ensure!(
-                bytes.len() <= MAX_FRAME_BYTES,
-                "test response exceeds fixture bound"
-            );
-            stream.write_all(&[channel])?;
-            stream.write_all(&u32::try_from(bytes.len())?.to_be_bytes())?;
-            stream.write_all(bytes)?;
-            Ok(())
-        }
-
-        pub(super) fn read_response(stream: &mut TcpStream) -> Result<Response> {
-            let mut observer = OutputObserver::new();
-            let mut text = Vec::new();
-            let mut thinking = Vec::new();
-            let mut total_bytes = 0;
-            let mut saw_terminal = false;
-            let mut completion = Completion::UnexpectedEof;
-            while let Some(tag) = read_tag(stream)? {
-                match tag {
-                    TEXT | THINKING => {
-                        ensure!(!saw_terminal, "fixture data after terminal");
-                        let bytes = read_data_frame(stream)?;
-                        ensure!(
-                            bytes.len() <= MAX_FRAME_BYTES - total_bytes,
-                            "test response exceeds fixture bound"
-                        );
-                        total_bytes += bytes.len();
-                        let (channel, destination) = if tag == TEXT {
-                            (OutputChannel::Text, &mut text)
-                        } else {
-                            (OutputChannel::Thinking, &mut thinking)
-                        };
-                        destination.extend_from_slice(&bytes);
-                        // Frames deliberately split every UTF-8 scalar into
-                        // one-byte events; the observer receives the exact raw
-                        // bytes without decoding or normalization.
-                        let _ = observer.observe(channel, &bytes);
-                    }
-                    TERMINAL => {
-                        ensure!(!saw_terminal, "fixture duplicate terminal");
-                        let mut status = [0; 1];
-                        stream.read_exact(&mut status)?;
-                        let (provider_terminal, parsed_completion) = match status[0] {
-                            COMPLETE => (ProviderTerminal::Complete, Completion::Parsed),
-                            LENGTH_LIMIT => (ProviderTerminal::LengthLimit, Completion::Truncated),
-                            INELIGIBLE => (ProviderTerminal::Ineligible, Completion::ParseFailure),
-                            _ => anyhow::bail!("fixture sent unknown terminal"),
-                        };
-                        let _ = observer.observe_terminal(provider_terminal);
-                        completion = parsed_completion;
-                        saw_terminal = true;
-                    }
-                    _ => anyhow::bail!("fixture sent unknown frame"),
-                }
-            }
-            Ok(Response {
-                observation: observer.finish(completion),
-                text,
-                thinking,
-                saw_terminal,
-                // Successful return is only possible after `read_tag` saw
-                // EOF, so record the observed close explicitly.
-                peer_closed: true,
-            })
-        }
-
-        fn read_tag(stream: &mut TcpStream) -> io::Result<Option<u8>> {
-            let mut tag = [0; 1];
-            loop {
-                match stream.read(&mut tag) {
-                    Ok(0) => return Ok(None),
-                    Ok(_) => return Ok(Some(tag[0])),
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-
-        fn read_data_frame(stream: &mut TcpStream) -> Result<Vec<u8>> {
-            let mut header = [0; 4];
-            stream.read_exact(&mut header)?;
-            let length = usize::try_from(u32::from_be_bytes(header))?;
-            ensure!(
-                length <= MAX_FRAME_BYTES,
-                "test response exceeds fixture bound"
-            );
-            let mut bytes = vec![0; length];
-            stream.read_exact(&mut bytes)?;
-            Ok(bytes)
-        }
-
-        pub(super) fn wait_for_peer_close(stream: &mut TcpStream) -> io::Result<()> {
-            let mut byte = [0; 1];
-            loop {
-                match stream.read(&mut byte) {
-                    Ok(0) => return Ok(()),
-                    Ok(_) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "unexpected bytes after fixed request",
-                        ));
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(error),
-                }
-            }
-        }
-    }
 
     const BUDGET: ReadBudget = ReadBudget {
         max_references: 8,
         max_reference_bytes: 4096,
     };
-
-    struct Fixture {
-        root: std::path::PathBuf,
-        owner: Arc<GenerationClaimOwner>,
-        finalized: FinalizedAttempt,
-        attempt: StoredAttempt,
-    }
-
-    fn final_request(owner: &GenerationClaimOwner, payload: Value) -> FinalDispatchRequest {
-        let now = now_ms().expect("clock");
-        let digest = canonical_json_digest(&serde_json::json!("fixture")).expect("digest");
-        FinalDispatchRequest {
-            project_id: "project-1".into(),
-            route_revision: owner.route_revision.clone(),
-            purpose: GenerationPurpose::Writing,
-            scope_digest: digest.clone(),
-            material_digest: digest.clone(),
-            d1_digest: digest.clone(),
-            provider: "test-recorder".into(),
-            model: "test".into(),
-            api: "internal-test".into(),
-            endpoint_identity: digest,
-            payload,
-            inputs: vec![],
-            qualifications: vec![],
-            created_at_ms: now,
-            expires_at_ms: now + 60_000,
-            budget: BUDGET,
-        }
-    }
-
-    impl Fixture {
-        fn new() -> Self {
-            let root =
-                std::env::temp_dir().join(format!("nir1-dispatch-owner-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(root.join(".grimodex")).expect("workspace directory");
-            std::fs::write(
-                root.join(".grimodex/workspace.json"),
-                r#"{"id":"workspace-1"}"#,
-            )
-            .expect("workspace metadata");
-            let backend =
-                crate::Backend::new(root.join("app").to_string_lossy().into_owned(), None, None)
-                    .expect("actual Native backend");
-            let state = Arc::clone(&backend.state);
-            let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("database");
-            db.migrate().expect("database schema");
-            db.with_conn(|conn| {
-                conn.execute_batch("INSERT INTO projects(id,title) VALUES ('project-1','Fixture');
-                    INSERT INTO chat_sessions(id,project_id,title) VALUES ('session-1','project-1','Fixture');")?;
-                Ok(())
-            }).expect("existing stores");
-            let authority =
-                WorkspaceAuthority::from_database_for_test(db, root.clone()).expect("authority");
-            let live = LiveBinding::new(
-                root.to_string_lossy(),
-                "workspace-1",
-                authority.identity(),
-                1,
-            );
-            *state.ws.inner.lock().expect("workspace") = Some(ActiveWorkspace::new(authority));
-            state.ws.lifecycle_core().set_ready(live).expect("ready");
-            let status = state
-                .profile_egress
-                .activate_first_restricted_publication(true)
-                .expect("restriction");
-            state
-                .profile_egress
-                .bind_workspace(Some(root.to_string_lossy().into_owned()));
-            let caller = CallerIdentity {
-                profile_id: status.profile_id,
-                caller_id: "main-issued".into(),
-                caller_epoch: status.caller_epoch,
-                sender_id: 1,
-                workspace_id: Some(root.to_string_lossy().into_owned()),
-                session_id: "session-1".into(),
-            };
-            state
-                .profile_egress
-                .register_caller(&caller)
-                .expect("registered main caller");
-            let owner =
-                Arc::new(GenerationClaimOwner::capture(state, caller).expect("capture owner"));
-            let finalized = owner
-                .persist_final_request(final_request(
-                    &owner,
-                    serde_json::json!({"messages":[],"fixture":true}),
-                ))
-                .expect("durable attempt before claim");
-            let attempt = storage::read_attempt(owner.db.db(), &finalized.snapshot.id, BUDGET)
-                .expect("reread durable attempt");
-            Self {
-                root,
-                owner,
-                finalized,
-                attempt,
-            }
-        }
-
-        fn record(&self, recorder: &AtomicUsize) -> Result<bool> {
-            record(&self.owner, &self.finalized, recorder)
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
-    }
-
-    fn record(
-        owner: &GenerationClaimOwner,
-        finalized: &FinalizedAttempt,
-        recorder: &AtomicUsize,
-    ) -> Result<bool> {
-        let claimed = owner.consume_finalized_claim(finalized, BUDGET)?;
-        if claimed {
-            // Recorder is synchronous and has no worker to cancel/join. These
-            // acquisitions prove no DB/core/profile guard spans transport.
-            assert!(owner.cancellation.try_lock().is_ok());
-            owner.db.db().with_conn(|_| Ok(()))?;
-            owner.state.profile_egress.status();
-            owner.state.ws.lifecycle_core().snapshot()?;
-            recorder.fetch_add(1, Ordering::SeqCst);
-        }
-        Ok(claimed)
-    }
-
-    fn assert_transport_guards_released(owner: &GenerationClaimOwner) -> Result<()> {
-        assert!(owner.cancellation.try_lock().is_ok());
-        owner.db.db().with_conn(|_| Ok(()))?;
-        owner.state.profile_egress.status();
-        owner.state.ws.lifecycle_core().snapshot()?;
-        Ok(())
-    }
-
-    #[test]
-    fn cancel_after_claim_before_test_start_sends_no_request_body() {
-        let fixture = Fixture::new();
-        let listener = loopback::listener().expect("loopback listener");
-        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
-
-        std::thread::scope(|scope| -> Result<()> {
-            let peer = scope.spawn(|| -> Result<()> {
-                let mut stream = loopback::accept(&listener)?;
-                let mut first_byte = [0; 1];
-                let read = stream.read(&mut first_byte)?;
-                closed_tx.send(read).expect("peer close observation");
-                Ok(())
-            });
-
-            assert!(fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            fixture.owner.cancel()?;
-            assert_transport_guards_released(&fixture.owner)?;
-            let client = loopback::connect(&listener)?;
-            assert!(!fixture.owner.begin_test_transport(&client)?);
-            drop(client);
-            assert_eq!(
-                closed_rx.recv_timeout(loopback::IO_TIMEOUT)?,
-                0,
-                "peer observed close before receiving a request byte"
-            );
-            peer.join().expect("peer thread")?;
-            let cancelled = OutputObserver::new().finish(Completion::Cancelled);
-            let terminal =
-                fixture
-                    .owner
-                    .persist_terminal(&fixture.finalized, &cancelled, None, now_ms()?)?;
-            assert!(terminal.message_version.is_none());
-            assert!(fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)
-                .is_err());
-            Ok(())
-        })
-        .expect("bounded pre-start fixture");
-
-        let attempt = storage::read_attempt(
-            fixture.owner.db.db(),
-            &fixture.finalized.snapshot.id,
-            BUDGET,
-        )
-        .expect("terminalized attempt");
-        assert!(attempt.claimed_at_ms.is_some());
-        assert!(attempt.terminal.is_some());
-        assert!(
-            storage::pending_attempt_ids(fixture.owner.db.db(), "project-1", None, 8)
-                .expect("cancelled attempt is not pending")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn loopback_observation_commits_exact_body_version_and_receipt_once() {
-        let fixture = Fixture::new();
-        let listener = loopback::listener().expect("loopback listener");
-        let expected_payload = fixture.finalized.canonical_payload.clone();
-        let text = "  本文 e\u{301}🙂\n";
-        let thinking = " 推敲中🙂 \n";
-        let expected_text = text.as_bytes().to_vec();
-        let expected_thinking = thinking.as_bytes().to_vec();
-
-        std::thread::scope(|scope| -> Result<()> {
-            let peer = scope.spawn(|| -> Result<()> {
-                let mut stream = loopback::accept(&listener)?;
-                assert_eq!(
-                    loopback::read_request(&mut stream)?,
-                    expected_payload.as_bytes(),
-                    "loopback body is the exact canonical payload"
-                );
-                loopback::write_response(&mut stream, &expected_text, &expected_thinking, 1)?;
-                Ok(())
-            });
-
-            assert!(fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            assert!(!fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            assert_transport_guards_released(&fixture.owner)?;
-
-            let mut client = loopback::connect(&listener)?;
-            assert!(fixture.owner.begin_test_transport(&client)?);
-            loopback::send_request(&mut client, expected_payload.as_bytes())?;
-            let response = loopback::read_response(&mut client)?;
-            fixture.owner.finish_test_transport()?;
-            peer.join().expect("peer thread")?;
-            loopback::assert_no_pending_connection(&listener)?;
-
-            assert!(response.saw_terminal);
-            assert!(response.peer_closed);
-            assert_eq!(response.text, expected_text);
-            assert_eq!(response.thinking, expected_thinking);
-            assert_eq!(
-                response.observation.provider_terminal,
-                Some(ProviderTerminal::Complete)
-            );
-            assert_eq!(
-                response.observation.terminal_status,
-                TerminalStatus::Succeeded
-            );
-            assert_eq!(response.observation.parse_status, ParseStatus::Parsed);
-            assert!(response.observation.response_digest.is_some());
-
-            let body = NewMessageBody {
-                message_id: "loopback-generated-output".into(),
-                content: String::from_utf8(response.text).expect("strict text UTF-8"),
-                thinking: String::from_utf8(response.thinking).expect("strict thinking UTF-8"),
-            };
-            let message_id = body.message_id.clone();
-            fixture.owner.db.db().with_conn(|conn| {
-                conn.execute_batch(
-                    "CREATE TEMP TRIGGER fail_native_generation_terminal
-                     BEFORE UPDATE OF terminal_json ON nir1_generation_attempts
-                     WHEN NEW.terminal_json IS NOT NULL
-                     BEGIN SELECT RAISE(ABORT, 'injected native terminal failure'); END;",
-                )?;
-                Ok(())
-            })?;
-            assert!(fixture
-                .owner
-                .persist_terminal(
-                    &fixture.finalized,
-                    &response.observation,
-                    Some(body.clone()),
-                    now_ms()?,
-                )
-                .is_err());
-            fixture.owner.db.db().with_conn(|conn| {
-                let body_count: i64 = conn.query_row(
-                    "SELECT count(*) FROM chat_messages WHERE id=?1",
-                    [&message_id],
-                    |row| row.get(0),
-                )?;
-                let version_count: i64 = conn.query_row(
-                    "SELECT count(*) FROM nir1_generation_message_versions WHERE message_id=?1",
-                    [&message_id],
-                    |row| row.get(0),
-                )?;
-                assert_eq!(body_count, 0);
-                assert_eq!(version_count, 0);
-                conn.execute_batch("DROP TRIGGER fail_native_generation_terminal")?;
-                Ok(())
-            })?;
-            assert!(
-                storage::read_terminal(fixture.owner.db.db(), &fixture.finalized.snapshot.id)?
-                    .is_none()
-            );
-
-            let terminal = fixture.owner.persist_terminal(
-                &fixture.finalized,
-                &response.observation,
-                Some(body),
-                now_ms()?,
-            )?;
-            let version = terminal
-                .message_version
-                .as_ref()
-                .expect("success binds immutable body version");
-            assert_eq!(version.message_id, message_id);
-            assert_eq!(
-                version.parent_attempt_id.as_deref(),
-                Some(fixture.finalized.snapshot.id.as_str())
-            );
-            assert_eq!(
-                &storage::read_message_version(fixture.owner.db.db(), &version.id)?,
-                version
-            );
-            assert_eq!(
-                storage::read_terminal(fixture.owner.db.db(), &fixture.finalized.snapshot.id)?,
-                Some(terminal.clone())
-            );
-            fixture.owner.db.db().with_conn(|conn| {
-                let (saved_text, metadata): (String, Option<String>) = conn.query_row(
-                    "SELECT content,metadata FROM chat_messages WHERE id=?1",
-                    [&message_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?;
-                assert_eq!(saved_text, text);
-                let saved_thinking: Value =
-                    serde_json::from_str(metadata.as_deref().expect("thinking metadata"))?;
-                assert_eq!(saved_thinking["thinking_blocks"][0]["thinking"], thinking);
-                Ok(())
-            })?;
-            Ok(())
-        })
-        .expect("bounded success fixture");
-
-        assert!(
-            storage::pending_attempt_ids(fixture.owner.db.db(), "project-1", None, 8)
-                .expect("success terminal removes pending attempt")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn loopback_invalid_utf8_never_publishes_a_body_even_with_terminal() {
-        let fixture = Fixture::new();
-        let listener = loopback::listener().expect("loopback listener");
-        let expected_payload = fixture.finalized.canonical_payload.clone();
-        let text = vec![0xf0, 0x28, 0x8c, 0x28];
-        let thinking = vec![0xf0, 0x28, 0x8c, 0x28];
-
-        std::thread::scope(|scope| -> Result<()> {
-            let peer = scope.spawn(|| -> Result<()> {
-                let mut stream = loopback::accept(&listener)?;
-                assert_eq!(
-                    loopback::read_request(&mut stream)?,
-                    expected_payload.as_bytes()
-                );
-                loopback::write_response(&mut stream, &text, &thinking, 1)?;
-                Ok(())
-            });
-
-            assert!(fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            assert_transport_guards_released(&fixture.owner)?;
-            let mut client = loopback::connect(&listener)?;
-            assert!(fixture.owner.begin_test_transport(&client)?);
-            loopback::send_request(&mut client, expected_payload.as_bytes())?;
-            let response = loopback::read_response(&mut client)?;
-            fixture.owner.finish_test_transport()?;
-            peer.join().expect("peer thread")?;
-            loopback::assert_no_pending_connection(&listener)?;
-
-            assert!(response.saw_terminal);
-            assert!(response.peer_closed);
-            assert_eq!(
-                response.observation.provider_terminal,
-                Some(ProviderTerminal::Complete)
-            );
-            assert_eq!(response.observation.terminal_status, TerminalStatus::Failed);
-            assert_eq!(response.observation.parse_status, ParseStatus::Invalid);
-            assert!(response.observation.response_digest.is_some());
-            assert!(String::from_utf8(response.text).is_err());
-            assert!(String::from_utf8(response.thinking).is_err());
-
-            let terminal = fixture.owner.persist_terminal(
-                &fixture.finalized,
-                &response.observation,
-                None,
-                now_ms()?,
-            )?;
-            assert!(terminal.message_version.is_none());
-            assert_eq!(
-                terminal.failure_classification,
-                Some(FailureClassification::InvalidOutput)
-            );
-            assert!(!fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            Ok(())
-        })
-        .expect("bounded invalid-output fixture");
-        assert!(
-            storage::pending_attempt_ids(fixture.owner.db.db(), "project-1", None, 8)
-                .expect("invalid terminal removes pending attempt")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn loopback_eof_without_provider_terminal_never_publishes_a_body() {
-        let fixture = Fixture::new();
-        let listener = loopback::listener().expect("loopback listener");
-        let expected_payload = fixture.finalized.canonical_payload.clone();
-        let text = b"valid text".to_vec();
-        let thinking = b"valid thinking".to_vec();
-
-        std::thread::scope(|scope| -> Result<()> {
-            let peer = scope.spawn(|| -> Result<()> {
-                let mut stream = loopback::accept(&listener)?;
-                assert_eq!(
-                    loopback::read_request(&mut stream)?,
-                    expected_payload.as_bytes()
-                );
-                loopback::write_output(&mut stream, &text, &thinking)?;
-                Ok(())
-            });
-
-            assert!(fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            assert_transport_guards_released(&fixture.owner)?;
-            let mut client = loopback::connect(&listener)?;
-            assert!(fixture.owner.begin_test_transport(&client)?);
-            loopback::send_request(&mut client, expected_payload.as_bytes())?;
-            let response = loopback::read_response(&mut client)?;
-            fixture.owner.finish_test_transport()?;
-            peer.join().expect("peer thread")?;
-            loopback::assert_no_pending_connection(&listener)?;
-
-            assert!(!response.saw_terminal);
-            assert!(response.peer_closed);
-            assert_eq!(response.observation.provider_terminal, None);
-            assert_eq!(response.observation.terminal_status, TerminalStatus::Failed);
-            assert_eq!(response.observation.parse_status, ParseStatus::Invalid);
-            assert!(response.observation.response_digest.is_some());
-            assert_eq!(response.text, text);
-            assert_eq!(response.thinking, thinking);
-
-            let terminal = fixture.owner.persist_terminal(
-                &fixture.finalized,
-                &response.observation,
-                None,
-                now_ms()?,
-            )?;
-            assert!(terminal.message_version.is_none());
-            assert_eq!(
-                terminal.failure_classification,
-                Some(FailureClassification::InvalidOutput)
-            );
-            assert!(!fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            Ok(())
-        })
-        .expect("bounded missing-terminal fixture");
-        assert!(
-            storage::pending_attempt_ids(fixture.owner.db.db(), "project-1", None, 8)
-                .expect("missing-terminal failure removes pending attempt")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn cancellation_after_claim_closes_peer_and_never_reuses_old_attempt() {
-        let fixture = Fixture::new();
-        let listener = loopback::listener().expect("loopback listener");
-        let expected_payload = fixture.finalized.canonical_payload.clone();
-        let (request_tx, request_rx) = std::sync::mpsc::channel();
-        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
-        let accepted = AtomicUsize::new(0);
-
-        std::thread::scope(|scope| -> Result<()> {
-            let peer = scope.spawn(|| -> Result<()> {
-                let mut stream = loopback::accept(&listener)?;
-                accepted.fetch_add(1, Ordering::SeqCst);
-                request_tx
-                    .send(loopback::read_request(&mut stream)?)
-                    .expect("send peer-observed request");
-                loopback::wait_for_peer_close(&mut stream)?;
-                closed_tx.send(()).expect("send peer-close observation");
-                Ok(())
-            });
-
-            assert!(fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            assert!(!fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)?);
-            assert_transport_guards_released(&fixture.owner)?;
-            let mut client = loopback::connect(&listener)?;
-            assert!(fixture.owner.begin_test_transport(&client)?);
-            loopback::send_request(&mut client, expected_payload.as_bytes())?;
-            assert_eq!(
-                request_rx.recv_timeout(loopback::IO_TIMEOUT)?,
-                expected_payload.as_bytes(),
-                "peer saw the exact body before cancellation"
-            );
-
-            fixture.owner.cancel()?;
-            closed_rx.recv_timeout(loopback::IO_TIMEOUT)?;
-            fixture.owner.finish_test_transport()?;
-            peer.join().expect("peer thread")?;
-            loopback::assert_no_pending_connection(&listener)?;
-
-            let cancelled = OutputObserver::new().finish(Completion::Cancelled);
-            let terminal =
-                fixture
-                    .owner
-                    .persist_terminal(&fixture.finalized, &cancelled, None, now_ms()?)?;
-            assert!(terminal.message_version.is_none());
-            assert_eq!(
-                terminal.failure_classification,
-                Some(FailureClassification::Cancelled)
-            );
-            assert!(fixture
-                .owner
-                .consume_finalized_claim(&fixture.finalized, BUDGET)
-                .is_err());
-            Ok(())
-        })
-        .expect("bounded cancellation fixture");
-
-        assert_eq!(accepted.load(Ordering::SeqCst), 1);
-        assert!(
-            storage::pending_attempt_ids(fixture.owner.db.db(), "project-1", None, 8)
-                .expect("cancelled terminal removes pending attempt")
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn same_handle_concurrent_native_claim_calls_recorder_once() {
-        let fixture = Fixture::new();
-        let recorder = AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            let first = scope.spawn(|| fixture.record(&recorder));
-            let second = scope.spawn(|| fixture.record(&recorder));
-            let claimed = [
-                first.join().expect("first").expect("first claim"),
-                second.join().expect("second").expect("second claim"),
-            ];
-            assert_eq!(claimed.into_iter().filter(|value| *value).count(), 1);
-        });
-        assert_eq!(recorder.load(Ordering::SeqCst), 1);
-    }
-
-    #[test]
-    fn invalidation_before_claim_never_enters_recorder() {
-        for invalidation in 0..4 {
-            let fixture = Fixture::new();
-            match invalidation {
-                0 => fixture.owner.cancel().expect("cancel"),
-                1 => fixture.owner.state.profile_egress.invalidate_callers(),
-                2 => {
-                    fixture
-                        .owner
-                        .state
-                        .ws
-                        .lifecycle_core()
-                        .begin_transition(AdmissionKind::Open)
-                        .expect("transition");
-                }
-                _ => fixture
-                    .owner
-                    .state
-                    .profile_egress
-                    .with_route_update(|| Ok(()))
-                    .expect("route update"),
-            }
-            let recorder = AtomicUsize::new(0);
-            assert!(fixture.record(&recorder).is_err());
-            assert_eq!(recorder.load(Ordering::SeqCst), 0);
-            assert!(
-                storage::read_attempt(fixture.owner.db.db(), &fixture.attempt.id, BUDGET)
-                    .expect("still pending")
-                    .claimed_at_ms
-                    .is_none()
-            );
-        }
-    }
-
-    #[test]
-    fn pending_db_wait_can_be_cancelled_before_claim() {
-        let fixture = Fixture::new();
-        let recorder = AtomicUsize::new(0);
-        std::thread::scope(|scope| {
-            fixture
-                .owner
-                .db
-                .db()
-                .with_conn(|_| {
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let fixture = &fixture;
-                    let recorder = &recorder;
-                    let worker = scope.spawn(move || {
-                        tx.send(()).expect("announce pending worker");
-                        fixture.record(recorder)
-                    });
-                    rx.recv_timeout(std::time::Duration::from_secs(5))
-                        .expect("worker queued");
-                    fixture.owner.cancel().expect("cancel does not wait on DB");
-                    Ok(worker)
-                })
-                .expect("release DB before joining")
-                .join()
-                .expect("worker")
-                .expect_err("cancel wins");
-        });
-        assert_eq!(recorder.load(Ordering::SeqCst), 0);
-    }
-
-    #[test]
-    fn committed_claim_is_never_reused_and_terminal_save_survives_closed_admissions() {
-        let fixture = Fixture::new();
-        let payload: Value =
-            serde_json::from_str(&fixture.finalized.canonical_payload).expect("canonical payload");
-        assert_eq!(
-            canonical_json_string(&payload).expect("canonical payload bytes"),
-            fixture.finalized.canonical_payload
-        );
-        assert_eq!(
-            final_payload_digest(&payload).expect("payload digest"),
-            fixture.finalized.snapshot.payload_digest
-        );
-        assert!(fixture
-            .owner
-            .consume_finalized_claim(&fixture.finalized, BUDGET)
-            .expect("durable claim"));
-        // Crash between claim and actual send is conservatively consumed.
-        assert!(!fixture
-            .owner
-            .consume_finalized_claim(&fixture.finalized, BUDGET)
-            .expect("no resend"));
-        fixture
-            .owner
-            .state
-            .profile_egress
-            .begin_startup_barrier()
-            .expect("profile stop");
-        fixture
-            .owner
-            .state
-            .ws
-            .lifecycle_core()
-            .request_shutdown()
-            .expect("workspace stop");
-        fixture
-            .owner
-            .persist_terminal(
-                &fixture.finalized,
-                &OutputObserver::new().finish(Completion::Cancelled),
-                None,
-                now_ms().expect("clock"),
-            )
-            .expect("existing owner terminal save");
-        assert!(
-            storage::read_terminal(fixture.owner.db.db(), &fixture.finalized.snapshot.id)
-                .expect("terminal")
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn recovery_terminalizes_fixed_attempt_without_resend() {
-        let fixture = Fixture::new();
-        assert!(fixture
-            .owner
-            .consume_finalized_claim(&fixture.finalized, BUDGET)
-            .expect("durable claim"));
-        let terminal = fixture
-            .owner
-            .recover_terminal(&fixture.finalized, now_ms().expect("clock"))
-            .expect("recover exact attempt");
-        assert_eq!(
-            terminal.failure_classification,
-            Some(FailureClassification::InterruptedUnknown)
-        );
-        assert_eq!(
-            terminal.payload_digest,
-            fixture.finalized.snapshot.payload_digest
-        );
-        assert!(!fixture
-            .owner
-            .consume_finalized_claim(&fixture.finalized, BUDGET)
-            .expect("terminal blocks old handle"));
-    }
-
-    #[test]
-    fn mutated_private_pairing_is_rejected_before_claim() {
-        let fixture = Fixture::new();
-
-        let mut tampered_payload = fixture.finalized.clone();
-        tampered_payload.canonical_payload = r#"{"fixture":false,"messages":[]}"#.into();
-        assert!(fixture
-            .owner
-            .consume_finalized_claim(&tampered_payload, BUDGET)
-            .is_err());
-
-        let mut tampered_inputs = fixture.finalized.clone();
-        tampered_inputs.snapshot.input_digest =
-            canonical_json_digest(&serde_json::json!("different-inputs")).expect("digest");
-        assert!(fixture
-            .owner
-            .consume_finalized_claim(&tampered_inputs, BUDGET)
-            .is_err());
-        assert!(storage::read_attempt(
-            fixture.owner.db.db(),
-            &fixture.finalized.snapshot.id,
-            BUDGET
-        )
-        .expect("unchanged attempt")
-        .claimed_at_ms
-        .is_none());
-    }
-
-    #[test]
-    fn same_binding_attempt_swap_is_rejected_for_claim_and_terminal_paths() {
-        let fixture = Fixture::new();
-        let other = fixture
-            .owner
-            .persist_final_request(final_request(
-                &fixture.owner,
-                serde_json::json!({"messages":[],"fixture":false}),
-            ))
-            .expect("second same-binding attempt");
-
-        let mut swapped = fixture.finalized.clone();
-        swapped.snapshot.id = other.snapshot.id.clone();
-        let observation = OutputObserver::new().finish(Completion::Cancelled);
-
-        assert!(fixture
-            .owner
-            .consume_finalized_claim(&swapped, BUDGET)
-            .is_err());
-        assert!(fixture
-            .owner
-            .persist_terminal(&swapped, &observation, None, now_ms().expect("clock"))
-            .is_err());
-        assert!(fixture
-            .owner
-            .recover_terminal(&swapped, now_ms().expect("clock"))
-            .is_err());
-        let current = storage::read_attempt(fixture.owner.db.db(), &other.snapshot.id, BUDGET)
-            .expect("other attempt");
-        assert!(current.claimed_at_ms.is_none());
-        assert!(current.terminal.is_none());
-    }
 
     fn recovery_attempt(ordinal: usize) -> NewAttempt {
         recovery_attempt_for("recovery-project", "recovery-session", ordinal)
@@ -2705,8 +1496,17 @@ mod tests {
             .expect("capture recovery coordinator")
             .expect("trusted reopened coordinator");
         let db = Arc::clone(&coordinator.workspace.authority);
+        // This test pins keyset paging, not timing. Keep the production page
+        // and item cutoffs but give the ~260 bounded operations of an
+        // unoptimized build on a loaded CI runner room under the time cutoffs
+        // (the 250 ms per-operation limit elapsed there once).
+        let paging_limits = GenerationRecoveryLimits {
+            time: Duration::from_secs(120),
+            operation_time: Duration::from_secs(10),
+            ..GenerationRecoveryLimits::SAFETY_LIMITS
+        };
         let summary = coordinator
-            .recover_all_pending_attempts()
+            .recover_all_pending_attempts_with_limits(paging_limits)
             .expect("recover complete all-project sweep");
 
         assert_eq!(summary.project_pages, 3);
@@ -3337,11 +2137,11 @@ mod tests {
             Arc::clone(&state),
             ready_revision_b,
         ));
-        run_generation_recovery_after_ready(
+        drop(run_generation_recovery_after_ready(
             Arc::clone(&state),
             binding_b.clone(),
             ready_revision_b,
-        );
+        ));
         assert_eq!(
             recovery_hook_state(&state, &binding_b),
             Some(GenerationRecoveryHookState::Complete)
@@ -4095,12 +2895,13 @@ mod tests {
         let worker_state = Arc::clone(&state);
         let worker_binding = binding_a.clone();
         let worker = spawn_generation_recovery(move || {
-            run_generation_recovery_after_ready(
+            let proof = run_generation_recovery_after_ready(
                 Arc::clone(&worker_state),
                 worker_binding,
                 revision_a,
             );
             observe_generation_recovery_completion_probe(&worker_state);
+            proof
         });
         tail_rx
             .recv_timeout(Duration::from_secs(2))
@@ -4247,8 +3048,8 @@ mod tests {
         let recovery = startup_gate(state)
             .begin_recovery(&binding, revision, Duration::ZERO)
             .expect("exact Ready entry recovery");
-        assert!(recovery.record_complete_sweep());
-        assert!(startup_gate(state).open_after_joined_sweep(&binding, revision));
+        let proof = recovery.record_complete_sweep().expect("sweep proof");
+        assert!(startup_gate(state).open_after_joined_sweep(proof));
         (binding, revision)
     }
 
@@ -4368,7 +3169,7 @@ mod tests {
                 .is_none(),
             "the incomplete Ready entry is consumed"
         );
-        assert!(!open_startup_gate_after_join(&state, &binding, revision));
+        assert!(startup_gate(&state).try_lease_for_binding(&binding).is_none());
 
         active_workspace_snapshot(&state.ws)
             .expect("Ready workspace")
@@ -4439,8 +3240,10 @@ mod tests {
             .try_lease(&binding_a, revision_a)
             .is_none());
         assert!(
-            !open_startup_gate_after_join(&state, &binding_a, revision_a),
-            "a stale owner cannot open the current gate"
+            startup_gate(&state)
+                .begin_recovery(&binding_a, revision_a, Duration::ZERO)
+                .is_none(),
+            "a stale entry can no longer be swept or opened"
         );
         assert!(startup_gate(&state).is_open_for(&binding_b, revision_b));
         let db = active_workspace_snapshot(&state.ws).expect("B workspace");
@@ -4758,12 +3561,508 @@ mod tests {
         assert!(startup_gate(&state)
             .try_lease(&restored_binding, restored_revision)
             .is_none());
-        assert!(!open_startup_gate_after_join(
-            &state,
-            &restored_binding,
-            restored_revision
-        ));
+        assert!(startup_gate(&state)
+            .begin_recovery(&restored_binding, restored_revision, Duration::ZERO)
+            .is_none());
         drop(backend);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// Hold a C-query style quarantine of the exact Ready workspace (a
+    /// revision-only Core change) until the returned value drops.
+    fn quarantine_ready_workspace(state: &AppState) -> storage::Nir1WorkspaceQuarantineForTest {
+        storage::quarantine_workspace_for_test(
+            active_workspace_snapshot(&state.ws).expect("Ready workspace"),
+        )
+        .expect("quarantine of the identity-bearing Ready binding")
+    }
+
+    /// R1 + R3 (P3(b)): revision-only Core changes (quarantine set/release and
+    /// a background descriptor completion) while the sweep is paused neither
+    /// make the sweep Incomplete nor keep the gate Closed; the hook given a
+    /// later view revision schedules the gate's exact entry.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r1_revision_only_changes_before_join_still_open_the_exact_entry() {
+        let (root_w1, _) = recovery_workspace(0);
+        let (root, attempts) = recovery_workspace(1);
+        let state = Arc::new(
+            AppState::new(
+                root.join("native-app").to_str().expect("app path"),
+                root.join("resources").to_str().expect("resources path"),
+            )
+            .expect("native state"),
+        );
+        let adapter = &state.workspace_lifecycle;
+        let authority = |path: &Path| {
+            let db = grimodex_db::Database::new(&path.join("grimodex.db")).expect("database");
+            db.migrate().expect("schema");
+            WorkspaceAuthority::from_database_for_test(db, path.to_path_buf()).expect("authority")
+        };
+        // W1 becomes a background recovery descriptor; W2 (with the pending
+        // attempt) is the active Ready entry.
+        *state.ws.inner.lock().expect("workspace") =
+            Some(ActiveWorkspace::new(authority(&root_w1)));
+        adapter.ensure_authority_ready(&state.ws).expect("W1 Ready");
+        adapter.begin_transition().expect("W1 transition");
+        adapter
+            .publish_recovery_required(&state.ws)
+            .expect("W1 descriptor");
+        let descriptor_id = match adapter.lifecycle_snapshot().expect("snapshot").state {
+            LifecycleState::RecoveryRequired { descriptor_id } => descriptor_id,
+            state => panic!("expected the W1 descriptor, got {state:?}"),
+        };
+        *state.ws.inner.lock().expect("workspace") = Some(ActiveWorkspace::new(authority(&root)));
+        adapter.begin_transition().expect("W2 transition");
+        adapter
+            .complete_transition_from_workspace(&state.ws)
+            .expect("W2 Ready");
+        let (binding, entry_revision) = current_ready(&state);
+        assert!(startup_gate(&state).awaits_recovery_for(&binding, entry_revision));
+
+        // A quarantine set and release before the hook: the view the hook
+        // receives is newer than the entry.
+        drop(quarantine_ready_workspace(&state));
+        let view_revision = current_ready(&state).1;
+        assert!(view_revision > entry_revision);
+        assert_eq!(
+            ready_entry_for_view(&state, &binding, entry_revision - 1, view_revision),
+            None,
+            "a view older than the entry is stale"
+        );
+        let (reached_tx, reached_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        *state
+            .nir1_generation_recovery_worker_probe
+            .lock()
+            .expect("worker probe") = Some((reached_tx, release_rx));
+        assert!(start_generation_recovery_after_ready(
+            Arc::clone(&state),
+            view_revision
+        ));
+        assert_eq!(
+            state
+                .nir1_generation_recovery_statuses
+                .lock()
+                .expect("ledger")
+                .entry
+                .as_ref()
+                .map(|entry| entry.ready_revision),
+            Some(entry_revision),
+            "the hook schedules the gate's exact entry"
+        );
+        reached_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker paused before capture");
+
+        // Between Ready and Join: quarantine set/release and a background
+        // descriptor completion for W1. None of them is a lifecycle edge.
+        drop(quarantine_ready_workspace(&state));
+        let background = adapter
+            .begin_recovery_transition(descriptor_id, &state.ws)
+            .expect("background recovery admission")
+            .0;
+        assert_eq!(
+            background.status,
+            crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::Ready
+        );
+        adapter
+            .mark_current_transition_joined()
+            .expect("background Join");
+        adapter
+            .complete_transition_from_workspace(&state.ws)
+            .expect("complete background recovery");
+        let (after_binding, after_revision) = current_ready(&state);
+        assert_eq!(after_binding, binding);
+        assert!(after_revision > view_revision);
+        assert!(same_ready_entry(&state, &binding, entry_revision));
+        release_tx.send(()).expect("release the worker");
+
+        wait_startup_gate_open(&state, &binding, entry_revision).await;
+        wait_recovery_joined(&state).await;
+        assert_eq!(
+            recovery_hook_state(&state, &binding),
+            Some(GenerationRecoveryHookState::Complete)
+        );
+        let lease = startup_gate(&state)
+            .try_lease_for_binding(&binding)
+            .expect("a binding lease after revision-only changes");
+        assert_eq!(lease.entry_revision(), entry_revision);
+        drop(lease);
+        let db = active_workspace_snapshot(&state.ws).expect("W2 workspace");
+        assert!(storage::read_terminal(db.db(), &attempts[0].id)
+            .expect("terminal read")
+            .is_some());
+        drop(db);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+        std::fs::remove_dir_all(root_w1).expect("W1 cleanup");
+    }
+
+    /// R2 (P3(b)): a quarantine after Open refuses new participants; after its
+    /// release the same entry still issues leases (no sweep is needed).
+    #[test]
+    fn r2_quarantine_after_open_refuses_participants_until_release() {
+        let (root, _) = recovery_workspace(0);
+        let state = reopened_recovery_state(&root);
+        let (binding, entry_revision) = publish_new_ready_entry(&state, AdmissionKind::Open);
+        assert!(sweep_and_open_ready_entry_for_test(&state));
+        assert!(startup_gate(&state).is_open_for(&binding, entry_revision));
+        let quarantine = quarantine_ready_workspace(&state);
+        assert!(state
+            .ws
+            .lifecycle_core()
+            .begin_workspace_participant()
+            .is_err());
+        assert!(
+            startup_gate(&state).is_open_for(&binding, entry_revision),
+            "a revision-only change is not an edge"
+        );
+        drop(quarantine);
+        let core_revision = current_ready(&state).1;
+        assert!(core_revision > entry_revision);
+        drop(
+            state
+                .ws
+                .lifecycle_core()
+                .begin_workspace_participant()
+                .expect("participants after the release"),
+        );
+        let lease = startup_gate(&state)
+            .try_lease_for_binding(&binding)
+            .expect("the same entry issues a lease");
+        assert!(lease.is_current());
+        assert!(same_ready_entry(&state, &binding, entry_revision));
+        assert!(!same_ready_entry(&state, &binding, core_revision));
+        drop(lease);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// R4 (P3(a)): the Ready publisher runs off the runtime thread, so a
+    /// lease held by a task on a current-thread runtime drops before the
+    /// drain limit. Called on the runtime thread itself, the same drain times
+    /// out and publishes RecoveryRequired.
+    #[test]
+    fn r4_off_runtime_publisher_lets_a_runtime_lease_holder_drop() {
+        for off_runtime in [true, false] {
+            let (root, _) = recovery_workspace(0);
+            let state = reopened_recovery_state(&root);
+            let (binding, revision) = open_startup_gate_for_current_ready(&state);
+            let runtime = napi::tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+                .expect("current-thread runtime");
+            let status = runtime.block_on(async {
+                let lease = startup_gate(&state)
+                    .try_lease(&binding, revision)
+                    .expect("lease held by a runtime task");
+                admitted_ticket(
+                    state
+                        .workspace_lifecycle
+                        .try_begin_transition_kind(AdmissionKind::Restore)
+                        .expect("admission"),
+                );
+                let holder = napi::tokio::spawn(async move {
+                    napi::tokio::time::sleep(Duration::from_millis(20)).await;
+                    drop(lease);
+                });
+                let started = Instant::now();
+                let view = if off_runtime {
+                    crate::publish_workspace_lifecycle_from_workspace_off_runtime(&state)
+                        .await
+                        .expect("publication")
+                } else {
+                    crate::publish_workspace_lifecycle_from_workspace(&state).expect("publication")
+                };
+                let elapsed = started.elapsed();
+                holder.await.expect("holder");
+                if off_runtime {
+                    assert!(elapsed < NIR1_STARTUP_LEASE_DRAIN_LIMIT, "{elapsed:?}");
+                }
+                view.status
+            });
+            assert_eq!(
+                status,
+                if off_runtime {
+                    crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::Ready
+                } else {
+                    crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::RecoveryRequired
+                },
+                "off_runtime={off_runtime}"
+            );
+            drop(state);
+            std::fs::remove_dir_all(root).expect("cleanup");
+        }
+    }
+
+    /// R5 (P3(c)): a worker that recorded its sweep proof and is paused before
+    /// returning cannot open a newer entry; the pending entry opens after the
+    /// Join with its own proof.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r5_a_recorded_proof_cannot_open_a_newer_entry() {
+        let (root, attempts) = recovery_workspace(1);
+        let state = reopened_recovery_state(&root);
+        let (binding_a, revision_a) = current_ready(&state);
+        let (tail_tx, tail_rx) = mpsc::channel();
+        let (tail_release_tx, tail_release_rx) = mpsc::channel();
+        *state
+            .nir1_generation_recovery_completion_probe
+            .lock()
+            .expect("tail probe") = Some((tail_tx, tail_release_rx));
+        assert!(start_generation_recovery_after_ready(
+            Arc::clone(&state),
+            revision_a
+        ));
+        tail_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("A recorded its sweep and paused before returning the proof");
+        assert_eq!(
+            recovery_hook_state(&state, &binding_a),
+            Some(GenerationRecoveryHookState::Complete)
+        );
+        let (binding_b, revision_b) = publish_new_ready_entry(&state, AdmissionKind::Restore);
+        assert!(!start_generation_recovery_after_ready(
+            Arc::clone(&state),
+            revision_b
+        ));
+        tail_release_tx.send(()).expect("release A");
+        wait_startup_gate_open(&state, &binding_b, revision_b).await;
+        wait_recovery_joined(&state).await;
+        assert!(!startup_gate(&state).is_open_for(&binding_a, revision_a));
+        assert!(startup_gate(&state).is_open_for(&binding_b, revision_b));
+        let db = active_workspace_snapshot(&state.ws).expect("B workspace");
+        assert!(storage::read_terminal(db.db(), &attempts[0].id)
+            .expect("terminal read")
+            .is_some());
+        drop(db);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    type HeldConnection = Arc<std::sync::Mutex<Option<(mpsc::Sender<()>, thread::JoinHandle<()>)>>>;
+
+    /// Hold the workspace connection mutex on another thread until the
+    /// returned sender fires (at most 10 s).
+    fn hold_connection_mutex(
+        authority: &grimodex_db::PinnedWorkspaceDb,
+    ) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let holder = Arc::clone(authority);
+        let worker = thread::spawn(move || {
+            holder
+                .db()
+                .with_conn(|_| {
+                    held_tx.send(()).expect("announce the held mutex");
+                    let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                    Ok(())
+                })
+                .expect("mutex holder");
+        });
+        held_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("connection mutex held");
+        (release_tx, worker)
+    }
+
+    fn release_held_connection(held: &HeldConnection) {
+        if let Some((release, holder)) = held.lock().expect("holder").take() {
+            release.send(()).expect("release the mutex");
+            holder.join().expect("mutex holder joined");
+        }
+    }
+
+    /// Before the first recovery try, hold the connection mutex; before the
+    /// try numbered `release_before` (if any), release it again. `on_try`
+    /// runs after that. Returns the last try number seen and the holder.
+    fn install_busy_recovery_probe(
+        state: &AppState,
+        release_before: Option<usize>,
+        on_try: impl Fn(usize) + Send + 'static,
+    ) -> (Arc<std::sync::atomic::AtomicUsize>, HeldConnection) {
+        let authority = Arc::clone(
+            active_workspace_snapshot(&state.ws)
+                .expect("Ready workspace")
+                .db(),
+        );
+        let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let held: HeldConnection = Arc::new(std::sync::Mutex::new(None));
+        let probe_tries = Arc::clone(&tries);
+        let probe_held = Arc::clone(&held);
+        *state
+            .nir1_generation_recovery_try_probe
+            .lock()
+            .expect("try probe") = Some(Box::new(move |try_number| {
+            probe_tries.store(try_number, Ordering::SeqCst);
+            if try_number == 1 {
+                *probe_held.lock().expect("holder") = Some(hold_connection_mutex(&authority));
+            } else if Some(try_number) == release_before {
+                release_held_connection(&probe_held);
+            }
+            on_try(try_number);
+        }));
+        (tries, held)
+    }
+
+    /// R6 (DT-2 P3): a recovery write that only timed out on the connection
+    /// mutex is tried again inside the sweep budget. A hold that outlasts the
+    /// mutex limit but ends before the next try no longer leaves the entry's
+    /// startup gate Closed: the sweep completes and the gate opens.
+    #[test]
+    fn r6_sweep_retries_a_connection_busy_recovery_and_opens_the_gate() {
+        let (root, attempts) = recovery_workspace(1);
+        let state = reopened_recovery_state(&root);
+        let (binding, revision) = publish_new_ready_entry(&state, AdmissionKind::Open);
+        let (tries, held) = install_busy_recovery_probe(&state, Some(2), |_| {});
+        let started = Instant::now();
+        assert!(
+            sweep_and_open_ready_entry_for_test(&state),
+            "the retried sweep completes and opens the gate"
+        );
+        let elapsed = started.elapsed();
+        release_held_connection(&held);
+        assert_eq!(
+            tries.load(Ordering::SeqCst),
+            2,
+            "one ConnectionBusy try, then the recovery"
+        );
+        assert!(
+            elapsed >= storage::NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT,
+            "{elapsed:?}"
+        );
+        assert!(startup_gate(&state).is_open_for(&binding, revision));
+        let db = active_workspace_snapshot(&state.ws).expect("workspace");
+        let terminal = storage::read_terminal(db.db(), &attempts[0].id)
+            .expect("terminal read")
+            .expect("recovered attempt");
+        assert_eq!(
+            terminal.failure_classification,
+            Some(FailureClassification::InterruptedUnknown)
+        );
+        drop(db);
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// R6 (DT-2 P3): the tries are finite and stay inside the sweep. After
+    /// `MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS` mutex timeouts the sweep is
+    /// incomplete with a typed reason and nothing is terminalized; a sweep
+    /// deadline too short for the last try stops them earlier. A fresh owner
+    /// recovers the attempt once the mutex is free.
+    #[test]
+    fn r6_connection_busy_tries_are_bounded_by_count_and_sweep_deadline() {
+        let (root, attempts) = recovery_workspace(1);
+        let state = reopened_recovery_state(&root);
+        let pending = |state: &AppState| {
+            let db = active_workspace_snapshot(&state.ws).expect("workspace");
+            storage::read_terminal(db.db(), &attempts[0].id)
+                .expect("terminal read")
+                .is_none()
+        };
+
+        let (tries, held) = install_busy_recovery_probe(&state, None, |_| {});
+        let owner = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+            .expect("capture")
+            .expect("ready owner");
+        let started = Instant::now();
+        let error = owner
+            .recover_all_pending_attempts()
+            .expect_err("exhausted tries leave the sweep incomplete");
+        let elapsed = started.elapsed();
+        release_held_connection(&held);
+        assert_eq!(
+            tries.load(Ordering::SeqCst),
+            MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("NIR1_GENERATION_RECOVERY_CONNECTION_BUSY_LIMIT"),
+            "{error:#}"
+        );
+        assert!(storage::is_recovery_connection_busy(&error), "{error:#}");
+        let tries_u32 = u32::try_from(MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS).expect("tries");
+        assert!(
+            elapsed >= storage::NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT * tries_u32,
+            "{elapsed:?}"
+        );
+        assert!(elapsed < MAX_RECOVERY_SWEEP_TIME, "{elapsed:?}");
+        assert!(pending(&state));
+
+        // 1.5 mutex limits of sweep time leave no room for a third try.
+        let (tries, held) = install_busy_recovery_probe(&state, None, |_| {});
+        let owner = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+            .expect("capture")
+            .expect("ready owner");
+        let limits = GenerationRecoveryLimits {
+            time: storage::NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT * 3 / 2,
+            ..GenerationRecoveryLimits::SAFETY_LIMITS
+        };
+        let started = Instant::now();
+        let error = owner
+            .recover_all_pending_attempts_with_limits(limits)
+            .expect_err("the sweep deadline leaves the sweep incomplete");
+        let elapsed = started.elapsed();
+        release_held_connection(&held);
+        assert!(
+            tries.load(Ordering::SeqCst) < MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS,
+            "the sweep deadline stopped the tries"
+        );
+        assert!(
+            !error
+                .to_string()
+                .contains("NIR1_GENERATION_RECOVERY_CONNECTION_BUSY_LIMIT"),
+            "{error:#}"
+        );
+        assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
+        assert!(pending(&state));
+
+        *state
+            .nir1_generation_recovery_try_probe
+            .lock()
+            .expect("try probe") = None;
+        let summary = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+            .expect("capture")
+            .expect("fresh owner")
+            .recover_all_pending_attempts()
+            .expect("a fresh owner recovers once the mutex is free");
+        assert_eq!(summary.recovered, 1);
+        assert!(!pending(&state));
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// R6 (DT-2 P3): a shutdown requested before a retried try is observed by
+    /// that try's mutex wait; the tries stop and the sweep is incomplete
+    /// without a busy reason.
+    #[test]
+    fn r6_shutdown_stops_connection_busy_tries() {
+        let (root, attempts) = recovery_workspace(1);
+        let state = reopened_recovery_state(&root);
+        let core = state.ws.lifecycle_core();
+        let (tries, held) = install_busy_recovery_probe(&state, None, move |try_number| {
+            if try_number == 2 {
+                core.request_shutdown().expect("shutdown");
+            }
+        });
+        let owner = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+            .expect("capture")
+            .expect("ready owner");
+        let started = Instant::now();
+        let error = owner
+            .recover_all_pending_attempts()
+            .expect_err("shutdown leaves the sweep incomplete");
+        let elapsed = started.elapsed();
+        release_held_connection(&held);
+        assert_eq!(tries.load(Ordering::SeqCst), 2);
+        assert!(!storage::is_recovery_connection_busy(&error), "{error:#}");
+        assert!(elapsed < Duration::from_secs(1), "{elapsed:?}");
+        let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("database");
+        assert!(storage::read_terminal(&db, &attempts[0].id)
+            .expect("terminal read")
+            .is_none());
+        drop(db);
         drop(state);
         std::fs::remove_dir_all(root).expect("cleanup");
     }
