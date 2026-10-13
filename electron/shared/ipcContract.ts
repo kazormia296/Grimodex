@@ -259,6 +259,8 @@ export const IPC = {
   fsReadDir: "grim:fs-read-dir",
   openExternal: "grim:open-external",
   getVersion: "grim:get-version",
+  /** 起動時 GPU 状態から WebGL2 が blocklist／無効化で確定しているかを返す（boolean）。 */
+  getWebGl2GpuBlocked: "grim:get-webgl2-gpu-blocked",
   setZoomFactor: "grim:set-zoom-factor",
   /** パネル別窓（§6.5）。main 側実装は S7（S4 は IPC_UNIMPLEMENTED スタブ）。 */
   panelOpen: "grim:panel-open",

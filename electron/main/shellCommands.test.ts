@@ -30,9 +30,15 @@ const openPathMock = vi.fn(() => Promise.resolve(""));
 const showOpenDialogMock = vi.fn();
 const showSaveDialogMock = vi.fn();
 const fromWebContentsMock = vi.fn();
+const gpuFeatureStatusMock = vi.fn<() => Record<string, string>>(() => ({
+  webgl2: "enabled",
+}));
 
 vi.mock("electron", () => ({
-  app: { getVersion: () => "1.0.0-test" },
+  app: {
+    getVersion: () => "1.0.0-test",
+    getGPUFeatureStatus: () => gpuFeatureStatusMock(),
+  },
   dialog: {
     showOpenDialog: showOpenDialogMock,
     showSaveDialog: showSaveDialogMock,
@@ -600,6 +606,20 @@ describe("setZoomFactor / getVersion / panelWindow スタブ", () => {
   it("getVersion は app.getVersion() を返す", async () => {
     const env = await invokeBridge(IPC.getVersion, { sender: {} });
     expect(env).toEqual({ ok: true, value: "1.0.0-test" });
+  });
+
+  it("getWebGl2GpuBlocked は GPU 機能状態から blocklist の確定だけを boolean で返す", async () => {
+    gpuFeatureStatusMock.mockReturnValueOnce({ webgl2: "unavailable_off" });
+    expect(await invokeBridge(IPC.getWebGl2GpuBlocked, { sender: {} })).toEqual(
+      { ok: true, value: true },
+    );
+
+    gpuFeatureStatusMock.mockReturnValueOnce({
+      webgl2: "unavailable_software",
+    });
+    expect(await invokeBridge(IPC.getWebGl2GpuBlocked, { sender: {} })).toEqual(
+      { ok: true, value: false },
+    );
   });
 
   it("panelWindow は S7 まで IPC_UNIMPLEMENTED スタブ", async () => {

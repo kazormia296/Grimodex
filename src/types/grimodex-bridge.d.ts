@@ -95,6 +95,8 @@ export interface GrimodexBridge {
   };
   openExternal(url: string): Promise<void>;
   getVersion(): Promise<string>;
+  /** WebGL2 が GPU blocklist／無効化で確定している場合 true（不明は false）。 */
+  getWebGl2GpuBlocked(): Promise<boolean>;
   setZoomFactor(factor: number): Promise<void>;
   panelWindow: {
     open(

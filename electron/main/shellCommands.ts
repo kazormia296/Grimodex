@@ -38,6 +38,7 @@ import type {
 import { readUtf8FileWithLimit } from "./boundedFileRead.js";
 import { FsScope } from "./fsScope.js";
 import type { ProfileEgressGate } from "./profileEgress.js";
+import { isWebGl2GpuBlocked } from "./webgl2GpuStatus.js";
 
 // 64 MiB SQLite payloadはbase64で約85.34 MiBになる。最大メタデータを含む
 // version 1 JSONを許容しつつ、main/renderer双方の文字列・JSON parseを固定上限にする。
@@ -910,6 +911,10 @@ export function registerShellBridgeHandlers(
   });
 
   handleWithEnvelope(IPC.getVersion, () => resolveAppVersion());
+
+  handleWithEnvelope(IPC.getWebGl2GpuBlocked, () =>
+    isWebGl2GpuBlocked(app.getGPUFeatureStatus()),
+  );
 
   handleWithEnvelope(IPC.setZoomFactor, (event, factor) => {
     event.sender.setZoomFactor(clampZoomFactor(factor));

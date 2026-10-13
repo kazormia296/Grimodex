@@ -233,6 +233,8 @@ const bridge = {
 
   getVersion: (): Promise<string> => call(IPC.getVersion),
 
+  getWebGl2GpuBlocked: (): Promise<boolean> => call(IPC.getWebGl2GpuBlocked),
+
   setZoomFactor: (factor: number): Promise<void> =>
     call(IPC.setZoomFactor, factor),
 
