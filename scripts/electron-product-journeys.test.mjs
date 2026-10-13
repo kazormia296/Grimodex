@@ -53,14 +53,23 @@ import {
   readNarrativeMaintenanceCiHeldFreshness,
   narrativeMaintenanceReceiptRoot,
   MAIN_PROCESS_NOISE_ALLOWLIST,
+  ProductJourneyOperationTimeoutError,
   runWithLaneWatchdog,
+  timeoutAbortReason,
   waitUntil,
   withOperationTimeout,
 } from "../electron/scripts/product-journey-harness.mjs";
 import {
+  assertSingleCreatedNode,
+  awaitCreatedNodes,
+  clickCreateMenuItem,
   configureWorkspace,
+  createFolderScopeAnchor,
+  createFolderThroughUi,
+  createSceneThroughUi,
   PRODUCT_JOURNEYS,
   runProductJourneys,
+  selectCreatedNodes,
   selectPersistedFolderScopeAnchor,
 } from "../electron/scripts/product-journeys.mjs";
 import {
@@ -87,6 +96,510 @@ test("folder scope anchor waits for the new folder's persisted rename", () => {
     id: "new-folder",
     title,
   });
+});
+
+// A click that Playwright reports as failed can still have been handled by the
+// app, which then has created the node. Repeating the click creates a second
+// node whose create entry stays in the undo history. These tests drive the real
+// helpers with fake Playwright and harness objects; no Electron is started.
+
+function clickTimeout() {
+  return new Error(
+    "locator.click: Timeout 5000ms exceeded.\nCall log:\n  - waiting for getByRole('menuitem')",
+  );
+}
+
+/** A clock whose sleeps advance time by exactly the requested amount. */
+function fakeClock() {
+  let time = 0;
+  return {
+    now: () => time,
+    sleep: async (ms) => {
+      time += ms;
+    },
+  };
+}
+
+const OPEN_CREATE_MENU = 'open button[title="新規作成"]';
+
+function createMenuFakes(clickResults) {
+  const results = [...clickResults];
+  const calls = [];
+  return {
+    calls,
+    header: {
+      locator: (selector) => ({
+        click: async () => {
+          calls.push(`open ${selector}`);
+        },
+      }),
+    },
+    page: {
+      getByRole: (role, { name }) => ({
+        click: async ({ timeout }) => {
+          calls.push(`click ${role} ${name} ${timeout}`);
+          const result = results.shift();
+          if (result instanceof Error) throw result;
+        },
+      }),
+      keyboard: {
+        press: async (key) => {
+          calls.push(`press ${key}`);
+        },
+      },
+    },
+  };
+}
+
+/**
+ * Just enough of the scenes panel and of the db_execute bridge for the create
+ * helpers. Every menu item click creates a node, like the real app;
+ * `afterMenuItemClick` can then make that click fail or create more nodes.
+ */
+function createFakeTreeUi({
+  existing = [],
+  afterMenuItemClick = () => undefined,
+  onEditorLoaded = () => undefined,
+  renameInputVisible = false,
+} = {}) {
+  const nodes = existing.map((node) => ({
+    projectId: "project-1",
+    title: "",
+    content: "",
+    ...node,
+  }));
+  const calls = [];
+  let created = 0;
+  const addNode = (nodeType) => {
+    created += 1;
+    const node = {
+      id: `${nodeType}-created-${created}`,
+      nodeType,
+      projectId: "project-1",
+      title: nodeType === "scene" ? "シーン 2" : "Part.1",
+      content: "",
+    };
+    nodes.push(node);
+    return node;
+  };
+  let typedTitle = null;
+  const renameInput = {
+    waitFor: async () => {
+      if (!renameInputVisible) throw new Error("rename input is not visible");
+    },
+    fill: async (value) => {
+      typedTitle = value;
+    },
+    press: async () => {
+      if (typedTitle !== null) nodes.at(-1).title = typedTitle;
+    },
+  };
+  const editorSurface = {
+    waitFor: async () => {
+      await onEditorLoaded({ addNode });
+    },
+    locator: () => ({ first: () => ({ waitFor: async () => undefined }) }),
+  };
+  const header = {
+    waitFor: async () => undefined,
+    locator: () => ({
+      click: async () => {
+        calls.push("open-menu");
+      },
+    }),
+  };
+  let clicks = 0;
+  const page = {
+    locator(selector) {
+      if (selector.startsWith("[data-panel-header]")) return header;
+      if (selector.includes('data-droptarget-id="scenes-panel"')) {
+        return renameInput;
+      }
+      if (selector.includes("data-editor-loaded-document-id")) {
+        return { last: () => editorSurface };
+      }
+      throw new Error(`unexpected selector ${selector}`);
+    },
+    getByRole: (_role, { name }) => ({
+      click: async () => {
+        clicks += 1;
+        calls.push(`click ${name}`);
+        const node = addNode(name === "New scene" ? "scene" : "folder");
+        await afterMenuItemClick({ clickIndex: clicks, node, addNode });
+      },
+    }),
+    keyboard: {
+      press: async (key) => {
+        calls.push(`press ${key}`);
+      },
+    },
+  };
+  const harness = {
+    invokeOk: async (_page, command, { sql, params }) => {
+      assert.equal(command, "db_execute");
+      const nodeType = /node_type = '(\w+)'/u.exec(sql)?.[1] ?? params[0];
+      return {
+        rows: nodes
+          .filter((node) => node.nodeType === nodeType)
+          .reverse()
+          .map(({ id, projectId, title, content }) => ({
+            id,
+            projectId,
+            title,
+            content,
+          })),
+      };
+    },
+    waitUntil: async (predicate, label) => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const value = await predicate();
+        if (value) return value;
+      }
+      throw new Error(`timeout waiting for ${label}`);
+    },
+  };
+  return {
+    harness,
+    page,
+    calls,
+    nodeIds: (nodeType) =>
+      nodes.filter((node) => node.nodeType === nodeType).map((node) => node.id),
+    clickCalls: () => calls.filter((call) => call.startsWith("click ")),
+  };
+}
+
+test("created node selection compares ids as strings in the given order", () => {
+  const existing = new Set(["1", "scene-old"]);
+  const rows = [{ id: 3 }, { id: "scene-old" }, { id: 1 }, { id: "scene-new" }];
+  assert.deepEqual(selectCreatedNodes(rows, existing), [
+    { id: 3 },
+    { id: "scene-new" },
+  ]);
+  assert.deepEqual(selectCreatedNodes(undefined, existing), []);
+});
+
+test("one UI create action must add exactly one node and names the ids otherwise", () => {
+  const only = { id: "scene-a" };
+  assert.equal(assertSingleCreatedNode([only], "scene"), only);
+  assert.throws(
+    () => assertSingleCreatedNode([], "folder"),
+    /exactly one folder node, but none exists/,
+  );
+  assert.throws(
+    () =>
+      assertSingleCreatedNode([{ id: "scene-b" }, { id: "scene-a" }], "scene"),
+    /exactly one scene node, but 2 new ones exist: scene-b, scene-a/,
+  );
+});
+
+test("awaitCreatedNodes polls within its bound and stops at the first node", async () => {
+  const clock = fakeClock();
+  const sleeps = [];
+  const recordedClock = {
+    now: clock.now,
+    sleep: async (ms) => {
+      sleeps.push(ms);
+      await clock.sleep(ms);
+    },
+  };
+  let asked = 0;
+  const appearsOnThirdAsk = async () => (++asked >= 3 ? [{ id: "late" }] : []);
+  assert.deepEqual(
+    await awaitCreatedNodes(appearsOnThirdAsk, {
+      settleMs: 1_000,
+      pollMs: 250,
+      ...recordedClock,
+    }),
+    [{ id: "late" }],
+  );
+  assert.equal(asked, 3);
+  assert.deepEqual(sleeps, [250, 250]);
+
+  // Never appearing: ask until the deadline, clamping the last sleep to it.
+  const never = async () => {
+    asked += 1;
+    return [];
+  };
+  asked = 0;
+  sleeps.length = 0;
+  const startedAt = clock.now();
+  assert.equal(
+    await awaitCreatedNodes(never, {
+      settleMs: 1_000,
+      pollMs: 300,
+      ...recordedClock,
+    }),
+    null,
+  );
+  assert.deepEqual(sleeps, [300, 300, 300, 100]);
+  assert.equal(asked, 5);
+  assert.equal(clock.now() - startedAt, 1_000);
+
+  // It always asks once, even when there is no time to settle.
+  asked = 0;
+  assert.equal(
+    await awaitCreatedNodes(never, { settleMs: 0, ...recordedClock }),
+    null,
+  );
+  assert.equal(asked, 1);
+
+  // Not knowing whether the node exists must not look like "not created".
+  const readError = new Error("db_execute rejected: database is locked");
+  await assert.rejects(
+    awaitCreatedNodes(async () => {
+      throw readError;
+    }, recordedClock),
+    (error) => error === readError,
+  );
+});
+
+test("a click reported as failed is not repeated once its node exists", async (t) => {
+  const log = t.mock.method(console, "log", () => undefined);
+  const fakes = createMenuFakes([clickTimeout()]);
+  let asked = 0;
+  // The node is persisted a moment after Playwright gave up on the click.
+  const findCreatedNodes = async () =>
+    ++asked < 2 ? [] : [{ id: "scene-new" }];
+
+  const created = await clickCreateMenuItem(
+    fakes.header,
+    fakes.page,
+    "New scene",
+    { findCreatedNodes, settle: fakeClock() },
+  );
+
+  assert.deepEqual(created, [{ id: "scene-new" }]);
+  assert.deepEqual(fakes.calls, [
+    OPEN_CREATE_MENU,
+    "click menuitem New scene 5000",
+  ]);
+  assert.match(
+    log.mock.calls[0].arguments[0],
+    /"New scene": click reported as failed on attempt 1 \(locator\.click: Timeout 5000ms exceeded\.\) but the node exists \(scene-new\); not retrying$/u,
+  );
+});
+
+test("a failed click is retried after Escape when no node appears within the bound", async () => {
+  const fakes = createMenuFakes([clickTimeout(), undefined]);
+  let asked = 0;
+  const findCreatedNodes = async () => {
+    asked += 1;
+    return [];
+  };
+
+  assert.equal(
+    await clickCreateMenuItem(fakes.header, fakes.page, "New folder", {
+      findCreatedNodes,
+      settle: fakeClock(),
+    }),
+    null,
+  );
+
+  assert.deepEqual(fakes.calls, [
+    OPEN_CREATE_MENU,
+    "click menuitem New folder 5000",
+    "press Escape",
+    OPEN_CREATE_MENU,
+    "click menuitem New folder 5000",
+  ]);
+  // The default 1.5 s window is polled every 250 ms, both ends included.
+  assert.equal(asked, 7);
+});
+
+test("the last click error is rethrown only after every attempt found no node", async () => {
+  const errors = [1, 2, 3, 4].map((n) => new Error(`click ${n} failed`));
+  const fakes = createMenuFakes(errors);
+
+  await assert.rejects(
+    clickCreateMenuItem(fakes.header, fakes.page, "New scene", {
+      findCreatedNodes: async () => [],
+      settle: fakeClock(),
+    }),
+    (error) => error === errors[3],
+  );
+
+  assert.equal(
+    fakes.calls.filter((call) => call === OPEN_CREATE_MENU).length,
+    4,
+  );
+  assert.equal(fakes.calls.filter((call) => call === "press Escape").length, 3);
+});
+
+test("the last attempt also accepts the node of the click it reported as failed", async (t) => {
+  t.mock.method(console, "log", () => undefined);
+  const errors = [1, 2, 3, 4].map((n) => new Error(`click ${n} failed`));
+  const fakes = createMenuFakes(errors);
+  // Only the fourth click's node ever shows up.
+  const findCreatedNodes = async () =>
+    fakes.calls.filter((call) => call.startsWith("click ")).length >= 4
+      ? [{ id: "scene-late" }]
+      : [];
+
+  assert.deepEqual(
+    await clickCreateMenuItem(fakes.header, fakes.page, "New scene", {
+      findCreatedNodes,
+      settle: fakeClock(),
+    }),
+    [{ id: "scene-late" }],
+  );
+  assert.equal(fakes.calls.filter((call) => call === "press Escape").length, 3);
+});
+
+test("without a node finder a failed click is retried exactly as before", async () => {
+  const recovered = createMenuFakes([clickTimeout(), undefined]);
+  assert.equal(
+    await clickCreateMenuItem(recovered.header, recovered.page, "New scene"),
+    null,
+  );
+  assert.deepEqual(recovered.calls, [
+    OPEN_CREATE_MENU,
+    "click menuitem New scene 5000",
+    "press Escape",
+    OPEN_CREATE_MENU,
+    "click menuitem New scene 5000",
+  ]);
+
+  const errors = [1, 2, 3, 4].map((n) => new Error(`click ${n} failed`));
+  const exhausted = createMenuFakes(errors);
+  await assert.rejects(
+    clickCreateMenuItem(exhausted.header, exhausted.page, "New scene"),
+    (error) => error === errors[3],
+  );
+  assert.equal(
+    exhausted.calls.filter((call) => call === "press Escape").length,
+    3,
+  );
+});
+
+test("failing to open the menu or to read the nodes is not retried", async () => {
+  const openError = new Error("menu button detached");
+  await assert.rejects(
+    clickCreateMenuItem(
+      {
+        locator: () => ({
+          click: async () => {
+            throw openError;
+          },
+        }),
+      },
+      createMenuFakes([]).page,
+      "New scene",
+    ),
+    (error) => error === openError,
+  );
+
+  const fakes = createMenuFakes([clickTimeout(), undefined]);
+  const readError = new Error("db_execute rejected: database is locked");
+  await assert.rejects(
+    clickCreateMenuItem(fakes.header, fakes.page, "New scene", {
+      findCreatedNodes: async () => {
+        throw readError;
+      },
+      settle: fakeClock(),
+    }),
+    (error) => error === readError,
+  );
+  assert.equal(fakes.calls.includes("press Escape"), false);
+});
+
+test("scene creation does not repeat a click that the app already handled", async (t) => {
+  t.mock.method(console, "log", () => undefined);
+  const ui = createFakeTreeUi({
+    existing: [{ id: "scene-old", nodeType: "scene" }],
+    afterMenuItemClick: ({ clickIndex }) => {
+      // Playwright gives up on the first click although the scene was created.
+      if (clickIndex === 1) throw clickTimeout();
+    },
+  });
+
+  const scene = await createSceneThroughUi(ui.harness, ui.page);
+
+  assert.equal(scene.sceneId, "scene-created-1");
+  assert.deepEqual(ui.clickCalls(), ["click New scene"]);
+  assert.equal(ui.calls.includes("press Escape"), false);
+  assert.deepEqual(ui.nodeIds("scene"), ["scene-old", "scene-created-1"]);
+});
+
+test("scene creation fails with the count and ids when one action adds two scenes", async () => {
+  const ui = createFakeTreeUi({
+    afterMenuItemClick: ({ addNode }) => {
+      addNode("scene");
+    },
+  });
+
+  await assert.rejects(
+    createSceneThroughUi(ui.harness, ui.page),
+    /exactly one scene node, but 2 new ones exist: scene-created-2, scene-created-1/,
+  );
+});
+
+test("scene creation also catches a duplicate that lands while the editor loads", async () => {
+  const ui = createFakeTreeUi({
+    onEditorLoaded: ({ addNode }) => {
+      addNode("scene");
+    },
+  });
+
+  await assert.rejects(
+    createSceneThroughUi(ui.harness, ui.page),
+    /exactly one scene node, but 2 new ones exist/,
+  );
+});
+
+test("folder creation does not repeat a click that the app already handled", async (t) => {
+  t.mock.method(console, "log", () => undefined);
+  const ui = createFakeTreeUi({
+    afterMenuItemClick: ({ clickIndex }) => {
+      if (clickIndex === 1) throw clickTimeout();
+    },
+  });
+
+  assert.deepEqual(await createFolderThroughUi(ui.harness, ui.page), {
+    folderId: "folder-created-1",
+    projectId: "project-1",
+    title: "Part.1",
+  });
+  assert.deepEqual(ui.clickCalls(), ["click New folder"]);
+  assert.deepEqual(ui.nodeIds("folder"), ["folder-created-1"]);
+});
+
+test("folder creation fails with the count and ids when one action adds two folders", async () => {
+  const ui = createFakeTreeUi({
+    afterMenuItemClick: ({ addNode }) => {
+      addNode("folder");
+    },
+  });
+
+  await assert.rejects(
+    createFolderThroughUi(ui.harness, ui.page),
+    /exactly one folder node, but 2 new ones exist: folder-created-2, folder-created-1/,
+  );
+});
+
+test("folder scope anchor creation neither repeats a handled click nor accepts a duplicate", async (t) => {
+  t.mock.method(console, "log", () => undefined);
+  const handled = createFakeTreeUi({
+    renameInputVisible: true,
+    afterMenuItemClick: ({ clickIndex }) => {
+      if (clickIndex === 1) throw clickTimeout();
+    },
+  });
+  const anchor = await createFolderScopeAnchor(handled.harness, handled.page);
+  assert.equal(anchor.id, "folder-created-1");
+  assert.equal(anchor.title, "Product Journey Folder");
+  assert.deepEqual(handled.clickCalls(), ["click New folder"]);
+  assert.deepEqual(handled.nodeIds("folder"), ["folder-created-1"]);
+
+  const doubled = createFakeTreeUi({
+    renameInputVisible: true,
+    afterMenuItemClick: ({ addNode }) => {
+      addNode("folder");
+    },
+  });
+  await assert.rejects(
+    createFolderScopeAnchor(doubled.harness, doubled.page),
+    /exactly one folder node, but 2 new ones exist/,
+  );
 });
 
 async function read(relativePath) {
@@ -6858,6 +7371,113 @@ test("harness lane watchdog relays outer-lane cancellation", async (t) => {
   await assert.rejects(running, /aborted.*outer-lane-timeout/i);
   assert.equal(nestedSignal.aborted, true);
   await harness.dispose({ success: false, name: "linked-watchdog" });
+});
+
+test("timeout abort reasons name what timed out and stay bounded", () => {
+  assert.equal(timeoutAbortReason(new Error("anything")), "timeout");
+  assert.equal(
+    timeoutAbortReason(new Error("anything"), {
+      label: "external write history invalidation",
+    }),
+    "timeout (waiting for external write history invalidation)",
+  );
+  assert.equal(
+    timeoutAbortReason(
+      new ProductJourneyOperationTimeoutError({
+        phase: "external-write-conflict",
+        operation: "ipc:db_execute",
+        command: "db_execute",
+        requestId: "request-1",
+        timeoutMs: 30_000,
+      }),
+    ),
+    "timeout (db_execute timed out after 30000ms)",
+  );
+  // A label wins over the error shape, whitespace collapses, length is capped.
+  const reason = timeoutAbortReason(new Error("anything"), {
+    label: `first\n  second ${"x".repeat(500)}`,
+  });
+  assert.match(reason, /^timeout \(waiting for first second x+…\)$/u);
+  assert.ok(reason.length < 160, reason);
+});
+
+test("a waitUntil timeout aborts its lane naming the awaited label", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-wait-label-"),
+  );
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 100,
+  });
+  t.after(async () => {
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  await assert.rejects(
+    harness.withLaneWatchdog(
+      () =>
+        harness.waitUntil(
+          async () => null,
+          "external write history invalidation",
+          40,
+          5,
+        ),
+      { phase: "observability/wait-label", timeoutMs: 5_000 },
+    ),
+    (error) => {
+      // The lane failure is the primary message of the results report, so it
+      // must say what was awaited, not only that the lane timed out.
+      assert.equal(error.name, "ProductJourneyLaneAbortError");
+      assert.match(
+        error.message,
+        /aborted by timeout \(waiting for external write history invalidation\)/,
+      );
+      assert.match(error.message, /observability\/wait-label/);
+      return true;
+    },
+  );
+  await harness.dispose({ success: false, name: "wait-label" });
+});
+
+test("an operation timeout aborts its lane naming the command", async (t) => {
+  const artifactRoot = await mkdtemp(
+    path.join(os.tmpdir(), "grimodex-product-command-timeout-"),
+  );
+  const harness = createProductJourneyHarness({
+    mainCjs: "/tmp/fake-main.cjs",
+    electronBin: "/tmp/fake-electron",
+    artifactRoot,
+    operationTimeoutMs: 100,
+  });
+  t.after(async () => {
+    await rm(harness.tmpRoot, { recursive: true, force: true });
+    await rm(artifactRoot, { recursive: true, force: true });
+  });
+
+  await assert.rejects(
+    harness.withLaneWatchdog(
+      () =>
+        harness.invokeOk(
+          { evaluate: async () => new Promise(() => {}) },
+          "hung_command",
+          {},
+          { timeoutMs: 30 },
+        ),
+      { phase: "observability/command-timeout", timeoutMs: 5_000 },
+    ),
+    (error) => {
+      assert.equal(error.name, "ProductJourneyLaneAbortError");
+      assert.match(
+        error.message,
+        /aborted by timeout \(hung_command timed out after 30ms\)/,
+      );
+      return true;
+    },
+  );
+  await harness.dispose({ success: false, name: "command-timeout" });
 });
 
 test("lane watchdog owns dynamic children and awaits registered cleanup", async () => {

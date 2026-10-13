@@ -1199,18 +1199,19 @@ async function findSceneWithText(harness, page, text) {
   );
 }
 
-async function createSceneThroughUi(harness, page) {
+export async function createSceneThroughUi(harness, page) {
   const header = scenesPanelHeader(page);
   await header.waitFor({ state: "visible", timeout: 60_000 });
-  const before = await harness.invokeOk(page, "db_execute", {
-    sql: "SELECT id FROM tree_nodes WHERE node_type = 'scene'",
-    params: [],
-    method: "all",
-  });
-  const existingSceneIds = new Set(
-    (before?.rows ?? []).map((row) => String(row.id)),
+  const existingSceneIds = await treeNodeIds(harness, page, "scene");
+  const findCreatedScenes = createdNodeFinder(
+    harness,
+    page,
+    "scene",
+    existingSceneIds,
   );
-  await clickCreateMenuItem(header, page, NEW_SCENE_MENU_ITEM);
+  await clickCreateMenuItem(header, page, NEW_SCENE_MENU_ITEM, {
+    findCreatedNodes: findCreatedScenes,
+  });
 
   const renameInput = page.locator(
     '[data-droptarget-id="scenes-panel"] input:focus',
@@ -1224,7 +1225,7 @@ async function createSceneThroughUi(harness, page) {
     await page.keyboard.press("Enter");
   }
 
-  const created = await harness.waitUntil(async () => {
+  const newScenes = await harness.waitUntil(async () => {
     const result = await harness.invokeOk(page, "db_execute", {
       sql: `SELECT id, project_id AS projectId, title, content
         FROM tree_nodes
@@ -1233,12 +1234,10 @@ async function createSceneThroughUi(harness, page) {
       params: [],
       method: "all",
     });
-    return (
-      (result?.rows ?? []).find(
-        (row) => !existingSceneIds.has(String(row.id)),
-      ) ?? null
-    );
+    const fresh = selectCreatedNodes(result?.rows, existingSceneIds);
+    return fresh.length > 0 ? fresh : null;
   }, "new scene persistence");
+  const created = assertSingleCreatedNode(newScenes, "scene");
   const sceneId = String(created.id);
   const editorSurface = page
     .locator(
@@ -1260,6 +1259,9 @@ async function createSceneThroughUi(harness, page) {
     .locator('.ProseMirror[contenteditable="true"]')
     .first();
   await editor.waitFor({ state: "visible", timeout: 30_000 });
+  // Check again now that the editor has loaded: a duplicate create that had
+  // not landed at the first check has had time to by now.
+  assertSingleCreatedNode(await findCreatedScenes(), "scene");
   return {
     sceneId,
     projectId: String(created.projectId),
@@ -1526,35 +1528,153 @@ async function runChatAuthorityIsolationJourney(harness) {
   }
 }
 
+// One UI create action adds exactly one tree node. These helpers compare the
+// persisted nodes of one type with the ids captured before the action.
+
+/** Rows whose id is not in `existingIds`, in the order given. */
+export function selectCreatedNodes(rows, existingIds) {
+  return (rows ?? []).filter((row) => !existingIds.has(String(row.id)));
+}
+
+/**
+ * Require that one UI create action added exactly one node. Any other count is
+ * reported with the new ids, so a duplicated create (typically a menu click
+ * that the app handled although Playwright reported it as failed, followed by
+ * a retry) is named at its source instead of surfacing later as an unrelated
+ * symptom such as a stale undo entry.
+ */
+export function assertSingleCreatedNode(created, nodeType) {
+  if (created.length === 1) return created[0];
+  const requirement = `one UI create action must add exactly one ${nodeType} node`;
+  if (created.length === 0) {
+    throw new Error(`${requirement}, but none exists`);
+  }
+  const ids = created.map((row) => String(row.id)).join(", ");
+  throw new Error(
+    `${requirement}, but ${created.length} new ones exist: ${ids} ` +
+      "(the create menu item was probably selected more than once)",
+  );
+}
+
+function treeNodeIdRows(harness, page, nodeType) {
+  return queryRows(
+    harness,
+    page,
+    "SELECT id FROM tree_nodes WHERE node_type = ?",
+    [nodeType],
+  );
+}
+
+async function treeNodeIds(harness, page, nodeType) {
+  const rows = await treeNodeIdRows(harness, page, nodeType);
+  return new Set(rows.map((row) => String(row.id)));
+}
+
+/** Reads the `nodeType` nodes created since `existingIds` was captured. */
+function createdNodeFinder(harness, page, nodeType, existingIds) {
+  return async () =>
+    selectCreatedNodes(
+      await treeNodeIdRows(harness, page, nodeType),
+      existingIds,
+    );
+}
+
+const CREATE_MENU_CLICK_ATTEMPTS = 4;
+const CREATE_MENU_CLICK_TIMEOUT_MS = 5_000;
+// A click that Playwright reports as failed may still have been handled by the
+// app. The node is persisted by a single create call, so it shows up within
+// moments or not at all: wait this long for it before reopening the menu.
+const CREATE_MENU_SETTLE_MS = 1_500;
+const CREATE_MENU_SETTLE_POLL_MS = 250;
+
+function sleepMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Polls `findCreatedNodes` until it reports a node or `settleMs` has elapsed.
+ * Always asks at least once. Resolves to the nodes found, or null when none
+ * appeared within the bound. An error from `findCreatedNodes` propagates: not
+ * knowing whether the node exists must not turn into a retry.
+ */
+export async function awaitCreatedNodes(
+  findCreatedNodes,
+  {
+    settleMs = CREATE_MENU_SETTLE_MS,
+    pollMs = CREATE_MENU_SETTLE_POLL_MS,
+    sleep = sleepMs,
+    now = Date.now,
+  } = {},
+) {
+  const deadline = now() + settleMs;
+  for (;;) {
+    const created = await findCreatedNodes();
+    if (created.length > 0) return created;
+    const remaining = deadline - now();
+    if (remaining <= 0) return null;
+    await sleep(Math.min(pollMs, remaining));
+  }
+}
+
 // A background reload right after workspace open can re-render the scenes
 // panel and detach the freshly opened create menu; reopen it rather than wait
 // 30 s on a detached item.
-async function clickCreateMenuItem(header, page, name) {
+//
+// A click that Playwright reports as failed does not prove the item was not
+// selected: Radix selects a menu item from a click and from a pointerup that it
+// turns into one, so the app can have created the node already, and reopening
+// the menu would then create a second one. `findCreatedNodes` lets the caller
+// say whether its node exists (it resolves to the new nodes, or an empty
+// array). It is consulted for a bounded time before the menu is reopened and
+// before giving up, and nodes found there are this call's result. Resolves to
+// null when the item click itself succeeded.
+export async function clickCreateMenuItem(
+  header,
+  page,
+  name,
+  { findCreatedNodes = null, settle = {} } = {},
+) {
   for (let attempt = 1; ; attempt += 1) {
     await header.locator(`button[title="${CREATE_BUTTON_TITLE}"]`).click();
-    const clicked = await page
-      .getByRole("menuitem", { name, exact: true })
-      .click({ timeout: 5_000 })
-      .then(() => true)
-      .catch((error) => {
-        if (attempt >= 4) throw error;
-        return false;
-      });
-    if (clicked) return;
+    let clickError;
+    try {
+      await page
+        .getByRole("menuitem", { name, exact: true })
+        .click({ timeout: CREATE_MENU_CLICK_TIMEOUT_MS });
+      return null;
+    } catch (error) {
+      clickError = error;
+    }
+    const created = findCreatedNodes
+      ? await awaitCreatedNodes(findCreatedNodes, settle)
+      : null;
+    if (created) {
+      const reported = String(clickError?.message ?? clickError).split("\n")[0];
+      log(
+        `Create menu "${name}": click reported as failed on attempt ${attempt} ` +
+          `(${reported}) but the node exists (${created
+            .map((row) => String(row.id))
+            .join(", ")}); not retrying`,
+      );
+      return created;
+    }
+    if (attempt >= CREATE_MENU_CLICK_ATTEMPTS) throw clickError;
     await page.keyboard.press("Escape");
   }
 }
 
-async function createFolderThroughUi(harness, page) {
+export async function createFolderThroughUi(harness, page) {
   const header = scenesPanelHeader(page);
   await header.waitFor({ state: "visible", timeout: 60_000 });
-  const before = await queryRows(
-    harness,
-    page,
-    "SELECT id FROM tree_nodes WHERE node_type = 'folder'",
-  );
-  const existingFolderIds = new Set(before.map((row) => String(row.id)));
-  await clickCreateMenuItem(header, page, NEW_FOLDER_MENU_ITEM);
+  const existingFolderIds = await treeNodeIds(harness, page, "folder");
+  await clickCreateMenuItem(header, page, NEW_FOLDER_MENU_ITEM, {
+    findCreatedNodes: createdNodeFinder(
+      harness,
+      page,
+      "folder",
+      existingFolderIds,
+    ),
+  });
 
   const renameInput = page.locator(
     '[data-droptarget-id="scenes-panel"] input:focus',
@@ -1568,7 +1688,7 @@ async function createFolderThroughUi(harness, page) {
     await page.keyboard.press("Enter");
   }
 
-  const created = await harness.waitUntil(async () => {
+  const newFolders = await harness.waitUntil(async () => {
     const rows = await queryRows(
       harness,
       page,
@@ -1577,8 +1697,10 @@ async function createFolderThroughUi(harness, page) {
        WHERE node_type = 'folder'
        ORDER BY created_at DESC`,
     );
-    return rows.find((row) => !existingFolderIds.has(String(row.id))) ?? null;
+    const fresh = selectCreatedNodes(rows, existingFolderIds);
+    return fresh.length > 0 ? fresh : null;
   }, "new folder persistence");
+  const created = assertSingleCreatedNode(newFolders, "folder");
   if (!created.projectId) {
     throw new Error("new folder did not expose its project authority");
   }
@@ -3225,21 +3347,20 @@ async function prepareSnippetScopeAnchor(harness) {
   }
 }
 
-async function createFolderScopeAnchor(harness, page) {
+export async function createFolderScopeAnchor(harness, page) {
   const title = "Product Journey Folder";
-  const existing = new Set(
-    (
-      await queryRows(
-        harness,
-        page,
-        "SELECT id FROM tree_nodes WHERE node_type = 'folder'",
-      )
-    ).map((row) => String(row.id)),
+  const existing = await treeNodeIds(harness, page, "folder");
+  const findCreatedFolders = createdNodeFinder(
+    harness,
+    page,
+    "folder",
+    existing,
   );
   await clickCreateMenuItem(
     scenesPanelHeader(page),
     page,
     NEW_FOLDER_MENU_ITEM,
+    { findCreatedNodes: findCreatedFolders },
   );
   const renameInput = page.locator(
     '[data-droptarget-id="scenes-panel"] input:focus',
@@ -3247,7 +3368,7 @@ async function createFolderScopeAnchor(harness, page) {
   await renameInput.waitFor({ state: "visible", timeout: 5_000 });
   await renameInput.fill(title);
   await renameInput.press("Enter");
-  return harness.waitUntil(async () => {
+  const anchor = await harness.waitUntil(async () => {
     const rows = await queryRows(
       harness,
       page,
@@ -3255,6 +3376,8 @@ async function createFolderScopeAnchor(harness, page) {
     );
     return selectPersistedFolderScopeAnchor(rows, existing, title);
   }, "folder scope anchor persistence");
+  assertSingleCreatedNode(await findCreatedFolders(), "folder");
+  return anchor;
 }
 
 /** Keep the folder picker bound to the renamed row, not its initial title. */
