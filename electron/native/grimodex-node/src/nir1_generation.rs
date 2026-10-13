@@ -15,7 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{ensure, Context, Result};
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::nir1_generation::{
-    self as storage, GenerationPurpose, InputReference, QualificationReference, ReadBudget,
+    self as storage, AttemptSceneBinding, GenerationPurpose, InputReference,
+    QualificationReference, ReadBudget,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
@@ -43,6 +44,13 @@ use crate::state::{
 #[derive(Clone, Debug)]
 pub(crate) struct FinalDispatchRequest {
     pub project_id: String,
+    /// The DB chat session the request answers (`chat_sessions.id`). The
+    /// owner binds the Main-issued caller session separately.
+    pub chat_session_id: String,
+    /// The query Scene incarnation, read with
+    /// `storage::read_attempt_scene_binding_in_tx` in the snapshot that
+    /// Packing and the material readers used.
+    pub scene: AttemptSceneBinding,
     pub route_revision: String,
     pub purpose: GenerationPurpose,
     pub scope_digest: String,
@@ -1057,8 +1065,11 @@ pub(crate) fn route_revision(state: &AppState) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grimodex_db::domain_writes::{tree_node_create, TreeNodeCreatePayload};
+    use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
     use grimodex_db::nir1_generation::{
-        AttemptBinding, FailureClassification, GenerationPurpose, NewAttempt, StoredAttempt,
+        AttemptBinding, AttemptBindingVersion, AttemptCallerBinding, FailureClassification,
+        GenerationPurpose, NewAttempt, StoredAttempt,
     };
     use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
     use grimodex_db::workspace_lifecycle::AdmissionKind;
@@ -1072,30 +1083,97 @@ mod tests {
         max_reference_bytes: 4096,
     };
 
-    fn recovery_attempt(ordinal: usize) -> NewAttempt {
-        recovery_attempt_for("recovery-project", "recovery-session", ordinal)
+    /// Create a live Scene through the Native tree writer, which mints its A1
+    /// scope incarnation, and attach the chat session to it.
+    fn attach_scene(
+        db: &grimodex_db::Database,
+        project_id: &str,
+        scene_id: &str,
+        session_id: &str,
+    ) {
+        tree_node_create(
+            db,
+            TreeNodeCreatePayload {
+                id: scene_id.into(),
+                project_id: project_id.into(),
+                request_id: format!("{scene_id}-create"),
+                session_id: session_id.into(),
+                event_uid: format!("{scene_id}-create-event"),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                parent_id: None,
+                node_type: "scene".into(),
+                title: "Fixture".into(),
+                sort_order: "a0".into(),
+                synopsis: None,
+                status: None,
+                source_uri: None,
+                source_mtime: None,
+                content: Some(r#"{"type":"doc","content":[]}"#.into()),
+                canonical_payload: None,
+            },
+        )
+        .expect("Scene through the Native tree writer");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE chat_sessions SET node_id=?1 WHERE id=?2 AND project_id=?3",
+                [scene_id, session_id, project_id],
+            )?;
+            Ok(())
+        })
+        .expect("attach the chat session to the Scene");
     }
 
-    fn recovery_attempt_for(project_id: &str, session_id: &str, ordinal: usize) -> NewAttempt {
+    fn recovery_attempt(db: &grimodex_db::Database, ordinal: usize) -> NewAttempt {
+        recovery_attempt_for(db, "recovery-project", "recovery-session", ordinal)
+    }
+
+    fn recovery_scene_id(project_id: &str) -> String {
+        format!("{project_id}-scene")
+    }
+
+    fn recovery_attempt_for(
+        db: &grimodex_db::Database,
+        project_id: &str,
+        session_id: &str,
+        ordinal: usize,
+    ) -> NewAttempt {
         let digest =
             canonical_json_digest(&json!(["recovery", project_id, ordinal])).expect("digest");
+        let scene = db
+            .with_read_transaction(|conn| {
+                storage::read_attempt_scene_binding_in_tx(
+                    conn,
+                    project_id,
+                    &recovery_scene_id(project_id),
+                )
+            })
+            .expect("recovery Scene binding");
         NewAttempt {
             binding: AttemptBinding {
+                binding_version: AttemptBindingVersion::V2,
                 project_id: project_id.into(),
-                session_id: session_id.into(),
-                profile_id: "recovery-profile".into(),
-                caller_id: "recovery-owner".into(),
-                caller_epoch: 1,
+                chat_session_id: session_id.into(),
+                scene,
+                caller: AttemptCallerBinding {
+                    profile_id: "recovery-profile".into(),
+                    caller_id: "recovery-owner".into(),
+                    caller_epoch: 1,
+                    caller_session_id: "recovery-caller-session".into(),
+                },
                 workspace_binding_digest: digest.clone(),
+                route_revision: digest.clone(),
                 purpose: GenerationPurpose::Writing,
                 scope_digest: digest.clone(),
                 material_digest: digest.clone(),
                 d1_digest: digest.clone(),
-                route_revision: digest.clone(),
                 provider: "recovery-recorder".into(),
                 model: "recovery".into(),
                 api: "internal".into(),
                 endpoint_identity: digest.clone(),
+                history_turn_context: None,
+                durable_workspace_identity: None,
             },
             payload_digest: digest,
             inputs: vec![],
@@ -1130,8 +1208,14 @@ mod tests {
             Ok(())
         })
         .expect("workspace rows");
+        attach_scene(
+            &db,
+            "recovery-project",
+            &recovery_scene_id("recovery-project"),
+            "recovery-session",
+        );
         let attempts = (0..attempt_count)
-            .map(|ordinal| storage::create_attempt(&db, recovery_attempt(ordinal)))
+            .map(|ordinal| storage::create_attempt(&db, recovery_attempt(&db, ordinal)))
             .collect::<Result<Vec<_>>>()
             .expect("pending attempts");
         (root, attempts)
@@ -1172,11 +1256,19 @@ mod tests {
             Ok(())
         })
         .expect("workspace rows");
+        for (index, project_id) in project_ids.iter().enumerate() {
+            attach_scene(
+                &db,
+                project_id,
+                &recovery_scene_id(project_id),
+                &format!("recovery-session-{index:04}"),
+            );
+        }
         let attempts = (0..attempts_on_first_project)
             .map(|ordinal| {
                 storage::create_attempt(
                     &db,
-                    recovery_attempt_for(&project_ids[0], "recovery-session-0000", ordinal),
+                    recovery_attempt_for(&db, &project_ids[0], "recovery-session-0000", ordinal),
                 )
             })
             .collect::<Result<Vec<_>>>()
@@ -1295,7 +1387,7 @@ mod tests {
         let future_time = now_ms().expect("wall clock") + 60_000;
         let attempt = {
             let db = grimodex_db::Database::new(&root.join("grimodex.db")).expect("database");
-            let mut request = recovery_attempt(0);
+            let mut request = recovery_attempt(&db, 0);
             request.created_at_ms = future_time;
             request.expires_at_ms = future_time + 60_000;
             let attempt = storage::create_attempt(&db, request).expect("future-clock attempt");
@@ -1482,6 +1574,7 @@ mod tests {
                     storage::create_attempt(
                         &db,
                         recovery_attempt_for(
+                            &db,
                             project_id,
                             &format!("recovery-session-{index:04}"),
                             0,
@@ -1543,6 +1636,7 @@ mod tests {
                     storage::create_attempt(
                         &db,
                         recovery_attempt_for(
+                            &db,
                             project_id,
                             &format!("recovery-session-{index:04}"),
                             0,
@@ -2537,7 +2631,7 @@ mod tests {
         drop(db);
 
         let db = active_workspace_snapshot(&state.ws).expect("Ready workspace");
-        let pending = storage::create_attempt(db.db(), recovery_attempt(1))
+        let pending = storage::create_attempt(db.db(), recovery_attempt(db.db(), 1))
             .expect("new pending attempt before duplicate hook");
         assert!(!start_generation_recovery_after_ready(
             Arc::clone(&state),

@@ -7,9 +7,13 @@
 //! owner fences create/claim with its startup lease and the profile permit
 //! (atomic pre-commit checks plus an admission probe), then revalidates the
 //! profile, route, workspace, lease and cancel after COMMIT and before it
-//! starts a transport. No operation here resends.
+//! starts a transport. Create and claim also re-read the chat session and the
+//! query Scene incarnation (`AttemptBinding` v2) inside their own IMMEDIATE
+//! transaction, so a claim's CAS commits in the transaction that checked them.
+//! No operation here resends.
 
 use anyhow::{ensure, Context, Result};
+use grimodex_core::narrative_nir1::MAX_PACKING_INPUT_BYTES;
 use grimodex_core::narrative_nir1_receipt::{
     validate_terminal_matrix, Completion, OutputChannel, OutputObserver, ParseStatus,
     ProviderTerminal, TerminalObservation, TerminalStatus, OUTPUT_DIGEST_VERSION,
@@ -18,6 +22,7 @@ use grimodex_core::{canonical_json_digest, canonical_json_string};
 use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -127,27 +132,177 @@ pub enum GenerationPurpose {
     Review,
 }
 
-/// Exact Native-owned identities; endpoint identity is a credential-free
-/// digest, never a URL. The opaque workspace identity includes the existing
-/// authority instance/recovery generation, not merely a project or path.
+/// The only binding format this build writes. Stored rows are read through
+/// `parse_attempt_binding`, which admits legacy v1 rows for terminalization
+/// only and rejects every other version.
+const ATTEMPT_BINDING_VERSION: u64 = 2;
+const BINDING_VERSION_UNSUPPORTED_ERROR: &str = "NIR1_GENERATION_BINDING_VERSION_UNSUPPORTED";
+const BINDING_LEGACY_TERMINAL_ONLY_ERROR: &str = "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY";
+
+/// `bindingVersion` of [`AttemptBinding`]. It serializes as the integer 2,
+/// and every other value fails to deserialize.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttemptBindingVersion {
+    V2,
+}
+
+impl Serialize for AttemptBindingVersion {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::V2 => serializer.serialize_u64(ATTEMPT_BINDING_VERSION),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AttemptBindingVersion {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if u64::deserialize(deserializer)? == ATTEMPT_BINDING_VERSION {
+            Ok(Self::V2)
+        } else {
+            Err(serde::de::Error::custom(BINDING_VERSION_UNSUPPORTED_ERROR))
+        }
+    }
+}
+
+/// A slot reserved for a later binding version. The type is uninhabited, so
+/// `None` (JSON null) is the only value this build writes or accepts; a row
+/// whose slot holds a value fails to parse.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservedBindingSlot {}
+
+impl Serialize for ReservedBindingSlot {
+    fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match *self {}
+    }
+}
+
+impl<'de> Deserialize<'de> for ReservedBindingSlot {
+    fn deserialize<D>(_deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Err(serde::de::Error::custom(
+            "NIR1_GENERATION_BINDING_RESERVED_SLOT_SET",
+        ))
+    }
+}
+
+/// Exact Native-owned identities of one attempt (binding format v2).
+/// Endpoint identity is a credential-free digest, never a URL. The opaque
+/// workspace identity includes the existing authority instance/recovery
+/// generation, not merely a project or path.
+///
+/// Storage re-reads `project_id`, `chat_session_id` and `scene` from the
+/// current rows inside the IMMEDIATE transaction of create and claim.
+/// `caller`, `workspace_binding_digest` and `route_revision` are
+/// process-local: storage keeps them and compares them with the claimant's
+/// binding, and the Native owner compares them with its live caller
+/// registration, LiveBinding and route before it claims. The remaining
+/// digests and route fields are coordinator-supplied proof inputs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AttemptBinding {
+    pub binding_version: AttemptBindingVersion,
     pub project_id: String,
-    pub session_id: String,
-    pub profile_id: String,
-    pub caller_id: String,
-    pub caller_epoch: u64,
+    /// The `chat_sessions` row; the attempt row stores it as `session_id`.
+    pub chat_session_id: String,
+    pub scene: AttemptSceneBinding,
+    pub caller: AttemptCallerBinding,
     pub workspace_binding_digest: String,
+    pub route_revision: String,
     pub purpose: GenerationPurpose,
     pub scope_digest: String,
     pub material_digest: String,
     pub d1_digest: String,
-    pub route_revision: String,
     pub provider: String,
     pub model: String,
     pub api: String,
     pub endpoint_identity: String,
+    /// Reserved for the history turn context.
+    pub history_turn_context: Option<ReservedBindingSlot>,
+    /// Reserved for a durable workspace identity.
+    pub durable_workspace_identity: Option<ReservedBindingSlot>,
+}
+
+/// The Main-issued caller that Native registered for the profile. It is
+/// process-local: it is not persisted as an authority and a restart
+/// invalidates it, so storage can only compare it with the claimant's value.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttemptCallerBinding {
+    pub profile_id: String,
+    pub caller_id: String,
+    pub caller_epoch: u64,
+    /// Main's per-sender `sessionId`. Deliberately not a chat session.
+    pub caller_session_id: String,
+}
+
+/// The exact query Scene incarnation a request was prepared from, read with
+/// `read_attempt_scene_binding_in_tx`. The `v{version}@{updated_at}` token
+/// alone repeats across delete/recreate, snapshot restore and id reuse, so the
+/// incarnation, the stored body digest and the live, unarchived state are
+/// bound with it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AttemptSceneBinding {
+    pub scene_id: String,
+    /// `narrative_scene_scope_bindings.scene_incarnation_id`. The Native writer
+    /// mints it for every Scene row; it is never derived from the id, title
+    /// or body.
+    pub scene_incarnation_id: String,
+    /// `v{version}@{updated_at}` of the `tree_nodes` row.
+    pub source_token: String,
+    /// `sha256:` + hex SHA-256 of the stored `tree_nodes.content` bytes.
+    pub body_digest: String,
+}
+
+/// Binding format v1: rows written before `bindingVersion` existed. It has no
+/// Scene binding, and its one `sessionId` mixed the chat session with the Main
+/// caller session. Such a row may only be terminalized (recovery or a
+/// non-success finish); it is never claimed, dispatched, used as a parent or
+/// read as history.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyAttemptBindingV1 {
+    project_id: String,
+    session_id: String,
+    profile_id: String,
+    caller_id: String,
+    caller_epoch: u64,
+    workspace_binding_digest: String,
+    purpose: GenerationPurpose,
+    scope_digest: String,
+    material_digest: String,
+    d1_digest: String,
+    route_revision: String,
+    provider: String,
+    model: String,
+    api: String,
+    endpoint_identity: String,
+}
+
+#[derive(Debug)]
+enum VersionedAttemptBinding {
+    LegacyV1(LegacyAttemptBindingV1),
+    Current(AttemptBinding),
+}
+
+/// Reads only `bindingVersion`. Other keys are skipped, and a duplicated
+/// `bindingVersion` key is a parse error.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttemptBindingVersionProbe {
+    #[serde(default)]
+    binding_version: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -676,7 +831,45 @@ fn digest(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Shape of a current binding. The database-side checks are in
+/// `require_bound_session_and_scene`.
 fn validate_binding(binding: &AttemptBinding) -> Result<()> {
+    for value in [
+        &binding.project_id,
+        &binding.chat_session_id,
+        &binding.scene.scene_id,
+        &binding.scene.scene_incarnation_id,
+        &binding.scene.source_token,
+        &binding.caller.profile_id,
+        &binding.caller.caller_id,
+        &binding.caller.caller_session_id,
+        &binding.route_revision,
+        &binding.provider,
+        &binding.model,
+        &binding.api,
+    ] {
+        identity(value)?;
+    }
+    for value in [
+        &binding.scene.body_digest,
+        &binding.workspace_binding_digest,
+        &binding.scope_digest,
+        &binding.material_digest,
+        &binding.d1_digest,
+        &binding.endpoint_identity,
+    ] {
+        digest(value)?;
+    }
+    // Main's caller session and the chat session are separate namespaces.
+    // Equal values mean one was assembled from the other.
+    ensure!(
+        binding.chat_session_id != binding.caller.caller_session_id,
+        "NIR1_GENERATION_SESSION_CONFUSION"
+    );
+    Ok(())
+}
+
+fn validate_legacy_binding(binding: &LegacyAttemptBindingV1) -> Result<()> {
     for value in [
         &binding.project_id,
         &binding.session_id,
@@ -701,6 +894,69 @@ fn validate_binding(binding: &AttemptBinding) -> Result<()> {
     Ok(())
 }
 
+/// The single parser of a stored `binding_json`. An explicit `bindingVersion`
+/// selects the struct before the whole value is parsed, and both structs deny
+/// unknown fields. A later version adds an arm here; until then it is
+/// rejected.
+fn parse_attempt_binding(json: &str) -> Result<VersionedAttemptBinding> {
+    let probe: AttemptBindingVersionProbe =
+        serde_json::from_str(json).context("NIR1_GENERATION_BINDING_INVALID")?;
+    match probe.binding_version {
+        // v1 never wrote the key. An explicit null is not a version either:
+        // the v1 struct then rejects `bindingVersion` as an unknown field.
+        None => {
+            let legacy: LegacyAttemptBindingV1 =
+                serde_json::from_str(json).context("NIR1_GENERATION_BINDING_INVALID")?;
+            validate_legacy_binding(&legacy)?;
+            Ok(VersionedAttemptBinding::LegacyV1(legacy))
+        }
+        Some(Value::Number(version)) if version.as_u64() == Some(ATTEMPT_BINDING_VERSION) => {
+            let binding: AttemptBinding =
+                serde_json::from_str(json).context("NIR1_GENERATION_BINDING_INVALID")?;
+            validate_binding(&binding)?;
+            Ok(VersionedAttemptBinding::Current(binding))
+        }
+        Some(_) => anyhow::bail!(BINDING_VERSION_UNSUPPORTED_ERROR),
+    }
+}
+
+impl VersionedAttemptBinding {
+    /// The attempt row's `project_id`/`session_id` columns are the binding's
+    /// project and chat session.
+    fn ensure_attempt_row_identity(&self, project_id: &str, session_id: &str) -> Result<()> {
+        let (bound_project, bound_session) = match self {
+            Self::LegacyV1(legacy) => (&legacy.project_id, &legacy.session_id),
+            Self::Current(binding) => (&binding.project_id, &binding.chat_session_id),
+        };
+        ensure!(
+            bound_project == project_id && bound_session == session_id,
+            "NIR1_GENERATION_BINDING_MISMATCH"
+        );
+        Ok(())
+    }
+
+    /// Claim, dispatch, parent lineage, history and a success body need the
+    /// current format. A legacy row may only be terminalized.
+    fn into_current(self) -> Result<AttemptBinding> {
+        match self {
+            Self::Current(binding) => Ok(binding),
+            Self::LegacyV1(_) => anyhow::bail!(BINDING_LEGACY_TERMINAL_ONLY_ERROR),
+        }
+    }
+}
+
+/// Parse a stored binding and check it against its attempt row. Every reader
+/// of `binding_json` goes through this function.
+fn read_stored_binding(
+    binding_json: &str,
+    project_id: &str,
+    session_id: &str,
+) -> Result<VersionedAttemptBinding> {
+    let binding = parse_attempt_binding(binding_json)?;
+    binding.ensure_attempt_row_identity(project_id, session_id)?;
+    Ok(binding)
+}
+
 fn input_digest(
     inputs: &[InputReference],
     qualifications: &[QualificationReference],
@@ -711,15 +967,126 @@ fn input_digest(
     )?)
 }
 
-fn require_session(conn: &Connection, project: &str, session: &str) -> Result<()> {
+/// Read the current binding values of one live, unarchived Scene inside the
+/// caller's transaction. Create and claim compare them with
+/// `AttemptBinding.scene`, and a coordinator builds that value with this same
+/// reader in the snapshot it packs from. Scalar lengths are admitted before
+/// any String is materialized, the stored body is bounded by the Packing input
+/// ceiling, and only its digest is returned. A Scene without its Native scope
+/// incarnation row is unavailable.
+pub fn read_attempt_scene_binding_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> Result<AttemptSceneBinding> {
     ensure!(
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM chat_sessions WHERE id=?1 AND project_id=?2)",
-            params![session, project],
-            |row| row.get::<_, bool>(0)
-        )?,
-        "NIR1_GENERATION_SESSION_MISMATCH"
+        !conn.is_autocommit(),
+        "NIR1_GENERATION_TRANSACTION_REQUIRED"
     );
+    identity(project_id)?;
+    identity(scene_id)?;
+    let lengths: Option<(i64, i64, i64, bool, Option<i64>)> = conn
+        .query_row(
+            "SELECT t.version,octet_length(t.updated_at),octet_length(t.content),
+                    t.archived_at IS NOT NULL,octet_length(b.scene_incarnation_id)
+               FROM tree_nodes t
+               LEFT JOIN narrative_scene_scope_bindings b
+                 ON b.project_id=t.project_id AND b.scene_id=t.id
+              WHERE t.id=?1 AND t.project_id=?2 AND t.node_type='scene'",
+            params![scene_id, project_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let (version, updated_at_length, content_length, archived, incarnation_length) =
+        lengths.context("NIR1_GENERATION_SCENE_UNAVAILABLE")?;
+    let incarnation_length = incarnation_length.context("NIR1_GENERATION_SCENE_UNAVAILABLE")?;
+    ensure!(!archived, "NIR1_GENERATION_SCENE_ARCHIVED");
+    ensure!(
+        version >= 0 && updated_at_length > 0,
+        "NIR1_GENERATION_SCENE_UNAVAILABLE"
+    );
+    let updated_at_length = bounded_sqlite_length(
+        updated_at_length,
+        MAX_ID_BYTES,
+        "NIR1_GENERATION_SCENE_METADATA_LIMIT",
+    )?;
+    let incarnation_length = bounded_sqlite_length(
+        incarnation_length,
+        MAX_ID_BYTES,
+        "NIR1_GENERATION_SCENE_METADATA_LIMIT",
+    )?;
+    let content_length = bounded_sqlite_length(
+        content_length,
+        MAX_PACKING_INPUT_BYTES,
+        "NIR1_GENERATION_SCENE_BODY_LIMIT",
+    )?;
+    let (updated_at, content, scene_incarnation_id): (String, String, String) = conn.query_row(
+        "SELECT t.updated_at,t.content,b.scene_incarnation_id
+           FROM tree_nodes t
+           JOIN narrative_scene_scope_bindings b
+             ON b.project_id=t.project_id AND b.scene_id=t.id
+          WHERE t.id=?1 AND t.project_id=?2 AND t.node_type='scene'",
+        params![scene_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    ensure!(
+        updated_at.len() == updated_at_length
+            && content.len() == content_length
+            && scene_incarnation_id.len() == incarnation_length,
+        "NIR1_GENERATION_SCENE_CHANGED"
+    );
+    identity(&scene_incarnation_id)?;
+    let source_token = format!("v{version}@{updated_at}");
+    identity(&source_token)?;
+    Ok(AttemptSceneBinding {
+        scene_id: scene_id.to_owned(),
+        scene_incarnation_id,
+        source_token,
+        body_digest: format!("sha256:{}", hex::encode(Sha256::digest(content.as_bytes()))),
+    })
+}
+
+/// Database-side checks of a current binding, run inside the IMMEDIATE
+/// transaction of create and of claim (which commits its CAS in that same
+/// transaction): the chat session row, the exact live and unarchived Scene
+/// incarnation with its source token and body, and the session's attachment
+/// to that Scene. The process-local caller is not checked here.
+fn require_bound_session_and_scene(conn: &Connection, binding: &AttemptBinding) -> Result<()> {
+    let session_on_scene: bool = conn
+        .query_row(
+            "SELECT node_id IS ?3 FROM chat_sessions WHERE id=?1 AND project_id=?2",
+            params![
+                binding.chat_session_id,
+                binding.project_id,
+                binding.scene.scene_id
+            ],
+            |row| row.get(0),
+        )
+        .optional()?
+        .context("NIR1_GENERATION_SESSION_MISMATCH")?;
+    let current =
+        read_attempt_scene_binding_in_tx(conn, &binding.project_id, &binding.scene.scene_id)?;
+    ensure!(
+        current.scene_incarnation_id == binding.scene.scene_incarnation_id,
+        "NIR1_GENERATION_SCENE_INCARNATION_MISMATCH"
+    );
+    ensure!(
+        current.source_token == binding.scene.source_token,
+        "NIR1_GENERATION_SCENE_SOURCE_STALE"
+    );
+    ensure!(
+        current.body_digest == binding.scene.body_digest,
+        "NIR1_GENERATION_SCENE_BODY_MISMATCH"
+    );
+    ensure!(session_on_scene, "NIR1_GENERATION_SESSION_SCENE_MISMATCH");
     Ok(())
 }
 
@@ -750,7 +1117,7 @@ fn validate_refs(
                 let version = read_message_version_in_tx(conn, version_id)?;
                 ensure!(
                     version.project_id == binding.project_id
-                        && version.session_id == binding.session_id
+                        && version.session_id == binding.chat_session_id
                         && &version.parent_attempt_id == parent_attempt_id,
                     "NIR1_GENERATION_MESSAGE_BINDING_MISMATCH"
                 );
@@ -887,11 +1254,7 @@ pub fn create_attempt(db: &Database, request: NewAttempt) -> Result<StoredAttemp
     validate_new_attempt(&request)?;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            require_session(
-                conn,
-                &request.binding.project_id,
-                &request.binding.session_id,
-            )?;
+            require_bound_session_and_scene(conn, &request.binding)?;
             validate_refs(
                 conn,
                 &request.binding,
@@ -939,7 +1302,7 @@ fn insert_attempt_in_tx(
         params![
             id,
             request.binding.project_id,
-            request.binding.session_id,
+            request.binding.chat_session_id,
             binding_json,
             request.payload_digest,
             input_digest,
@@ -1279,15 +1642,14 @@ where
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
-    let binding: AttemptBinding = serde_json::from_str(&stored.binding_json)?;
+    let binding =
+        read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?;
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
-    validate_binding(&binding)?;
-    ensure!(
-        binding.project_id == stored.project_id && binding.session_id == stored.session_id,
-        "NIR1_GENERATION_BINDING_MISMATCH"
-    );
+    // Claims, parent lineage and history read attempts through this function,
+    // so a legacy row is reachable only through terminalization.
+    let binding = binding.into_current()?;
     Ok(StoredAttempt {
         id: id.to_owned(),
         binding,
@@ -1494,9 +1856,10 @@ fn message_version_materialization_bytes_in_tx(conn: &Connection, id: &str) -> R
 /// A read-only view over one SQLite read transaction. Its fields are private
 /// so callers can issue only the typed, owned reads below; no raw connection,
 /// nested transaction, claim, writer, or transport capability crosses this
-/// boundary. `StoredAttempt.binding` contains only the persisted coarse
-/// digests; it is intentionally not a substitute for the full Scope-axis,
-/// input-use, purpose, or send-classification tuple required by history.
+/// boundary. `StoredAttempt.binding` contains the persisted coarse digests
+/// and the query Scene binding; it is intentionally not a substitute for the
+/// full Scope-axis, input-use, purpose, or send-classification tuple required
+/// by history.
 pub(crate) struct GenerationHistorySnapshotReader<'connection> {
     connection: &'connection Connection,
     cancellation: GenerationHistorySnapshotCancellation,
@@ -1887,7 +2250,7 @@ pub fn claim_attempt(
                 now_ms >= attempt.created_at_ms && now_ms < attempt.expires_at_ms,
                 "NIR1_GENERATION_EXPIRED"
             );
-            require_session(conn, &binding.project_id, &binding.session_id)?;
+            require_bound_session_and_scene(conn, binding)?;
             validate_refs(
                 conn,
                 binding,
@@ -2934,12 +3297,12 @@ where
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
-    let binding: AttemptBinding = serde_json::from_str(&attempt.binding_json)?;
-    validate_binding(&binding)?;
-    ensure!(
-        binding.project_id == attempt.project_id && binding.session_id == attempt.session_id,
-        "NIR1_GENERATION_BINDING_MISMATCH"
-    );
+    // A written terminal stays readable for both binding formats.
+    read_stored_binding(
+        &attempt.binding_json,
+        &attempt.project_id,
+        &attempt.session_id,
+    )?;
     ensure!(
         terminal.payload_digest == attempt.payload_digest,
         "NIR1_GENERATION_PAYLOAD_DIGEST_MISMATCH"
@@ -3105,12 +3468,15 @@ fn finish_in_tx(
         );
     }
     let stored = read_attempt_metadata_in_tx(conn, id)?;
-    let binding: AttemptBinding = serde_json::from_str(&stored.binding_json)?;
-    validate_binding(&binding)?;
-    ensure!(
-        binding.project_id == stored.project_id && binding.session_id == stored.session_id,
-        "NIR1_GENERATION_BINDING_MISMATCH"
-    );
+    let binding =
+        read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?;
+    // A legacy v1 row may only be terminalized without a body (recovery or a
+    // non-success observation). A success body needs the current format.
+    let success_binding = if observation.terminal_status == TerminalStatus::Succeeded {
+        Some(binding.into_current()?)
+    } else {
+        None
+    };
     // Recovery records a conservative terminalization, not a provider event.
     // A regressed wall clock must not strand the attempt or place its terminal
     // before an already-durable create/claim. Live completion keeps its strict
@@ -3150,6 +3516,10 @@ fn finish_in_tx(
         return Ok(existing);
     }
     let message_version = if let Some(body) = body {
+        // A body implies a success observation (NIR1_GENERATION_NON_SUCCESS_BODY).
+        let binding = success_binding
+            .as_ref()
+            .context("NIR1_GENERATION_NON_SUCCESS_BODY")?;
         identity(&body.message_id)?;
         verify_body_observation(body, observation)?;
         let metadata = if body.thinking.is_empty() {
@@ -3971,9 +4341,10 @@ pub fn attempt_id_for_capture(capture: &AcceptedChatInputCapture) -> Result<Stri
 }
 
 /// Create the attempt of one exact current Human capture. The binding must
-/// carry the capture's project, chat session and caller; the inputs must
-/// include its Human message version; and the capture row must still be the
-/// exact current one inside the same transaction.
+/// carry the capture's project, chat session and caller (including the
+/// caller's Main session); the inputs must include its Human message
+/// version; and the capture row must still be the exact current one inside
+/// the same transaction.
 #[cfg(feature = "native-current-human-capture")]
 pub fn create_attempt_for_capture_bounded(
     workspace: &ActiveWorkspaceSnapshot,
@@ -3993,10 +4364,11 @@ pub fn create_attempt_for_capture_bounded(
             )
     });
     if request.binding.project_id != capture.project_id
-        || request.binding.session_id != capture.chat_session_id
-        || request.binding.profile_id != owner.profile_id
-        || request.binding.caller_id != owner.caller_id
-        || request.binding.caller_epoch != owner.caller_epoch
+        || request.binding.chat_session_id != capture.chat_session_id
+        || request.binding.caller.profile_id != owner.profile_id
+        || request.binding.caller.caller_id != owner.caller_id
+        || request.binding.caller.caller_epoch != owner.caller_epoch
+        || request.binding.caller.caller_session_id != owner.caller_session_id
         || !human_input
     {
         return Err(Nir1GenerationStoreError::not_committed(
@@ -4084,11 +4456,7 @@ fn create_attempt_with_id_bounded_checked(
                     "NIR1_GENERATION_ATTEMPT_EXISTS",
                 ));
             }
-            require_session(
-                conn,
-                &request.binding.project_id,
-                &request.binding.session_id,
-            )?;
+            require_bound_session_and_scene(conn, &request.binding)?;
             validate_refs(
                 conn,
                 &request.binding,
@@ -4136,7 +4504,7 @@ pub fn claim_attempt_bounded(
                     "NIR1_GENERATION_EXPIRED",
                 ));
             }
-            require_session(conn, &stored.binding.project_id, &stored.binding.session_id)?;
+            require_bound_session_and_scene(conn, &stored.binding)?;
             validate_refs(
                 conn,
                 &stored.binding,

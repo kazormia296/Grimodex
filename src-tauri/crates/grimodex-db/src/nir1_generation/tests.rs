@@ -16,12 +16,41 @@ fn test_digest(value: &str) -> String {
     canonical_json_digest(&json!(value)).expect("test digest")
 }
 
+/// The Scene that generic attempts bind. The Native A1 writer mints its scope
+/// incarnation; the fixture then pins that opaque value so `binding()` stays
+/// a pure helper. Storage only compares it exactly.
+const GENERATION_SCENE_ID: &str = "generation-scene";
+const GENERATION_SCENE_INCARNATION: &str = "generation-scene-incarnation";
+const GENERATION_SCENE_UPDATED_AT: &str = "2026-10-11 00:00:00";
+const GENERATION_SCENE_BODY: &str = r#"{"type":"doc","content":[]}"#;
+
 fn database(path: &Path) -> Database {
     let db = Database::new(path).expect("database");
     db.migrate().expect("migrate");
     db.with_conn(|conn| {
         conn.execute("INSERT OR IGNORE INTO projects(id,title) VALUES ('generation-project','Project')",[])?;
-        conn.execute("INSERT OR IGNORE INTO chat_sessions(id,project_id) VALUES ('generation-session','generation-project')",[])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO tree_nodes
+               (id,project_id,node_type,title,sort_order,content,version,created_at,updated_at)
+             VALUES (?1,'generation-project','scene','Generation','a0',?2,0,?3,?3)",
+            params![
+                GENERATION_SCENE_ID,
+                GENERATION_SCENE_BODY,
+                GENERATION_SCENE_UPDATED_AT
+            ],
+        )?;
+        crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+            conn,
+            "generation-project",
+            GENERATION_SCENE_ID,
+            GENERATION_SCENE_UPDATED_AT,
+        )?;
+        conn.execute(
+            "UPDATE narrative_scene_scope_bindings SET scene_incarnation_id=?2
+              WHERE project_id='generation-project' AND scene_id=?1",
+            params![GENERATION_SCENE_ID, GENERATION_SCENE_INCARNATION],
+        )?;
+        conn.execute("INSERT OR IGNORE INTO chat_sessions(id,project_id,node_id) VALUES ('generation-session','generation-project','generation-scene')",[])?;
         Ok(())
     }).expect("fixture");
     db
@@ -65,23 +94,42 @@ where
     })
 }
 
+fn generation_scene_binding() -> AttemptSceneBinding {
+    AttemptSceneBinding {
+        scene_id: GENERATION_SCENE_ID.into(),
+        scene_incarnation_id: GENERATION_SCENE_INCARNATION.into(),
+        source_token: format!("v0@{GENERATION_SCENE_UPDATED_AT}"),
+        body_digest: format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(GENERATION_SCENE_BODY.as_bytes()))
+        ),
+    }
+}
+
 fn binding() -> AttemptBinding {
     AttemptBinding {
+        binding_version: AttemptBindingVersion::V2,
         project_id: "generation-project".into(),
-        session_id: "generation-session".into(),
-        profile_id: "profile".into(),
-        caller_id: "main-caller".into(),
-        caller_epoch: 3,
+        chat_session_id: "generation-session".into(),
+        scene: generation_scene_binding(),
+        caller: AttemptCallerBinding {
+            profile_id: "profile".into(),
+            caller_id: "main-caller".into(),
+            caller_epoch: 3,
+            caller_session_id: "main-caller-session".into(),
+        },
         workspace_binding_digest: test_digest("live-workspace-instance"),
+        route_revision: "route-1".into(),
         purpose: GenerationPurpose::Writing,
         scope_digest: test_digest("scope"),
         material_digest: test_digest("material"),
         d1_digest: test_digest("d1"),
-        route_revision: "route-1".into(),
         provider: "local".into(),
         model: "test-model".into(),
         api: "chat-completions".into(),
         endpoint_identity: test_digest("loopback-endpoint"),
+        history_turn_context: None,
+        durable_workspace_identity: None,
     }
 }
 
@@ -1160,7 +1208,7 @@ fn terminal_rejects_binding_json_that_disagrees_with_attempt_identity() {
     let terminal = finish_success(&db, &attempt, "binding-mismatch-message", "answer");
     let mut wrong_binding = attempt.binding.clone();
     wrong_binding.project_id = "other-generation-project".into();
-    wrong_binding.session_id = "other-generation-session".into();
+    wrong_binding.chat_session_id = "other-generation-session".into();
     let binding_json =
         canonical_json_string(&serde_json::to_value(wrong_binding).expect("binding"))
             .expect("canonical binding");
@@ -2379,7 +2427,7 @@ mod capture {
             3,
             1,
             locator.clone(),
-            "caller-session".into(),
+            "main-caller-session".into(),
             "bounded-workspace".into(),
             locator,
             workspace.db().identity(),
@@ -2441,25 +2489,6 @@ mod capture {
         )
     }
 
-    fn bind_scene(snapshot: &crate::state::ActiveWorkspaceSnapshot) {
-        snapshot
-            .db()
-            .db()
-            .with_conn(|conn| {
-                conn.execute(
-                    "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
-                     VALUES (?1, 'generation-project', 'scene', 'Scene', '')",
-                    [SCENE],
-                )?;
-                conn.execute(
-                    "UPDATE chat_sessions SET node_id=?1 WHERE id=?2",
-                    [SCENE, SESSION],
-                )?;
-                Ok(())
-            })
-            .expect("scene-bound session");
-    }
-
     fn attempt_count(snapshot: &crate::state::ActiveWorkspaceSnapshot) -> i64 {
         snapshot
             .db()
@@ -2475,7 +2504,8 @@ mod capture {
     }
 
     /// D13: before any transaction, the capture form refuses a binding whose
-    /// profile, caller or caller epoch is not the capture owner's, and a
+    /// profile, caller, caller epoch or Main caller session is not the
+    /// capture owner's, and a
     /// pinned workspace whose locator or authority instance is not the
     /// owner's (the same path re-opened as a new authority instance, or
     /// another locator under the same instance). Nothing is written.
@@ -2483,7 +2513,6 @@ mod capture {
     fn d13_capture_create_requires_the_owner_caller_and_workspace_incarnation() {
         let workspace = BoundedWorkspace::new();
         let snapshot = workspace.snapshot();
-        bind_scene(&snapshot);
         let capture = accept(&snapshot, "d13");
         let refused = |pinned: &crate::state::ActiveWorkspaceSnapshot,
                        capture: &AcceptedChatInputCapture,
@@ -2499,12 +2528,13 @@ mod capture {
                 error.source
             );
         };
-        for name in ["profile", "caller", "caller epoch"] {
+        for name in ["profile", "caller", "caller epoch", "caller session"] {
             let mut request = capture_request(&capture);
             match name {
-                "profile" => request.binding.profile_id = "another-profile".into(),
-                "caller" => request.binding.caller_id = "another-caller".into(),
-                _ => request.binding.caller_epoch += 1,
+                "profile" => request.binding.caller.profile_id = "another-profile".into(),
+                "caller" => request.binding.caller.caller_id = "another-caller".into(),
+                "caller epoch" => request.binding.caller.caller_epoch += 1,
+                _ => request.binding.caller.caller_session_id = "another-caller-session".into(),
             }
             refused(
                 &snapshot,
@@ -2550,11 +2580,54 @@ mod capture {
         assert_eq!(attempt_count(&snapshot), 1);
     }
 
+    /// DT-3: the capture form binds the live Scene of the session in the same
+    /// transaction. A binding built from another Scene body, or a Scene that
+    /// was archived after the capture was accepted, is refused and writes
+    /// nothing; the same capture then creates its one attempt.
+    #[test]
+    fn dt3_capture_create_binds_the_live_scene_of_the_session() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let capture = accept(&snapshot, "dt3");
+        let set_archived = |value: Option<&str>| {
+            snapshot
+                .db()
+                .db()
+                .with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE tree_nodes SET archived_at=?2
+                          WHERE id=?1 AND project_id='generation-project'",
+                        params![SCENE, value],
+                    )?;
+                    Ok(())
+                })
+                .expect("archive state");
+        };
+        let refused = |request: NewAttempt, code: &str| {
+            let error = create_for(&snapshot, &capture, request).expect_err(code);
+            assert_eq!(error.commit(), Nir1CommitState::NotCommitted, "{code}");
+            assert!(
+                error_chain_contains(&error.source, code),
+                "{code}: {:#}",
+                error.source
+            );
+            assert_eq!(attempt_count(&snapshot), 0, "{code}");
+        };
+        let mut another_body = capture_request(&capture);
+        another_body.binding.scene.body_digest = test_digest("another body");
+        refused(another_body, "NIR1_GENERATION_SCENE_BODY_MISMATCH");
+        set_archived(Some("2026-10-12 00:01:00"));
+        refused(capture_request(&capture), "NIR1_GENERATION_SCENE_ARCHIVED");
+        set_archived(None);
+        create_for(&snapshot, &capture, capture_request(&capture))
+            .expect("the live Scene binds the capture");
+        assert_eq!(attempt_count(&snapshot), 1);
+    }
+
     #[test]
     fn d9_capture_create_is_deterministic_and_requires_the_current_capture() {
         let workspace = BoundedWorkspace::new();
         let snapshot = workspace.snapshot();
-        bind_scene(&snapshot);
         let first = accept(&snapshot, "first");
         let attempt = create_for(&snapshot, &first, capture_request(&first)).expect("create");
         assert_eq!(
@@ -2572,7 +2645,7 @@ mod capture {
 
         let second = accept(&snapshot, "second");
         let mut wrong_session = capture_request(&second);
-        wrong_session.binding.session_id = "another-session".into();
+        wrong_session.binding.chat_session_id = "another-session".into();
         assert_eq!(
             create_for(&snapshot, &second, wrong_session)
                 .expect_err("session mismatch")
@@ -2611,6 +2684,1172 @@ mod capture {
                 .expect_err("cancelled capture")
                 .failure(),
             Nir1StoreFailure::NotCurrent
+        );
+    }
+}
+
+// S4 (DT-3): the Scene `v{version}@{updated_at}` token repeats across Scene
+// incarnations, and the Main-issued caller session is not a chat session.
+// These tests describe the AttemptBinding v2 contract; only the helpers that
+// assemble a binding change between the v1 (red) and v2 (green) shapes.
+
+const S4_SCENE_ID: &str = "s4-scene";
+/// `datetime('now')` form. The trash restore writer relies on this
+/// one-second column default, so two incarnations created within the same
+/// second share it; snapshot restore re-inserts the captured value verbatim.
+const S4_UPDATED_AT: &str = "2026-10-12 00:00:00";
+const S4_BODY: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"S4 scene body"}]}]}"#;
+const S4_OTHER_BODY: &str = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"another Scene reusing the id"}]}]}"#;
+/// Main issues one random `sessionId` per sender
+/// (electron/main/profileEgress.ts:648); it never names a chat_sessions row.
+const S4_MAIN_CALLER_SESSION: &str = "5f0c9a52-6f39-4c41-9d0e-0b7c6d4e8a31";
+
+#[derive(Clone, Copy, Debug)]
+enum S4SceneReplacement {
+    /// Delete, then recreate the same row (undo/redo or a writer that reuses
+    /// the captured state).
+    DeleteAndRecreate,
+    /// Edit, then restore a snapshot captured before the attempt: every tree
+    /// row is deleted and the captured id/created_at/updated_at/content are
+    /// re-inserted without a version (column default 0).
+    SnapshotRestore,
+    /// A different Scene reuses the id within the same second.
+    IdReuse,
+}
+
+/// Insert one live version-0 Scene row and let the Native A1 writer mint its
+/// scope incarnation, as every Scene writer does. The chat session is
+/// attached to the Scene, as current Human capture requires.
+fn s4_insert_scene(db: &Database, updated_at: &str, content: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO tree_nodes
+               (id,project_id,node_type,title,sort_order,content,version,created_at,updated_at)
+             VALUES (?1,'generation-project','scene','S4','a0',?2,0,?3,?3)",
+            params![S4_SCENE_ID, content, updated_at],
+        )?;
+        crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+            conn,
+            "generation-project",
+            S4_SCENE_ID,
+            updated_at,
+        )?;
+        conn.execute(
+            "UPDATE chat_sessions SET node_id=?1 WHERE id='generation-session'",
+            [S4_SCENE_ID],
+        )?;
+        Ok(())
+    })
+    .expect("S4 scene");
+}
+
+fn s4_delete_scene(db: &Database) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM tree_nodes WHERE id=?1 AND project_id='generation-project'",
+            [S4_SCENE_ID],
+        )?;
+        Ok(())
+    })
+    .expect("delete S4 scene");
+}
+
+/// The stored Scene token and its Native A1 incarnation.
+fn s4_scene_state(db: &Database) -> (String, String) {
+    db.with_read_transaction(|conn| {
+        let (version, updated_at, incarnation): (i64, String, String) = conn.query_row(
+            "SELECT t.version,t.updated_at,b.scene_incarnation_id
+               FROM tree_nodes t
+               JOIN narrative_scene_scope_bindings b
+                 ON b.project_id=t.project_id AND b.scene_id=t.id
+              WHERE t.id=?1 AND t.project_id='generation-project'",
+            [S4_SCENE_ID],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        Ok((format!("v{version}@{updated_at}"), incarnation))
+    })
+    .expect("S4 scene state")
+}
+
+/// Replace the S4 Scene the way each ABA path does. The replacement keeps the
+/// Scene token (`v{version}@{updated_at}`) and the Native A1 writer mints a
+/// new incarnation.
+fn s4_replace_scene(db: &Database, replacement: S4SceneReplacement) {
+    match replacement {
+        S4SceneReplacement::DeleteAndRecreate => {
+            s4_delete_scene(db);
+            s4_insert_scene(db, S4_UPDATED_AT, S4_BODY);
+        }
+        S4SceneReplacement::SnapshotRestore => {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET content=?2,version=version+1,
+                            updated_at='2026-10-12 00:05:00'
+                      WHERE id=?1 AND project_id='generation-project'",
+                    params![S4_SCENE_ID, S4_OTHER_BODY],
+                )?;
+                Ok(())
+            })
+            .expect("edit after the snapshot");
+            s4_delete_scene(db);
+            s4_insert_scene(db, S4_UPDATED_AT, S4_BODY);
+            db.with_conn(|conn| {
+                crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                    conn,
+                    "generation-project",
+                    S4_SCENE_ID,
+                    S4_UPDATED_AT,
+                )?;
+                Ok(())
+            })
+            .expect("restore refreshes the scope token");
+        }
+        S4SceneReplacement::IdReuse => {
+            s4_delete_scene(db);
+            s4_insert_scene(db, S4_UPDATED_AT, S4_OTHER_BODY);
+        }
+    }
+}
+
+/// Change one column of the S4 Scene (`assignment` uses `?2`).
+fn s4_update_scene(db: &Database, assignment: &str, value: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            &format!(
+                "UPDATE tree_nodes SET {assignment} WHERE id=?1 AND project_id='generation-project'"
+            ),
+            params![S4_SCENE_ID, value],
+        )?;
+        Ok(())
+    })
+    .expect("update the S4 Scene");
+}
+
+/// The attempt an earlier turn prepared for the S4 Scene. Besides the Raw
+/// Source reference, the v2 binding pins the Scene incarnation, source token
+/// and body digest read in one transaction.
+fn s4_scene_request(db: &Database) -> NewAttempt {
+    let (token, _incarnation) = s4_scene_state(db);
+    let source_key = format!("project:scene:{S4_SCENE_ID}");
+    let mut attempt = request(
+        vec![InputReference {
+            role: InputRole::Context,
+            target: InputTarget::RawSource {
+                source_key: source_key.clone(),
+                revision_token: token.clone(),
+            },
+        }],
+        vec![QualificationReference {
+            input_ordinal: 0,
+            kind: QualificationKind::Source,
+            identity: source_key,
+            version: token,
+        }],
+    );
+    attempt.binding.scene = db
+        .with_read_transaction(|conn| {
+            read_attempt_scene_binding_in_tx(conn, "generation-project", S4_SCENE_ID)
+        })
+        .expect("S4 Scene binding");
+    attempt
+}
+
+/// A request assembled like the Native owner does for a production caller:
+/// the Main caller session is part of the process-local caller binding, and
+/// the chat session stays the DB-validated `generation-session`.
+fn s4_production_request(db: &Database, main_caller_session: &str) -> NewAttempt {
+    let mut request = s4_scene_request(db);
+    request.binding.caller.caller_session_id = main_caller_session.into();
+    request
+}
+
+#[test]
+fn s4_old_attempt_cannot_claim_after_scene_delete_recreate_restore_or_id_reuse() {
+    // Every replacement is evaluated before failing so each one reports its
+    // own outcome.
+    let mut accepted = Vec::new();
+    for replacement in [
+        S4SceneReplacement::DeleteAndRecreate,
+        S4SceneReplacement::SnapshotRestore,
+        S4SceneReplacement::IdReuse,
+    ] {
+        let db = database(Path::new(":memory:"));
+        s4_insert_scene(&db, S4_UPDATED_AT, S4_BODY);
+        let (old_token, old_incarnation) = s4_scene_state(&db);
+        let attempt = create_attempt(&db, s4_scene_request(&db))
+            .unwrap_or_else(|error| panic!("{replacement:?}: attempt for the Scene: {error:#}"));
+
+        s4_replace_scene(&db, replacement);
+
+        let (new_token, new_incarnation) = s4_scene_state(&db);
+        assert_eq!(
+            new_token, old_token,
+            "{replacement:?}: the Scene token repeats across incarnations"
+        );
+        assert_ne!(
+            new_incarnation, old_incarnation,
+            "{replacement:?}: the Native A1 writer minted a new incarnation"
+        );
+        match claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()) {
+            Ok(won) => accepted.push(format!(
+                "{replacement:?}: the old attempt was claimable against a replaced Scene incarnation (won={won})"
+            )),
+            Err(error) => assert!(
+                error
+                    .to_string()
+                    .contains("NIR1_GENERATION_SCENE_INCARNATION_MISMATCH"),
+                "{replacement:?}: {error:#}"
+            ),
+        }
+    }
+    assert!(accepted.is_empty(), "{}", accepted.join("\n"));
+}
+
+#[test]
+fn s4_old_attempt_cannot_claim_archived_scene() {
+    let db = database(Path::new(":memory:"));
+    s4_insert_scene(&db, S4_UPDATED_AT, S4_BODY);
+    let before = s4_scene_state(&db);
+    let attempt = create_attempt(&db, s4_scene_request(&db)).expect("attempt for the Scene");
+    // A tree patch may archive without bumping the version and with a
+    // caller-chosen updated_at, so the token and incarnation stay the same.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE tree_nodes SET archived_at='2026-10-12 00:01:00'
+              WHERE id=?1 AND project_id='generation-project'",
+            [S4_SCENE_ID],
+        )?;
+        Ok(())
+    })
+    .expect("archive the Scene");
+    assert_eq!(s4_scene_state(&db), before);
+    match claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()) {
+        Ok(won) => panic!("the old attempt was claimable against an archived Scene (won={won})"),
+        Err(error) => assert!(
+            error.to_string().contains("NIR1_GENERATION_SCENE_ARCHIVED"),
+            "{error:#}"
+        ),
+    }
+}
+
+#[test]
+fn s4_main_issued_caller_session_is_not_the_db_chat_session() {
+    let db = database(Path::new(":memory:"));
+    s4_insert_scene(&db, S4_UPDATED_AT, S4_BODY);
+    let attempt = create_attempt(&db, s4_production_request(&db, S4_MAIN_CALLER_SESSION))
+        .unwrap_or_else(|error| {
+            panic!(
+                "a Main-issued caller session must not be validated as a chat session: {error:#}"
+            )
+        });
+    let stored_session: String = db
+        .with_read_transaction(|conn| {
+            Ok(conn.query_row(
+                "SELECT session_id FROM nir1_generation_attempts WHERE id=?1",
+                [&attempt.id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("stored session");
+    assert_eq!(
+        stored_session, "generation-session",
+        "the attempt row keeps the DB-validated chat session"
+    );
+    assert!(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget())
+            .expect("the same binding claims once")
+    );
+}
+
+// DT-3: the binding version dispatcher, the separated sessions, the Scene
+// binding checks, the binding size ceiling and the downgrade behaviour.
+
+fn legacy_v1_binding() -> LegacyAttemptBindingV1 {
+    let current = binding();
+    LegacyAttemptBindingV1 {
+        project_id: current.project_id,
+        session_id: current.chat_session_id,
+        profile_id: current.caller.profile_id,
+        caller_id: current.caller.caller_id,
+        caller_epoch: current.caller.caller_epoch,
+        workspace_binding_digest: current.workspace_binding_digest,
+        purpose: current.purpose,
+        scope_digest: current.scope_digest,
+        material_digest: current.material_digest,
+        d1_digest: current.d1_digest,
+        route_revision: current.route_revision,
+        provider: current.provider,
+        model: current.model,
+        api: current.api,
+        endpoint_identity: current.endpoint_identity,
+    }
+}
+
+fn binding_value<T: Serialize>(binding: &T) -> Value {
+    serde_json::to_value(binding).expect("binding value")
+}
+
+fn canonical_binding(value: &Value) -> String {
+    canonical_json_string(value).expect("canonical binding")
+}
+
+/// Replace one attempt row's binding, as a pre-DT-3 writer, a later writer or
+/// an import would have stored it.
+fn store_binding_json(db: &Database, attempt_id: &str, binding_json: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE nir1_generation_attempts SET binding_json=?2 WHERE id=?1",
+            params![attempt_id, binding_json],
+        )?;
+        Ok(())
+    })
+    .expect("store binding JSON");
+}
+
+/// Change one column of the generic fixture Scene (`assignment` uses `?2`).
+fn update_generation_scene(db: &Database, assignment: &str, value: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            &format!(
+                "UPDATE tree_nodes SET {assignment} WHERE id=?1 AND project_id='generation-project'"
+            ),
+            params![GENERATION_SCENE_ID, value],
+        )?;
+        Ok(())
+    })
+    .expect("update the generation Scene");
+}
+
+fn set_generation_session_node(db: &Database, node: Option<&str>) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_sessions SET node_id=?1 WHERE id='generation-session'",
+            [node],
+        )?;
+        Ok(())
+    })
+    .expect("move the chat session");
+}
+
+fn read_generation_scene_binding(db: &Database) -> Result<AttemptSceneBinding> {
+    db.with_read_transaction(|conn| {
+        read_attempt_scene_binding_in_tx(conn, "generation-project", GENERATION_SCENE_ID)
+    })
+}
+
+fn assert_error_code<T: std::fmt::Debug>(result: Result<T>, code: &str) {
+    let error = result.expect_err(code);
+    assert!(
+        format!("{error:#}").contains(code),
+        "expected {code}, got {error:#}"
+    );
+}
+
+fn history_budget() -> GenerationHistoryReadBudget {
+    GenerationHistoryReadBudget {
+        max_attempts: 4,
+        max_candidates: 8,
+        max_reference_count: 8,
+        max_reference_bytes: 16_384,
+        max_resolved_body_bytes: 16_384,
+        remaining_nodes: 8,
+        remaining_edges: 8,
+        remaining_qualification_refs: 16,
+    }
+}
+
+#[test]
+fn dt3_scene_reader_returns_the_bound_incarnation_token_and_body_digest() {
+    let db = database(Path::new(":memory:"));
+    assert_eq!(
+        read_generation_scene_binding(&db).expect("fixture Scene binding"),
+        generation_scene_binding()
+    );
+    assert_error_code(
+        db.with_conn(|conn| {
+            read_attempt_scene_binding_in_tx(conn, "generation-project", GENERATION_SCENE_ID)
+        }),
+        "NIR1_GENERATION_TRANSACTION_REQUIRED",
+    );
+    assert_error_code(
+        db.with_read_transaction(|conn| {
+            read_attempt_scene_binding_in_tx(conn, "other-project", GENERATION_SCENE_ID)
+        }),
+        "NIR1_GENERATION_SCENE_UNAVAILABLE",
+    );
+}
+
+#[test]
+fn dt3_dispatcher_reads_v1_and_v2_and_rejects_unknown_versions_keys_and_slots() {
+    let current = binding_value(&binding());
+    assert_eq!(current["bindingVersion"], json!(2));
+    assert!(current["historyTurnContext"].is_null());
+    assert!(current["durableWorkspaceIdentity"].is_null());
+    match parse_attempt_binding(&canonical_binding(&current)).expect("v2 binding") {
+        VersionedAttemptBinding::Current(parsed) => assert_eq!(parsed, binding()),
+        VersionedAttemptBinding::LegacyV1(_) => panic!("a v2 binding was read as legacy"),
+    }
+    let legacy = binding_value(&legacy_v1_binding());
+    assert!(legacy.get("bindingVersion").is_none());
+    assert!(matches!(
+        parse_attempt_binding(&canonical_binding(&legacy)).expect("v1 binding"),
+        VersionedAttemptBinding::LegacyV1(_)
+    ));
+
+    // Raw stored text: canonical JSON itself would spell 2.0 as 2.
+    let canonical_current = canonical_binding(&current);
+    for version in [
+        "1",
+        "3",
+        r#""2""#,
+        "2.0",
+        "2e0",
+        "-2",
+        r#"{"major":2}"#,
+        "[2]",
+    ] {
+        let raw = canonical_current.replacen(
+            r#""bindingVersion":2"#,
+            &format!(r#""bindingVersion":{version}"#),
+            1,
+        );
+        assert_ne!(raw, canonical_current);
+        assert_error_code(
+            parse_attempt_binding(&raw),
+            "NIR1_GENERATION_BINDING_VERSION_UNSUPPORTED",
+        );
+    }
+    // An explicit null is not a version; the v1 struct rejects the key.
+    for base in [&current, &legacy] {
+        let mut value = base.clone();
+        value["bindingVersion"] = Value::Null;
+        assert_error_code(
+            parse_attempt_binding(&canonical_binding(&value)),
+            "NIR1_GENERATION_BINDING_INVALID",
+        );
+    }
+    for base in [&current, &legacy] {
+        let mut value = base.clone();
+        value["unknownAuthority"] = json!("unchecked");
+        assert_error_code(
+            parse_attempt_binding(&canonical_binding(&value)),
+            "NIR1_GENERATION_BINDING_INVALID",
+        );
+    }
+    for nested in ["scene", "caller"] {
+        let mut value = current.clone();
+        value[nested]["unknownAuthority"] = json!("unchecked");
+        assert_error_code(
+            parse_attempt_binding(&canonical_binding(&value)),
+            "NIR1_GENERATION_BINDING_INVALID",
+        );
+    }
+    for slot in ["historyTurnContext", "durableWorkspaceIdentity"] {
+        for filled in [json!({}), json!("value"), json!(0), json!([])] {
+            let mut value = current.clone();
+            value[slot] = filled;
+            assert_error_code(
+                parse_attempt_binding(&canonical_binding(&value)),
+                "NIR1_GENERATION_BINDING_RESERVED_SLOT_SET",
+            );
+        }
+    }
+    let mut without_scene = current.clone();
+    without_scene
+        .as_object_mut()
+        .expect("binding object")
+        .remove("scene");
+    assert_error_code(
+        parse_attempt_binding(&canonical_binding(&without_scene)),
+        "NIR1_GENERATION_BINDING_INVALID",
+    );
+    let duplicated = canonical_binding(&current).replacen('{', r#"{"bindingVersion":2,"#, 1);
+    assert_error_code(
+        parse_attempt_binding(&duplicated),
+        "NIR1_GENERATION_BINDING_INVALID",
+    );
+}
+
+#[test]
+fn dt3_legacy_v1_row_is_terminalized_but_never_claimed_or_read_as_current() {
+    let workspace = bounded::BoundedWorkspace::new();
+    let snapshot = workspace.snapshot();
+    let pinned = workspace.db();
+    let db = pinned.db();
+    let recovered = create_attempt(db, request(vec![], vec![])).expect("recovered attempt");
+    let cancelled = create_attempt(db, request(vec![], vec![])).expect("cancelled attempt");
+    let legacy_json = canonical_binding(&binding_value(&legacy_v1_binding()));
+    for attempt in [&recovered, &cancelled] {
+        store_binding_json(db, &attempt.id, &legacy_json);
+        assert_error_code(
+            read_attempt(db, &attempt.id, budget()),
+            "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY",
+        );
+        assert_error_code(
+            claim_attempt(db, &attempt.id, &attempt.binding, 1_500, budget()),
+            "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY",
+        );
+        let refused = claim_attempt_bounded(
+            &snapshot,
+            &bounded::expected(attempt),
+            &bounded::admission(),
+            &mut || Ok(()),
+        )
+        .expect_err("a legacy v1 row is never claimed by the production writer");
+        assert_eq!(refused.commit(), Nir1CommitState::NotCommitted);
+        assert!(
+            format!("{:#}", refused.source)
+                .contains("NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY"),
+            "{:#}",
+            refused.source
+        );
+        assert_error_code(
+            finish_attempt(
+                db,
+                &attempt.id,
+                &completed("legacy answer", ""),
+                Some(NewMessageBody {
+                    message_id: format!("legacy-body-{}", attempt.id),
+                    content: "legacy answer".into(),
+                    thinking: String::new(),
+                }),
+                1_600,
+            ),
+            "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY",
+        );
+    }
+    db.with_conn(|conn| {
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM nir1_generation_attempts WHERE claimed_at_ms IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM chat_messages WHERE role='assistant'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            0
+        );
+        Ok(())
+    })
+    .expect("no claim and no generated body");
+
+    // The production sweep terminalizes a legacy row through the bounded
+    // recovery writer.
+    let terminal = recover_attempt_bounded(
+        &snapshot,
+        &recovered.id,
+        2_000,
+        ParticipantSqlOperationBudget::new(
+            Arc::new(AtomicBool::new(false)),
+            Instant::now() + NIR1_GENERATION_OPERATION_LIMIT,
+            NIR1_GENERATION_SQLITE_BUSY_LIMIT,
+        ),
+    )
+    .expect("legacy recovery");
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::InterruptedUnknown)
+    );
+    assert!(terminal.message_version.is_none());
+    assert_eq!(
+        read_terminal(db, &recovered.id).expect("legacy terminal"),
+        Some(terminal.clone())
+    );
+    assert_eq!(
+        recover_attempt(db, &recovered.id, 3_000).expect("repeat recovery"),
+        terminal
+    );
+    let cancellation = OutputObserver::new().finish(Completion::Cancelled);
+    let cancelled_terminal =
+        finish_attempt(db, &cancelled.id, &cancellation, None, 2_000).expect("legacy cancel");
+    assert_eq!(
+        cancelled_terminal.failure_classification,
+        Some(FailureClassification::Cancelled)
+    );
+    assert_eq!(
+        read_terminal(db, &cancelled.id).expect("cancelled terminal"),
+        Some(cancelled_terminal)
+    );
+    assert!(pending_attempt_ids(db, "generation-project", None, 8)
+        .expect("pending page")
+        .is_empty());
+}
+
+#[test]
+fn dt3_legacy_v1_receipt_stays_readable_but_cannot_parent_or_feed_history() {
+    let db = database(Path::new(":memory:"));
+    let parent = create_attempt(&db, request(vec![], vec![])).expect("parent");
+    let terminal = finish_success(&db, &parent, "legacy-parent-message", "answer");
+    let parent_version = terminal.message_version.clone().expect("parent version");
+    store_binding_json(
+        &db,
+        &parent.id,
+        &canonical_binding(&binding_value(&legacy_v1_binding())),
+    );
+
+    assert_eq!(
+        read_terminal(&db, &parent.id).expect("written terminal stays readable"),
+        Some(terminal)
+    );
+    assert_error_code(
+        create_attempt(&db, request(vec![message_input(&parent_version)], vec![])),
+        "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY",
+    );
+    let mut caller_budget = history_budget();
+    assert_error_code(
+        with_snapshot(&db, &mut caller_budget, |reader, budget| {
+            reader.read_attempt(budget, &parent.id).map(|_| ())
+        }),
+        "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY",
+    );
+}
+
+#[test]
+fn dt3_unknown_binding_version_row_is_never_claimed_or_recovered() {
+    let db = database(Path::new(":memory:"));
+    let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
+    let mut future = binding_value(&attempt.binding);
+    future["bindingVersion"] = json!(3);
+    future["historyTurnContext"] = json!({"turn": "a later writer"});
+    store_binding_json(&db, &attempt.id, &canonical_binding(&future));
+
+    assert_error_code(
+        read_attempt(&db, &attempt.id, budget()),
+        "NIR1_GENERATION_BINDING_VERSION_UNSUPPORTED",
+    );
+    assert_error_code(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()),
+        "NIR1_GENERATION_BINDING_VERSION_UNSUPPORTED",
+    );
+    assert_error_code(
+        recover_attempt(&db, &attempt.id, 2_000),
+        "NIR1_GENERATION_BINDING_VERSION_UNSUPPORTED",
+    );
+    assert!(read_terminal(&db, &attempt.id)
+        .expect("no terminal")
+        .is_none());
+    assert_eq!(
+        pending_attempt_ids(&db, "generation-project", None, 8).expect("pending page"),
+        vec![attempt.id.clone()]
+    );
+}
+
+/// A reader that predates DT-3 knows only the v1 struct; it must not read a
+/// v2 row at all, so it can neither claim nor terminalize one.
+#[test]
+fn dt3_v1_only_reader_rejects_v2_rows_fail_closed() {
+    let db = database(Path::new(":memory:"));
+    let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
+    let stored: String = db
+        .with_read_transaction(|conn| {
+            Ok(conn.query_row(
+                "SELECT binding_json FROM nir1_generation_attempts WHERE id=?1",
+                [&attempt.id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("stored binding");
+    assert_eq!(stored, canonical_binding(&binding_value(&attempt.binding)));
+    let error = serde_json::from_str::<LegacyAttemptBindingV1>(&stored)
+        .expect_err("a v1-only reader must reject a v2 binding");
+    assert!(error.to_string().contains("unknown field"), "{error}");
+    serde_json::from_str::<LegacyAttemptBindingV1>(&canonical_binding(&binding_value(
+        &legacy_v1_binding(),
+    )))
+    .expect("the v1 reader still reads v1 rows");
+}
+
+#[test]
+fn dt3_session_confusion_and_detached_sessions_are_rejected() {
+    let db = database(Path::new(":memory:"));
+    let mut confused = request(vec![], vec![]);
+    confused.binding.caller.caller_session_id = confused.binding.chat_session_id.clone();
+    assert_error_code(
+        create_attempt(&db, confused),
+        "NIR1_GENERATION_SESSION_CONFUSION",
+    );
+    let mut main_session_as_chat = request(vec![], vec![]);
+    main_session_as_chat.binding.chat_session_id = S4_MAIN_CALLER_SESSION.into();
+    assert_error_code(
+        create_attempt(&db, main_session_as_chat),
+        "NIR1_GENERATION_SESSION_MISMATCH",
+    );
+    set_generation_session_node(&db, None);
+    assert_error_code(
+        create_attempt(&db, request(vec![], vec![])),
+        "NIR1_GENERATION_SESSION_SCENE_MISMATCH",
+    );
+
+    set_generation_session_node(&db, Some(GENERATION_SCENE_ID));
+    let attempt = create_attempt(&db, request(vec![], vec![])).expect("attached session");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO tree_nodes(id,project_id,node_type,title,sort_order)
+             VALUES ('generation-folder','generation-project','folder','Folder','a1')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("another node");
+    set_generation_session_node(&db, Some("generation-folder"));
+    assert_error_code(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()),
+        "NIR1_GENERATION_SESSION_SCENE_MISMATCH",
+    );
+    set_generation_session_node(&db, Some(GENERATION_SCENE_ID));
+    let mut other_main_session = attempt.binding.clone();
+    other_main_session.caller.caller_session_id = S4_MAIN_CALLER_SESSION.into();
+    assert_error_code(
+        claim_attempt(&db, &attempt.id, &other_main_session, 1_500, budget()),
+        "NIR1_GENERATION_BINDING_MISMATCH",
+    );
+    assert!(read_attempt(&db, &attempt.id, budget())
+        .expect("attempt")
+        .claimed_at_ms
+        .is_none());
+    assert!(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget())
+            .expect("the exact binding still claims")
+    );
+}
+
+#[test]
+fn dt3_in_place_scene_changes_and_missing_incarnation_reject_the_attempt() {
+    let db = database(Path::new(":memory:"));
+    let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
+
+    // A tree patch may change the body without bumping the version and with a
+    // caller-chosen updated_at, so the token stays the same.
+    update_generation_scene(
+        &db,
+        "content=?2",
+        r#"{"type":"doc","content":[{"type":"paragraph"}]}"#,
+    );
+    assert_error_code(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()),
+        "NIR1_GENERATION_SCENE_BODY_MISMATCH",
+    );
+    update_generation_scene(&db, "content=?2", GENERATION_SCENE_BODY);
+
+    // An edit inside the same incarnation changes the token.
+    update_generation_scene(&db, "updated_at=?2", "2026-10-11 00:00:01");
+    assert_error_code(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()),
+        "NIR1_GENERATION_SCENE_SOURCE_STALE",
+    );
+    update_generation_scene(&db, "updated_at=?2", GENERATION_SCENE_UPDATED_AT);
+    assert_eq!(
+        read_generation_scene_binding(&db).expect("restored Scene"),
+        generation_scene_binding()
+    );
+
+    // A Scene row without its Native scope incarnation row.
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_scene_scope_bindings
+              WHERE project_id='generation-project' AND scene_id=?1",
+            [GENERATION_SCENE_ID],
+        )?;
+        Ok(())
+    })
+    .expect("drop the A1 row");
+    assert_error_code(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()),
+        "NIR1_GENERATION_SCENE_UNAVAILABLE",
+    );
+    assert_error_code(
+        create_attempt(&db, request(vec![], vec![])),
+        "NIR1_GENERATION_SCENE_UNAVAILABLE",
+    );
+    assert!(read_attempt(&db, &attempt.id, budget())
+        .expect("attempt")
+        .claimed_at_ms
+        .is_none());
+}
+
+#[test]
+fn dt3_scene_body_over_the_packing_ceiling_is_rejected_before_materialization() {
+    let db = database(Path::new(":memory:"));
+    let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
+    // A BLOB cannot be read as the String body, so only the scalar length
+    // admission can produce the limit error below.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE tree_nodes SET content=zeroblob(?2) WHERE id=?1",
+            params![
+                GENERATION_SCENE_ID,
+                i64::try_from(MAX_PACKING_INPUT_BYTES + 1)?
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("oversized body");
+    assert_error_code(
+        read_generation_scene_binding(&db),
+        "NIR1_GENERATION_SCENE_BODY_LIMIT",
+    );
+    assert_error_code(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()),
+        "NIR1_GENERATION_SCENE_BODY_LIMIT",
+    );
+
+    let at_ceiling = "x".repeat(MAX_PACKING_INPUT_BYTES);
+    update_generation_scene(&db, "content=?2", &at_ceiling);
+    assert_eq!(
+        read_generation_scene_binding(&db)
+            .expect("a body at the ceiling")
+            .body_digest,
+        format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(at_ceiling.as_bytes()))
+        )
+    );
+}
+
+#[test]
+fn dt3_v2_binding_over_64_kib_is_rejected_at_create_and_before_parse() {
+    let db = database(Path::new(":memory:"));
+    // Every identity stays within MAX_ID_BYTES, but JSON escaping makes the
+    // canonical binding larger than the storage ceiling.
+    let escaped = "\u{1}".repeat(MAX_ID_BYTES);
+    let mut oversized = request(vec![], vec![]);
+    oversized.binding.provider = escaped.clone();
+    oversized.binding.model = escaped.clone();
+    oversized.binding.api = escaped;
+    assert_error_code(
+        create_attempt(&db, oversized),
+        "NIR1_GENERATION_BINDING_LIMIT",
+    );
+    assert!(pending_attempt_ids(&db, "generation-project", None, 8)
+        .expect("pending page")
+        .is_empty());
+
+    let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
+    let mut padded = binding_value(&attempt.binding);
+    padded["model"] = json!("m".repeat(MAX_BINDING_JSON_BYTES));
+    let padded = canonical_binding(&padded);
+    assert!(padded.len() > MAX_BINDING_JSON_BYTES);
+    store_binding_json(&db, &attempt.id, &padded);
+    assert_error_code(
+        read_attempt(&db, &attempt.id, budget()),
+        "NIR1_GENERATION_BINDING_LIMIT",
+    );
+    assert_error_code(
+        claim_attempt(&db, &attempt.id, &attempt.binding, 1_500, budget()),
+        "NIR1_GENERATION_BINDING_LIMIT",
+    );
+    assert_error_code(
+        recover_attempt(&db, &attempt.id, 2_000),
+        "NIR1_GENERATION_BINDING_LIMIT",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// DT-3 on the DT-2 bounded writers. Create and claim re-read the chat session
+// and the Scene incarnation inside their own IMMEDIATE transaction, and the
+// claim commits its CAS in that same transaction. The terminal writers record
+// an observation, so they never require a current Scene.
+// ---------------------------------------------------------------------------
+
+mod dt3_bounded {
+    use super::bounded::{admission, expected, BoundedWorkspace};
+    use super::*;
+
+    fn no_check() -> impl FnMut() -> Result<()> {
+        || Ok(())
+    }
+
+    /// An unclaimed zero-send terminal of `attempt` through the pinned writer.
+    fn zero_send(
+        snapshot: &ActiveWorkspaceSnapshot,
+        attempt: &StoredAttempt,
+    ) -> std::result::Result<StoredTerminal, Nir1GenerationStoreError> {
+        finish_pretransport_attempt_bounded(
+            snapshot,
+            &expected(attempt),
+            Nir1ExpectedClaim::Unclaimed,
+            Nir1ZeroSendCompletion::DispatchFailure,
+            &Nir1PinnedSqlBudget::new(),
+        )
+    }
+
+    /// The attempt of the S4 Scene, created by the production writer in a
+    /// fresh workspace. Its binding pins the Scene incarnation, token and
+    /// body read in the create transaction's snapshot.
+    fn scene_workspace() -> (BoundedWorkspace, StoredAttempt) {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let pinned = workspace.db();
+        s4_insert_scene(pinned.db(), S4_UPDATED_AT, S4_BODY);
+        let now = wall_clock_ms().expect("clock");
+        let attempt = create_attempt_with_id_bounded(
+            &snapshot,
+            &test_digest("dt3-bounded-scene-attempt"),
+            NewAttempt {
+                created_at_ms: now,
+                expires_at_ms: now + 60_000,
+                ..s4_scene_request(pinned.db())
+            },
+            &admission(),
+            &mut no_check(),
+        )
+        .expect("the production create binds the live Scene");
+        (workspace, attempt)
+    }
+
+    /// Every way the Scene or the session can stop matching the attempt's
+    /// binding between create and claim is refused by the production claim,
+    /// inside the transaction that would have committed its CAS. The attempt
+    /// stays unclaimed, and the pinned zero-send writer still records its
+    /// terminal: a terminal is an observation, not a send.
+    #[test]
+    fn dt3_bounded_claim_refuses_a_changed_scene_or_session_and_zero_send_still_records() {
+        type Change = fn(&Database);
+        // (name, change, expected code, whether the Scene token repeats while
+        // the incarnation is new)
+        let cases: [(&str, Change, &str, bool); 7] = [
+            (
+                "delete and recreate",
+                |db| s4_replace_scene(db, S4SceneReplacement::DeleteAndRecreate),
+                "NIR1_GENERATION_SCENE_INCARNATION_MISMATCH",
+                true,
+            ),
+            (
+                "snapshot restore",
+                |db| s4_replace_scene(db, S4SceneReplacement::SnapshotRestore),
+                "NIR1_GENERATION_SCENE_INCARNATION_MISMATCH",
+                true,
+            ),
+            (
+                "id reuse",
+                |db| s4_replace_scene(db, S4SceneReplacement::IdReuse),
+                "NIR1_GENERATION_SCENE_INCARNATION_MISMATCH",
+                true,
+            ),
+            (
+                "archived",
+                |db| s4_update_scene(db, "archived_at=?2", "2026-10-12 00:01:00"),
+                "NIR1_GENERATION_SCENE_ARCHIVED",
+                false,
+            ),
+            (
+                "body changed in place",
+                |db| s4_update_scene(db, "content=?2", S4_OTHER_BODY),
+                "NIR1_GENERATION_SCENE_BODY_MISMATCH",
+                false,
+            ),
+            (
+                "edited inside the incarnation",
+                |db| s4_update_scene(db, "updated_at=?2", "2026-10-12 00:00:01"),
+                "NIR1_GENERATION_SCENE_SOURCE_STALE",
+                false,
+            ),
+            (
+                "chat session detached from the Scene",
+                |db| set_generation_session_node(db, None),
+                "NIR1_GENERATION_SESSION_SCENE_MISMATCH",
+                false,
+            ),
+        ];
+        for (name, change, code, aba) in cases {
+            let (workspace, attempt) = scene_workspace();
+            let snapshot = workspace.snapshot();
+            let pinned = workspace.db();
+            let db = pinned.db();
+            let before = s4_scene_state(db);
+            change(db);
+            if aba {
+                let after = s4_scene_state(db);
+                assert_eq!(after.0, before.0, "{name}: the Scene token repeats");
+                assert_ne!(after.1, before.1, "{name}: the incarnation is new");
+            }
+            let error = claim_attempt_bounded(
+                &snapshot,
+                &expected(&attempt),
+                &admission(),
+                &mut no_check(),
+            )
+            .expect_err(name);
+            assert_eq!(error.commit(), Nir1CommitState::NotCommitted, "{name}");
+            assert!(
+                error_chain_contains(&error.source, code),
+                "{name}: expected {code}, got {:#}",
+                error.source
+            );
+            assert!(
+                read_attempt(db, &attempt.id, budget())
+                    .expect("attempt")
+                    .claimed_at_ms
+                    .is_none(),
+                "{name}: no claim reached COMMIT"
+            );
+            let terminal = zero_send(&snapshot, &attempt)
+                .unwrap_or_else(|error| panic!("{name}: zero-send must record: {error}"));
+            assert_eq!(
+                terminal.failure_classification,
+                Some(FailureClassification::DispatchUnavailable),
+                "{name}"
+            );
+            assert!(pinned.connection_reusable(), "{name}");
+        }
+    }
+
+    /// Create reads the same things in its own transaction: a binding built
+    /// from an older Scene snapshot, an unknown chat session, a session that
+    /// is not on the Scene, or a merged caller/chat session is refused before
+    /// a row exists.
+    #[test]
+    fn dt3_bounded_create_refuses_a_binding_that_does_not_match_the_live_scene() {
+        type Mutate = fn(&Database, &mut NewAttempt);
+        let cases: [(&str, Mutate, &str); 8] = [
+            (
+                "another incarnation",
+                |_, request| {
+                    request.binding.scene.scene_incarnation_id = "another-incarnation".into()
+                },
+                "NIR1_GENERATION_SCENE_INCARNATION_MISMATCH",
+            ),
+            (
+                "stale source token",
+                |_, request| request.binding.scene.source_token = "v9@2026-10-11 00:00:00".into(),
+                "NIR1_GENERATION_SCENE_SOURCE_STALE",
+            ),
+            (
+                "another body",
+                |_, request| request.binding.scene.body_digest = test_digest("another body"),
+                "NIR1_GENERATION_SCENE_BODY_MISMATCH",
+            ),
+            (
+                "unknown Scene",
+                |_, request| request.binding.scene.scene_id = "unknown-scene".into(),
+                "NIR1_GENERATION_SCENE_UNAVAILABLE",
+            ),
+            (
+                "archived Scene",
+                |db, _| update_generation_scene(db, "archived_at=?2", "2026-10-12 00:01:00"),
+                "NIR1_GENERATION_SCENE_ARCHIVED",
+            ),
+            (
+                "a Main caller session as the chat session",
+                |_, request| request.binding.chat_session_id = S4_MAIN_CALLER_SESSION.into(),
+                "NIR1_GENERATION_SESSION_MISMATCH",
+            ),
+            (
+                "chat session not on the Scene",
+                |db, _| set_generation_session_node(db, None),
+                "NIR1_GENERATION_SESSION_SCENE_MISMATCH",
+            ),
+            (
+                "caller session equal to the chat session",
+                |_, request| {
+                    request.binding.caller.caller_session_id =
+                        request.binding.chat_session_id.clone()
+                },
+                "NIR1_GENERATION_SESSION_CONFUSION",
+            ),
+        ];
+        for (index, (name, mutate, code)) in cases.into_iter().enumerate() {
+            let workspace = BoundedWorkspace::new();
+            let snapshot = workspace.snapshot();
+            let pinned = workspace.db();
+            let db = pinned.db();
+            let now = wall_clock_ms().expect("clock");
+            let mut stale = NewAttempt {
+                created_at_ms: now,
+                expires_at_ms: now + 60_000,
+                ..request(vec![], vec![])
+            };
+            mutate(db, &mut stale);
+            let id = test_digest(&format!("dt3-bounded-create-{index}"));
+            let error = create_attempt_with_id_bounded(
+                &snapshot,
+                &id,
+                stale,
+                &admission(),
+                &mut no_check(),
+            )
+            .expect_err(name);
+            assert_eq!(error.commit(), Nir1CommitState::NotCommitted, "{name}");
+            assert!(
+                error_chain_contains(&error.source, code),
+                "{name}: expected {code}, got {:#}",
+                error.source
+            );
+            assert!(
+                pending_attempt_ids(db, "generation-project", None, 8)
+                    .expect("pending page")
+                    .is_empty(),
+                "{name}: nothing was written"
+            );
+            assert!(pinned.connection_reusable(), "{name}");
+        }
+    }
+
+    /// The terminal writers do not re-check the Scene. Attempts that were
+    /// claimed before their Scene was replaced still record their
+    /// observation, with a generated body or as a recovered interruption.
+    #[test]
+    fn dt3_scene_change_after_claim_does_not_block_the_terminal_record() {
+        let (workspace, attempt) = scene_workspace();
+        let snapshot = workspace.snapshot();
+        let pinned = workspace.db();
+        let db = pinned.db();
+        let now = wall_clock_ms().expect("clock");
+        let second = create_attempt_with_id_bounded(
+            &snapshot,
+            &test_digest("dt3-bounded-second-attempt"),
+            NewAttempt {
+                created_at_ms: now,
+                expires_at_ms: now + 60_000,
+                payload_digest: test_digest("dt3 second payload"),
+                ..s4_scene_request(db)
+            },
+            &admission(),
+            &mut no_check(),
+        )
+        .expect("a second attempt of the same Scene");
+        for claimed in [&attempt, &second] {
+            let Ok(Nir1ClaimOutcome::Claimed { .. }) =
+                claim_attempt_bounded(&snapshot, &expected(claimed), &admission(), &mut no_check())
+            else {
+                panic!("the live Scene claims");
+            };
+        }
+        s4_replace_scene(db, S4SceneReplacement::DeleteAndRecreate);
+        assert_ne!(
+            s4_scene_state(db).1,
+            attempt.binding.scene.scene_incarnation_id,
+            "the Scene was replaced after the claims"
+        );
+        let terminal = finish_attempt_bounded(
+            &snapshot,
+            &expected(&attempt),
+            &completed("recorded answer", ""),
+            Some(NewMessageBody {
+                message_id: "dt3-after-claim-message".into(),
+                content: "recorded answer".into(),
+                thinking: String::new(),
+            }),
+            wall_clock_ms().expect("clock"),
+            &Nir1PinnedSqlBudget::new(),
+        )
+        .expect("a replaced Scene does not block the observation of a claimed attempt");
+        assert!(terminal.message_version.is_some());
+        let recovered = recover_claimed_attempt_bounded(
+            &snapshot,
+            &expected(&second),
+            &Nir1PinnedSqlBudget::new(),
+        )
+        .expect("a replaced Scene does not block the recovery of a claimed attempt");
+        assert_eq!(
+            recovered.failure_classification,
+            Some(FailureClassification::InterruptedUnknown)
         );
     }
 }
