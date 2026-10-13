@@ -8,7 +8,7 @@
 // 注意: 初回の lint / segmentBunsetsu は UniDic のコールドロードで
 // 数秒〜10s かかりうる (FE 側は SLOW_COMMANDS 対応済み)。
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -25,6 +25,17 @@ process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 
 // lint / fonts は workspace 非依存 (openWorkspace 不要で呼べることも契約の一部)
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 
 /** lintStore.ts が送る形と同形の最小 LintBlock。 */
 function block(id, text) {

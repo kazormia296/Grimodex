@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
 import {
   C2ZC_AUTHORITY_APPLICATION_ROWS_QUERY,
@@ -26,6 +26,17 @@ const root = mkdtempSync(join(tmpdir(), "grimodex-node-c2zc-authority-"));
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 
 function canonical(requestId) {
   return {

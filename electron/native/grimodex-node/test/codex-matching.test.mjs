@@ -9,7 +9,7 @@
 //
 // マッチャは workspace 非依存（openWorkspace 不要で呼べる）。
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -25,6 +25,17 @@ const root = mkdtempSync(join(tmpdir(), "grimodex-node-codex-"));
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 
 /** rustMatcher.ts が送る camelCase MatchEntry と同形。 */
 function entry(id, name, extra = {}) {

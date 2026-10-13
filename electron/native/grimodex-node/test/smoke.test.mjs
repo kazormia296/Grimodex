@@ -15,7 +15,7 @@
 // テストは宣言順に直列実行される (共有 Backend の状態遷移に依存するため順序を
 // 変えないこと)。
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -37,6 +37,17 @@ const backend = new Backend(appDataDir);
 // onEvent 登録は new の後 = backend:ready は登録前 emit。EventQueue の
 // バッファ + flush が効いていることをテスト 2 で検証する。
 backend.onEvent((channel, payload) => events.push({ channel, payload }));
+
+// Background workspace maintenance can still be writing under ws/ when the
+// exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 
 async function waitForEvent(channel, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;

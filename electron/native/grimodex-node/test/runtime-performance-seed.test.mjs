@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -19,6 +19,17 @@ const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
 const root = mkdtempSync(join(tmpdir(), "grimodex-runtime-seed-"));
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 const ownerTokenEnvironment = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
 const originalOwnerToken = process.env[ownerTokenEnvironment];
 
