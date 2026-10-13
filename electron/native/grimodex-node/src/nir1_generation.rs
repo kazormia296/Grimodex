@@ -3849,6 +3849,17 @@ mod tests {
             restored_revision
         );
         drop(db);
+        // Close the workspace before deleting it: the real Open scheduled DB
+        // workspace maintenance (log pruning, auto-backup) that may still write
+        // into the root. Shutdown joins those workers first.
+        let closed: Value = serde_json::from_str(
+            &backend
+                .shutdown_workspace_lifecycle()
+                .await
+                .expect("shutdown workspace lifecycle"),
+        )
+        .expect("shutdown view JSON");
+        assert_eq!(closed["status"], "closed");
         drop(backend);
         drop(state);
         std::fs::remove_dir_all(root).expect("cleanup");
@@ -3981,6 +3992,17 @@ mod tests {
         assert!(storage::read_terminal(&db_a, &attempts_a[0].id).expect("no stale A recovery").is_none());
         drop(db_b);
         drop(db_a);
+        // Close the workspace before deleting it: the real Open scheduled DB
+        // workspace maintenance (log pruning, auto-backup) that may still write
+        // into the root. Shutdown joins those workers first.
+        let closed: Value = serde_json::from_str(
+            &backend
+                .shutdown_workspace_lifecycle()
+                .await
+                .expect("shutdown workspace lifecycle"),
+        )
+        .expect("shutdown view JSON");
+        assert_eq!(closed["status"], "closed");
         drop(backend);
         drop(state);
         std::fs::remove_dir_all(root_a).expect("A cleanup");
