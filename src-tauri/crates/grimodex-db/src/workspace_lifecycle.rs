@@ -1707,6 +1707,14 @@ impl WorkspaceLifecycleCore {
         Ok(self.lock_state()?.workspace_participants)
     }
 
+    /// The binding behind the process-lifetime C-query fence, if one is held.
+    /// `None` means no quarantine, or a quarantine that kept its participant
+    /// instead of a fence: that one blocks every physical exclusion, not only
+    /// the quarantined workspace. Observation only; it admits and releases nothing.
+    pub fn c_query_quarantine_binding(&self) -> Result<Option<LiveBinding>, LifecycleError> {
+        Ok(self.lock_state()?.c_query_quarantine.as_deref().cloned())
+    }
+
     fn release_workspace_participant(&self) -> Result<(), LifecycleError> {
         let mut state = self.lock_state()?;
         state.workspace_participants = state.workspace_participants.saturating_sub(1);
@@ -5242,6 +5250,35 @@ mod tests {
         assert!(
             original_id.upgrade().is_none(),
             "dropping the fence must release the final W1 workspace-ID owner"
+        );
+    }
+
+    #[test]
+    fn c_query_quarantine_binding_reports_a_held_fence_and_nothing_else() {
+        let core = WorkspaceLifecycleCore::new();
+        assert_eq!(
+            core.c_query_quarantine_binding().expect("no quarantine"),
+            None
+        );
+        let original = binding(1);
+        core.set_ready(original.clone()).expect("ready");
+        let participant = core.begin_workspace_participant().expect("participant");
+        assert_eq!(
+            core.c_query_quarantine_binding()
+                .expect("a participant is not a fence"),
+            None
+        );
+        let fence = participant
+            .detach_c_query_quarantine(&original)
+            .expect("unique exact participant transfers to quarantine");
+        assert_eq!(
+            core.c_query_quarantine_binding().expect("held fence"),
+            Some(original)
+        );
+        drop(fence);
+        assert_eq!(
+            core.c_query_quarantine_binding().expect("released fence"),
+            None
         );
     }
 

@@ -4,6 +4,7 @@
 //! registration proves the complete B binding on this exact read connection;
 //! changed committed state requires owned maintenance, never a query-time scan.
 
+pub mod c_query_freshness;
 pub mod c_query_worker;
 mod candidates;
 mod input;
@@ -21,6 +22,7 @@ mod scenes;
 #[cfg(test)]
 mod tests;
 pub mod worker_frame;
+pub mod worker_projection;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

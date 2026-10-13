@@ -23,6 +23,7 @@ mod nir1_generation;
 mod nir1_generation_owner;
 #[cfg(test)]
 mod nir1_graph_activation_tests;
+mod nir1_graph_product;
 mod nir1_prepared_request;
 mod nir1_startup_barrier;
 mod post_effect_runtime;
@@ -3140,6 +3141,7 @@ pub(crate) fn publish_workspace_lifecycle_closed(
 async fn finish_workspace_shutdown(state: Arc<AppState>) -> Result<()> {
     // Independent of the Core edge, so a poisoned Core cannot keep it open.
     state.workspace_lifecycle.nir1_startup_gate().close_for_shutdown();
+    state.nir1_graph.close_for_shutdown();
     state.post_effect_abort.abort_all();
     state.semantic.semantic_cancel_background();
     let _ = state.related_scenes.stop_for_workspace_transition();
@@ -9904,6 +9906,13 @@ impl Backend {
 
     async fn open_workspace_supervised(self, path: String) -> Result<String> {
         preflight_workspace_open_target(&path).map_err(app_err_to_napi)?;
+        if let Some(refusal) = self
+            .state
+            .nir1_graph
+            .refuse_open_while_participant_quarantined(&self.state)
+        {
+            return Ok(refusal);
+        }
         let target = WorkspaceRecoveryTarget::read(&path);
         let database_file_identity =
             grimodex_db::state::WorkspaceAuthority::database_file_identity_for_path(
@@ -9925,7 +9934,12 @@ impl Backend {
         )
         .map_err(app_err_to_napi)?
         {
-            return Ok(not_admitted);
+            return Ok(self.state.nir1_graph.relabel_open_refusal(
+                not_admitted,
+                &path,
+                target.workspace_id.as_deref(),
+                database_file_identity.as_deref(),
+            ));
         }
         let state = Arc::clone(&self.state);
         let trace_enabled = native_workspace_open_trace_enabled();
@@ -10364,6 +10378,12 @@ impl Backend {
             .maintenance_admission_is_closed()
         {
             return restore_not_admitted_outcome(&self.state, "maintenance-admission-closed");
+        }
+        if self.state.nir1_graph.blocks_restore_of_current_workspace(&self.state) {
+            return restore_not_admitted_outcome(
+                &self.state,
+                crate::nir1_graph_product::NIR1_GRAPH_RESTART_REQUIRED_REASON_CODE,
+            );
         }
         let not_admitted =
             begin_workspace_lifecycle_transition_wire(&self.state, AdmissionKind::Restore)

@@ -313,6 +313,23 @@ impl ActiveWorkspaceSnapshot {
     }
 }
 
+/// Cross-crate test support only: emulate a cleanup-unproved C-query by
+/// detaching this unique snapshot's exact participant into a process-lifetime
+/// quarantine fence (leaked, as production detachment does). False when the
+/// fence cannot be taken; the snapshot is then dropped normally.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+#[doc(hidden)]
+pub fn leak_c_query_quarantine_fence_for_test(snapshot: ActiveWorkspaceSnapshot) -> bool {
+    match snapshot.detach_c_query_quarantine() {
+        Some(fence) => {
+            drop(snapshot);
+            std::mem::forget(fence);
+            true
+        }
+        None => false,
+    }
+}
+
 /// The exact C-query binding and lifecycle barrier retained after READY,
 /// without pinning the workspace DB/index authority.
 pub(crate) struct CQueryReadyWorkspace {

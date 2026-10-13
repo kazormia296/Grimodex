@@ -30,6 +30,9 @@ const STARTUP_REFUSAL_PROJECT_ID: &str = "nir1-project-that-does-not-exist";
 enum Q2WorkerScenario {
     ReaderOnly,
     NativeOwner,
+    #[cfg(target_os = "linux")]
+    ChildEnvironment,
+    ProjectedLease,
     CallerCancellation,
     #[cfg(target_os = "linux")]
     RequestWriteCancellation,
@@ -896,6 +899,19 @@ fn ordinary_reader_registers_and_queries_fixed_q2_fixture() -> Result<()> {
 #[ignore = "requires a closed Q2/R1/D0-local preseed and a built normal worker binary"]
 fn native_worker_returns_fixed_q2_frame_from_real_workspace_owner() -> Result<()> {
     q2_reader_fixture(Q2WorkerScenario::NativeOwner)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the official Q2 preseed and a normal worker binary"]
+fn native_worker_child_environment_is_cleared_and_cwd_is_worker_dir() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::ChildEnvironment)
+}
+
+#[test]
+#[ignore = "requires the official Q2 preseed and a normal worker binary"]
+fn native_worker_projects_owned_dto_after_lease_drop() -> Result<()> {
+    q2_reader_fixture(Q2WorkerScenario::ProjectedLease)
 }
 
 #[test]
@@ -2059,7 +2075,10 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         tx.commit()?;
         Ok(published)
     })?;
-    let canonical_gold_frame = if scenario == Q2WorkerScenario::NativeOwner {
+    let canonical_gold_frame = if matches!(
+        scenario,
+        Q2WorkerScenario::NativeOwner | Q2WorkerScenario::ProjectedLease
+    ) {
         let binding = fixture_canonical_gold_binding(
             &authority,
             PROJECT,
@@ -2694,9 +2713,11 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             );
             return Ok(());
         }
+        let prepare_started = Instant::now();
         owner
             .prepare(&request.project_id)
             .map_err(|error| anyhow::anyhow!("Native Q2 worker startup diagnostic: {error:#}"))?;
+        let prepare_elapsed = prepare_started.elapsed();
         if let Some(expected_authority_count) = authority_strong_count_before_snapshot {
             ensure!(
                 owner.child_pid_for_test()? > 0,
@@ -2706,6 +2727,65 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 Arc::strong_count(&authority) == expected_authority_count,
                 "Native Q2 READY owner retained its Authority Arc"
             );
+        }
+        #[cfg(target_os = "linux")]
+        if scenario == Q2WorkerScenario::ChildEnvironment {
+            let pid = owner.child_pid_for_test()?;
+            ensure!(pid > 0, "accepted READY did not retain a real child session");
+            let environ = std::fs::read(format!("/proc/{pid}/environ"))?;
+            ensure!(
+                environ.is_empty(),
+                "worker child inherited {} environment bytes",
+                environ.len()
+            );
+            let cwd = std::fs::read_link(format!("/proc/{pid}/cwd"))?;
+            let worker_directory = worker_path
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("worker path has no parent directory"))?
+                .canonicalize()?;
+            ensure!(
+                cwd.canonicalize()? == worker_directory,
+                "worker child cwd is not the worker directory"
+            );
+            drop(owner);
+            ensure!(
+                native_state.switching.core().workspace_participant_count()? == 0,
+                "worker child retained a workspace participant after owner drop"
+            );
+            return Ok(());
+        }
+        if scenario == Q2WorkerScenario::ProjectedLease {
+            let query_started = Instant::now();
+            let projection = owner.query_projected(&request, &AtomicBool::new(false))?;
+            let query_elapsed = query_started.elapsed();
+            ensure!(
+                owner.retirement() == super::c_query_worker::CQueryRetirement::Retired,
+                "projected query returned before its child was retired"
+            );
+            ensure!(
+                !owner.retirement_pending_for_test(),
+                "projected query returned with a pending retirement"
+            );
+            let claim = authority
+                .claim_c_query_child()
+                .ok_or_else(|| anyhow::anyhow!("retired query did not release its child claim"))?;
+            claim.release();
+            ensure!(
+                projection.elapsed <= QUERY_DEADLINE,
+                "projected query exceeded its deadline: {:?}",
+                projection.elapsed
+            );
+            let expected = canonical_gold_frame
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("independent Q2 worker Gold frame missing"))?;
+            ensure!(
+                super::worker_frame::encode(&projection.into_response())? == expected,
+                "projected Q2 DTO differs from canonical Gold"
+            );
+            eprintln!(
+                "Native Q2 projected lease diagnostic (test instrumentation; diagnostic only): prepare={prepare_elapsed:?}; query_to_dto={query_elapsed:?}"
+            );
+            return Ok(());
         }
         if scenario == Q2WorkerScenario::PostAdmissionCrash {
             let mut busy_owner = super::c_query_worker::CQueryWorkerOwner::new(
