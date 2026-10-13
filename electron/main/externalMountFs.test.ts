@@ -20,6 +20,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { rename as fsRename } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -28,14 +29,19 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   MAX_SCAN_DEPTH,
   MAX_TEXT_FILE_BYTES,
+  RENAME_RETRY_BUDGET_MS,
+  RENAME_RETRY_INITIAL_DELAY_MS,
+  RENAME_RETRY_MAX_DELAY_MS,
   atomicWriteText,
   contentHash,
   fileMtimeIso,
   isPathInside,
   normalizeRelPath,
   pathsOverlap,
+  pendingAtomicWriteTargetCount,
   readTextFile,
   rejectUnsafeMountPath,
+  renameWithRetry,
   resolveUnderRoot,
   scanRoot,
 } from "./externalMountFs.js";
@@ -54,6 +60,72 @@ afterEach(() => {
     const dir = created.pop();
     if (dir) rmSync(dir, { recursive: true, force: true });
   }
+});
+
+function tmpFiles(dir: string): string[] {
+  return readdirSync(dir).filter((name) => name.startsWith(".chapter.md-"));
+}
+
+function errnoError(code: string): NodeJS.ErrnoException {
+  const error: NodeJS.ErrnoException = new Error(`${code}: simulated rename`);
+  error.code = code;
+  return error;
+}
+
+describe("renameWithRetry", () => {
+  it.each(["EPERM", "EACCES", "EBUSY"])(
+    "win32 の %s は保存先が存在しても retry する",
+    async (code) => {
+      let calls = 0;
+      await renameWithRetry("from", "to", {
+        platform: "win32",
+        sleep: async () => undefined,
+        rename: async () => {
+          calls += 1;
+          if (calls === 1) throw errnoError(code);
+        },
+      });
+      expect(calls).toBe(2);
+    },
+  );
+
+  it("win32 以外では EPERM でも retry しない", async () => {
+    let calls = 0;
+    let slept = 0;
+    await expect(
+      renameWithRetry("from", "to", {
+        platform: "linux",
+        sleep: async () => {
+          slept += 1;
+        },
+        rename: async () => {
+          calls += 1;
+          throw errnoError("EPERM");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "EPERM" });
+    expect(calls).toBe(1);
+    expect(slept).toBe(0);
+  });
+
+  it("win32 でも retry 対象外の code（ENOENT）は即座に投げる", async () => {
+    let calls = 0;
+    let slept = 0;
+    await expect(
+      renameWithRetry("from", "to", {
+        platform: "win32",
+        sleep: async () => {
+          slept += 1;
+        },
+        rename: async () => {
+          calls += 1;
+          throw errnoError("ENOENT");
+        },
+      }),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(calls).toBe(1);
+    expect(slept).toBe(0);
+  });
 });
 
 describe("contentHash", () => {
@@ -216,10 +288,126 @@ describe("atomicWriteText / readTextFile / fileMtimeIso", () => {
       atomicWriteText(file, "first"),
       atomicWriteText(file, "second"),
     ]);
-    expect(["first", "second"]).toContain(readFileSync(file, "utf8"));
-    expect(
-      readdirSync(dir).filter((name) => name.startsWith(".chapter.md-")),
-    ).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe("second");
+    expect(tmpFiles(dir)).toEqual([]);
+    expect(pendingAtomicWriteTargetCount()).toBe(0);
+  });
+
+  it("同一 target の同時保存は開始順に直列化され、後に開始した内容が残る", async () => {
+    const dir = tempDir("atomic-serialized");
+    const file = path.join(dir, "chapter.md");
+    let active = 0;
+    let maxActive = 0;
+    // 先に開始した書込の rename だけを遅らせる。直列化がなければ後発の
+    // "second" が先に rename され、遅れた "first" が上書きして残る。
+    const slowRename = async (from: string, to: string) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        await fsRename(from, to);
+      } finally {
+        active -= 1;
+      }
+    };
+    const fastRename = async (from: string, to: string) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      try {
+        await fsRename(from, to);
+      } finally {
+        active -= 1;
+      }
+    };
+    await Promise.all([
+      atomicWriteText(file, "first", { renameDeps: { rename: slowRename } }),
+      atomicWriteText(file, "second", { renameDeps: { rename: fastRename } }),
+    ]);
+    expect(readFileSync(file, "utf8")).toBe("second");
+    expect(maxActive).toBe(1);
+    expect(tmpFiles(dir)).toEqual([]);
+    expect(pendingAtomicWriteTargetCount()).toBe(0);
+  });
+
+  it("失敗した書込の後も同一 target のキューは詰まらない", async () => {
+    const dir = tempDir("atomic-serialized-failure");
+    const file = path.join(dir, "chapter.md");
+    writeFileSync(file, "original");
+    const failing = atomicWriteText(file, "broken", {
+      renameDeps: {
+        rename: async () => {
+          throw errnoError("ENOENT");
+        },
+      },
+    });
+    const following = atomicWriteText(file, "recovered");
+    await expect(failing).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(following).resolves.toBeUndefined();
+    expect(readFileSync(file, "utf8")).toBe("recovered");
+    await expect(atomicWriteText(file, "again")).resolves.toBeUndefined();
+    expect(readFileSync(file, "utf8")).toBe("again");
+    expect(tmpFiles(dir)).toEqual([]);
+    expect(pendingAtomicWriteTargetCount()).toBe(0);
+  });
+
+  it("Windows の一時的な EPERM は retry して上書きを完了する", async () => {
+    const dir = tempDir("atomic-win-eperm-retry");
+    const file = path.join(dir, "chapter.md");
+    writeFileSync(file, "original");
+    let calls = 0;
+    const sleeps: number[] = [];
+    await atomicWriteText(file, "updated", {
+      renameDeps: {
+        platform: "win32",
+        sleep: async (ms) => {
+          sleeps.push(ms);
+        },
+        rename: async (from, to) => {
+          calls += 1;
+          if (calls <= 2) throw errnoError("EPERM");
+          await fsRename(from, to);
+        },
+      },
+    });
+    expect(calls).toBe(3);
+    expect(sleeps).toEqual([
+      RENAME_RETRY_INITIAL_DELAY_MS,
+      RENAME_RETRY_INITIAL_DELAY_MS * 2,
+    ]);
+    expect(readFileSync(file, "utf8")).toBe("updated");
+    expect(tmpFiles(dir)).toEqual([]);
+  });
+
+  it("Windows で EPERM が続けば予算内で諦め、保存先と tmp を残さない", async () => {
+    const dir = tempDir("atomic-win-eperm-persistent");
+    const file = path.join(dir, "chapter.md");
+    writeFileSync(file, "original");
+    let calls = 0;
+    const sleeps: number[] = [];
+    await expect(
+      atomicWriteText(file, "updated", {
+        renameDeps: {
+          platform: "win32",
+          sleep: async (ms) => {
+            sleeps.push(ms);
+          },
+          rename: async () => {
+            calls += 1;
+            throw errnoError("EPERM");
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "EPERM" });
+    const waited = sleeps.reduce((sum, ms) => sum + ms, 0);
+    expect(calls).toBe(sleeps.length + 1);
+    expect(sleeps.length).toBeGreaterThan(2);
+    expect(Math.max(...sleeps)).toBe(RENAME_RETRY_MAX_DELAY_MS);
+    expect(waited).toBeLessThanOrEqual(RENAME_RETRY_BUDGET_MS);
+    expect(waited).toBeGreaterThan(
+      RENAME_RETRY_BUDGET_MS - RENAME_RETRY_MAX_DELAY_MS,
+    );
+    expect(readFileSync(file, "utf8")).toBe("original");
+    expect(tmpFiles(dir)).toEqual([]);
   });
 
   it("32 MiB 超過ファイルを拒否（RUST-DOS-01）", async () => {

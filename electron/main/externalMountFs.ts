@@ -9,7 +9,8 @@
  * 契約の要点（Rust とワイヤ同形）:
  * - `resolveUnderRoot`: `..` 拒否・絶対パス拒否・canonical 包含チェック。
  * - `readTextFile`: 32 MiB 上限（RUST-DOS-01）+ CRLF→LF 正規化。
- * - `atomicWriteText`: tmp + fsync + rename（LF 出力）。
+ * - `atomicWriteText`: tmp + fsync + rename（LF 出力）。同一 target は直列化し、
+ *   Windows の上書き rename の一時的な EPERM/EACCES/EBUSY は有界 retry する。
  * - `scanRoot`: `.md` のみ・symlink 非追従・深さ/件数/バイト上限、rel/name camelCase。
  * - `contentHash`: LF 正規化後の SHA-256 hex（Rust `external_mount::hash` と一致）。
  */
@@ -243,6 +244,124 @@ export async function readTextFile(absPath: string): Promise<string> {
 export interface AtomicWriteTextOptions {
   /** テスト用の一時ファイル名生成器。通常は暗号学的乱数を使う。 */
   randomId?: () => string;
+  /** テスト用の rename 依存注入（fs.rename / sleep / platform）。 */
+  renameDeps?: RenameWithRetryDeps;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Windows の上書き rename retry
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 最初の retry 待機（ms）。Defender / Search indexer / 同期クライアントが
+ * 保存先を一瞬開いている状態は多くが数十 ms で解消するため、短く始める。
+ */
+export const RENAME_RETRY_INITIAL_DELAY_MS = 10;
+/** 1 回の待機の上限（ms）。指数 backoff を 100 ms で頭打ちにする。 */
+export const RENAME_RETRY_MAX_DELAY_MS = 100;
+/**
+ * 待機時間の総予算（ms）。AV スキャン等の数百 ms 程度の保持を吸収しつつ、
+ * 同一 target の直列化キューで後続の自動保存を待たせすぎない値にする。
+ * 失敗しても DB は commit 済みで次回 flush が再試行するため、graceful-fs の
+ * 60 s のような長い予算は不要。
+ */
+export const RENAME_RETRY_BUDGET_MS = 2_000;
+
+const RETRYABLE_WIN32_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+export interface RenameWithRetryDeps {
+  rename?: (from: string, to: string) => Promise<void>;
+  sleep?: (ms: number) => Promise<void>;
+  platform?: NodeJS.Platform;
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
+/**
+ * `rename(from, to)` を行い、Windows では保存先が一時的に開かれていることによる
+ * EPERM / EACCES / EBUSY（MoveFileExW REPLACE_EXISTING の失敗）を有界 backoff で
+ * retry する。保存先が既に存在する上書きでも retry する（graceful-fs の win32
+ * polyfill は保存先が存在しない場合しか retry しない）。
+ * 他 platform・他 code は retry せず、予算切れでは最後の error をそのまま投げる。
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  deps: RenameWithRetryDeps = {},
+): Promise<void> {
+  const doRename = deps.rename ?? rename;
+  const sleep = deps.sleep ?? defaultSleep;
+  const platform = deps.platform ?? process.platform;
+  let delay = RENAME_RETRY_INITIAL_DELAY_MS;
+  let waited = 0;
+  for (;;) {
+    try {
+      await doRename(from, to);
+      return;
+    } catch (error) {
+      const code = errorCode(error);
+      if (
+        platform !== "win32" ||
+        code === undefined ||
+        !RETRYABLE_WIN32_RENAME_CODES.has(code) ||
+        waited + delay > RENAME_RETRY_BUDGET_MS
+      ) {
+        throw error;
+      }
+      await sleep(delay);
+      waited += delay;
+      delay = Math.min(delay * 2, RENAME_RETRY_MAX_DELAY_MS);
+    }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 同一 target への書込の直列化
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** target key → 直近の書込の完了（常に fulfilled）。idle になれば削除する。 */
+const atomicWriteQueues = new Map<string, Promise<void>>();
+
+function atomicWriteQueueKey(absPath: string): string {
+  const resolved = path.resolve(absPath);
+  // NTFS / APFS 既定は大文字小文字を区別しないが、Windows 以外では区別する FS が
+  // 一般的なので、Windows だけ畳み込む。
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+
+async function runSerializedByTarget<T>(
+  absPath: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const key = atomicWriteQueueKey(absPath);
+  const previous = atomicWriteQueues.get(key) ?? Promise.resolve();
+  const run = previous.then(task);
+  // 失敗した書込でもキューを止めないよう、後続には settle だけを伝える。
+  const tail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  atomicWriteQueues.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (atomicWriteQueues.get(key) === tail) {
+      atomicWriteQueues.delete(key);
+    }
+  }
+}
+
+/** テスト用: 書込中または待機中の target 数。 */
+export function pendingAtomicWriteTargetCount(): number {
+  return atomicWriteQueues.size;
 }
 
 function exclusiveWriteFlags(): number {
@@ -273,11 +392,23 @@ async function syncParentDirectory(parent: string): Promise<void> {
 /**
  * 排他的なランダム tmp + fsync + rename のアトミック書込（LF 出力）。
  * Rust `atomic_write_text` と同様、tmp の symlink 追従と名前競合を防ぐ。
+ * main process 内の同一 target への書込は開始順に直列化し、最後に開始した
+ * 書込の内容が残る。Windows の一時的な rename 失敗は `renameWithRetry` で吸収する。
  */
-export async function atomicWriteText(
+export function atomicWriteText(
   absPath: string,
   content: string,
   options: AtomicWriteTextOptions = {},
+): Promise<void> {
+  return runSerializedByTarget(absPath, () =>
+    atomicWriteTextUnserialized(absPath, content, options),
+  );
+}
+
+async function atomicWriteTextUnserialized(
+  absPath: string,
+  content: string,
+  options: AtomicWriteTextOptions,
 ): Promise<void> {
   const parent = path.dirname(absPath);
   await mkdir(parent, { recursive: true });
@@ -309,7 +440,7 @@ export async function atomicWriteText(
     await fh.sync();
     await fh.close();
     fh = null;
-    await rename(tmpPath, absPath);
+    await renameWithRetry(tmpPath, absPath, options.renameDeps);
     await syncParentDirectory(parent);
   } finally {
     await fh?.close().catch(() => undefined);
