@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 41,
+  "schemaVersion": 42,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -15927,6 +15927,42 @@
         }
       ],
       "createSql": "CREATE INDEX idx_narrative_consumer_freshness_epoch ON narrative_consumer_freshness(project_id, semantic_epoch_id)"
+    },
+    "idx_narrative_decisions_proposal_created_id": {
+      "table": "narrative_proposal_decisions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "proposal_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "created_at"
+        },
+        {
+          "ordinal": 2,
+          "column": "id"
+        }
+      ],
+      "createSql": "CREATE INDEX \"idx_narrative_decisions_proposal_created_id\" ON \"narrative_proposal_decisions\"(proposal_id, created_at, id)"
+    },
+    "idx_narrative_decisions_revision_proposal": {
+      "table": "narrative_proposal_decisions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "revision_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "proposal_id"
+        }
+      ],
+      "createSql": "CREATE INDEX \"idx_narrative_decisions_revision_proposal\" ON \"narrative_proposal_decisions\"(revision_id, proposal_id)"
     },
     "idx_narrative_dependency_declaration_entries_set": {
       "table": "narrative_dependency_declaration_entries",

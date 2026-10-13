@@ -908,13 +908,8 @@ fn preflight_disclosure_inner(
     anyhow::ensure!(payload_bytes <= INPUT_BYTES, ERROR);
     #[cfg(feature = "nir1-material-diagnostics")]
     let started = start_a3_sql_timer(&observation);
-    let entity_count_query: rusqlite::Result<i64> = conn.query_row(
-        "SELECT CASE WHEN json_valid(payload_json)
-                     THEN COALESCE(json_array_length(payload_json,'$.bundle.entities'),0)
-                     ELSE 0 END FROM narrative_proposal_revisions WHERE id=?1",
-        [revision_id],
-        |row| row.get(0),
-    );
+    let entity_count_query: rusqlite::Result<i64> =
+        conn.query_row(DISCLOSURE_ENTITY_COUNT_SQL, [revision_id], |row| row.get(0));
     #[cfg(feature = "nir1-material-diagnostics")]
     record_a3_sql_query(&mut observation, 0, started, entity_count_query.is_err());
     let entity_count = entity_count_query?;
@@ -1030,6 +1025,10 @@ fn preflight_disclosure_inner(
     }
     Ok(DisclosureAdmission { rows, bytes })
 }
+
+const DISCLOSURE_ENTITY_COUNT_SQL: &str = "SELECT CASE WHEN json_valid(payload_json)
+                     THEN COALESCE(json_array_length(payload_json,'$.bundle.entities'),0)
+                     ELSE 0 END FROM narrative_proposal_revisions WHERE id=?1";
 
 #[derive(Clone, Copy)]
 enum DisclosureGlobalRowsParams {
@@ -1575,5 +1574,167 @@ mod disclosure_tests {
             .to_string(),
             DISCLOSURE_ROW_LIMIT
         );
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use super::*;
+
+    // CQ-2: these charges read the seed Revision's Decisions. They must seek
+    // SCHEMA 42's Revision index: a scan follows every workspace Decision, and
+    // the Proposal index would also read the seed Proposal's other Revisions.
+    const REVISION_DECISION_CHARGES: &[&str] =
+        &["A2 length", "A3 global rows 7", "A3 global bytes 7"];
+    const REVISION_DECISION_SEEK: &str =
+        "INDEX idx_narrative_decisions_revision_proposal (revision_id=?";
+
+    fn a2_a3_statements() -> Vec<(String, &'static str)> {
+        let mut statements = vec![
+            ("A2 length".to_owned(), LENGTH_SQL),
+            ("A2 count".to_owned(), COUNT_SQL),
+            ("A3 entity count".to_owned(), DISCLOSURE_ENTITY_COUNT_SQL),
+            ("A3 material rows".to_owned(), DISCLOSURE_MATERIAL_ROWS_SQL),
+        ];
+        statements.extend(
+            RELATED_BYTES_SQL
+                .iter()
+                .enumerate()
+                .map(|(index, sql)| (format!("A2 related {index}"), *sql)),
+        );
+        statements.extend(
+            DISCLOSURE_GLOBAL_ROWS_SQL
+                .iter()
+                .enumerate()
+                .map(|(index, query)| (format!("A3 global rows {index}"), query.0)),
+        );
+        statements.extend(
+            DISCLOSURE_GLOBAL_BYTES_SQL
+                .iter()
+                .enumerate()
+                .map(|(index, query)| (format!("A3 global bytes {index}"), query.0)),
+        );
+        statements.extend(
+            DISCLOSURE_MATERIAL_BYTES_SQL
+                .iter()
+                .enumerate()
+                .map(|(index, sql)| (format!("A3 material bytes {index}"), *sql)),
+        );
+        statements
+    }
+
+    fn query_plan(conn: &Connection, sql: &str) -> Vec<String> {
+        let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let parameters = statement.parameter_count();
+        statement
+            .query_map(
+                rusqlite::params_from_iter(std::iter::repeat_n("x", parameters)),
+                |row| row.get::<_, String>(3),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    /// Plan lines that would let an unrelated workspace row change the cost.
+    fn plan_violations(label: &str, sql: &str, plan: &[String]) -> Vec<String> {
+        let mut violations = plan
+            .iter()
+            .filter(|line| line.contains("TEMP B-TREE") || line.contains("AUTOMATIC"))
+            .cloned()
+            .collect::<Vec<_>>();
+        // Only one-row subqueries and the bounded Revision's json_each may be
+        // scanned.
+        let mut derived = plan
+            .iter()
+            .filter_map(|line| {
+                line.strip_prefix("CO-ROUTINE ")
+                    .or_else(|| line.strip_prefix("MATERIALIZE "))
+            })
+            .collect::<Vec<_>>();
+        if derived.contains(&"material") {
+            derived.push("m");
+        }
+        for line in plan {
+            let Some(scanned) = line.strip_prefix("SCAN ") else {
+                continue;
+            };
+            if !(scanned.contains(" VIRTUAL TABLE ")
+                || scanned == "CONSTANT ROW"
+                || derived.contains(&scanned.split(' ').next().unwrap()))
+            {
+                violations.push(line.clone());
+            }
+        }
+        let decision_seeks = plan
+            .iter()
+            .filter(|line| {
+                line.starts_with("SEARCH d USING ") && line.contains(REVISION_DECISION_SEEK)
+            })
+            .count();
+        if decision_seeks != usize::from(REVISION_DECISION_CHARGES.contains(&label)) {
+            violations.push(format!("Revision index Decision seeks: {decision_seeks}"));
+        }
+        // JSON1 expansion is only allowed over the one seed Revision.
+        if sql.contains("narrative_proposal_revisions")
+            && !plan
+                .iter()
+                .any(|line| line.contains("sqlite_autoindex_narrative_proposal_revisions_1 (id=?)"))
+        {
+            violations.push("Revision is not sought by id".to_owned());
+        }
+        violations
+    }
+
+    // Same method as candidates.rs: inspect the current-schema plan instead
+    // of trusting row counts from a small fixture.
+    #[test]
+    fn a2_a3_plans_seek_the_seed_revision_without_table_scans_or_temp_sorts() {
+        let db = crate::Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            let statements = a2_a3_statements();
+            assert_eq!(statements.len(), 4 + 10 + 8 + 8 + 5);
+            for (label, sql) in &statements {
+                let plan = query_plan(conn, sql);
+                let violations = plan_violations(label, sql, &plan);
+                assert!(
+                    violations.is_empty(),
+                    "{label}: {violations:?}\n{}",
+                    plan.join("\n")
+                );
+            }
+            // Negative controls on the same schema: each regression is reported.
+            for (label, sql, expected) in [
+                (
+                    "negative control",
+                    "SELECT COUNT(*) FROM narrative_proposal_decisions d WHERE d.decision=?1",
+                    vec!["SCAN d"],
+                ),
+                (
+                    "A2 length",
+                    "SELECT COUNT(*) FROM narrative_proposal_decisions d WHERE d.proposal_id=?1",
+                    vec!["Revision index Decision seeks: 0"],
+                ),
+                (
+                    "negative control",
+                    "SELECT COUNT(*) FROM narrative_proposal_revisions v, json_each(v.payload_json)",
+                    vec!["SCAN v", "Revision is not sought by id"],
+                ),
+                (
+                    "negative control",
+                    "SELECT t.id FROM tree_nodes t WHERE t.project_id=?1 ORDER BY t.content",
+                    vec!["USE TEMP B-TREE FOR ORDER BY"],
+                ),
+            ] {
+                assert_eq!(
+                    plan_violations(label, sql, &query_plan(conn, sql)),
+                    expected,
+                    "{sql}"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
     }
 }

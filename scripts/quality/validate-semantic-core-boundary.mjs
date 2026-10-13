@@ -47,7 +47,10 @@ const REPO_ROOT = path.resolve(
 // writer has a separate operation policy. The concern matrix is unchanged.
 // SCHEMA_VERSION 41 moves capture/provenance cleanup behind canonical Native
 // parent-delete triggers and RESTRICT references; semantic authority is unchanged.
-export const EXPECTED_SCHEMA_VERSION = 41;
+// SCHEMA_VERSION 42 only adds two plain narrative_proposal_decisions lookup
+// indexes (by Revision, latest per Proposal). No table, column, row, writer or
+// authority changes, so the concern matrix is unchanged.
+export const EXPECTED_SCHEMA_VERSION = 42;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal && "${1:-}" != trailing-data && "${1:-}" != partial-terminal-marker && "${1:-}" != practical-retention && "${1:-}" != frame-lifecycle ) ]]; then
-  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal|trailing-data|partial-terminal-marker|practical-retention|frame-lifecycle]\n' >&2
+if [[ "$#" -gt 1 || ( "$#" -eq 1 && "${1:-}" != caller-cancellation && "${1:-}" != startup-registration-refusal && "${1:-}" != trailing-data && "${1:-}" != partial-terminal-marker && "${1:-}" != practical-retention && "${1:-}" != frame-lifecycle && "${1:-}" != lifecycle ) ]]; then
+  printf 'usage: nir1-c-query-worker-ci.sh [caller-cancellation|startup-registration-refusal|trailing-data|partial-terminal-marker|practical-retention|frame-lifecycle|lifecycle]\n' >&2
   exit 2
 fi
 
@@ -18,6 +18,12 @@ fi
 # This finite observation reads only its own Linux parent/owned worker status.
 if [[ "${1:-}" == practical-retention && "$os_name" != Linux ]]; then
   printf '[precheck] practical-retention requires Linux process usage observation\n' >&2
+  exit 2
+fi
+
+# These real-worker lifecycle cases are compiled only for Linux.
+if [[ "${1:-}" == lifecycle && "$os_name" != Linux ]]; then
+  printf '[precheck] lifecycle requires the Linux-only real-worker lifecycle tests\n' >&2
   exit 2
 fi
 
@@ -150,6 +156,97 @@ if [[ "${1:-}" == frame-lifecycle ]]; then
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib request_writer_panic_keeps_claim_quarantined_after_handle_consumption \
     -- --ignored --nocapture --test-threads=1
+  exit 0
+fi
+
+# Wire the remaining ignored Linux lifecycle cases without replaying other lanes.
+if [[ "${1:-}" == lifecycle ]]; then
+  q2_fixture_checksum="$(cksum < "$q2_fixture_file")"
+  registry33_fixture_file="$fixture_dir/registry33-preseed.db"
+  printf '%s' \
+    '{"schemaVersion":"nir1-capacity/1","diagnosticOnly":true,"fixtures":[{"id":"Q512/R1/E12/registry33","qualifiedMaterials":24,"qualifiedRevisions":1,"ineligibleCandidates":0}]}' \
+    > "$fixture_dir/registry33-manifest.json"
+  cargo run --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --features nir1-material-diagnostics \
+    --bin nir1-material-capacity -- \
+    fixture "$fixture_dir/registry33-manifest.json" Q512/R1/E12/registry33 "$registry33_fixture_file" \
+    > "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"caseId": "Q512/R1/E12/registry33"' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"diagnosticOnly": true' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"qualifiedMaterials": 24' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"qualifiedRevisions": 1' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"ineligibleCandidates": 0' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"walBytes": 0' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"shmBytes": 0' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"reopenedReadOnly": true' "$fixture_dir/registry33-fixture-report.json"
+  assert_closed_fixture "$registry33_fixture_file"
+  registry33_fixture_checksum="$(cksum < "$registry33_fixture_file")"
+
+  # Compile once so each per-case timeout covers only that isolated test process.
+  cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --lib --no-run
+
+  # Every case gets a fresh input copy and its own test process: several cases
+  # intentionally quarantine process-global worker capacity until process exit.
+  run_lifecycle_case() {
+    local name="$1" source="$2" source_checksum="$3"
+    local input="$fixture_dir/$name-input.db" log="$fixture_dir/$name.log"
+    cp -- "$source" "$input"
+    test "$(cksum < "$input")" = "$source_checksum"
+    assert_closed_fixture "$input"
+    NIR1_Q2_FIXTURE_PATH="$input" \
+    NIR1_C_QUERY_WORKER_BIN="$worker_path" \
+      timeout --kill-after=30s 600s \
+      cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
+        -p grimodex-db --lib "narrative_extraction::nir1_graph::tests::$name" \
+        -- --ignored --exact --nocapture --test-threads=1 2>&1 | tee "$log"
+    # A renamed or cfg-excluded case would otherwise pass with zero tests.
+    grep -Fq 'test result: ok. 1 passed; 0 failed;' "$log"
+    test "$(cksum < "$source")" = "$source_checksum"
+    assert_closed_fixture "$source"
+  }
+
+  # A host core-dump pipe (systemd-coredump, apport) ignores a zero
+  # RLIMIT_CORE and can delay the Rust OOM child's SIGABRT exit past the
+  # owner's cleanup deadline. RLIMIT_CORE=1 is the kernel's documented value
+  # that skips a pipe core dump; children inherit it. The case still requires
+  # an observed SIGABRT.
+  prlimit --pid "$$" --core=1:1
+  test "$(prlimit --pid "$$" --core --output SOFT,HARD --noheadings | tr -s ' ' | sed 's/^ //')" = "1 1"
+
+  run_lifecycle_case production_query_has_an_available_100ms_success_path \
+    "$q2_fixture_file" "$q2_fixture_checksum"
+  run_lifecycle_case ordinary_reader_registers_and_queries_fixed_q2_fixture \
+    "$q2_fixture_file" "$q2_fixture_checksum"
+
+  cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --bin nir1-c-query-worker
+  test -f "$worker_file"
+  # These cases require the normal worker's successful exit after a frame;
+  # the seam build always exits 23 after commit.
+  for name in \
+    native_worker_exits_after_owner_process_dies_after_request_admission \
+    native_worker_quarantines_when_cleanup_proof_is_unobserved \
+    native_worker_quarantine_blocks_w1_restore_and_retains_shared_lease \
+    native_worker_cleanup_unproved_without_file_identity_retains_participant_and_blocks_io; do
+    run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
+  done
+  run_lifecycle_case native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph \
+    "$registry33_fixture_file" "$registry33_fixture_checksum"
+
+  cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
+    -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
+  test -f "$worker_file"
+  for name in \
+    native_worker_handles_backpressured_request_writes \
+    native_worker_reaps_live_committed_child_after_result_lease \
+    native_worker_quarantines_result_lease_when_exit_proof_transfer_is_unavailable \
+    native_worker_quarantines_result_lease_when_reader_join_fails \
+    native_worker_quarantines_result_lease_when_reader_completion_exceeds_cleanup_deadline \
+    native_worker_retires_after_real_child_rust_oom \
+    native_worker_refuses_after_real_child_sqlite_nomem; do
+    run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
+  done
   exit 0
 fi
 

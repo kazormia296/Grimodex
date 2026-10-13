@@ -1042,14 +1042,15 @@ fn read_revision_input_stats(
     capacity.input(payload_bytes)?;
     capacity.input(envelope_bytes)?;
     capacity.input(usize::try_from(metadata_bytes)?)?;
-    // The 2 MiB contract is the semantic bundle admission enforced by the
-    // A2 reader.  The persisted envelope carries basis and provenance JSON in
-    // addition to that bundle, so payload and envelope may legitimately sum
-    // above 2 MiB even when the bundle remains within its contract.  Guard
-    // each stored component independently before the A2 reader allocates both
-    // strings. This is an operational resource failure, not an ordinary
-    // ineligible Revision: abort the source build so a partial roster can
-    // never be published as complete.
+    // B admits each stored Revision component up to 6 MiB
+    // (MAX_GRAPH_INPUT_BYTES); the whole-set scan is separately charged above
+    // against the 16 MiB INPUT_BYTES budget. The 2 MiB figure is only the
+    // C-query per-Revision preflight (nir1_graph/input.rs), not this build.
+    // The persisted envelope carries basis and provenance JSON in addition to
+    // the bundle, so guard each stored component independently before the A2
+    // reader allocates both strings. This is an operational resource failure,
+    // not an ordinary ineligible Revision: abort the source build so a partial
+    // roster can never be published as complete.
     if !persisted_revision_components_within_limit(payload_bytes, envelope_bytes) {
         anyhow::bail!("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT");
     }
@@ -3192,5 +3193,178 @@ mod tests {
             let _ = std::fs::remove_file(std::path::PathBuf::from(candidate));
         }
         result
+    }
+
+    // U6 safe failure: every stored component of the one Revision stays within
+    // its 6 MiB limit, but the whole-set 16 MiB scan budget is exhausted.
+    #[test]
+    fn whole_set_input_limit_refuses_without_replacing_the_sealed_generation() -> Result<()> {
+        use crate::narrative_extraction::incremental_freshness::run_incremental_freshness_cycle;
+        use crate::narrative_extraction::nir1_entity_relation::{
+            create_nir1_entity_relation_revision,
+            tests::{approve_typed_revision, request, seed_run_and_catalog},
+        };
+        use crate::narrative_extraction::source_revision::is_validation_capacity_exceeded;
+
+        const PROJECT: &str = "default-project";
+        const STORED_TABLES: &[&str] = &[
+            "narrative_semantic_index_metadata",
+            "narrative_dependency_declaration_heads",
+            "narrative_dependency_declaration_sets",
+            "narrative_dependency_declaration_entries",
+            "narrative_consumer_freshness",
+            "narrative_projection_freshness",
+            "narrative_nir1_chronicle_vectors",
+        ];
+        fn stored_rows(conn: &Connection) -> Result<Vec<String>> {
+            let mut rows = Vec::new();
+            for table in STORED_TABLES {
+                let mut statement =
+                    conn.prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))?;
+                let columns = statement.column_count();
+                let mut cursor = statement.query([])?;
+                while let Some(row) = cursor.next()? {
+                    let values = (0..columns)
+                        .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    rows.push(format!("{table}:{values:?}"));
+                }
+            }
+            Ok(rows)
+        }
+        fn padded_json(prefix: &str, bytes: usize) -> String {
+            let padding = bytes - prefix.len() - "\"}".len();
+            format!("{prefix}{}\"}}", "x".repeat(padding))
+        }
+
+        let directory = std::env::temp_dir().join(format!("nir1-u6-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory)?;
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(directory.clone());
+        let db = crate::Database::new(&directory.join("grimodex.db"))?;
+        db.migrate()?;
+        seed_run_and_catalog(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let authority =
+            crate::state::WorkspaceAuthority::from_database_for_test(db, directory.clone())?;
+        let runtime = authority.nir_chronicle_index_runtime();
+        let snapshot = authority
+            .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
+        authority.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        let sealed = authority.with_read_transaction(|conn| {
+            ensure!(is_registered(conn, PROJECT, INDEX_KEY)?);
+            Ok((read(conn, PROJECT)?, stored_rows(conn)?))
+        })?;
+        assert!(matches!(sealed.0, BindingRead::Registered(_)));
+
+        // One unrelated candidate whose payload and envelope are each exactly
+        // at REVISION_INPUT_BYTE_LIMIT. JSON validity is irrelevant: the
+        // scalar length gate runs before any JSON function.
+        let revision_id = "u6-whole-set-revision";
+        authority.with_conn(|conn| {
+            let proposal_set: String = conn.query_row(
+                "SELECT proposal.proposal_set_id FROM narrative_proposal_revisions revision
+                   JOIN narrative_proposals proposal ON proposal.id=revision.proposal_id
+                  WHERE revision.id=?1",
+                [created["revisionId"].as_str().unwrap()],
+                |row| row.get(0),
+            )?;
+            let tx = conn.unchecked_transaction()?;
+            tx.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 VALUES ('u6-whole-set-proposal', ?1, 'u6', 'u6', 'accepted', '{}', ?2,
+                         '2026-09-22T00:00:00Z', '2026-09-22T00:00:00Z')",
+                params![proposal_set, revision_id],
+            )?;
+            tx.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES (?1, 'u6-whole-set-proposal', 1, ?2, ?3, '2026-09-22T00:00:00Z', 'u6')",
+                params![
+                    revision_id,
+                    padded_json(
+                        r#"{"bundle":{"entities":[],"relations":[]},"padding":""#,
+                        REVISION_INPUT_BYTE_LIMIT
+                    ),
+                    padded_json(r#"{"padding":""#, REVISION_INPUT_BYTE_LIMIT),
+                ],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        let stored_bytes = |conn: &Connection| -> Result<(i64, i64)> {
+            Ok(conn.query_row(
+                "SELECT octet_length(payload_json), octet_length(reconciliation_envelope_json)
+                   FROM narrative_proposal_revisions WHERE id=?1",
+                [revision_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        };
+        // Control: 12 MiB of components is still inside the 16 MiB whole set,
+        // so the same candidate is admitted (and skipped as ineligible).
+        authority.with_read_transaction(|conn| {
+            assert_eq!(
+                stored_bytes(conn)?,
+                (
+                    REVISION_INPUT_BYTE_LIMIT as i64,
+                    REVISION_INPUT_BYTE_LIMIT as i64
+                )
+            );
+            prepare_graph_index_build(conn, runtime, PROJECT).map(drop)
+        })?;
+
+        // A 5 MiB Decision for the same Revision pushes only the sum over.
+        authority.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_proposal_decisions
+                    (id, proposal_id, revision_id, decision, decision_json, created_at, created_by)
+                 VALUES ('u6-whole-set-decision', 'u6-whole-set-proposal', ?1, 'approve', ?2,
+                         '2026-09-22T00:00:00Z', 'u6')",
+                params![revision_id, padded_json(r#"{"padding":""#, 5 * 1024 * 1024)],
+            )?;
+            Ok(())
+        })?;
+        let error = authority
+            .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))
+            .err()
+            .expect("whole-set input over 16 MiB must refuse the build");
+        assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains(&format!(
+                "input-bytes exceeds {}",
+                nir1_capacity::INPUT_BYTES
+            )),
+            "{text}"
+        );
+        assert!(
+            !text.contains("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT"),
+            "{text}"
+        );
+
+        // No partial generation reached storage; the old sealed binding and
+        // every stored Graph surface are byte-identical and still registered.
+        authority.with_read_transaction(|conn| {
+            ensure!(is_registered(conn, PROJECT, INDEX_KEY)?);
+            assert_eq!(read(conn, PROJECT)?, sealed.0);
+            assert_eq!(stored_rows(conn)?, sealed.1);
+            Ok(())
+        })?;
+        Ok(())
     }
 }

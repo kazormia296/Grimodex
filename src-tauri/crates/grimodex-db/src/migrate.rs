@@ -4491,6 +4491,12 @@ impl Database {
         // table rebuilds, which would otherwise discard them on upgrade.
         Self::repair_nir1_extraction_query_indexes(&conn)?;
 
+        // SCHEMA 42: Decision lookups by Revision and the latest Decision of a
+        // Proposal. Index-only: no table, column or row changes. A failure
+        // unwinds both indexes together, and because the checkpoint requires
+        // them, `user_version` cannot advance until a later open retries.
+        Self::repair_narrative_decision_lookup_indexes(&conn)?;
+
         // SCHEMA 31: versioned Finding identity and append-only lifecycle.
         // This is deliberately after the C2-2 re-key so the backfill can
         // derive identities from the durable Edge subject and never from a
@@ -10104,6 +10110,16 @@ impl Database {
         )
     }
 
+    /// SCHEMA 42. The definitions live beside the checkpoint that probes them;
+    /// the shared repair also replaces a wrong-shaped index of the same name.
+    fn repair_narrative_decision_lookup_indexes(conn: &Connection) -> anyhow::Result<()> {
+        Self::repair_query_indexes(
+            conn,
+            "narrative_decision_lookup_index_repair",
+            grimodex_core::workspace_schema::NARRATIVE_DECISION_LOOKUP_INDEXES,
+        )
+    }
+
     fn repair_query_indexes(
         conn: &Connection,
         savepoint: &str,
@@ -10474,7 +10490,7 @@ mod tests {
                 assert_eq!(count, 1, "live object head must be preserved");
             }
             let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-            assert_eq!(version, 41);
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
             Ok(())
         })?;
         Ok(())
@@ -10937,7 +10953,7 @@ mod tests {
             db.with_conn(|conn| {
                 let schema_version: i32 =
                     conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-                assert_eq!(schema_version, 41);
+                assert_eq!(schema_version, grimodex_core::SCHEMA_VERSION);
                 let capture: (String, String, String, String) = conn.query_row(
                     "SELECT capture_id,submission_id,message_id,message_version_id
                        FROM nir1_chat_input_captures WHERE capture_id=?1",
@@ -11687,6 +11703,323 @@ mod tests {
         // A second open must remain converged after the repair rather than
         // dropping/recreating the indexes on every current-schema open.
         db.migrate().expect("reopen repaired schema");
+    }
+
+    /// The SCHEMA 42 contract, pinned independently of the shared definition.
+    const V42_DECISION_INDEXES: [(&str, &[&str]); 2] = [
+        (
+            "idx_narrative_decisions_revision_proposal",
+            &["revision_id", "proposal_id"],
+        ),
+        (
+            "idx_narrative_decisions_proposal_created_id",
+            &["proposal_id", "created_at", "id"],
+        ),
+    ];
+
+    /// `(rootpage, unique, partial, key columns)` of a Decision table index.
+    type DecisionIndexShape = (i64, bool, bool, Vec<String>);
+
+    fn decision_index_shape(
+        conn: &Connection,
+        name: &str,
+    ) -> anyhow::Result<Option<DecisionIndexShape>> {
+        let Some((rootpage, unique, partial)) = conn
+            .query_row(
+                "SELECT m.rootpage, l.\"unique\", l.partial
+                   FROM sqlite_master m
+                   JOIN pragma_index_list('narrative_proposal_decisions') l ON l.name = m.name
+                  WHERE m.type = 'index' AND m.name = ?1",
+                [name],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        let columns = conn
+            .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+            .query_map([name], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Some((rootpage, unique, partial, columns)))
+    }
+
+    fn assert_v42_decision_indexes(conn: &Connection) -> anyhow::Result<()> {
+        for (name, columns) in V42_DECISION_INDEXES {
+            let (_, unique, partial, actual) = decision_index_shape(conn, name)?
+                .ok_or_else(|| anyhow::anyhow!("{name} is missing"))?;
+            assert!(!unique && !partial, "{name} must be a plain index");
+            assert_eq!(actual, columns, "{name} key columns");
+        }
+        assert!(
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+            "both Decision indexes satisfy the current checkpoint"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn schema_42_shares_the_pinned_decision_index_definition() {
+        let shared = grimodex_core::workspace_schema::NARRATIVE_DECISION_LOOKUP_INDEXES;
+        assert_eq!(shared.len(), V42_DECISION_INDEXES.len());
+        for (&(table, name, columns), (pinned_name, pinned_columns)) in
+            shared.iter().zip(V42_DECISION_INDEXES)
+        {
+            assert_eq!(
+                (table, name, columns),
+                ("narrative_proposal_decisions", pinned_name, pinned_columns)
+            );
+        }
+    }
+
+    #[test]
+    fn schema_42_does_not_promote_a_41_marker_until_both_decision_indexes_install() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            for (id, revision, created_at) in [
+                (
+                    "decision-v42-a",
+                    "revision-v42-1",
+                    "2026-10-01T00:00:00.000Z",
+                ),
+                (
+                    "decision-v42-b",
+                    "revision-v42-2",
+                    "2026-10-02T00:00:00.000Z",
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO narrative_proposal_decisions
+                        (id, proposal_id, revision_id, decision, created_at, created_by)
+                     VALUES (?1, 'proposal-v42', ?2, 'approved', ?3, 'migration-test')",
+                    params![id, revision, created_at],
+                )?;
+            }
+            conn.execute_batch(
+                "DROP INDEX idx_narrative_decisions_revision_proposal;
+                 DROP INDEX idx_narrative_decisions_proposal_created_id;
+                 PRAGMA user_version = 41;",
+            )?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            // The previous-marker fast path stamps without DDL only when
+            // every current invariant already holds; it must not here.
+            assert!(
+                !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
+            Ok(())
+        })
+        .expect("shape a v41 workspace with Decisions and no v42 indexes");
+
+        let first_index_created = Arc::new(AtomicBool::new(false));
+        let first_index_created_for_hook = Arc::clone(&first_index_created);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
+                AuthAction::CreateIndex {
+                    index_name: "idx_narrative_decisions_revision_proposal",
+                    ..
+                } => {
+                    first_index_created_for_hook.store(true, Ordering::SeqCst);
+                    Authorization::Allow
+                }
+                AuthAction::CreateIndex {
+                    index_name: "idx_narrative_decisions_proposal_created_id",
+                    ..
+                } => Authorization::Deny,
+                _ => Authorization::Allow,
+            }))?;
+            Ok(())
+        })
+        .expect("install v42 index failure hook");
+        let error = db
+            .migrate()
+            .expect_err("a failed v42 index must fail the migration");
+        assert!(first_index_created.load(Ordering::SeqCst));
+        assert!(error.to_string().contains("not authorized"), "{error:#}");
+        db.with_conn(|conn| {
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, 41, "a failed v42 step must not promote the marker");
+            for (name, _) in V42_DECISION_INDEXES {
+                assert_eq!(
+                    decision_index_shape(conn, name)?,
+                    None,
+                    "{name} must unwind together with its pair"
+                );
+            }
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            Ok(())
+        })
+        .expect("inspect the unwound v42 step");
+
+        db.migrate().expect("a later open retries the v42 step");
+        let schema_cookie = db
+            .with_conn(|conn| {
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+                assert_v42_decision_indexes(conn)?;
+                let preserved: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_decisions
+                      WHERE proposal_id = 'proposal-v42'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(preserved, 2);
+                Ok(conn.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?)
+            })
+            .expect("inspect the promoted v42 workspace");
+        // A converged v42 open takes the read-only fast path.
+        db.migrate().expect("reopen v42");
+        db.with_conn(|conn| {
+            assert_eq!(
+                conn.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?,
+                schema_cookie
+            );
+            Ok(())
+        })
+        .expect("v42 reopen performs no DDL");
+    }
+
+    #[test]
+    fn schema_42_repairs_one_missing_or_wrong_shape_decision_index_alone() {
+        for (damaged, damage) in [
+            (
+                "idx_narrative_decisions_revision_proposal",
+                "DROP INDEX idx_narrative_decisions_revision_proposal;",
+            ),
+            (
+                "idx_narrative_decisions_proposal_created_id",
+                "DROP INDEX idx_narrative_decisions_proposal_created_id;",
+            ),
+            (
+                "idx_narrative_decisions_revision_proposal",
+                "DROP INDEX idx_narrative_decisions_revision_proposal;
+                 CREATE INDEX idx_narrative_decisions_revision_proposal
+                     ON narrative_proposal_decisions(proposal_id, revision_id);",
+            ),
+            (
+                "idx_narrative_decisions_revision_proposal",
+                "DROP INDEX idx_narrative_decisions_revision_proposal;
+                 CREATE UNIQUE INDEX idx_narrative_decisions_revision_proposal
+                     ON narrative_proposal_decisions(revision_id, proposal_id);",
+            ),
+            (
+                "idx_narrative_decisions_proposal_created_id",
+                "DROP INDEX idx_narrative_decisions_proposal_created_id;
+                 CREATE INDEX idx_narrative_decisions_proposal_created_id
+                     ON narrative_proposal_decisions(proposal_id, created_at, id)
+                     WHERE decision = 'approved';",
+            ),
+        ] {
+            let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+            db.migrate().expect("create current schema");
+            let (intact, _) = V42_DECISION_INDEXES
+                .into_iter()
+                .find(|(name, _)| *name != damaged)
+                .expect("the pair has another index");
+            let intact_before = db
+                .with_conn(|conn| {
+                    conn.execute_batch(damage)?;
+                    assert!(
+                        !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                            conn
+                        )?,
+                        "{damage}"
+                    );
+                    decision_index_shape(conn, intact)
+                })
+                .expect("damage one Decision index");
+            assert!(intact_before.is_some());
+
+            db.migrate()
+                .expect("repair the current-marker Decision index");
+            db.with_conn(|conn| {
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+                assert_v42_decision_indexes(conn)?;
+                assert_eq!(
+                    decision_index_shape(conn, intact)?,
+                    intact_before,
+                    "{intact} is not rebuilt while repairing {damaged}"
+                );
+                Ok(())
+            })
+            .expect("inspect the repaired Decision indexes");
+        }
+    }
+
+    #[test]
+    fn schema_42_decision_indexes_each_serve_a_lookup_the_other_cannot() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            let plan = |sql: &str| -> anyhow::Result<Vec<String>> {
+                let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                let parameters = statement.parameter_count();
+                let lines = statement
+                    .query_map(
+                        rusqlite::params_from_iter(std::iter::repeat_n("x", parameters)),
+                        |row| row.get::<_, String>(3),
+                    )?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(lines)
+            };
+            // One Revision's Decisions, as the A2/A3 charges and Revision
+            // readers select them, and the latest Decision of a Proposal, as
+            // disclosure and current-admission readers select it.
+            let by_revision = "SELECT COUNT(*) FROM narrative_proposal_decisions
+                                WHERE revision_id = ?1 AND proposal_id = ?2";
+            let revision_only = "SELECT COUNT(*) FROM narrative_proposal_decisions
+                                  WHERE revision_id = ?1";
+            let latest = "SELECT id, revision_id, decision FROM narrative_proposal_decisions
+                           WHERE proposal_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 1";
+            assert_eq!(
+                plan(by_revision)?,
+                ["SEARCH narrative_proposal_decisions USING COVERING INDEX \
+                  idx_narrative_decisions_revision_proposal (revision_id=? AND proposal_id=?)"]
+            );
+            assert_eq!(
+                plan(revision_only)?,
+                ["SEARCH narrative_proposal_decisions USING COVERING INDEX \
+                  idx_narrative_decisions_revision_proposal (revision_id=?)"]
+            );
+            assert_eq!(
+                plan(latest)?,
+                ["SEARCH narrative_proposal_decisions USING INDEX \
+                  idx_narrative_decisions_proposal_created_id (proposal_id=?)"]
+            );
+
+            conn.execute_batch("DROP INDEX idx_narrative_decisions_proposal_created_id")?;
+            assert_eq!(
+                plan(latest)?,
+                [
+                    "SCAN narrative_proposal_decisions",
+                    "USE TEMP B-TREE FOR ORDER BY"
+                ]
+            );
+            conn.execute_batch(
+                "CREATE INDEX idx_narrative_decisions_proposal_created_id
+                     ON narrative_proposal_decisions(proposal_id, created_at, id);
+                 DROP INDEX idx_narrative_decisions_revision_proposal;",
+            )?;
+            assert_eq!(plan(revision_only)?, ["SCAN narrative_proposal_decisions"]);
+            Ok(())
+        })
+        .expect("inspect Decision lookup plans");
     }
 
     #[test]

@@ -121,10 +121,10 @@ fn same_schema_opens_without_migration_snapshot() {
 #[test]
 fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
     assert_eq!(
-        SCHEMA_VERSION, 41,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-41 \
-         (Gate C2/D1/C2A/NIR-1/current Human capture retirement) migrate further on top \
-         but do not touch this step's own fixtures or assertions"
+        SCHEMA_VERSION, 42,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-42 \
+         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes) \
+         migrate further on top but do not touch this step's own fixtures or assertions"
     );
     let ws = temp_workspace("schema-20-through-22");
     let db_path = ws.join("grimodex.db");
@@ -199,10 +199,10 @@ fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
 #[test]
 fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
     assert_eq!(
-        SCHEMA_VERSION, 41,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-41 \
-         (Gate C2/D1/C2A/NIR-1/current Human capture retirement) migrate further on top \
-         but do not touch this step's own fixtures or assertions"
+        SCHEMA_VERSION, 42,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-42 \
+         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes) \
+         migrate further on top but do not touch this step's own fixtures or assertions"
     );
     let ws = temp_workspace("schema-21-to-22");
     let db_path = ws.join("grimodex.db");
@@ -571,6 +571,82 @@ fn current_marker_missing_change_feed_nullable_column_is_shadow_repaired() {
         Ok(())
     })
     .expect("verify repaired workspace");
+}
+
+#[test]
+fn schema_41_workspace_without_decision_indexes_shadow_migrates_to_42() {
+    let ws = temp_workspace("v41-decision-indexes");
+    let db_path = ws.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate current");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_proposal_decisions
+                    (id, proposal_id, revision_id, decision, created_at, created_by)
+                 VALUES ('v41-decision', 'v41-proposal', 'v41-revision', 'approved',
+                         '2026-10-01T00:00:00.000Z', 'supervisor-test')",
+                [],
+            )?;
+            conn.execute_batch(
+                "DROP INDEX idx_narrative_decisions_revision_proposal;
+                 DROP INDEX idx_narrative_decisions_proposal_created_id;
+                 PRAGMA user_version = 41;",
+            )?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "a v41 workspace lacks the v42 Decision indexes"
+            );
+            Ok(())
+        })
+        .expect("shape a v41 workspace");
+    }
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("migrate");
+    match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            from_schema,
+            to_schema,
+            opened,
+            receipt_path,
+        } => {
+            assert_eq!(from_schema, 41);
+            assert_eq!(to_schema, SCHEMA_VERSION);
+            assert!(receipt_path.exists(), "receipt should be written");
+            drop(opened);
+        }
+        other => panic!("expected a staged v41 -> v42 migration, got {other:?}"),
+    }
+    assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
+
+    let db = Database::new(&db_path).expect("reopen migrated");
+    db.with_conn(|conn| {
+        assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
+        for (name, expected) in [
+            (
+                "idx_narrative_decisions_revision_proposal",
+                ["revision_id", "proposal_id"].as_slice(),
+            ),
+            (
+                "idx_narrative_decisions_proposal_created_id",
+                ["proposal_id", "created_at", "id"].as_slice(),
+            ),
+        ] {
+            let columns = conn
+                .prepare("SELECT name FROM pragma_index_info(?1) ORDER BY seqno")?
+                .query_map([name], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(columns, expected, "{name}");
+        }
+        let decision: String = conn.query_row(
+            "SELECT decision FROM narrative_proposal_decisions WHERE id = 'v41-decision'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(decision, "approved");
+        Ok(())
+    })
+    .expect("verify migrated v42 workspace");
 }
 
 #[test]
