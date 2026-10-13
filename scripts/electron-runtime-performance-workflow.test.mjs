@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -520,13 +521,17 @@ test("runner sampler owns Playwright-style detached descendants and reaps them",
     `require('node:fs').writeFileSync(${JSON.stringify(detachedPidPath)}, String(child.pid));`,
     "setInterval(() => {}, 1000);",
   ].join(" ");
+  // The leader must start Node, spawn the detached child and write its pid
+  // before the diagnostic timeout fires. 250 ms was shorter than a loaded CI
+  // runner needs for that (the pid file was missing), so allow 2 s; the
+  // timeout is still what stops the owned tree.
   const observation = await runObservedRuntimeCommand({
     command: process.execPath,
     args: ["-e", ownedTreeSource],
     cwd: repoRoot,
     env: process.env,
     sampleIntervalMs: 50,
-    timeoutMs: 250,
+    timeoutMs: 2_000,
     termGraceMs: 1_000,
     killGraceMs: 1_000,
   });
@@ -564,6 +569,10 @@ test("runner sampler owns Playwright-style detached descendants and reaps them",
   });
   assert.equal(observation.stopReason, "diagnostic-timeout");
   assert.equal(observation.cleanup.actualTermination, true);
+  assert.ok(
+    existsSync(detachedPidPath),
+    "the leader must write the detached child's pid before the diagnostic timeout",
+  );
   const detachedChildPid = Number(readFileSync(detachedPidPath, "utf8"));
   assert.ok(Number.isSafeInteger(detachedChildPid));
   assert.ok(
@@ -579,7 +588,7 @@ test("runner sampler owns Playwright-style detached descendants and reaps them",
   );
   assert.deepEqual(observation.limits, {
     sampleIntervalMs: 50,
-    timeoutMs: 250,
+    timeoutMs: 2_000,
     termGraceMs: 1_000,
     killGraceMs: 1_000,
   });
