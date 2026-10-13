@@ -1,5 +1,7 @@
 # C-query 同時メモリ容量差分（draft / HOLD）
 
+> **2026-10-12 注記（G0。以下の本文は作成時のまま）:** 本書の 2 MiB／8 ms と同時メモリ容量の前提は現行の契約ではない。2 MiB／8 ms は達成不能と判断した（[作業記録](nir1-continuation-2026-10.md) の U2）。C-query の現行の境界は [C-query 資源・lifecycle 境界](nir1-c-query-memory-enforcement-v1-draft.md) の「2026-10-04 現行の実装・受入れ境界」と [post-B §6.2](nir1-post-b-execution-plan.md#62-資源契約) で、100 ms result lease、512／513、100,000 SQL steps を維持し、aggregate physical-memory cap/proof は求めない。今後の資源契約は防御用の上限として、2026-10-12 に K1（`nir1-l6-l9-contract-proposal/6`）で確認された。本書は履歴と診断の記録として読み、受入れ条件や批准の根拠にしない。
+
 この文書は容量証明の未完了箇所と検討候補を記録する。既存の確認済み 2 MiB 契約、他の資源値、authority を変更・批准しない。Graph は HOLD とし、製品入口の activation を閉じたままにする。
 
 ## 未立証の範囲

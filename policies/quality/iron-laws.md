@@ -65,14 +65,19 @@ Security-sensitive threat models remain `draft` until explicit user confirmation
 actors, in-scope and out-of-scope attacks, mandatory defenses, and acceptance implications. Material
 changes require reconfirmation. Subagents and reviewers may propose a change, but may not silently
 freeze or change the threat model. Missing confirmation is a blocking precheck and must stop as
-`[precheck]` before mutation. For PR #610's C-query worker, the user has already delegated technical
-revisions of its worker, ownership, termination and threat model within the named actors, defenses,
-recipients and unchanged acceptance contract. The integrator records each concrete revision and its
-trust boundary in the existing work result before mutation; for a hard decision, obtain read-only
-Astra Max advice and decide explicitly. This is a delegated technical decision, not a claim of
-individual user approval. Deleting product authorization, sending secrets or data to unapproved
-recipients, or silently relaxing 8 ms, 2 MiB or Gold falls outside this delegation and still fails
-the precheck. This exception does not apply to other work.
+`[precheck]` before mutation. For the remaining NIR-1 lanes (C-resource, C-body, C-product, the
+D-final addendum, D-transport, D-dispatch, H-store/H-current, DI-1 and E), the user has delegated
+technical decisions on worker, owner, termination and lifecycle, and technical threat-model revisions
+within the already confirmed actors, defenses, recipients and acceptance. Before mutation, the
+integrator records each decision and its trust boundary in the lane's decision record and the PR
+body, and indexes the decision ID and record location in the
+[NIR-1 work record](../../docs/plans/nir1-continuation-2026-10.md); for a hard decision, obtain
+read-only advisor input and decide explicitly. This is a delegated technical
+decision, not a claim of individual user approval. New recipients of secrets or data, expanded
+storage scope, relaxed thresholds (including any relaxation or silent change of the current
+confirmation-ledger thresholds and Gold), product publication, deleting product authorization, and
+new contracts or authorities fall outside this delegation and still fail the precheck. This
+delegation does not apply outside the remaining NIR-1 lanes.
 
 Long or high-risk work uses one integrator, implementer(s), and candidate-untouched independent
 acceptance reviewer(s). Keep separate implementation and acceptance reviewers; these roles do not
@@ -262,13 +267,22 @@ and failure class remain linked. Failures use `[routing]`, `[precheck]`, `[tool]
 `[quality]`, or `[artifact]`. Runnable Heavy evaluations are `deferred` until executed; missing
 runners or prerequisites are `blocked`. Neither state is ever reported as `passed`.
 
-Normal PR and branch pushes do not start hosted GitHub Actions runners. The absence of hosted PR
-checks is not evidence of a passing gate. Windows NSIS final compilation remains a separate
-manual Full CI / tag-release obligation; an unavailable release-only check is never passed.
+Pull requests (opened, synchronize, reopened), `master` pushes and the nightly schedule run the
+ordinary `ci.yml` checks automatically. Ordinary checks are not a canonical Quick/Full receipt, and
+the absence of hosted PR checks is not evidence of a passing gate; a pending or missing check,
+`no checks reported`, or a green ordinary run never replaces the canonical receipt. Canonical Quick
+and Full run as a hosted `canonical-ci.yml` `workflow_dispatch` with `profile`, `candidate_base`,
+and `candidate_head`; the dispatched ref's head must equal `candidate_head`. A hosted Quick runs its
+immediate verify in the same job. Full runs as independent part jobs plus the `full-aggregate` job,
+which assembles the single receipt and runs the immediate verify with the same tuple; a re-run
+re-runs all jobs, never only failed ones. Full admission refuses a local `pnpm ci:local:full`
+outside a standard GitHub-hosted job, so a local Full is never merge evidence. Windows NSIS final
+compilation remains a separate manual Full CI / tag-release obligation; an unavailable release-only
+check is never passed.
 
-When hosted PR checks are absent, focused validation finishes first. If a completion commit is in scope,
+Before any canonical Quick/Full evidence, focused validation finishes first. If a completion commit is in scope,
 the candidate commit is created before any PR/release evidence; the candidate must be clean. Only when PR/release evidence is requested
-and CI is allowed does the clean candidate run local Quick; the Quick is immediately verified with the same fixed base/head
+and CI is allowed does the clean candidate run local Quick or the hosted canonical Quick; the Quick is immediately verified with the same fixed base/head
 values. Commit-only or CI-excluded work keeps the candidate commit without starting Quick and does not claim
 merge/release readiness. A change without a requested commit or PR does not create a commit or start PR-bound CI
 solely for Quick; any explicitly requested dirty working-tree Quick is diagnostic-only.
@@ -288,11 +302,16 @@ capacity on the actual workspace, build-cache, and temp filesystems, and separat
 pressure and temp quota. Do not use any fixed capacity/quota threshold (including GB, percentage, inode,
 or other numeric thresholds), a host-specific cache deletion list, or deletion automation. Derive any
 thresholds from risk, workload, and filesystem state rather than hardcoding them. This preflight is read-only and must not auto-delete artifacts, kill other jobs, or
-rewrite temp paths. A competing job is a coordination stop, not kill authority.
+rewrite temp paths. A competing job is a coordination stop, not kill authority. For a hosted Full,
+Full admission observes the actual workspace, build-cache, temp, memory, and pressure state on each
+fresh part VM and refuses unsafe placement or pressure; before dispatch, the dispatcher still checks
+read-only that no other canonical Full for the same merge queue is in progress.
 
 At candidate freeze, bind the exact candidate once in the receipt/ledger, including base, head, tree,
 clean state, receipt directory, and completeness. Use an expected-head check at push and merge state
-transitions. For a squash merge only, after merge and fetch, compare the actual squash merge commit's first
+transitions; a squash merge through `gh` uses `gh pr merge --squash --match-head-commit` with the
+candidate head. Immediately before merge, fetch `origin/master` and confirm the current base equals
+the recorded `approved_merge_base`. For a squash merge only, after merge and fetch, compare the actual squash merge commit's first
 parent (`<merge-sha>^1`) once with the recorded `approved_merge_base`, and verify that the merge commit is
 included in `origin/master`.
 An explicitly requested non-squash method must, before merge, have a method-specific actual-base/post-merge

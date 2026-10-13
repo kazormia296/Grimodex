@@ -1232,6 +1232,103 @@ test("NIR-1 capacity paths select their feature-gated diagnostic suite", async (
   );
 });
 
+test("NIR-1 C-query worker, diagnostics, CI harness and continuation records stay classified", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const requirement = (id) => {
+    const found = manifest.requirements.find((candidate) => candidate.id === id);
+    assert.ok(found, id);
+    return found;
+  };
+  const expectRules = (changedPath, ruleIds) => {
+    const selection = selectImpact(map, [changedPath]);
+    assert.deepEqual(selection.unmatchedPaths, [], changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+    for (const ruleId of ruleIds) {
+      assert.ok(selection.matchedRuleIds.includes(ruleId), `${changedPath}: ${ruleId}`);
+    }
+    return selection;
+  };
+
+  const worker = [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/worker_frame.rs",
+    "src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs",
+    "src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs",
+  ];
+  for (const changedPath of worker) {
+    const selection = expectRules(changedPath, ["nir1-entity-relation-review"]);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
+    for (const id of ["GDX-ARTIFACT-001", "GDX-NARR-SEMANTIC-CONTRACT-001"]) {
+      assert.ok(requirement(id).implementedBy.includes(changedPath), `${id}: ${changedPath}`);
+    }
+  }
+
+  const diagnostics = [
+    "src-tauri/crates/grimodex-db/src/bin/nir1-c-query-memory.rs",
+    "src-tauri/crates/grimodex-db/src/bin/nir1-c-query-linux-probe.rs",
+    "src-tauri/crates/grimodex-db/src/bin/support/c_query_allocation_cases.rs",
+    "src-tauri/crates/grimodex-db/src/bin/support/c_query_allocator.rs",
+    "src-tauri/crates/grimodex-db/src/bin/support/c_query_probe_frame.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_memory_diagnostics.rs",
+    "scripts/quality/nir1-c-query-linux-host-smoke.py",
+  ];
+  for (const changedPath of diagnostics) {
+    const selection = expectRules(changedPath, ["nir1-capacity-diagnostics"]);
+    assert.ok(selection.suiteIds.includes("nir1-capacity-diagnostics"), changedPath);
+    assert.ok(requirement("GDX-ISOLATION-001").implementedBy.includes(changedPath), changedPath);
+  }
+
+  const ciHarness = "scripts/nir1-c-query-worker-ci.sh";
+  const ciSelection = expectRules(ciHarness, ["workflow-runtime", "nir1-entity-relation-review"]);
+  assert.equal(ciSelection.allSelected, true, "the dataset-bound C-query CI harness selects every suite");
+  assert.ok(requirement("GDX-TRACE-001").implementedBy.includes(ciHarness));
+
+  const lifecycle = "src/application/chat/chatTurnLifecycle.ts";
+  const lifecycleSelection = expectRules(lifecycle, ["ai-routing", "nir1-entity-relation-review"]);
+  assert.ok(lifecycleSelection.suiteIds.includes("ai-routing"));
+  for (const id of ["GDX-ROUTE-001", "GDX-PRECHECK-001"]) {
+    assert.ok(requirement(id).implementedBy.includes(lifecycle), `${id}: ${lifecycle}`);
+  }
+
+  const matrix = "docs/plans/maintenance-transient-recovery-matrix.md";
+  const matrixSelection = expectRules(matrix, ["narrative-maintenance-product-journeys"]);
+  assert.ok(matrixSelection.suiteIds.includes("narrative-runtime"));
+  assert.ok(requirement("GDX-PRECHECK-001").implementedBy.includes(matrix));
+
+  const record = "docs/plans/nir1-continuation-2026-10.md";
+  const recordSelection = expectRules(record, ["quality-foundation"]);
+  assert.equal(recordSelection.allSelected, true, "the delegation record selects every suite");
+  assert.ok(requirement("GDX-PRECHECK-001").implementedBy.includes(record));
+
+  const postB = "docs/plans/nir1-post-b-execution-plan.md";
+  expectRules(postB, ["narrative-semantic-contract", "nir1-entity-relation-review"]);
+  assert.ok(requirement("GDX-NARR-SEMANTIC-CONTRACT-001").implementedBy.includes(postB));
+
+  // Receptacle globs: modules and records added by later NIR-1 lanes select
+  // the NIR-1 suite instead of falling back to every suite.
+  for (const futurePath of [
+    "src-tauri/crates/grimodex-db/src/nir1_startup_barrier.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_history/turn_context.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_scene_body.rs",
+    "src-tauri/crates/grimodex-db/tests/nir1_c_query_lifecycle.rs",
+    "src-tauri/crates/grimodex-db/src/bin/nir1-future-probe.rs",
+    "src-tauri/crates/grimodex-core/src/narrative_nir1_history.rs",
+    "electron/native/grimodex-node/src/nir1_c_query_owner.rs",
+    "electron/main/nir1GraphWire.ts",
+    "electron/shared/nir1GraphWire.ts",
+    "src/features/related-scenes/nir1GraphSeed.ts",
+    "docs/plans/nir1-c-query-acceptance-2026-10.md",
+  ]) {
+    const selection = expectRules(futurePath, ["nir1-entity-relation-review"]);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), futurePath);
+  }
+});
+
 const execFileAsync = promisify(execFile);
 const ALLOWED_SUITES = ["quality-workflow", "ai-routing", "tool-policy"];
 

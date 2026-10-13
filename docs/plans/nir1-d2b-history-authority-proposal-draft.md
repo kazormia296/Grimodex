@@ -1,5 +1,7 @@
 # NIR-1 D2b 履歴 authority adapter 提案（draft）
 
+> **2026-10-12 注記（G0。以下の本文は作成時のまま）:** 本書は superseded である。後継は今後起案する K4（`nir1-d2b-history-mapping-proposal/1`）とする。本文は作成時の履歴として保持し、現行の契約・承認の根拠として読まない。2026-09-25/26 の off-master 承認と WIP も採用しない（[作業記録](nir1-continuation-2026-10.md) の U1）。
+
 更新日: 2026-09-23
 
 | 項目 | 値 |

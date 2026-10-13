@@ -23,6 +23,9 @@ rules:
       - .agents/skills/**
       - .claude/skills/**
       - docs/communication-style-guide.md
+      - docs/plans/nir1-continuation-2026-10.md
+      - docs/plans/nir1-l6-l9-execution-plan.md
+      - docs/plans/nir1-l6-l9-contract-proposal-*.md
       - policies/quality/**
       - evals/**
       - scripts/quality/**
@@ -55,6 +58,7 @@ rules:
       - scripts/local-ci-process-supervisor.test.mjs
       - docs/local-ci-runner.md
       - scripts/ci-pause.test.mjs
+      - scripts/nir1-c-query-worker-ci.sh
     requirements:
       - GDX-TRACE-001
     suites:
@@ -67,6 +71,7 @@ rules:
       - src/features/chat/modelRouting.ts
       - src/features/chat/modelRouting.test.ts
       - src/application/chat/chatTurnStoreActions.ts
+      - src/application/chat/chatTurnLifecycle.ts
       - src/application/chat/chatAgentToolHandlers.ts
       - src/features/chat/chatContentGeneration.ts
       - src/features/chat/turn/**
@@ -233,6 +238,7 @@ rules:
       - docs/plans/narrative-ir-nir1-implementation-plan.md
       - docs/plans/narrative-semantic-core-roadmap.md
       - docs/plans/nir1-l6-l9-execution-plan.md
+      - docs/plans/nir1-post-b-execution-plan.md
       - docs/plans/nir0-d2-impact-matrix.md
       - policies/narrative/**
       - policies/narrative/fixtures/canonical-json-number-parity.json
@@ -317,7 +323,7 @@ rules:
     suites:
       - narrative-semantic-contract
   - id: nir1-entity-relation-review
-    reason: NIR-1 typed Entity/Relation review and internal Graph, Packing, prepared-request, and generation receipt contracts keep their core/DB checks together with typed IPC and the review journey; Native activation denial remains separately validated.
+    reason: NIR-1 typed Entity/Relation review and internal Graph, Packing, prepared-request, and generation receipt contracts keep their core/DB checks together with typed IPC and the review journey; Native activation denial remains separately validated. The nir1 globs receive modules and plan records added by later NIR-1 lanes.
     paths:
       - src/features/codex/CodexEntityRelationReviewDialog.integration.test.tsx
       - src/features/codex/CodexEntityRelationReviewDialog.test.tsx
@@ -426,6 +432,24 @@ rules:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs
       - src/db/narrativeChangeFeedSchema.test.ts
+      - src/application/chat/chatTurnLifecycle.ts
+      - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
+      - scripts/nir1-c-query-worker-ci.sh
+      - docs/plans/nir1-*.md
+      - src/**/nir1*
+      - electron/main/nir1*.ts
+      - electron/shared/nir1*.ts
+      - electron/native/grimodex-node/src/nir1_*.rs
+      - electron/native/grimodex-node/src/nir1_*/**
+      - src-tauri/crates/grimodex-core/src/narrative_nir1*.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_nir1*.rs
+      - src-tauri/crates/grimodex-db/src/nir1_*.rs
+      - src-tauri/crates/grimodex-db/src/nir1_*/**
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_*.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_*/**
+      - src-tauri/crates/grimodex-db/src/bin/nir1-*.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_*.rs
+      - src-tauri/crates/grimodex-db/tests/nir1_*.rs
     requirements:
       - GDX-NARR-SEMANTIC-CONTRACT-001
       - GDX-ARTIFACT-001
@@ -436,7 +460,7 @@ rules:
     suites:
       - nir1-entity-relation-review
   - id: nir1-capacity-diagnostics
-    reason: NIR-1 B capacity diagnostics require isolated fresh-copy/process paths, a machine-readable manifest, and feature-gated Native fixture coverage without activating Graph capacity claims.
+    reason: NIR-1 B capacity and C-query memory diagnostics require isolated fresh-copy/process paths, a machine-readable manifest, and feature-gated Native fixture coverage without activating Graph capacity claims.
     paths:
       - evals/nir1-capacity/**
       - scripts/nir1-material-capacity-probe.mjs
@@ -450,6 +474,13 @@ rules:
       - src-tauri/crates/grimodex-db/tests/nir1_capacity_boundaries.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs
       - src-tauri/crates/grimodex-db/tests/nir1_capacity_binary.rs
+      - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-memory.rs
+      - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-linux-probe.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_allocation_cases.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_allocator.rs
+      - src-tauri/crates/grimodex-db/src/bin/support/c_query_probe_frame.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_memory_diagnostics.rs
+      - scripts/quality/nir1-c-query-linux-host-smoke.py
     requirements:
       - GDX-ISOLATION-001
       - GDX-TRACE-001
@@ -541,6 +572,7 @@ rules:
       - src-tauri/crates/grimodex-db/src/state.rs
       - src-tauri/crates/grimodex-db/src/domain_writes.rs
       - src-tauri/crates/grimodex-db/src/narrative_maintenance_connection.rs
+      - docs/plans/maintenance-transient-recovery-matrix.md
       - src-tauri/crates/grimodex-db/tests/narrative_*.rs
       - src/features/narrative-extraction/maintenance/**
       - src/features/timelapse/recorder.ts

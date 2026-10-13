@@ -1,9 +1,11 @@
 # NIR-1 残工程実装計画 — 最終版
 
-更新日：2026-10-04
+更新日：2026-10-13
 対象：Grimodex / NIR-1 B-close、C、D2b、P、E
-状態：B-closeの実装・必須focused証跡は完了。C以降、G-01実行可能性検証、残る追加契約と製品公開は未完了。
+状態：B-closeの実装・必須focused証跡は完了。R-hook（#609）、D-final内部候補（#611）、C-query worker（#610）はmasterにある。C-resourceの受入れ、C-body以降、G-01実行可能性検証、残る追加契約と製品公開は未完了。
 リポジトリ配置：`docs/plans/nir1-post-b-execution-plan.md`
+
+2026-10-12 post-#629現在地: 残HOLDの状態は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の残HOLD表を正本とする。#610でC-queryの別process worker、Native owner、100 ms result leaseがmasterに入ったが、C-resourceの受入れはHOLDで、製品Graph入口は閉じている。2026-09-25/26のoff-master承認とWIPは使わず、契約はK1〜K6として最新master前提で起案し直す。資源契約は防御用の上限へ簡素化する方針で、2026-10-12にK1（`nir1-l6-l9-contract-proposal/6` の `graph-limited-binding` と `nir1-defensive-resource-limits`）で確認された。2 MiB／8 msは前提にしない。残工程のレーン、merge列、委任の範囲と記録は [NIR-1続行計画の作業記録](nir1-continuation-2026-10.md) に従う。本追記は契約の批准や公開許可ではない。
 
 2026-10-04 PR #610 C-query revision: §6.2以下は、aggregate physical-memory proofとNative fixed-area packingを必須条件から削除したユーザー承認済み境界へ同期した。512/513、100,000 VM steps、入力/frame/traversal/checked-arithmetic/concurrency、Gold、認可、100 ms result lease、owner/retirement契約は維持する。単一Revision validation、Packing、whole-project等の別budgetは変更しない。Graphは機能/lifecycle受入れと残るPR gateが終わるまで閉じたままで、この文書更新はPASSや公開許可ではない。
 
@@ -32,6 +34,7 @@
 | `nir1-l6-l9-contract-proposal/3` | `scope-storage-authority`、`caller-profile-egress`、`native-generation-receipt`、`history-reauthorization` |
 | `nir1-l6-l9-contract-proposal/4` | `typed-revision-material`：Option B / `nir1.entity-relation@1` |
 | `nir1-l6-l9-contract-proposal/5` | `graph-limited-binding`：三つのresource unit、whole-project lifecycle、測定と受け入れの分離 |
+| `nir1-l6-l9-contract-proposal/6`（2026-10-12確認） | `graph-limited-binding`：proposal/5の資源の値と受入れだけの改訂（Revision 512 records／6,291,456 B、C-queryのper-Revision preflight 2,097,152 B、100 ms result lease、物理メモリの証明の削除）。`nir1-defensive-resource-limits`：残レーンで今後追加する上限に共通の規則 |
 
 既存の確認済み行を再批准し直さない。各提案節のhistorical baselineにある「未承認」を、現在の確認台帳より優先しない。一方、計画への同意を、新規の保存範囲・authority・consumer・送信先・品質閾値・信頼境界の批准へ拡張しない。[S3]
 
@@ -160,6 +163,8 @@ queryごとに完全Graphをscanして完全性を証明しない。既存構造
 | seed-local query | read/admission 512（513件目はrefuse）、batch 16×32、SQL 100,000 VM steps、1,000 steps刻みの取消・期限確認、既存input/frame/fixed-buffer limitsとchecked arithmetic、aggregate physical-memory capなし、親のadmission→valid Native result lease ≤100 ms、reader/busy wait 0 |
 | 意味上の探索 | 最大2hop、発見Entity 12、適格edge展開144、返却Scene 8 |
 | whole-project build | B-closeで測定・確定する独立資源契約 |
+
+2026-10-12追記（K1）: 上表の値は、`nir1-l6-l9-contract-proposal/6#graph-limited-binding` で確認台帳の形式により確認された。確認済みの固定値（C-queryのper-Revision preflight 2,097,152 Bを含む）、実装上の防御上限、削除した要件の正本は、[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の「graph-limited-binding (proposal/6 confirmed contract)」節とする。残レーンで今後追加する上限は `nir1-defensive-resource-limits` の規則に従う。C-resourceの受入れのHOLDは、CR-REC（CR-1のlane証跡と独立受入れ）で解除するまで残る。
 
 C-queryではparent admission-to-valid-Native-result-leaseの100 msを維持し、旧query-wide 2 MiB / 8 ms条件を適用しない。100 msは結果leaseの期限であり、registration/READY前のstartupやcleanup/retirement待ちを含めない。単一Revision validationは引き続き512 records / 6 MiB、Packingは引き続き2 MiBで、whole-project build等の別budgetも変更しない。C-queryにQ 4,718,592 B + Native 1,572,864 B = 6,291,456 Bのaggregate physical cap/proofはない。過去のこれらの値は旧実装設計の履歴であり、現行の物理上限ではない。[S3]
 
@@ -392,18 +397,21 @@ C系とD2b系の二レーンを基本とする。共有IPC型、Native入口、p
 
 focused境界試験、型/契約/必要なRust・Native・Electron検証、品質台帳とimpact traceを更新してから候補をcommitする。clean candidateでQuick→直後verify、独立受け入れ、merge前Fullをstage 1から→直後verifyを実行する。すべてのPRに既存merge gate Mを適用する。[S3]
 
+2026-10-12同期（#627以降の実態）: PRと`master`へのpushでは`ci.yml`の通常checksが自動で走るが、canonical Quick／Full receiptの代わりにはしない。Full admissionはGitHub-hosted job以外を拒否するため、Fullはpushしたbranchのremote HEADが`full_head`と一致することを確認してから、`canonical-ci.yml`のhosted dispatchで実行する。Quickはローカルで実行するか、同じ固定値で`profile=quick`をhosted dispatchする。
+
 ```sh
 candidate_base="$(git rev-parse 'origin/master^{commit}')"
 candidate_head="$(git rev-parse 'HEAD^{commit}')"
 pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
 pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
 
-# merge用の最終候補をfreezeし、base/headを一度解決する
+# merge用の最終候補をfreezeし、base/headを一度解決してからhosted Fullをdispatchする
 full_base="$(git rev-parse 'origin/master^{commit}')"
 full_head="$(git rev-parse 'HEAD^{commit}')"
-pnpm ci:local:full -- --base "$full_base" --head "$full_head"
-pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"
+gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$full_base" -f candidate_head="$full_head"
 ```
+
+7つのpart jobと、同じtupleで `pnpm ci:local:full -- --aggregate` と直後の `pnpm ci:local:verify -- full` を実行する `full-aggregate` jobがすべて成功したrunだけをFull receiptとする。失敗したrunは全jobを再実行する。merge直前に `git fetch origin master` でbaseが`full_base`と一致することを確認し、`gh pr merge --squash --match-head-commit "$full_head"` でmergeし、merge commitの`^1`をapproved merge baseと照合する。手順の正本は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の全PR共通 merge gate M。
 
 base/head/tree/clean state/receipt directory、契約ref、評価manifest/model hash、reviewerを境界時点で記録する。各操作で同じSHAを過剰照合しない。候補変更後は旧receiptを流用しない。Full失敗を単体再実行成功でPASSへ変えず、原因を確認し、必要修正後の新候補で再実行する。
 
@@ -424,6 +432,8 @@ CI明示除外やcommit-onlyではその範囲を守り、merge readinessを主�
 B-closeの残測定・数値契約・必須境界の証跡整理は完了した。次の工程はCの候補完全性・Scene接続・G-01成立確認と、Dの来歴保存先・dispatch確定順序の設計である。本B-closeの依頼ではそれらの実装・製品公開を開始しない。
 
 B-closeと該当接続契約の完了後、C-queryとD2b-1を並行実装する。続いてC-productとhistoryを並行させ、Graph由来履歴の実接続まで受け入れた後にD2b-2-dispatchへ合流し、Eで全体完了を判定する。
+
+2026-10-12追記: R-hook（#609）、D-final内部候補（#611）、C-query worker（#610）はmasterに入った。次の着手は [NIR-1続行計画の作業記録](nir1-continuation-2026-10.md) のWave 1（G0、K1、SPIKE、CR-1／CR-REC、CP-0、DT-1〜3、HP-1、DSN、K2〜K6の起案）であり、製品公開はPUB-G／PUB-Lまで行わない。
 
 ## 参照資料
 

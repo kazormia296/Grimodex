@@ -1,5 +1,7 @@
 # NIR-1 C: target Scene body disclosure decision (DRAFT)
 
+> **2026-10-12 注記（G0。以下の本文は作成時のまま）:** 本書は superseded である。後継は今後起案する K2（`nir1-c-body-disclosure-proposal/2`）とする。K2 が確認され実装されるまで、Graph だけが追加する target Scene の本文を出さない現在の fail-closed の挙動は変えない。本文は作成時の履歴として保持し、現行の契約・承認の根拠として読まない。2026-09-25/26 の off-master 承認と WIP も採用しない（[作業記録](nir1-continuation-2026-10.md) の U1）。
+
 Status: **fail-closed Hold; no new contract or approval request**
 Scope: Graph-added Related Scenes only. This note does not revise the confirmed Entity/Relation, Graph, history, egress, Gold, metric, or resource contracts.
 

@@ -1,5 +1,7 @@
 # NIR-1 C: Scene接続とG-01の実装前候補
 
+> **2026-10-12 注記（G0。以下の本文は作成時のまま）:** 本書が前提とする 2 MiB／8 ms の C-query 資源条件は現行の契約ではない。2 MiB／8 ms は達成不能と判断した（[作業記録](nir1-continuation-2026-10.md) の U2）。C-query の現行の境界は [C-query 資源・lifecycle 境界](nir1-c-query-memory-enforcement-v1-draft.md) の「2026-10-04 現行の実装・受入れ境界」と [post-B §6.2](nir1-post-b-execution-plan.md#62-資源契約) で、100 ms result lease、512／513、100,000 SQL steps を維持し、aggregate physical-memory cap/proof は求めない。G-01 の fixture 提案と observationPolicy は変えない。Scene 接続と join の設計は続行計画の DSN と CP-1 で最新 master に合わせて扱う。
+
 作成日: 2026-09-22。状態: **design candidate / runtime unmeasured**。
 対象: [post-B計画](nir1-post-b-execution-plan.md) §3、§6.3、§7.1。
 本書は製品コード、既存24件のGold、評価指標、公開条件を変更しない。
