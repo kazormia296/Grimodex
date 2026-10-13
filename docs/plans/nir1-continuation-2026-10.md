@@ -97,7 +97,7 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 | G0 | ガバナンスと doc-sync。本書、U3 と U4 の反映、現在地の同期、旧 draft の banner、quality-manifest と impact-map の分類 | integrator | 即時 |
 | K1（Session A） | 資源契約 /6 の2文。2026-10-12 に確認され、G0 に同梱して台帳へ記録した（§10.1） | integrator（起案と adversarial review） | 即時 |
 | SPIKE（S1〜S6） | 投資前の診断。merge しない | Workflow の subagent | 即時。計測は窓を分ける |
-| CR-1／CR-REC | C-resource の閉鎖（opt-in lane の dispatch、ignored の実 worker 試験の配線、CQ-2、U6 の安全失敗、dataset の更新）と受入れ台帳 | CR-1 は Ralph で起動（以後は Workflow subagent）、CR-REC は integrator | 即時。CR-REC の HOLD 解除は K1 の後（K1 は 2026-10-12 に確認済み。解除には CR-1 の lane 証跡と独立受入れが要る） |
+| CR-1／CR-REC | C-resource の閉鎖（opt-in lane の dispatch、ignored の実 worker 試験の配線、CQ-2、U6 の安全失敗、dataset の更新）と受入れ台帳 | CR-1 は Ralph で起動（以後は Workflow subagent）、CR-REC は integrator | 即時。CR-REC の HOLD 解除は K1 の後（K1 は 2026-10-12 に確認済み。解除には CR-1 の lane 証跡と独立受入れが要る）。CR-REC の記録は §10.2 |
 | CP-0 | G-02〜G-08 の fixture・Gold・期待値の事前固定と P arm の足場 | Workflow の subagent と、それとは別の期待値 reviewer | 即時。Graph の出力を観測する前に固定する |
 | DT-1→DT-2→DT-3 | D-transport の基盤（barrier と seam、bounded な create／claim／finish、AttemptBinding v2）。製品入口は作らない | DT-1 は Ralph で起動（以後は Workflow subagent）、DT-2 と DT-3 は Workflow subagent | 即時（U3 委任） |
 | HP-1 | history 読取の前段（内部・未接続） | Ralph で起動（以後は Workflow subagent） | 即時。merge は DT-3 の後 |
@@ -171,8 +171,9 @@ U5（計画外）への依存: M0（CI 保守。期限と Dependabot への対�
 | `claude-nir1-hp` | `claude/nir1-hp` | `a153743b` | HP-1 |
 | `claude-nir1-spike` | `claude/nir1-spike` | `a153743b` | SPIKE S1〜S6（merge しない） |
 | `claude-nir1-contracts` | `claude/nir1-contracts` | `a153743b` | 契約 K1〜K6 の起案（merge しない branch で SHA を固定） |
+| `claude-nir1-crrec` | `claude/nir1-crrec` | `dabbed14`（`origin/master`） | CR-REC（受入れ台帳と HOLD の解除。docs だけ） |
 
-`origin/master` の基点はいずれも `a153743b3f672b7274bdd748f15ef9c216dc9961`（#629）。`claude-nir1-dt2` は 2026-10-12 23:17 JST に、`claude/nir1-dt1` の DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-dt3` は 2026-10-12 23:34 JST に、同じ DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-cp1` は 2026-10-13 00:11 JST に、`claude/nir1-cres` の CR-1b commit `0e041537e8c56c43be38afea490c26857bb488a7` から作った。`claude-nir1-broute` は 2026-10-13 00:47 JST に `origin/master` の `a153743b` から作った（SPIKE S1 で、製品に B の sealed binding を publish する経路が無いことが分かったため、B-ROUTE レーンを追加した）。作成時刻は各 branch の reflog（`git reflog show --date=iso <branch>`）の作成記録で確かめた。以後に作る worktree は、作成時に本表へ追記する。merge 済みのレーンの worktree は、この計画で作ったものに限って片付ける。
+`origin/master` の基点はいずれも `a153743b3f672b7274bdd748f15ef9c216dc9961`（#629）。`claude-nir1-dt2` は 2026-10-12 23:17 JST に、`claude/nir1-dt1` の DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-dt3` は 2026-10-12 23:34 JST に、同じ DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-cp1` は 2026-10-13 00:11 JST に、`claude/nir1-cres` の CR-1b commit `0e041537e8c56c43be38afea490c26857bb488a7` から作った。`claude-nir1-broute` は 2026-10-13 00:47 JST に `origin/master` の `a153743b` から作った（SPIKE S1 で、製品に B の sealed binding を publish する経路が無いことが分かったため、B-ROUTE レーンを追加した）。`claude-nir1-crrec` は 2026-10-13 22:07 JST に `origin/master` の `dabbed14711561693b0a86de0241873a9beafa04`（#649）から作り、CR-1 の merge の後に、その squash commit `750741183cf4d75ccf18b3904a5751b762284bda`（#636）へ載せ替えた。作成時刻は各 branch の reflog（`git reflog show --date=iso <branch>`）の作成記録で確かめた。以後に作る worktree は、作成時に本表へ追記する。merge 済みのレーンの worktree は、この計画で作ったものに限って片付ける。
 
 ## 8. 2026-09-25/26 の off-master 承認と WIP（不採用・参照のみ）
 
@@ -217,6 +218,20 @@ I confirm draftRef nir1-l6-l9-contract-proposal/6 for contractId nir1-defensive-
 - 残HOLD表の「Revision上限の整合」は、解消（K1 確認）とした。C-resource の受入れの HOLD は、CR-REC（CR-1 の lane 証跡と独立受入れ）で解除するので、まだ解除しない。
 - `graph-query-memory-accounting/1` は proposal/6 で退役した。[C-query 資源・lifecycle 境界](nir1-c-query-memory-enforcement-v1-draft.md) と [C-query Linux resource probe](nir1-c-query-linux-resource-probe-draft.md) に注記した。
 - この確認は、Graph の製品公開、local 送信、新しい authority・保存先・送信先、K2〜K6 の内容を確認しない。
+
+### 10.2. CR-REC（C-resource の受入れ）
+
+CR-1（#636）の lane 証跡と独立受入れを、[C-query 受入れ台帳](nir1-c-query-acceptance-2026-10.md) に束縛した。docs だけの変更で、新しい委任判断（§3.2）は発生しない。
+
+| 項目 | 値 |
+|---|---|
+| 記録日 | 2026-10-13 |
+| 解除した範囲 | 台帳の §2 で「充足」とした条件（CQ-1〜3、RB-3、RB-5〜RB-7、LC-1〜LC-9、NB-1、PF-1、A-1）と、「一部充足」の行のうち試験がある部分 |
+| 解除の条件 | CR-1（#636）の merge と、最終 head の Quick・PR checks・lane 6本の green。いずれも満たした（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。CR-1 は 2026-10-13T14:06:23Z に merge された。U7（2026-10-13 のユーザー決定）により Full は merge 後の master で走らせる。最終 head の結果は台帳の §3.2、§3.3、§4 に記入した |
+| U7 の記録 | U7（2026-10-13 のユーザー決定）の逐語の記録と、規則文書の更新は別の PR で行う。本節は参照するだけである |
+| 残す HOLD | 台帳の §7 の G-1〜G-4（Revision と per-Revision preflight の境界、DB の SQLITE_BUSY、proposal/5 の負例の一部）。CR-1 の試験では固定されていない境界で、後続の CR-2（branch `claude/nir1-cr2`、試験だけの PR、進行中）で足してから解除する |
+| 変えないもの | 製品の Graph 入口（A-1）、Graph の公開、local 送信、固定値と閾値、確認台帳の各行、K2〜K6 の内容 |
+| 試験の期待値 | `scripts/quality/quality-workflow.test.mjs` の、L6〜L9実行計画の残HOLD表で C-resource の行を固定する assertion は、CR-REC までは HOLD を守る番人だったため、解除済みの形に更新した。確認台帳の `graph-limited-binding` の行を固定する assertion は文言を残し、括弧書きで追記しただけで、変えていない。各文書の解除の記述が、解除の条件（CR-1 の merge と、最終 head の Quick・PR checks・lane 6本の green）、squash commit の SHA、U7 の文言を持つことは、同じ試験で固定した |
 
 ## 11. 未解決事項
 

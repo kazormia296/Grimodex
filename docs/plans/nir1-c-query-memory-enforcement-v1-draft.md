@@ -1,6 +1,8 @@
 # NIR-1 C-query 資源・lifecycle境界 — 旧提案と2026-10-04改訂
 
-> **2026-10-12 注記（K1。以下の本文は作成時のまま）:** 本書の旧v1提案 `graph-query-memory-accounting/1`（query の 2 MiB を worker と allocator で物理的に強制する設計。一度も批准されていない）は、2026-10-12 に確認された `nir1-l6-l9-contract-proposal/6#graph-limited-binding` で退役した。同じ方式をまた提案するときは、新しい draftRef で起案する。本文の「2026-10-04 現行の実装・受入れ境界」にある資源の値（単一 Revision validation の 512 records／6,291,456 B、100 ms result lease、aggregate physical-memory cap/proof と Native fixed-area packing の削除）は、proposal/6 で確認台帳の形式により正式化された。現行の固定値と実装上の防御上限は、[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の「graph-limited-binding (proposal/6 confirmed contract)」節を正本とする。C-resource の受入れの HOLD は、CR-REC（CR-1 の lane 証跡と独立受入れ）で解除するまで残る。
+> **2026-10-12 注記（K1。以下の本文は作成時のまま）:** 本書の旧v1提案 `graph-query-memory-accounting/1`（query の 2 MiB を worker と allocator で物理的に強制する設計。一度も批准されていない）は、2026-10-12 に確認された `nir1-l6-l9-contract-proposal/6#graph-limited-binding` で退役した。同じ方式をまた提案するときは、新しい draftRef で起案する。本文の「2026-10-04 現行の実装・受入れ境界」にある資源の値（単一 Revision validation の 512 records／6,291,456 B、100 ms result lease、aggregate physical-memory cap/proof と Native fixed-area packing の削除）は、proposal/6 で確認台帳の形式により正式化された。現行の固定値と実装上の防御上限は、[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の「graph-limited-binding (proposal/6 confirmed contract)」節を正本とする。C-resource の受入れの HOLD は、2026-10-13 の CR-REC で解除済みである（下の注記）。
+
+> **2026-10-13 注記（CR-REC。以下の本文は作成時のまま）:** C-resource の受入れ（下の「維持する機能・workload・認可契約」の functional／lifecycle／resource-safety を含む）は、[C-query 受入れ台帳](nir1-c-query-acceptance-2026-10.md) で試験と run に対応づけて記録した。HOLD は解除済みである。条件：CR-1（#636）の merge と、最終 head の Quick・PR checks・lane 6本の green（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。U7（2026-10-13 のユーザー決定）により Full は merge 後の master で走らせる。台帳の未充足（G-1〜G-4）は HOLD のまま残す（後続は CR-2）。製品の Graph 入口は閉じたまま（A-1）で、この注記は Graph の公開、local 送信、固定値、閾値を変えない。
 
 状態: 2026-10-04、PR #610のC-queryについてユーザーが資源受入れを改訂した。以下の「現行境界」が正本であり、従前の物理メモリ上界の立証は必須実装・受入れ・merge条件ではない。C-queryの機能/lifecycle受入れとPR gateは未完了で、製品Graph入口は引き続き閉じる。この改訂は既存のGraph認可を削除せず、製品公開を許可しない。
 
@@ -25,6 +27,8 @@
 ### 状態
 
 Graphは、上記の維持された機能/lifecycle条件、必要な独立レビュー、3-OS real-worker checks、固定candidateのQuick/Full等が揃うまで公開しない。物理fit proofの削除はPASSやmerge readinessではなく、その旧条件だけを未解決理由にしない。過去の測定・失敗・`UNKNOWN`は後続の履歴として保持し、PASSへ読み替えない。
+
+2026-10-13: これらのうち、C-queryの機能・lifecycle・独立受入れ・3-OSの実worker確認は、[C-query 受入れ台帳](nir1-c-query-acceptance-2026-10.md) に記録した（解除の条件と、HOLDのまま残す未充足は台帳に従う）。Graphの製品公開には、A3 + B + C + D2aと公開時の承認がさらに要り、製品のGraph入口は閉じたまま（A-1）である。
 
 ## 旧承認・数値変更の履歴（現行要件ではない）
 

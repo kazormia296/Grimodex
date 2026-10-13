@@ -3535,8 +3535,12 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       `${retiredIn} must record the retirement of graph-query-memory-accounting/1`,
     );
   }
-  // K1 (2026-10-12) resolved the Revision limit; the C-resource acceptance
-  // HOLD is released only by CR-REC with the CR-1 lane evidence.
+  // K1 (2026-10-12) resolved the Revision limit. CR-REC (2026-10-13) released
+  // the C-resource acceptance HOLD on the CR-1 lane evidence recorded in the
+  // acceptance ledger. The release condition is the CR-1 merge and the green
+  // final-head Quick, PR checks and lanes; by U7 (2026-10-13) Full is no longer
+  // a merge condition and runs on master after the merge. The ledger's unmet
+  // items stay a separate HOLD row, followed up by CR-2.
   assert.match(
     executionPlan,
     /^\| Revision上限の整合 \|[^\n]*\| 解消（K1 確認）。2026-10-12に `nir1-l6-l9-contract-proposal\/6#graph-limited-binding` で `512 records`／`6,291,456 B` を確認し、確認台帳に記録した \|$/m,
@@ -3544,8 +3548,86 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
   assert.match(
     executionPlan,
-    /^\| C-queryのfunctional\/resource-safety・100 ms lease、SQL・cleanup \|[^\n]*\| HOLD。[^\n]*資源の固定値はK1（proposal\/6）で確認済みだが、受入れはCR-1[^\n]*とCR-REC[^\n]*で閉じる \|$/m,
-    "the C-resource acceptance HOLD stays open until CR-REC",
+    /^\| C-queryのfunctional\/resource-safety・100 ms lease、SQL・cleanup \|[^\n]*\| 解除済み（CR-REC、2026-10-13）。[^\n]*資源の固定値はK1（proposal\/6）で確認済み[^\n]*\]\(nir1-c-query-acceptance-2026-10\.md\)[^\n]*条件：CR-1（#636）のmergeと最終headのQuick・PR checks・lane 6本のgreen（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。U7（2026-10-13のユーザー決定）により Full は merge 後の master で走らせる。[^\n]*A-1） \|$/m,
+    "the C-resource acceptance HOLD is released by CR-REC under the CR-1 merge and the green final-head Quick, PR checks and lanes",
+  );
+  assert.match(
+    executionPlan,
+    /^\| C-resourceの境界試験（台帳§7のG-1〜G-4） \|[^\n]*\| HOLD。[^\n]*後続はCR-2（branch claude\/nir1-cr2、試験だけのPR、進行中[^\n]*台帳に追記してから解除する \|$/m,
+    "the ledger's unmet C-resource items stay an open HOLD followed up by CR-2",
+  );
+  // Every place that records the release names its condition (the CR-1 merge
+  // and the green final-head Quick, PR checks and lanes), the CR-1 squash
+  // commit, and that Full runs on master after the merge (U7). Full is not a
+  // release condition, no field is left unfilled, and no stale "stays until
+  // CR-REC" remains.
+  const CR1_SQUASH_COMMIT = "750741183cf4d75ccf18b3904a5751b762284bda";
+  const crRelease =
+    /CR-1（#636）の ?merge ?と、? ?最終 ?head ?の ?Quick・PR checks・lane 6本の ?green/;
+  const crSquash = new RegExp(`（CR-1 の squash commit：${CR1_SQUASH_COMMIT}）`);
+  const crFullOnMaster =
+    /U7（2026-10-13 ?のユーザー決定）により ?Full ?は ?merge ?後の ?master ?で走らせる/;
+  const crRecDocs = {
+    "execution plan": executionPlan,
+    "post-B plan": postBPlan,
+    "integration plan": integrationPlan,
+    roadmap,
+    "memory enforcement draft": await read(
+      "docs/plans/nir1-c-query-memory-enforcement-v1-draft.md",
+    ),
+    "continuation record": await read("docs/plans/nir1-continuation-2026-10.md"),
+    "acceptance ledger": await read(
+      "docs/plans/nir1-c-query-acceptance-2026-10.md",
+    ),
+  };
+  for (const [name, text] of Object.entries(crRecDocs)) {
+    assert.match(text, crRelease, `${name} must name the release condition`);
+    assert.match(text, crSquash, `${name} must carry the CR-1 squash commit`);
+    assert.match(
+      text,
+      crFullOnMaster,
+      `${name} must say that Full runs on master after the merge (U7)`,
+    );
+    assert.doesNotMatch(
+      text,
+      /lane・Full ?の ?green/,
+      `${name} must not keep Full as a release condition`,
+    );
+    assert.doesNotMatch(
+      text,
+      /integrator が記入/,
+      `${name} must not leave a field for the integrator unfilled`,
+    );
+    assert.doesNotMatch(
+      text,
+      /で解除するまで残る/,
+      `${name} must not keep the HOLD open until CR-REC`,
+    );
+    if (name !== "acceptance ledger") {
+      assert.match(
+        text,
+        /\]\((?:\.\/)?nir1-c-query-acceptance-2026-10\.md\)/,
+        `${name} must link the acceptance ledger`,
+      );
+    }
+  }
+  const ledger = crRecDocs["acceptance ledger"];
+  for (const id of ["CQ-1", "CQ-2", "CQ-3", "A-1", "G-1", "G-2", "G-3", "G-4"]) {
+    assert.match(
+      ledger,
+      new RegExp(`^\\| ${id} \\|`, "m"),
+      `the acceptance ledger must keep a row for ${id}`,
+    );
+  }
+  assert.match(
+    ledger,
+    /製品の Graph 入口は閉じたまま（A-1）/,
+    "the acceptance ledger must keep the product Graph entrance closed",
+  );
+  assert.match(
+    ledger,
+    /CR-2（branch `claude\/nir1-cr2`、試験だけの PR、進行中）/,
+    "the acceptance ledger must name CR-2 as the follow-up of its unmet items",
   );
   assert.match(
     executionPlan,

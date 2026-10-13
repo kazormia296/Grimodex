@@ -2,10 +2,12 @@
 
 更新日：2026-10-13
 対象：Grimodex / NIR-1 B-close、C、D2b、P、E
-状態：B-closeの実装・必須focused証跡は完了。R-hook（#609）、D-final内部候補（#611）、C-query worker（#610）はmasterにある。C-resourceの受入れ、C-body以降、G-01実行可能性検証、残る追加契約と製品公開は未完了。
+状態：B-closeの実装・必須focused証跡は完了。R-hook（#609）、D-final内部候補（#611）、C-query worker（#610）はmasterにある。C-resourceの受入れは [C-query受入れ台帳](nir1-c-query-acceptance-2026-10.md) に記録し、HOLDを解除済み。条件：CR-1（#636）のmergeと最終headのQuick・PR checks・lane 6本のgreen（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。U7（2026-10-13のユーザー決定）により Full は merge 後の master で走らせる。台帳の未充足はHOLDのまま。C-body以降、G-01実行可能性検証、残る追加契約と製品公開は未完了。
 リポジトリ配置：`docs/plans/nir1-post-b-execution-plan.md`
 
 2026-10-12 post-#629現在地: 残HOLDの状態は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の残HOLD表を正本とする。#610でC-queryの別process worker、Native owner、100 ms result leaseがmasterに入ったが、C-resourceの受入れはHOLDで、製品Graph入口は閉じている。2026-09-25/26のoff-master承認とWIPは使わず、契約はK1〜K6として最新master前提で起案し直す。資源契約は防御用の上限へ簡素化する方針で、2026-10-12にK1（`nir1-l6-l9-contract-proposal/6` の `graph-limited-binding` と `nir1-defensive-resource-limits`）で確認された。2 MiB／8 msは前提にしない。残工程のレーン、merge列、委任の範囲と記録は [NIR-1続行計画の作業記録](nir1-continuation-2026-10.md) に従う。本追記は契約の批准や公開許可ではない。
+
+2026-10-13追記（CR-REC）: C-resourceの受入れを [C-query受入れ台帳](nir1-c-query-acceptance-2026-10.md) に記録した。§12のCQ-1〜3と§6.2の資源契約の各条件を、CR-1（#636）の試験とlaneのrunに対応づけ、独立受入れの結果とpracticalの観測値を載せた。対応する証跡が無い条件は未充足として残し、HOLDのままにする。解除した範囲の条件は、CR-1（#636）のmergeと最終headのQuick・PR checks・lane 6本のgreenで、いずれも満たした（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。U7（2026-10-13のユーザー決定）により Full は merge 後の master で走らせる。台帳の未充足の後続はCR-2。製品Graph入口は閉じたまま（A-1）。本追記は契約の批准や公開許可ではない。
 
 2026-10-04 PR #610 C-query revision: §6.2以下は、aggregate physical-memory proofとNative fixed-area packingを必須条件から削除したユーザー承認済み境界へ同期した。512/513、100,000 VM steps、入力/frame/traversal/checked-arithmetic/concurrency、Gold、認可、100 ms result lease、owner/retirement契約は維持する。単一Revision validation、Packing、whole-project等の別budgetは変更しない。Graphは機能/lifecycle受入れと残るPR gateが終わるまで閉じたままで、この文書更新はPASSや公開許可ではない。
 
@@ -164,7 +166,7 @@ queryごとに完全Graphをscanして完全性を証明しない。既存構造
 | 意味上の探索 | 最大2hop、発見Entity 12、適格edge展開144、返却Scene 8 |
 | whole-project build | B-closeで測定・確定する独立資源契約 |
 
-2026-10-12追記（K1）: 上表の値は、`nir1-l6-l9-contract-proposal/6#graph-limited-binding` で確認台帳の形式により確認された。確認済みの固定値（C-queryのper-Revision preflight 2,097,152 Bを含む）、実装上の防御上限、削除した要件の正本は、[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の「graph-limited-binding (proposal/6 confirmed contract)」節とする。残レーンで今後追加する上限は `nir1-defensive-resource-limits` の規則に従う。C-resourceの受入れのHOLDは、CR-REC（CR-1のlane証跡と独立受入れ）で解除するまで残る。
+2026-10-12追記（K1）: 上表の値は、`nir1-l6-l9-contract-proposal/6#graph-limited-binding` で確認台帳の形式により確認された。確認済みの固定値（C-queryのper-Revision preflight 2,097,152 Bを含む）、実装上の防御上限、削除した要件の正本は、[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の「graph-limited-binding (proposal/6 confirmed contract)」節とする。残レーンで今後追加する上限は `nir1-defensive-resource-limits` の規則に従う。C-resourceの受入れのHOLDは、2026-10-13のCR-REC（[C-query受入れ台帳](nir1-c-query-acceptance-2026-10.md)）で解除済みである。条件：CR-1（#636）のmergeと最終headのQuick・PR checks・lane 6本のgreen（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。U7（2026-10-13のユーザー決定）により Full は merge 後の master で走らせる。台帳の未充足はHOLDのまま残す。
 
 C-queryではparent admission-to-valid-Native-result-leaseの100 msを維持し、旧query-wide 2 MiB / 8 ms条件を適用しない。100 msは結果leaseの期限であり、registration/READY前のstartupやcleanup/retirement待ちを含めない。単一Revision validationは引き続き512 records / 6 MiB、Packingは引き続き2 MiBで、whole-project build等の別budgetも変更しない。C-queryにQ 4,718,592 B + Native 1,572,864 B = 6,291,456 Bのaggregate physical cap/proofはない。過去のこれらの値は旧実装設計の履歴であり、現行の物理上限ではない。[S3]
 
@@ -197,6 +199,8 @@ Graph→Sceneのjoinには既存の正本上の対応情報、Source token、失
 memory/lifetimeの有限な実用確認では、既存の反復testを再利用するか、必要なら同一Native parent processでQ512を30回逐次実行し、各lease releaseと実worker reapを次回の前に確認する。既存maximum-size fixtureも一度実行し、fixture/work scale、環境、parent/workerの観測使用量、reap後resourceを記録する。具体的なowner/result/worker retention、継続的growth、OOM、stalled operationがあれば修正する。固定byte/RSS thresholdやRSS baselineへの完全復帰は要求せず、この有限観測を全入力のmemory upper-boundやleak不存在の証明としない。
 
 製品Graph入口への直接呼び出しは拒否されたままにする。
+
+CQ-1〜3の試験とrunの対応、独立受入れ、practicalの観測値は [C-query受入れ台帳](nir1-c-query-acceptance-2026-10.md) に記録した。
 
 ## 7. C-productとP：Related Scenes統合
 
@@ -360,6 +364,8 @@ loopback recorderで実payload、対象endpoint、送信回数、禁止検出文
 | E-1 | E | 通常操作→Graph→Evidence→生成→次turn→失効→reopen | 実Electron/IPC/N-API/SQLite/transport一貫性 |
 
 競合試験は固定sleep増加ではなく、検証後、dispatch権取得前後、publish、terminal保存等の同期点で再現する。性能は実時間で別測定する。期待値生成に実装と同じ誤りを共有させず、mockのみ/正例のみ/単体のみを製品受け入れにしない。
+
+CQ-1〜3とA-1の試験・runへの対応は [C-query受入れ台帳](nir1-c-query-acceptance-2026-10.md) に記録した。
 
 ## 13. E：統合受け入れと完了判定
 
