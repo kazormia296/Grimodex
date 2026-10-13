@@ -32,6 +32,17 @@ import {
 } from "../electron/scripts/runtime-performance-diagnostic.mjs";
 import { buildRuntimePerformanceAttemptPaths } from "../electron/scripts/runtime-performance-retry.mjs";
 import {
+  RUNTIME_OPEN_EVIDENCE_MAX_SPANS,
+  aggregateAppProcessCpu,
+  buildRuntimeOpenEvidence,
+  diffProcessResourceSnapshots,
+  formatRuntimeOpenEvidenceLine,
+  readClockTicksPerSecond,
+  readHostPressureSnapshot,
+  readProcessResourceSnapshot,
+  summarizeWorkspaceOpenTraceRecords,
+} from "../electron/scripts/runtime-performance-open-evidence.mjs";
+import {
   RUNTIME_PERFORMANCE_RAF_CALIBRATION_SAMPLE_COUNT,
   buildRuntimePerformanceSmokeInvocation,
   buildRuntimePerformanceTimeoutArtifact,
@@ -1783,4 +1794,386 @@ test("Electron close can diagnose a startup failure without a Page", async () =>
       return true;
     },
   );
+});
+
+function fakeProcFiles(files) {
+  return (filePath) => {
+    const normalized = filePath.split(path.sep).join("/");
+    if (!(normalized in files)) {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    }
+    return files[normalized];
+  };
+}
+
+const PSI_CPU =
+  "some avg10=12.50 avg60=3.10 avg300=0.80 total=123456\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n";
+const PSI_IO =
+  "some avg10=40.00 avg60=9.00 avg300=1.00 total=999\nfull avg10=30.00 avg60=7.00 avg300=0.50 total=888\n";
+
+test("open evidence projects the measured workspace-open trace onto workspaceOpen.start", () => {
+  const records = [
+    {
+      startedAtMs: 50,
+      summary: {
+        source: "launcher-card",
+        result: "failed",
+        totalDurationMs: 10,
+        requestToInputReadyMs: null,
+        spans: [],
+      },
+    },
+    {
+      startedAtMs: 900,
+      summary: {
+        version: 1,
+        runId: "11111111-1111-4111-8111-111111111111",
+        source: "startup-auto",
+        result: "ready",
+        totalDurationMs: 4_200.1234,
+        requestToInputReadyMs: 4_200.1234,
+        spans: [
+          {
+            name: "path-validation",
+            status: "finished",
+            startOffsetMs: 0,
+            durationMs: 3.04,
+          },
+          {
+            name: "native-ipc",
+            status: "finished",
+            startOffsetMs: 20,
+            durationMs: 3_100.06,
+          },
+          {
+            name: "project-critical",
+            participantId: "tree",
+            status: "failed",
+            startOffsetMs: 3_200,
+            durationMs: 500,
+          },
+          {
+            name: "/home/user/secret project",
+            status: "finished",
+            startOffsetMs: 1,
+            durationMs: 1,
+          },
+          {
+            name: "workspace-hydration",
+            participantId: "/home/user/Novel.db",
+            status: "finished",
+            startOffsetMs: 3_150,
+            durationMs: "slow",
+          },
+        ],
+      },
+    },
+    {
+      startedAtMs: 9_000,
+      summary: {
+        source: "direct",
+        result: "ready",
+        totalDurationMs: 1,
+        requestToInputReadyMs: 1,
+        spans: [],
+      },
+    },
+  ];
+
+  const summary = summarizeWorkspaceOpenTraceRecords(records, {
+    workspaceOpenStartMs: 920,
+  });
+
+  assert.equal(summary.status, "captured");
+  assert.equal(summary.source, "startup-auto");
+  assert.equal(summary.result, "ready");
+  assert.equal(summary.origin, "workspace-open-start");
+  assert.equal(summary.traceStartMs, -20);
+  assert.equal(summary.totalDurationMs, 4_200.1);
+  assert.equal(summary.droppedSpanCount, 2);
+  assert.deepEqual(summary.spans, [
+    {
+      name: "path-validation",
+      status: "finished",
+      startMs: -20,
+      durationMs: 3,
+    },
+    { name: "native-ipc", status: "finished", startMs: 0, durationMs: 3_100.1 },
+    {
+      name: "project-critical",
+      participantId: "tree",
+      status: "failed",
+      startMs: 3_180,
+      durationMs: 500,
+    },
+  ]);
+  const serialized = JSON.stringify(summary);
+  assert.doesNotMatch(serialized, /home|secret|Novel|runId|1111/);
+});
+
+test("open evidence trace summary is bounded and reports unavailable sources", () => {
+  assert.deepEqual(summarizeWorkspaceOpenTraceRecords(null), {
+    status: "unavailable",
+    reason: "trace-not-exposed",
+  });
+  assert.deepEqual(summarizeWorkspaceOpenTraceRecords([]), {
+    status: "unavailable",
+    reason: "no-terminal-trace",
+  });
+  assert.deepEqual(summarizeWorkspaceOpenTraceRecords([{ summary: {} }]), {
+    status: "unavailable",
+    reason: "invalid-trace",
+  });
+
+  const spans = Array.from(
+    { length: RUNTIME_OPEN_EVIDENCE_MAX_SPANS + 10 },
+    (_, index) => ({
+      name: "project-optional",
+      participantId: "labels-load",
+      status: "finished",
+      startOffsetMs: index,
+      durationMs: 1,
+    }),
+  );
+  const bounded = summarizeWorkspaceOpenTraceRecords([
+    {
+      startedAtMs: 10,
+      summary: {
+        source: "startup-auto",
+        result: "ready",
+        totalDurationMs: 200,
+        requestToInputReadyMs: 200,
+        spans,
+      },
+    },
+  ]);
+  assert.equal(bounded.origin, "trace-start");
+  assert.equal(bounded.spans.length, RUNTIME_OPEN_EVIDENCE_MAX_SPANS);
+  assert.equal(bounded.droppedSpanCount, 10);
+});
+
+test("open evidence reads PSI, loadavg, and process counters and degrades to unavailable", () => {
+  const readFile = fakeProcFiles({
+    "/proc/pressure/cpu": PSI_CPU,
+    "/proc/pressure/io": PSI_IO,
+    "/proc/loadavg": "1.50 0.75 0.25 2/345 6789\n",
+    "/proc/4242/stat":
+      "4242 (electron main) S 1 4242 4242 0 -1 4194560 100 0 0 0 250 50 0 0 20 0 30 0 777 1 2\n",
+    "/proc/4242/io":
+      "rchar: 1000\nwchar: 2000\nsyscr: 1\nsyscw: 1\nread_bytes: 4096\nwrite_bytes: 8192\ncancelled_write_bytes: 0\n",
+  });
+  const host = readHostPressureSnapshot({
+    readFile,
+    platform: "linux",
+    atMs: 12.345,
+  });
+  assert.equal(host.atMs, 12.3);
+  assert.deepEqual(host.pressure.cpu.some, {
+    avg10: 12.5,
+    avg60: 3.1,
+    avg300: 0.8,
+    total: 123456,
+  });
+  assert.equal(host.pressure.io.full.avg10, 30);
+  assert.equal(host.pressure.memory, null);
+  assert.deepEqual(host.loadavg, [1.5, 0.75, 0.25]);
+  assert.deepEqual(host.unavailable, ["pressure.memory"]);
+
+  const processSnapshot = readProcessResourceSnapshot(4242, {
+    readFile,
+    platform: "linux",
+    atMs: 100,
+  });
+  assert.deepEqual(processSnapshot.cpu, { userTicks: 250, systemTicks: 50 });
+  assert.deepEqual(processSnapshot.io, {
+    rchar: 1000,
+    wchar: 2000,
+    readBytes: 4096,
+    writeBytes: 8192,
+  });
+  assert.deepEqual(processSnapshot.unavailable, []);
+
+  const missing = readProcessResourceSnapshot(9999, {
+    readFile,
+    platform: "linux",
+  });
+  assert.equal(missing.cpu, null);
+  assert.equal(missing.io, null);
+  assert.deepEqual(missing.unavailable, ["stat", "io"]);
+  assert.deepEqual(
+    readProcessResourceSnapshot(null, { readFile, platform: "linux" })
+      .unavailable,
+    ["pid"],
+  );
+  assert.deepEqual(
+    readHostPressureSnapshot({ readFile, platform: "darwin" }).unavailable,
+    ["platform"],
+  );
+  assert.deepEqual(
+    readHostPressureSnapshot({
+      readFile: () => {
+        throw new Error("EACCES");
+      },
+      platform: "linux",
+    }).unavailable,
+    ["pressure.cpu", "pressure.io", "pressure.memory", "loadavg"],
+  );
+
+  assert.deepEqual(
+    readClockTicksPerSecond({
+      platform: "linux",
+      spawnSyncImpl: () => ({ status: 0, stdout: "250\n" }),
+    }),
+    { value: 250, source: "getconf" },
+  );
+  assert.deepEqual(
+    readClockTicksPerSecond({
+      platform: "linux",
+      spawnSyncImpl: () => {
+        throw new Error("ENOENT");
+      },
+    }),
+    { value: 100, source: "assumed-user-hz" },
+  );
+  assert.deepEqual(
+    diffProcessResourceSnapshots(
+      { atMs: 100, cpu: { userTicks: 10, systemTicks: 5 }, io: null },
+      { atMs: 350, cpu: { userTicks: 60, systemTicks: 7 }, io: null },
+      100,
+    ),
+    { elapsedMs: 250, cpu: { userMs: 500, systemMs: 20 }, io: null },
+  );
+});
+
+test("open evidence one-line summary is informational and path-free", () => {
+  const readFile = fakeProcFiles({
+    "/proc/pressure/cpu": PSI_CPU,
+    "/proc/pressure/io": PSI_IO,
+    "/proc/loadavg": "1.50 0.75 0.25 2/345 6789\n",
+    "/proc/7/stat":
+      "7 (electron) S 1 7 7 0 -1 4194560 100 0 0 0 300 100 0 0 20 0 30 0 777 1 2\n",
+  });
+  const evidence = buildRuntimeOpenEvidence({
+    rendererMarks: {
+      rendererBootstrapMs: 210.04,
+      rendererFirstFrameMs: 380,
+      workspaceOpenStartMs: 420,
+      editorInputReadyMs: 1_900,
+      ignored: "/home/user",
+    },
+    workspaceOpen: summarizeWorkspaceOpenTraceRecords(
+      [
+        {
+          startedAtMs: 400,
+          summary: {
+            source: "startup-auto",
+            result: "ready",
+            totalDurationMs: 1_500,
+            requestToInputReadyMs: 1_500,
+            spans: [
+              {
+                name: "native-ipc",
+                status: "finished",
+                startOffsetMs: 20,
+                durationMs: 900,
+              },
+            ],
+          },
+        },
+      ],
+      { workspaceOpenStartMs: 420 },
+    ),
+    hostBeforeLaunch: readHostPressureSnapshot({ readFile, platform: "linux" }),
+    hostAfterMeasurement: readHostPressureSnapshot({
+      readFile,
+      platform: "linux",
+    }),
+    clockTicks: { value: 100, source: "getconf" },
+    mainBridgeReady: readProcessResourceSnapshot(7, {
+      readFile,
+      platform: "linux",
+    }),
+    mainAfterMeasurement: readProcessResourceSnapshot(7, {
+      readFile,
+      platform: "linux",
+    }),
+    appProcessCpu: aggregateAppProcessCpu([
+      { type: "Browser", cumulativeCpuSeconds: 1.2 },
+      { type: "Tab", cumulativeCpuSeconds: 2.5 },
+      { type: "Tab", cumulativeCpuSeconds: undefined },
+      { type: "/tmp/odd", cumulativeCpuSeconds: 0.1 },
+    ]),
+  });
+
+  assert.equal(evidence.schemaVersion, 1);
+  assert.deepEqual(Object.keys(evidence.rendererMarks), [
+    "rendererBootstrapMs",
+    "rendererFirstFrameMs",
+    "workspaceOpenStartMs",
+    "editorInputReadyMs",
+  ]);
+  assert.deepEqual(evidence.mainProcess.totalSinceStart.cpu, {
+    userMs: 3_000,
+    systemMs: 1_000,
+  });
+  assert.deepEqual(evidence.appProcessCpu.processes[0], {
+    type: "Tab",
+    processCount: 2,
+    cumulativeCpuSeconds: 2.5,
+    cumulativeCpuMissing: 1,
+  });
+  assert.ok(
+    evidence.appProcessCpu.processes.some((entry) => entry.type === "other"),
+  );
+
+  const line = formatRuntimeOpenEvidenceLine(evidence);
+  assert.match(line, /^\[runtime-perf\] INFO open-evidence /);
+  assert.doesNotMatch(line, /\b(PASS|FAIL)\b/);
+  assert.doesNotMatch(line, /\n/);
+  assert.match(line, /trace=ready total=1500 spans\[1\] native-ipc@0\+900/);
+  assert.match(
+    line,
+    /psi10\(some\/full\) before cpu=12\.5\/0,io=40\/30,memory=n\/a/,
+  );
+  assert.match(line, /load=1\.5\/0\.75\/0\.25/);
+  assert.match(line, /main cpu=3000u\+1000s ms/);
+  assert.doesNotMatch(JSON.stringify(evidence) + line, /\/home|\/tmp/);
+
+  const fallback = formatRuntimeOpenEvidenceLine(buildRuntimeOpenEvidence());
+  assert.match(fallback, /trace=unavailable\(not-collected\)/);
+  assert.match(fallback, /main=n\/a/);
+});
+
+test("smoke records open evidence after the measured values without gating", async () => {
+  const source = await read("electron/scripts/smoke.mjs");
+  const coldStart = source.indexOf(
+    "performanceMetrics.coldStartMs = editorReadyTiming.startTime;",
+  );
+  const projectOpen = source.indexOf("performanceMetrics.projectOpenMs =");
+  const collect = source.indexOf(
+    "performanceMetrics.openEvidence = await collectRuntimeOpenEvidence(",
+  );
+  assert.ok(projectOpen >= 0 && coldStart > projectOpen);
+  assert.ok(collect > coldStart, "evidence is collected after measurement");
+  assert.match(
+    source,
+    /const openEvidenceBeforeLaunch = performanceOutputPath\s*\?\s*readHostPressureSnapshot\(/,
+  );
+  assert.ok(
+    source.indexOf("const openEvidenceBeforeLaunch") <
+      source.indexOf('const launched = await launchApp("write"'),
+    "host pressure is sampled before the measured launch",
+  );
+  const helperStart = source.indexOf(
+    "async function collectRuntimeOpenEvidence(",
+  );
+  const helperEnd = source.indexOf("async function phaseWrite()", helperStart);
+  const helper = source.slice(helperStart, helperEnd);
+  assert.match(helper, /\} catch \{\s+return buildRuntimeOpenEvidence\(/);
+  assert.match(helper, /\.catch\(\(\) => null\)/);
+  assert.doesNotMatch(helper, /throw /);
+  const budget = await read("scripts/runtime-performance-budget.mjs");
+  assert.doesNotMatch(budget, /openEvidence/);
+  const retry = await read("electron/scripts/runtime-performance-retry.mjs");
+  assert.doesNotMatch(retry, /openEvidence/);
 });

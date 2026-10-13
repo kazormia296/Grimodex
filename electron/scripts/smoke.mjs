@@ -61,6 +61,15 @@ import {
   extractInteractionFrameMetrics,
 } from "../../scripts/runtime-performance-budget.mjs";
 import { invokeOk, waitUntil } from "./product-journey-harness.mjs";
+import {
+  aggregateAppProcessCpu,
+  buildRuntimeOpenEvidence,
+  formatRuntimeOpenEvidenceLine,
+  readClockTicksPerSecond,
+  readHostPressureSnapshot,
+  readProcessResourceSnapshot,
+  summarizeWorkspaceOpenTraceRecords,
+} from "./runtime-performance-open-evidence.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -255,6 +264,8 @@ const performanceMetrics = {
     mapDrag: null,
   },
   diagnostics: null,
+  // Evidence only: never read by budgets, retry classification, or PASS/FAIL.
+  openEvidence: null,
 };
 const performanceTimeoutArtifactPath =
   buildRuntimePerformanceTimeoutArtifactPath(
@@ -2530,15 +2541,101 @@ async function phaseSeed() {
 
 // ── フェーズ 2: 執筆（シーン作成 → 本文入力 → オートセーブ着弾） ───────────────
 
+/**
+ * Evidence-only snapshot after the measured cold start / project open. All
+ * reads are best-effort and bounded; failures are recorded as unavailable and
+ * never change the measured values or the gate result.
+ */
+async function collectRuntimeOpenEvidence({
+  app,
+  page,
+  mainPid,
+  hostBeforeLaunch,
+  mainBridgeReady,
+}) {
+  try {
+    const hostAfterMeasurement = readHostPressureSnapshot({
+      atMs: performance.now(),
+    });
+    const mainAfterMeasurement = readProcessResourceSnapshot(mainPid, {
+      atMs: performance.now(),
+    });
+    const renderer = await page
+      .evaluate(
+        ({ workspaceOpenMark, editorReadyMark }) => {
+          const last = (name) =>
+            performance.getEntriesByName(name, "mark").at(-1)?.startTime ??
+            null;
+          const read = globalThis.readRuntimePerformanceWorkspaceOpenTraces;
+          let traces;
+          try {
+            traces = typeof read === "function" ? read() : null;
+          } catch {
+            traces = null;
+          }
+          return {
+            marks: {
+              rendererBootstrapMs: last("grimodex:renderer-bootstrap"),
+              rendererFirstFrameMs: last("grimodex:renderer-first-frame"),
+              workspaceOpenStartMs: last(workspaceOpenMark),
+              editorInputReadyMs: last(editorReadyMark),
+            },
+            traces,
+          };
+        },
+        {
+          workspaceOpenMark: WORKSPACE_OPEN_START_MARK,
+          editorReadyMark: EDITOR_INPUT_READY_MARK,
+        },
+      )
+      .catch(() => null);
+    const appMetrics = await app
+      .evaluate(({ app: electronApp }) =>
+        electronApp.getAppMetrics().map((metric) => ({
+          type: metric.type,
+          cumulativeCpuSeconds: metric.cpu?.cumulativeCPUUsage,
+        })),
+      )
+      .catch(() => null);
+    return buildRuntimeOpenEvidence({
+      rendererMarks: renderer?.marks ?? null,
+      workspaceOpen: summarizeWorkspaceOpenTraceRecords(
+        renderer?.traces ?? null,
+        { workspaceOpenStartMs: renderer?.marks?.workspaceOpenStartMs ?? null },
+      ),
+      hostBeforeLaunch,
+      hostAfterMeasurement,
+      clockTicks: readClockTicksPerSecond(),
+      mainBridgeReady,
+      mainAfterMeasurement,
+      appProcessCpu: aggregateAppProcessCpu(appMetrics),
+    });
+  } catch {
+    return buildRuntimeOpenEvidence({
+      workspaceOpen: { status: "unavailable", reason: "collection-failed" },
+    });
+  }
+}
+
 async function phaseWrite() {
   assertRuntimePhaseActive("phase write");
   setRuntimePhase("write");
   log("phase 2/3: write — シーン作成と本文入力");
+  // Evidence only (host PSI before the measured launch); never gates.
+  const openEvidenceBeforeLaunch = performanceOutputPath
+    ? readHostPressureSnapshot({ atMs: performance.now() })
+    : null;
   const launched = await launchApp("write", {
     deferMemorySampler: Boolean(performanceOutputPath),
   });
   const { app, page } = launched;
   let { memorySampler } = launched;
+  const openEvidenceMainPid = app.process?.()?.pid ?? null;
+  const openEvidenceBridgeReady = performanceOutputPath
+    ? readProcessResourceSnapshot(openEvidenceMainPid, {
+        atMs: performance.now(),
+      })
+    : null;
   try {
     const header = scenesPanelHeader(page);
     await header.waitFor({ state: "visible", timeout: LAUNCH_TIMEOUT_MS });
@@ -2613,6 +2710,16 @@ async function phaseWrite() {
       }
       performanceMetrics.coldStartMs = editorReadyTiming.startTime;
       log("  seed scene editor が入力可能（coldStart完了）");
+      performanceMetrics.openEvidence = await collectRuntimeOpenEvidence({
+        app,
+        page,
+        mainPid: openEvidenceMainPid,
+        hostBeforeLaunch: openEvidenceBeforeLaunch,
+        mainBridgeReady: openEvidenceBridgeReady,
+      });
+      console.log(
+        formatRuntimeOpenEvidenceLine(performanceMetrics.openEvidence),
+      );
 
       memorySampler = startMemorySampler(app, "write", page);
       runtimeContext.memorySampler = memorySampler;
