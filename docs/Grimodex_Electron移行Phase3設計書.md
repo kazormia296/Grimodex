@@ -84,7 +84,7 @@ agent_event）は db_execute へ分解せず、共有 Rust 層に維持してい
 `external_mount_*` 7 コマンドは Rust の `notify` watcher に依存する。napi へ持ち込む
 より **main-TS + chokidar で再実装**した（fs 監視は Node の領分）。`external-mount://`
 ×4 イベントは main → 全窓 broadcast（Phase 2 のイベントバスの最初の実戦投入）。
-`resolve_under_root` のパス検査・tmp+rename アトミック書込・32MiB 上限（RUST-DOS-01）・
+`resolve_under_root` のパス検査・tmp+rename アトミック書込（win32 の上書き rename は EPERM／EACCES／EBUSY のみ 2 秒を上限に再試行、同一パスの書込は直列化。共有 Rust 側は `grimodex_db::fs_replace`）・32MiB 上限（RUST-DOS-01）・
 overlap 検査を TS へ忠実移植。バッチ1 と依存なしで並行可。
 
 実装（ブランチ `feat/electron-phase3-batch2-external-mount`）:
