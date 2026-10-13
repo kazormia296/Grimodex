@@ -4,9 +4,18 @@
 //! (transition admission, Ready publication, unavailability, shutdown). It
 //! moves to Recovering only for the exact Ready entry named by the latest
 //! closure, and to Open only after the #610 recovery sweep for that same
-//! entry has exhausted every page and its blocking task has joined. Leases
-//! are issued only from an exact Open entry and are counted per closure
-//! epoch, so a later closure can wait for the actual Drop of earlier leases.
+//! entry has exhausted every page and its blocking task has joined (the
+//! supervisor hands the one-shot sweep proof from the task's Join to
+//! `open_after_joined_sweep`). Leases are issued only from an Open entry and
+//! are counted per closure epoch, so a later closure can wait for the actual
+//! Drop of earlier leases.
+//!
+//! A Ready entry is identified by its exact binding and the closure epoch.
+//! Revision-only Core changes (quarantine fences, background descriptor
+//! completion) are not edges, so a claimant presents its binding and the
+//! lease keeps the entry's revision. Lease currency is mirrored in atomics
+//! (epoch and poison) so it can be read without this mutex, for example from
+//! an SQLite progress hook while the connection mutex is held.
 //!
 //! The gate performs no recovery, database work or lifecycle publication.
 //! Its mutex guards only short state updates; waits use its Condvar with a
@@ -14,6 +23,7 @@
 //! Poison or epoch exhaustion keeps the gate permanently Closed.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -42,6 +52,10 @@ pub(crate) struct Nir1StartupAdmissionGate {
 struct Shared {
     state: Mutex<GateState>,
     changed: Condvar,
+    /// Mirrors `GateState::epoch`, written under the mutex (Release).
+    epoch_mirror: AtomicU64,
+    /// Mirrors `GateState::poisoned`, written under the mutex (Release).
+    poisoned_mirror: AtomicBool,
 }
 
 struct GateState {
@@ -70,7 +84,8 @@ enum Closure {
     Ready(Arc<ReadyEntry>),
     Unavailable,
     Shutdown,
-    /// The Ready entry's recovery ended without a sweep proof.
+    /// The Ready entry's recovery ended without a sweep proof, or the Open
+    /// entry was quarantined.
     Consumed,
 }
 
@@ -94,10 +109,27 @@ pub(crate) struct Nir1StartupRecovery {
     recorded: bool,
 }
 
+/// One-shot proof that the sweep for one exact Ready entry completed. It is
+/// not Clone; only `open_after_joined_sweep` consumes it. Dropping it unused
+/// closes and consumes that same entry (never a newer one).
+pub(crate) struct Nir1SweepProof {
+    shared: Arc<Shared>,
+    epoch: u64,
+    entry: Arc<ReadyEntry>,
+    used: bool,
+}
+
 /// Short admission lease for one exact Open Ready entry.
-// DT-1 provides the lease API only; DT-2 routes attempt create/claim here.
-#[allow(dead_code)]
 pub(crate) struct Nir1StartupLease {
+    shared: Arc<Shared>,
+    epoch: u64,
+    entry: Arc<ReadyEntry>,
+}
+
+/// Uncounted reference to the Open entry a lease was issued from. It answers
+/// the same currency question as the lease, without any lock.
+#[derive(Clone)]
+pub(crate) struct Nir1EntryWitness {
     shared: Arc<Shared>,
     epoch: u64,
     entry: Arc<ReadyEntry>,
@@ -126,6 +158,8 @@ impl Nir1StartupAdmissionGate {
                     timeout_wakes: 0,
                 }),
                 changed: Condvar::new(),
+                epoch_mirror: AtomicU64::new(0),
+                poisoned_mirror: AtomicBool::new(false),
             }),
         }
     }
@@ -147,10 +181,7 @@ impl Nir1StartupAdmissionGate {
         } else {
             closure
         };
-        match state.epoch.checked_add(1) {
-            Some(epoch) => state.epoch = epoch,
-            None => state.poisoned = true,
-        }
+        self.shared.advance_epoch(&mut state);
         drop(state);
         // Wake every bounded waiter so it observes the newer closure now
         // instead of at its deadline.
@@ -216,43 +247,74 @@ impl Nir1StartupAdmissionGate {
         })
     }
 
-    /// Open the exact Ready entry after its sweep owner recorded a complete
-    /// sweep and the supervisor observed the blocking task's successful Join.
-    /// An older owner, or any closure after the sweep, cannot open the gate.
-    pub(crate) fn open_after_joined_sweep(
-        &self,
-        binding: &LiveBinding,
-        ready_revision: StateRevision,
-    ) -> bool {
+    /// Open the exact Ready entry named by `proof`, after its sweep owner
+    /// recorded a complete sweep and the supervisor observed the blocking
+    /// task's successful Join. A proof from an older epoch or entry cannot
+    /// open the gate; it is dropped and affects only its own entry.
+    pub(crate) fn open_after_joined_sweep(&self, mut proof: Nir1SweepProof) -> bool {
+        if !Arc::ptr_eq(&proof.shared, &self.shared) {
+            return false;
+        }
         let Ok(mut state) = self.shared.lock_state_checked() else {
             return false;
         };
-        let entry = match &state.phase {
-            Phase::Recovering { entry, swept: true } if entry.is(binding, ready_revision) => {
-                Arc::clone(entry)
-            }
-            _ => return false,
-        };
-        if has_leases_through(&state, state.epoch) {
+        let exact = state.epoch == proof.epoch
+            && matches!(
+                &state.phase,
+                Phase::Recovering { entry, swept: true } if Arc::ptr_eq(entry, &proof.entry)
+            );
+        if !exact || has_leases_through(&state, state.epoch) {
+            // Release the gate mutex before the unused proof's Drop runs.
+            drop(state);
             return false;
         }
-        state.phase = Phase::Open(entry);
+        state.phase = Phase::Open(Arc::clone(&proof.entry));
+        proof.used = true;
         true
     }
 
     /// Issue a lease only while the exact Ready entry is Open.
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn try_lease(
         &self,
         binding: &LiveBinding,
         ready_revision: StateRevision,
     ) -> Option<Nir1StartupLease> {
+        self.issue_lease(|entry, _epoch| entry.is(binding, ready_revision))
+    }
+
+    /// Issue a lease while the Open entry has this exact binding. Revision-only
+    /// Core changes after the entry was published do not matter: they are not
+    /// edges, and every edge closes the gate.
+    pub(crate) fn try_lease_for_binding(&self, binding: &LiveBinding) -> Option<Nir1StartupLease> {
+        self.issue_lease(|entry, _epoch| &entry.binding == binding)
+    }
+
+    /// Issue a lease only while the gate is still Open for the exact entry
+    /// and epoch this witness was taken from (never a later entry, even with
+    /// the same binding).
+    pub(crate) fn try_lease_for_witness(
+        &self,
+        witness: &Nir1EntryWitness,
+    ) -> Option<Nir1StartupLease> {
+        if !Arc::ptr_eq(&witness.shared, &self.shared) {
+            return None;
+        }
+        self.issue_lease(|entry, epoch| {
+            epoch == witness.epoch && Arc::ptr_eq(entry, &witness.entry)
+        })
+    }
+
+    fn issue_lease(
+        &self,
+        accept: impl FnOnce(&Arc<ReadyEntry>, u64) -> bool,
+    ) -> Option<Nir1StartupLease> {
         let mut state = self.shared.lock_state_checked().ok()?;
+        let epoch = state.epoch;
         let entry = match &state.phase {
-            Phase::Open(entry) if entry.is(binding, ready_revision) => Arc::clone(entry),
+            Phase::Open(entry) if accept(entry, epoch) => Arc::clone(entry),
             _ => return None,
         };
-        let epoch = state.epoch;
         let count = state.leases.entry(epoch).or_default();
         *count = count.checked_add(1)?;
         drop(state);
@@ -261,6 +323,79 @@ impl Nir1StartupAdmissionGate {
             epoch,
             entry,
         })
+    }
+
+    /// The Ready entry named by the latest closure, if that closure is a
+    /// Ready entry (awaiting, recovering or Open).
+    pub(crate) fn current_ready_entry(&self) -> Option<(LiveBinding, StateRevision)> {
+        let state = self.shared.lock_state();
+        if state.poisoned || state.shutdown {
+            return None;
+        }
+        match &state.closure {
+            Closure::Ready(entry) => Some((entry.binding.clone(), entry.revision)),
+            _ => None,
+        }
+    }
+
+    /// No edge has replaced the exact Ready entry `(binding, revision)`.
+    pub(crate) fn is_current_ready_entry(
+        &self,
+        binding: &LiveBinding,
+        revision: StateRevision,
+    ) -> bool {
+        let state = self.shared.lock_state();
+        !state.poisoned
+            && !state.shutdown
+            && matches!(&state.closure, Closure::Ready(entry) if entry.is(binding, revision))
+    }
+
+    /// Whether this gate can identify Ready entries at all. It cannot when it
+    /// is poisoned or has never observed an edge (its observer registration
+    /// failed); callers then fall back to the exact Core revision, and the
+    /// gate stays Closed.
+    pub(crate) fn observes_lifecycle(&self) -> bool {
+        let state = self.shared.lock_state();
+        !state.poisoned && !matches!(state.closure, Closure::Initial)
+    }
+
+    /// The epoch of the Open entry, if the gate is Open.
+    pub(crate) fn open_entry_epoch(&self) -> Option<u64> {
+        let state = self.shared.lock_state();
+        match state.phase {
+            Phase::Open(_) if !state.poisoned && !state.shutdown => Some(state.epoch),
+            _ => None,
+        }
+    }
+
+    /// The current closure epoch, read without the gate mutex.
+    pub(crate) fn current_epoch(&self) -> u64 {
+        self.shared.epoch_mirror.load(Ordering::Acquire)
+    }
+
+    /// Close the gate if it is still Open for the witness's exact entry, and
+    /// consume that entry: it reopens only after a later Ready entry sweeps.
+    pub(crate) fn quarantine_entry(&self, witness: &Nir1EntryWitness) -> bool {
+        if !Arc::ptr_eq(&witness.shared, &self.shared) {
+            return false;
+        }
+        let mut state = self.shared.lock_state();
+        let exact = !state.poisoned
+            && state.epoch == witness.epoch
+            && matches!(&state.phase, Phase::Open(entry) if Arc::ptr_eq(entry, &witness.entry));
+        if !exact {
+            return false;
+        }
+        state.phase = Phase::Closed;
+        state.closure = if state.shutdown {
+            Closure::Shutdown
+        } else {
+            Closure::Consumed
+        };
+        self.shared.advance_epoch(&mut state);
+        drop(state);
+        self.shared.changed.notify_all();
+        true
     }
 
     #[cfg(test)]
@@ -313,6 +448,17 @@ impl Nir1StartupAdmissionGate {
         matches!(&state.closure, Closure::Ready(entry) if entry.is(binding, ready_revision))
             && matches!(state.phase, Phase::Closed)
     }
+
+    /// Poison the gate mutex as a panicking holder would (test only).
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        let shared = Arc::clone(&self.shared);
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _state = shared.state.lock().expect("unpoisoned gate");
+            panic!("poison gate state");
+        }));
+        assert!(panic.is_err());
+    }
 }
 
 impl WorkspaceLifecycleObserver for Nir1StartupAdmissionGate {
@@ -337,53 +483,76 @@ impl WorkspaceLifecycleObserver for Nir1StartupAdmissionGate {
 
 impl Nir1StartupRecovery {
     /// Record that the sweep for this exact entry exhausted every page
-    /// without cutoff, cancel or error. Opening still waits for the Join.
-    pub(crate) fn record_complete_sweep(mut self) -> bool {
+    /// without cutoff, cancel or error. Opening still waits for the Join:
+    /// the returned proof travels through the task's JoinHandle.
+    pub(crate) fn record_complete_sweep(mut self) -> Option<Nir1SweepProof> {
         let Ok(mut state) = self.shared.lock_state_checked() else {
-            return false;
+            return None;
         };
         if state.epoch != self.epoch {
-            return false;
+            return None;
         }
         match &mut state.phase {
             Phase::Recovering { entry, swept } if Arc::ptr_eq(entry, &self.entry) => {
                 *swept = true;
                 self.recorded = true;
-                true
+                Some(Nir1SweepProof {
+                    shared: Arc::clone(&self.shared),
+                    epoch: self.epoch,
+                    entry: Arc::clone(&self.entry),
+                    used: false,
+                })
             }
-            _ => false,
+            _ => None,
         }
     }
 }
 
 impl Drop for Nir1StartupRecovery {
     fn drop(&mut self) {
-        if self.recorded {
-            return;
-        }
-        let mut state = self.shared.lock_state();
-        if state.epoch == self.epoch
-            && matches!(
-                &state.phase,
-                Phase::Recovering { entry, .. } if Arc::ptr_eq(entry, &self.entry)
-            )
-        {
-            state.phase = Phase::Closed;
-            state.closure = Closure::Consumed;
+        if !self.recorded {
+            self.shared.consume_recovering(self.epoch, &self.entry);
         }
     }
 }
 
-#[allow(dead_code)]
+impl Drop for Nir1SweepProof {
+    fn drop(&mut self) {
+        if !self.used {
+            self.shared.consume_recovering(self.epoch, &self.entry);
+        }
+    }
+}
+
 impl Nir1StartupLease {
     /// Recheck after work: false once any closure has replaced the Open
-    /// entry this lease was issued from.
+    /// entry this lease was issued from. Reads atomics only, no lock.
     pub(crate) fn is_current(&self) -> bool {
-        let Ok(state) = self.shared.lock_state_checked() else {
-            return false;
-        };
-        state.epoch == self.epoch
-            && matches!(&state.phase, Phase::Open(entry) if Arc::ptr_eq(entry, &self.entry))
+        self.shared.is_current_at(self.epoch)
+    }
+
+    pub(crate) fn binding(&self) -> &LiveBinding {
+        &self.entry.binding
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn entry_revision(&self) -> StateRevision {
+        self.entry.revision
+    }
+
+    pub(crate) fn witness(&self) -> Nir1EntryWitness {
+        Nir1EntryWitness {
+            shared: Arc::clone(&self.shared),
+            epoch: self.epoch,
+            entry: Arc::clone(&self.entry),
+        }
+    }
+}
+
+impl Nir1EntryWitness {
+    /// Same answer as the lease's `is_current`, without counting or locking.
+    pub(crate) fn is_current(&self) -> bool {
+        self.shared.is_current_at(self.epoch)
     }
 }
 
@@ -406,7 +575,7 @@ impl Shared {
     fn lock_state(&self) -> MutexGuard<'_, GateState> {
         self.state.lock().unwrap_or_else(|poisoned| {
             let mut state = poisoned.into_inner();
-            fail_closed(&mut state);
+            self.fail_closed(&mut state);
             state
         })
     }
@@ -422,6 +591,46 @@ impl Shared {
             return Err(Nir1StartupDrainError::Stale);
         }
         Ok(state)
+    }
+
+    fn fail_closed(&self, state: &mut GateState) {
+        state.poisoned = true;
+        state.phase = Phase::Closed;
+        self.poisoned_mirror.store(true, Ordering::Release);
+    }
+
+    /// Advance the closure epoch under the mutex; exhaustion poisons.
+    fn advance_epoch(&self, state: &mut GateState) {
+        match state.epoch.checked_add(1) {
+            Some(epoch) => {
+                state.epoch = epoch;
+                self.epoch_mirror.store(epoch, Ordering::Release);
+            }
+            None => self.fail_closed(state),
+        }
+    }
+
+    /// A lease or witness from epoch `epoch` was issued while its entry was
+    /// Open, and Open is left only by an epoch advance or by poison. So the
+    /// mirrors decide currency exactly as the mutex-guarded state would.
+    fn is_current_at(&self, epoch: u64) -> bool {
+        !self.state.is_poisoned()
+            && !self.poisoned_mirror.load(Ordering::Acquire)
+            && self.epoch_mirror.load(Ordering::Acquire) == epoch
+    }
+
+    /// Close and consume one exact Recovering entry, never a newer one.
+    fn consume_recovering(&self, epoch: u64, entry: &Arc<ReadyEntry>) {
+        let mut state = self.lock_state();
+        if state.epoch == epoch
+            && matches!(
+                &state.phase,
+                Phase::Recovering { entry: current, .. } if Arc::ptr_eq(current, entry)
+            )
+        {
+            state.phase = Phase::Closed;
+            state.closure = Closure::Consumed;
+        }
     }
 
     /// Wait until no lease from `epoch` or earlier remains, while `current`
@@ -456,7 +665,7 @@ impl Shared {
                 Ok(woken) => woken,
                 Err(poisoned) => {
                     let (mut state, wake) = poisoned.into_inner();
-                    fail_closed(&mut state);
+                    self.fail_closed(&mut state);
                     (state, wake)
                 }
             };
@@ -470,11 +679,6 @@ impl Shared {
             }
         }
     }
-}
-
-fn fail_closed(state: &mut GateState) {
-    state.poisoned = true;
-    state.phase = Phase::Closed;
 }
 
 fn has_leases_through(state: &GateState, epoch: u64) -> bool {
@@ -513,8 +717,8 @@ mod tests {
         let recovery = gate
             .begin_recovery(binding, revision, NIR1_STARTUP_LEASE_DRAIN_LIMIT)
             .expect("exact Ready entry recovery");
-        assert!(recovery.record_complete_sweep());
-        assert!(gate.open_after_joined_sweep(binding, revision));
+        let proof = recovery.record_complete_sweep().expect("sweep proof");
+        assert!(gate.open_after_joined_sweep(proof));
     }
 
     fn wait_for_waiter(gate: &Nir1StartupAdmissionGate) {
@@ -551,13 +755,9 @@ mod tests {
             .begin_recovery(&ready, 7, Duration::ZERO)
             .expect("exact Ready entry");
         assert!(gate.try_lease(&ready, 7).is_none(), "Recovering is closed");
-        assert!(
-            !gate.open_after_joined_sweep(&ready, 7),
-            "Join without a complete sweep cannot open"
-        );
-        assert!(recovery.record_complete_sweep());
+        let proof = recovery.record_complete_sweep().expect("sweep proof");
         assert!(gate.try_lease(&ready, 7).is_none(), "sweep without Join is closed");
-        assert!(gate.open_after_joined_sweep(&ready, 7));
+        assert!(gate.open_after_joined_sweep(proof));
 
         let lease = gate.try_lease(&ready, 7).expect("exact Open entry");
         assert!(lease.is_current());
@@ -663,8 +863,8 @@ mod tests {
         let recovery = gate
             .begin_recovery(&binding(2, 2), 8, Duration::ZERO)
             .expect("recovery after the actual Drop");
-        assert!(recovery.record_complete_sweep());
-        assert!(gate.open_after_joined_sweep(&binding(2, 2), 8));
+        let proof = recovery.record_complete_sweep().expect("sweep proof");
+        assert!(gate.open_after_joined_sweep(proof));
     }
 
     #[test]
@@ -769,14 +969,13 @@ mod tests {
         recovery_waiter.join().expect("recovery waiter joined");
         assert_eq!(gate.timeout_wake_count(), 0, "woken, not timed out");
         assert!(gate.begin_recovery(&ready_b, 8, Duration::ZERO).is_none());
-        assert!(!gate.open_after_joined_sweep(&ready_b, 8));
 
         drop(prior);
         let current = gate
             .begin_recovery(&ready_c, 9, Duration::ZERO)
             .expect("current Ready entry");
-        assert!(current.record_complete_sweep());
-        assert!(gate.open_after_joined_sweep(&ready_c, 9));
+        let proof = current.record_complete_sweep().expect("sweep proof");
+        assert!(gate.open_after_joined_sweep(proof));
     }
 
     #[test]
@@ -789,22 +988,31 @@ mod tests {
             .expect("A recovery");
         let ready_b = binding(2, 2);
         publish(&gate, &ready_b, 8);
-        assert!(!stale.record_complete_sweep(), "A's sweep is for an old entry");
-        assert!(!gate.open_after_joined_sweep(&ready_a, 7));
+        assert!(
+            stale.record_complete_sweep().is_none(),
+            "A's sweep is for an old entry"
+        );
         assert!(gate.is_closed());
 
         // Same binding, newer revision: still a different Ready entry.
         let recovery_b = gate
             .begin_recovery(&ready_b, 8, Duration::ZERO)
             .expect("B recovery");
-        assert!(recovery_b.record_complete_sweep());
+        let proof_b8 = recovery_b.record_complete_sweep().expect("B proof");
         publish(&gate, &ready_b, 9);
-        assert!(!gate.open_after_joined_sweep(&ready_b, 8));
+        assert!(
+            !gate.open_after_joined_sweep(proof_b8),
+            "older entry's proof"
+        );
+        assert!(
+            gate.awaits_recovery_for(&ready_b, 9),
+            "stale proof Drop is inert"
+        );
         let recovery_b9 = gate
             .begin_recovery(&ready_b, 9, Duration::ZERO)
             .expect("B revision 9 recovery");
-        assert!(recovery_b9.record_complete_sweep());
-        assert!(gate.open_after_joined_sweep(&ready_b, 9));
+        let proof_b9 = recovery_b9.record_complete_sweep().expect("B9 proof");
+        assert!(gate.open_after_joined_sweep(proof_b9));
         assert!(gate.try_lease(&ready_b, 8).is_none());
         assert!(gate.try_lease(&ready_b, 9).is_some());
     }
@@ -819,7 +1027,6 @@ mod tests {
             .expect("recovery");
         drop(recovery);
         assert!(gate.is_closed());
-        assert!(!gate.open_after_joined_sweep(&ready, 7));
         assert!(
             gate.begin_recovery(&ready, 7, Duration::ZERO).is_none(),
             "the incomplete entry is consumed"
@@ -887,5 +1094,177 @@ mod tests {
             gate.drain_before_ready(OperationId::new(11), Duration::ZERO),
             Ok(())
         );
+    }
+
+    /// G1: a lease is issued by binding even after revision-only Core changes
+    /// (they are not edges); every edge closes the entry.
+    #[test]
+    fn g1_binding_lease_survives_revision_only_changes_and_closes_on_edges() {
+        let gate = Nir1StartupAdmissionGate::new();
+        let ready = binding(1, 1);
+        assert!(
+            gate.try_lease_for_binding(&ready).is_none(),
+            "Closed issues none"
+        );
+        open(&gate, &ready, 7);
+        // A revision-only change produces no edge; the claimant presents only
+        // its binding and the lease keeps the entry revision.
+        let lease = gate.try_lease_for_binding(&ready).expect("binding lease");
+        assert_eq!(lease.binding(), &ready);
+        assert_eq!(lease.entry_revision(), 7);
+        assert!(gate.try_lease_for_binding(&binding(2, 1)).is_none());
+        assert_eq!(gate.current_ready_entry(), Some((ready.clone(), 7)));
+        assert!(gate.is_current_ready_entry(&ready, 7));
+        assert!(!gate.is_current_ready_entry(&ready, 8));
+        admit(&gate, 11);
+        assert!(!lease.is_current());
+        assert!(gate.try_lease_for_binding(&ready).is_none());
+        assert!(gate.current_ready_entry().is_none());
+        assert!(!gate.is_current_ready_entry(&ready, 7));
+        drop(lease);
+    }
+
+    /// G2: the sweep proof is one-shot and opens only its own exact entry.
+    #[test]
+    fn g2_sweep_proof_is_one_shot_and_exact() {
+        let gate = Nir1StartupAdmissionGate::new();
+        let ready = binding(1, 1);
+        publish(&gate, &ready, 7);
+        let proof = gate
+            .begin_recovery(&ready, 7, Duration::ZERO)
+            .expect("recovery")
+            .record_complete_sweep()
+            .expect("proof");
+        // Another gate cannot consume it.
+        let other = Nir1StartupAdmissionGate::new();
+        assert!(!other.open_after_joined_sweep(proof));
+        assert!(gate.is_closed());
+        assert!(
+            gate.begin_recovery(&ready, 7, Duration::ZERO).is_none(),
+            "the unused proof's Drop consumed its entry"
+        );
+
+        // A newer entry is never closed by an older proof's Drop.
+        publish(&gate, &ready, 8);
+        let stale = gate
+            .begin_recovery(&ready, 8, Duration::ZERO)
+            .expect("recovery 8")
+            .record_complete_sweep()
+            .expect("proof 8");
+        publish(&gate, &ready, 9);
+        drop(stale);
+        assert!(gate.awaits_recovery_for(&ready, 9));
+        let proof = gate
+            .begin_recovery(&ready, 9, Duration::ZERO)
+            .expect("recovery 9")
+            .record_complete_sweep()
+            .expect("proof 9");
+        assert!(gate.open_after_joined_sweep(proof));
+        assert!(gate.is_open_for(&ready, 9));
+    }
+
+    /// G3: quarantine closes the exact Open entry until a later Ready entry
+    /// sweeps; a stale witness cannot quarantine a newer entry.
+    #[test]
+    fn g3_quarantine_closes_the_open_entry_until_the_next_sweep() {
+        let gate = Nir1StartupAdmissionGate::new();
+        let ready = binding(1, 1);
+        open(&gate, &ready, 7);
+        let lease = gate.try_lease_for_binding(&ready).expect("lease");
+        let witness = lease.witness();
+        let epoch = gate.epoch();
+        assert_eq!(gate.open_entry_epoch(), Some(epoch));
+        assert!(gate.quarantine_entry(&witness));
+        assert_eq!(gate.epoch(), epoch + 1);
+        assert!(gate.is_closed());
+        assert!(gate.open_entry_epoch().is_none());
+        assert!(!lease.is_current());
+        assert!(!witness.is_current());
+        assert!(gate.try_lease_for_binding(&ready).is_none());
+        assert!(
+            gate.begin_recovery(&ready, 7, Duration::ZERO).is_none(),
+            "the quarantined entry is consumed"
+        );
+        assert!(!gate.quarantine_entry(&witness), "already closed");
+        drop(lease);
+        open(&gate, &ready, 8);
+        assert!(!gate.quarantine_entry(&witness), "stale witness");
+        assert!(gate.is_open_for(&ready, 8));
+        assert!(gate.open_entry_epoch().is_some_and(|open| open > epoch + 1));
+    }
+
+    /// G4: lock-free currency equals the mutex-guarded state under close,
+    /// quarantine, shutdown, epoch exhaustion and poison.
+    #[test]
+    fn g4_lock_free_currency_matches_the_guarded_state() {
+        let guarded = |gate: &Nir1StartupAdmissionGate, lease: &Nir1StartupLease| {
+            let state = gate.shared.lock_state();
+            state.epoch == lease.epoch
+                && matches!(&state.phase, Phase::Open(entry) if Arc::ptr_eq(entry, &lease.entry))
+        };
+        type Closer = fn(&Nir1StartupAdmissionGate, &Nir1EntryWitness);
+        let closers: [(&str, Closer); 5] = [
+            ("edge", |gate, _| admit(gate, 11)),
+            ("quarantine", |gate, witness| {
+                assert!(gate.quarantine_entry(witness));
+            }),
+            ("shutdown", |gate, _| gate.close_for_shutdown()),
+            ("epoch exhaustion", |gate, _| {
+                {
+                    let mut state = gate.shared.lock_state();
+                    state.epoch = u64::MAX;
+                    gate.shared.epoch_mirror.store(u64::MAX, Ordering::Release);
+                }
+                admit(gate, 12);
+            }),
+            ("poison", |gate, _| gate.poison_for_test()),
+        ];
+        for (name, close) in closers {
+            let gate = Nir1StartupAdmissionGate::new();
+            let ready = binding(1, 1);
+            open(&gate, &ready, 7);
+            let lease = gate.try_lease_for_binding(&ready).expect("lease");
+            let witness = lease.witness();
+            assert!(lease.is_current() && witness.is_current() && guarded(&gate, &lease));
+            if name == "epoch exhaustion" {
+                // The forced epoch makes the earlier lease stale by itself.
+                close(&gate, &witness);
+                assert!(!lease.is_current() && !witness.is_current(), "{name}");
+                assert!(!guarded(&gate, &lease), "{name}");
+                continue;
+            }
+            close(&gate, &witness);
+            assert_eq!(lease.is_current(), guarded(&gate, &lease), "{name}");
+            assert!(!lease.is_current(), "{name}");
+            assert!(!witness.is_current(), "{name}");
+            drop(lease);
+        }
+    }
+
+    /// G5: a witness re-leases only the same epoch and exact entry.
+    #[test]
+    fn g5_witness_lease_requires_the_same_open_entry_and_epoch() {
+        let gate = Nir1StartupAdmissionGate::new();
+        let ready = binding(1, 1);
+        open(&gate, &ready, 7);
+        let lease = gate.try_lease_for_binding(&ready).expect("lease");
+        let witness = lease.witness();
+        drop(lease);
+        let again = gate.try_lease_for_witness(&witness).expect("same entry");
+        assert!(again.is_current());
+        drop(again);
+        admit(&gate, 11);
+        open(&gate, &ready, 8);
+        assert!(
+            gate.try_lease_for_binding(&ready).is_some(),
+            "new same-binding entry"
+        );
+        assert!(
+            gate.try_lease_for_witness(&witness).is_none(),
+            "a witness never crosses into a later entry"
+        );
+        assert!(Nir1StartupAdmissionGate::new()
+            .try_lease_for_witness(&witness)
+            .is_none());
     }
 }

@@ -251,6 +251,9 @@ pub(crate) struct NarrativeMaintenanceGraphControlConfig {
     /// A close is distinct from an ordinary user cancellation so terminal
     /// receipts can preserve the owner supplied reason.
     pub(crate) closed: Option<Arc<AtomicBool>>,
+    /// Lock-free admission predicate of an `Admission` participant fence. A
+    /// false value stops SQLite work as `Closed`, like `closed`.
+    pub(crate) admission_probe: Option<ParticipantSqlProbe>,
     /// Optional owner-owned counter for the progress hook installed by this
     /// outer scope. This is diagnostic telemetry only; callback count is not
     /// an SQL work total.
@@ -296,6 +299,30 @@ pub struct ParticipantSqlOperationBudget {
     /// Maximum SQLite busy wait for this operation. The scope clips it to the
     /// time remaining after it acquires the process-local connection mutex.
     busy_timeout: Duration,
+    /// Optional bound for the process-local connection mutex wait alone. The
+    /// operation deadline still bounds the acquisition as well.
+    connection_lock_timeout: Option<Duration>,
+}
+
+/// Marker for an operation that stopped while waiting for the process-local
+/// connection mutex. It is distinct from the operation deadline (`TimedOut`).
+pub(crate) const NIR1_SQL_CONNECTION_LOCK_TIMEOUT: &str = "NIR1_SQL_CONNECTION_LOCK_TIMEOUT";
+
+/// Lock-free admission predicate observed by an `Admission` SQL fence. It must
+/// read atomics only: it runs from the SQLite progress hook while the
+/// connection mutex is held.
+pub(crate) type ParticipantSqlProbe = Arc<dyn Fn() -> bool + Send + Sync>;
+
+/// What one bounded participant-owned operation observes besides its own
+/// deadline, busy and mutex bounds.
+#[derive(Clone)]
+pub(crate) enum ParticipantSqlFence {
+    /// Stops on the participant stop, the budget stop and a false probe.
+    Admission { probe: Option<ParticipantSqlProbe> },
+    /// Keeps the participant counted but observes no stop and no probe: an
+    /// existing owner's own cleanup must still be able to finish while new
+    /// admissions are closed. Deadline, busy and mutex bounds still apply.
+    Pinned,
 }
 
 impl ParticipantSqlOperationBudget {
@@ -304,7 +331,15 @@ impl ParticipantSqlOperationBudget {
             stop,
             deadline,
             busy_timeout,
+            connection_lock_timeout: None,
         }
+    }
+
+    /// Bound only the process-local connection mutex wait. Exceeding it
+    /// returns `NIR1_SQL_CONNECTION_LOCK_TIMEOUT` before any SQL runs.
+    pub fn with_connection_lock_timeout(mut self, timeout: Duration) -> Self {
+        self.connection_lock_timeout = Some(timeout);
+        self
     }
 
     /// Check this owner against the participant pinned in the supplied
@@ -318,17 +353,56 @@ impl ParticipantSqlOperationBudget {
     }
 }
 
-fn preserve_participant_stop<T>(
-    result: Result<T>,
-    participant: &WorkspaceParticipant,
-    budget: &ParticipantSqlOperationBudget,
-) -> Result<T> {
+/// The stop/deadline observation set of one bounded operation, selected by
+/// its fence. `Pinned` observes the deadline only.
+struct ParticipantSqlChecks<'a> {
+    participant: &'a WorkspaceParticipant,
+    fence: &'a ParticipantSqlFence,
+    stop: &'a Arc<AtomicBool>,
+    deadline: Option<Instant>,
+}
+
+impl ParticipantSqlChecks<'_> {
+    fn check(&self) -> Result<()> {
+        match self.fence {
+            ParticipantSqlFence::Pinned => check_sql_deadline(self.deadline),
+            ParticipantSqlFence::Admission { probe } => {
+                if self.stop.load(Ordering::Acquire) {
+                    return Err(validation_terminated(
+                        ValidationTerminationReason::Cancelled,
+                        "participant SQL owner stopped the operation",
+                    ));
+                }
+                check_participant(self.participant)?;
+                if probe.as_ref().is_some_and(|probe| !probe()) {
+                    return Err(validation_terminated(
+                        ValidationTerminationReason::Closed,
+                        "participant SQL admission fence closed",
+                    ));
+                }
+                check_sql_deadline(self.deadline)
+            }
+        }
+    }
+}
+
+fn check_sql_deadline(deadline: Option<Instant>) -> Result<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(validation_terminated(
+            ValidationTerminationReason::TimedOut,
+            "participant SQL deadline elapsed",
+        ));
+    }
+    Ok(())
+}
+
+fn preserve_fenced_stop<T>(result: Result<T>, checks: &ParticipantSqlChecks<'_>) -> Result<T> {
     match result {
         Ok(value) => {
-            budget.check(participant)?;
+            checks.check()?;
             Ok(value)
         }
-        Err(error) => match budget.check(participant) {
+        Err(error) => match checks.check() {
             Ok(()) => Err(error),
             Err(termination) => Err(termination.context(format!(
                 "participant SQL operation stopped after SQLite returned: {error}"
@@ -874,6 +948,7 @@ where
         let stop_for_hook = Arc::clone(&stop);
         let latch_for_hook = hook_config.termination_latch.clone();
         let closed_for_hook = hook_config.closed.clone();
+        let admission_probe_for_hook = hook_config.admission_probe.clone();
         let generation_for_hook = hook_config.workspace_generation.clone();
         let deadline_for_hook = hook_config.deadline;
         let progress_callbacks_for_hook = hook_config.progress_callbacks.clone();
@@ -900,6 +975,13 @@ where
                     if closed_for_hook
                         .as_ref()
                         .is_some_and(|closed| closed.load(Ordering::Acquire))
+                    {
+                        latch_for_hook.set(ValidationTerminationReason::Closed);
+                        return true;
+                    }
+                    if admission_probe_for_hook
+                        .as_ref()
+                        .is_some_and(|probe| !probe())
                     {
                         latch_for_hook.set(ValidationTerminationReason::Closed);
                         return true;
@@ -1176,25 +1258,58 @@ impl Database {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
+        self.with_participant_read_transaction_bounded_in(
+            participant,
+            ParticipantSqlFence::Admission { probe: None },
+            budget,
+            operation,
+        )
+    }
+
+    /// Bounded read transaction under an explicit fence. `Pinned` keeps the
+    /// participant counted but observes only the deadline, busy and mutex
+    /// bounds, so an owner can reread its exact rows after admission closed.
+    pub(crate) fn with_participant_read_transaction_bounded_in<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        fence: ParticipantSqlFence,
+        budget: ParticipantSqlOperationBudget,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
         let config = NarrativeMaintenanceGraphControlConfig {
             deadline: Some(budget.deadline),
             ..Default::default()
         };
         let stop = Arc::clone(&budget.stop);
-        self.with_participant_sql_scope_config_with_stop_and_timeout(
+        let lock_deadline = budget
+            .connection_lock_timeout
+            .map(|timeout| Instant::now() + timeout);
+        let operation_fence = fence.clone();
+        self.with_participant_sql_scope_fenced(
             participant,
+            &fence,
             config,
             stop,
             Some(budget.busy_timeout),
+            lock_deadline,
             move |conn| {
-                budget.check(participant)?;
+                let checks = ParticipantSqlChecks {
+                    participant,
+                    fence: &operation_fence,
+                    stop: &budget.stop,
+                    deadline: Some(budget.deadline),
+                };
+                checks.check()?;
                 let tx = conn.unchecked_transaction()?;
                 // Recheck after BEGIN, then after the complete bounded page
                 // callback, immediately before COMMIT, and after COMMIT.
-                budget.check(participant)?;
-                let value = preserve_participant_stop(operation(&tx), participant, &budget)?;
+                checks.check()?;
+                let value = preserve_fenced_stop(operation(&tx), &checks)?;
                 tx.commit()?;
-                budget.check(participant)?;
+                checks.check()?;
                 Ok(value)
             },
         )
@@ -1213,29 +1328,65 @@ impl Database {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
+        self.with_participant_immediate_transaction_bounded_in(
+            participant,
+            ParticipantSqlFence::Admission { probe: None },
+            budget,
+            operation,
+        )
+    }
+
+    /// Bounded immediate write transaction under an explicit fence. See
+    /// [`ParticipantSqlFence`] for what each fence observes.
+    pub(crate) fn with_participant_immediate_transaction_bounded_in<T, F>(
+        &self,
+        participant: &WorkspaceParticipant,
+        fence: ParticipantSqlFence,
+        budget: ParticipantSqlOperationBudget,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(&Connection) -> Result<T>,
+    {
         let config = NarrativeMaintenanceGraphControlConfig {
             deadline: Some(budget.deadline),
             ..Default::default()
         };
         let stop = Arc::clone(&budget.stop);
-        self.with_participant_sql_scope_config_with_stop_and_timeout(
+        let lock_deadline = budget
+            .connection_lock_timeout
+            .map(|timeout| Instant::now() + timeout);
+        let operation_fence = fence.clone();
+        self.with_participant_sql_scope_fenced(
             participant,
+            &fence,
             config,
             stop,
             Some(budget.busy_timeout),
+            lock_deadline,
             move |conn| {
-                budget.check(participant)?;
+                let checks = ParticipantSqlChecks {
+                    participant,
+                    fence: &operation_fence,
+                    stop: &budget.stop,
+                    deadline: Some(budget.deadline),
+                };
+                checks.check()?;
                 let result = with_immediate_transaction(conn, |conn| {
                     // BEGIN IMMEDIATE may itself wait on another SQLite
                     // writer. Check the owner as soon as the lock is acquired.
-                    budget.check(participant)?;
-                    preserve_participant_stop(operation(conn), participant, &budget)
+                    checks.check()?;
+                    preserve_fenced_stop(operation(conn), &checks)
                 });
-                let value = preserve_participant_stop(result, participant, &budget)?;
+                // A test failpoint may leave a one-shot commit hook behind;
+                // no hook may outlive this transaction.
+                #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+                let _ = conn.commit_hook(None::<fn() -> bool>);
+                let value = preserve_fenced_stop(result, &checks)?;
                 // A stop observed just after COMMIT makes this pass
                 // incomplete, while leaving the committed row idempotently
                 // recoverable by a fresh sweep.
-                budget.check(participant)?;
+                checks.check()?;
                 Ok(value)
             },
         )
@@ -1268,32 +1419,63 @@ impl Database {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
-        self.with_participant_sql_scope_config_with_stop_and_timeout(
+        self.with_participant_sql_scope_fenced(
             participant,
+            &ParticipantSqlFence::Admission { probe: None },
             config,
             stop,
+            None,
             None,
             operation,
         )
     }
 
-    fn with_participant_sql_scope_config_with_stop_and_timeout<T, F>(
+    /// The one outer participant scope. The fence selects what the mutex
+    /// acquisition loop, the operation boundaries and the SQLite progress hook
+    /// observe; `lock_deadline` bounds the connection mutex wait on its own.
+    #[allow(clippy::too_many_arguments)]
+    fn with_participant_sql_scope_fenced<T, F>(
         &self,
         participant: &WorkspaceParticipant,
+        fence: &ParticipantSqlFence,
         mut config: NarrativeMaintenanceGraphControlConfig,
         stop: Arc<AtomicBool>,
         requested_busy_timeout: Option<Duration>,
+        lock_deadline: Option<Instant>,
         operation: F,
     ) -> Result<T>
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
-        check_participant(participant)?;
-        config.participant = Some(participant.clone());
         let deadline = config.deadline;
-        let acquisition_stop = Arc::clone(&stop);
-        let mut check_acquisition =
-            || check_participant_sql_control(participant, &acquisition_stop, deadline);
+        // A Pinned owner observes no stop: its hook receives a private flag
+        // that nothing sets, and no participant or probe.
+        let hook_stop = match fence {
+            ParticipantSqlFence::Admission { probe } => {
+                check_participant(participant)?;
+                config.participant = Some(participant.clone());
+                config.admission_probe = probe.clone();
+                Arc::clone(&stop)
+            }
+            ParticipantSqlFence::Pinned => {
+                config.participant = None;
+                config.admission_probe = None;
+                Arc::new(AtomicBool::new(false))
+            }
+        };
+        let checks = ParticipantSqlChecks {
+            participant,
+            fence,
+            stop: &stop,
+            deadline,
+        };
+        let mut check_acquisition = || {
+            checks.check()?;
+            if lock_deadline.is_some_and(|lock_deadline| Instant::now() >= lock_deadline) {
+                return Err(anyhow!(NIR1_SQL_CONNECTION_LOCK_TIMEOUT));
+            }
+            Ok(())
+        };
         let conn = self.lock_conn_with_check(Some(&mut check_acquisition))?;
         let busy_timeout = requested_busy_timeout.map(|requested| {
             requested.min(
@@ -1307,13 +1489,13 @@ impl Database {
                 &conn,
                 busy_timeout,
                 1_000,
-                stop,
+                hook_stop,
                 config,
                 None,
                 |conn| {
-                    check_participant_sql_control(participant, &acquisition_stop, deadline)?;
+                    checks.check()?;
                     let value = operation(conn)?;
-                    check_participant_sql_control(participant, &acquisition_stop, deadline)?;
+                    checks.check()?;
                     Ok(value)
                 },
             )
@@ -1560,11 +1742,7 @@ mod tests {
         deadline: Instant,
         busy_timeout: Duration,
     ) -> ParticipantSqlOperationBudget {
-        ParticipantSqlOperationBudget {
-            stop,
-            deadline,
-            busy_timeout,
-        }
+        ParticipantSqlOperationBudget::new(stop, deadline, busy_timeout)
     }
 
     fn termination_reason(error: anyhow::Error) -> ValidationTerminationReason {
@@ -1641,6 +1819,230 @@ mod tests {
         assert!(reusable_while_held);
         core.close()
             .expect("queued participant released before shutdown completion");
+    }
+
+    /// N1: a mutex-limited scope reports a dedicated marker before any SQL.
+    #[test]
+    fn bounded_scope_mutex_timeout_is_a_dedicated_marker_before_sql() {
+        let db = test_db();
+        let (_core, participant) = test_participant();
+        let held = db.conn.lock().expect("hold the connection mutex");
+        let started = Instant::now();
+        for fence in [
+            ParticipantSqlFence::Pinned,
+            ParticipantSqlFence::Admission { probe: None },
+        ] {
+            let error = db
+                .with_participant_read_transaction_bounded_in(
+                    &participant,
+                    fence,
+                    operation_budget(
+                        stop_flag(),
+                        Instant::now() + Duration::from_secs(5),
+                        Duration::from_millis(10),
+                    )
+                    .with_connection_lock_timeout(Duration::from_millis(30)),
+                    |_| -> Result<()> { panic!("no SQL without the connection mutex") },
+                )
+                .expect_err("mutex wait limit");
+            assert!(
+                error.to_string().contains(NIR1_SQL_CONNECTION_LOCK_TIMEOUT),
+                "{error:#}"
+            );
+            assert!(!is_validation_terminated(&error), "not the op deadline");
+        }
+        assert!(started.elapsed() >= Duration::from_millis(60));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(held);
+        assert!(db.connection_reusable());
+        assert_eq!(db.foreground_connection_waiter_count(), 0);
+    }
+
+    /// N1: Pinned skips the entry participant check and observes neither the
+    /// participant stop nor the budget stop, but keeps its deadline, busy
+    /// restore and rollback.
+    #[test]
+    fn pinned_scope_ignores_stops_but_keeps_deadline_rollback_and_settings() {
+        let db = test_db();
+        let (core, participant) = test_participant();
+        core.request_shutdown().expect("participant stop requested");
+        let stop = Arc::new(AtomicBool::new(true));
+        let value = db
+            .with_participant_immediate_transaction_bounded_in(
+                &participant,
+                ParticipantSqlFence::Pinned,
+                operation_budget(
+                    Arc::clone(&stop),
+                    Instant::now() + Duration::from_secs(5),
+                    Duration::from_millis(50),
+                ),
+                |conn| Ok(conn.query_row("SELECT 7", [], |row| row.get::<_, i64>(0))?),
+            )
+            .expect("pinned write despite both stops");
+        assert_eq!(value, 7);
+        let error = db
+            .with_participant_immediate_transaction_bounded_in(
+                &participant,
+                ParticipantSqlFence::Admission { probe: None },
+                operation_budget(
+                    Arc::clone(&stop),
+                    Instant::now() + Duration::from_secs(5),
+                    Duration::from_millis(50),
+                ),
+                |_| -> Result<()> { panic!("admission must stop before SQL") },
+            )
+            .expect_err("admission observes the stop");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Cancelled
+        );
+        let started = Instant::now();
+        let error = db
+            .with_participant_immediate_transaction_bounded_in(
+                &participant,
+                ParticipantSqlFence::Pinned,
+                operation_budget(
+                    stop,
+                    Instant::now() + Duration::from_millis(40),
+                    Duration::from_millis(50),
+                ),
+                |conn| {
+                    conn.execute_batch("CREATE TEMP TABLE pinned_rollback(x INTEGER)")?;
+                    conn.query_row(
+                        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c)
+                         SELECT count(*) FROM c",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?;
+                    Ok(())
+                },
+            )
+            .expect_err("deadline still interrupts a pinned statement");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::TimedOut
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(db.connection_reusable());
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit());
+            let busy: i64 = conn.pragma_query_value(None, "busy_timeout", |row| row.get(0))?;
+            assert_eq!(busy, 5_000);
+            let rolled_back: i64 = conn.query_row(
+                "SELECT count(*) FROM temp.sqlite_master WHERE name='pinned_rollback'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(rolled_back, 0);
+            Ok(())
+        })
+        .expect("restored connection");
+    }
+
+    /// N1: a false admission probe stops the mutex acquisition loop, the
+    /// operation boundary and a running statement, each as `Closed`.
+    #[test]
+    fn admission_probe_closes_acquisition_operation_boundary_and_progress_hook() {
+        let db = Arc::new(test_db());
+        let (_core, participant) = test_participant();
+        let admission_budget = || {
+            operation_budget(
+                stop_flag(),
+                Instant::now() + Duration::from_secs(5),
+                Duration::from_millis(50),
+            )
+        };
+
+        // Acquisition loop: the probe turns false while the mutex is held.
+        let calls = Arc::new(AtomicU64::new(0));
+        let probe_calls = Arc::clone(&calls);
+        let held = db.conn.lock().expect("hold the connection mutex");
+        let error = db
+            .with_participant_read_transaction_bounded_in(
+                &participant,
+                ParticipantSqlFence::Admission {
+                    probe: Some(Arc::new(move || {
+                        probe_calls.fetch_add(1, Ordering::SeqCst) < 5
+                    })),
+                },
+                admission_budget(),
+                |_| -> Result<()> { panic!("no SQL without the mutex") },
+            )
+            .expect_err("probe closes the acquisition");
+        drop(held);
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Closed
+        );
+
+        // Operation boundary: the probe turns false during the operation.
+        let open = Arc::new(AtomicBool::new(true));
+        let probe_open = Arc::clone(&open);
+        let operation_open = Arc::clone(&open);
+        let error = db
+            .with_participant_immediate_transaction_bounded_in(
+                &participant,
+                ParticipantSqlFence::Admission {
+                    probe: Some(Arc::new(move || probe_open.load(Ordering::Acquire))),
+                },
+                admission_budget(),
+                move |conn| {
+                    conn.execute_batch("CREATE TEMP TABLE probe_boundary(x INTEGER)")?;
+                    operation_open.store(false, Ordering::Release);
+                    Ok(())
+                },
+            )
+            .expect_err("probe closes at the boundary");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Closed
+        );
+
+        // Progress hook: a statement that would not finish is interrupted.
+        let open = Arc::new(AtomicBool::new(true));
+        let probe_open = Arc::clone(&open);
+        let closer_open = Arc::clone(&open);
+        let closer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            closer_open.store(false, Ordering::Release);
+        });
+        let started = Instant::now();
+        let error = db
+            .with_participant_read_transaction_bounded_in(
+                &participant,
+                ParticipantSqlFence::Admission {
+                    probe: Some(Arc::new(move || probe_open.load(Ordering::Acquire))),
+                },
+                admission_budget(),
+                |conn| {
+                    conn.query_row(
+                        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c)
+                         SELECT count(*) FROM c",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )?;
+                    Ok(())
+                },
+            )
+            .expect_err("probe interrupts the running statement");
+        closer.join().expect("closer");
+        assert_eq!(
+            termination_reason(error),
+            ValidationTerminationReason::Closed
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(db.connection_reusable());
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit());
+            let leaked: i64 = conn.query_row(
+                "SELECT count(*) FROM temp.sqlite_master WHERE name='probe_boundary'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(leaked, 0, "the boundary stop rolled back");
+            Ok(())
+        })
+        .expect("clean connection");
     }
 
     #[test]

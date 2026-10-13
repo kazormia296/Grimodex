@@ -20,6 +20,7 @@ mod lifecycle_failure_diagnostics;
 mod legacy_keyring;
 mod narrative_maintenance;
 mod nir1_generation;
+mod nir1_generation_owner;
 #[cfg(test)]
 mod nir1_graph_activation_tests;
 mod nir1_prepared_request;
@@ -2213,6 +2214,22 @@ fn publish_workspace_lifecycle_from_workspace(
         .complete_transition_from_workspace(&state.ws)?;
     emit_workspace_lifecycle_view(state, &view);
     Ok(view)
+}
+
+/// Run the Ready publisher on a blocking thread. It may wait (at most 250 ms)
+/// for NIR-1 startup leases to drop; a runtime worker thread must not wait on
+/// work that the same runtime may need to run.
+async fn publish_workspace_lifecycle_from_workspace_off_runtime(
+    state: &Arc<AppState>,
+) -> std::result::Result<WorkspaceLifecycleView, AppError> {
+    let state = Arc::clone(state);
+    napi::tokio::task::spawn_blocking(move || publish_workspace_lifecycle_from_workspace(&state))
+        .await
+        .map_err(|error| {
+            AppError::Anyhow(anyhow::anyhow!(
+                "workspace lifecycle publisher did not join: {error}"
+            ))
+        })?
 }
 
 /// Publish a panic/poison outcome only after the blocking worker has joined.
@@ -10051,7 +10068,7 @@ impl Backend {
         let lifecycle = if needs_recovery {
             publish_workspace_lifecycle_recovery_after_join(&self.state)
         } else {
-            publish_workspace_lifecycle_from_workspace(&self.state)
+            publish_workspace_lifecycle_from_workspace_off_runtime(&self.state).await
         };
         if result.is_err() {
             let _ = lifecycle;
@@ -10528,7 +10545,7 @@ impl Backend {
         let mut lifecycle = if force_recovery {
             publish_workspace_lifecycle_recovery_after_join(&self.state)
         } else {
-            publish_workspace_lifecycle_from_workspace(&self.state)
+            publish_workspace_lifecycle_from_workspace_off_runtime(&self.state).await
         }
         .map_err(app_err_to_napi)?;
         let terminal_kind = self
@@ -10680,7 +10697,7 @@ impl Backend {
             restore_safe_mode_candidate(&state.ws, &candidate_id)
         })
         .await;
-        let lifecycle = publish_workspace_lifecycle_from_workspace(&self.state);
+        let lifecycle = publish_workspace_lifecycle_from_workspace_off_runtime(&self.state).await;
         if result.is_err() {
             let _ = lifecycle;
             result
