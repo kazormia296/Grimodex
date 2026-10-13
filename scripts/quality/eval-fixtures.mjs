@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
+import { validateNir1GraphCases } from "./nir1-graph/contract.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(import.meta.dirname, "../..");
 
@@ -873,12 +874,31 @@ function buildBlockedEvaluationReport(model) {
   }));
 }
 
+/**
+ * NIR-1 C-product Graph cases (G-01..G-08): schema, l6-l9 class rows, Raw
+ * prediction guard and rule-derived expectations. No runtime is executed.
+ */
+export async function buildNir1GraphCaseReport({
+  repoRoot = DEFAULT_REPO_ROOT,
+} = {}) {
+  const result = await validateNir1GraphCases({ repoRoot });
+  return {
+    status: result.errors.length === 0 ? "passed" : "failed",
+    scope:
+      "Predeclared fixture shape, l6-l9 class rows, Raw-prediction lexical guard and rule-derived Graph expectations only; no Raw, IR or Graph runtime result.",
+    cases: result.cases,
+    freeze: result.freeze,
+    errors: result.errors,
+  };
+}
+
 async function main() {
   const model = await loadQualityModel();
   const validation = await validateQualityModel(model);
   const fixtureContracts = evaluateFixtureContracts(model);
   const heavy = buildHeavyEvaluationReport(model);
   const blocked = buildBlockedEvaluationReport(model);
+  const nir1Graph = await buildNir1GraphCaseReport();
   const report = {
     version: 1,
     generatedAt: new Date().toISOString(),
@@ -895,9 +915,14 @@ async function main() {
     },
     heavy,
     blocked,
+    nir1Graph,
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  if (validation.errors.length > 0 || fixtureContracts.failed > 0)
+  if (
+    validation.errors.length > 0 ||
+    fixtureContracts.failed > 0 ||
+    nir1Graph.errors.length > 0
+  )
     process.exitCode = 1;
 }
 

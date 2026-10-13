@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildHeavyEvaluationReport,
+  buildNir1GraphCaseReport,
   evaluateFixtureContracts,
   loadQualityModel,
   validateQualityModel,
@@ -177,4 +178,21 @@ test("heavy evaluations are explicit deferred evidence, never implicit passes", 
   assert.ok(heavy.every((entry) => entry.status === "deferred"));
   assert.ok(heavy.every((entry) => entry.command.length > 0));
   assert.ok(heavy.every((entry) => entry.reason.length > 0));
+});
+
+test("NIR-1 Graph cases G-01..G-08 are part of the fixture gate without runtime claims", async () => {
+  const report = await buildNir1GraphCaseReport({ repoRoot });
+
+  assert.equal(report.status, "passed");
+  assert.deepEqual(report.errors, []);
+  assert.deepEqual(
+    report.cases.map((entry) => entry.caseId),
+    ["G-01", "G-02", "G-03", "G-04", "G-05", "G-06", "G-07", "G-08"],
+  );
+  assert.match(report.scope, /no Raw, IR or Graph runtime result/);
+  assert.ok(
+    ["pending-independent-expectation-review", "frozen"].includes(
+      report.freeze.status,
+    ),
+  );
 });

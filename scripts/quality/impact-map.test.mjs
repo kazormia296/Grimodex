@@ -612,6 +612,12 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
   ];
   const nativeAcceptance = "electron/native/grimodex-node/src/nir1_graph_activation_tests.rs";
   const g01Assets = ["evals/nir1-g01/fixture.v1.json", "src/features/related-scenes/nir1G01Feasibility.test.ts"];
+  const graphCaseAssets = [
+    "evals/nir1-graph/manifest.v1.json",
+    "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+    "scripts/quality/nir1-graph/contract.mjs",
+    "scripts/quality/nir1-graph/contract.test.mjs",
+  ];
   const postBCandidatePaths = [
     "docs/plans/nir1-c-scene-connection-candidate.md",
     "docs/plans/nir1-d1-snapshot-candidate.md",
@@ -631,6 +637,7 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     ...tests,
     nativeAcceptance,
     ...g01Assets,
+    ...graphCaseAssets,
     ...postBCandidatePaths,
   ]) {
     const selection = selectImpact(map, [changedPath]);
@@ -668,6 +675,9 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
   assert.ok(ground.implementedBy.includes(g01Assets[0]));
   assert.ok(ground.lightTests.includes(g01Assets[1]));
   assert.ok(commandLines.some((command) => command.includes(g01Assets[1])));
+  assert.ok(ground.implementedBy.includes(graphCaseAssets[0]));
+  assert.ok(ground.lightTests.includes(graphCaseAssets[3]));
+  assert.ok(commandLines.some((command) => command.includes(graphCaseAssets[3])));
   for (const command of [
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-core --test narrative_nir1_receipt",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_graph -- --test-threads=1",

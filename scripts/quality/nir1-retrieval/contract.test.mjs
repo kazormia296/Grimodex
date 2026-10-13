@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  GRAPH_ARM_UNAVAILABLE_REASON,
+  GRAPH_ARM_WIRING,
+  RETRIEVAL_ARMS,
+  assertGraphArmRequestable,
+  describeGraphArm,
+  graphSeedForExistingQuery,
+  loadGraphSeedPolicy,
   nearestRank,
   scoreQuery,
+  summarizeGraphArm,
   summarizeWarm,
   loadContract,
   validateWarmPopulation,
@@ -125,4 +133,65 @@ test("nearest rank p95 has fixed denominator and failed calls cannot fix B", () 
   calls[0] = { status: "completed-safe-fallback", durationMs: 110 };
   assert.equal(summarizeWarm(calls).status, "complete");
   assert.equal(summarizeWarm(calls).scheduledCount, 720);
+});
+
+test("the R+IR+Graph arm is a not-wired scaffold that is unavailable and never passes", () => {
+  assert.deepEqual(RETRIEVAL_ARMS, {
+    raw: "R",
+    hybrid: "R+IR",
+    graph: "R+IR+Graph",
+  });
+  const arm = describeGraphArm();
+  assert.equal(arm.wiring, GRAPH_ARM_WIRING);
+  assert.equal(arm.status, "unavailable");
+  assert.equal(arm.reason, GRAPH_ARM_UNAVAILABLE_REASON);
+  assert.equal(arm.comparedAgainst, "hybrid");
+  assert.equal(arm.scheduledCalls, 0);
+  assert.equal(arm.pass, false);
+  assert.deepEqual(summarizeGraphArm(arm), {
+    status: "hold",
+    reason: GRAPH_ARM_UNAVAILABLE_REASON,
+    arm: "R+IR+Graph",
+    pass: false,
+  });
+  // Even a fabricated "measured" arm cannot turn the recheck into a pass.
+  const forged = { ...arm, wiring: "wired", status: "measured", pass: true };
+  assert.equal(summarizeGraphArm(forged).pass, false);
+  assert.equal(summarizeGraphArm(forged).status, "hold");
+  assert.equal(summarizeGraphArm(undefined).pass, false);
+});
+
+test("a request to measure the R+IR+Graph arm is refused while it is not wired", () => {
+  assert.doesNotThrow(() => assertGraphArmRequestable());
+  assert.doesNotThrow(() => assertGraphArmRequestable(GRAPH_ARM_WIRING));
+  for (const requested of ["wired", "measure", "R+IR+Graph"])
+    assert.throws(() => assertGraphArmRequestable(requested), /\[precheck\]/);
+});
+
+test("the frozen 24 queries take no Graph seed and the retrieval scope stays not Graph", async () => {
+  const root = path.resolve(import.meta.dirname, "../../..");
+  const contract = await loadContract(root);
+  const policy = await loadGraphSeedPolicy(root, contract);
+  assert.equal(policy.manualSeed, "none");
+  assert.equal(policy.expectedGraphContribution, 0);
+  assert.equal(policy.graphStatus, "not-requested");
+  assert.match(policy.manifestSha256, /^[0-9a-f]{64}$/);
+  assert.match(contract.manifest.scope, /\bnot Graph\b/);
+  for (const query of contract.queries)
+    assert.equal(graphSeedForExistingQuery(policy, query), null);
+  assert.throws(
+    () =>
+      graphSeedForExistingQuery(
+        { ...policy, manualSeed: "case" },
+        contract.queries[0],
+      ),
+    /no Graph seed/,
+  );
+  await assert.rejects(
+    loadGraphSeedPolicy(root, {
+      ...contract,
+      manifest: { ...contract.manifest, scope: "Graph" },
+    }),
+    /scope differs/,
+  );
 });

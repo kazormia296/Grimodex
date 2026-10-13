@@ -9,7 +9,10 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  assertGraphArmRequestable,
+  describeGraphArm,
   loadContract,
+  loadGraphSeedPolicy,
   scoreQuery,
   sha256,
   summarizeQuality,
@@ -142,6 +145,8 @@ export async function runNir1Retrieval(options) {
   let verifiedBuildSources;
   let built;
   try {
+    // R+IR+Graph is a not-wired scaffold; no mode may request measuring it.
+    assertGraphArmRequestable(options["graph-arm"]);
     if (options["build-receipt"]) {
       receipt.buildReceipt = await artifactIdentity(
         path.resolve(options["build-receipt"]),
@@ -274,6 +279,9 @@ export async function runNir1Retrieval(options) {
       }
     }
     if (options.mode === "precheck") {
+      receipt.graphArm = describeGraphArm({
+        seedPolicy: await loadGraphSeedPolicy(ROOT, contract),
+      });
       receipt.status = "precheck-complete";
       return receipt;
     }

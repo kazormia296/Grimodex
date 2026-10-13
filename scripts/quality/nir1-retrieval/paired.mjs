@@ -4,14 +4,21 @@ import process from "node:process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
+  assertGraphArmRequestable,
+  describeGraphArm,
+  graphSeedForExistingQuery,
+  loadGraphSeedPolicy,
   nearestRank,
   scoreQuery,
   sha256,
+  summarizeGraphArm,
   summarizeQuality,
   summarizeWarm,
   validateRawIpcTrace,
   validateWarmPopulation,
 } from "./contract.mjs";
+
+const ROOT = path.resolve(import.meta.dirname, "../../..");
 
 export async function runPaired({
   app,
@@ -46,6 +53,11 @@ export async function runPaired({
     budget.rawReceiptSha256,
     "[precheck] fixed Raw receipt changed",
   );
+  // The R+IR+Graph arm is a not-wired scaffold: refuse any request to measure
+  // it, record it as unavailable and never schedule a Graph call.
+  assertGraphArmRequestable(options["graph-arm"]);
+  const graphSeedPolicy = await loadGraphSeedPolicy(ROOT, contract);
+  receipt.graphArm = describeGraphArm({ seedPolicy: graphSeedPolicy });
   receipt.schemaVersion = "nir1-paired-retrieval/1";
   receipt.evidenceScope =
     "fixed-corpus actual Electron Raw versus IR comparison; author-value, forbidden cases and full UI journeys are separate gates";
@@ -277,7 +289,12 @@ export async function runPaired({
         irBenefitExpected: query.irBenefitExpected,
       });
     }
-    receipt.cases.push({ queryId: query.id, prepared, build });
+    receipt.cases.push({
+      queryId: query.id,
+      prepared,
+      build,
+      graphSeed: graphSeedForExistingQuery(graphSeedPolicy, query),
+    });
     receipt.hostDuring.push({ queryId: query.id, ...(await snapshotHost()) });
     await writeFile(
       path.join(output, "receipt.in-progress.json"),
@@ -446,5 +463,8 @@ export async function runPaired({
     : Object.values(receipt.gates).every(Boolean)
       ? "paired-gates-passed"
       : "hold";
+  // `status` above keeps its R versus R+IR meaning. The Graph-integrated
+  // recheck is a separate verdict and stays Hold while the arm is not wired.
+  receipt.graphIntegratedRecheck = summarizeGraphArm(receipt.graphArm);
   return receipt;
 }

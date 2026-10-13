@@ -1,0 +1,1020 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.local/evals/nir1-graph/schema.v1.json",
+  "title": "NIR-1 C-product predeclared Graph case fixture (G-02..G-08)",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "status",
+    "caseId",
+    "fixtureId",
+    "sourceDocument",
+    "sourceSection",
+    "designReferences",
+    "observationPolicy",
+    "language",
+    "caseClass",
+    "slotClass",
+    "goldDefinition",
+    "answerEntityIds",
+    "query",
+    "scenes",
+    "eligibleSceneIds",
+    "scope",
+    "entities",
+    "relations",
+    "manualSeed",
+    "pins",
+    "foreshadows",
+    "qualifiedIr",
+    "revisions",
+    "mutations",
+    "setupTimeline",
+    "variants",
+    "positive",
+    "negative",
+    "measurementBoundary"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": "nir1-graph-case/1" },
+    "status": { "const": "predeclared-design-fixture" },
+    "caseId": { "type": "string", "pattern": "^G-0[2-8]$" },
+    "fixtureId": { "type": "string", "pattern": "^nir1-g0[2-8]-[a-z0-9-]+/1$" },
+    "sourceDocument": { "const": "docs/plans/nir1-l6-l9-execution-plan.md" },
+    "sourceSection": { "$ref": "#/$defs/text" },
+    "designReferences": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/text" }
+    },
+    "observationPolicy": {
+      "const": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result."
+    },
+    "language": { "const": "en" },
+    "caseClass": {
+      "type": "object",
+      "required": ["queryClass", "expectedJudgement", "positive", "negative"],
+      "additionalProperties": false,
+      "properties": {
+        "queryClass": { "$ref": "#/$defs/text" },
+        "expectedJudgement": { "$ref": "#/$defs/text" },
+        "positive": { "$ref": "#/$defs/text" },
+        "negative": { "$ref": "#/$defs/text" }
+      }
+    },
+    "slotClass": { "$ref": "#/$defs/slotClass" },
+    "goldDefinition": { "$ref": "#/$defs/text" },
+    "answerEntityIds": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "query": {
+      "type": "object",
+      "required": ["sceneId", "readingOrder", "title", "body"],
+      "additionalProperties": false,
+      "properties": {
+        "sceneId": { "$ref": "#/$defs/id" },
+        "readingOrder": { "type": "integer", "minimum": 1 },
+        "title": { "$ref": "#/$defs/text" },
+        "body": { "$ref": "#/$defs/line" }
+      }
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 3,
+      "items": { "$ref": "#/$defs/scene" }
+    },
+    "eligibleSceneIds": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "scope": {
+      "type": "object",
+      "required": ["registry", "default", "overrides"],
+      "additionalProperties": false,
+      "properties": {
+        "registry": {
+          "type": "object",
+          "required": ["timelineRefs", "worldlineRefs", "narrativeLayerRefs"],
+          "additionalProperties": false,
+          "properties": {
+            "timelineRefs": { "$ref": "#/$defs/refList" },
+            "worldlineRefs": { "$ref": "#/$defs/refList" },
+            "narrativeLayerRefs": { "$ref": "#/$defs/refList" }
+          }
+        },
+        "default": { "$ref": "#/$defs/explicitScope" },
+        "overrides": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/scopeOverride" }
+        }
+      }
+    },
+    "entities": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/entity" }
+    },
+    "relations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/relation" }
+    },
+    "manualSeed": {
+      "type": "object",
+      "required": ["entityId", "manualSeed"],
+      "additionalProperties": false,
+      "properties": {
+        "entityId": { "$ref": "#/$defs/id" },
+        "manualSeed": { "const": true }
+      }
+    },
+    "pins": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/pin" }
+    },
+    "foreshadows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/foreshadow" }
+    },
+    "qualifiedIr": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/qualifiedIr" }
+    },
+    "revisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/revision" }
+    },
+    "mutations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/mutation" }
+    },
+    "setupTimeline": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kind", "id"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": { "enum": ["revision", "mutation", "qualified-ir"] },
+          "id": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "variants": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/variant" }
+    },
+    "positive": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "negative": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "measurementBoundary": {
+      "type": "object",
+      "required": [
+        "contractBaseline",
+        "runtimeSetup",
+        "setupOrder",
+        "graphConnection",
+        "goldOrigin",
+        "setupRefusal",
+        "rawPrediction"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "contractBaseline": { "$ref": "#/$defs/text" },
+        "runtimeSetup": { "$ref": "#/$defs/text" },
+        "setupOrder": { "$ref": "#/$defs/text" },
+        "graphConnection": { "$ref": "#/$defs/text" },
+        "goldOrigin": { "$ref": "#/$defs/text" },
+        "setupRefusal": { "$ref": "#/$defs/text" },
+        "rawPrediction": { "$ref": "#/$defs/text" },
+        "indexStateHolding": { "$ref": "#/$defs/text" }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^g0[2-8]-[a-z0-9-]+$" },
+    "text": { "type": "string", "minLength": 1, "pattern": "\\S" },
+    "line": { "type": "string", "minLength": 1, "pattern": "^[^\\n\\r]+$" },
+    "refList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+    },
+    "slotClass": { "enum": ["supplementable", "raw-full", "ir-supplemented"] },
+    "scene": {
+      "type": "object",
+      "required": ["id", "readingOrder", "title", "body", "gold", "role"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "readingOrder": { "type": "integer", "minimum": 0 },
+        "title": { "$ref": "#/$defs/text" },
+        "body": { "$ref": "#/$defs/line" },
+        "gold": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "role": {
+          "enum": [
+            "control",
+            "review",
+            "answer",
+            "ir-only",
+            "decoy",
+            "filler",
+            "payoff"
+          ]
+        }
+      }
+    },
+    "constraint": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "ref"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "exact" },
+            "ref": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": { "kind": { "const": "any" } }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "reason"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "unresolved" },
+            "reason": {
+              "enum": [
+                "not-provided",
+                "ambiguous",
+                "missing-reference",
+                "unsupported-axis",
+                "legacy-axis-unknown"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "axes": {
+      "type": "object",
+      "required": ["timeline", "worldline", "narrativeLayer"],
+      "additionalProperties": false,
+      "properties": {
+        "timeline": { "$ref": "#/$defs/constraint" },
+        "worldline": { "$ref": "#/$defs/constraint" },
+        "narrativeLayer": { "$ref": "#/$defs/constraint" }
+      }
+    },
+    "partialAxes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "timeline": { "$ref": "#/$defs/constraint" },
+        "worldline": { "$ref": "#/$defs/constraint" },
+        "narrativeLayer": { "$ref": "#/$defs/constraint" }
+      }
+    },
+    "principal": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": { "kind": { "const": "reader" } }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "ref"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "character" },
+            "ref": { "$ref": "#/$defs/id" }
+          }
+        }
+      ]
+    },
+    "explicitScope": {
+      "type": "object",
+      "required": [
+        "marker",
+        "queryIdentity",
+        "materialConstraint",
+        "knowledgeHolder",
+        "audience"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "marker": { "const": "explicit" },
+        "queryIdentity": { "$ref": "#/$defs/axes" },
+        "materialConstraint": { "$ref": "#/$defs/axes" },
+        "knowledgeHolder": { "$ref": "#/$defs/principal" },
+        "audience": { "$ref": "#/$defs/principal" }
+      }
+    },
+    "scopeOverride": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["marker"],
+          "additionalProperties": false,
+          "properties": { "marker": { "const": "unknown" } }
+        },
+        {
+          "type": "object",
+          "required": ["marker"],
+          "minProperties": 2,
+          "additionalProperties": false,
+          "properties": {
+            "marker": { "const": "explicit" },
+            "queryIdentity": { "$ref": "#/$defs/partialAxes" },
+            "materialConstraint": { "$ref": "#/$defs/partialAxes" },
+            "knowledgeHolder": { "$ref": "#/$defs/principal" },
+            "audience": { "$ref": "#/$defs/principal" }
+          }
+        }
+      ]
+    },
+    "entity": {
+      "type": "object",
+      "required": ["id", "kind", "label", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "kind": { "const": "character" },
+        "label": { "type": "string", "pattern": "^[A-Z][a-z]+$" },
+        "summary": { "$ref": "#/$defs/line" }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "required": [
+        "id",
+        "fromEntityId",
+        "toEntityId",
+        "type",
+        "direction",
+        "authorDeclared"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "fromEntityId": { "$ref": "#/$defs/id" },
+        "toEntityId": { "$ref": "#/$defs/id" },
+        "type": { "type": "string", "pattern": "^[a-z][a-z-]*$" },
+        "direction": { "enum": ["directed", "symmetric"] },
+        "authorDeclared": { "const": true }
+      }
+    },
+    "pin": {
+      "type": "object",
+      "required": ["sceneId", "entryId", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "sceneId": { "$ref": "#/$defs/id" },
+        "entryId": { "$ref": "#/$defs/id" },
+        "source": { "const": "scene_codex_pins" }
+      }
+    },
+    "foreshadow": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "secret",
+        "payoffSceneId",
+        "payoffConfirmed",
+        "abandoned",
+        "linkedEntityIds"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "title": { "$ref": "#/$defs/text" },
+        "secret": { "type": "boolean" },
+        "payoffSceneId": {
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        },
+        "payoffConfirmed": { "type": "boolean" },
+        "abandoned": { "type": "boolean" },
+        "linkedEntityIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        }
+      }
+    },
+    "qualifiedIr": {
+      "type": "object",
+      "required": [
+        "sceneId",
+        "summary",
+        "actuality",
+        "attribution",
+        "narrativeFrame"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sceneId": { "$ref": "#/$defs/id" },
+        "summary": { "$ref": "#/$defs/line" },
+        "actuality": { "const": "actual" },
+        "attribution": { "const": "narrator" },
+        "narrativeFrame": { "const": "story-world" }
+      }
+    },
+    "variantList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" }
+    },
+    "precondition": {
+      "description": "An observation-time precondition from the closed set in manifest.v1.json `preconditions`. If it is unmet the variant (scope variant) or its appended-Scene sub-expectation (scope added-scene) is recorded as blocked:<id>, never Hold, and its expectations are not changed.",
+      "type": "object",
+      "required": ["id", "scope"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "enum": [
+            "b-sealed-binding",
+            "maintenance-enabled",
+            "raw-membership",
+            "ir-supplement-admission",
+            "index-state-holding",
+            "cb4-inputs"
+          ]
+        },
+        "scope": { "enum": ["variant", "added-scene"] },
+        "sceneId": { "$ref": "#/$defs/id" }
+      }
+    },
+    "revision": {
+      "type": "object",
+      "required": [
+        "id",
+        "reviewSceneId",
+        "entityIds",
+        "relationIds",
+        "decision"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "reviewSceneId": { "$ref": "#/$defs/id" },
+        "entityIds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "relationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "decision": { "enum": ["approved", "rejected", "none"] },
+        "onlyInVariants": { "$ref": "#/$defs/variantList" }
+      }
+    },
+    "mutation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["id", "kind", "entityId", "from", "to"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "kind": { "const": "codex-entry-summary-edit" },
+            "entityId": { "$ref": "#/$defs/id" },
+            "from": { "$ref": "#/$defs/line" },
+            "to": { "$ref": "#/$defs/line" },
+            "onlyInVariants": { "$ref": "#/$defs/variantList" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["id", "kind", "relationId", "from", "to"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "kind": { "const": "codex-relation-type-edit" },
+            "relationId": { "$ref": "#/$defs/id" },
+            "from": { "type": "string", "pattern": "^[a-z][a-z-]*$" },
+            "to": { "type": "string", "pattern": "^[a-z][a-z-]*$" },
+            "onlyInVariants": { "$ref": "#/$defs/variantList" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["id", "kind", "sceneId"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "$ref": "#/$defs/id" },
+            "kind": { "const": "ir-approval-withdrawal" },
+            "sceneId": { "$ref": "#/$defs/id" },
+            "onlyInVariants": { "$ref": "#/$defs/variantList" }
+          }
+        }
+      ]
+    },
+    "path": {
+      "type": "object",
+      "required": ["seedEntityId", "edgeIds", "targetEntityId", "hop"],
+      "additionalProperties": false,
+      "properties": {
+        "seedEntityId": { "$ref": "#/$defs/id" },
+        "edgeIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "targetEntityId": { "$ref": "#/$defs/id" },
+        "hop": { "type": "integer", "minimum": 1, "maximum": 2 }
+      }
+    },
+    "metric": {
+      "type": "object",
+      "required": ["recallAt8", "ndcgAt8"],
+      "additionalProperties": false,
+      "properties": {
+        "recallAt8": { "type": "number", "minimum": 0, "maximum": 1 },
+        "ndcgAt8": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "arm": {
+      "type": "object",
+      "required": ["sceneIds", "orderPredeclared"],
+      "additionalProperties": false,
+      "properties": {
+        "sceneIds": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "orderPredeclared": { "type": "boolean" }
+      }
+    },
+    "evidenceAssertion": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "entityId",
+            "currentText",
+            "supersededText",
+            "mustNotContain"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "current-entity-evidence" },
+            "entityId": { "$ref": "#/$defs/id" },
+            "currentText": { "$ref": "#/$defs/line" },
+            "supersededText": { "$ref": "#/$defs/line" },
+            "mustNotContain": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "$ref": "#/$defs/text" }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "sceneId",
+            "edgeIds",
+            "forbiddenCollapsedRelation"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "edge-sequence-preserved" },
+            "sceneId": { "$ref": "#/$defs/id" },
+            "edgeIds": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "$ref": "#/$defs/id" }
+            },
+            "forbiddenCollapsedRelation": { "$ref": "#/$defs/text" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "sceneId", "nameMentioned"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "no-name-inferred-association" },
+            "sceneId": { "$ref": "#/$defs/id" },
+            "nameMentioned": { "$ref": "#/$defs/text" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "entityIds", "label"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "homonym-not-merged" },
+            "entityIds": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/id" }
+            },
+            "label": { "$ref": "#/$defs/text" }
+          }
+        }
+      ]
+    },
+    "variant": {
+      "type": "object",
+      "required": [
+        "id",
+        "description",
+        "measurementPoint",
+        "indexState",
+        "preconditions",
+        "expectations"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "description": { "$ref": "#/$defs/text" },
+        "preconditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/precondition" }
+        },
+        "measurementPoint": {
+          "enum": [
+            "after-maintenance-current",
+            "while-graph-index-unusable",
+            "while-chronicle-index-unusable",
+            "while-both-indexes-unusable"
+          ]
+        },
+        "indexState": {
+          "type": "object",
+          "required": ["chronicle", "graph"],
+          "additionalProperties": false,
+          "properties": {
+            "chronicle": { "enum": ["usable", "unusable"] },
+            "graph": { "enum": ["usable", "unusable"] }
+          }
+        },
+        "expectations": {
+          "type": "object",
+          "required": [
+            "arms",
+            "graph",
+            "pathAttachments",
+            "addedScene",
+            "blockedCandidates",
+            "scenesWithoutPath",
+            "forbiddenSceneIds",
+            "evidence",
+            "metrics"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "arms": {
+              "type": "object",
+              "required": ["raw", "rPlusIr", "rPlusIrPlusGraph"],
+              "additionalProperties": false,
+              "properties": {
+                "raw": { "$ref": "#/$defs/arm" },
+                "rPlusIr": {
+                  "allOf": [{ "$ref": "#/$defs/armWithIr" }]
+                },
+                "rPlusIrPlusGraph": {
+                  "type": "object",
+                  "required": [
+                    "baseline",
+                    "sceneIds",
+                    "appendedSceneId",
+                    "orderPredeclared"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "baseline": { "enum": ["rPlusIr", "raw"] },
+                    "sceneIds": {
+                      "type": "array",
+                      "maxItems": 8,
+                      "uniqueItems": true,
+                      "items": { "$ref": "#/$defs/id" }
+                    },
+                    "appendedSceneId": {
+                      "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+                    },
+                    "orderPredeclared": { "type": "boolean" }
+                  }
+                }
+              }
+            },
+            "graph": {
+              "type": "object",
+              "required": ["status", "reasonClass", "nodes", "edgeIds"],
+              "additionalProperties": false,
+              "properties": {
+                "status": { "enum": ["available", "unavailable"] },
+                "reasonClass": {
+                  "description": "Rule-derived cause, recorded only. Runtime comparison uses graph.status alone until a runtime reason mapping is fixed (manifest runtimeComparison.reasonClass).",
+                  "enum": [
+                    null,
+                    "graph-index-unusable",
+                    "chronicle-index-unusable",
+                    "graph-limit-exceeded",
+                    "seed-not-qualified"
+                  ]
+                },
+                "nodes": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["entityId", "hop"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "entityId": { "$ref": "#/$defs/id" },
+                      "hop": { "type": "integer", "minimum": 0, "maximum": 2 }
+                    }
+                  }
+                },
+                "edgeIds": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": { "$ref": "#/$defs/id" }
+                },
+                "qualifiedRevisionIds": {
+                  "description": "Rule-derived explanation, recorded only.",
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": { "$ref": "#/$defs/id" }
+                },
+                "excludedRevisions": {
+                  "description": "Rule-derived explanation, recorded only; runtime reason labels may differ.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["revisionId", "reasons"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "revisionId": { "$ref": "#/$defs/id" },
+                      "reasons": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "decision-rejected",
+                            "decision-missing",
+                            "stale-after-approval",
+                            "reading-future",
+                            "reading-same-boundary",
+                            "scope-mismatch",
+                            "scope-unresolved",
+                            "scope-marker-unknown",
+                            "holder-not-reader",
+                            "audience-not-reader",
+                            "secret-not-revealed"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                },
+                "excludedEdges": {
+                  "description": "Rule-derived explanation, recorded only.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["edgeId", "reason"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "edgeId": { "$ref": "#/$defs/id" },
+                      "reason": {
+                        "enum": [
+                          "no-revision",
+                          "revision-excluded",
+                          "reverse-direction",
+                          "beyond-max-hops",
+                          "unreachable"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "excludedEntities": {
+                  "description": "Rule-derived explanation, recorded only.",
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["entityId", "reason"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "entityId": { "$ref": "#/$defs/id" },
+                      "reason": {
+                        "enum": [
+                          "no-revision",
+                          "revision-excluded",
+                          "unreached",
+                          "beyond-max-hops"
+                        ]
+                      }
+                    }
+                  }
+                },
+                "frontier": {
+                  "description": "Rule-derived discovery count, recorded only; a runtime stops at its node limit and never reports this count.",
+                  "type": "object",
+                  "required": ["discoveredEntities", "limit"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "discoveredEntities": { "type": "integer", "minimum": 0 },
+                    "limit": { "const": 12 }
+                  }
+                }
+              }
+            },
+            "pathAttachments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["sceneId", "path"],
+                "additionalProperties": false,
+                "properties": {
+                  "sceneId": { "$ref": "#/$defs/id" },
+                  "path": { "$ref": "#/$defs/path" }
+                }
+              }
+            },
+            "addedScene": {
+              "oneOf": [
+                { "type": "null" },
+                {
+                  "type": "object",
+                  "required": ["sceneId", "path", "sceneExcerpt"],
+                  "additionalProperties": false,
+                  "properties": {
+                    "sceneId": { "$ref": "#/$defs/id" },
+                    "path": { "$ref": "#/$defs/path" },
+                    "sceneExcerpt": {
+                      "type": "object",
+                      "required": ["sceneId", "body", "canonicalUtf16Range"],
+                      "additionalProperties": false,
+                      "properties": {
+                        "sceneId": { "$ref": "#/$defs/id" },
+                        "body": { "$ref": "#/$defs/line" },
+                        "canonicalUtf16Range": {
+                          "type": "object",
+                          "required": ["start", "end"],
+                          "additionalProperties": false,
+                          "properties": {
+                            "start": { "const": 0 },
+                            "end": { "type": "integer", "minimum": 1 }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              ]
+            },
+            "blockedCandidates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["sceneId", "entityId", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "sceneId": { "$ref": "#/$defs/id" },
+                  "entityId": { "$ref": "#/$defs/id" },
+                  "reason": {
+                    "description": "Rule-derived explanation, recorded only; the Scene and Entity are compared.",
+                    "enum": ["raw-full", "ir-supplement-used", "one-slot-used"]
+                  }
+                }
+              }
+            },
+            "scenesWithoutPath": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/id" }
+            },
+            "forbiddenSceneIds": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/id" }
+            },
+            "evidence": {
+              "type": "object",
+              "required": [
+                "pathEvidenceValidity",
+                "requirements",
+                "assertions"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "pathEvidenceValidity": { "const": 1 },
+                "requirements": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "items": {
+                    "enum": [
+                      "edge-relation-evidence",
+                      "node-entity-evidence",
+                      "revision-decision-binding",
+                      "explicit-pin-association",
+                      "raw-excerpt-unchanged",
+                      "added-scene-body-anchor"
+                    ]
+                  }
+                },
+                "assertions": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/evidenceAssertion" }
+                }
+              }
+            },
+            "metrics": {
+              "type": "object",
+              "required": ["raw", "rPlusIr", "rPlusIrPlusGraph"],
+              "additionalProperties": false,
+              "properties": {
+                "raw": { "$ref": "#/$defs/metric" },
+                "rPlusIr": { "$ref": "#/$defs/metric" },
+                "rPlusIrPlusGraph": { "$ref": "#/$defs/metric" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "armWithIr": {
+      "type": "object",
+      "required": [
+        "sceneIds",
+        "orderPredeclared",
+        "irSupplementSceneId",
+        "resultKind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "sceneIds": {
+          "type": "array",
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "orderPredeclared": { "type": "boolean" },
+        "irSupplementSceneId": {
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        },
+        "resultKind": {
+          "description": "Design prediction recorded only, never compared: control IR may stay below the IR floor, and R+IR+Graph uses the observed R+IR whatever its kind.",
+          "enum": ["fused", "raw"]
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "required": ["id", "materials", "expectation", "rule"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^G-0[2-8]-[PN][0-9]+$" },
+        "materials": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
+        "expectation": { "$ref": "#/$defs/text" },
+        "rule": { "$ref": "#/$defs/text" }
+      }
+    }
+  }
+}

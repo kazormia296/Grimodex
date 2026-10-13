@@ -1,0 +1,163 @@
+{
+  "schemaVersion": "nir1-graph-expectation-review/1",
+  "reviewKind": "independent-expectation-review",
+  "reviewer": "independent-expectation-reviewer",
+  "reviewerIndependence": "A reviewer other than the fixture author, deriving every expectation from the documented rules and the fixtures before any Graph runtime observation.",
+  "graphRuntimeOutputObserved": false,
+  "baselineHead": "a153743b3f672b7274bdd748f15ef9c216dc9961",
+  "worktreeFilesAtReview": {
+    "meaning": "CP-0 files as they stood when the review ran (unchanged since 2026-10-12T13:57:11Z); the freeze binds the versions after the required changes.",
+    "files": [
+      {
+        "path": "evals/nir1-graph/manifest.v1.json",
+        "sha256": "6ba155b644ff965bff97171342f571f6ce3fe39a841ee7d03113b9ffa12626e0"
+      },
+      {
+        "path": "evals/nir1-graph/schema.v1.json",
+        "sha256": "345e084c32ce19f7e47438f89e91fb898a73a6684b2ced10de10fa585897b3fe"
+      },
+      {
+        "path": "evals/nir1-graph/README.md",
+        "sha256": "4016ca482af8dcffbd0b5b54dff349aed576f5946fcdec097ff1b58d4d4ffa86"
+      },
+      {
+        "path": "evals/nir1-g01/fixture.v1.json",
+        "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+      },
+      {
+        "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+        "sha256": "351d5687de3ce2a4260958c7632919b911f4d2a65a0001d85b2b3fac11be3bde"
+      },
+      {
+        "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+        "sha256": "11869a5056dcaf4fb3c5033936d99ea9909d50da200afc0b22e498dd95160fd7"
+      },
+      {
+        "path": "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+        "sha256": "96ca81ca6d5ed7f62dcbbc33b54bc4e644d360ed3f3a33efe3b55688d68ba8cf"
+      },
+      {
+        "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+        "sha256": "2e8a47b450ef14816e8478f03699c2cffeb98c0d7e8b25682a32af3d40079e93"
+      },
+      {
+        "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+        "sha256": "48709cdf580505bd54af5e44820af4a33bf2fa3a61e953522067a05d03e68f0b"
+      },
+      {
+        "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+        "sha256": "3aed74c034d2bcd27b9bb24b0bb25fbd4c348fa46468eac1adf79d5ac3044b70"
+      },
+      {
+        "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+        "sha256": "2951d7cbfd88a0b2442c2c4e4852f41d9cf5797d5f60334b26cb4cfd5f03e8d9"
+      },
+      {
+        "path": "scripts/quality/nir1-graph/contract.mjs",
+        "sha256": "aa61c523c16e246bf4751476a8527ce9640ca141517251114a746966e4f10627"
+      },
+      {
+        "path": "scripts/quality/nir1-graph/porter.mjs",
+        "sha256": "21c418de4ee17d6e337a7dd6fcc3791d4824394e70a13bf6802c43844ceb5026"
+      }
+    ]
+  },
+  "result": {
+    "verdict": "changes-required",
+    "cases": [
+      {
+        "id": "G-02",
+        "verdict": "approve",
+        "notes": "独立導出: 資格 Revision = r-tamsin, r-rook, r-sela（r-dace は型編集後で stale）。Orla から trained-tamsin（保存方向）と works-beside（symmetric の to 側から）だけを辿り、nodes {Orla0, Tamsin1, Sela1}、Rook→Orla は逆向きで不通、Dace は stale。pin 対応: Tamsin→tamsin-first（R+IR 外、hop1 唯一の新規候補）、Sela→attach（R+IR 内、path 付加）。R=R+IR={probe, attach}（順序未宣言、両方 Gold 0）、IR 補完なし、2<8 なので末尾に tamsin-first を 1 件追加。excerpt [0,78) は本文長と一致。nDCG@8 = 7/log2(4)/7 = 0.5、recall 1。fixture の宣言と全て一致。到達 Entity の pin 総数 2 ≤ 8 なので DSN 既定規則の N_F=8 切り詰めに依存しない。留保: IR は control への付加だけなので、S1 と同じく floor 未満で IR が空になりうる。その場合 membership は不変だが resultKind は raw になる（requiredChanges の resultKind 扱いを適用）。追加 1 件は C-body と CB-4 入力（POV/story time 未設定）に依存する。"
+      },
+      {
+        "id": "G-03",
+        "verdict": "approve",
+        "notes": "base: r-path と r-third が資格、knows-* は Revision なし。Wren→Ivy(1)→Hollis(2)、Hollis→Corin は 3hop で不通。pin: Ivy→c1（1hop path 付加）、Hollis→c2（2hop の edge 列 [has-sister, treated-by] を保持して付加）、Hollis→hollis-ward は Raw 満杯で blocked、Corin→c3/corin-shed は未到達。R=R+IR=R+IR+Graph= 8 control、指標 0/0/0、非回帰。frontier-exceeded: r-frontier 承認で hop1 に 15 件、計 16（seed 込み 17）で 12 をどちらの数え方でも超過。製品の traversal は `ensure!(hops.len() < MAX_GRAPH_NODES, NIR1_GRAPH_NODE_LIMIT)` で Err を返す構造なので「切り詰めず Graph 全体 unavailable」の解釈と整合する（出力は観測していない）。discoveredEntities=16 は規則由来の説明値で runtime 比較対象外にすべき（requiredChanges）。edge 展開 16 < 144。"
+      },
+      {
+        "id": "G-04",
+        "verdict": "changes-required",
+        "notes": "導出自体は正しい: r-lio だけが資格（rv-match は全軸 exact 一致・reader/reader）。r-kit は material worldline exact wl-alt ≠ query wl-main で scope-mismatch、r-ora は unresolved で fail closed、r-tam は marker unknown、r-sel は holder=character(Mott)。nodes {Bren0, Lio1}。Lio の pin: lio-landing（IR 補完で R+IR 内 → path 付加）、lio-market（IR が共通追加枠を使用済み → blocked）。control の pin（Kit/Ora/Tam/Sel）は未到達なので path なし。R=[control]、R+IR=[control, lio-landing]、Graph は membership/順序/excerpt を変えない。指標 recall 0.5、nDCG = (7/log2 3)/(7+3/log2 3) = 0.49664 で一致。変更要求の理由: この case の期待値全体（slotClass=IR補完済み、attach/blocked の振り分け）が「lio-landing の IR が query との cosine ≥ 0.66 で admission される」予測に依存する。S1 で同種の IR が 0.613 で floor 未満だった以上、外れた場合は Graph が lio-landing/lio-market のどちらを追加するかが runtime の Scene ID 順に依存して導出不能になる。fixture に IR 補完の admission を観測時の前提条件として明記し、不成立なら variant を blocked（Hold ではなく未測定）にする形を freeze 前に書くこと。"
+      },
+      {
+        "id": "G-05",
+        "verdict": "changes-required",
+        "notes": "導出は正しい: timeline 順に r-pia（資格）、r-xan-1 → m-xan で stale、r-xan-2（編集後に新規準備・承認で資格）、r-yara → m-yara で stale、r-zeb-1 → m-zeb で stale、r-zeb-2 は Decision なし、r-wynn は却下。nodes {Hale0, Pia1, Xan1}、edges supplied-pia/supplied-xan。pin: Xan→xan-watch（IR 補完で R+IR 内 → path 付加、Entity Evidence は現行要約 silver）、Pia→pia-ridge（IR 補完済みで blocked）、Yara/Zeb/Wynn→control は未到達。R=[control]、R+IR=[control, xan-watch]、指標 0.5/0.49664 で一致。G-04 と同じ理由で変更要求: xan-watch の IR admission が成立しないと slot 区分と追加候補（xan-watch と pia-ridge は同 hop・別 edge なので edge ID 順に依存）が導出不能になる。前提条件化と blocked 化を fixture に書くこと。「旧Epoch」の具体化（同一 material の置換前 Revision の Evidence 非返却）は妥当だが、literal な semantic epoch（restore/Scope authority 変更）は G-01〜G-08 のどれも測らないことを README に coverage gap として明記する。"
+      },
+      {
+        "id": "G-06",
+        "verdict": "approve",
+        "notes": "r-path（Maro, Ines, Bram と 2 edge）、r-bram-2、r-lute（Entity のみ）が資格。Maro→Ines(1)→Bram(2)、Maro→Lute は Codex のみで Revision なし → 橋にしない。Lute と Bram-2 は資格 Entity だが未到達。pin: Ines→c1（1hop 付加）、Bram→c2（2hop の edge 列を保持、「Maro hired Bram」へ畳まない）、Bram→bram-galley は Raw 満杯で blocked、Bram-2→c5/bram2-stable と Lute→c3/lute-docks は path なし。c4 は本文で Bram を名指しするが pin がないので対応付けない。R=R+IR=R+IR+Graph= 8 control、指標 0。同名 Entity を label で統合しないこと、Entity-only bundle が valid であること（graph-limited-binding の record 数え方）も文書と整合。宣言と全て一致。"
+      },
+      {
+        "id": "G-07",
+        "verdict": "approve",
+        "notes": "r-pell/r-rhea（rv-early=0 < 100、非秘密または開示済み）が資格。r-fenn は review=110 で reading-future、r-quin は review=S2 自身で same-boundary、r-hask は payoff=g07-late(120) > S2 で未開示、r-nim は payoff Scene なし・未確定で未開示。Rhea の fs-rhea は payoff=30 < 100 かつ confirmed で開示済み。この 3 配置は製品 read_a3_reveal_state（secret かつ非 abandoned: payoff Scene あり → order != Greater、なし → payoff_confirmed）でも同じ結論になる（Equal・未確定 payoff Scene・confirmed orphan の分岐はこの fixture では踏まない）。nodes {Vesna0, Pell1, Rhea1}。pin: Pell→pell-dock（hop1 唯一の新規候補、追加）、Rhea→attach（付加）、probe の pin は全員除外 Entity。R=R+IR={probe, attach}、追加後 nDCG 0.5、recall 1。不適格 Revision は個別に除外し Graph 全体を unavailable にしない、という読み（L7「不適格行は frontier に寄与しない」）を前提にしている点を interpretations に固定した。"
+      },
+      {
+        "id": "G-08",
+        "verdict": "approve",
+        "notes": "base-usable: r-cass/r-juno 資格、nodes {Odile0, Cass1, Juno1}、Cass→cass-attic 追加、Juno→attach 付加、excerpt [0,64)。graph-index-unusable: Juno 要約編集の commit 後・再 build 前は Graph 全体 unavailable で R+IR に戻り、無関係な Cass path も使わない（部分 Graph なし）。graph-recovered: 再 build 後は r-juno が stale で除外、Cass だけ追加、旧 generation の Juno path は attach に付かない。chronicle-index-unusable / both: control の IR 承認撤回で Chronicle unusable → Graph も停止して exact R（kind raw、baseline raw）、cass-attic 禁止。both は Chronicle 理由を優先。5 variant とも A6 の状態表どおりで一致。Juno は IR を持つ control（g08-control）に pin されず IR 文でも名指しされないので、IR の後の編集として独立条件を満たす。unusable 状態の保持は indexStateHolding のとおり blocked 扱いで良い。前提として製品既定の maintenance_enabled=0（S1 §5）を実設定で有効にしないと after-maintenance-current に到達しないことを setup 前提に書くこと。"
+      }
+    ],
+    "interpretations": [
+      {
+        "point": "README 1: G-05 の「旧Epoch」を同一 material の置換前 Revision（旧 Source/承認 epoch）として具体化",
+        "decision": "採用。置換前 Revision の Evidence（copper）が返らないことは stale 規則から導け、R+IR を保ったまま測れる唯一の形。ただし literal な semantic epoch（restore、Scope authority 変更）は全材料を同時失効させるため G-case では測れないと README に coverage gap として明記し、旧 generation の混入は G-08 が担うと書く。"
+      },
+      {
+        "point": "README 2: G-02 の「型不一致 edge」を承認後の Relation 型編集で作る",
+        "decision": "採用。seed だけの query に型条件はなく、typed-revision-material の Source token 失効で r-dace が stale になる導出は一意。通常 writer が承認済み Relation の型編集を拒否した場合は setupRefusal の refused-at-setup で寄与 0 のまま。"
+      },
+      {
+        "point": "README 3: G-03 の frontier 超過を Graph 全体の unavailable とする（切り詰めない）",
+        "decision": "採用。graph-limited-binding「limit超過 => Graph寄与0」、post-B §6.2「上限超過では partial Graph を返さない」と一致し、製品 traversal の NIR1_GRAPH_NODE_LIMIT も ensure! による Err（切り詰めではない）。発見数を 2 と 16 にして seed 込み/抜きの数え方に依存させた点も妥当。上位 12 件に切り詰める実装が現れたら Hold であり、規則を観測後に読み替えない。"
+      },
+      {
+        "point": "README 4: G-07 の開示済み secret（payoff 確定かつ S2 より前）を許可",
+        "decision": "採用。A6「秘密は既存 reveal 規則の範囲」の正本は read_a3_reveal_state で、validator の条件はその保守的な部分集合。G-07 の 3 配置では結論が一致する。validator を製品規則（payoff Scene あり → S2 以前（Equal 含む）で開示、confirmed 不要／Scene なし → confirmed なら開示）に揃え、分岐を踏む試験を contract.test に足す。A2 表の「secret は reveal 後も初回不可」は Chronicle IR の allow_secrets=false の規則で A3 Graph 材料には適用しないと README に書く。"
+      },
+      {
+        "point": "README 5: G-04 の「未対応制約」を character holder の例とする",
+        "decision": "条件付き採用。character holder は A6 の holder/audience AND 条件の不一致であり、literal な「未対応制約」は unresolved(unsupported-axis 等) に近い。fixture は変えず、README で「未対応制約は rv-unresolved の unresolved 制約で、holder は knowledge holder 不一致の追加負例」と対応を明記する。"
+      },
+      {
+        "point": "README 6: Raw は control だけ、IR は control への付加と予測（dense は静的に検証できない）",
+        "decision": "S1 を踏まえ修正が要る。control への IR は S1 と同様に floor(0.66) 未満で空になりうるので「IR は control に付く」は前提にしない。resultKind(fused/raw) は runtime 比較対象から外し記録のみとする。Raw の membership（補完可能 2 件、Raw 満杯 8 件、IR 補完済み 1 件）と ir-only Scene の IR admission は観測時に確かめる前提条件とし、不成立なら Hold ではなく blocked（未測定）にする。"
+      },
+      {
+        "point": "README 7: Gold =「S2 時点で読者に開示されている情報で、答えの人物が登場する Scene」",
+        "decision": "採用。G-01 の定義と揃い、pin だけ・名前だけ・問いの写しは Gold 0。G-04/G-05 の第二 Gold(2) は answer Entity が登場する別 Scene で、追加枠が使えないことを測る負例として機能する。"
+      },
+      {
+        "point": "README 8: IR と Graph 側 mutation の独立（IR を最後に作る、G-08 は Juno を IR 材料から隔離）",
+        "decision": "採用。validator が pin と名指しを検査している。IR recipe が Codex を入力に含むかは未確定なので、G-08 で Juno 編集が Chronicle を unusable にしたら variant を blocked にする扱いで良い。"
+      },
+      {
+        "point": "追加: K1 既定規則（tuple 順で先頭 8 件 → 先頭から資格判定 → 付加と追加 1 枠）の適用",
+        "decision": "全 fixture で到達 Entity の pin 総数（不適格 Scene への pin を含む）が ≤ 8 なので N_F=8 の切り詰めは効かず、追加候補は最小 hop 1 件で tuple 順と一致する。DSN §2.5 が推奨する「両規則で結果が分かれる fixture」は K1 が逸脱なしで確認済みのため含めないと決め、validator に「pin 候補 ≤ 8」の検査を加えて独立性を機械的に保証する。"
+      },
+      {
+        "point": "追加: 不適格 Revision の扱い",
+        "decision": "不適格 Revision（Scope 不一致、未開示 secret 等）は個別に除外し Graph 全体を unavailable にしない（L7「不適格行は read/admission を消費するが frontier に寄与しない」）。製品の Disclosure read が Unavailable を返しても個別除外と読む。これを README に固定する。"
+      },
+      {
+        "point": "追加: runtime 比較対象",
+        "decision": "比較するのは arms の membership/順序、graph.status、nodes(hop)、edgeIds、pathAttachments、addedScene、blockedCandidates、forbiddenSceneIds、metrics。excluded*.reason(s)、frontier の数値、resultKind は規則由来の説明で比較対象外。reasonClass は runtime の reason allowlist との対応表を観測前に manifest に固定するか、固定できなければ status だけを比較する。"
+      }
+    ],
+    "requiredChanges": [
+      "【前提条件と blocked の導入】schema/manifest/各 fixture に観測時の前提条件（preconditions）を追加し、不成立時は variant を `blocked:<precondition>` として記録し Graph の期待値を評価しない形にする（Hold と区別し、macro 集計から除外、期待値は観測後に変えない）。前提条件: (a) raw-membership: R が宣言どおり（補完可能=control 2 件、Raw満杯=control ちょうど 8 件、IR補完済み=control 1 件）。(b) ir-supplement-admission: ir-only Scene の IR が floor 以上で admission され R+IR に入る（G-04 lio-landing、G-05 xan-watch）。(c) index-state-holding（G-08 unusable variant）。(d) b-sealed-binding: B の sealed generation を製品経路で確立できること（S1 §5 のとおり現行コードに製品経路がなく CP-2a 等に依存）。(e) maintenance 有効化を実設定で行い after-maintenance-current に到達できること。(f) cb4-inputs: fixture は POV/story time を設定しないので、CB-4 が明示 POV や story position を要求する場合は追加 1 件の sub-expectation だけを blocked にし、DTO と path 付加は測る。",
+      "【IR 予測への依存の切り離し】S1 の結果どおり control への IR は floor 未満で空になりうる。全 fixture の `rPlusIr.resultKind` を runtime 比較対象から外して記録のみとし（manifest に runtimeComparedFields を機械可読で持たせる）、README「解釈を要した点 6」を「IR は control に付くとは仮定しない。R+IR+Graph の基底は観測した R+IR をその kind(raw/fused) にかかわらず用いる」に改める。CP-3a が raw 基底でも Graph-only 追加を行う必要があることを依存として記録する。",
+      "【IR補完済み class の救済（任意だが推奨）】G-04/G-05 の ir-only IR が admission されないと IR補完済み class が 1 件も測れない。freeze 前に、pin 済み model と ordered-json/1 の statement 直列化だけを使う model-only の cosine probe（Related Scenes runtime・Graph を動かさない）で ir-only IR の floor 通過と Raw 予測を確かめ、必要なら IR 要約を改版してから freeze することを integrator が observationPolicy の範囲内と判断した場合に限り行い、probe の実施と結果を freeze record に残す。行わない場合は、IR補完済み class の全 variant が blocked になったとき CP-4 を PASS にできない（l6-l9「後二群は membership/順序/excerpt 不変を要求」が未検証）と manifest に明記する。",
+      "【P3-1 secret/reveal】README の規則表と「解釈を要した点 4」に正本 read_a3_reveal_state を引用し、validator の revealed 条件を製品規則（payoff Scene あり → S2 以前（Equal 含む）、confirmed 不要／Scene なし → payoffConfirmed）に揃える。G-07 の結論は変わらない。分岐（payoff==S2、未確定 payoff が S2 前、confirmed orphan）を contract.test.mjs に追加する。A2 表の allow_secrets=false 行は IR query context の規則で A3 Graph 材料に適用しないと書く。",
+      "【P3-2 比較対象の明記】README「fixture の読み方」と manifest に、runtime と比較する field の一覧と、excluded*.reason(s)・frontier・resultKind が規則由来の説明で比較対象外であることを機械可読に持たせる。graph.reasonClass は runtime reason allowlist との対応表を観測前に固定するか、固定できなければ status のみ比較とする。",
+      "【P3-3 freeze と manifest の整合】validateFreeze で freeze がある場合は manifest.status=frozen-after-independent-expectation-review かつ independentExpectationReview.status=reviewed を要求し、freeze がない場合は frozen 状態を拒否する（両方向の負例を contract.test に追加）。freeze record に schema.v1.json と README.md の sha256 も束縛する（現状は manifest と fixture だけで、解釈を記した README と schema の事後変更を検出できない）。",
+      "【P3-4 未実施作業の記録】CP-0 の PR 本文と計画の作業記録に、計画 CP-0 節 4 点目（静かな窓での R/R+IR baseline 再計測、PR-P receipt 参照）と S1 harness の取り込みを CR-REC または CP-4 へ移す旨、S1 §5 の「B sealed binding の製品経路が無い」が CP-4 の前提であること、merge 前に grimodex-impact-gate Light（pnpm eval:impact -- --run）を実行して receipt を残すことを明記する。",
+      "【K1 既定規則の明示】README「期待値を導いた規則」に DSN §2.2〜§2.3 の既定規則（tuple 順で先頭 8 件 → 先頭から資格判定 → path 付加と追加 1 枠、tuple=(hop, edge ID 列, 到達 Entity ID, Scene ID) の UTF-8 byte 順）を出典付きで追加し、全 fixture が到達 Entity の pin 総数 ≤ 8 で N_F 切り詰めに依存しないこと、DSN §2.5 推奨の規則判別 fixture を含めない決定を書く。validator に「到達 Entity の pin 候補（不適格 Scene への pin を含む）≤ 8」の検査を追加する。",
+      "【README の解釈追記】(i) 不適格 Revision は個別除外で Graph 全体を unavailable にしない。(ii) G-04 の「未対応制約」は rv-unresolved が担い、character holder は holder/audience AND 条件の追加負例。(iii) G-05 の literal な semantic epoch は G-case の coverage 外。(iv) G-08 と全 case の setup 前提として maintenance の実設定有効化を setupOrder に追記する。",
+      "【freeze の手順】上記を反映した後、manifest と 7 fixture の sha256 を取り直し、本レビュー記録（この結果）とその sha256、reviewer、baselineHead=a153743b、graphRuntimeObservedBeforeFreeze=false を freeze.v1.json に置く。fixture 本体（query、本文、Scene、Entity、Relation、pin、Scope、伏線、Revision/Decision、mutation、setupTimeline、Gold、arms、graph、path、指標）は本レビューで規則どおりと確認したので、前提条件 field の追加以外は変更しない。"
+    ]
+  }
+}

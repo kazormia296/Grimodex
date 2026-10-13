@@ -1,0 +1,616 @@
+{
+  "schemaVersion": "nir1-graph-case/1",
+  "status": "predeclared-design-fixture",
+  "caseId": "G-07",
+  "fixtureId": "nir1-g07-reading-before-reveal/1",
+  "sourceDocument": "docs/plans/nir1-l6-l9-execution-plan.md",
+  "sourceSection": "G-01〜G-08 表（G-07）",
+  "designReferences": [
+    "docs/plans/nir1-l6-l9-execution-plan.md#L7: Entity/Relation入力とGraph",
+    "docs/plans/nir1-l6-l9-execution-plan.md#graph-limited-binding",
+    "docs/plans/nir1-c-scene-connection-candidate.md#6. 候補選択・融合の事前規則",
+    "docs/plans/nir1-c-scene-connection-candidate.md#7. G-01 fixture提案: 出力観察前の固定v1",
+    "docs/plans/nir1-post-b-execution-plan.md#7. C-productとP：Related Scenes統合",
+    "docs/plans/narrative-ir-nir1-implementation-plan.md#A6に含める後続の材料開示・Graph authority"
+  ],
+  "observationPolicy": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result.",
+  "language": "en",
+  "caseClass": {
+    "queryClass": "strict reading-before-S2／reveal・secret境界",
+    "expectedJudgement": "reading-before-S2を満たす材料だけを許可",
+    "positive": "pre-S2に読了した開示済みqualified material",
+    "negative": "at/after-S2のfuture／same-boundary、reveal前secret"
+  },
+  "slotClass": "supplementable",
+  "goldDefinition": "Gold is defined by what the reader legitimately knows at S2: Gold 3 marks the earlier Scene in which a witness questioned by the selected detective Vesna appears, using only material read strictly before S2 and not hidden by an unrevealed secret. Fenn is questioned only after S2, Quin at S2 itself, and Hask and Nim are unrevealed secrets; no eligible Scene shows them.",
+  "answerEntityIds": ["g07-pell", "g07-rhea"],
+  "query": {
+    "sceneId": "g07-query",
+    "readingOrder": 100,
+    "title": "Open question",
+    "body": "Which earlier scene shows a witness my chosen detective questioned?"
+  },
+  "scenes": [
+    {
+      "id": "g07-rv-early",
+      "readingOrder": 0,
+      "title": "Empty chairs",
+      "body": "Rain streaked a window above a row of empty chairs.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g07-probe",
+      "readingOrder": 10,
+      "title": "Post slip",
+      "body": "Four dock workers saw a slip nailed to a post: Which earlier scene shows a witness my chosen detective questioned? None of them answered.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g07-attach",
+      "readingOrder": 20,
+      "title": "Ledger slip",
+      "body": "A clerk found a slip tucked in a ledger: Which earlier scene shows a witness my chosen detective questioned? The clerk left it blank.",
+      "gold": 0,
+      "role": "control"
+    },
+    {
+      "id": "g07-rhea-reveal",
+      "readingOrder": 30,
+      "title": "Floorboards",
+      "body": "A clerk read aloud from a second toll ledger found beneath loose floorboards.",
+      "gold": 0,
+      "role": "payoff"
+    },
+    {
+      "id": "g07-pell-dock",
+      "readingOrder": 40,
+      "title": "Customs steps",
+      "body": "Pell swept broken shells off the customs steps and kept his eyes down.",
+      "gold": 3,
+      "role": "answer"
+    },
+    {
+      "id": "g07-rv-future",
+      "readingOrder": 110,
+      "title": "Moored barge",
+      "body": "Mist hid a barge moored under a low bridge.",
+      "gold": 0,
+      "role": "review"
+    },
+    {
+      "id": "g07-late",
+      "readingOrder": 120,
+      "title": "Stolen seal",
+      "body": "A tailor found silk stamped with a stolen seal.",
+      "gold": 0,
+      "role": "payoff"
+    }
+  ],
+  "eligibleSceneIds": [
+    "g07-rv-early",
+    "g07-probe",
+    "g07-attach",
+    "g07-rhea-reveal",
+    "g07-pell-dock"
+  ],
+  "scope": {
+    "registry": {
+      "timelineRefs": ["tl-main"],
+      "worldlineRefs": ["wl-main"],
+      "narrativeLayerRefs": ["layer-story"]
+    },
+    "default": {
+      "marker": "explicit",
+      "queryIdentity": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "materialConstraint": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "tl-main"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "wl-main"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "layer-story"
+        }
+      },
+      "knowledgeHolder": {
+        "kind": "reader"
+      },
+      "audience": {
+        "kind": "reader"
+      }
+    },
+    "overrides": {}
+  },
+  "entities": [
+    {
+      "id": "g07-vesna",
+      "kind": "character",
+      "label": "Vesna",
+      "summary": "Vesna is a river-port detective."
+    },
+    {
+      "id": "g07-pell",
+      "kind": "character",
+      "label": "Pell",
+      "summary": "Pell sweeps the customs house."
+    },
+    {
+      "id": "g07-rhea",
+      "kind": "character",
+      "label": "Rhea",
+      "summary": "Rhea keeps the toll ledger."
+    },
+    {
+      "id": "g07-fenn",
+      "kind": "character",
+      "label": "Fenn",
+      "summary": "Fenn rows the night barge."
+    },
+    {
+      "id": "g07-quin",
+      "kind": "character",
+      "label": "Quin",
+      "summary": "Quin lights the harbor lamps."
+    },
+    {
+      "id": "g07-hask",
+      "kind": "character",
+      "label": "Hask",
+      "summary": "Hask buys stolen silk."
+    },
+    {
+      "id": "g07-nim",
+      "kind": "character",
+      "label": "Nim",
+      "summary": "Nim forges seals."
+    }
+  ],
+  "relations": [
+    {
+      "id": "g07-questioned-pell",
+      "fromEntityId": "g07-vesna",
+      "toEntityId": "g07-pell",
+      "type": "questioned",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g07-questioned-rhea",
+      "fromEntityId": "g07-vesna",
+      "toEntityId": "g07-rhea",
+      "type": "questioned",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g07-questioned-fenn",
+      "fromEntityId": "g07-vesna",
+      "toEntityId": "g07-fenn",
+      "type": "questioned",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g07-questioned-quin",
+      "fromEntityId": "g07-vesna",
+      "toEntityId": "g07-quin",
+      "type": "questioned",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g07-questioned-hask",
+      "fromEntityId": "g07-vesna",
+      "toEntityId": "g07-hask",
+      "type": "questioned",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g07-questioned-nim",
+      "fromEntityId": "g07-vesna",
+      "toEntityId": "g07-nim",
+      "type": "questioned",
+      "direction": "directed",
+      "authorDeclared": true
+    }
+  ],
+  "manualSeed": {
+    "entityId": "g07-vesna",
+    "manualSeed": true
+  },
+  "pins": [
+    {
+      "sceneId": "g07-pell-dock",
+      "entryId": "g07-pell",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g07-attach",
+      "entryId": "g07-rhea",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g07-probe",
+      "entryId": "g07-fenn",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g07-probe",
+      "entryId": "g07-quin",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g07-probe",
+      "entryId": "g07-hask",
+      "source": "scene_codex_pins"
+    },
+    {
+      "sceneId": "g07-probe",
+      "entryId": "g07-nim",
+      "source": "scene_codex_pins"
+    }
+  ],
+  "foreshadows": [
+    {
+      "id": "g07-fs-rhea",
+      "title": "Second ledger",
+      "secret": true,
+      "payoffSceneId": "g07-rhea-reveal",
+      "payoffConfirmed": true,
+      "abandoned": false,
+      "linkedEntityIds": ["g07-rhea"]
+    },
+    {
+      "id": "g07-fs-hask",
+      "title": "Stolen silk",
+      "secret": true,
+      "payoffSceneId": "g07-late",
+      "payoffConfirmed": true,
+      "abandoned": false,
+      "linkedEntityIds": ["g07-hask"]
+    },
+    {
+      "id": "g07-fs-nim",
+      "title": "Forged seals",
+      "secret": true,
+      "payoffSceneId": null,
+      "payoffConfirmed": false,
+      "abandoned": false,
+      "linkedEntityIds": ["g07-nim"]
+    }
+  ],
+  "qualifiedIr": [
+    {
+      "sceneId": "g07-probe",
+      "summary": "Dock workers saw an unanswered slip asking which witness a detective had questioned.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    }
+  ],
+  "revisions": [
+    {
+      "id": "g07-r-pell",
+      "reviewSceneId": "g07-rv-early",
+      "entityIds": ["g07-vesna", "g07-pell"],
+      "relationIds": ["g07-questioned-pell"],
+      "decision": "approved"
+    },
+    {
+      "id": "g07-r-rhea",
+      "reviewSceneId": "g07-rv-early",
+      "entityIds": ["g07-vesna", "g07-rhea"],
+      "relationIds": ["g07-questioned-rhea"],
+      "decision": "approved"
+    },
+    {
+      "id": "g07-r-fenn",
+      "reviewSceneId": "g07-rv-future",
+      "entityIds": ["g07-vesna", "g07-fenn"],
+      "relationIds": ["g07-questioned-fenn"],
+      "decision": "approved"
+    },
+    {
+      "id": "g07-r-quin",
+      "reviewSceneId": "g07-query",
+      "entityIds": ["g07-vesna", "g07-quin"],
+      "relationIds": ["g07-questioned-quin"],
+      "decision": "approved"
+    },
+    {
+      "id": "g07-r-hask",
+      "reviewSceneId": "g07-rv-early",
+      "entityIds": ["g07-vesna", "g07-hask"],
+      "relationIds": ["g07-questioned-hask"],
+      "decision": "approved"
+    },
+    {
+      "id": "g07-r-nim",
+      "reviewSceneId": "g07-rv-early",
+      "entityIds": ["g07-vesna", "g07-nim"],
+      "relationIds": ["g07-questioned-nim"],
+      "decision": "approved"
+    }
+  ],
+  "mutations": [],
+  "setupTimeline": [
+    {
+      "kind": "revision",
+      "id": "g07-r-pell"
+    },
+    {
+      "kind": "revision",
+      "id": "g07-r-rhea"
+    },
+    {
+      "kind": "revision",
+      "id": "g07-r-fenn"
+    },
+    {
+      "kind": "revision",
+      "id": "g07-r-quin"
+    },
+    {
+      "kind": "revision",
+      "id": "g07-r-hask"
+    },
+    {
+      "kind": "revision",
+      "id": "g07-r-nim"
+    },
+    {
+      "kind": "qualified-ir",
+      "id": "g07-ir"
+    }
+  ],
+  "variants": [
+    {
+      "id": "base",
+      "description": "Steady state with reading-order and reveal boundaries fixed before any Revision is prepared.",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      },
+      "preconditions": [
+        {
+          "id": "b-sealed-binding",
+          "scope": "variant"
+        },
+        {
+          "id": "maintenance-enabled",
+          "scope": "variant"
+        },
+        {
+          "id": "raw-membership",
+          "scope": "variant"
+        },
+        {
+          "id": "cb4-inputs",
+          "scope": "added-scene",
+          "sceneId": "g07-pell-dock"
+        }
+      ],
+      "expectations": {
+        "arms": {
+          "raw": {
+            "sceneIds": ["g07-probe", "g07-attach"],
+            "orderPredeclared": false
+          },
+          "rPlusIr": {
+            "sceneIds": ["g07-probe", "g07-attach"],
+            "orderPredeclared": false,
+            "irSupplementSceneId": null,
+            "resultKind": "fused"
+          },
+          "rPlusIrPlusGraph": {
+            "baseline": "rPlusIr",
+            "sceneIds": ["g07-probe", "g07-attach", "g07-pell-dock"],
+            "appendedSceneId": "g07-pell-dock",
+            "orderPredeclared": false
+          }
+        },
+        "graph": {
+          "status": "available",
+          "reasonClass": null,
+          "nodes": [
+            {
+              "entityId": "g07-vesna",
+              "hop": 0
+            },
+            {
+              "entityId": "g07-pell",
+              "hop": 1
+            },
+            {
+              "entityId": "g07-rhea",
+              "hop": 1
+            }
+          ],
+          "edgeIds": ["g07-questioned-pell", "g07-questioned-rhea"],
+          "qualifiedRevisionIds": ["g07-r-pell", "g07-r-rhea"],
+          "excludedRevisions": [
+            {
+              "revisionId": "g07-r-fenn",
+              "reasons": ["reading-future"]
+            },
+            {
+              "revisionId": "g07-r-quin",
+              "reasons": ["reading-same-boundary"]
+            },
+            {
+              "revisionId": "g07-r-hask",
+              "reasons": ["secret-not-revealed"]
+            },
+            {
+              "revisionId": "g07-r-nim",
+              "reasons": ["secret-not-revealed"]
+            }
+          ],
+          "excludedEdges": [
+            {
+              "edgeId": "g07-questioned-fenn",
+              "reason": "revision-excluded"
+            },
+            {
+              "edgeId": "g07-questioned-quin",
+              "reason": "revision-excluded"
+            },
+            {
+              "edgeId": "g07-questioned-hask",
+              "reason": "revision-excluded"
+            },
+            {
+              "edgeId": "g07-questioned-nim",
+              "reason": "revision-excluded"
+            }
+          ],
+          "excludedEntities": [
+            {
+              "entityId": "g07-fenn",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g07-quin",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g07-hask",
+              "reason": "revision-excluded"
+            },
+            {
+              "entityId": "g07-nim",
+              "reason": "revision-excluded"
+            }
+          ]
+        },
+        "pathAttachments": [
+          {
+            "sceneId": "g07-attach",
+            "path": {
+              "seedEntityId": "g07-vesna",
+              "edgeIds": ["g07-questioned-rhea"],
+              "targetEntityId": "g07-rhea",
+              "hop": 1
+            }
+          }
+        ],
+        "addedScene": {
+          "sceneId": "g07-pell-dock",
+          "path": {
+            "seedEntityId": "g07-vesna",
+            "edgeIds": ["g07-questioned-pell"],
+            "targetEntityId": "g07-pell",
+            "hop": 1
+          },
+          "sceneExcerpt": {
+            "sceneId": "g07-pell-dock",
+            "body": "Pell swept broken shells off the customs steps and kept his eyes down.",
+            "canonicalUtf16Range": {
+              "start": 0,
+              "end": 70
+            }
+          }
+        },
+        "blockedCandidates": [],
+        "scenesWithoutPath": ["g07-probe"],
+        "forbiddenSceneIds": [],
+        "evidence": {
+          "pathEvidenceValidity": 1,
+          "requirements": [
+            "edge-relation-evidence",
+            "node-entity-evidence",
+            "revision-decision-binding",
+            "explicit-pin-association",
+            "raw-excerpt-unchanged",
+            "added-scene-body-anchor"
+          ],
+          "assertions": []
+        },
+        "metrics": {
+          "raw": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIr": {
+            "recallAt8": 0,
+            "ndcgAt8": 0
+          },
+          "rPlusIrPlusGraph": {
+            "recallAt8": 1,
+            "ndcgAt8": 0.5
+          }
+        }
+      }
+    }
+  ],
+  "positive": [
+    {
+      "id": "G-07-P1",
+      "materials": ["g07-r-pell", "g07-questioned-pell", "g07-pell-dock"],
+      "expectation": "Non-secret material bound to a review Scene strictly before S2 qualifies; Pell's pinned Scene is the single appended Scene.",
+      "rule": "implementation plan A6: strict reading-before-S2."
+    },
+    {
+      "id": "G-07-P2",
+      "materials": ["g07-r-rhea", "g07-fs-rhea", "g07-attach"],
+      "expectation": "A secret whose confirmed payoff Scene is strictly before S2 is already disclosed to the reader; Rhea's path is attached to the existing R+IR Scene g07-attach.",
+      "rule": "l6-l9 G-07 positive: pre-S2に読了した開示済みqualified material; A6: 秘密は既存reveal規則の範囲で扱う."
+    }
+  ],
+  "negative": [
+    {
+      "id": "G-07-N1",
+      "materials": ["g07-r-fenn", "g07-rv-future", "g07-fenn", "g07-probe"],
+      "expectation": "Material read only after S2 (future) contributes nothing; no path reaches g07-probe.",
+      "rule": "l6-l9 G-07 negative: at/after-S2のfuture."
+    },
+    {
+      "id": "G-07-N2",
+      "materials": ["g07-r-quin", "g07-quin", "g07-probe"],
+      "expectation": "Material bound to S2 itself is not strictly before S2 (same boundary) and contributes nothing.",
+      "rule": "l6-l9 G-07 negative: same-boundary; strict reading-before-S2."
+    },
+    {
+      "id": "G-07-N3",
+      "materials": ["g07-r-hask", "g07-fs-hask", "g07-hask", "g07-probe"],
+      "expectation": "A secret whose payoff is after S2 is not yet revealed; Hask contributes nothing.",
+      "rule": "l6-l9 G-07 negative: reveal前secret."
+    },
+    {
+      "id": "G-07-N4",
+      "materials": ["g07-r-nim", "g07-fs-nim", "g07-nim", "g07-probe"],
+      "expectation": "A secret without any payoff anchor is never treated as revealed; Nim contributes nothing.",
+      "rule": "A6 reveal rule: an unknown or missing reveal state denies."
+    }
+  ],
+  "measurementBoundary": {
+    "contractBaseline": "The isolated validator recomputes Graph traversal, Scene association, one-slot fusion and scorer arithmetic from these predeclared rows; it never runs Raw, IR or Graph.",
+    "runtimeSetup": "Requires normal Scene/Scope/registry/Entity/Relation/pin/foreshadow writers, normal Chronicle provider/Proposal/child/Decision setup for qualifiedIr, and the normal typed Entity/Relation prepare plus Human Decision route for every revision. Runtime IDs issued by writers are mapped to these logical IDs in a setup receipt; Gold never stores runtime IDs.",
+    "setupOrder": "Create the project and every Scene (including S2) in reading order; then Codex entities and relations; then the Scope registry and every explicit Scene Scope; then foreshadows, foreshadow Codex links and pins. Before the first setupTimeline step, enable maintenance through the real runtime-policy setting (the product default is maintenance_enabled=0; never through SQL or injected state; precondition maintenance-enabled). Then follow setupTimeline in order: each revision is prepared against its review Scene and receives its declared decision, each mutation uses its normal writer, and the qualified-ir step creates every qualifiedIr through the normal fixture provider/Proposal/child/Decision route with optional story inputs disabled only through real planner settings. Do not change tree order, registry or Scene Scope after the first typed revision is prepared. Then wait for the variant measurementPoint, record whether each declared precondition holds, and compare only the expectations that no unmet precondition blocks.",
+    "graphConnection": "The appended Graph-only Scene needs target-Scene body disclosure (C-body). While that authority is Hold, the predeclared appended Scene cannot be returned and this case stays Hold; path attachments to existing R+IR Scenes do not depend on it. The fixture sets no explicit POV or story position: if CB-4 requires either to judge the appended Scene, only the appended-Scene sub-expectation is blocked:cb4-inputs, and the Graph DTO, path attachments and the unchanged R+IR prefix are still compared. Because control IR may stay below the IR floor, CP-3a must also append on a raw R+IR basis.",
+    "goldOrigin": "Predeclared for this case before any Graph runtime observation; not selected from observed output and not a human author measurement.",
+    "setupRefusal": "If a normal writer refuses to prepare or approve a negative material, record refused-at-setup; that negative still expects Graph contribution 0. A refused positive material makes the case Hold. A declared precondition that does not hold (such as a Raw membership or an ir-only IR admission that differs from the arms) records the affected variant as blocked:<precondition> instead; any other R or R+IR difference from the arms is Hold. Nothing is tuned and rerun.",
+    "rawPrediction": "R is predicted as the two control Scenes that quote S2 verbatim, in an order that is not predeclared; both have Gold 0, so metrics do not depend on that order. Every other Scene shares no Raw-visible token with S2. This prediction is the precondition raw-membership: a different Raw membership records the variant as blocked:raw-membership, not Hold. IR is not assumed to attach to a control Scene; the R+IR result kind is recorded only."
+  }
+}

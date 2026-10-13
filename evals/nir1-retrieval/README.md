@@ -39,6 +39,13 @@ executing a model. Missing resources and incomplete measurements produce a
 `blocked` receipt and a nonzero exit. `baseline-complete` describes Raw only; it
 does not award IR, Graph, Packing, technical product-path or author-value acceptance.
 
+For the later R+IR+Graph comparison these 24 queries take no manual seed: Graph
+is not requested, contributes nothing, and R+IR+Graph must equal R+IR. The
+declaration lives in [`../nir1-graph/`](../nir1-graph/README.md); the manifest
+scope stays "not Graph". The harness records the R+IR+Graph arm as an
+unavailable, not-wired scaffold and refuses `--graph-arm` values other than
+`not-wired`; it never passes.
+
 The evaluation renderer imports the actual `fetchRelatedPastScenes`, query
 builder, selector, Drizzle reader and preload APIs. It creates each case through
 canonical typed project/tree writers in an independent database, with only that
