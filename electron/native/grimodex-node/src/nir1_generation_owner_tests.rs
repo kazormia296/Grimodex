@@ -633,6 +633,7 @@ impl OwnerFixture {
 
     fn admission_budget(&self) -> Nir1AdmissionSqlBudget {
         Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), Arc::new(|| true))
+            .for_untimed_test()
     }
 }
 
@@ -1505,6 +1506,9 @@ fn o10_owner_operations_fail_typed_and_the_connection_is_reused() {
     let fixture = OwnerFixture::new();
     let submission = fixture.accept(0, "o10");
     let owner = fixture.owner(0, &submission).expect("owner");
+    // This test examines the per-operation limit, and that the mutex limit
+    // ends a wait before it: the owner keeps the plan's per-operation limit.
+    owner.hooks().test_hooks().examine_time();
     // The request carries a Scene binding read from the database, so it is
     // built before the connection mutex is held.
     let request = fixture.request(&owner, &submission);
@@ -1536,6 +1540,7 @@ fn o10_owner_operations_fail_typed_and_the_connection_is_reused() {
         })
         .expect("slow insert trigger");
     let owner = fixture.owner(0, &submission).expect("owner");
+    owner.hooks().test_hooks().examine_time();
     let request = fixture.request(&owner, &submission);
     assert_eq!(
         owner.create(request).err(),

@@ -2250,8 +2250,23 @@ mod bounded {
         Arc::new(|| true)
     }
 
-    pub(super) fn admission() -> Nir1AdmissionSqlBudget {
+    /// The plan defaults (mutex 100 ms, busy 100 ms, per-op 250 ms), for a test
+    /// of the per-operation limit or of which limit takes effect first.
+    fn production_admission() -> Nir1AdmissionSqlBudget {
         Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), open_probe())
+    }
+
+    /// The admission budget of a test that does not examine the per-operation
+    /// limit: only that limit is widened (see `for_untimed_test`), so a test of
+    /// the mutex or busy limit may use it.
+    pub(super) fn admission() -> Nir1AdmissionSqlBudget {
+        production_admission().for_untimed_test()
+    }
+
+    /// The pinned budget of a test that does not examine the per-operation
+    /// limit.
+    pub(super) fn pinned_budget() -> Nir1PinnedSqlBudget {
+        Nir1PinnedSqlBudget::new().for_untimed_test()
     }
 
     pub(super) fn now_request() -> NewAttempt {
@@ -2271,7 +2286,17 @@ mod bounded {
         workspace: &ActiveWorkspaceSnapshot,
         id: &str,
     ) -> std::result::Result<StoredAttempt, Nir1GenerationStoreError> {
-        create_attempt_with_id_bounded(workspace, id, now_request(), &admission(), &mut no_check())
+        create_with(workspace, id, &admission())
+    }
+
+    /// `create` under an explicit budget, for a test of the per-operation limit
+    /// or of which limit takes effect first.
+    fn create_with(
+        workspace: &ActiveWorkspaceSnapshot,
+        id: &str,
+        budget: &Nir1AdmissionSqlBudget,
+    ) -> std::result::Result<StoredAttempt, Nir1GenerationStoreError> {
+        create_attempt_with_id_bounded(workspace, id, now_request(), budget, &mut no_check())
     }
 
     pub(super) fn expected(attempt: &StoredAttempt) -> Nir1ExpectedAttempt {
@@ -2297,7 +2322,7 @@ mod bounded {
             &expected(attempt),
             claim,
             completion,
-            &Nir1PinnedSqlBudget::new(),
+            &pinned_budget(),
         )
     }
 
@@ -2339,7 +2364,8 @@ mod bounded {
         {
             let _held = db.lock().expect("hold the connection mutex");
             let started = Instant::now();
-            let error = create(&snapshot, &id).expect_err("held mutex");
+            let error =
+                create_with(&snapshot, &id, &production_admission()).expect_err("held mutex");
             let elapsed = started.elapsed();
             assert_failure(
                 &error,
@@ -2427,7 +2453,8 @@ mod bounded {
         install_slow_insert_trigger(db.db());
         let id = test_digest("d3-attempt");
         let started = Instant::now();
-        let error = create(&snapshot, &id).expect_err("per-op timeout");
+        let error =
+            create_with(&snapshot, &id, &production_admission()).expect_err("per-op timeout");
         let elapsed = started.elapsed();
         assert_failure(
             &error,
@@ -2544,14 +2571,9 @@ mod bounded {
             error.claim_written_at_ms().is_some(),
             "claim Unknown has its time"
         );
-        let reread = read_attempt_exact_bounded(
-            &snapshot,
-            &vetoed.id,
-            budget(),
-            &Nir1PinnedSqlBudget::new(),
-        )
-        .expect("reread")
-        .expect("row");
+        let reread = read_attempt_exact_bounded(&snapshot, &vetoed.id, budget(), &pinned_budget())
+            .expect("reread")
+            .expect("row");
         assert!(
             reread.claimed_at_ms.is_none(),
             "the vetoed claim is not durable"
@@ -2566,20 +2588,15 @@ mod bounded {
         )
         .expect_err("error after COMMIT");
         assert_eq!(error.commit(), Nir1CommitState::Unknown);
-        let reread = read_attempt_exact_bounded(
-            &snapshot,
-            &applied.id,
-            budget(),
-            &Nir1PinnedSqlBudget::new(),
-        )
-        .expect("reread")
-        .expect("row");
+        let reread = read_attempt_exact_bounded(&snapshot, &applied.id, budget(), &pinned_budget())
+            .expect("reread")
+            .expect("row");
         assert_eq!(reread.claimed_at_ms, error.claim_written_at_ms());
         assert!(read_attempt_exact_bounded(
             &snapshot,
             &test_digest("never-created"),
             budget(),
-            &Nir1PinnedSqlBudget::new(),
+            &pinned_budget(),
         )
         .expect("confirmed absence")
         .is_none());
@@ -2802,26 +2819,17 @@ mod bounded {
                     &OutputObserver::new().finish(Completion::Cancelled),
                     None,
                     1_000,
-                    &Nir1PinnedSqlBudget::new(),
+                    &pinned_budget(),
                 )
                 .err(),
             );
             assert_refused(
-                recover_claimed_attempt_bounded(
-                    &snapshot,
-                    &expected(&attempt),
-                    &Nir1PinnedSqlBudget::new(),
-                )
-                .err(),
+                recover_claimed_attempt_bounded(&snapshot, &expected(&attempt), &pinned_budget())
+                    .err(),
             );
             assert_refused(
-                read_attempt_exact_bounded(
-                    &snapshot,
-                    &attempt.id,
-                    budget(),
-                    &Nir1PinnedSqlBudget::new(),
-                )
-                .err(),
+                read_attempt_exact_bounded(&snapshot, &attempt.id, budget(), &pinned_budget())
+                    .err(),
             );
             // The connection mutex is held by this very scope: a writer that
             // waited for it would have taken at least the mutex limit.
@@ -2950,7 +2958,7 @@ mod bounded {
                     &swapped,
                     claim,
                     Nir1ZeroSendCompletion::DispatchFailure,
-                    &Nir1PinnedSqlBudget::new(),
+                    &pinned_budget(),
                 )
                 .err(),
                 "zero-send",
@@ -2962,14 +2970,13 @@ mod bounded {
                     &observation,
                     None,
                     wall_clock_ms().expect("clock"),
-                    &Nir1PinnedSqlBudget::new(),
+                    &pinned_budget(),
                 )
                 .err(),
                 "finish",
             );
             refused(
-                recover_claimed_attempt_bounded(&snapshot, &swapped, &Nir1PinnedSqlBudget::new())
-                    .err(),
+                recover_claimed_attempt_bounded(&snapshot, &swapped, &pinned_budget()).err(),
                 "recover",
             );
         };
@@ -2997,7 +3004,7 @@ mod bounded {
             &observation,
             None,
             wall_clock_ms().expect("clock"),
-            &Nir1PinnedSqlBudget::new(),
+            &pinned_budget(),
         )
         .expect("the exact attempt finishes");
         assert_eq!(
@@ -3039,11 +3046,33 @@ mod bounded {
         assert!(read_terminal(db.db(), &attempt.id)
             .expect("terminal")
             .is_none());
-        let terminal = recover(NIR1_GENERATION_OPERATION_LIMIT).expect("recovery after release");
+        let terminal =
+            recover(NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT).expect("recovery after release");
         assert_eq!(
             terminal.failure_classification,
             Some(FailureClassification::InterruptedUnknown)
         );
+    }
+
+    /// The plan defaults stay what the constructors build; the untimed-test
+    /// budgets widen the per-operation limit alone.
+    #[test]
+    fn untimed_test_budgets_widen_only_the_operation_limit() {
+        let plan = Nir1SqlLimits::DEFAULT;
+        assert_eq!(plan.mutex, Duration::from_millis(100));
+        assert_eq!(plan.busy, Duration::from_millis(100));
+        assert_eq!(plan.operation, Duration::from_millis(250));
+        assert_eq!(production_admission().limits, plan);
+        assert_eq!(Nir1PinnedSqlBudget::new().limits, plan);
+        for limits in [admission().limits, pinned_budget().limits] {
+            assert_eq!(limits.mutex, plan.mutex);
+            assert_eq!(limits.busy, plan.busy);
+            assert_eq!(
+                limits.operation,
+                NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT
+            );
+            assert!(limits.operation > plan.operation);
+        }
     }
 
     #[test]
@@ -3900,7 +3929,7 @@ fn dt3_legacy_v1_row_is_terminalized_but_never_claimed_or_read_as_current() {
         2_000,
         ParticipantSqlOperationBudget::new(
             Arc::new(AtomicBool::new(false)),
-            Instant::now() + NIR1_GENERATION_OPERATION_LIMIT,
+            Instant::now() + NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT,
             NIR1_GENERATION_SQLITE_BUSY_LIMIT,
         ),
     )
@@ -4211,7 +4240,7 @@ fn dt3_v2_binding_over_64_kib_is_rejected_at_create_and_before_parse() {
 // ---------------------------------------------------------------------------
 
 mod dt3_bounded {
-    use super::bounded::{admission, expected, BoundedWorkspace};
+    use super::bounded::{admission, expected, pinned_budget, BoundedWorkspace};
     use super::*;
 
     fn no_check() -> impl FnMut() -> Result<()> {
@@ -4228,7 +4257,7 @@ mod dt3_bounded {
             &expected(attempt),
             Nir1ExpectedClaim::Unclaimed,
             Nir1ZeroSendCompletion::DispatchFailure,
-            &Nir1PinnedSqlBudget::new(),
+            &pinned_budget(),
         )
     }
 
@@ -4490,16 +4519,13 @@ mod dt3_bounded {
                 thinking: String::new(),
             }),
             wall_clock_ms().expect("clock"),
-            &Nir1PinnedSqlBudget::new(),
+            &pinned_budget(),
         )
         .expect("a replaced Scene does not block the observation of a claimed attempt");
         assert!(terminal.message_version.is_some());
-        let recovered = recover_claimed_attempt_bounded(
-            &snapshot,
-            &expected(&second),
-            &Nir1PinnedSqlBudget::new(),
-        )
-        .expect("a replaced Scene does not block the recovery of a claimed attempt");
+        let recovered =
+            recover_claimed_attempt_bounded(&snapshot, &expected(&second), &pinned_budget())
+                .expect("a replaced Scene does not block the recovery of a claimed attempt");
         assert_eq!(
             recovered.failure_classification,
             Some(FailureClassification::InterruptedUnknown)

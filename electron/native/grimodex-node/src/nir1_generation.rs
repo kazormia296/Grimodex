@@ -101,6 +101,13 @@ const MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS: usize = 3;
 // attempt writers; the values live once, in grimodex-db.
 const MAX_RECOVERY_OPERATION_TIME: Duration = storage::NIR1_GENERATION_OPERATION_LIMIT;
 const RECOVERY_SQL_BUSY_TIMEOUT: Duration = storage::NIR1_GENERATION_SQLITE_BUSY_LIMIT;
+// Test builds only (see `GenerationRecoveryLimits::SAFETY_LIMITS`): the sweep
+// time cutoff that tests which do not examine time run under. A release build
+// never sees it. Only the sweep has this value; the per-operation test cutoff
+// is grimodex-db's `NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT`, which the
+// bounded writers' test budgets use too, so it is not repeated here.
+#[cfg(test)]
+const TEST_RECOVERY_SWEEP_TIME: Duration = Duration::from_secs(120);
 
 #[cfg(test)]
 fn recovery_error_chain_categories(error: &anyhow::Error) -> String {
@@ -148,12 +155,38 @@ struct GenerationRecoveryLimits {
 }
 
 impl GenerationRecoveryLimits {
-    const SAFETY_LIMITS: Self = Self {
+    /// The production safety limits: what every release build sweeps under,
+    /// and what a test pins when it examines a time cutoff itself.
+    const PRODUCTION_LIMITS: Self = Self {
         pages: MAX_RECOVERY_SWEEP_PAGES,
         items: MAX_RECOVERY_SWEEP_ITEMS,
         time: MAX_RECOVERY_SWEEP_TIME,
         operation_time: MAX_RECOVERY_OPERATION_TIME,
         busy_timeout: RECOVERY_SQL_BUSY_TIMEOUT,
+    };
+
+    /// The limits `recover_all_pending_attempts`, and so the post-Ready hook,
+    /// sweeps under. A release build uses exactly `PRODUCTION_LIMITS`.
+    #[cfg(not(test))]
+    const SAFETY_LIMITS: Self = Self::PRODUCTION_LIMITS;
+
+    /// Test builds widen only the two time cutoffs. A loaded CI runner running
+    /// an unoptimized build can overrun the 250 ms per-operation limit (or the
+    /// 5 s sweep limit) without anything being wrong; the sweep, and so the
+    /// hook, then ends `Incomplete`, and a test that sweeps without examining
+    /// time must not depend on that. The page and item cutoffs, the SQLite
+    /// busy wait and the mutex wait of a recovery write stay production
+    /// values. The page reads have no mutex limit of their own: only the
+    /// operation cutoff bounds their mutex wait, so a test build widens that
+    /// wait too. A test of a time cutoff, or of a wait that the production
+    /// operation cutoff must end, names that cutoff in the limits it passes to
+    /// `recover_all_pending_attempts_with_limits`, starting from
+    /// `PRODUCTION_LIMITS` when it needs the production value of the other.
+    #[cfg(test)]
+    const SAFETY_LIMITS: Self = Self {
+        time: TEST_RECOVERY_SWEEP_TIME,
+        operation_time: storage::NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT,
+        ..Self::PRODUCTION_LIMITS
     };
 }
 
@@ -327,6 +360,8 @@ impl GenerationRecoveryCoordinator {
     /// Exhaust pending attempts across the workspace under finite safety cutoffs.
     /// Every DB operation owns its own bounded participant scope; partial
     /// terminal commits survive an incomplete pass, whose fresh owner retries.
+    /// Test builds widen the two time cutoffs; see
+    /// `GenerationRecoveryLimits::SAFETY_LIMITS`.
     pub(crate) fn recover_all_pending_attempts(self) -> Result<GenerationRecoverySummary> {
         self.recover_all_pending_attempts_with_limits(GenerationRecoveryLimits::SAFETY_LIMITS)
     }
@@ -1319,6 +1354,35 @@ mod tests {
             .map(|entry| entry.state)
     }
 
+    /// The production limits keep the plan values; test builds widen only the
+    /// two time cutoffs, so a test that sweeps through the hook does not hit
+    /// them on a slow runner.
+    #[test]
+    fn test_builds_widen_only_the_recovery_time_cutoffs() {
+        let production = GenerationRecoveryLimits::PRODUCTION_LIMITS;
+        assert_eq!(production.pages, 4_096);
+        assert_eq!(production.items, 2_048);
+        assert_eq!(production.time, Duration::from_secs(5));
+        assert_eq!(production.operation_time, Duration::from_millis(250));
+        assert_eq!(production.busy_timeout, Duration::from_millis(100));
+
+        let tests = GenerationRecoveryLimits::SAFETY_LIMITS;
+        assert_eq!(tests.pages, production.pages);
+        assert_eq!(tests.items, production.items);
+        assert_eq!(tests.busy_timeout, production.busy_timeout);
+        assert!(tests.time > production.time);
+        assert!(tests.operation_time > production.operation_time);
+        assert_eq!(
+            tests.operation_time,
+            storage::NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT,
+            "the sweep shares the per-operation test limit of the bounded writers"
+        );
+        assert!(
+            tests.operation_time < tests.time,
+            "one operation stays inside the sweep, as in production"
+        );
+    }
+
     #[test]
     fn recovery_error_chain_diagnostic_is_redacted_and_bounded() {
         let error = anyhow::anyhow!("SQLITE_BUSY: database is locked; opaque detail")
@@ -1589,17 +1653,13 @@ mod tests {
             .expect("capture recovery coordinator")
             .expect("trusted reopened coordinator");
         let db = Arc::clone(&coordinator.workspace.authority);
-        // This test pins keyset paging, not timing. Keep the production page
-        // and item cutoffs but give the ~260 bounded operations of an
-        // unoptimized build on a loaded CI runner room under the time cutoffs
-        // (the 250 ms per-operation limit elapsed there once).
-        let paging_limits = GenerationRecoveryLimits {
-            time: Duration::from_secs(120),
-            operation_time: Duration::from_secs(10),
-            ..GenerationRecoveryLimits::SAFETY_LIMITS
-        };
+        // This test pins keyset paging, not timing. It sweeps under the
+        // default limits of a test build: the production page and item
+        // cutoffs, and room for the ~260 bounded operations of an unoptimized
+        // build on a loaded CI runner under the time cutoffs (the 250 ms
+        // per-operation limit elapsed there once).
         let summary = coordinator
-            .recover_all_pending_attempts_with_limits(paging_limits)
+            .recover_all_pending_attempts()
             .expect("recover complete all-project sweep");
 
         assert_eq!(summary.project_pages, 3);
@@ -1757,6 +1817,56 @@ mod tests {
             .recover_all_pending_attempts_with_limits(time_limits)
             .expect_err("elapsed sweep deadline is incomplete");
         assert!(error.to_string().contains("SWEEP_TIME_LIMIT"));
+        drop(state);
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    /// The test-build widening is only the default: a test that names the
+    /// per-operation cutoff, starting from the production limits, still ends
+    /// the sweep Incomplete before any attempt is terminalized, and a fresh
+    /// owner retries.
+    #[test]
+    fn recovery_operation_time_limit_is_incomplete_and_retryable() {
+        let (root, attempts) = recovery_workspace(2);
+        let state = reopened_recovery_state(&root);
+        let coordinator = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+            .expect("capture recovery coordinator")
+            .expect("ready owner");
+        let db = Arc::clone(&coordinator.workspace.authority);
+        let lapsed = GenerationRecoveryLimits {
+            operation_time: Duration::ZERO,
+            ..GenerationRecoveryLimits::PRODUCTION_LIMITS
+        };
+        let error = coordinator
+            .recover_all_pending_attempts_with_limits(lapsed)
+            .expect_err("a lapsed operation deadline leaves the sweep incomplete");
+        assert!(
+            format!("{error:#}").contains("deadline elapsed"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(
+            storage::pending_attempt_ids(db.db(), "recovery-project", None, 64)
+                .expect("pending after the lapsed operation")
+                .len(),
+            attempts.len()
+        );
+        assert!(state
+            .nir1_generation_recovery_bindings
+            .lock()
+            .expect("single-flight lock")
+            .is_empty());
+
+        let retry = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
+            .expect("capture fresh owner")
+            .expect("fresh owner after the incomplete pass");
+        assert_eq!(
+            retry
+                .recover_all_pending_attempts()
+                .expect("fresh owner retries pending rows")
+                .recovered,
+            attempts.len()
+        );
+        drop(db);
         drop(state);
         std::fs::remove_dir_all(root).expect("cleanup");
     }
@@ -4044,6 +4154,12 @@ mod tests {
     /// incomplete with a typed reason and nothing is terminalized; a sweep
     /// deadline too short for the last try stops them earlier. A fresh owner
     /// recovers the attempt once the mutex is free.
+    ///
+    /// The first sweep runs under the production per-operation limit, which is
+    /// shorter than the tries' mutex waits together. It therefore ends in the
+    /// busy limit only because each try takes a fresh operation deadline: the
+    /// default limits of a test build would fit every try into one deadline
+    /// and let a deadline shared across the tries pass unnoticed.
     #[test]
     fn r6_connection_busy_tries_are_bounded_by_count_and_sweep_deadline() {
         let (root, attempts) = recovery_workspace(1);
@@ -4055,13 +4171,32 @@ mod tests {
                 .is_none()
         };
 
+        // One try fits in the production per-operation limit (250 ms) with
+        // room to spare, the tries together (3 x the 100 ms mutex limit) do
+        // not. Only the sweep time is widened, for a slow runner. The two page
+        // reads before the first try are the only SQL under the narrow
+        // operation deadline: the mutex is held from the first try on.
+        let tries_u32 = u32::try_from(MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS).expect("tries");
+        let limits = GenerationRecoveryLimits {
+            time: TEST_RECOVERY_SWEEP_TIME,
+            ..GenerationRecoveryLimits::PRODUCTION_LIMITS
+        };
+        let mutex_limit = storage::NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT;
+        assert!(
+            limits.operation_time > mutex_limit,
+            "one try fits in an operation deadline"
+        );
+        assert!(
+            limits.operation_time < mutex_limit * tries_u32,
+            "the tries together must outlast one operation deadline"
+        );
         let (tries, held) = install_busy_recovery_probe(&state, None, |_| {});
         let owner = GenerationRecoveryCoordinator::capture(Arc::clone(&state))
             .expect("capture")
             .expect("ready owner");
         let started = Instant::now();
         let error = owner
-            .recover_all_pending_attempts()
+            .recover_all_pending_attempts_with_limits(limits)
             .expect_err("exhausted tries leave the sweep incomplete");
         let elapsed = started.elapsed();
         release_held_connection(&held);
@@ -4076,11 +4211,7 @@ mod tests {
             "{error:#}"
         );
         assert!(storage::is_recovery_connection_busy(&error), "{error:#}");
-        let tries_u32 = u32::try_from(MAX_RECOVERY_CONNECTION_BUSY_ATTEMPTS).expect("tries");
-        assert!(
-            elapsed >= storage::NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT * tries_u32,
-            "{elapsed:?}"
-        );
+        assert!(elapsed >= mutex_limit * tries_u32, "{elapsed:?}");
         assert!(elapsed < MAX_RECOVERY_SWEEP_TIME, "{elapsed:?}");
         assert!(pending(&state));
 
