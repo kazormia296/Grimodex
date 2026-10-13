@@ -17,13 +17,6 @@ mod input;
 mod memory;
 #[cfg(test)]
 mod oracle_tests;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Scene join foundations await confirmed target-body authority; Graph remains closed"
-    )
-)]
 mod scenes;
 #[cfg(test)]
 mod tests;
@@ -37,7 +30,7 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Result};
 use grimodex_core::narrative_nir1::{
     EntityInput, GraphEdgeInput, ScopeValue, MAX_GRAPH_EDGES, MAX_GRAPH_HOPS,
-    MAX_GRAPH_INPUT_BYTES, MAX_GRAPH_NODES, MAX_GRAPH_RECORDS,
+    MAX_GRAPH_INPUT_BYTES, MAX_GRAPH_NODES, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
 };
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -64,6 +57,11 @@ use crate::workspace_lifecycle::WorkspaceParticipant;
 #[cfg(feature = "nir1-material-diagnostics")]
 pub(crate) use self::input::{A2SqlObservation, A3SqlObservation};
 use self::memory::{RetainedLedger, RetainedPart};
+use self::scenes::{SceneJoinBudget, ScenePinLocator};
+use self::worker_frame::{
+    PreCleanup, SceneAssociationLengths, UnavailableReason, WorkerCause, WorkerSite,
+    MAX_SCENE_SECTION_BYTES, SCENE_SECTION_HEADER_BYTES,
+};
 
 pub(crate) const QUERY_SQL_STEPS: u64 = 100_000;
 pub(crate) const QUERY_DEADLINE: Duration = Duration::from_millis(100);
@@ -225,6 +223,27 @@ pub struct Nir1GraphEdge {
     pub binding: Arc<Nir1GraphMaterialBinding>,
 }
 
+/// One explicit pin of a reached Entity, located in the same snapshot and
+/// QueryUsage as its representative path. A pin is a request-local locator,
+/// not Relation evidence or Scene eligibility; Native qualifies it later.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Nir1GraphSceneAssociation {
+    pub scene_id: String,
+    /// The A1 binding incarnation; None when the Scene has no binding row.
+    pub scene_incarnation_id: Option<String>,
+    /// `v{version}@{updated_at}` of the Scene row. Never the body.
+    pub scene_source_token: String,
+    /// The A1 binding source token; present exactly with the incarnation.
+    pub scene_scope_token: Option<String>,
+    pub pin_rowid: i64,
+    pub pin_entry_id: String,
+    pub pin_created_at: String,
+    pub path_hop: u8,
+    /// Indices into `edges`, in traversal order from the seed.
+    pub path_edge_indices: Vec<u16>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Nir1QualifiedGraph {
@@ -232,6 +251,11 @@ pub struct Nir1QualifiedGraph {
     pub generation: i64,
     pub nodes: Vec<Nir1GraphNode>,
     pub edges: Vec<Nir1GraphEdge>,
+    /// Distinct pinned Scenes of the complete enumeration. Diagnostic only;
+    /// never an eligibility, ranking or acceptance input.
+    pub scene_total: usize,
+    /// The first `MAX_GRAPH_SCENES` Scenes in tuple order.
+    pub scenes: Vec<Nir1GraphSceneAssociation>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -838,15 +862,18 @@ impl Nir1GraphReader {
         };
         validate_request(request)?;
         if self.check().is_err() {
-            return Ok(unavailable_response(request, "reader-unavailable"));
+            return Ok(unavailable(request, UnavailableReason::ReaderUnavailable));
         }
         let Some(registration) = self.registration.as_ref() else {
-            return Ok(unavailable_response(request, "registration-required"));
+            return Ok(unavailable(
+                request,
+                UnavailableReason::RegistrationRequired,
+            ));
         };
         if registration.project != request.project_id {
-            return Ok(unavailable_response(
+            return Ok(unavailable(
                 request,
-                "registration-project-mismatch",
+                UnavailableReason::RegistrationProjectMismatch,
             ));
         }
         let identity = registration.identity.clone();
@@ -977,12 +1004,13 @@ impl Nir1GraphReader {
                     }
                     let reason = if worker_path {
                         worker_refusal_reason(
-                            WorkerRefusalSite::PostStamp,
+                            WorkerSite::PostStamp,
                             &error,
                             Instant::now() >= deadline,
                             budget.sql_steps_used() > sql_steps,
                             pre_cleanup_status,
                         )
+                        .to_string()
                     } else {
                         "query-budget-or-validation-failed".to_owned()
                     };
@@ -1005,7 +1033,7 @@ impl Nir1GraphReader {
                 if let Some(observation) = _observation.as_deref_mut() {
                     observation.unattributed = true;
                 }
-                return Ok(unavailable_response(request, "registration-drift"));
+                return Ok(unavailable(request, UnavailableReason::RegistrationDrift));
             }
             let reader_invalidated = self.check().is_err();
             let deadline_observed = !reader_invalidated && Instant::now() >= deadline;
@@ -1017,7 +1045,7 @@ impl Nir1GraphReader {
                     observation.deadline_observed_at_collapse |= deadline_observed;
                     observation.unattributed |= reader_invalidated;
                 }
-                return Ok(unavailable_response(request, "query-invalidated"));
+                return Ok(unavailable(request, UnavailableReason::QueryInvalidated));
             }
             match result {
                 Ok(response) => Ok(response),
@@ -1028,12 +1056,13 @@ impl Nir1GraphReader {
                     }
                     let reason = if worker_path {
                         worker_refusal_reason(
-                            WorkerRefusalSite::Work,
+                            WorkerSite::Work,
                             &error,
                             Instant::now() >= deadline,
                             budget.sql_steps_used() > sql_steps,
                             pre_cleanup_status,
                         )
+                        .to_string()
                     } else {
                         "query-budget-or-validation-failed".to_owned()
                     };
@@ -1182,84 +1211,72 @@ impl Nir1GraphReader {
     }
 }
 
-#[derive(Clone, Copy)]
-enum WorkerRefusalSite {
-    Work,
-    PostStamp,
-}
-
-#[derive(Clone, Copy)]
-enum WorkerWorkStatus {
-    WorkOk,
-    WorkFailed(&'static str),
-    DeadlineAlreadyCrossed,
-}
-
 fn worker_work_status<T>(
     result: &Result<T>,
     deadline_elapsed: bool,
     sql_steps_exhausted: bool,
-) -> WorkerWorkStatus {
+) -> PreCleanup {
     if deadline_elapsed {
-        WorkerWorkStatus::DeadlineAlreadyCrossed
+        PreCleanup::DeadlineAlreadyCrossed
     } else {
         match result {
-            Ok(_) => WorkerWorkStatus::WorkOk,
-            Err(_) if sql_steps_exhausted => WorkerWorkStatus::WorkFailed("steps"),
-            Err(error) => WorkerWorkStatus::WorkFailed(worker_refusal_cause(error, false, false)),
+            Ok(_) => PreCleanup::WorkOk,
+            Err(_) if sql_steps_exhausted => PreCleanup::WorkFailed(WorkerCause::Steps),
+            Err(error) => PreCleanup::WorkFailed(worker_refusal_cause(error, false, false)),
         }
     }
 }
 
+/// Compose an allowlisted worker reason. Assembly and the parent's parser
+/// share the closed `worker_frame` enums; no error text reaches the frame.
 fn worker_refusal_reason(
-    site: WorkerRefusalSite,
+    site: WorkerSite,
     error: &anyhow::Error,
     deadline_elapsed: bool,
     sql_steps_exhausted: bool,
-    pre_cleanup_status: Option<WorkerWorkStatus>,
-) -> String {
-    let cause = match (site, pre_cleanup_status) {
-        (WorkerRefusalSite::Work, Some(WorkerWorkStatus::WorkFailed(cause))) => cause,
-        (WorkerRefusalSite::Work, Some(WorkerWorkStatus::DeadlineAlreadyCrossed)) => "deadline",
+    pre_cleanup: Option<PreCleanup>,
+) -> UnavailableReason {
+    let cause = match (site, pre_cleanup) {
+        (WorkerSite::Work, Some(PreCleanup::WorkFailed(cause))) => cause,
+        (WorkerSite::Work, Some(PreCleanup::DeadlineAlreadyCrossed)) => WorkerCause::Deadline,
         _ => worker_refusal_cause(error, deadline_elapsed, sql_steps_exhausted),
     };
-    let site = match site {
-        WorkerRefusalSite::Work => "work",
-        WorkerRefusalSite::PostStamp => "post-stamp",
-    };
-    let status = match pre_cleanup_status {
-        Some(WorkerWorkStatus::WorkOk) => "-pre-cleanup-work-ok".to_owned(),
-        Some(WorkerWorkStatus::WorkFailed(cause)) => {
-            format!("-pre-cleanup-work-failed-{cause}")
-        }
-        Some(WorkerWorkStatus::DeadlineAlreadyCrossed) => {
-            "-pre-cleanup-deadline-already-crossed".to_owned()
-        }
-        None => String::new(),
-    };
-    format!("query-worker-{site}-{cause}{status}")
+    UnavailableReason::Worker {
+        site,
+        cause,
+        pre_cleanup,
+    }
 }
 
 fn worker_refusal_cause(
     error: &anyhow::Error,
     deadline_elapsed: bool,
     sql_steps_exhausted: bool,
-) -> &'static str {
+) -> WorkerCause {
     if error.chain().any(|cause| {
         cause
             .downcast_ref::<rusqlite::Error>()
             .is_some_and(|error| matches!(error, rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::OutOfMemory))
     }) {
-        return "sqlite-nomem";
+        return WorkerCause::SqliteNoMem;
     }
+    // The Scene join marks its own resource refusals, including the shared
+    // QueryUsage ones it reaches, so it is matched first.
     for (marker, cause) in [
-        ("NIR1_GRAPH_CANDIDATE_LIMIT", "candidate-record-limit"),
-        ("NIR1_GRAPH_REVISION_RECORD_LIMIT", "revision-record-limit"),
+        (SCENE_LIMIT_MARKER, WorkerCause::SceneLimit),
+        (
+            "NIR1_GRAPH_CANDIDATE_LIMIT",
+            WorkerCause::CandidateRecordLimit,
+        ),
+        (
+            "NIR1_GRAPH_REVISION_RECORD_LIMIT",
+            WorkerCause::RevisionRecordLimit,
+        ),
         (
             "NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT",
-            "disclosure-record-limit",
+            WorkerCause::DisclosureRecordLimit,
         ),
-        ("NIR1_GRAPH_READ_LIMIT", "read-record-limit"),
+        ("NIR1_GRAPH_READ_LIMIT", WorkerCause::ReadRecordLimit),
     ] {
         if error.chain().any(|error| error.to_string() == marker) {
             return cause;
@@ -1267,25 +1284,29 @@ fn worker_refusal_cause(
     }
     match error.downcast_ref::<ValidationTerminated>() {
         Some(termination) => match termination.reason {
-            ValidationTerminationReason::TimedOut => "deadline",
+            ValidationTerminationReason::TimedOut => WorkerCause::Deadline,
             ValidationTerminationReason::CapacityExceeded => {
                 match (deadline_elapsed, sql_steps_exhausted) {
-                    (true, true) => "deadline-or-steps",
-                    (true, false) => "deadline",
-                    (false, true) => "steps",
-                    (false, false) => "validation-capacity-exceeded",
+                    (true, true) => WorkerCause::DeadlineOrSteps,
+                    (true, false) => WorkerCause::Deadline,
+                    (false, true) => WorkerCause::Steps,
+                    (false, false) => WorkerCause::ValidationCapacityExceeded,
                 }
             }
-            ValidationTerminationReason::ContextUnavailable => "validation-context-unavailable",
-            ValidationTerminationReason::Cancelled => "validation-cancelled",
-            ValidationTerminationReason::Closed => "validation-closed",
-            ValidationTerminationReason::WorkspaceGenerationChanged => {
-                "validation-workspace-generation-changed"
+            ValidationTerminationReason::ContextUnavailable => {
+                WorkerCause::ValidationContextUnavailable
             }
-            ValidationTerminationReason::ForegroundPreempted => "validation-foreground-preempted",
-            ValidationTerminationReason::CleanupFailed => "validation-cleanup-failed",
+            ValidationTerminationReason::Cancelled => WorkerCause::ValidationCancelled,
+            ValidationTerminationReason::Closed => WorkerCause::ValidationClosed,
+            ValidationTerminationReason::WorkspaceGenerationChanged => {
+                WorkerCause::ValidationWorkspaceGenerationChanged
+            }
+            ValidationTerminationReason::ForegroundPreempted => {
+                WorkerCause::ValidationForegroundPreempted
+            }
+            ValidationTerminationReason::CleanupFailed => WorkerCause::ValidationCleanupFailed,
         },
-        None => "other",
+        None => WorkerCause::Other,
     }
 }
 
@@ -1632,7 +1653,7 @@ fn query_in_snapshot(
         |r| r.get(0),
     )?;
     if !exists {
-        return Ok(unavailable_response(request, "seed-not-found"));
+        return Ok(unavailable(request, UnavailableReason::SeedNotFound));
     }
     let revision_capacity = MAX_GRAPH_RECORDS;
     let frontier_capacity = MAX_GRAPH_NODES;
@@ -1948,6 +1969,17 @@ fn query_in_snapshot(
     });
     let mut ordered_edges = Vec::with_capacity(MAX_GRAPH_EDGES);
     ordered_edges.extend(edges.into_values());
+    // Same snapshot, QueryUsage and control as the paths; an incomplete
+    // enumeration refuses the whole Graph instead of returning a prefix.
+    let (scene_total, scenes) = join_scene_pins(
+        conn,
+        request,
+        &ordered_nodes,
+        &ordered_edges,
+        &mut usage,
+        control,
+    )
+    .map_err(scene_join_failure)?;
     let response_scope_bytes = scope_revision.as_ref().map_or(0, retained_string);
     usage.admit_retained(
         std::mem::size_of::<Nir1GraphResponse>()
@@ -1970,6 +2002,8 @@ fn query_in_snapshot(
             generation: seal.generation,
             nodes: ordered_nodes,
             edges: ordered_edges,
+            scene_total,
+            scenes,
         }),
         reason: None,
     };
@@ -1985,6 +2019,322 @@ fn query_in_snapshot(
         control.check(GraphWorkStage::Serialization)?;
     }
     Ok(response)
+}
+
+/// Context for every resource refusal of the Scene join (category `limit`).
+const SCENE_LIMIT_MARKER: &str = "NIR1_GRAPH_SCENE_LIMIT";
+const SCENE_RESOURCE_MARKERS: [&str; 9] = [
+    "NIR1_GRAPH_SCENE_READ_LIMIT",
+    "NIR1_GRAPH_SCENE_INPUT_LIMIT",
+    "NIR1_GRAPH_SCENE_QUERY_RESOURCE_LIMIT",
+    "NIR1_GRAPH_SCENE_PIN_LIMIT",
+    "NIR1_GRAPH_SCENE_FRAME_LIMIT",
+    "NIR1_GRAPH_QUERY_RESOURCE_LIMIT",
+    "NIR1_GRAPH_READ_LIMIT",
+    "NIR1_GRAPH_INPUT_LIMIT",
+    "NIR1_GRAPH_RETAINED_LIMIT",
+];
+
+/// Mark resource exhaustion inside the join as `scene-limit`. SQL steps,
+/// deadline and cancellation keep their typed ValidationTerminated cause.
+fn scene_join_failure(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<ValidationTerminated>().is_none()
+        && error
+            .chain()
+            .any(|cause| SCENE_RESOURCE_MARKERS.contains(&cause.to_string().as_str()))
+    {
+        error.context(SCENE_LIMIT_MARKER)
+    } else {
+        error
+    }
+}
+
+/// A reached Entity (hop >= 1) and its representative path.
+#[derive(Clone, Copy, Debug)]
+struct ReachedEntity<'g> {
+    entity_id: &'g str,
+    hop: u8,
+    /// Frame edge indices in traversal order; the first `hop` are used.
+    path: [usize; MAX_GRAPH_HOPS as usize],
+}
+
+impl ReachedEntity<'_> {
+    fn path(&self) -> &[usize] {
+        &self.path[..usize::from(self.hop)]
+    }
+}
+
+/// The Graph traversal rule: a relation is followed from its source, and
+/// also from its target when it is symmetric.
+fn traversed<'g>(relation: &'g GraphEdgeInput, from: &str) -> Option<&'g str> {
+    if relation.from_entity_id == from {
+        Some(&relation.to_entity_id)
+    } else if relation.directionality == "symmetric" && relation.to_entity_id == from {
+        Some(&relation.from_entity_id)
+    } else {
+        None
+    }
+}
+
+fn path_edge_ids<'g>(
+    edges: &'g [Nir1GraphEdge],
+    path: &'g [usize],
+) -> impl Iterator<Item = &'g [u8]> + 'g {
+    path.iter()
+        .map(|index| edges[*index].relation.edge_id.as_bytes())
+}
+
+/// Equal-length paths by (edge ID bytes..., frame indices...). The frame index
+/// only separates the same edge ID carried by different Revisions.
+fn compare_paths(edges: &[Nir1GraphEdge], left: &[usize], right: &[usize]) -> std::cmp::Ordering {
+    path_edge_ids(edges, left)
+        .cmp(path_edge_ids(edges, right))
+        .then_with(|| left.cmp(right))
+}
+
+/// The minimum direct step from `from` to `to`.
+fn minimum_step(edges: &[Nir1GraphEdge], from: &str, to: &str) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    for (index, edge) in edges.iter().enumerate() {
+        if traversed(&edge.relation, from) == Some(to)
+            && best.is_none_or(|best| {
+                compare_paths(edges, &[index], &[best]) == std::cmp::Ordering::Less
+            })
+        {
+            best = Some(index);
+        }
+    }
+    best
+}
+
+/// Rank reached Entities by (hop, representative edge IDs, Entity ID), all
+/// IDs as UTF-8 bytes. The hop is the BFS shortest distance, so a
+/// representative path is a shortest path; for a hop-2 Entity the first
+/// edge is compared before the second, so each hop-1 Entity's own minimum
+/// first step yields the minimum over every pair.
+fn rank_reached_entities<'g>(
+    seed: &str,
+    nodes: &'g [Nir1GraphNode],
+    edges: &'g [Nir1GraphEdge],
+) -> Result<Vec<ReachedEntity<'g>>> {
+    let mut reached = Vec::with_capacity(MAX_GRAPH_NODES);
+    for node in nodes.iter().filter(|node| node.hop == 1) {
+        let first = minimum_step(edges, seed, &node.entity.entity_id)
+            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_PATH_MISSING"))?;
+        reached.push(ReachedEntity {
+            entity_id: &node.entity.entity_id,
+            hop: 1,
+            path: [first, 0],
+        });
+    }
+    let hop_one = reached.len();
+    for node in nodes.iter().filter(|node| node.hop == 2) {
+        let mut best: Option<[usize; 2]> = None;
+        for intermediate in &reached[..hop_one] {
+            let Some(second) = minimum_step(edges, intermediate.entity_id, &node.entity.entity_id)
+            else {
+                continue;
+            };
+            let candidate = [intermediate.path[0], second];
+            if best.is_none_or(|best| {
+                compare_paths(edges, &candidate, &best) == std::cmp::Ordering::Less
+            }) {
+                best = Some(candidate);
+            }
+        }
+        reached.push(ReachedEntity {
+            entity_id: &node.entity.entity_id,
+            hop: 2,
+            path: best.ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_PATH_MISSING"))?,
+        });
+    }
+    reached.sort_by(|left, right| {
+        left.hop
+            .cmp(&right.hop)
+            .then_with(|| path_edge_ids(edges, left.path()).cmp(path_edge_ids(edges, right.path())))
+            .then_with(|| left.entity_id.as_bytes().cmp(right.entity_id.as_bytes()))
+    });
+    Ok(reached)
+}
+
+/// The first pin seen for a Scene in rank order: its representative.
+struct FirstPin {
+    rank: usize,
+    pin: ScenePinLocator,
+}
+
+/// Enumerate every explicit pin of every reached Entity in the Graph's own
+/// snapshot, QueryUsage and control, then keep the first `MAX_GRAPH_SCENES`
+/// distinct Scenes in tuple order. The seed's pins never contribute, and no
+/// Scene body is read.
+fn join_scene_pins(
+    conn: &Connection,
+    request: &Nir1GraphRequest,
+    nodes: &[Nir1GraphNode],
+    edges: &[Nir1GraphEdge],
+    usage: &mut QueryUsage,
+    control: &mut dyn GraphWorkControl,
+) -> Result<(usize, Vec<Nir1GraphSceneAssociation>)> {
+    control.check(GraphWorkStage::Page)?;
+    usage.admit_retained(
+        std::mem::size_of::<Vec<ReachedEntity<'_>>>()
+            + MAX_GRAPH_NODES * std::mem::size_of::<ReachedEntity<'_>>(),
+    )?;
+    let reached = rank_reached_entities(&request.seed_entity_id, nodes, edges)?;
+    if reached.is_empty() {
+        return Ok((0, Vec::new()));
+    }
+    // One cumulative instance for the whole Graph, limited to the shared
+    // remainder; never one budget per Entity or Scene.
+    let mut budget = SceneJoinBudget::new(
+        MAX_GRAPH_RECORDS.saturating_sub(usage.rows),
+        MAX_GRAPH_INPUT_BYTES.saturating_sub(usage.bytes),
+    );
+    usage.admit_retained(std::mem::size_of::<BTreeMap<String, FirstPin>>())?;
+    let mut first_pins: BTreeMap<String, FirstPin> = BTreeMap::new();
+    for (rank, entity) in reached.iter().enumerate() {
+        let mut cursor = 0i64;
+        loop {
+            control.check(GraphWorkStage::Page)?;
+            // The bound Entity ID is materialized for every page and probe.
+            let key_bytes = entity.entity_id.len();
+            budget.admit(0, key_bytes)?;
+            usage.admit(0, key_bytes)?;
+            if usage.rows == MAX_GRAPH_RECORDS || usage.pages == QUERY_MAX_PAGES {
+                let mut check = || control.check(GraphWorkStage::Page);
+                let more = scenes::scene_pins_remain(
+                    conn,
+                    &request.project_id,
+                    entity.entity_id,
+                    cursor,
+                    &mut check,
+                )?;
+                ensure!(!more, "NIR1_GRAPH_SCENE_PIN_LIMIT");
+                break;
+            }
+            let page_limit = (MAX_GRAPH_RECORDS - usage.rows).min(scenes::PIN_PAGE_ROWS);
+            usage.admit_retained(scenes::pin_page_scratch_bytes(page_limit)?)?;
+            let page = {
+                let mut check = || control.check(GraphWorkStage::Row);
+                scenes::read_scene_pin_page_with_admission(
+                    conn,
+                    &request.project_id,
+                    entity.entity_id,
+                    cursor,
+                    page_limit,
+                    &mut budget,
+                    &mut check,
+                    |rows, bytes| usage.admit(rows, bytes),
+                )?
+            };
+            usage.pages += 1;
+            let count = page.len();
+            for pin in page {
+                control.check(GraphWorkStage::Row)?;
+                cursor = pin.rowid;
+                if !first_pins.contains_key(&pin.scene_id) {
+                    usage.admit_retained(
+                        retained_string(&pin.scene_id) * 2
+                            + retained_string(&pin.entry_id)
+                            + retained_string(&pin.created_at)
+                            + std::mem::size_of::<FirstPin>()
+                            + 8 * std::mem::size_of::<usize>(),
+                    )?;
+                    first_pins.insert(pin.scene_id.clone(), FirstPin { rank, pin });
+                }
+            }
+            // As with candidates, only a page shorter than it asked for ends
+            // the Entity; a page cut by the shared remainder reaches the probe.
+            if count < page_limit {
+                break;
+            }
+        }
+    }
+    let scene_total = first_pins.len();
+    // (rank, Scene ID): ranks in order, each rank's Scenes in map order.
+    usage.admit_retained(
+        std::mem::size_of::<Vec<&FirstPin>>() + MAX_GRAPH_SCENES * std::mem::size_of::<&FirstPin>(),
+    )?;
+    let mut selected: Vec<&FirstPin> = Vec::with_capacity(MAX_GRAPH_SCENES);
+    'ranks: for rank in 0..reached.len() {
+        control.check(GraphWorkStage::Sort)?;
+        for first in first_pins.values().filter(|first| first.rank == rank) {
+            if selected.len() == MAX_GRAPH_SCENES {
+                break 'ranks;
+            }
+            selected.push(first);
+        }
+    }
+    usage.admit_retained(
+        std::mem::size_of::<Vec<Nir1GraphSceneAssociation>>()
+            + selected.len() * std::mem::size_of::<Nir1GraphSceneAssociation>(),
+    )?;
+    let mut associations = Vec::with_capacity(selected.len());
+    let mut section_bytes = SCENE_SECTION_HEADER_BYTES;
+    for first in selected {
+        control.check(GraphWorkStage::Source)?;
+        let entity = &reached[first.rank];
+        let pin = &first.pin;
+        let tokens = {
+            let mut check = || control.check(GraphWorkStage::Source);
+            scenes::read_scene_frame_tokens(
+                conn,
+                &request.project_id,
+                &pin.scene_id,
+                &mut budget,
+                &mut check,
+                |lengths| {
+                    // The frame's Scene-section cap is checked before any
+                    // token is materialized.
+                    let association = SceneAssociationLengths {
+                        scene_id: pin.scene_id.len(),
+                        scene_incarnation_id: lengths.incarnation_id,
+                        scene_source_token: lengths.source_token,
+                        scene_scope_token: lengths.scope_token,
+                        pin_entry_id: pin.entry_id.len(),
+                        pin_created_at: pin.created_at.len(),
+                        path_edge_count: usize::from(entity.hop),
+                    };
+                    section_bytes = association
+                        .encoded_bytes()
+                        .and_then(|bytes| section_bytes.checked_add(bytes))
+                        .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_FRAME_LIMIT"))?;
+                    ensure!(
+                        section_bytes <= MAX_SCENE_SECTION_BYTES,
+                        "NIR1_GRAPH_SCENE_FRAME_LIMIT"
+                    );
+                    let token_bytes = lengths.bytes()?;
+                    usage.admit(lengths.rows, token_bytes)?;
+                    usage.admit_retained(
+                        token_bytes
+                            + pin.scene_id.len()
+                            + pin.entry_id.len()
+                            + pin.created_at.len()
+                            + std::mem::size_of::<Vec<u16>>()
+                            + usize::from(entity.hop) * std::mem::size_of::<u16>(),
+                    )
+                },
+            )?
+        };
+        let path_edge_indices = entity
+            .path()
+            .iter()
+            .map(|index| u16::try_from(*index))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        associations.push(Nir1GraphSceneAssociation {
+            scene_id: pin.scene_id.clone(),
+            scene_incarnation_id: tokens.incarnation_id,
+            scene_source_token: tokens.source_token,
+            scene_scope_token: tokens.scope_token,
+            pin_rowid: pin.rowid,
+            pin_entry_id: pin.entry_id.clone(),
+            pin_created_at: pin.created_at.clone(),
+            path_hop: entity.hop,
+            path_edge_indices,
+        });
+    }
+    control.check(GraphWorkStage::ResultAssembly)?;
+    Ok((scene_total, associations))
 }
 
 fn add_node(
@@ -2085,7 +2435,15 @@ pub fn read_nir1_graph(
     request: &Nir1GraphRequest,
 ) -> Result<Nir1GraphResponse> {
     validate_request(request)?;
-    Ok(unavailable_response(request, "registration-required"))
+    Ok(unavailable(
+        request,
+        UnavailableReason::RegistrationRequired,
+    ))
+}
+
+/// An unavailable response whose reason is a member of the frame allowlist.
+fn unavailable(request: &Nir1GraphRequest, reason: UnavailableReason) -> Nir1GraphResponse {
+    unavailable_response(request, &reason.to_string())
 }
 
 fn unavailable_response(request: &Nir1GraphRequest, reason: &str) -> Nir1GraphResponse {

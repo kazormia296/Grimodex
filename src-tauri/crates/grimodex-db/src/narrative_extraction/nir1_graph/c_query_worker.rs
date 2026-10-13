@@ -21,7 +21,7 @@ use crate::{
 };
 
 use super::{
-    worker_frame::{self, FrameView},
+    worker_frame::{self, FrameView, UnavailableReason},
     Nir1GraphRequest, QUERY_DEADLINE,
 };
 
@@ -35,6 +35,52 @@ const POLL_INTERVAL: Duration = Duration::from_millis(1);
 const REQUEST_WRITE_CHUNK_BYTES: usize = 1_024;
 const FRAME_EXIT_POLL_INTERVAL: Duration = Duration::from_micros(100);
 const STARTUP_STDERR_CAPTURE_BYTES: usize = 256;
+
+/// A worker frame that carried an allowlisted unavailable reason. It keeps
+/// the established `NIR1_GRAPH_WORKER_UNAVAILABLE: {reason}` text; callers
+/// downcast it to read the reason and its category.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CQueryWorkerUnavailable {
+    pub reason: UnavailableReason,
+}
+
+impl std::fmt::Display for CQueryWorkerUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NIR1_GRAPH_WORKER_UNAVAILABLE: {}", self.reason)
+    }
+}
+
+impl std::error::Error for CQueryWorkerUnavailable {}
+
+/// Accept one complete published frame for `request`. Only NQG2 validates;
+/// the project, query Scene and seed must be the request's, and a refusal
+/// becomes a typed [`CQueryWorkerUnavailable`]. Pure: no process state.
+fn accept_published_frame<'a>(
+    bytes: &'a [u8],
+    request: &Nir1GraphRequest,
+) -> Result<FrameView<'a>> {
+    let view = worker_frame::validate(bytes)?;
+    ensure!(
+        view.project() == request.project_id,
+        "NIR1_GRAPH_WORKER_PROJECT_MISMATCH"
+    );
+    ensure!(
+        view.query_scene() == request.query_scene_id,
+        "NIR1_GRAPH_WORKER_SCENE_MISMATCH"
+    );
+    if let Some(reason) = view.unavailable_reason() {
+        return Err(CQueryWorkerUnavailable { reason }.into());
+    }
+    // validate() already proved a non-empty scope and a positive generation.
+    let graph = view
+        .graph()
+        .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_FRAME_INVALID"))?;
+    ensure!(
+        graph.seed() == request.seed_entity_id,
+        "NIR1_GRAPH_WORKER_SEED_MISMATCH"
+    );
+    Ok(view)
+}
 
 // ponytail: one process-local owner; use a bounded permit count only if approved capacity grows.
 static C_QUERY_CAPACITY_IN_USE: AtomicBool = AtomicBool::new(false);
@@ -1853,28 +1899,7 @@ impl CQueryWorkerOwner {
             if self.region.result_len == 0 && events & READER_FRAME != 0 {
                 let len = native.mailbox.frame_len.load(Ordering::Relaxed);
                 ensure!(len <= FRAME_BYTES, "NIR1_GRAPH_FRAME_LIMIT");
-                let bytes = self.result_bytes(len)?;
-                let view = worker_frame::validate(bytes)?;
-                ensure!(
-                    view.project == request.project_id,
-                    "NIR1_GRAPH_WORKER_PROJECT_MISMATCH"
-                );
-                ensure!(
-                    view.scene == request.query_scene_id,
-                    "NIR1_GRAPH_WORKER_SCENE_MISMATCH"
-                );
-                if let Some(reason) = view.reason {
-                    anyhow::bail!("NIR1_GRAPH_WORKER_UNAVAILABLE: {reason}");
-                }
-                ensure!(
-                    view.scope.is_some()
-                        && view.generation.is_some_and(|generation| generation > 0),
-                    "NIR1_GRAPH_WORKER_FRAME_INVALID"
-                );
-                ensure!(
-                    view.seed == Some(request.seed_entity_id.as_str()),
-                    "NIR1_GRAPH_WORKER_SEED_MISMATCH"
-                );
+                accept_published_frame(self.result_bytes(len)?, request)?;
                 self.check_current_binding()?;
                 let frame_binding_validated_at = admitted_at.elapsed();
                 self.region.elapsed = Some(frame_binding_validated_at);
@@ -2517,17 +2542,19 @@ impl CQueryWorkerOwner {
         let Ok(frame) = worker_frame::validate(&bytes[..len]) else {
             return false;
         };
-        frame.project == request.project_id.as_str()
-            && frame.scene == request.query_scene_id.as_str()
-            && frame.reason.is_none()
-            && frame.scope.is_some()
-            && frame.generation.is_some_and(|generation| generation > 0)
-            && frame.seed == Some(request.seed_entity_id.as_str())
-            && frame.node_count == 1
-            && frame.edge_count == 0
-            && frame
-                .first_node
-                .is_some_and(|node| node.entity.id == request.seed_entity_id.as_str())
+        // validate() proves the scope and positive generation of a Graph.
+        let Some(graph) = frame.graph() else {
+            return false;
+        };
+        frame.project() == request.project_id.as_str()
+            && frame.query_scene() == request.query_scene_id.as_str()
+            && graph.seed() == request.seed_entity_id.as_str()
+            && graph.node_count() == 1
+            && graph.edge_count() == 0
+            && graph.scene_count() == 0
+            && graph.nodes().next().is_some_and(|node| {
+                node.is_ok_and(|node| node.entity.id == request.seed_entity_id.as_str())
+            })
     }
 
     fn result_bytes(&self, len: usize) -> Result<&[u8]> {
@@ -3054,9 +3081,17 @@ mod tests {
     }
     use std::io::Cursor;
 
+    // `query-invalidated` is an allowlisted reason; the old free-text "r"
+    // would now be refused by validate().
+    const TEST_REASON: &str = "query-invalidated";
+
     fn unavailable_test_frame(reason: &str) -> Vec<u8> {
-        let mut frame = b"NQG1\0".to_vec();
-        for value in ["p", "s", reason] {
+        unavailable_test_frame_for("p", reason)
+    }
+
+    fn unavailable_test_frame_for(project: &str, reason: &str) -> Vec<u8> {
+        let mut frame = b"NQG2\0".to_vec();
+        for value in [project, "s", reason] {
             frame.extend_from_slice(&(value.len() as u32).to_le_bytes());
             frame.extend_from_slice(value.as_bytes());
         }
@@ -3064,7 +3099,7 @@ mod tests {
     }
 
     fn read_test_wire(suffix: &[u8]) -> usize {
-        read_test_frame(&unavailable_test_frame("r"), suffix)
+        read_test_frame(&unavailable_test_frame(TEST_REASON), suffix)
     }
 
     fn read_test_frame(frame: &[u8], suffix: &[u8]) -> usize {
@@ -3275,6 +3310,99 @@ mod tests {
     }
 
     #[test]
+    fn parent_frame_acceptance_rejects_nqg1_and_non_allowlisted_reason() -> Result<()> {
+        use super::super::{Nir1GraphResponse, Nir1QualifiedGraph};
+        use worker_frame::UnavailableCategory;
+
+        let request = Nir1GraphRequest {
+            project_id: "p".into(),
+            query_scene_id: "s".into(),
+            seed_entity_id: "e".into(),
+        };
+        // An allowlisted refusal is typed and keeps the established text.
+        for (reason, expected, category) in [
+            (
+                TEST_REASON,
+                UnavailableReason::QueryInvalidated,
+                UnavailableCategory::Timeout,
+            ),
+            (
+                "query-worker-work-scene-limit-pre-cleanup-work-failed-scene-limit",
+                UnavailableReason::parse(
+                    "query-worker-work-scene-limit-pre-cleanup-work-failed-scene-limit",
+                )
+                .expect("allowlisted"),
+                UnavailableCategory::Limit,
+            ),
+        ] {
+            let error = accept_published_frame(&unavailable_test_frame(reason), &request)
+                .expect_err("an unavailable frame never becomes a result");
+            let unavailable = error
+                .downcast_ref::<CQueryWorkerUnavailable>()
+                .expect("typed worker refusal");
+            assert_eq!(unavailable.reason, expected);
+            assert_eq!(unavailable.reason.category(), category);
+            assert_eq!(
+                error.to_string(),
+                format!("NIR1_GRAPH_WORKER_UNAVAILABLE: {reason}")
+            );
+        }
+        // Free text is refused as a malformed frame and never surfaced.
+        for reason in ["r", "private detail", "query-budget-or-validation-failed"] {
+            let error = accept_published_frame(&unavailable_test_frame(reason), &request)
+                .expect_err("non-allowlisted reason");
+            assert!(error.downcast_ref::<CQueryWorkerUnavailable>().is_none());
+            assert_eq!(error.to_string(), "NIR1_GRAPH_FRAME_REASON");
+        }
+        // Only NQG2 is accepted.
+        let mut retired = unavailable_test_frame(TEST_REASON);
+        retired[..4].copy_from_slice(b"NQG1");
+        assert_eq!(
+            accept_published_frame(&retired, &request)
+                .expect_err("NQG1 frame")
+                .to_string(),
+            "NIR1_GRAPH_FRAME_VERSION"
+        );
+        assert_eq!(
+            accept_published_frame(&unavailable_test_frame_for("other", TEST_REASON), &request)
+                .expect_err("another project")
+                .to_string(),
+            "NIR1_GRAPH_WORKER_PROJECT_MISMATCH"
+        );
+
+        // An available frame is bound to the request's seed.
+        let response = Nir1GraphResponse {
+            status: "available",
+            project_id: "p".into(),
+            query_scene_id: "s".into(),
+            scope_revision: Some("scope".into()),
+            graph: Some(Nir1QualifiedGraph {
+                seed_entity_id: "e".into(),
+                generation: 1,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                scene_total: 0,
+                scenes: Vec::new(),
+            }),
+            reason: None,
+        };
+        let frame = worker_frame::encode(&response)?;
+        let view = accept_published_frame(&frame, &request)?;
+        assert_eq!(view.graph().map(|graph| graph.seed()), Some("e"));
+        let other_seed = Nir1GraphRequest {
+            seed_entity_id: "other".into(),
+            ..request.clone()
+        };
+        assert_eq!(
+            accept_published_frame(&frame, &other_seed)
+                .expect_err("another seed")
+                .to_string(),
+            "NIR1_GRAPH_WORKER_SEED_MISMATCH"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn terminal_commit_requires_exact_marker_and_eof_without_trailing_data() {
         let events = read_test_wire(worker_frame::TERMINAL_SUCCESS_COMMIT);
         assert_ne!(events & READER_FRAME, 0);
@@ -3292,7 +3420,7 @@ mod tests {
     #[test]
     fn reader_publication_timestamps_capture_commit_then_eof() {
         let (_, stamps) = read_test_frame_with_timing(
-            &unavailable_test_frame("r"),
+            &unavailable_test_frame(TEST_REASON),
             worker_frame::TERMINAL_SUCCESS_COMMIT,
         );
         assert!(matches!(
@@ -3337,9 +3465,13 @@ mod tests {
         assert_ne!(events & READER_EOF, 0);
         assert!(!result_wire_complete(events));
 
+        // The marker bytes inside a free-text field are payload, not COMMIT.
         let marker_in_payload = worker_frame::TERMINAL_SUCCESS_COMMIT;
         let events = read_test_frame(
-            &unavailable_test_frame(std::str::from_utf8(marker_in_payload).unwrap()),
+            &unavailable_test_frame_for(
+                std::str::from_utf8(marker_in_payload).unwrap(),
+                TEST_REASON,
+            ),
             &[],
         );
         assert_ne!(events & READER_FAILED, 0);
@@ -3433,7 +3565,7 @@ mod tests {
         let request_len = request_len(&request)?;
         let project_prefix = request.project_id.as_bytes();
         let stage_end = project_prefix.len() + LAUNCH_STAGING_BYTES;
-        let frame = unavailable_test_frame("r");
+        let frame = unavailable_test_frame(TEST_REASON);
         let mut wire = vec![b'R'];
         wire.extend_from_slice(&(frame.len() as u32).to_le_bytes());
         wire.extend_from_slice(&frame);
@@ -3551,8 +3683,8 @@ mod tests {
         let bytes = unsafe { native.bytes() };
         assert_eq!(&bytes[..frame.len()], frame.as_slice());
         let view = worker_frame::validate(&bytes[..frame.len()])?;
-        assert_eq!(view.project, request.project_id);
-        assert_eq!(view.scene, request.query_scene_id);
+        assert_eq!(view.project(), request.project_id);
+        assert_eq!(view.query_scene(), request.query_scene_id);
         Ok(())
     }
 

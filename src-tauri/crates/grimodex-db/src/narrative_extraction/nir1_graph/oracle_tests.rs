@@ -10,7 +10,7 @@ use crate::narrative_extraction::nir1_entity_relation_index::{
 use crate::workspace_lifecycle::WorkspaceLifecycleCore;
 use grimodex_core::canonical_json::canonical_json_digest;
 use grimodex_core::narrative_nir1::{EntityRelationBundle, ScopeValue};
-use rusqlite::params;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,6 +22,10 @@ const TWO_HOP_ENTITY: &str = "oracle-third";
 const SEED_KEYSET_DECOYS: usize = 31;
 const UNRELATED_REVERSE_INDEX_DECOYS: usize = 513;
 const STALE_SEED_REVERSE_INDEX_DECOYS: usize = 512;
+const SCENE_SEED_ONLY: &str = "oracle-scene-a";
+const SCENE_BOB_ONLY: &str = "oracle-scene-b1";
+const SCENE_SHARED: &str = "oracle-scene-s";
+const SCENE_THIRD_ONLY: &str = "oracle-scene-t1";
 
 struct TestDirectory(PathBuf);
 
@@ -38,6 +42,9 @@ struct OracleFixture {
     expected_bundle: EntityRelationBundle,
     generation: i64,
     two_hop: bool,
+    /// (Scene, representative Entity, frame edge indices), fixed by hand
+    /// from the tuple rule before any query.
+    expected_scene_order: Vec<(&'static str, &'static str, Vec<u16>)>,
     _directory: TestDirectory,
 }
 
@@ -69,14 +76,18 @@ impl OracleFixture {
     }
 
     fn two_hop() -> Result<Self> {
-        Self::build(None, true)
+        Self::build(None, true, false)
+    }
+
+    fn two_hop_with_scene_pins() -> Result<Self> {
+        Self::build(None, true, true)
     }
 
     fn with_denied_bridge(bridge: Option<DeniedBridge>) -> Result<Self> {
-        Self::build(bridge, false)
+        Self::build(bridge, false, false)
     }
 
-    fn build(bridge: Option<DeniedBridge>, two_hop: bool) -> Result<Self> {
+    fn build(bridge: Option<DeniedBridge>, two_hop: bool, scene_pins: bool) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-c-graph-oracle-{}", uuid::Uuid::new_v4())),
         );
@@ -118,6 +129,46 @@ impl OracleFixture {
                              'directed', 1, '2026-09-12T00:00:00Z')",
                     [PROJECT],
                 )?;
+            }
+            if scene_pins {
+                // Scenes and their A1 bindings enter the live Scope authority,
+                // so they precede the typed Revision that records it. Root
+                // Scenes ordered last keep the fixture's reading order.
+                for (index, scene) in [
+                    SCENE_SEED_ONLY,
+                    SCENE_BOB_ONLY,
+                    SCENE_SHARED,
+                    SCENE_THIRD_ONLY,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    conn.execute(
+                        "INSERT INTO tree_nodes
+                            (id, project_id, node_type, title, content, sort_order)
+                         VALUES (?1, ?2, 'scene', ?1, '{}', ?3)",
+                        params![scene, PROJECT, format!("z{index}")],
+                    )?;
+                }
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    conn,
+                    PROJECT,
+                    SCENE_SHARED,
+                    "2026-09-17T00:00:09.000Z",
+                )?;
+                for (scene, entity) in [
+                    (SCENE_SEED_ONLY, "nir1-alice"),
+                    (SCENE_BOB_ONLY, "nir1-bob"),
+                    (SCENE_SHARED, TWO_HOP_ENTITY),
+                    (SCENE_SHARED, "nir1-bob"),
+                    (SCENE_THIRD_ONLY, TWO_HOP_ENTITY),
+                ] {
+                    conn.execute(
+                        "INSERT INTO scene_codex_pins (scene_id, entry_id, created_at)
+                         VALUES (?1, ?2, '2026-09-23T00:00:00.000Z')",
+                        params![scene, entity],
+                    )?;
+                }
             }
             Ok(())
         })?;
@@ -264,8 +315,61 @@ impl OracleFixture {
             expected_bundle,
             generation,
             two_hop,
+            // The seed's own pin never contributes. Bob (hop 1, [nir1-edge])
+            // ranks before Third (hop 2, [nir1-edge, oracle-edge-bc]); the
+            // shared Scene is represented by its minimum tuple, through Bob.
+            expected_scene_order: if scene_pins {
+                vec![
+                    (SCENE_BOB_ONLY, "nir1-bob", vec![0]),
+                    (SCENE_SHARED, "nir1-bob", vec![0]),
+                    (SCENE_THIRD_ONLY, TWO_HOP_ENTITY, vec![0, 1]),
+                ]
+            } else {
+                Vec::new()
+            },
             _directory: directory,
         })
+    }
+
+    /// Each expected association reads only canonical Scene, pin and A1
+    /// binding rows for the declared (Scene, Entity); never reader output.
+    fn expected_scenes(&self, conn: &Connection) -> Result<Vec<Value>> {
+        let mut scenes = Vec::with_capacity(self.expected_scene_order.len());
+        for (scene, entity, path) in &self.expected_scene_order {
+            let (rowid, created_at): (i64, String) = conn.query_row(
+                "SELECT rowid, created_at FROM scene_codex_pins
+                  WHERE scene_id=?1 AND entry_id=?2",
+                params![scene, entity],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let source_token: String = conn.query_row(
+                "SELECT 'v' || version || '@' || updated_at FROM tree_nodes
+                  WHERE id=?1 AND project_id=?2",
+                params![scene, PROJECT],
+                |row| row.get(0),
+            )?;
+            let binding: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT scene_incarnation_id, source_token
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id=?1 AND scene_id=?2",
+                    params![PROJECT, scene],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            scenes.push(json!({
+                "sceneId": scene,
+                "sceneIncarnationId": binding.as_ref().map(|(incarnation, _)| incarnation),
+                "sceneSourceToken": source_token,
+                "sceneScopeToken": binding.as_ref().map(|(_, scope)| scope),
+                "pinRowid": rowid,
+                "pinEntryId": entity,
+                "pinCreatedAt": created_at,
+                "pathHop": path.len(),
+                "pathEdgeIndices": path,
+            }));
+        }
+        Ok(scenes)
     }
 
     // The roster/material comes from inputs saved before the canonical writer,
@@ -398,6 +502,8 @@ impl OracleFixture {
                     "seedEntityId": "nir1-alice", "generation": self.generation,
                     "nodes": expected_nodes,
                     "edges": expected_edges,
+                    "sceneTotal": self.expected_scene_order.len(),
+                    "scenes": self.expected_scenes(conn)?,
                 },
             }))
         })
@@ -592,6 +698,70 @@ fn seed_local_two_hop_query_matches_independent_canonical_projection() -> Result
     assert_eq!(
         actual["graph"]["edges"][1]["to"]["entityId"],
         TWO_HOP_ENTITY
+    );
+    Ok(())
+}
+
+// Pins enter the Graph only through reached Entities: Bob's and Third's
+// Scenes in tuple order, the shared Scene once through its minimum path, and
+// none of the seed's own pins. The expected frame is fixed from the inputs.
+#[test]
+fn seed_local_two_hop_scene_associations_match_independent_projection() -> Result<()> {
+    let fixture = OracleFixture::two_hop_with_scene_pins()?;
+    let expected = fixture.expected_response()?;
+    assert_eq!(expected["graph"]["sceneTotal"], 3);
+    assert!(expected["graph"]["scenes"][1]["sceneIncarnationId"].is_string());
+    let mut reader = fixture.registered_reader()?;
+    let response = reader.query_with_deadline(
+        &graph_request("nir1-alice"),
+        Duration::from_secs(2),
+        100_000,
+    )?;
+    ensure!(
+        response.status == "available",
+        "two-hop Scene oracle query unavailable: {:?}",
+        response.reason
+    );
+    assert_eq!(serde_json::to_value(&response)?, expected);
+
+    // The worker frame carries exactly the same associations.
+    let frame = super::worker_frame::encode(&response)?;
+    let view = super::worker_frame::validate(&frame)?;
+    let graph = view
+        .graph()
+        .ok_or_else(|| anyhow::anyhow!("Scene oracle frame was unavailable"))?;
+    assert_eq!(graph.diagnostic_scene_total(), 3);
+    let mut scenes = Vec::new();
+    for scene in graph.scenes() {
+        let scene = scene?;
+        let path = graph.scene_path(&scene)?;
+        scenes.push((
+            scene.scene_id.to_owned(),
+            scene.pin.entry_id.to_owned(),
+            path.steps()
+                .map(|step| step.edge.relation.edge_id.to_owned())
+                .collect::<Vec<_>>(),
+        ));
+    }
+    assert_eq!(
+        scenes,
+        vec![
+            (
+                SCENE_BOB_ONLY.into(),
+                "nir1-bob".into(),
+                vec!["nir1-edge".into()]
+            ),
+            (
+                SCENE_SHARED.into(),
+                "nir1-bob".into(),
+                vec!["nir1-edge".into()]
+            ),
+            (
+                SCENE_THIRD_ONLY.into(),
+                TWO_HOP_ENTITY.into(),
+                vec!["nir1-edge".into(), "oracle-edge-bc".into()]
+            ),
+        ]
     );
     Ok(())
 }
