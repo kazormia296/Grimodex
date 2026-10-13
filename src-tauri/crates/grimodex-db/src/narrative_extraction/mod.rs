@@ -38,6 +38,7 @@ pub mod nir1_chronicle_index;
 mod nir1_entity_relation;
 pub mod nir1_entity_relation_index;
 pub mod nir1_graph;
+mod nir1_graph_index_maintenance;
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,
     write_dependency_declaration_set, write_dependency_declaration_set_in_tx,

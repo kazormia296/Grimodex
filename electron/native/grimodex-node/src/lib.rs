@@ -3277,6 +3277,11 @@ where
             narrative_extraction::REBUILD_DERIVED_WORK_KEY.to_string()
         }
         AutomaticRunKind::Backfill => narrative_extraction::LEGACY_BACKFILL_WORK_KEY.to_string(),
+        // Rejected by the closed manual allowlist above; the gated Graph
+        // Index build has no manual or Run-backed route.
+        AutomaticRunKind::Nir1GraphIndexBuild => {
+            anyhow::bail!("manual narrative maintenance kind is unsupported")
+        }
     };
     let identity = match semantic_epoch_id.as_deref() {
         Some(epoch_id) => WorkKey::new_for_epoch(
@@ -8166,7 +8171,10 @@ impl Backend {
                         mark_run_terminalized: Some(&mark_run_terminalized),
                     };
                     let cycle_result = {
-                        narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_control(
+                        // The pinned authority's runtime lets the shared cycle own
+                        // the gated NIR-1 Graph Index build. Its gate opens only for
+                        // the validated journey seam; product launches pass no seam.
+                        narrative_extraction::maintenance_runtime::run_system_work_cycle_with_nir1_graph_runtime(
                     authority.db(),
                     &request,
                     |item| {
@@ -8177,6 +8185,7 @@ impl Backend {
                     ci_config.as_ref(),
                     foreground_owner.as_ref(),
                     Some(&attempt_control),
+                    Some(authority.nir_chronicle_index_runtime()),
                 )
                     };
                     let result = match cycle_result {

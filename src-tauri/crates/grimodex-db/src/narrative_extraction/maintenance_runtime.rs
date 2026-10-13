@@ -41,8 +41,12 @@ use super::maintenance_skip_evidence::{
     evaluate_completed_run_skip, persist_completed_run_skip_evidence_in_tx,
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
+use super::nir1_chronicle_index::NirChronicleIndexRuntime;
 use super::nir1_entity_relation_index::{
     GraphProgressCallback, GraphWorkControl, GraphWorkStage,
+};
+use super::nir1_graph_index_maintenance::{
+    Nir1GraphCycleContext, Nir1GraphIndexBuildGate, NIR1_GRAPH_INDEX_BUILD_WORK_KEY,
 };
 use super::restore_rebuild::{
     is_canonical_graph_state_digest, validate_canonical_verify_outcome_digest,
@@ -76,6 +80,15 @@ pub enum AutomaticRunKind {
     Verify,
     #[serde(rename = "semantic-index-rebuild")]
     RebuildDerived,
+    /// Whole-project NIR-1 Graph Index build (B), gated closed until PUB-G.
+    /// It is ledgerless: no Run is ever created with this value (the
+    /// `narrative_extraction_runs.run_kind` CHECK and the maintenance
+    /// lifecycle both reject it), it is not part of [`Self::all`] or the
+    /// production route registry, and only the Rust cycle can discover it
+    /// while the validated journey seam opens its gate. A wire request that
+    /// carries it is rejected before any lifecycle work.
+    #[serde(rename = "nir1-graph-index-build")]
+    Nir1GraphIndexBuild,
 }
 
 /// Result of dispatching one automatic adapter.
@@ -89,23 +102,38 @@ pub enum AutomaticRunKind {
 pub(crate) enum MaintenanceDispatchOutcome {
     Completed,
     ForegroundHeld,
+    /// A gated, ledgerless adapter finished without taking a finalization
+    /// grant: nothing to publish, a typed refusal, a gate refusal, or an owned
+    /// validation result. The queue execution settles as a no-op completion.
+    /// `rediscover` asks the cycle to plan the follow-up now (a failed
+    /// validation hands over to a fresh rebuild attempt); otherwise the key is
+    /// halted for the rest of this cycle.
+    CompletedWithoutFinalization {
+        rediscover: bool,
+    },
 }
 
 impl AutomaticRunKind {
-    /// Persisted `narrative_extraction_runs.run_kind` value.
+    /// Canonical identity value. For the three Run-backed kinds this is the
+    /// persisted `narrative_extraction_runs.run_kind`; the gated Graph build
+    /// value is used only in canonical work keys and is never persisted.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Backfill => "backfill",
             Self::Verify => "dependency-verify",
             Self::RebuildDerived => "semantic-index-rebuild",
+            Self::Nir1GraphIndexBuild => "nir1-graph-index-build",
         }
     }
 
     /// Stable product route identity. This is intentionally distinct from
     /// [`Self::as_str`], whose values are persisted SQLite Run Kind values.
+    /// The gated pre-activation route has an identity for diagnostics only;
+    /// it is never part of the production registry.
     pub fn route_id(self) -> &'static str {
         super::maintenance_route_registry::route_id_for_run_kind(self)
-            .expect("every AutomaticRunKind must have a registered route")
+            .or_else(|| super::maintenance_route_registry::gated_route_id_for_run_kind(self))
+            .expect("every AutomaticRunKind must have a registered or gated route")
     }
 
     /// All automatic kinds.  Keeping this list closed is an architecture
@@ -301,6 +329,11 @@ pub enum NarrativeMaintenanceCiTrigger {
     RuleRegistryDigestChanged,
     #[serde(rename = "producerGenerationSetDigest-changed")]
     ProducerGenerationSetDigestChanged,
+    /// Opens the gated NIR-1 Graph Index build route for this validated,
+    /// unpackaged CI launch only. It selects no coordinate; production and
+    /// ordinary launches never carry a seam, so the route stays closed.
+    #[serde(rename = "nir1-graph-index-build")]
+    Nir1GraphIndexBuild,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -420,7 +453,8 @@ pub fn effective_maintenance_coordinates(
         }
         Some(
             NarrativeMaintenanceCiTrigger::DependencyGap
-            | NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake,
+            | NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake
+            | NarrativeMaintenanceCiTrigger::Nir1GraphIndexBuild,
         )
         | None => {}
     }
@@ -1388,6 +1422,12 @@ impl MaintenanceCycleRequest {
                     .any(|reason| reason == BEFORE_CUTOVER_FOLLOW_UP_REASON),
                 "NEX_MAINTENANCE_INVALID_REQUEST: C2-ZC follow-up reason is Rust-internal"
             );
+            // The gated Graph Index build is planned only by the Rust cycle
+            // behind its closed-by-default gate. Main never names it.
+            anyhow::ensure!(
+                item.run_kind != AutomaticRunKind::Nir1GraphIndexBuild,
+                "NEX_MAINTENANCE_INVALID_REQUEST: the gated NIR-1 Graph Index build is Rust-internal"
+            );
             let epoch = item
                 .semantic_epoch_id
                 .clone()
@@ -2229,14 +2269,28 @@ pub(crate) fn discover_durable_maintenance_work_with_coordinates_and_control(
     result.into_result()
 }
 
+/// Plan the next cycle work for one project. The gated Graph Index build is
+/// judged first; its gate is checked before any SQL, so a closed gate (the
+/// product default) leaves this function exactly as before. With the gate
+/// open, a stale existing Graph binding is repaired by its own producer before
+/// the durable Backfill -> Verify -> conditional Rebuild -> Verify chain runs
+/// (Verify treats a non-validated declared binding as a manual defect); a
+/// missing binding is built only after the durable chain has nothing to do.
 fn discover_cycle_work(
     db: &Database,
     project_id: &str,
     reason: &str,
     coordinates: Option<&MaintenanceContractCoordinates>,
     control: Option<&MaintenanceCycleControl<'_>>,
+    graph: &Nir1GraphCycleContext<'_>,
 ) -> anyhow::Result<Option<DesiredWork>> {
-    match control {
+    let graph_plan = super::nir1_graph_index_maintenance::plan_graph_index_build(
+        db, project_id, reason, control, graph,
+    )?;
+    if graph_plan.preempts_durable_chain() {
+        return Ok(graph_plan.into_work());
+    }
+    let durable = match control {
         Some(control) if reason == "before-cutover" => {
             discover_before_cutover_maintenance_work_with_coordinates_and_control(
                 db,
@@ -2258,7 +2312,11 @@ fn discover_cycle_work(
             reason,
             coordinates,
         ),
+    }?;
+    if durable.is_some() {
+        return Ok(durable);
     }
+    Ok(graph_plan.into_work())
 }
 
 pub(crate) fn is_scan_staging_project_in_tx(
@@ -2574,7 +2632,7 @@ fn completed_rebuild_outcome_is_current(
     .is_ok()
 }
 
-const BEFORE_CUTOVER_FOLLOW_UP_REASON: &str = "before-cutover-follow-up";
+pub(crate) const BEFORE_CUTOVER_FOLLOW_UP_REASON: &str = "before-cutover-follow-up";
 
 fn maintenance_rediscovery_reason(item: &DesiredWork) -> &str {
     if item.run_kind == AutomaticRunKind::Verify
@@ -2704,6 +2762,8 @@ fn durable_run_work(
                 .as_deref()
                 .is_some_and(|epoch| { work_key == format!("{VERIFY_WORK_KEY_PREFIX}{epoch}") }),
             AutomaticRunKind::RebuildDerived => work_key == REBUILD_DERIVED_WORK_KEY,
+            // Ledgerless: the string match above never yields this kind.
+            AutomaticRunKind::Nir1GraphIndexBuild => false,
         },
         "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Run workKey does not match its phase"
     );
@@ -2865,8 +2925,33 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
     request: &MaintenanceCycleRequest,
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    foreground_owner: Option<&ForegroundSystemWorkRun>,
+    control: Option<&MaintenanceCycleControl<'_>>,
+) -> anyhow::Result<MaintenanceCycleResult> {
+    run_system_work_cycle_with_nir1_graph_runtime(
+        db,
+        request,
+        mode_for,
+        ci_config,
+        foreground_owner,
+        control,
+        None,
+    )
+}
+
+/// Execute a controlled cycle that may also own the gated whole-project NIR-1
+/// Graph Index build. The Native owner passes its pinned authority's runtime;
+/// the build is still discovered only when the validated journey seam opens
+/// the gate (`trigger = nir1-graph-index-build`). With no seam (every product
+/// launch) or no runtime, the cycle behaves exactly like the form above.
+pub fn run_system_work_cycle_with_nir1_graph_runtime(
+    db: &Database,
+    request: &MaintenanceCycleRequest,
+    mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
     _foreground_owner: Option<&ForegroundSystemWorkRun>,
     control: Option<&MaintenanceCycleControl<'_>>,
+    nir1_graph_runtime: Option<&NirChronicleIndexRuntime>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
     if let Some(control) = control {
         (control.should_stop)()?;
@@ -2875,6 +2960,10 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
     if let Some(binding) = request.workspace_binding.as_ref() {
         binding.validate()?;
     }
+    let graph = Nir1GraphCycleContext::new(
+        Nir1GraphIndexBuildGate::from_journey_seam(ci_config),
+        nir1_graph_runtime,
+    );
     let mut work = preflight_maintenance_cycle_request(request)?;
     if work.is_empty() {
         for project_id in &request.wake_project_ids {
@@ -2884,6 +2973,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                 "durable-wake",
                 Some(&effective_coordinates),
                 control,
+                &graph,
             )? {
                 work.push(next);
             }
@@ -3091,6 +3181,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                     maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
                     control,
+                    &graph,
                 )?;
                 match next {
                     Some(next) if next.canonical_key() != item.canonical_key() => {
@@ -3149,6 +3240,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                         control,
+                        &graph,
                     )? {
                         enqueue_discovered(&mut queue, next)?;
                     }
@@ -3300,6 +3392,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                         control,
+                        &graph,
                     )?;
                     match next {
                         Some(next) if next.canonical_key() != item.canonical_key() => {
@@ -3343,6 +3436,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         maintenance_rediscovery_reason(&item),
                         Some(&effective_coordinates),
                         control,
+                        &graph,
                     )? {
                         enqueue_discovered(&mut queue, next)?;
                     }
@@ -3366,6 +3460,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                         &effective_item,
                         Some(&effective_coordinates),
                         control,
+                        &graph,
                     )
                 }) {
                     Ok(outcome) => outcome,
@@ -3394,6 +3489,34 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                     mark_deferred(&effective_item)?;
                     break;
                 }
+                if let MaintenanceDispatchOutcome::CompletedWithoutFinalization { rediscover } =
+                    dispatch_outcome
+                {
+                    // The gated, ledgerless Graph build route took no
+                    // finalization grant (nothing to publish, a typed
+                    // refusal, or an owned validation result). Settle the
+                    // queue execution as a no-op. Only a failed validation
+                    // asks for its follow-up now; every other outcome is
+                    // halted for this cycle so the final rediscovery cannot
+                    // turn it into a retry wake.
+                    handled_non_coalesced = true;
+                    if rediscover {
+                        if let Some(next) = discover_cycle_work(
+                            db,
+                            &item.project_id,
+                            maintenance_rediscovery_reason(&item),
+                            Some(&effective_coordinates),
+                            control,
+                            &graph,
+                        )? {
+                            enqueue_discovered(&mut queue, next)?;
+                        }
+                    } else {
+                        terminal_halted_work.insert(recovery_work_key);
+                    }
+                    mark_noop_completed(&effective_item)?;
+                    continue;
+                }
                 // Register the next phase before marking this item complete.
                 // The per-work completion transition may close the attempt
                 // when this was the final registered item.
@@ -3403,6 +3526,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                     maintenance_rediscovery_reason(&item),
                     Some(&effective_coordinates),
                     control,
+                    &graph,
                 ) {
                     Ok(next) => next,
                     Err(error) => {
@@ -3463,6 +3587,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner_with_con
                 "durable-wake",
                 Some(&effective_coordinates),
                 control,
+                &graph,
             )? {
                 let next_key = recovery_work_key_for_item(db, &next)?.canonical_key();
                 if !terminal_halted_work.contains(&next_key) {
@@ -3647,6 +3772,14 @@ fn validate_dispatch_contract(item: &DesiredWork) -> anyhow::Result<()> {
             );
             Ok(())
         }
+        AutomaticRunKind::Nir1GraphIndexBuild => {
+            anyhow::ensure!(
+                item.work_key == NIR1_GRAPH_INDEX_BUILD_WORK_KEY
+                    && item.semantic_epoch_id.is_some(),
+                "NEX_MAINTENANCE_UNKNOWN_NIR1_GRAPH_WORK_KEY: Graph Index build work must use its canonical key and a Semantic Epoch"
+            );
+            Ok(())
+        }
     }
 }
 
@@ -3655,12 +3788,13 @@ fn dispatch_enabled_work(
     item: &DesiredWork,
     coordinates: Option<&MaintenanceContractCoordinates>,
     control: Option<&MaintenanceCycleControl<'_>>,
+    graph: &Nir1GraphCycleContext<'_>,
 ) -> anyhow::Result<MaintenanceDispatchOutcome> {
     validate_dispatch_contract(item)?;
     // This adapter uses the exact Database supplied by the live
     // WorkspaceAuthority. It owns its transaction phases but never opens a
     // second filesystem connection.
-    super::maintenance_route_registry::dispatch_enabled_work(db, item, coordinates, control)
+    super::maintenance_route_registry::dispatch_enabled_work(db, item, coordinates, control, graph)
 }
 
 /// Classify foreground/no-wait contention as a transient queue outcome.  It
@@ -3678,7 +3812,7 @@ fn is_maintenance_connection_cleanup_failure(error: &anyhow::Error) -> bool {
         || error_chain_contains(error, "NEX_MAINTENANCE_CONNECTION_UNUSABLE")
 }
 
-fn is_maintenance_control_or_cleanup_error(error: &anyhow::Error) -> bool {
+pub(crate) fn is_maintenance_control_or_cleanup_error(error: &anyhow::Error) -> bool {
     is_transient_maintenance_preemption(error)
         || (!super::source_revision::is_validation_capacity_exceeded(error)
             && (is_validation_terminated(error)
@@ -3687,7 +3821,7 @@ fn is_maintenance_control_or_cleanup_error(error: &anyhow::Error) -> bool {
         || error_chain_contains(error, "NIR1_MAINTENANCE_CONNECTION_")
 }
 
-fn error_chain_contains(error: &anyhow::Error, marker: &str) -> bool {
+pub(crate) fn error_chain_contains(error: &anyhow::Error, marker: &str) -> bool {
     error
         .chain()
         .any(|cause| cause.to_string().contains(marker))
@@ -3755,7 +3889,7 @@ impl DesiredWork {
         Self::new_with_epoch(project_id, run_kind, work_key, None, reason)
     }
 
-    fn new_with_epoch(
+    pub(crate) fn new_with_epoch(
         project_id: impl Into<String>,
         run_kind: AutomaticRunKind,
         work_key: impl Into<String>,
@@ -3954,6 +4088,10 @@ pub fn decide_execution(
         AutomaticRunKind::Backfill => MaintenanceExecutionDecision::ExecuteBackfill,
         AutomaticRunKind::Verify => MaintenanceExecutionDecision::ExecuteVerify,
         AutomaticRunKind::RebuildDerived => MaintenanceExecutionDecision::ExecuteRebuildDerived,
+        // Never planned from a wire trigger; only the gated cycle owns it.
+        AutomaticRunKind::Nir1GraphIndexBuild => MaintenanceExecutionDecision::Deferred {
+            reason: "nir1-graph-index-build-cycle-internal".to_string(),
+        },
     }
 }
 
@@ -4893,6 +5031,9 @@ mod tests {
             AutomaticRunKind::Backfill => LEGACY_BACKFILL_WORK_KEY.to_owned(),
             AutomaticRunKind::Verify => format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}"),
             AutomaticRunKind::RebuildDerived => REBUILD_DERIVED_WORK_KEY.to_owned(),
+            AutomaticRunKind::Nir1GraphIndexBuild => {
+                unreachable!("the gated Graph Index build is ledgerless")
+            }
         };
         WorkKey::new_for_epoch("project-1", kind, work_key, epoch_id).expect("recovery work")
     }
@@ -4908,6 +5049,9 @@ mod tests {
                 format!(r#"{{"verifyContractVersion":"{VERIFY_CONTRACT_VERSION}"}}"#)
             }
             AutomaticRunKind::RebuildDerived => "{}".to_string(),
+            AutomaticRunKind::Nir1GraphIndexBuild => {
+                unreachable!("the gated Graph Index build is ledgerless")
+            }
         }
     }
 
@@ -4916,6 +5060,9 @@ mod tests {
             AutomaticRunKind::Backfill => "maintenance-backfill",
             AutomaticRunKind::Verify => "maintenance-dependency-verify",
             AutomaticRunKind::RebuildDerived => "maintenance-semantic-index-rebuild",
+            AutomaticRunKind::Nir1GraphIndexBuild => {
+                unreachable!("the gated Graph Index build is ledgerless")
+            }
         }
     }
 

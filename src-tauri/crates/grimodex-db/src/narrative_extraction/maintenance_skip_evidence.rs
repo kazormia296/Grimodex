@@ -137,6 +137,88 @@ pub enum CompletedRunSkipDecision {
     },
 }
 
+/// How the gated NIR-1 Graph Index build route must treat a project.
+///
+/// This route is ledgerless: it creates no Run, so the decision is never
+/// persisted. It is the typed, fail-closed skip evidence for one judgement,
+/// observed by tests and reported to logs by its reason code only.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "kebab-case")]
+pub enum Nir1GraphIndexBuildDecision {
+    Build {
+        mode: Nir1GraphIndexBuildMode,
+        reason: Nir1GraphIndexBuildReason,
+    },
+    Skip {
+        reason: Nir1GraphIndexSkipReason,
+    },
+}
+
+/// `Rebuild` prepares and publishes a new sealed generation.
+/// `ValidateThenRebuild` first runs the owned full-set validation of an
+/// existing binding that this process has not yet validated (cold reopen).
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Nir1GraphIndexBuildMode {
+    Rebuild,
+    ValidateThenRebuild,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Nir1GraphIndexBuildReason {
+    BindingMissing,
+    BindingDirty,
+    NotCurrent,
+    ColdReopenValidation,
+    ValidationFailed,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Nir1GraphIndexSkipReason {
+    GateClosed,
+    NoCycleOwner,
+    RuntimeUnavailable,
+    BeforeCutoverFlow,
+    ScanStaging,
+    SchemaUnavailable,
+    NoEpoch,
+    BindingIncoherent,
+    NoCandidates,
+    BindingCurrent,
+    RefusedUnchanged,
+}
+
+impl Nir1GraphIndexBuildDecision {
+    /// Stable reason code for logs. It never contains a project, Revision,
+    /// Source, or other user-data identity.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Build { reason, .. } => match reason {
+                Nir1GraphIndexBuildReason::BindingMissing => "build:binding-missing",
+                Nir1GraphIndexBuildReason::BindingDirty => "build:binding-dirty",
+                Nir1GraphIndexBuildReason::NotCurrent => "build:not-current",
+                Nir1GraphIndexBuildReason::ColdReopenValidation => "build:cold-reopen-validation",
+                Nir1GraphIndexBuildReason::ValidationFailed => "build:validation-failed",
+            },
+            Self::Skip { reason } => match reason {
+                Nir1GraphIndexSkipReason::GateClosed => "skip:gate-closed",
+                Nir1GraphIndexSkipReason::NoCycleOwner => "skip:no-cycle-owner",
+                Nir1GraphIndexSkipReason::RuntimeUnavailable => "skip:runtime-unavailable",
+                Nir1GraphIndexSkipReason::BeforeCutoverFlow => "skip:before-cutover-flow",
+                Nir1GraphIndexSkipReason::ScanStaging => "skip:scan-staging",
+                Nir1GraphIndexSkipReason::SchemaUnavailable => "skip:schema-unavailable",
+                Nir1GraphIndexSkipReason::NoEpoch => "skip:no-epoch",
+                Nir1GraphIndexSkipReason::BindingIncoherent => "skip:binding-incoherent",
+                Nir1GraphIndexSkipReason::NoCandidates => "skip:no-candidates",
+                Nir1GraphIndexSkipReason::BindingCurrent => "skip:binding-current",
+                Nir1GraphIndexSkipReason::RefusedUnchanged => "skip:refused-unchanged",
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 struct LatestRun {
     id: String,
