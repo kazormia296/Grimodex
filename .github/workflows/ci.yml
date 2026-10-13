@@ -969,16 +969,26 @@ jobs:
     if: ${{ !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks && !inputs.independent_gates }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      # One base for the whole run. The consuming jobs verify the receipt
+      # against this SHA, so a master push during the run (or a re-run of
+      # only the failed consumers) cannot turn into a base mismatch.
+      c2zc-base-sha: ${{ steps.c2zc-base.outputs.sha }}
     env:
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
       GRIMODEX_C2ZC_RUST_RECEIPT_PATH: .artifacts/local-ci/c2-zc-rust-acceptance.json
-      GRIMODEX_C2ZC_RUST_REQUESTED_BASE: origin/master
       GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: HEAD
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+
+      - name: Pin the C2-ZC base for this run
+        id: c2zc-base
+        run: |
+          set -euo pipefail
+          echo "sha=$(git rev-parse 'origin/master^{commit}')" >> "$GITHUB_OUTPUT"
 
       - name: Native build dependencies
         env:
@@ -1016,6 +1026,7 @@ jobs:
         env:
           CARGO_BUILD_JOBS: "2"
           RUST_TEST_THREADS: "2"
+          GRIMODEX_C2ZC_RUST_REQUESTED_BASE: ${{ steps.c2zc-base.outputs.sha }}
         run: |
           node scripts/c2zc-rust-acceptance-receipt.mjs \
             --base "$GRIMODEX_C2ZC_RUST_REQUESTED_BASE" \
@@ -1082,7 +1093,7 @@ jobs:
       # The local-CI Xvfb wrapper admits only this canonical output layout.
       GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/local-ci/runs/ci-${{ github.run_id }}/product-journeys
       GRIMODEX_C2ZC_RUST_RECEIPT_PATH: .artifacts/local-ci/c2-zc-rust-acceptance.json
-      GRIMODEX_C2ZC_RUST_REQUESTED_BASE: origin/master
+      GRIMODEX_C2ZC_RUST_REQUESTED_BASE: ${{ needs.electron-product-journeys-c2zc.outputs.c2zc-base-sha }}
       GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: HEAD
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -1177,7 +1188,7 @@ jobs:
       # The local-CI Xvfb wrapper admits only this canonical output layout.
       GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR: .artifacts/local-ci/runs/ci-${{ github.run_id }}/product-journeys
       GRIMODEX_C2ZC_RUST_RECEIPT_PATH: .artifacts/local-ci/c2-zc-rust-acceptance.json
-      GRIMODEX_C2ZC_RUST_REQUESTED_BASE: origin/master
+      GRIMODEX_C2ZC_RUST_REQUESTED_BASE: ${{ needs.electron-product-journeys-c2zc.outputs.c2zc-base-sha }}
       GRIMODEX_C2ZC_RUST_REQUESTED_HEAD: HEAD
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

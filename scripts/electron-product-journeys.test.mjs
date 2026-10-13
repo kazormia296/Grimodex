@@ -4022,9 +4022,37 @@ test("CI prepares candidate-bound C2-ZC product evidence before journeys", async
     assert.doesNotMatch(runCommands(job), /napi:build|electron:build|mcp:build|cargo /);
   }
 
-  assert.equal(c2zc.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE, "origin/master");
+  // The evidence job resolves origin/master once and every consumer verifies
+  // the receipt against that SHA, so a master push during the run (or a
+  // re-run of only the failed consumers) cannot become a base mismatch.
+  assert.equal(c2zc.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE, undefined);
   assert.equal(c2zc.env.GRIMODEX_C2ZC_RUST_REQUESTED_HEAD, "HEAD");
+  const pinBase = namedStep(c2zc, "Pin the C2-ZC base for this run");
+  assert.equal(pinBase.id, "c2zc-base");
+  assert.match(
+    pinBase.run,
+    /echo "sha=\$\(git rev-parse 'origin\/master\^\{commit\}'\)" >> "\$GITHUB_OUTPUT"/,
+  );
+  assert.equal(c2zc.outputs?.["c2zc-base-sha"], "${{ steps.c2zc-base.outputs.sha }}");
+  for (const job of [shards, aggregate]) {
+    assert.equal(
+      job.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE,
+      "${{ needs.electron-product-journeys-c2zc.outputs.c2zc-base-sha }}",
+    );
+    assert.ok(
+      [job.needs].flat().includes("electron-product-journeys-c2zc"),
+      "a consumer of the pinned base must need the evidence job",
+    );
+  }
   const receipt = namedStep(c2zc, "Candidate-bound C2-ZC Rust acceptance gate");
+  assert.equal(
+    receipt.env.GRIMODEX_C2ZC_RUST_REQUESTED_BASE,
+    "${{ steps.c2zc-base.outputs.sha }}",
+  );
+  assert.ok(
+    c2zc.steps.indexOf(pinBase) < c2zc.steps.indexOf(receipt),
+    "the base must be pinned before the receipt is produced",
+  );
   const fixture = namedStep(
     c2zc,
     "Build and verify candidate-bound C2-ZC restore fixture",
