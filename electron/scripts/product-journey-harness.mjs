@@ -2625,6 +2625,34 @@ export class ProductJourneyLaneAbortError extends Error {
   }
 }
 
+const MAX_ABORT_REASON_DETAIL_LENGTH = 120;
+
+function abortReasonDetail(value) {
+  const text = String(value ?? "")
+    .replaceAll(/\s+/gu, " ")
+    .trim();
+  return text.length <= MAX_ABORT_REASON_DETAIL_LENGTH
+    ? text
+    : `${text.slice(0, MAX_ABORT_REASON_DETAIL_LENGTH)}…`;
+}
+
+/**
+ * Reason recorded on the abort signal when an operation timeout aborts the
+ * lane. It becomes the lane failure's message ("lane aborted by <reason>"),
+ * which is what the results report shows as the primary failure, so name what
+ * timed out instead of leaving only "timeout". A `waitUntil` timeout supplies
+ * the awaited `label`; an operation timeout carries its own command.
+ */
+export function timeoutAbortReason(error, { label = null } = {}) {
+  let detail = null;
+  if (typeof label === "string" && label.trim() !== "") {
+    detail = `waiting for ${abortReasonDetail(label)}`;
+  } else if (error instanceof ProductJourneyOperationTimeoutError) {
+    detail = `${abortReasonDetail(error.command)} timed out after ${error.timeoutMs}ms`;
+  }
+  return detail === null ? "timeout" : `timeout (${detail})`;
+}
+
 function journalEntry({
   phase,
   operation,
@@ -2975,7 +3003,7 @@ export async function waitUntil(
     } requestId=${lastRequestId}`,
   );
   if (typeof onTimeout === "function") {
-    await onTimeout(timeoutError).catch(() => undefined);
+    await onTimeout(timeoutError, { label }).catch(() => undefined);
   }
   throw timeoutError;
 }
@@ -4187,8 +4215,9 @@ export function createProductJourneyHarness({
 
   async function handleOperationTimeout(
     error,
-    { phase = null, launchId = null } = {},
+    { phase = null, launchId = null, label = null } = {},
   ) {
+    const abortReason = timeoutAbortReason(error, { label });
     const launchContext = launchId ? launchContexts.get(launchId) : null;
     if (launchContext && !launchContext.app) {
       const failureName = operationPhase(
@@ -4206,11 +4235,11 @@ export function createProductJourneyHarness({
       ).catch(() => undefined);
       if (laneWatchdogController) {
         if (!laneWatchdogController.signal.aborted) {
-          laneWatchdogController.abort("timeout");
+          laneWatchdogController.abort(abortReason);
         }
       } else {
         if (!harnessAbortController.signal.aborted) {
-          harnessAbortController.abort("timeout");
+          harnessAbortController.abort(abortReason);
         }
       }
       void error;
@@ -4218,12 +4247,12 @@ export function createProductJourneyHarness({
     }
     if (laneWatchdogController) {
       if (!laneWatchdogController.signal.aborted) {
-        laneWatchdogController.abort("timeout");
+        laneWatchdogController.abort(abortReason);
       }
       return;
     }
     if (!harnessAbortController.signal.aborted) {
-      harnessAbortController.abort("timeout");
+      harnessAbortController.abort(abortReason);
     }
     await captureFailureWithCleanup(
       operationPhase(lastResources.phase).replaceAll(/[\\/]/gu, "-"),
