@@ -1215,6 +1215,11 @@ def file(relative, contents):
     target.write_text(contents)
     return target
 git("init", "--quiet")
+# git commit spawns a detached "git maintenance run --auto" that may write
+# objects/ files (commit-graph, multi-pack-index, tmp packs) while git_sources
+# walks them. Disable it so the fixture is deterministic.
+git("config", "maintenance.auto", "false")
+git("config", "gc.auto", "0")
 file(".gitignore", ".artifacts/\n.logs/\n")
 file(".npmrc", "ignore-scripts=true\n")
 file("package.json", '{}\n')
