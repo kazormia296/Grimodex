@@ -5821,7 +5821,7 @@ test("restore reload warning has no static phase-and-message allowance", async (
       phase: "c2-5b-restore-verify-rebuild-verify/restore",
       message: exact,
       allowed: false,
-      now: "2026-10-18",
+      now: "2026-11-11",
     },
   ]) {
     await t.test(name, async (t) => {
@@ -5990,7 +5990,7 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
       phase: "c2-zc-canonical-authority-cutover/open",
       allowed: false,
     },
-    { name: "expired exception", now: "2026-10-18", allowed: false },
+    { name: "expired exception", now: "2026-11-11", allowed: false },
     {
       name: "near-match GPU warning",
       message: exact.replace("ProduceSkia:", "ProduceSkiaNearMatch:"),
@@ -6199,7 +6199,7 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
         assert.ok(
           timeline.some((entry) => entry.event === "restore-reload-guard"),
         );
-        t.mock.timers.setTime(new Date("2026-10-18T00:00:00Z").getTime());
+        t.mock.timers.setTime(new Date("2026-11-11T00:00:00Z").getTime());
         assert.equal(harness.diagnostics().mainCleanPass, false);
       }
     });
