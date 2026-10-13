@@ -427,6 +427,11 @@ require a separate necessity/scope proposal and authorization.
 
 After the required confirmations: implement one vertical slice with focused gates, then Quick
 and verify before a completion commit. Merge requires clean Full-from-stage-1
-and verify. No review exemption is requested as part of design approval.
+and verify (the rule when this draft was written; since 2026-10-13 an ordinary
+PR's merge conditions follow
+[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001), see U7 in
+[the continuation record](nir1-continuation-2026-10.md), and Full is required
+only for a release PR and the release tag). No review exemption is requested as
+part of design approval.
 No runtime/policy changes, tests, commit, push or PR have been made by this
 document revision; validation is document/diff inspection only.

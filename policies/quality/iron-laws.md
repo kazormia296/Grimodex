@@ -93,8 +93,9 @@ admission closure, pending-start work, active handle ownership, cancellation, bo
 termination evidence (close/exit/terminal receipt), error/timeout/onClosed ownership, and persisted
 restart state. A kill request, error event, or rejected promise alone is not termination proof.
 High-effort review and candidate-untouched independent acceptance must resolve P2+ findings before
-freeze and the expensive Full; after Full, acceptance confirms the unchanged candidate and does not
-reopen semantics without a candidate change.
+freeze and merge (for a release PR, before the expensive Full as well); after the canonical Quick or
+Full, acceptance confirms the unchanged candidate and does not reopen semantics without a candidate
+change.
 
 Before an expensive Full, require generic resource isolation: no competing heavy run, enough writable
 capacity on the actual workspace, build-cache, and temp filesystems, and separate checks for root/home
@@ -103,13 +104,10 @@ or other numeric thresholds), a host-specific cache deletion list, or deletion a
 thresholds from risk, workload, and filesystem state rather than hardcoding them. This preflight is read-only and must not auto-delete artifacts, kill other jobs, or
 rewrite temp paths. A competing job is a coordination stop, not kill authority. Also use a focused
 preflight for risk-derived applicable late stages only.
-Resolve the immutable candidate base and head once as expanded shell-local values before Full, and pass
-those exact same values to Full and every verify of that receipt. A merge precheck fetches before comparing
-or classifying the base; it records exactly one `approved_merge_base` commit, either the verified candidate
-base on the normal path or the current fetched base only after the narrow exception is approved.
-For a squash merge only, after merge compare the squash merge commit's first parent (`<merge-sha>^1`)
-once with that approved merge-base and verify inclusion in `origin/master`; a mismatch is not verified
-success and requires classifying the new upstream delta and the necessary revalidation. An explicitly
+Resolve the immutable candidate base and head once as expanded shell-local values before the canonical Quick
+or Full, and pass those exact same values to it and every verify of that receipt. The merge precheck for each
+kind of PR is defined in [GDX-TRACE-001](#GDX-TRACE-001); only the release path records an `approved_merge_base`
+and compares the squash merge commit's first parent (`<merge-sha>^1`) with it after merge. An explicitly
 requested non-squash method must, before merge, have a method-specific actual-base/post-merge verification
 procedure defined and approved; if absent, stop before merge. Do not reuse the squash first-parent rule or
 add general non-squash verification logic.
@@ -286,12 +284,72 @@ and CI is allowed does the clean candidate run local Quick or the hosted canonic
 values. Commit-only or CI-excluded work keeps the candidate commit without starting Quick and does not claim
 merge/release readiness. A change without a requested commit or PR does not create a commit or start PR-bound CI
 solely for Quick; any explicitly requested dirty working-tree Quick is diagnostic-only.
-After a candidate change, older receipts are invalid and are not reused. The initial merge Full first confirms the fetched current `origin/master` is an ancestor of the
-candidate HEAD, then resolves immutable `candidate_base` and `candidate_head` values once and passes the
-same expanded strings to Full and every verify of that receipt. A merge precheck fetches `origin/master`
-before base comparison or classification and records exactly one `approved_merge_base`: the verified
-candidate base on the normal path, or the current base only after the narrow editorial docs/ADR-only
-exception is approved. A release tag requires a new complete Full run on the merged release commit itself.
+After a candidate change, older receipts are invalid and are not reused.
+
+Merge evidence depends on the kind of PR. An ordinary PR is every PR that is not a release PR; it merges on the
+complete Quick of a rebased candidate and the same-head ordinary checks. A release PR is any PR that changes the
+`package.json` `version`, including the version-bump PR prepared by `bump-version`; when it is unclear whether a PR is
+one, treat it as a release PR. A release PR keeps a complete hosted Full as merge evidence.
+The two cases are called the ordinary path and the release path below.
+
+An ordinary PR merges as follows. After `git fetch origin master`, the current `origin/master` must be an ancestor of
+the candidate HEAD (rebased); otherwise rebase and take the candidate again. The condition is the ancestry, not the
+method: where a force push is not allowed (it needs the user's explicit permission), merge `origin/master` into the
+branch instead of rebasing. Resolve immutable `candidate_base` and `candidate_head` values once as expanded shell-local
+strings, pass those same strings to the canonical Quick (local, or hosted with `profile=quick`) and every verify of that
+receipt, and obtain a complete Quick receipt. Before merge, after `git fetch origin master`, `candidate_base` must be an
+ancestor of both `candidate_head` and `origin/master` (`git merge-base --is-ancestor "$candidate_base" "$candidate_head"`
+and `git merge-base --is-ancestor "$candidate_base" origin/master`), where `candidate_base` is the `origin/master`
+fetched just before that Quick; it stays an ancestor after `origin/master` advances, so freshness is not asked. The local
+Quick checks neither and the hosted Quick checks only the first; a base that is not on `origin/master`, such as a commit
+on the branch, narrows the Quick's changed-path selection to part of the PR diff. A Quick whose pair fails either check
+(for example one taken for a PR-only goal on a branch that had fallen behind) is not merge evidence even when the
+candidate is unchanged, and the Quick is taken again after the branch is brought up to date.
+
+The ordinary `ci.yml` PR checks must have succeeded on the same head with none pending or failing, and the review gate
+must hold (no requested changes, no unresolved thread, no P2+ finding). Merge with
+`gh pr merge --squash --match-head-commit` and the candidate head. The current base is not required to equal a recorded
+base immediately before merge, and this path does not use `approved_merge_base`: if `origin/master` advanced after the
+Quick, GitHub reports the PR mergeable without conflict, and the PR HEAD still equals `candidate_head`, neither the
+rebase nor the Quick is repeated; only a conflict or a needed candidate change restarts from the rebase. After merge,
+fetch and verify that the merge commit is included in `origin/master`; a squash merge commit whose first parent
+(`<merge-sha>^1`) differs from `candidate_base` may be recorded but is not a failure on this path. Canonical Full is not
+an ordinary PR merge condition, and no Full is dispatched for an ordinary PR.
+
+The party that merged an ordinary PR then dispatches a hosted canonical Full on the `origin/master` head (`--ref master`,
+`candidate_head` the master head, `candidate_base` the master commit that last passed a complete Full, or the merge
+commit's first parent when that is unknown), and the next merge does not wait for it. If a canonical Full for `master` is
+already running, dispatch nothing now; after it finishes, dispatch one Full on the latest master head, so that several
+merges share one Full. A party that cannot wait for that one dispatch reports it as pending and hands it to its caller
+(the integrator, or the user who requested the work), who first checks that no Full already covers the latest master
+head. The party that dispatched a Full watches it to completion and starts the red handling below if it fails; a party
+that cannot wait reports the run id and hands the watching to its caller.
+
+A master Full follows the same Full rules as any other Full: the resource-isolation preflight, all part jobs plus
+`full-aggregate`, re-running all jobs, and no local Full as evidence. A run that stopped at the dispatch's selection
+validation (for example because `master` advanced between resolving `candidate_head` and the dispatch, so that it no
+longer equals the head of the dispatched ref) never ran the Full: it is neither a green nor a red master Full, it is not
+re-run, and a new dispatch with a fresh `candidate_head` replaces it.
+
+A failed master Full takes priority over other work. Master is red when the last concluded attempt of the newest master
+Full run that has a concluded attempt (not counting a run stopped at the selection validation) did not succeed (it failed,
+was cancelled, or timed out). A run whose jobs are being re-run is judged by the attempt before the re-run, and a first
+attempt that is still running is skipped, so a re-run in progress does not reopen merging. While master is red, merge only the fix or
+the revert: before the next merge, re-run all jobs to see whether it reproduces and find which merge introduced it, then
+merge the fix or the revert ahead of other PRs. Red clears only when a re-run or a later master Full completes
+successfully, or when the fix or the revert is on `origin/master`. The one exception is a failure shown to be an
+unrelated flake and recorded where the merging party can read it: other merges are not blocked while all jobs are
+re-run, a red whose record cannot be found is not treated as a flake, and a failed re-run ends the exception. A party
+that only has merge authority and finds master red stops merging and reports to its caller, who decides whether to
+revert.
+
+A release PR's initial merge Full first confirms the fetched current `origin/master` is an ancestor of the candidate
+HEAD, then resolves immutable `candidate_base` and `candidate_head` values once and passes the same expanded strings to
+Full and every verify of that receipt. A release merge precheck fetches `origin/master` before base comparison or
+classification and records exactly one `approved_merge_base`: the verified candidate base when no exception applies, or
+the current base only after the narrow editorial docs/ADR-only exception is approved. A release tag requires a new
+complete Full run on the merged release commit itself.
+
 Receipts bind the requested and resolved base and head, current HEAD and tree, worktree state, and
 completeness. Dirty Quick receipts additionally bind the tracked diff and untracked file-content fingerprint.
 Partial `--from` runs, dry runs, stale receipts, missing prerequisites, and release-only coverage are never
@@ -305,27 +363,29 @@ thresholds from risk, workload, and filesystem state rather than hardcoding them
 rewrite temp paths. A competing job is a coordination stop, not kill authority. For a hosted Full,
 Full admission observes the actual workspace, build-cache, temp, memory, and pressure state on each
 fresh part VM and refuses unsafe placement or pressure; before dispatch, the dispatcher still checks
-read-only that no other canonical Full for the same merge queue is in progress.
+read-only that no other canonical Full for the same target ref (`master`, or the release PR branch) is
+in progress.
 
 At candidate freeze, bind the exact candidate once in the receipt/ledger, including base, head, tree,
 clean state, receipt directory, and completeness. Use an expected-head check at push and merge state
 transitions; a squash merge through `gh` uses `gh pr merge --squash --match-head-commit` with the
-candidate head. Immediately before merge, fetch `origin/master` and confirm the current base equals
-the recorded `approved_merge_base`. For a squash merge only, after merge and fetch, compare the actual squash merge commit's first
-parent (`<merge-sha>^1`) once with the recorded `approved_merge_base`, and verify that the merge commit is
-included in `origin/master`.
+candidate head on both paths. On the release path only, immediately before merge, fetch `origin/master` and
+confirm the current base equals the recorded `approved_merge_base`. For a release PR's squash merge only, after
+merge and fetch, compare the actual squash merge commit's first parent (`<merge-sha>^1`) once with the recorded
+`approved_merge_base`, and verify that the merge commit is included in `origin/master`.
 An explicitly requested non-squash method must, before merge, have a method-specific actual-base/post-merge
 verification procedure defined and approved; if absent, stop before merge. Do not reuse the squash
 first-parent rule or add general non-squash verification logic.
-Do not require repeated tree equality checks or user-facing SHA recitation except on mismatch or request. An
-upstream-base change is exempt from a Full rerun only when candidate HEAD and PR diff are unchanged and the
+Do not require repeated tree equality checks or user-facing SHA recitation except on mismatch or request. On the
+release path, an upstream-base change is exempt from a Full rerun only when candidate HEAD and PR diff are unchanged and the
 upstream delta is editorial docs/ADR-only: it must change no executable, build, dependency, CI, policy,
 schema, manifest, or generated-contract content and no ratified decision or acceptance meaning. Record the
 exception and proportionate static/focused checks; the old receipt remains bound to its old base, not the new
 one, and is reverified with the same original candidate values. Any ambiguity or candidate HEAD change
-invalidates the receipt and requires a clean Full-from-stage-1 + verify. If the first-parent comparison
-mismatches, do not report verified success: classify the newly added base delta and perform the necessary
-exception/revalidation path; the merge may have occurred, but acceptance evidence is not valid until resolved.
+invalidates the receipt and requires a clean Full-from-stage-1 + verify. If a release PR's first-parent
+comparison mismatches, do not report verified success: classify the newly added base delta and perform the
+necessary exception/revalidation path; the merge may have occurred, but acceptance evidence is not valid until
+resolved.
 
 Decisive acceptance evidence is either directly candidate-bound, or transitively bound through a
 verified parent receipt that is itself candidate-bound. When metrics or artifacts are quoted or adopted
@@ -370,7 +430,8 @@ Choose validation from the requested work and the affected contracts before star
 - AI instructions, skills, policy, or evaluation contracts: Related contract tests and the canonical `grimodex-impact-gate` Light evaluation
 - Commit only: Focused validation and the requested candidate commit; no Quick or merge-readiness claim
 - PR/release evidence with CI allowed: Clean candidate Quick plus immediate verify under GDX-TRACE-001
-- Merge or release tag with CI allowed: Full and verify under GDX-TRACE-001, including applicable preflight
+- Ordinary PR merge with CI allowed: Rebased clean candidate Quick plus immediate verify, and success of the same-head PR checks, under GDX-TRACE-001; the canonical Full runs on master after the merge
+- Release PR merge or release tag with CI allowed: Full and verify under GDX-TRACE-001, including applicable preflight
 
 Instruction and policy changes are behavior changes, even when stored in Markdown. Reuse a successful
 command result only for the same candidate, environment, and command; rerun when those inputs change,

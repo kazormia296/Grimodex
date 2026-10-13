@@ -12,7 +12,7 @@
 
 ## 1. ユーザー決定（逐語）
 
-決定日は 2026-10-12（JST）。integrator セッション（`3754f9a7-620d-4e21-ad37-3096691a96be`）の会話記録にあるユーザー自身の回答を、G0 で照合して逐語で転記した。選択肢を選んだ回答は、その選択肢の label を逐語とする。問いは要旨である。
+決定日は 2026-10-12（JST）。ただし U7 は 2026-10-13（JST）。integrator セッション（`3754f9a7-620d-4e21-ad37-3096691a96be`）の会話記録にあるユーザー自身の回答を、G0 で照合して逐語で転記した。U7 は同じセッションの会話記録にあるユーザー自身のメッセージを、merge 規則の変更時（2026-10-13）に逐語で転記した。選択肢を選んだ回答は、その選択肢の label を逐語とする。問いは要旨である。
 
 | ID | 時刻（JST） | 問い（要旨） | ユーザーの回答（逐語） | 計画での扱い |
 |---|---|---|---|---|
@@ -20,11 +20,12 @@
 | U2 | 17:22 | 承認済み草案（同時 2 MiB・8 ms 前提など）と #610／#611 の実装が食い違った。どう扱うか | 「2MiB/8ms はキツすぎてCodexでは達成できませんでした。何かいい案があれば挑戦してもいいかもしれませんが、現状は達成不可能です。」 | 2 MiB／8 ms は達成不能として扱い、現行の C-query 契約（100 ms result lease、aggregate physical-memory cap/proof なし）を前提にする。8 ms への挑戦は任意 |
 | U3 | 17:22 | 今後の `[precheck]` 停止をどう運用するか。選択肢1は、#610 型の技術委任を NIR-1 の残レーンへ広げる案 | 「1でRalphを使ってやるかどうかは任せます。」 | #610 型の技術委任を NIR-1 の残レーン全体へ広げる（§3）。Ralph を使うかは integrator に任された |
 | U3 追加 | 18:45 | 問いへの回答ではない。最初の計画提示（ExitPlanMode）を差し戻したときのユーザーのメッセージ。計画の承認は、21:51 の2回目の提示に対するもの | 「Ralphの実行はPiではなくClaudeCodeにしてください」 | エンジンは Claude Code にし、Pi と OpenAI は使わない。Ralph は Claude Code の backend で動かす（§5。23:05 以後の実装は U3 変更に従う） |
-| U4 | 17:22 | 各レーンの到達点 | 「merge まで進める」 | 独立受入れと hosted Full＋verify が green なら、merge 直前に base を照合して squash merge まで進める |
+| U4 | 17:22 | 各レーンの到達点 | 「merge まで進める」 | 独立受入れと、rebase 済みの Quick＋verify、同じ head の `ci.yml` checks が green なら、squash merge まで進める（merge の条件は U7 で変更した。当初は hosted Full＋verify が green で、merge 直前に base を照合する条件だった。§6） |
 | U6 前段 | 17:28 | #610 で共有定数が 2 MiB から 6 MiB に変わり、A2 の Revision 保存上限と B の per-Revision 入力上限も変わった。どうするか | 「そもそもこんなにキチキチにメモリを制限している理由がよくわからん」 | 制限の経緯（応答時間、壊れたデータや巨大データへの防御、物理メモリ上限の証明）を説明し、資源契約の方針を改めて問うた |
 | U6 | 17:31 | 説明を受けた後、今後の資源契約をどうするか | 「防御用の上限だけに簡素化（推奨）」 | 資源契約は防御用の上限だけに簡素化する。新しい資源契約として K1 で一度だけ確認を求める |
 | U5 | 17:28 | CI 保守（ProduceSkia allowance 10-17、pnpm audit 例外 GHSA-ch52-4w7c-c8xp 10-18、Dependabot 10件）をどう進めるか | 「この計画では扱わない」 | CI 保守はこの計画では扱わない |
 | U3 変更 | 23:05 | Ralph（Claude Code backend）の新しい起動が、auto mode の安全判定（Create Unsafe Agents。Ralph が子の Claude Code を `--dangerously-skip-permissions` で動かすため）で拒否された。今後どうするか | 「Workflow subagent で続ける（推奨）」 | 以後の実装は Ralph ではなく Workflow subagent で行う（builder → Fable による reviewer → fix の順。§5）。Ralph で起動済みの最初の3レーン（CR-1、DT-1、HP-1）の記述は記録として残す |
+| U7 | 10-13 22:22 | 問いへの回答ではない。CR-1 の Full 待ちなどの途中経過の報告の後に、ユーザーが出した merge 条件の変更の指示 | 「FullCIに時間が掛かり、Full中の並列PRのmergeによるbase stale 問題などが発生している。merge条件からCanonicalFullの合格を外す。「merge の直前に base が master と完全に一致していること」という条件も、一緒に緩める。たとえば「rebase して Quick が通れば可」にします。masterのfullで赤が出た場合、優先して対応するなどの運用でカバーする。ReleaseではFullCIのままにする。」 | 通常の PR の merge 条件から canonical Full を外し、rebase 済みの Quick と同じ head の `ci.yml` checks で merge する。merge 直前の base の完全一致も要求しない。merge 後に master の head で hosted Full を走らせ、赤は優先して直す。release PR と release tag は従来どおり Full を要求する（[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)。§6） |
 
 計画は 2026-10-12 21:51（JST）に承認された。U3 の「1」が指す選択肢の提示文は「#610 型の委任（worker/owner/終了処理/lifecycle の技術判断を作業記録に残して進める）を NIR-1 残レーンへ広げ、表記を 100 ms／aggregate cap なしへ更新する。新しい送信先・保存範囲・閾値緩和・製品公開・新しい契約は従来どおり確認する。AGENTS/iron-laws を更新する PR が必要。」である。表記の扱いは、承認済みの計画に従い、確認台帳の現行閾値と Gold への参照に置き換える。判断の記録先は §3.2 の形式に従う。提示文はユーザーの発言ではなく、選ばれた選択肢の範囲を示す記録として残す。
 
@@ -36,7 +37,7 @@ U3 変更で選ばれた選択肢の提示文は「Ralph の代わりに、こ�
 - 9/25-26 の承認と WIP は使わず（U1）、契約は K1〜K6 として最新 master 前提で起案し直す。
 - 2 MiB／8 ms は前提にしない（U2）。資源契約は防御用の上限に簡素化し、K1 で確認する（U6）。K1 は 2026-10-12 に確認された（§10.1）。
 - 確認セッションは A（K1）、B（K2〜K6）、C（PUB-G、PUB-L）の3回とする。確認されなかった行のレーンだけを `[precheck]` で止め、ほかのレーンは止めない。
-- CI 保守は扱わない（U5）。保守の失敗で Security job や Full が止まった場合は、merge 列を止めて実装を続け、ユーザーに報告する。
+- CI 保守は扱わない（U5）。保守の失敗で PR の Security job が止まった場合は、merge 列を止めて実装を続け、ユーザーに報告する。master の Full が赤になった場合は、§6 の優先対応に従う（U7）。
 
 ### 2.1. 契約（起案予定。9/25 の文面は流用しない）
 
@@ -140,19 +141,19 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 
 G0 → CR-1 → CR-REC → CP-0 → DT-1 → DT-2 → DT-3 → HP-1 → CP-1 → CP-2a → LEDGER-1 → B-ROUTE → CB-1 → DA-1 → CB-2（＋MG-1）→ DF+-a/b → HS-1 → DT-4 → DP-H → CB-3 → CP-3a → DA-2 → CB-4 → CP-3b → DT-5a/b → HC-1a/b → DI-1c → DI-1a → DI-1b → CP-2b → CP-4 → PUB-G → DD-1 → PUB-L → E-1 → E-2
 
-各 PR の手順（U4。CI の実態は #627 以降の hosted 実行に合わせる）:
+各 PR の手順（U4。merge の条件は U7 で変更した。CI の実態は #627 以降の hosted 実行に合わせる。規則の正本は [GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)、手順は `/ship-branch`）:
 
-1. rebase して freeze する。
+1. 最新の `origin/master` に同期して freeze する（`/ship-branch` §2.3。未 push の branch は rebase し、push 済みの branch は force push の明示がなければ `origin/master` を取り込む）。`git fetch origin master` の後、最新の `origin/master` が候補 HEAD の祖先であることを確かめる。
 2. 独立受入れで P2 以上を 0 にする。
-3. 列の先頭で shell-local の `candidate_base` と `candidate_head` を一度だけ解決する。branch を push し、remote HEAD が `candidate_head` と一致することを確かめる。
-4. Full の dispatch の前に、同じ列で実行中の canonical Full がないことを read-only で確かめる。Quick はローカル（`pnpm ci:local:quick` と直後の verify）か hosted（`canonical-ci.yml` の `profile=quick`）で行う。Full は `gh workflow run canonical-ci.yml --ref <branch> -f profile=full -f candidate_base=<candidate_base> -f candidate_head=<candidate_head>` で hosted に dispatch する。ローカルの Full は Full admission で拒否される。worker・frame・Native owner を変える PR では、同じ head に `ci.yml` の C-query opt-in lane と lifecycle lane も dispatch する。
-5. PR の `ci.yml` checks、Quick、Full（7 part と `full-aggregate` の verify）を green にする。失敗した run は失敗 job だけでなく全 job を再実行する。
-6. merge の直前に `git fetch origin master` を実行し、base が `candidate_base` と一致することを確かめる。
-7. `gh pr merge --squash --match-head-commit <candidate_head>` で merge し、merge commit の `^1` を approved merge base と照合する。
+3. shell-local の `candidate_base` と `candidate_head` を一度だけ解決する。Quick はローカル（`pnpm ci:local:quick` と直後の verify）か hosted（`canonical-ci.yml` の `profile=quick`）で行い、complete な Quick receipt を得る。hosted の Quick は、branch を push し、remote HEAD が `candidate_head` と一致することを確かめてから dispatch する。worker・frame・Native owner を変える PR では、同じ head に `ci.yml` の C-query opt-in lane と lifecycle lane も dispatch する。
+4. 同じ head の `ci.yml` checks（opt-in lane を含む）と Quick を green にする。通常の PR のために canonical Full は dispatch しない。
+5. `gh pr merge --squash --match-head-commit <candidate_head>` で merge する。merge 直前に base が `candidate_base` と一致することは要求しない。Quick の後に `origin/master` が進んでも、衝突がなく PR HEAD が `candidate_head` のままなら、同期（手順 1）と Quick はやり直さない。衝突があるか候補を変えるときは、同期して 1 からやり直す。
+6. merge の後、merge commit が `origin/master` に含まれることを確かめる。squash commit の first parent が `candidate_base` と違っても失敗にしない。
+7. merge した担当は、master の head で hosted の canonical Full を dispatch する。実行中なら、終わった後に最新の master head で 1 本だけ dispatch する。次の merge はこの Full の完了を待たない。dispatch した run の id は integrator へ引き継ぎ、完了の見届けと赤のときの対応の開始は integrator が行う（`/ship-branch` §8.3）。master の Full が赤になったら（判定は `/ship-branch` §8.5。全 job を再実行している間も赤のままである）、次の merge の前に、全 job の再実行で再現するか、どの merge が持ち込んだかを切り分け、修正か revert を他の PR より先に merge する。他のレーンの PR を revert するかどうかは integrator が判断する。
 
-base が変わったら Quick と Full をやり直す。台帳、policy、計画の受入れの意味を変える docs は、editorial の例外にあたらない。
+release PR と release tag は、従来どおり complete な hosted Full と verify を要求する（release PR は merge 前、tag は merge 後の release commit 自身）。
 
-U5（計画外）への依存: M0（CI 保守。期限と Dependabot への対応）の Full が走っている間は、NIR の Full を起動しない。M0 が入った時点で、進行中の Full receipt は取り直す。10-17／18 を過ぎても M0 が入らず Security job と Full が失敗する間は、merge 列を止めて実装を続け、ユーザーに報告する。
+U5（計画外）への依存: M0（CI 保守。期限と Dependabot への対応）の master の Full が走っている間は、NIR の Full を重ねて起動せず、終わった後に最新の master head で 1 本だけ dispatch する。10-17／18 を過ぎても M0 が入らず PR の Security job が失敗する間は、merge 列を止めて実装を続け、ユーザーに報告する。master の Full の失敗は、M0 の期限切れによるものか NIR の変更によるものかを切り分ける。
 
 ## 7. worktree 台帳
 

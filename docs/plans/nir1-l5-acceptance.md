@@ -33,4 +33,4 @@
 
 ローカル台帳は `Documents/Grimodex-evidence/nir1/first-product-path/ledger.json`。現候補の標準buildは `l4-standard-build-22/build.json`、固定比較は `l4-paired-formal-5/receipt.json`、同期書込み診断は `l4-latency-sync-diagnostic-1/correlation.json`。初回診断driverの起動失敗を含む原記録を保持している。
 
-PR公開前にcleanなcommit済みHEADでQuick＋verifyを実行し、そのSHAをPRへ束縛する。今回はready PR作成後、マージ前で停止する。マージには最新baseを含むclean HEADでFull-from-stage-1＋verifyが別途必要である。
+PR公開前にcleanなcommit済みHEADでQuick＋verifyを実行し、そのSHAをPRへ束縛する。今回はready PR作成後、マージ前で停止する。マージには最新baseを含むclean HEADでFull-from-stage-1＋verifyが別途必要である。（この一文は当時の規則の記録である。2026-10-13のmerge条件の変更（[続行計画](nir1-continuation-2026-10.md)の§1 U7）以降、通常のPRのmergeにFullは要求されない。現行の条件は[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)に従う。）

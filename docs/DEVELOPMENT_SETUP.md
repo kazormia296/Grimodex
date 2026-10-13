@@ -183,9 +183,9 @@ cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex -
 
 ## ローカルCI運用
 
-private source repository では、通常のPR、branch push、scheduleからGitHub Actionsの
-CI runnerを起動しません。`.github/workflows/ci.yml` は、明示的な手動実行とtag releaseからの
-再利用呼び出しだけを受け付けます。
+`.github/workflows/ci.yml` は、通常のPR、`master`へのpush、nightlyで自動実行されます
+（手動実行とtag releaseからの再利用呼び出しも受け付けます）。この通常checksは、
+canonical Quick／Fullのreceiptの代わりにはなりません。
 
 通常の変更確認には、差分に対応するLight suiteだけを実行します。既定では
 `origin/master...HEAD`に加えてstaged、unstaged、untrackedの変更も対象です。
@@ -201,19 +201,22 @@ pnpm ci:local:quick -- --base <base-ref> --head HEAD
 pnpm ci:local:verify -- quick --base <base-ref> --head HEAD
 ```
 
-merge前は、最新の`origin/master`を含むcleanかつcommit済みの現在HEADで、ローカルで
-再現可能なFull CIを最初のstageから実行します。release tag前には、squash前のbranch証跡を
-再利用せず、merge後のrelease commitそのものをcleanな現在HEADとしてFullを再実行します。
-依存audit、Rust/N-API、Browser/WebGL/Storybook、Electron performance、全product journeyを
+通常のPRのmerge前は、最新の`origin/master`へrebaseしたcleanかつcommit済みの現在HEADで
+Quickと直後のverifyを実行し、同じheadの`ci.yml` checksが成功していればmergeできます。
+canonical Fullは通常のPRのmerge条件ではなく、merge後にmasterのheadで実行します（赤になったら
+優先して対応します）。release PRのmerge前と、release tag前（squash前のbranch証跡は再利用せず、
+merge後のrelease commitそのもの）には、cleanな現在HEADでFullを最初のstageから実行します。
+規則の正本は[GDX-TRACE-001](../policies/quality/iron-laws.md#GDX-TRACE-001)です。
+Fullは依存audit、Rust/N-API、Browser/WebGL/Storybook、Electron performance、全product journeyを
 含むため、初回は長時間かかります。`uv`、Rust toolchain、`cargo-audit`、Playwrightと
-Electronのホスト依存を先に導入してください。
+Electronのホスト依存を先に導入してください。Fullを証跡にできるのは、GitHub-hostedの
+`canonical-ci.yml`で実行したものだけです。Full admissionが標準のGitHub-hosted job以外を拒否するため、
+手元で`pnpm ci:local:full`を実行してもmerge／releaseの証跡になりません。dispatchの手順は
+`ship-branch`に従います。
 
 ```bash
-pnpm ci:local:full -- --base origin/master --head HEAD
-pnpm ci:local:verify -- full --base origin/master --head HEAD
-
-# 失敗調査・修正確認のため、指定stageから部分再開する場合
-pnpm ci:local:full -- --from security
+# Fullは、GitHub-hostedのcanonical-ci.ymlでだけ実行する
+gh workflow run canonical-ci.yml --ref <branch> -f profile=full -f candidate_base=<base-sha> -f candidate_head=<head-sha>
 
 # profile、stage、release-only項目を確認する場合
 pnpm ci:local:list
