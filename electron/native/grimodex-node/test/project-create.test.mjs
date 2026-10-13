@@ -1,6 +1,6 @@
 // Canonical Project publication through the built N-API boundary.
 
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,6 +15,17 @@ const { Backend } = require(join(here, "..", "grimodex-node.node"));
 const root = mkdtempSync(join(tmpdir(), "grimodex-node-project-create-"));
 process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 const backend = new Backend(join(root, "app-data"));
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 
 async function rows(sql, params = [], method = "all") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;

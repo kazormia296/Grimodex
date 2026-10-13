@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,6 +13,17 @@ const { Backend } = require(join(here, "..", "grimodex-node.node"));
 const root = mkdtempSync(join(tmpdir(), "grimodex-node-sample-seed-"));
 const appDataDir = join(root, "app-data");
 const backend = new Backend(appDataDir);
+
+// Background workspace maintenance can still be writing under the workspace
+// when the exit hook removes the root (ENOTEMPTY); prove Closed before that.
+after(async () => {
+  const wire = await backend.shutdownWorkspaceLifecycle();
+  assert.equal(
+    JSON.parse(wire).status,
+    "closed",
+    "Native cleanup must prove Closed",
+  );
+});
 // Best-effort temp cleanup: the native backend may still be writing app-data
 // at process exit, and a leftover temp dir must not fail the test file.
 process.on("exit", () => {
