@@ -2397,7 +2397,7 @@
       "emits": [],
       "isAsync": false,
       "summary": "登録済みルート配下の相対パスへ tmp ファイル + rename によるアトミック書込を行う（LF 正規化、親ディレクトリ自動作成、sync_all 付き）",
-      "napiNotes": "書込が同ルートの watcher 経由で external-mount://file-changed を間接誘発（自己エコー抑止は FE/watcher 側の責務）。tmp は `.md.tmp` 拡張子 — with_extension のため元拡張子を置換する仕様に注意。fsync + rename のアトミック性を TS 移植時も維持。file-backed シーンのオートセーブ書き戻しなのでデータロス観点で P0",
+      "napiNotes": "書込が同ルートの watcher 経由で external-mount://file-changed を間接誘発（自己エコー抑止は FE/watcher 側の責務）。tmp は `.md.tmp` 拡張子 — with_extension のため元拡張子を置換する仕様に注意。fsync + rename のアトミック性を TS 移植時も維持。TS 実装（externalMountFs.ts）は win32 で既存ファイルへの rename が EPERM／EACCES／EBUSY のときだけ 10ms から倍々（100ms 頭打ち、累積待機 2 秒）で再試行し、それ以外は即失敗・上限超過で最後のエラーを返す。同じパスへの書込は直列化する（#635）。file-backed シーンのオートセーブ書き戻しなのでデータロス観点で P0",
       "callSites": [
         { "file": "src/features/external-mount/api.ts", "trigger": "editing-loop", "notes": "L28 writeExternalFile ← writeBack.scheduleWriteBack ← editor/persistSceneBody（file-backed シーンのオートセーブ、setTimeout debounce）" }
       ]

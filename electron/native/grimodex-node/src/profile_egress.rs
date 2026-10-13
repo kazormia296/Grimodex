@@ -598,8 +598,10 @@ impl ProfileEgressState {
         self.persist_locked_with(
             state,
             |staged, destination| {
-                grimodex_db::backup_restore::atomic_replace(staged, destination)
-                    .map_err(anyhow::Error::from)
+                grimodex_db::fs_replace::retry_replace(|| {
+                    grimodex_db::backup_restore::atomic_replace(staged, destination)
+                })
+                .map_err(anyhow::Error::from)
             },
             sync_parent_directory,
         )
