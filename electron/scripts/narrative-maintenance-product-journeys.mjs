@@ -237,6 +237,18 @@ const RUN_COLUMNS = `
     WHERE t.run_id = r.id
     ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
     LIMIT 1) AS lastAttemptFailureCode,
+  (SELECT a.retry_disposition
+     FROM narrative_extraction_attempts a
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptRetryDisposition,
+  (SELECT a.error_message
+     FROM narrative_extraction_attempts a
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptErrorMessage,
   (SELECT a.completed_at
      FROM narrative_extraction_attempts a
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
@@ -249,7 +261,11 @@ export function assertForegroundLifecycle(
   expectedStatus,
   label = "foreground lifecycle",
 ) {
-  if (!new Set(["running", "completed", "failed"]).has(expectedStatus)) {
+  if (
+    !new Set(["running", "completed", "failed", "cancelled"]).has(
+      expectedStatus,
+    )
+  ) {
     throw new Error(
       `${label} has unsupported expected lifecycle status ${expectedStatus}`,
     );
@@ -266,14 +282,19 @@ export function assertForegroundLifecycle(
       })}`,
     );
   }
+  // A preempted Run closes its Task as cancelled while its Attempt #1 closes as
+  // a retryable failure, so the Attempt does not mirror the Task there.
+  const expectedAttemptStatus =
+    expectedStatus === "cancelled" ? "failed" : expectedStatus;
   if (
     run.taskStatus !== expectedStatus ||
-    run.lastAttemptStatus !== expectedStatus
+    run.lastAttemptStatus !== expectedAttemptStatus
   ) {
     throw new Error(
       `${label} lifecycle status mismatch: ${JSON.stringify({
         runId: run?.id,
         expectedStatus,
+        expectedAttemptStatus,
         taskStatus: run?.taskStatus,
         attemptStatus: run?.lastAttemptStatus,
       })}`,
@@ -359,7 +380,11 @@ export function assertForegroundLifecycle(
       )}`,
     );
   }
-  if (expectedStatus === "completed" || expectedStatus === "failed") {
+  if (
+    expectedStatus === "completed" ||
+    expectedStatus === "failed" ||
+    expectedStatus === "cancelled"
+  ) {
     if (
       !run.completedAt ||
       !run.taskCompletedAt ||
@@ -1034,6 +1059,63 @@ export function assertTransientAttemptEvidence(run) {
   return run;
 }
 
+/**
+ * A foreground connection preemption cancels a Run that was already created;
+ * native then requeues the same WorkKey as a fresh Run without spending the
+ * retry budget. Native closes that exact lifecycle in one terminal transaction:
+ * the Run and its Task are cancelled, Attempt #1 fails as a retryable
+ * preemption, and all three share one terminal instant. A row that merely
+ * carries the same terminal reason (a lifecycle stop, a partial lifecycle, a
+ * second Attempt) is not that and must stay red.
+ */
+export function assertRetryablePreemptionMarker(run, label = "preempted Run") {
+  if (!isRetryableMaintenancePreemption(run)) {
+    throw new Error(
+      `${label} is not a cancelled connection preemption: ${JSON.stringify({
+        runId: run?.id,
+        status: run?.status,
+        terminalReasonCode: run?.terminalReasonCode,
+      })}`,
+    );
+  }
+  assertForegroundLifecycle(run, "cancelled", label);
+  if (
+    run.lastAttemptFailureCode !==
+      NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE ||
+    run.lastAttemptRetryDisposition !== "retryable"
+  ) {
+    throw new Error(
+      `${label} Attempt did not close as a retryable connection preemption: ${JSON.stringify(
+        {
+          runId: run.id,
+          terminalReasonCode: run.terminalReasonCode,
+          lastAttemptFailureCode: run.lastAttemptFailureCode,
+          lastAttemptRetryDisposition: run.lastAttemptRetryDisposition,
+        },
+      )}`,
+    );
+  }
+  // The terminal reason is shared with controlled stops and transitions. The
+  // exact stop codes are the only ones the stored message can still tell apart.
+  const stopCode =
+    /NEX_MAINTENANCE_(?:LIFECYCLE_STOP_REQUESTED|ATTEMPT_CANCELLED)/u.exec(
+      String(run.lastAttemptErrorMessage ?? ""),
+    )?.[0];
+  if (stopCode) {
+    throw new Error(
+      `${label} was cancelled by a controlled stop, not a foreground preemption: ${JSON.stringify(
+        {
+          runId: run.id,
+          terminalReasonCode: run.terminalReasonCode,
+          lastAttemptFailureCode: run.lastAttemptFailureCode,
+          stopCode,
+        },
+      )}`,
+    );
+  }
+  return run;
+}
+
 function assertTransientCompletedEvidence(run, label) {
   const outcome = parseOutcome(run?.outcomeSummaryJson);
   if (
@@ -1066,7 +1148,14 @@ function assertTransientCompletedEvidence(run, label) {
 }
 
 export function assertTransientRunSequence(runs, label = "transient retry") {
-  if (!Array.isArray(runs) || runs.length < 2 || runs.length > 3) {
+  // A foreground preemption can cancel a retry Run before its replacement
+  // completes. Such a Run is lifecycle evidence of its own (checked strictly
+  // in the loop below) and does not consume the bounded retry budget, so only
+  // the other Runs are counted against it.
+  const budgetedRuns = Array.isArray(runs)
+    ? runs.filter((run) => run?.status !== "cancelled")
+    : [];
+  if (budgetedRuns.length < 2 || budgetedRuns.length > 3) {
     throw new Error(
       `${label} must contain at least two and at most three distinct same-work Runs`,
     );
@@ -1108,6 +1197,12 @@ export function assertTransientRunSequence(runs, label = "transient retry") {
       );
     }
     previousCreatedAt = createdAt;
+    if (run.status === "cancelled") {
+      // The first-Run check above keeps it behind the failed Run, and the
+      // completed-Run check after the loop keeps it ahead of the final Run.
+      assertRetryablePreemptionMarker(run, `${label} Run ${run.id}`);
+      continue;
+    }
     if (!new Set(["failed", "completed"]).has(run.status)) {
       throw new Error(
         `${label} Run ${run.id} has unsupported terminal status ${run.status}`,
@@ -1438,28 +1533,53 @@ export function selectInterruptedRecoveryFromStableLedger(
       row.workKey === stale.workKey &&
       row.semanticEpochId === stale.semanticEpochId,
   );
-  if (candidates.length !== 1) {
+  // A foreground preemption can cancel a recovery Run before the Run that
+  // replaces it completes. Those cancelled Runs are checked strictly below and
+  // are not a second recovery; every other candidate still counts.
+  const recoveryCandidates = candidates.filter(
+    (row) => row.status !== "cancelled",
+  );
+  if (recoveryCandidates.length !== 1) {
     throw new Error(
       `${label} must leave exactly one new same-work recovery Run after reopen; ` +
         `observed=${JSON.stringify(summarizeRuns(candidates))}`,
     );
   }
-  const [recovery] = candidates;
+  const [recovery] = recoveryCandidates;
   if (recovery.status !== "completed") {
     throw new Error(
       `${label} recovery Run ${recovery.id} did not complete; ` +
         `observed=${JSON.stringify(summarizeRuns(candidates))}`,
     );
   }
-  if (
-    compareInstantValues(
-      parseInstant(recovery.createdAt, `${label} recovery Run createdAt`),
-      staleCompletedAt,
-    ) <= 0
-  ) {
+  const recoveryCreatedAt = parseInstant(
+    recovery.createdAt,
+    `${label} recovery Run createdAt`,
+  );
+  if (compareInstantValues(recoveryCreatedAt, staleCompletedAt) <= 0) {
     throw new Error(
       `${label} recovery Run ${recovery.id} was created at or before the stale Run completedAt`,
     );
+  }
+  for (const preempted of candidates.filter(
+    (row) => row.status === "cancelled",
+  )) {
+    assertRetryablePreemptionMarker(
+      preempted,
+      `${label} preempted Run ${preempted.id}`,
+    );
+    const preemptedCreatedAt = parseInstant(
+      preempted.createdAt,
+      `${label} preempted Run createdAt`,
+    );
+    if (
+      compareInstantValues(preemptedCreatedAt, staleCompletedAt) <= 0 ||
+      compareInstantValues(preemptedCreatedAt, recoveryCreatedAt) >= 0
+    ) {
+      throw new Error(
+        `${label} preempted Run ${preempted.id} must be created after the stale Run completedAt and before the recovery Run ${recovery.id}`,
+      );
+    }
   }
   assertForegroundLifecycle(recovery, "completed", `${label} recovery Run`);
   return recovery;
@@ -4031,6 +4151,9 @@ async function runTransientRetry(harness, configureWorkspace) {
         runIds: freshAttempts.map((run) => run.id),
         failedRunId: failed.id,
         completedRunId: completed.id,
+        preemptedRunIds: sameWorkRuns
+          .filter(isRetryableMaintenancePreemption)
+          .map((run) => run.id),
         distinctSameWorkRunCount,
       });
     },
