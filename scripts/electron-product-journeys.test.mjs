@@ -1516,8 +1516,30 @@ test("harness retries only the current held-Freshness temp and reports a stuck t
 
   const launched = await harness.launch("held-freshness-retry");
   const nextRequestNonce = "00000000-0000-4000-8000-000000000004";
+  const freshWait = harness.awaitHeldFreshness(
+    launched.app,
+    "held-freshness-retry",
+    {
+      previousSequence: 1,
+      requestNonce: nextRequestNonce,
+      authorityId: "authority-1",
+      generation: 1,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    },
+  );
+  // before-request の再検証が終わる前に temp を置くと、再検証は「変わった」と
+  // 判定する。stuck 側と同じ barrier で再検証完了後に書き込む。
+  try {
+    await awaitHeldFreshnessBeforeRequestBarrier(harness, {
+      phase: "held-freshness-retry",
+      requestNonce: nextRequestNonce,
+      workspaceBinding: { authorityId: "authority-1", generation: 1 },
+    });
+  } catch (error) {
+    await freshWait.catch(() => undefined);
+    throw error;
+  }
   const transientWrite = (async () => {
-    await new Promise((resolve) => setTimeout(resolve, 5));
     const nonceDir = path.join(harness.receiptRoot, RECEIPT_NONCE);
     const request = JSON.parse(
       await readFile(
@@ -1546,17 +1568,7 @@ test("harness retries only the current held-Freshness temp and reports a stuck t
     await new Promise((resolve) => setTimeout(resolve, 20));
     await rename(temporaryPath, temporaryPath.slice(0, -4));
   })();
-  const fresh = await harness.awaitHeldFreshness(
-    launched.app,
-    "held-freshness-retry",
-    {
-      previousSequence: 1,
-      requestNonce: nextRequestNonce,
-      authorityId: "authority-1",
-      generation: 1,
-      workspaceBinding: { authorityId: "authority-1", generation: 1 },
-    },
-  );
+  const fresh = await freshWait;
   await transientWrite;
   assert.equal(fresh.receipt.sequence, 2);
 
