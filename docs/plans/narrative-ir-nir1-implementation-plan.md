@@ -6,7 +6,7 @@
 
 ## Current snapshot (2026-10-12, post-#629)
 
-R-hook（#609、`689261c3`）、D-final内部候補とcurrent-turn Human capture（#611、`902a7e79`）、C-query worker（#610、`13e3f6c6`）、通常CIの自動実行（#627）、自動maintenanceの一時失敗の正常解放（#628）はmasterに入った。C-resourceの受入れ、C-body、C-product、H-store／H-current、D-transport、D-dispatch、Eは未完了で、製品Graph入口とlocal送信は閉じている。残HOLDの状態は[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)の残HOLD表、ユーザー決定・委任範囲・レーン・merge列は[NIR-1続行計画の作業記録](nir1-continuation-2026-10.md)を正本とする。2026-09-25/26のoff-master承認とWIPは採用せず、契約はK1〜K6として最新master前提で起案し直す。2 MiB／8 msは前提にせず、資源契約は防御用の上限へ簡素化した（2026-10-12にK1、`nir1-l6-l9-contract-proposal/6` の2行を確認）。Graph公開とlocal生成公開のAND条件を維持する。downstream threat modelはdraft。NIR-1 overall acceptance remains incomplete.
+R-hook（#609、`689261c3`）、D-final内部候補とcurrent-turn Human capture（#611、`902a7e79`）、C-query worker（#610、`13e3f6c6`）、通常CIの自動実行（#627）、自動maintenanceの一時失敗の正常解放（#628）はmasterに入った。C-body、C-product、H-store／H-current、D-transport、D-dispatch、Eは未完了で、製品Graph入口とlocal送信は閉じている。C-resourceの受入れは、2026-10-13のCR-RECで [C-query受入れ台帳](nir1-c-query-acceptance-2026-10.md) に記録し、HOLDを解除済み。条件：CR-1（#636）のmergeと最終headのQuick・PR checks・lane 6本のgreen（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。U7（2026-10-13のユーザー決定）により Full は merge 後の master で走らせる。台帳の未充足はHOLDのまま。残HOLDの状態は[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)の残HOLD表、ユーザー決定・委任範囲・レーン・merge列は[NIR-1続行計画の作業記録](nir1-continuation-2026-10.md)を正本とする。2026-09-25/26のoff-master承認とWIPは採用せず、契約はK1〜K6として最新master前提で起案し直す。2 MiB／8 msは前提にせず、資源契約は防御用の上限へ簡素化した（2026-10-12にK1、`nir1-l6-l9-contract-proposal/6` の2行を確認）。Graph公開とlocal生成公開のAND条件を維持する。downstream threat modelはdraft。NIR-1 overall acceptance remains incomplete.
 
 ### Previous snapshot (2026-09-24, post-#608)
 

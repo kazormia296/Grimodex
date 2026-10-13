@@ -378,6 +378,67 @@ finite functional confirmation neither renews consumed diagnostic purposes nor
 waives B/Full, final acceptance or canonical gates. The removed aggregate physical
 6 MiB and substitute Native 1.5 MiB proofs stay deleted.
 
+For a separately reviewed Linux lifecycle lane, `canonical_profile=c-query-lifecycle`
+reuses the existing worker job with only `ubuntu-latest` and
+`bash scripts/nir1-c-query-worker-ci.sh lifecycle`. Dispatch it manually, for example
+`gh workflow run ci.yml --ref <branch> -f canonical_profile=c-query-lifecycle`; ordinary
+CI never runs it. Keep product mode `all`, false booleans and empty canonical
+tuple/options. The same first literal guard rejects mixed/case-variant/wrong-event
+inputs before checkout/setup, and the canonical owner excludes the profile so only the
+worker job is admitted. The script rejects a non-Linux run with a `[precheck]` message
+before any fixture or build work. There is no new input, job, executor, dependency or
+test filter; the pinned setup/cache, `fail-fast: false` and 45-minute limit are
+unchanged. The profile is not in the local CI registry and joins no Full part:
+`scripts/ci-pause.test.mjs` pins the profile set, the twelve-step worker job and the
+absence from `registry.profiles`.
+
+This branch runs the 14 ignored cases that no other lane names, in this order. Two
+are in-process readers that start no worker: `production_query_has_an_available_100ms_success_path`
+and `ordinary_reader_registers_and_queries_fixed_q2_fixture`. Twelve drive a real
+worker child. Five use the normal worker build:
+`native_worker_exits_after_owner_process_dies_after_request_admission`,
+`native_worker_quarantines_when_cleanup_proof_is_unobserved`,
+`native_worker_quarantine_blocks_w1_restore_and_retains_shared_lease`,
+`native_worker_cleanup_unproved_without_file_identity_retains_participant_and_blocks_io`
+and `native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph`, the
+last on a `Q512/R1/E12/registry33` fixture that this mode alone builds. Seven use the
+seam-enabled build: `native_worker_handles_backpressured_request_writes`,
+`native_worker_reaps_live_committed_child_after_result_lease`,
+`native_worker_quarantines_result_lease_when_exit_proof_transfer_is_unavailable`,
+`native_worker_quarantines_result_lease_when_reader_join_fails`,
+`native_worker_quarantines_result_lease_when_reader_completion_exceeds_cleanup_deadline`,
+`native_worker_retires_after_real_child_rust_oom` and
+`native_worker_refuses_after_real_child_sqlite_nomem`. The Q2 and registry33 fixtures
+are closed synthetic sources; every case gets a fresh copy, and the source checksum and
+the absence of WAL/SHM/journal sidecars are checked again after each case.
+
+Each case is its own `cargo test` process, because several cases deliberately quarantine
+process-global worker capacity until the test process exits and would make later cases
+fail spuriously in a shared process. The test binary is compiled once with `--no-run`,
+so each case's `timeout --kill-after=30s 600s` covers execution only. Every
+invocation uses `--ignored --exact` with the full
+`narrative_extraction::nir1_graph::tests::<name>` path, tees its output and requires
+`test result: ok. 1 passed; 0 failed;`: a renamed or cfg-excluded case would otherwise
+report `0 passed` and exit 0. Before the first case the script runs
+`prlimit --pid "$$" --core=1:1` and fails closed unless the value reads back as `1 1`.
+`ulimit -c 0` is not enough: with a pipe-type `kernel.core_pattern` (systemd-coredump,
+apport) the kernel still starts the dump helper for a zero limit, which can delay the
+Rust OOM child's SIGABRT exit past the owner's 500 ms cleanup deadline so that the case
+observes SIGKILL. The kernel aborts a pipe core dump when the limit is 1 (kernel log:
+`RLIMIT_CORE is set to 1, aborting core`), and the worker children inherit it. A host
+whose hard limit is already 0 makes `prlimit` fail with EPERM, so the lane fails closed
+before any case runs; the hosted `ubuntu-latest` runner does not hit this.
+
+A lane pass proves only these 14 cases at that candidate on one Linux runner. It is not
+macOS/Windows coverage (several cases use a subreaper, SIGSTOP, `/proc` or SIGABRT),
+universal lifecycle acceptance, B/Full prerequisites or merge readiness, and it never
+stands in for the three-OS lanes above. If a case reaches its timeout, `timeout`
+signals only the cargo process group: the owner-death helper runs in its own process
+group and can outlive the failed case (the lane still fails). The script and
+`scripts/ci-pause.test.mjs` establish routing and contracts, not Rust/SQLite/worker
+acceptance, which comes from the executed cases. Exposing the profile neither waives
+B/Full, final acceptance or canonical gates nor changes any fixed value.
+
 For a separately reviewed shared-Rust lane, `canonical_profile=shared-rust`
 selects **only the complete existing `rust` job**. This reuses the registered
 workflow and its existing string input; it adds no dispatch input or executor.
