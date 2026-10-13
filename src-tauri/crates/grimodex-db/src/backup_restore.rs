@@ -422,7 +422,7 @@ fn write_restore_session_marker(workspace: &Path, marker: &RestoreSessionMarker)
         serde_json::to_writer_pretty(&mut file, marker).map_err(anyhow::Error::from)?;
         file.sync_all().map_err(anyhow::Error::from)?;
     }
-    std::fs::rename(&tmp, &path).map_err(anyhow::Error::from)?;
+    crate::fs_replace::rename_replace_with_retry(&tmp, &path).map_err(anyhow::Error::from)?;
     // Best-effort directory fsync so the rename is durable across crash.
     if let Ok(dir) = File::open(&backups) {
         let _ = dir.sync_all();

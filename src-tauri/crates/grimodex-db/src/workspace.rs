@@ -176,7 +176,7 @@ pub fn write_global_settings(path: &Path, settings: &GlobalSettings) -> anyhow::
     tmp_os.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp_os);
     std::fs::write(&tmp, json)?;
-    std::fs::rename(&tmp, path)?;
+    crate::fs_replace::rename_replace_with_retry(&tmp, path)?;
     Ok(())
 }
 

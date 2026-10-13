@@ -678,9 +678,9 @@ impl Database {
                 let gz_tmp = with_suffix(dest, ".tmp");
                 gzip_file(&sqlite_tmp, &gz_tmp)?;
                 std::fs::remove_file(&sqlite_tmp)?;
-                std::fs::rename(&gz_tmp, dest)?;
+                fs_replace::rename_replace_with_retry(&gz_tmp, dest)?;
             } else {
-                std::fs::rename(&sqlite_tmp, dest)?;
+                fs_replace::rename_replace_with_retry(&sqlite_tmp, dest)?;
             }
             Ok(())
         })();
@@ -844,6 +844,7 @@ pub mod domain_writes;
 pub mod editor_stickies;
 mod execute;
 pub mod foreshadow;
+pub mod fs_replace;
 mod fts;
 mod idempotency;
 pub mod ime_export;

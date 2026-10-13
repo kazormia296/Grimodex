@@ -1229,7 +1229,7 @@ fn write_json_atomic(path: &Path, value: &impl Serialize) -> io::Result<()> {
         serde_json::to_writer_pretty(&mut file, value).map_err(io::Error::other)?;
         file.sync_all()?;
     }
-    fs::rename(&tmp, path)?;
+    crate::fs_replace::rename_replace_with_retry(&tmp, path)?;
     Ok(())
 }
 

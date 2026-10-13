@@ -1577,7 +1577,8 @@ fn atomic_write_json<T: Serialize>(root: &Path, path: &Path, value: &T) -> anyho
             .context("write IME export staging file")?;
         file.sync_all().context("sync IME export staging file")?;
         drop(file);
-        atomic_replace(&temp, path).context("atomically replace IME export JSON")?;
+        crate::fs_replace::retry_replace(|| atomic_replace(&temp, path))
+            .context("atomically replace IME export JSON")?;
         sync_parent_directory(parent)?;
         Ok(())
     })();

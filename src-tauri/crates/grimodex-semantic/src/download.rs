@@ -117,7 +117,7 @@ pub async fn install(
     // absent, so a crash in this short replacement window is detected as an
     // incomplete install and retried on the next request.
     let _ = std::fs::remove_file(&final_path);
-    std::fs::rename(&part_path, &final_path)?;
+    grimodex_db::fs_replace::rename_replace_with_retry(&part_path, &final_path)?;
     std::fs::write(&sidecar_path, spec.artifact_sha256)?;
     Ok(())
 }
@@ -224,7 +224,7 @@ fn ensure_tokenizer(
 
         tokenizers::Tokenizer::from_file(&staged)
             .map_err(|error| anyhow::anyhow!("staged tokenizer validation failed: {error}"))?;
-        atomic_replace(&staged, &destination)?;
+        grimodex_db::fs_replace::retry_replace(|| atomic_replace(&staged, &destination))?;
         Ok(())
     })();
     if result.is_err() {
