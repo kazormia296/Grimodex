@@ -39,7 +39,7 @@ AIのhypotheses artifactはNativeの厳密schemaに合わせて従来の `{ hypo
 3. 次のJourney laneでは候補を明示的に再開し、古いgateを新差分の証明に使わない。実envelope、Native保存/Apply、再起動後の残存・件数不変を確認する。
 4. 独立担当が固定候補と証跡を確認する。失敗があれば候補を再開し、古いreceiptを無効化する。
 
-証跡の保存先: `.artifacts/narrative-eval/chronicle-modality-fix-20260907/`。commit/push/merge、課金APIの追加実行はこの作業に含めない。Fullはmerge前のclean commitで必要となる別gateであり、部分実行やdirty候補のQuick/Journeyで置き換えない。
+証跡の保存先: `.artifacts/narrative-eval/chronicle-modality-fix-20260907/`。commit/push/merge、課金APIの追加実行はこの作業に含めない。Fullはmerge前のclean commitで必要となる別gateであり、部分実行やdirty候補のQuick/Journeyで置き換えない。（Fullをmerge前に必要とするのは当時の規則である。2026-10-13のmerge条件の変更（[続行計画](./nir1-continuation-2026-10.md)の§1 U7）以降、通常のPRのmergeにFullは要求されない。現行の条件は[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)に従う。部分実行やdirty候補で置き換えない点は変わらない。）
 
 Journeyの詳細な操作と未実装部分は[前段の受入れ計画](./chronicle-modality-boundary-acceptance.md)を参照する。今回の結果は同文書の前段48 PASS/3 FAILと区別して追記する。
 

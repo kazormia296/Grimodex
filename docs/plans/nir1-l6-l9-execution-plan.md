@@ -19,7 +19,7 @@ Tree: b7f97fc7dbbb5243da090b41dbc884ecfdc0ec2b
 
 2026-10-12 K1追記（上の2026-10-01／10-02／10-04の改訂は当時の履歴としてそのまま残す）: これらの改訂は叙述だけで記録され、`draftRef` と `contractId` を名指した確認台帳の形式では確認されていなかった。2026-10-12に `nir1-l6-l9-contract-proposal/6` の `graph-limited-binding` と `nir1-defensive-resource-limits` が確認され（下の「契約別の確認台帳」）、次がproposal/6で正式化された。単一Revision validationの `512 records`／`6,291,456 B`（#610の作業中、2026-10-02のcommit `85898500` で共有定数が変わった値で、上の10-04の段落が前提にしている）。parent admission→valid Native result leaseの `100 ms`（10-02。registration／READYまでのstartupとcleanup／retirementの待ちを含めない）。query全体の物理メモリ上限とその証明（6 MiBのaggregate cap/proof、worker Q 4.5 MiB／Native 1.5 MiBの物理的な収まり）とNative fixed-area packingの削除（10-04）。10-01の値のうち、queryの入力と保持見積りの `6,291,456 B`、worker Qの固定allocator `4,718,592 B`、Native領域 `1,572,864 B` は、物理メモリの保証ではない「実装上の防御上限」として現行値のまま維持し、緩めるには再確認を要する。10-01の `16 ms` は10-02の `100 ms` で置き換わった。C-queryのper-Revision preflight（`2,097,152 B`）とPackingの `2 MiB` は変わらない。
 
-2026-10-12 post-#629現在地: master `a153743b` には、#609（R-hook、`689261c3`）、#611（D-final内部候補とcurrent-turn Human capture、`902a7e79`）、#614（依存更新、`dd7d6599`）、#610（C-query worker、`13e3f6c6`）、#627（通常CIの自動実行とproduct journeyの並列化、`af13db45`）、#628（自動maintenanceの一時失敗をRecoveryRequiredにしない、`5d2a56eb`）、#629（journey shard 2〜7のXvfb wrapper）が入っている。#610で別processのC-query worker、Native owner、100 ms result lease、512／513、100,000 SQL stepsがmasterに入ったが、C-resourceの受入れと独立証明はHOLDで、製品Graph入口は `NIR1_GRAPH_NOT_ACTIVATED` のまま閉じている。local送信、履歴の実authority、Graph先本文の開示もHOLDである。#610は単一Revision validationの上限を2 MiBから6 MiBへ変えたが、確認台帳の形式では確認されていなかった。この値は2026-10-12にK1（`nir1-l6-l9-contract-proposal/6`）で確認し、確認台帳に記録した。2026-09-25/26のoff-master承認と未commit WIPは採用せず参照だけに使い、契約は最新master前提の新しいdraftRefとして起案し直す。ユーザー決定（逐語）、委任範囲、レーン、merge列、worktree台帳は [NIR-1続行計画の作業記録](nir1-continuation-2026-10.md) に記録する。Full admissionはGitHub-hosted job以外を拒否するため、merge gate MのFullはhostedのcanonical-ci.ymlで実行する。
+2026-10-12 post-#629現在地: master `a153743b` には、#609（R-hook、`689261c3`）、#611（D-final内部候補とcurrent-turn Human capture、`902a7e79`）、#614（依存更新、`dd7d6599`）、#610（C-query worker、`13e3f6c6`）、#627（通常CIの自動実行とproduct journeyの並列化、`af13db45`）、#628（自動maintenanceの一時失敗をRecoveryRequiredにしない、`5d2a56eb`）、#629（journey shard 2〜7のXvfb wrapper）が入っている。#610で別processのC-query worker、Native owner、100 ms result lease、512／513、100,000 SQL stepsがmasterに入ったが、C-resourceの受入れと独立証明はHOLDで、製品Graph入口は `NIR1_GRAPH_NOT_ACTIVATED` のまま閉じている。local送信、履歴の実authority、Graph先本文の開示もHOLDである。#610は単一Revision validationの上限を2 MiBから6 MiBへ変えたが、確認台帳の形式では確認されていなかった。この値は2026-10-12にK1（`nir1-l6-l9-contract-proposal/6`）で確認し、確認台帳に記録した。2026-09-25/26のoff-master承認と未commit WIPは採用せず参照だけに使い、契約は最新master前提の新しいdraftRefとして起案し直す。ユーザー決定（逐語）、委任範囲、レーン、merge列、worktree台帳は [NIR-1続行計画の作業記録](nir1-continuation-2026-10.md) に記録する。Full admissionはGitHub-hosted job以外を拒否するため、canonical Fullはhostedの`canonical-ci.yml`で実行する。2026-10-13のU7（[作業記録](nir1-continuation-2026-10.md)）で、通常のPRのmerge gate MからFullを外した。
 
 2026-10-13 CR-REC追記: C-resourceの受入れを [C-query受入れ台帳](nir1-c-query-acceptance-2026-10.md) に記録した。CR-1（#636）の試験とopt-in／lifecycle laneのrunを、CQ-1〜3と資源契約の各条件に対応づけ、対応する証跡が無い条件は未充足として残した。下の残HOLD表のC-resourceの行は、この台帳を根拠に解除済みである。条件：CR-1（#636）のmergeと最終headのQuick・PR checks・lane 6本のgreen（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。U7（2026-10-13のユーザー決定）により Full は merge 後の master で走らせる。台帳の未充足（G-1〜G-4）は別の行でHOLDのまま残す（後続はCR-2）。製品のGraph入口は閉じたまま（A-1）で、Graphの公開、local送信、固定値と閾値、確認台帳の各行は変えない。
 
@@ -73,7 +73,7 @@ R0は、#572の現在地、後続laneの境界、契約ごとの開始可否、�
 | Tree | `04c491c29627ecc840112ebe379a5363e16892ff` |
 | candidateBranch | `codex/nir1-r0-contract-ledger` |
 | plan / policy / threat refs | 本書、統合計画、ロードマップ、既存 quality manifest / impact map。下流 threat model は draft のまま |
-| receipt boundary | 初回static draftの旧R0候補のfocused test／`verify:quality`／Quick＋verifyは無効。今後の実装候補は全PR共通 merge gate M（clean candidateのFull＋直後verify）で判定し、旧receiptを流用しない |
+| receipt boundary | 初回static draftの旧R0候補のfocused test／`verify:quality`／Quick＋verifyは無効。今後の実装候補は全PR共通 merge gate M（通常のPRはrebase済みclean candidateのQuick＋直後verifyと同じheadのPR checks、release PRはFull＋直後verify）で判定し、旧receiptを流用しない |
 
 ### #572の実装済み／未完了
 
@@ -458,7 +458,7 @@ retrievalの比較armは `R / R+IR / R+IR+Graph` とし、Graph改善は `R+IR` 
 
 ### 全PR共通 merge gate M
 
-全PR（R0、途中の機能PR、E、Pを含む）のmergeには、最新 `origin/master` を取り込んだcleanなcommit済みcandidate、Full、直後のverifyを要求する。baseまたはHEADが変わった場合はFullをstage 1から再実行し、古いreceiptを再利用しない。R0の機能受入れは文書・品質契約に限定するが、R0もmerge gate Mの対象であり、merge前にはFull＋verifyを実行する。R0の機能受入れではruntime journeyとactivationを実行しない。
+全PR（R0、途中の機能PR、E、Pを含む）の通常のmergeには、[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)の通常PRの経路を適用する。最新 `origin/master` へrebaseしたcleanなcommit済みcandidate、そのcandidateのcanonical Quickと直後のverify、同じheadの`ci.yml` checksの成功を要求する。candidateが変われば古いreceiptを再利用しない。canonical Fullは通常のPRのmerge条件ではなく、merge後にmasterのheadでhostedに走らせる（2026-10-13のU7、[作業記録](nir1-continuation-2026-10.md)）。release PRだけが、従来どおりcompleteなhosted Fullと直後のverifyを要求する。R0の機能受入れは文書・品質契約に限定するが、R0もmerge gate Mの対象であり、merge前にはQuick＋verifyを実行する。R0の機能受入れではruntime journeyとactivationを実行しない。
 
 2026-10-12同期（#627以降の実態）: PR（opened／synchronize／reopened）と`master`へのpushでは`ci.yml`の通常checksが自動で走るが、canonical Quick／Full receiptの代わりにはしない。canonical Quick／Fullは`canonical-ci.yml`の`workflow_dispatch`（`profile`、`candidate_base`、`candidate_head`）でhosted実行し、dispatchするrefのHEADは`candidate_head`と一致させる。Full admissionはGitHub-hosted job以外を拒否するため、ローカルの`pnpm ci:local:full`はmerge証跡にならない。
 
@@ -480,18 +480,7 @@ commit／PRを依頼されていない調査・計画ではcommitもCIも開始�
 
 同じQuickは、pushしたbranchのremote HEADが`candidate_head`と一致することを確認した後、同じ固定値の`gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=quick -f candidate_base="$candidate_base" -f candidate_head="$candidate_head"`でhosted実行してもよい。hosted Quickは同じjobで直後のverifyまで実行する。
 
-merge前のMは次のとおりで、rootの受入れ担当が候補をfreezeし、branchをpushしてremote HEADが候補HEADと一致することを確認した後に実行する。dispatchの前に、同じmerge列で実行中のcanonical Fullがないことをread-onlyで確認する。
-
-    full_base="$(git rev-parse 'origin/master^{commit}')"
-    full_head="$(git rev-parse 'HEAD^{commit}')"
-    gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$full_base" -f candidate_head="$full_head"
-
-dispatchしたrunの`headSha`が`full_head`と一致することを確認する。7つのpart job（frontend、native、journeys、rust、cquery、migration、runtime）がそれぞれのfresh VMで同じtupleのFull partを実行し、`full-aggregate` jobが全partを集約して次を同じtupleで実行する。
-
-    pnpm ci:local:full -- --aggregate --base "$full_base" --head "$full_head"
-    pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"
-
-全part jobと`full-aggregate`が成功したrunだけをFull receiptとする。失敗したrunは失敗jobだけでなく全jobを再実行する。merge直前に`git fetch origin master`を実行し、現在のbaseが`full_base`と一致することを確認して`approved_merge_base`とする（editorial docs/ADR-onlyの狭い例外はGDX-TRACE-001に従う）。mergeは`gh pr merge --squash --match-head-commit "$full_head"`で行い、merge後にfetchしてmerge commitのfirst parent（`<merge-sha>^1`）を`approved_merge_base`と照合し、`origin/master`への包含を確認する。
+merge前のMは、rootの受入れ担当が候補をfreezeし、branchをpushしてremote HEADが候補HEADと一致することを確認した後に、上のQuick（rebase済みの候補）と、同じheadの`ci.yml` checksの成功を確かめて満たす。mergeは`gh pr merge --squash --match-head-commit "$candidate_head"`で行い、merge直前のbase一致と`approved_merge_base`は通常のPRに要求しない（Quickの後にmasterが進んでも、衝突がなくPR HEADが`candidate_head`のままならQuickをやり直さない）。merge後のmasterのFull（dispatch、実行中は1本に合流、赤は次のmergeの前に切り分けて修正かrevertを先にmerge）と、release PRおよびrelease tagのFullは、GDX-TRACE-001と`/ship-branch`の手順に従う。
 
 candidateのbase・head・tree・clean state・receipt directoryは境界時点で記録する。各ステップで同じSHAを過度に照合することや、receiptの見た目だけで承認を推定することはしない。
 
@@ -531,7 +520,7 @@ candidateのbase・head・tree・clean state・receipt directoryは境界時点�
 | R0で確認済み・merge後開始 | R0でmerge済みの五つのproposal/3 contractIdはproposal scopeだけを確認し、R0 merge＋通常依存成立後のみreadyとする。 |
 | 明示確認済み・契約として有効 | proposal/4 Option BのEntity／Relation-only `typed-revision-material`を第六行として記録する。exact user confirmationにより批准済み・有効であり、A2はA1＋D2aの通常依存が成立した後にreadyとする。 |
 | 初回static draftの文書更新時点で未実施 | 新たなproduction runtime integration、activation、外部送信、runtime journey、push、PR、M2全体移行、全抽出recipe対応、作者価値の測定 |
-| 今後の実装候補の必須gate | 全PR共通 merge gate Mとしてclean candidateのFull＋直後verifyを必須とし、文書化・focused／Quick結果で免除しない |
+| 今後の実装候補の必須gate | 全PR共通 merge gate Mとして、通常のPRはrebase済みclean candidateのQuick＋直後verifyと同じheadのPR checks（Fullはmerge後にmasterで実行）、release PRはFull＋直後verifyを必須とし、文書化・focused結果で免除しない |
 
 ## 実装順序と公開条件
 
@@ -757,15 +746,9 @@ commit／PRを依頼されていない調査・計画ではcommitもCIも開始�
     pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
     pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
 
-L9受入れ・merge前（hostedのcanonical Full。ローカルの`pnpm ci:local:full`はFull admissionで拒否される）:
+L9受入れ（E-2）に必要なFull／verifyは、最後のPRのmerge後にmasterのheadで走らせたhostedのcanonical Fullで満たす。ローカルの`pnpm ci:local:full`はFull admissionで拒否される。全part jobと`full-aggregate`が成功したrunだけを証跡とし、dispatchと赤のときの扱いはGDX-TRACE-001と`/ship-branch`に従う。通常のPRのmerge前に求めるのは上のQuickと同じheadのPR checksで、`--match-head-commit`の扱いは上記merge gate Mに従う。
 
-    full_base="$(git rev-parse 'origin/master^{commit}')"
-    full_head="$(git rev-parse 'HEAD^{commit}')"
-    gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$full_base" -f candidate_head="$full_head"
-
-`full-aggregate` jobが同じtupleで `pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"` まで成功したrunだけを証跡とする。dispatchの前提、merge直前のbase照合、`--match-head-commit`、first-parentの照合は上記merge gate Mに従う。
-
-baseまたはHEADが変わった場合、古いreceiptを流用せずFullをstage 1から再実行する。初回static draftではruntime journey・activation・merge gate MのFull／verifyを実施していないと記録したが、これは現在候補の免除ではない。初回static draftの旧R0候補で実施済みだった `verify:quality`、Quick、直後のQuick verifyを本版で無効化し、再開候補で再実施する記録だった。今後の実装候補は全PR共通 merge gate Mの対象であり、merge前のclean HEADでFull＋直後verifyが必須である。runtime journey・activationはR0の機能受入れ範囲外である。
+candidateが変われば古いreceiptを流用しない。初回static draftではruntime journey・activation・merge gate MのFull／verifyを実施していないと記録したが、これは現在候補の免除ではない。初回static draftの旧R0候補で実施済みだった `verify:quality`、Quick、直後のQuick verifyを本版で無効化し、再開候補で再実施する記録だった。今後の実装候補は全PR共通 merge gate Mの対象であり、通常のPRはmerge前のrebase済みclean HEADでQuick＋直後verifyが必須である。runtime journey・activationはR0の機能受入れ範囲外である。
 
 ## 非目標と再確認条件
 

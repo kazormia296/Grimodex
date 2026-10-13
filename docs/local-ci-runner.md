@@ -37,6 +37,13 @@ without a requested commit/PR does not create a commit or start PR-bound CI
 solely for Quick; an explicitly requested dirty working-tree run remains
 diagnostic evidence and cannot establish merge readiness.
 
+An ordinary PR merges on its rebased clean candidate's complete Quick plus the
+same-head `ci.yml` checks, so canonical Full is not an ordinary-PR merge
+condition. Full runs on `master` after such a merge, and it remains the merge
+evidence for a release PR and the release tag. The rule and its procedure live in
+[GDX-TRACE-001](../policies/quality/iron-laws.md#GDX-TRACE-001) and the
+`ship-branch` skill.
+
 ### Split hosted Full
 
 Hosted canonical Full runs as independent parts, each on its own fresh

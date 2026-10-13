@@ -84,7 +84,7 @@ electron-builder、`app.getVersion()`、v2 release workflow の tag gate は、�
 8. **push、PR、mergeを行う**
    - release commit を作成して作業ツリーが clean になった後、`/ship-branch` をbranchのpush／PR／mergeフローとして使用する。
    - ユーザーが依頼したゴールに含まれる push、PR、merge まで進める。
-   - `/ship-branch` のcompleteなローカルFull、mergeability、レビュー、HEAD固定、base反映確認を満たす。
+   - `/ship-branch` のrelease path（completeなhosted Fullと直後のverify、`approved_merge_base`による直前のbase照合、mergeability、レビュー、HEAD固定、squashのfirst-parent照合）を満たす。通常のPR用のQuick経路は使わない。
 9. **merge済みrelease goalのFull、注釈付きtag、Draft Release**
    - tag／Draft Releaseが依頼範囲に含まれ、CIが許可され、mergeが完了した場合だけ、merge後の `origin/master` を fetch してrelease commitを確認し、release commitそのものをcleanなcheckout／worktreeの現在HEADにする。
    - その条件を満たす場合、`origin/master`とHEADがrelease commitを指す状態で、最初のstageからFullを実行し直して直後にverifyする。squash前のbranch HEADに対するFull receiptは、merge後のrelease commitの証跡として再利用しない。

@@ -460,19 +460,12 @@ pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
 pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
 ```
 
-最終NIR-1受入れ、および別途承認されたmerge前は、最新origin/masterを含むcleanなcommit済みHEADで
-`full_base`／`full_head`を一度だけ解決し、同じ値でFullと直後のverifyを実行する。#610以降、Full admissionは
-GitHub-hosted job以外を拒否するため、branchをpushしてremote HEADが`full_head`と一致することを確認した後、hostedのcanonical Fullをdispatchする。
-
-```sh
-full_base="$(git rev-parse 'origin/master^{commit}')"
-full_head="$(git rev-parse 'HEAD^{commit}')"
-gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$full_base" -f candidate_head="$full_head"
-```
-
-`full-aggregate` jobが同じtupleで `pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"` まで成功したrunだけを証跡にする。
-merge直前のbase照合、`--match-head-commit`、first-parentの照合は[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)の全PR共通 merge gate Mに従う。base/HEADが変わればFullをstage 1から再実行する。
-release tagが別途承認された場合はmerge後release commit自身で同じFull/verifyを再実行する。
+最終NIR-1受入れのFull/verifyは、最後のPRのmerge後にmasterのheadで走らせたhostedのcanonical Fullで確認する。#610以降、
+Full admissionはGitHub-hosted job以外を拒否するため、ローカルのFullは証跡にならない。全part jobと`full-aggregate`が成功したrunだけを
+証跡にし、dispatchと赤のときの扱いは[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)と`/ship-branch`に従う。
+通常のPRのmerge前に求めるのは、上のQuickと直後verify、同じheadの`ci.yml` checksの成功で、`--match-head-commit`を含む手順は
+[L6〜L9実行計画](nir1-l6-l9-execution-plan.md)の全PR共通 merge gate Mに従う。
+release PRのmerge前と、release tagが別途承認された場合のmerge後release commit自身には、従来どおりcompleteなhosted Full/verifyを要求する。
 P1/P2/P3の途中候補をmergeする場合も同じmerge gateを満たす。hosted PR checkが無いことをgreen根拠にしない。
 `--from`、`--dry-run`、古いreceipt、skipped/deferredを成功証跡としない。
 
@@ -523,5 +516,5 @@ L9では必須機能、意図的に停止した補助機能、停止経路の必
 2026-09-13のPR-R0では、上記の現在地を#572基点へ更新した。R0はproposal/3の五つのcontract rowを明示確認済みとしてmergeした。PR #579は、proposal/4 Option BのEntity／Relation-only assertion family `typed-revision-material`という第六行を記録し、正確なユーザー確認により明示批准済み・契約として有効となった。ref `nir1-l6-l9-contract-proposal/4#typed-revision-material`、正確なユーザー確認、A1＋D2a後にA2をreadyとする依存は、execution-plan ledgerに記録する。これらはdownstream threat modelを完了させず、runtime／consumerをactivateしない。
 評価は既存24検索case、8 Graph case（G-01〜G-08）、12 Packing task（P-01〜P-12）の識別子と、
 `R / R+IR / R+IR+Graph`、seed-only診断、共通seed/context、同一token budget、事前指定改善caseの比較条件を実行計画へ対応付けた。
-Graph改善はR+IRを比較対象とし、D1 fixtureとD2b-2／P3最終requestは別証跡とする。全PRのmerge gate M（clean candidateのFull＋verify）は維持する。
-初回static draft時点の「runtime journey・activation・merge gate MのFull／verifyは未実施」という記録は過去の静的draftに限り、現在候補の免除ではない。今後の実装候補は全PR共通 merge gate Mの対象であり、merge前のclean HEADのFull＋直後verifyを必須とする。R0の機能受入れではruntime journey・activationは対象外である。
+Graph改善はR+IRを比較対象とし、D1 fixtureとD2b-2／P3最終requestは別証跡とする。全PRのmerge gate M（通常のPRはrebase済みclean candidateのQuick＋verifyと同じheadのPR checks、release PRはFull＋verify）は維持する。
+初回static draft時点の「runtime journey・activation・merge gate MのFull／verifyは未実施」という記録は過去の静的draftに限り、現在候補の免除ではない。今後の実装候補は全PR共通 merge gate Mの対象であり、通常のPRはmerge前のrebase済みclean HEADでQuick＋直後verifyを必須とする。R0の機能受入れではruntime journey・activationは対象外である。

@@ -375,7 +375,7 @@ Eは未実装をまとめて埋める工程にしない。各レーンの合格�
 
 取消、保存前後クラッシュ、workspace切替、restore、Graph unavailable、巨大frontier、旧送信route拒否、legacy互換/ID再利用を負例として含める。既存正常な保存・編集・Raw検索・承認・復旧も回帰させない。
 
-NIR-1 Completeは、B容量と必須lifecycle、C品質/性能/Evidence、D1/D2b最終入力/来歴/生成/履歴、全中間公開境界、固定24/G8/P12、必須実journey、独立受け入れ、最終候補Full/verifyが揃った場合だけとする。必須Hold、blocked、未測定、未実装をPASSへ読み替えない。
+NIR-1 Completeは、B容量と必須lifecycle、C品質/性能/Evidence、D1/D2b最終入力/来歴/生成/履歴、全中間公開境界、固定24/G8/P12、必須実journey、独立受け入れ、最終候補Full/verifyが揃った場合だけとする（最終候補のFull/verifyは、最後のPRのmerge後にmasterのheadで走らせるhostedのcanonical Fullの成功で満たす）。必須Hold、blocked、未測定、未実装をPASSへ読み替えない。
 
 意図的に停止した補助AI機能の再有効化は完了条件にしないが、停止の拒否試験は必須。`author-value: not-measured` は技術受け入れと分離し、作者価値を実測したとは主張しない。Windows installerは既存release-only条件であり、Linux Fullから合格を推定しない。[S1][S3]
 
@@ -401,23 +401,18 @@ C系とD2b系の二レーンを基本とする。共有IPC型、Native入口、p
 
 ### 14.3. merge gate
 
-focused境界試験、型/契約/必要なRust・Native・Electron検証、品質台帳とimpact traceを更新してから候補をcommitする。clean candidateでQuick→直後verify、独立受け入れ、merge前Fullをstage 1から→直後verifyを実行する。すべてのPRに既存merge gate Mを適用する。[S3]
+focused境界試験、型/契約/必要なRust・Native・Electron検証、品質台帳とimpact traceを更新してから候補をcommitする。rebase済みのclean candidateでQuick→直後verify、独立受け入れ、同じheadの`ci.yml` checksの成功を経てmergeする。すべてのPRに既存merge gate Mを適用する。canonical Fullは通常のPRのmerge条件ではなく、merge後にmasterのheadで走らせる。release PRとrelease tagだけが、従来どおりFullを要求する。[S3]
 
-2026-10-12同期（#627以降の実態）: PRと`master`へのpushでは`ci.yml`の通常checksが自動で走るが、canonical Quick／Full receiptの代わりにはしない。Full admissionはGitHub-hosted job以外を拒否するため、Fullはpushしたbranchのremote HEADが`full_head`と一致することを確認してから、`canonical-ci.yml`のhosted dispatchで実行する。Quickはローカルで実行するか、同じ固定値で`profile=quick`をhosted dispatchする。
+2026-10-13更新（U7）: 通常のPRのmerge条件からcanonical Fullを外した（[作業記録](nir1-continuation-2026-10.md)のU7）。2026-10-12同期（#627以降の実態）として、PRと`master`へのpushでは`ci.yml`の通常checksが自動で走るが、canonical Quick／Full receiptの代わりにはしない。Quickはローカルで実行するか、同じ固定値で`profile=quick`をhosted dispatchする。
 
 ```sh
 candidate_base="$(git rev-parse 'origin/master^{commit}')"
 candidate_head="$(git rev-parse 'HEAD^{commit}')"
 pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"
 pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"
-
-# merge用の最終候補をfreezeし、base/headを一度解決してからhosted Fullをdispatchする
-full_base="$(git rev-parse 'origin/master^{commit}')"
-full_head="$(git rev-parse 'HEAD^{commit}')"
-gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$full_base" -f candidate_head="$full_head"
 ```
 
-7つのpart jobと、同じtupleで `pnpm ci:local:full -- --aggregate` と直後の `pnpm ci:local:verify -- full` を実行する `full-aggregate` jobがすべて成功したrunだけをFull receiptとする。失敗したrunは全jobを再実行する。merge直前に `git fetch origin master` でbaseが`full_base`と一致することを確認し、`gh pr merge --squash --match-head-commit "$full_head"` でmergeし、merge commitの`^1`をapproved merge baseと照合する。手順の正本は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の全PR共通 merge gate M。
+mergeは`gh pr merge --squash --match-head-commit "$candidate_head"`で行い、merge直前のbase一致と`approved_merge_base`は通常のPRに要求しない。merge後のmasterのFull（dispatch、実行中は1本に合流、赤は次のmergeの前に切り分けて修正かrevertを先にmerge）の手順の正本は[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)と`/ship-branch`、NIR-1の全PR共通の条件は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の全PR共通 merge gate M。
 
 base/head/tree/clean state/receipt directory、契約ref、評価manifest/model hash、reviewerを境界時点で記録する。各操作で同じSHAを過剰照合しない。候補変更後は旧receiptを流用しない。Full失敗を単体再実行成功でPASSへ変えず、原因を確認し、必要修正後の新候補で再実行する。
 

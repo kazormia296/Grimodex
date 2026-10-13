@@ -1238,9 +1238,44 @@ test("validation scope preserves instruction gates and conditional CI without ro
     validation,
     /PR\/release evidence with CI allowed.*Clean candidate Quick.*immediate verify/i,
   );
+  // U7 (2026-10-13): an ordinary PR merges on a rebased Quick and the same-head
+  // PR checks; only a release PR and the release tag keep the Full requirement.
+  const validationBullets = sectionFromAnchor(policy, "agent-validation")
+    .split(/^- /m)
+    .slice(1)
+    .map(normalizeSection);
+  const ordinaryMerge = validationBullets.find((bullet) =>
+    bullet.startsWith("Ordinary PR merge"),
+  );
+  const releaseMerge = validationBullets.find((bullet) =>
+    bullet.startsWith("Release PR merge"),
+  );
+  assert.ok(
+    ordinaryMerge,
+    "the validation scope must list the ordinary PR merge",
+  );
+  assert.ok(
+    releaseMerge,
+    "the validation scope must list the release PR merge",
+  );
   assert.match(
-    validation,
-    /Merge or release tag with CI allowed.*Full and verify.*preflight/i,
+    ordinaryMerge,
+    /with CI allowed: Rebased clean candidate Quick plus immediate verify, and success of the same-head PR checks, under GDX-TRACE-001; the canonical Full runs on master after the merge/i,
+  );
+  assert.doesNotMatch(
+    ordinaryMerge,
+    /Full and verify|release tag/i,
+    "an ordinary PR merge must not require Full and verify",
+  );
+  assert.match(
+    releaseMerge,
+    /^Release PR merge or release tag with CI allowed: Full and verify under GDX-TRACE-001, including applicable preflight/i,
+  );
+  assert.ok(
+    !validationBullets.some((bullet) =>
+      bullet.startsWith("Merge or release tag"),
+    ),
+    "the old unconditional merge-requires-Full row must be gone",
   );
   assert.match(
     validation,
@@ -1381,7 +1416,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   );
   assert.match(
     trace,
-    /hosted Full, Full admission observes.*fresh part VM.*no other canonical Full for the same merge queue is in progress/i,
+    /hosted Full, Full admission observes.*fresh part VM.*no other canonical Full for the same target ref/i,
   );
   assert.match(
     trace,
@@ -1389,11 +1424,192 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   );
   assert.match(
     trace,
-    /Immediately before merge, fetch `origin\/master` and confirm the current base equals the recorded `approved_merge_base`/i,
+    /Windows NSIS final compilation.*separate manual Full CI.*tag-release obligation.*unavailable release-only check is never passed/i,
+  );
+
+  // U7 (2026-10-13), A: an ordinary PR merges on a rebased, complete Quick and
+  // the same-head PR checks; canonical Full is not an ordinary merge condition.
+  assert.match(
+    trace,
+    /An ordinary PR is every PR that is not a release PR; it merges on the complete Quick of a rebased candidate and the same-head ordinary checks/i,
   );
   assert.match(
     trace,
-    /Windows NSIS final compilation.*separate manual Full CI.*tag-release obligation.*unavailable release-only check is never passed/i,
+    /After `git fetch origin master`, the current `origin\/master` must be an ancestor of the candidate HEAD \(rebased\); otherwise rebase and take the candidate again/i,
+  );
+  // Review P3: the condition is the ancestry, and rebasing a pushed branch needs
+  // a force push that requires the user's explicit permission.
+  assert.match(
+    trace,
+    /The condition is the ancestry, not the method: where a force push is not allowed \(it needs the user's explicit permission\), merge `origin\/master` into the branch instead of rebasing/i,
+  );
+  assert.match(
+    trace,
+    /Resolve immutable `candidate_base` and `candidate_head` values once as expanded shell-local strings, pass those same strings to the canonical Quick \(local, or hosted with `profile=quick`\) and every verify of that receipt, and obtain a complete Quick receipt/i,
+  );
+  // Review P2: the receipt itself must prove the candidate was rebased when the
+  // Quick was taken. The local Quick does not check ancestry, so the merge
+  // re-checks it from the receipt's own pair (a PR-only Quick on a stale branch
+  // must not become merge evidence just because the candidate is unchanged).
+  // Review P3: the base must also be on origin/master. A base taken from the
+  // branch passes the head ancestry check, yet the impact selection sees only
+  // base..head and narrows the Quick to part of the PR diff.
+  assert.match(
+    trace,
+    /Before merge, after `git fetch origin master`, `candidate_base` must be an ancestor of both `candidate_head` and `origin\/master` \(`git merge-base --is-ancestor "\$candidate_base" "\$candidate_head"` and `git merge-base --is-ancestor "\$candidate_base" origin\/master`\), where `candidate_base` is the `origin\/master` fetched just before that Quick; it stays an ancestor after `origin\/master` advances, so freshness is not asked/i,
+  );
+  assert.match(
+    trace,
+    /The local Quick checks neither and the hosted Quick checks only the first; a base that is not on `origin\/master`, such as a commit on the branch, narrows the Quick's changed-path selection to part of the PR diff/i,
+  );
+  assert.match(
+    trace,
+    /A Quick whose pair fails either check \(for example one taken for a PR-only goal on a branch that had fallen behind\) is not merge evidence even when the candidate is unchanged, and the Quick is taken again after the branch is brought up to date/i,
+  );
+  assert.match(
+    trace,
+    /The ordinary `ci\.yml` PR checks must have succeeded on the same head with none pending or failing, and the review gate must hold \(no requested changes, no unresolved thread, no P2\+ finding\)/i,
+  );
+  assert.match(
+    trace,
+    /Merge with `gh pr merge --squash --match-head-commit` and the candidate head\. The current base is not required to equal a recorded base immediately before merge/i,
+    "the ordinary path keeps the expected-head merge",
+  );
+  assert.match(
+    trace,
+    /The current base is not required to equal a recorded base immediately before merge, and this path does not use `approved_merge_base`/i,
+  );
+  assert.match(
+    trace,
+    /PR HEAD still equals `candidate_head`, neither the rebase nor the Quick is repeated; only a conflict or a needed candidate change restarts from the rebase/i,
+  );
+  assert.match(
+    trace,
+    /a squash merge commit whose first parent \(`<merge-sha>\^1`\) differs from `candidate_base` may be recorded but is not a failure on this path/i,
+  );
+  assert.match(
+    trace,
+    /Canonical Full is not an ordinary PR merge condition, and no Full is dispatched for an ordinary PR/i,
+  );
+
+  // B: the master Full compensates operationally after the merge.
+  assert.match(
+    trace,
+    /The party that merged an ordinary PR then dispatches a hosted canonical Full on the `origin\/master` head \(`--ref master`, `candidate_head` the master head, `candidate_base` the master commit that last passed a complete Full, or the merge commit's first parent when that is unknown\), and the next merge does not wait for it/i,
+  );
+  assert.match(
+    trace,
+    /If a canonical Full for `master` is already running, dispatch nothing now; after it finishes, dispatch one Full on the latest master head, so that several merges share one Full/i,
+  );
+  // Review P3: who dispatches the one coalesced Full when the merging party
+  // cannot wait for the running one.
+  assert.match(
+    trace,
+    /A party that cannot wait for that one dispatch reports it as pending and hands it to its caller \(the integrator, or the user who requested the work\), who first checks that no Full already covers the latest master head/i,
+  );
+  // Review P3: the party that dispatched the master Full owns watching it, or
+  // hands the run id to its caller; nobody else reverts for it.
+  assert.match(
+    trace,
+    /The party that dispatched a Full watches it to completion and starts the red handling below if it fails; a party that cannot wait reports the run id and hands the watching to its caller/i,
+  );
+  assert.match(
+    trace,
+    /A master Full follows the same Full rules as any other Full: the resource-isolation preflight, all part jobs plus `full-aggregate`, re-running all jobs, and no local Full as evidence/i,
+  );
+  // Review P2: red is judged per attempt. A re-run of all jobs shows no
+  // conclusion for hours, so "the latest completed Full" would reopen merging
+  // while a failed Full is being re-run (fail-open). The red persists through the
+  // re-run and clears only by a success or by the fix/revert landing.
+  assert.match(
+    trace,
+    /A failed master Full takes priority over other work\. Master is red when the last concluded attempt of the newest master Full run that has a concluded attempt \(not counting a run stopped at the selection validation\) did not succeed \(it failed, was cancelled, or timed out\)/i,
+  );
+  assert.match(
+    trace,
+    /A run whose jobs are being re-run is judged by the attempt before the re-run, and a first attempt that is still running is skipped, so a re-run in progress does not reopen merging/i,
+  );
+  assert.match(
+    trace,
+    /While master is red, merge only the fix or the revert: before the next merge, re-run all jobs to see whether it reproduces and find which merge introduced it, then merge the fix or the revert ahead of other PRs/i,
+  );
+  assert.match(
+    trace,
+    /Red clears only when a re-run or a later master Full completes successfully, or when the fix or the revert is on `origin\/master`/i,
+  );
+  assert.match(
+    trace,
+    /The one exception is a failure shown to be an unrelated flake and recorded where the merging party can read it: other merges are not blocked while all jobs are re-run, a red whose record cannot be found is not treated as a flake, and a failed re-run ends the exception/i,
+  );
+  assert.match(
+    trace,
+    /A party that only has merge authority and finds master red stops merging and reports to its caller, who decides whether to revert/i,
+  );
+  assert.doesNotMatch(
+    trace,
+    /latest (?:completed|finished) (?:master )?(?:canonical )?Full/i,
+    "master red is judged per attempt, not by the latest completed Full",
+  );
+  // Review P3: a run stopped by the dispatch's own selection validation (master
+  // advanced between resolving candidate_head and the dispatch) never ran the
+  // Full, so it is not a red master Full that would block the next merge.
+  assert.match(
+    trace,
+    /A run that stopped at the dispatch's selection validation \(for example because `master` advanced between resolving `candidate_head` and the dispatch, so that it no longer equals the head of the dispatched ref\) never ran the Full: it is neither a green nor a red master Full, it is not re-run, and a new dispatch with a fresh `candidate_head` replaces it/i,
+  );
+
+  // C: a release PR keeps the Full-based merge evidence, the base check right
+  // before merge, the first-parent comparison and the narrow exception; the
+  // release tag keeps its own complete Full on the merged commit.
+  // Review P3: a release PR is decided by the content of the change, not by
+  // whether bump-version prepared it; an unclear case takes the release path.
+  assert.match(
+    trace,
+    /A release PR is any PR that changes the `package\.json` `version`, including the version-bump PR prepared by `bump-version`; when it is unclear whether a PR is one, treat it as a release PR\. A release PR keeps a complete hosted Full as merge evidence/i,
+  );
+  assert.doesNotMatch(
+    trace,
+    /A release PR is the version-bump PR prepared by/i,
+    "a release PR is not defined by who prepared it",
+  );
+  assert.match(
+    trace,
+    /A release PR's initial merge Full first confirms the fetched current `origin\/master` is an ancestor of the candidate HEAD, then resolves immutable `candidate_base` and `candidate_head` values once/i,
+  );
+  assert.match(
+    trace,
+    /A release merge precheck fetches `origin\/master` before base comparison or classification and records exactly one `approved_merge_base`/i,
+  );
+  assert.match(
+    trace,
+    /On the release path only, immediately before merge, fetch `origin\/master` and confirm the current base equals the recorded `approved_merge_base`/i,
+  );
+  assert.match(
+    trace,
+    /For a release PR's squash merge only, after merge and fetch, compare the actual squash merge commit's first parent \(`<merge-sha>\^1`\) once with the recorded `approved_merge_base`/i,
+  );
+  assert.match(
+    trace,
+    /On the release path, an upstream-base change is exempt from a Full rerun only when/i,
+  );
+  assert.match(
+    trace,
+    /A release tag requires a new complete Full run on the merged release commit itself/i,
+  );
+  // The stale unscoped wording must not come back.
+  assert.doesNotMatch(
+    trace,
+    /The initial merge Full first confirms|Immediately before merge, fetch|\. An upstream-base change is exempt from a Full rerun only when/,
+    "the merge-time Full and base rules must be scoped to the release path",
+  );
+  assert.doesNotMatch(
+    trace,
+    /same merge queue/i,
+    "a master Full is coordinated per target ref, not per merge queue",
+  );
+  assert.match(
+    trace,
+    /no other canonical Full for the same target ref \(`master`, or the release PR branch\) is in progress/i,
   );
 
   for (const contract of [identity, matrix]) {
@@ -1433,6 +1649,68 @@ test("agent operation contracts keep candidate evidence and bounded identity che
   );
   assert.match(runbook, /selector.*ready signal/);
   assert.match(runbook, /33 catalog entries as 11\/11\/11 shards/);
+  // U7 (2026-10-13): the runbook and the setup guide point to GDX-TRACE-001
+  // instead of treating Full as the ordinary merge evidence.
+  assert.match(
+    normalizeSection(runbook),
+    /An ordinary PR merges on its rebased clean candidate's complete Quick plus the same-head `ci\.yml` checks, so canonical Full is not an ordinary-PR merge condition\. Full runs on `master` after such a merge, and it remains the merge evidence for a release PR and the release tag/,
+  );
+  await assertLocalMarkdownLink(
+    "docs/local-ci-runner.md",
+    "policies/quality/iron-laws.md",
+    "GDX-TRACE-001",
+  );
+  const setupGuide = await read("docs/DEVELOPMENT_SETUP.md");
+  assert.match(
+    normalizeSection(setupGuide),
+    /通常のPRのmerge前は、最新の`origin\/master`へrebaseしたcleanかつcommit済みの現在HEADで ?Quickと直後のverifyを実行し、同じheadの`ci\.yml` checksが成功していればmergeできます。 ?canonical Fullは通常のPRのmerge条件ではなく、merge後にmasterのheadで実行します/,
+  );
+  assert.match(
+    normalizeSection(setupGuide),
+    /release PRのmerge前と、release tag前.*には、cleanな現在HEADでFullを最初のstageから実行します/,
+  );
+  assert.doesNotMatch(
+    setupGuide,
+    /merge前は、最新の`origin\/master`を含むcleanかつcommit済みの現在HEADで、ローカルで/,
+    "the setup guide must not keep Full as the ordinary merge evidence",
+  );
+  // Review P3: the same section must not contradict itself. ci.yml runs on PRs,
+  // master pushes and the schedule (scripts/ci-pause.test.mjs binds the
+  // triggers), and Full admission refuses a Full that is not a GitHub-hosted
+  // job, so the guide dispatches the hosted workflow instead of showing a local
+  // Full that is no evidence.
+  assert.match(
+    normalizeSection(setupGuide),
+    /`\.github\/workflows\/ci\.yml` は、通常のPR、`master`へのpush、nightlyで自動実行されます ?（手動実行とtag releaseからの再利用呼び出しも受け付けます）。この通常checksは、 ?canonical Quick／Fullのreceiptの代わりにはなりません/,
+  );
+  assert.doesNotMatch(
+    setupGuide,
+    /通常のPR、branch push、scheduleからGitHub Actionsの|明示的な手動実行とtag releaseからの/,
+    "the setup guide must not say that ci.yml is not started by PRs, pushes or the schedule",
+  );
+  const ciOn = yaml.load(await read(".github/workflows/ci.yml")).on;
+  assert.ok(
+    ciOn.pull_request && ciOn.push && ciOn.schedule,
+    "the setup guide states that ci.yml runs on PRs, master pushes and the schedule",
+  );
+  assert.match(
+    normalizeSection(setupGuide),
+    /Fullを証跡にできるのは、GitHub-hostedの ?`canonical-ci\.yml`で実行したものだけです。Full admissionが標準のGitHub-hosted job以外を拒否するため、 ?手元で`pnpm ci:local:full`を実行してもmerge／releaseの証跡になりません。dispatchの手順は ?`ship-branch`に従います/,
+  );
+  assert.match(
+    setupGuide,
+    /gh workflow run canonical-ci\.yml --ref <branch> -f profile=full -f candidate_base=<base-sha> -f candidate_head=<head-sha>/,
+  );
+  assert.doesNotMatch(
+    setupGuide,
+    /^pnpm ci:local:full -- --(?:base|from)/m,
+    "the setup guide must not show a local Full that Full admission refuses",
+  );
+  await assertLocalMarkdownLink(
+    "docs/DEVELOPMENT_SETUP.md",
+    "policies/quality/iron-laws.md",
+    "GDX-TRACE-001",
+  );
   assert.match(
     bump,
     /PR／releaseの証跡が依頼範囲に含まれ.*CIが許可されている場合だけ/is,
@@ -1484,11 +1762,85 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     ship,
     /上記のPR／release／CI条件を満たす場合だけ.*Quickと直後のverify/is,
   );
-  assert.match(ship, /mergeまでがゴールでCIが許可されている場合.*Full/is);
-  assert.match(ship, /CIが明示的に除外されている場合はFullとmergeを開始せず/);
+  // U7 (2026-10-13): the default path is a rebased Quick plus the same-head PR
+  // checks; Full is required only on the release path.
+  const shipFlat = normalizeSection(ship);
   assert.match(
-    ship,
-    /上記のmerge／CI条件を満たす場合だけ.*Fullと直後のverify/is,
+    shipFlat,
+    /マージまでがゴールなら、通常のPRでは merge 後の master の Full の dispatch（§8）まで含む/,
+    "a merge goal includes the post-merge master Full for an ordinary PR",
+  );
+  assert.match(
+    shipFlat,
+    /本文の「手順N」と「§N」は節 N（`## N\.`）を、「§N\.M」はその節の項目 M を指す/,
+  );
+  assert.doesNotMatch(
+    shipFlat,
+    /手順[678]/,
+    "references to the sections 6-8 use §N, because §2 has items numbered 6-8 too",
+  );
+  // Review P3: the kind of PR is decided by the content of the change.
+  assert.match(
+    shipFlat,
+    /release PR（`package\.json` の `version` を変える PR。`\/bump-version` が作るものを含む。以下 release path。判定は §1\.9）/,
+  );
+  assert.match(
+    shipFlat,
+    /通常のPRか release PR かを決める。作り方ではなく内容で決め、`package\.json` の `version` を変える PR（`\/bump-version` が作るものを含む）を release PR、それ以外を通常のPRとする。 ?`git diff origin\/master\.\.\.HEAD -- package\.json` の差分に `"version"` の行があるかで確かめ、迷う場合は release PR として release path に倒す/,
+  );
+  assert.doesNotMatch(
+    shipFlat,
+    /`\/bump-version` が作る、`package\.json` の `version` を上げる PR だけが release PR/,
+    "a release PR is not defined by who prepared it",
+  );
+  assert.match(
+    shipFlat,
+    /通常のPRでQuickを取る場合（CIが許可されているとき。PR作成だけがゴールの場合も含む）は、Quickの前に`git fetch origin master`を実行し、 ?current `origin\/master`がcandidate HEADの祖先（rebase済み）であることを`git merge-base --is-ancestor origin\/master HEAD`で確認する。 ?ローカルのQuickは祖先関係を検証しない（hostedの`canonical-ci\.yml`は検証する）。祖先でなければ、branchを同期してレビュー対象を取り直し、 ?cleanなcommit済みHEADで最初のstageからやり直す。条件は「`origin\/master`がHEADの祖先であること」で、同期の方法は問わない/,
+  );
+  // Review P3: rebasing a pushed branch needs a force push, which section 3.4
+  // forbids without the user's explicit word, so merging origin/master is the
+  // fallback; the expected-head lease is used only when the user allowed it.
+  assert.match(
+    shipFlat,
+    /未pushのbranchは`origin\/master`へrebaseする。 ?- push済みのbranchをrebaseするとforce pushが必要になる。§3\.4のとおり、ユーザーがforce pushを明示した場合に限り、 ?リモートの現在のheadを期待値にした`git push --force-with-lease=<branch>:<リモートの現在のhead SHA> origin <branch>`で更新する。 ?- force pushが明示されていないpush済みのbranchは、`origin\/master`をbranchへmergeして取り込む。通常のPRはsquash mergeなので、branch上のmerge commitは残らない/,
+  );
+  assert.match(
+    sectionFromHeading(ship, "## 3. Branch を push する"),
+    /force push、base branch push、wildcard refspec は、ユーザーが明示しない限り使用しない/,
+    "the sync methods above must keep section 3.4 as the force-push gate",
+  );
+  assert.match(
+    shipFlat,
+    /通常のPRのmerge証跡は、上記のcompleteなQuick receipt（`candidate_base`が`candidate_head`と`origin\/master`の両方の祖先であるもの。確認は§6）と、同じheadの通常PR checks（`ci\.yml`）の成功である。 ?その祖先条件を満たさないQuick（PR作成だけがゴールのときに祖先確認なしで取ったQuickなど）は、候補が変わっていなくてもmerge証跡にせず、 ?branchを同期して§2\.3から取り直す。 ?canonical Fullは通常のPRの ?merge条件ではなく、通常のPRのためにFullをdispatchしない/,
+  );
+  assert.match(
+    shipFlat,
+    /通常のPRではmerge直前にcurrent baseが`candidate_base`と一致することを要求せず、 ?`approved_merge_base`も使わない/,
+  );
+  assert.match(
+    shipFlat,
+    /GitHubが衝突なしでmergeableと判定し、PR HEADが`candidate_head`と ?一致していれば、rebaseとQuickのやり直しは不要。衝突がある、または候補を変える必要がある場合だけ、branchを同期（§2\.3）して ?祖先確認からやり直す/,
+  );
+  assert.match(
+    shipFlat,
+    /通常のPRのmergeまでが依頼されていてもCIが明示的に除外されている場合は、 ?Quickとmergeを開始せず、merge readinessを主張しない/,
+  );
+  assert.match(
+    shipFlat,
+    /release PRでmergeまでがゴールでCIが許可されている場合だけ、Fullを要求する/,
+  );
+  assert.match(
+    shipFlat,
+    /release PRのmergeまでが依頼されていてもCIが明示的に除外されている場合はFullとmergeを開始せず/,
+  );
+  assert.match(
+    shipFlat,
+    /上記のrelease／CI条件を満たす場合だけ.*Fullと直後のverify/,
+  );
+  assert.doesNotMatch(
+    shipFlat,
+    /上記のmerge／CI条件を満たす場合だけ|mergeまでがゴールでCIが許可されている場合、初回Fullの前提/,
+    "the Full requirement must be scoped to the release path",
   );
   assert.match(bump, /release commit後.*cleanなHEAD.*Quick.*verify/is);
   assert.match(
@@ -1507,6 +1859,14 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     bump,
     /上記のrelease／CI／merge条件を満たす場合だけ.*release Fullと直後のverify/is,
   );
+  // U7 (2026-10-13): a release PR merges through ship-branch's release path
+  // (hosted Full, approved_merge_base, first-parent check), never the ordinary
+  // Quick path and never a local Full.
+  assert.match(
+    bump,
+    /`\/ship-branch` のrelease path（completeなhosted Fullと直後のverify、`approved_merge_base`による直前のbase照合、mergeability、レビュー、HEAD固定、squashのfirst-parent照合）を満たす。通常のPR用のQuick経路は使わない/,
+  );
+  assert.doesNotMatch(bump, /completeなローカルFull/);
 
   const nirValidationSection = normalizeSection(
     sectionFromHeading(nirPlan, "## 実装時の検証手順"),
@@ -1644,6 +2004,17 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   assert.match(
     policySection,
     /before mutation.*every entry\/start\/retry\/reentrant path/i,
+  );
+  // U7 (2026-10-13), review P3: the P2+ review convergence gates the merge on
+  // both paths (a release PR also before the expensive Full), and after the
+  // canonical Quick or Full the acceptance only confirms an unchanged candidate.
+  assert.match(
+    policySection,
+    /High-effort review and candidate-untouched independent acceptance must resolve P2\+ findings before freeze and merge \(for a release PR, before the expensive Full as well\); after the canonical Quick or Full, acceptance confirms the unchanged candidate and does not reopen semantics without a candidate change/i,
+  );
+  assert.match(
+    shipCiSection,
+    /高リスク作業では、merge（release PR ではexpensive Fullも）より前に high-effort review と candidate-untouched independent acceptance review を収束させ、P2\+ findingを解消する。acceptance reviewerはread-onlyで候補を編集しない。 ?focused gatesを通過してcandidateをfreezeした後、QuickまたはFull完了後のacceptanceはcandidateが不変であることだけを確認し/,
   );
   assert.match(
     policySection,
@@ -1802,15 +2173,32 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
       /candidate(?:[_ ]base).*(?:candidate(?:[_ ]head)|and head).*(?:once|一度だけ).*Full.*(?:every verify|全verify)/i,
       "candidate refs must be pinned before Full",
     );
-    assert.match(
-      section,
-      /approved_merge_base/i,
-      "one approved merge base must be recorded",
-    );
   }
+  // U7 (2026-10-13): only the release path records one approved_merge_base and
+  // compares the squash first parent; the ordinary path does neither as a gate.
+  // GDX-PRECHECK-001 points to GDX-TRACE-001 instead of restating the rule.
   assert.match(
     policySection,
-    /first parent.*<merge-sha>\^1.*approved.*merge-base/i,
+    /defined in \[GDX-TRACE-001\]\(#GDX-TRACE-001\); only the release path records an `approved_merge_base` and compares the squash merge commit's first parent \(`<merge-sha>\^1`\) with it after merge/i,
+  );
+  assert.doesNotMatch(
+    policySection,
+    /A merge precheck fetches before comparing|either the verified candidate base on the normal path/i,
+    "GDX-PRECHECK-001 must not restate the merge precheck",
+  );
+  assert.match(
+    traceSection,
+    /records exactly one `approved_merge_base`: the verified candidate base when no exception applies, or the current base only after the narrow editorial docs\/ADR-only exception is approved/i,
+    "one approved merge base must be recorded on the release path",
+  );
+  assert.doesNotMatch(
+    traceSection,
+    /on the normal path/i,
+    "the release path wording must not say 'normal path', which reads as the ordinary path",
+  );
+  assert.match(
+    traceSection,
+    /first parent.*<merge-sha>\^1.*approved_merge_base/i,
   );
   for (const section of [policySection, traceSection, shipMergeSection]) {
     assert.match(
@@ -1899,6 +2287,287 @@ test("high-risk work keeps threat models user-confirmed and candidate evidence r
   );
   assert.doesNotMatch(shipMergeSection, /git rev-parse <merge-sha>\^\{tree\}/i);
   assert.match(ship, /SHAは不一致.*ユーザーが求めた場合だけ/i);
+
+  // U7 (2026-10-13): the pre-merge snapshot has a common part, an ordinary-path
+  // part (Quick receipt, no base equality, no approved_merge_base) and a
+  // release-path part that keeps the hosted Full and the approved base.
+  const shipMergePrecheck = normalizeSection(shipMergePrecheckRawSection);
+  const ordinaryPrecheck = shipMergePrecheck.indexOf(
+    "通常path（通常のPR）では、さらに次を確認する",
+  );
+  const releasePrecheck = shipMergePrecheck.indexOf(
+    "release path（release PR）では、上の通常path固有の確認の代わりに次を確認する",
+  );
+  assert.ok(ordinaryPrecheck >= 0, "the ordinary-path checks must exist");
+  assert.ok(
+    releasePrecheck > ordinaryPrecheck,
+    "the release-path checks must follow the ordinary-path checks",
+  );
+  const commonPrecheck = shipMergePrecheck.slice(0, ordinaryPrecheck);
+  const ordinaryChecks = shipMergePrecheck.slice(
+    ordinaryPrecheck,
+    releasePrecheck,
+  );
+  const releaseChecks = shipMergePrecheck.slice(releasePrecheck);
+  assert.match(
+    commonPrecheck,
+    /同じ head の通常 PR checks（`ci\.yml`）が成功している/,
+  );
+  // Review P3: the pending/failed bullet is pinned in sequence with its
+  // neighbours, so deleting any one of the gate bullets fails the test.
+  assert.match(
+    commonPrecheck,
+    /- 設定されている全required checksがsuccess - 同じ head の通常 PR checks（`ci\.yml`）が成功している - pending／failed checks がない - requested changes と未解決 review thread がない/,
+  );
+  // Review P2: red is judged per attempt (§8.5). A run whose jobs are being
+  // re-run has no conclusion for hours, so "the latest completed Full" would let
+  // other merges through while the re-run of a failed Full is in flight.
+  assert.match(
+    commonPrecheck,
+    /master の Full が赤でない（判定は §8\.5。run の結論ではなく attempt の結論で見るので、全 job を再実行している間も、直前の attempt が赤なら赤のままである）。 ?赤ならその修正または revert 以外の PR を merge しない（§8\.6）/,
+  );
+  assert.doesNotMatch(
+    commonPrecheck,
+    /最新の完了した canonical Full/,
+    "the pre-merge red check must not look only at completed Full runs",
+  );
+  assert.match(
+    ordinaryChecks,
+    /手順2で固定した`candidate_base`／`candidate_head`のcompleteなQuick receiptがある。ローカルのQuickは、直後の ?`pnpm ci:local:verify -- quick --base "\$candidate_base" --head "\$candidate_head"`が成功している。hosted Quickは ?dispatchしたrunの`headSha`が`candidate_head`と一致し、同じjobのverifyまで成功している/,
+  );
+  // Review P2: the receipt's own pair must prove the Quick was taken on a
+  // rebased candidate; the local Quick does not check ancestry by itself.
+  // Review P3: the base must also be on origin/master, or a base taken from the
+  // branch would still pass the head ancestry check while the Quick covers only
+  // part of the PR diff.
+  assert.match(
+    ordinaryChecks,
+    /そのreceiptの`candidate_base`が`candidate_head`と`origin\/master`の両方の祖先である。 ?上の`git fetch origin master`の後に ?`git merge-base --is-ancestor "\$candidate_base" "\$candidate_head"`と`git merge-base --is-ancestor "\$candidate_base" origin\/master`の両方が成功する/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /（`candidate_base`は、そのQuickの直前に`git fetch origin master`で取った`origin\/master`のはずで、その後に`origin\/master`が進んでいても祖先のままである。鮮度は問わない）/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /hostedのQuickは前者をjob内で確認するが、ローカルのQuickはどちらも確認しない。branch上のcommitのようにmasterにないcommitを`candidate_base`にしたQuickは、 ?`candidate_head`の祖先であってもPRの差分の一部しか対象に選ばないので、後者で拒否する/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /どちらかが成功しないQuick receipt（PR作成だけがゴールのときに祖先確認なしで取ったQuickなど）は、候補が変わっていなくてもmerge証跡にしない。 ?branchを同期（§2\.3）して、§2\.3の祖先確認からQuickを取り直す/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /current fetched baseが`candidate_base`と一致することは要求せず、 ?`approved_merge_base`も使わない/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /Quickの後に`origin\/master`が進んでいても、mergeableで衝突がなくPR HEADが`candidate_head`のままなら、rebaseとQuickのやり直しは不要/,
+  );
+  assert.match(
+    ordinaryChecks,
+    /衝突がある、または候補を変える必要があるときだけ、branchを同期（§2\.3）して§2\.3の祖先確認からやり直す/,
+  );
+  assert.doesNotMatch(
+    ordinaryChecks,
+    /pnpm ci:local:verify -- full|full-aggregate/,
+    "the ordinary path must not require a Full receipt",
+  );
+  assert.match(
+    releaseChecks,
+    /exactly oneの`approved_merge_base` commitを記録する/,
+  );
+  assert.match(
+    releaseChecks,
+    /`full-aggregate` jobで`pnpm ci:local:verify -- full --base "\$candidate_base" --head "\$candidate_head"`が成功している/,
+  );
+  assert.match(
+    releaseChecks,
+    /exception pathでは.*狭いdocs\/ADR-only exception/,
+  );
+
+  // Section 7: both paths use the expected-head merge; only the release path
+  // compares the squash first parent with the approved base.
+  assert.match(
+    shipMergeSection,
+    /`gh pr merge --squash --match-head-commit "\$candidate_head"` のように ?`--match-head-commit <sha>` を使う。通常pathもrelease pathも同じである/,
+  );
+  assert.match(
+    shipMergeSection,
+    /通常pathでは、squash merge commitのfirst parent（`<merge-sha>\^1`）が`candidate_base`と違っても失敗にしない。報告に記録してよい/,
+  );
+  assert.match(
+    shipMergeSection,
+    /release pathのsquash mergeの場合だけ、実際のsquash merge commitのfirst parent（`<merge-sha>\^1`）を`approved_merge_base`と一度だけ比較する/,
+  );
+
+  // Section 5: the wait gate names the Quick receipt (ordinary) and adds the
+  // hosted Full receipt only for a release PR.
+  const shipWait = normalizeSection(
+    sectionFromHeading(ship, "## 5. CI とレビュー gate を待つ"),
+  );
+  assert.match(
+    shipWait,
+    /required check が設定されていない場合も、同じ head の通常 PR checks（`ci\.yml`）の成功（pending や failure がない）と、 ?手順2のcompleteなQuick receiptが有効であることを確認してから次へ進む。release PR では、これに加えて ?手順2のcompleteなhosted Full receipt（同じtupleの`full-aggregate`成功）が有効であることを確認する/,
+  );
+
+  // Section 8 (new): after an ordinary merge, dispatch one hosted Full on
+  // master, coalesce while one is running, and handle a red result first.
+  const shipMasterFull = normalizeSection(
+    sectionFromHeading(
+      ship,
+      "## 8. merge 後に master の Full を走らせ、赤は優先して直す",
+    ),
+  );
+  assert.match(
+    shipMasterFull,
+    /通常のPRをmergeした場合に実行する（マージまでがゴールの通常のPRでは依頼範囲に含まれる）。canonical Fullは通常のPRのmerge条件ではなく、 ?merge後に運用で補う証跡である/,
+  );
+  assert.match(
+    shipMasterFull,
+    /release PRはmerge前にcompleteなhosted Fullを通しているため、master のFullを重ねてdispatchしなくてよい/,
+  );
+  assert.match(
+    shipMasterFull,
+    /dispatch の `candidate_base` 入力（下の `master_base`）には、直前にcompleteなFull ?（全part jobと`full-aggregate`が成功）を通した master の commit を使う.*分からなければ ?merge commit のfirst parent（`<merge-sha>\^1`）を使う/,
+  );
+  // Review P3: queued runs have no jobs yet, so a run that cannot be proven to
+  // be something else is treated as a Full; a Full on the latest master head
+  // (running, queued or successful) already covers it.
+  assert.match(
+    shipMasterFull,
+    /master のcanonical Fullの状況をread-onlyで確認する。`gh run list --workflow canonical-ci\.yml --branch master --event workflow_dispatch --limit 20 --json databaseId,attempt,headSha,status,conclusion,createdAt`のrunのうち、 ?`gh run view <run-id> --json jobs` のjob名が`full-<part>`のものがFullである/,
+  );
+  assert.match(
+    shipMasterFull,
+    /queuedのrunはjobsがまだ無く、job名ではFullと判別できないことがある。 ?Fullでないと確かめられないrunは、Fullとして扱う。`status`と`conclusion`は最後のattempt（`attempt`）のものである/,
+  );
+  assert.match(
+    shipMasterFull,
+    /`headSha`が最新の`origin\/master`と一致するFullが実行中・queued（全jobの再実行中を含む）・成功のいずれかなら、最新のmaster HEADはすでに覆われているのでdispatchしない ?（本節4のとおり`Validate canonical selection`で止まったrunは、Fullとして走っていないので覆っていない）。 ?失敗・cancelled・timed outで終わったrunは覆っていないので、§8\.5の判定と§8\.6の対応に従う/,
+  );
+  assert.match(
+    shipMasterFull,
+    /別のheadのFullが実行中・queuedなら、今回はdispatchしない。終わった後に最新の master HEAD で1本だけdispatchする（複数のmergeを1本のFullに合流させる）/,
+  );
+  // Review P3: who dispatches the coalesced one when the merging party cannot
+  // wait (the caller, or the next merging party), and what is reported.
+  assert.match(
+    shipMasterFull,
+    /その1本を出すのは、終わるまで待てる担当ならこの担当、待てない担当（短命のsubagentなど）なら呼び出し元（integratorまたは依頼したユーザー）である。 ?待てない場合は、完了報告に「masterのFullが実行中のため未dispatch。終了後に最新のmaster HEADで1本のdispatchが必要」と書いて引き継ぎ、dispatch済みとは報告しない/,
+  );
+  assert.match(
+    shipMasterFull,
+    /引き継ぎの前に次のmergeがあれば、その担当が本節の手順で最新のmaster HEADに対する1本をdispatchする。 ?引き継いだ呼び出し元も、dispatchの前にこの項で最新のmaster HEADが覆われているかを確かめる/,
+  );
+  assert.match(
+    shipMasterFull,
+    /実行中のFullがなく、最新のmaster HEADも覆われていなければ、§2\.2のresource-isolation preflightを記録した後、次の固定値でhosted Fullをdispatchする/,
+  );
+  assert.match(
+    shipMasterFull,
+    /gh workflow run canonical-ci\.yml --ref master -f profile=full -f candidate_base="\$master_base" -f candidate_head="\$master_head"/,
+  );
+  assert.match(shipMasterFull, /次のmergeをこのFullの完了まで待たせない/);
+  // Review P3: nobody is left to watch a dispatched master Full; the party that
+  // can wait does, otherwise the caller gets the run id and starts the red
+  // handling.
+  assert.match(
+    shipMasterFull,
+    /次のmergeをこのFullの完了まで待たせない。 ?dispatchしたrunの完了を見届け、赤なら本節6を始めるのは、終わるまで待てる担当ならこの担当、待てない担当（短命のsubagentなど）なら呼び出し元（integratorまたは依頼したユーザー）である。 ?待てない場合は、記録したrun idを完了報告に書いて引き継ぐ/,
+  );
+  // Review P3: the dispatch can race with another merge. Such a run stops at the
+  // workflow's own selection validation; it is neither green nor red and is
+  // replaced by a new dispatch, never re-run.
+  assert.match(
+    shipMasterFull,
+    /dispatchしたrunが一覧に現れたら、`gh run list --workflow canonical-ci\.yml --branch master --event workflow_dispatch --limit 5 --json databaseId,headSha,status,createdAt`で ?今回のrunを特定してrun idを記録し、その`headSha`が`master_head`と一致することを確認する。dispatch時点のmasterの先頭が`master_head`と違うrunは、 ?`Validate canonical selection`（`candidate_head`と`GITHUB_SHA`の一致確認）で全part jobが失敗する。このrunは検証で止まっただけで、masterのFullの結果に ?数えない（緑でも赤でもない）。全jobを再実行しても同じ入力で同じく失敗するので再実行せず、`git fetch origin master`で`master_head`を取り直して ?dispatchし直す/,
+  );
+  assert.match(
+    shipMasterFull,
+    /全part jobと`full-aggregate`が成功したrunだけをcompleteなFull receiptとする。失敗したrunは失敗jobだけでなく全jobを再実行する。 ?ただし、失敗が`Validate canonical selection`のstepだけのrun（本節3）は、masterのFullの失敗に数えず再実行もしない（`gh run view <run-id> --json jobs`で失敗したstepを確かめる）。 ?ローカルのFullは証跡にならない/,
+  );
+  // The skill names the workflow's own validation step; keep the two bound.
+  const canonicalWorkflow = await read(".github/workflows/canonical-ci.yml");
+  assert.match(
+    canonicalWorkflow,
+    /- name: Validate canonical selection\n[\s\S]*?\[\[ "\$EXPECTED_HEAD" == "\$GITHUB_SHA" \]\]/,
+    "the master Full procedure relies on the dispatch's EXPECTED_HEAD == GITHUB_SHA validation step",
+  );
+  // The skill also says the hosted canonical job checks ancestry itself while
+  // the local Quick does not; keep that statement bound to the workflow.
+  assert.match(
+    canonicalWorkflow,
+    /git merge-base --is-ancestor "\$candidate_base" "\$candidate_head"/,
+    "the hosted canonical job verifies ancestry, as ship-branch states",
+  );
+  // Review P2: red is judged per attempt, not by the latest completed run. A
+  // re-run of all jobs bumps the run's attempt and leaves `conclusion` empty
+  // until it ends, so a "completed Full" test would see the previous green Full
+  // for the hours the re-run takes and let other merges through (fail-open).
+  // Sections 6, 8.2 and the stop condition cite these item numbers, so the
+  // numbering is pinned: 5 is the judgement and 6 the handling.
+  assert.match(
+    shipMasterFull,
+    /ローカルのFullは証跡にならない。 ?5\. master のFullが赤かどうかは、runの結論ではなくattemptの結論で判定する。全jobを再実行するとrunの`attempt`が増え、再実行が終わるまで一覧の`conclusion`は空になる。 ?再実行中のrunを「完了していない」として飛ばすと、赤のrunを見落としてmergeが通ってしまう/,
+  );
+  assert.match(
+    shipMasterFull,
+    /§8\.2の一覧のFull（本節4のとおり、`Validate canonical selection`のstepだけで失敗したrunは除く）を`createdAt`の新しい順に見て、 ?結論の出たattemptを持つ最初のrunの、最後に結論が出たattemptの結論で判定する/,
+  );
+  assert.match(
+    shipMasterFull,
+    /`status`が完了のrunは、一覧の`conclusion`が最後のattemptの結論である。`attempt`が2以上で`status`が実行中・queuedのrun（全jobを再実行中）は、 ?一覧の`conclusion`が空なので、直前のattemptの結論を`gh run view <run-id> --attempt <直前のattempt番号> --json attempt,status,conclusion` ?（`gh api repos\/\{owner\}\/\{repo\}\/actions\/runs\/<run-id>\/attempts\/<直前のattempt番号>`でもよい）で確かめて判定する/,
+  );
+  assert.match(
+    shipMasterFull,
+    /`attempt`が1で実行中・queuedのrunは、結論の出たattemptがないので飛ばして、次に新しいrunを見る/,
+  );
+  assert.match(
+    shipMasterFull,
+    /判定がsuccess以外（失敗・cancelled・timed outなど）なら赤である。全jobを再実行している間も赤のままで、再実行中であることを赤でない根拠にしない/,
+  );
+  assert.match(
+    shipMasterFull,
+    /赤が解けるのは、次のどちらかのときだけである。上の判定がcompleteな成功（全part jobと`full-aggregate`が成功）に変わったとき ?（そのrunの再実行の成功も、より新しいmasterのFullの成功も含む）。または、原因の修正かrevertが`origin\/master`に入ったとき/,
+  );
+  assert.match(
+    shipMasterFull,
+    /例外は、無関係なflakeと確かめ、そのrun idと根拠を、mergeする担当が確認できる場所に記録した赤である。全jobを再実行している間は、他のPRのmergeを止めない。 ?記録を確認できない赤は、flakeとして扱わない。再実行が失敗で終わったら例外は終わり、通常の赤として扱う/,
+  );
+  assert.match(
+    shipMasterFull,
+    /通常の赤として扱う。 ?6\. master のFullが赤になったら、他の作業より優先して対応する。次のmergeの前に、全jobの再実行で再現するか、どのmergeが持ち込んだかを切り分け、 ?修正またはrevertを他のPRより先にmergeする。その修正またはrevertのmergeが済むまで、それ以外のPRはmergeしない（§6）。 ?無関係なflakeと確かめたものは、記録して全jobを再実行する（本節5の例外）/,
+  );
+  // Review P3: a party that only has merge authority stops and reports; whether
+  // to revert another lane's PR is the caller's decision.
+  assert.match(
+    shipMasterFull,
+    /赤を見つけた担当が、その修正またはrevertを担当する指示を受けていない場合（merge権限しか持たない担当など）は、mergeを止めて呼び出し元へ報告する。 ?他のレーンのPRをrevertするかどうかは、呼び出し元が判断する/,
+  );
+  assert.doesNotMatch(
+    shipMasterFull,
+    /最新の完了した/,
+    "master red is not judged by the latest completed run",
+  );
+  assert.doesNotMatch(
+    shipMasterFull,
+    /pnpm ci:local:full/,
+    "the master Full is a hosted dispatch, never a local Full",
+  );
+  const shipStops = normalizeSection(sectionFromHeading(ship, "## 停止条件"));
+  assert.match(
+    shipStops,
+    /master の Full が未解決の赤（判定は§8\.5）: その修正またはrevertだけを先にmergeし、それ以外のPRはmergeせず停止する（§8\.6）/,
+  );
+  assert.match(
+    normalizeSection(sectionFromHeading(ship, "## 完了報告")),
+    /Quick／Full receiptの結果（通常のPRはQuickと同じheadのPR checks、release PRはFull）.*master Fullの扱い（dispatchしたrunのidとその見届け先、実行中のため未dispatchとその引き継ぎ先、判定済みの赤とその対応）/,
+  );
+  assert.match(
+    ship,
+    /\[GDX-TRACE-001\]\(\.\.\/\.\.\/\.\.\/policies\/quality\/iron-laws\.md#GDX-TRACE-001\)/,
+  );
 
   assert.ok(precheck, "GDX-PRECHECK-001 must exist");
   const trace = manifest.requirements.find(
@@ -3439,35 +4108,118 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     "candidate_head=\"$(git rev-parse 'HEAD^{commit}')\"",
     'pnpm ci:local:quick -- --base "$candidate_base" --head "$candidate_head"',
     'pnpm ci:local:verify -- quick --base "$candidate_base" --head "$candidate_head"',
-    "full_base=\"$(git rev-parse 'origin/master^{commit}')\"",
-    "full_head=\"$(git rev-parse 'HEAD^{commit}')\"",
-    'gh workflow run canonical-ci.yml --ref "$(git branch --show-current)" -f profile=full -f candidate_base="$full_base" -f candidate_head="$full_head"',
-    'pnpm ci:local:full -- --aggregate --base "$full_base" --head "$full_head"',
-    'pnpm ci:local:verify -- full --base "$full_base" --head "$full_head"',
-    'gh pr merge --squash --match-head-commit "$full_head"',
+    'gh pr merge --squash --match-head-commit "$candidate_head"',
   ]) {
     assert.match(
       executionPlan,
       new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
-  // Full admission refuses non-hosted Full since #610, so merge gate M runs
-  // the hosted canonical Full and never a local `pnpm ci:local:full`.
+  // U7 (2026-10-13): merge gate M is the ordinary path (a rebased complete
+  // Quick plus the same-head PR checks). Canonical Full runs on master after
+  // the merge and stays a merge requirement only for a release PR; the plans
+  // refer to GDX-TRACE-001 and /ship-branch instead of restating the commands,
+  // and none of them may run a local Full that Full admission refuses.
   const postBPlan = await read("docs/plans/nir1-post-b-execution-plan.md");
+  const gateM = normalizeSection(
+    executionPlan
+      .split("### 全PR共通 merge gate M\n", 2)[1]
+      ?.split("\n### PR-P 固定検索性能測定結果", 1)[0] ?? "",
+  );
+  assert.ok(gateM, "merge gate M must be present");
+  assert.match(
+    gateM,
+    /全PR（R0、途中の機能PR、E、Pを含む）の通常のmergeには、\[GDX-TRACE-001\]\(\.\.\/\.\.\/policies\/quality\/iron-laws\.md#GDX-TRACE-001\)の通常PRの経路を適用する/,
+  );
+  assert.match(
+    gateM,
+    /最新 `origin\/master` へrebaseしたcleanなcommit済みcandidate、そのcandidateのcanonical Quickと直後のverify、同じheadの`ci\.yml` checksの成功を要求する/,
+  );
+  assert.match(
+    gateM,
+    /canonical Fullは通常のPRのmerge条件ではなく、merge後にmasterのheadでhostedに走らせる（2026-10-13のU7/,
+  );
+  assert.match(
+    gateM,
+    /release PRだけが、従来どおりcompleteなhosted Fullと直後のverifyを要求する/,
+  );
+  assert.match(
+    gateM,
+    /R0もmerge gate Mの対象であり、merge前にはQuick＋verifyを実行する/,
+  );
+  assert.match(
+    gateM,
+    /mergeは`gh pr merge --squash --match-head-commit "\$candidate_head"`で行い、merge直前のbase一致と`approved_merge_base`は通常のPRに要求しない/,
+  );
+  assert.match(
+    gateM,
+    /merge後のmasterのFull（dispatch、実行中は1本に合流、赤は次のmergeの前に切り分けて修正かrevertを先にmerge）と、release PRおよびrelease tagのFullは、GDX-TRACE-001と`\/ship-branch`の手順に従う/,
+  );
+  assert.doesNotMatch(
+    gateM,
+    /full_base|full_head|profile=full|merge前にはFull＋verifyを実行する|現在のbaseが`full_base`と一致/,
+    "merge gate M must not keep the pre-merge Full commands or base-equality rule",
+  );
+  assert.match(
+    normalizeSection(sectionFromHeading(executionPlan, "## 実装時の検証手順")),
+    /L9受入れ（E-2）に必要なFull／verifyは、最後のPRのmerge後にmasterのheadで走らせたhostedのcanonical Fullで満たす。ローカルの`pnpm ci:local:full`はFull admissionで拒否される。全part jobと`full-aggregate`が成功したrunだけを証跡とし、dispatchと赤のときの扱いはGDX-TRACE-001と`\/ship-branch`に従う。通常のPRのmerge前に求めるのは上のQuickと同じheadのPR checksで/,
+  );
+  assert.match(
+    normalizeSection(postBPlan),
+    /rebase済みのclean candidateでQuick→直後verify、独立受け入れ、同じheadの`ci\.yml` checksの成功を経てmergeする。すべてのPRに既存merge gate Mを適用する。canonical Fullは通常のPRのmerge条件ではなく、merge後にmasterのheadで走らせる。release PRとrelease tagだけが、従来どおりFullを要求する/,
+  );
+  assert.match(
+    normalizeSection(postBPlan),
+    /mergeは`gh pr merge --squash --match-head-commit "\$candidate_head"`で行い、merge直前のbase一致と`approved_merge_base`は通常のPRに要求しない/,
+  );
+  assert.match(
+    normalizeSection(postBPlan),
+    /最終候補のFull\/verifyは、最後のPRのmerge後にmasterのheadで走らせるhostedのcanonical Fullの成功で満たす/,
+  );
+  const integrationGate = normalizeSection(
+    sectionFromHeading(
+      integrationPlan,
+      "## 8. 独立受入れ・候補管理・Quick / Full / verify",
+    ),
+  );
+  assert.match(
+    integrationGate,
+    /最終NIR-1受入れのFull\/verifyは、最後のPRのmerge後にmasterのheadで走らせたhostedのcanonical Fullで確認する/,
+  );
+  assert.match(
+    integrationGate,
+    /通常のPRのmerge前に求めるのは、上のQuickと直後verify、同じheadの`ci\.yml` checksの成功で/,
+  );
+  assert.match(
+    integrationGate,
+    /release PRのmerge前と、release tagが別途承認された場合のmerge後release commit自身には、従来どおりcompleteなhosted Full\/verifyを要求する/,
+  );
   for (const [name, plan] of [
     ["execution plan", executionPlan],
     ["post-B plan", postBPlan],
     ["integration plan", integrationPlan],
   ]) {
-    assert.match(
-      plan,
-      /gh workflow run canonical-ci\.yml --ref "\$\(git branch --show-current\)" -f profile=full -f candidate_base="\$full_base" -f candidate_head="\$full_head"/,
-      `${name} must dispatch the hosted canonical Full`,
-    );
     assert.doesNotMatch(
       plan,
       /^\s*pnpm ci:local:full -- --base "\$full_base" --head "\$full_head"\s*$/m,
       `${name} must not run a local Full that Full admission refuses`,
+    );
+    assert.doesNotMatch(
+      plan,
+      /full_base="\$\(git rev-parse|candidate_base="\$full_base"|merge直前に ?`git fetch origin master` でbaseが`full_base`と一致/,
+      `${name} must not keep the pre-merge Full dispatch for ordinary PRs`,
+    );
+  }
+  for (const planPath of [
+    "docs/plans/nir1-l6-l9-execution-plan.md",
+    "docs/plans/nir1-post-b-execution-plan.md",
+    "docs/plans/narrative-ir-nir1-implementation-plan.md",
+    "docs/plans/nir1-continuation-2026-10.md",
+  ]) {
+    await assertLocalMarkdownLink(
+      planPath,
+      "policies/quality/iron-laws.md",
+      "GDX-TRACE-001",
     );
   }
   assert.match(
@@ -3713,8 +4465,13 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     );
     assert.match(
       narrative,
-      /(?:今後の実装候補は.*merge gate M.*merge前のclean HEADのFull＋直後verifyを必須|Future implementation candidates remain subject to the shared merge gate M.*clean candidate must pass Full and immediate verify before merge)/is,
+      /(?:今後の実装候補は.*merge gate M.*通常のPRはmerge前のrebase済みclean HEADでQuick＋直後verifyを必須|Future implementation candidates remain subject to the shared merge gate M: an ordinary PR needs a rebased clean candidate with a complete Quick and immediate verify plus the same-head PR checks before merge \(the canonical Full then runs on master\), and a release PR needs a complete hosted Full and immediate verify)/is,
       `${name} must keep future implementation candidates subject to merge gate M`,
+    );
+    assert.doesNotMatch(
+      narrative,
+      /merge前のclean HEADのFull＋直後verifyを必須|a clean candidate must pass Full and immediate verify before merge/,
+      `${name} must not keep Full as the merge gate of every PR (U7)`,
     );
     assert.doesNotMatch(
       narrative,
@@ -3740,6 +4497,8 @@ test("NIR-1 continuation record keeps verbatim user decisions and the bounded de
     "「この計画では扱わない」",
     "「Ralphの実行はPiではなくClaudeCodeにしてください」",
     "「Workflow subagent で続ける（推奨）」",
+    // U7 (2026-10-13 22:22 JST): the user's own message, transcribed verbatim.
+    "「FullCIに時間が掛かり、Full中の並列PRのmergeによるbase stale 問題などが発生している。merge条件からCanonicalFullの合格を外す。「merge の直前に base が master と完全に一致していること」という条件も、一緒に緩める。たとえば「rebase して Quick が通れば可」にします。masterのfullで赤が出た場合、優先して対応するなどの運用でカバーする。ReleaseではFullCIのままにする。」",
   ]) {
     assert.ok(
       record.includes(quote),
@@ -3747,6 +4506,77 @@ test("NIR-1 continuation record keeps verbatim user decisions and the bounded de
     );
   }
   assert.match(record, /決定日は 2026-10-12/);
+  assert.match(record, /ただし U7 は 2026-10-13（JST）/);
+  assert.match(
+    record,
+    /^\| U7 \| 10-13 22:22 \| 問いへの回答ではない。[^\n]*merge 条件の変更の指示 \| 「FullCIに時間が掛かり、[^\n]*ReleaseではFullCIのままにする。」 \| 通常の PR の merge 条件から canonical Full を外し、rebase 済みの Quick と同じ head の `ci\.yml` checks で merge する。merge 直前の base の完全一致も要求しない。merge 後に master の head で hosted Full を走らせ、赤は優先して直す。release PR と release tag は従来どおり Full を要求する/m,
+    "U7 must be a decision row that records the new merge rule",
+  );
+  // The earlier merge decision (U4) now points at the changed condition.
+  assert.match(
+    record,
+    /^\| U4 \| 17:22 \| 各レーンの到達点 \| 「merge まで進める」 \| 独立受入れと、rebase 済みの Quick＋verify、同じ head の `ci\.yml` checks が green なら、squash merge まで進める（merge の条件は U7 で変更した。当初は hosted Full＋verify が green で、merge 直前に base を照合する条件だった。§6） \|$/m,
+  );
+  assert.doesNotMatch(
+    record,
+    /独立受入れと hosted Full＋verify が green なら、merge 直前に base を照合して squash merge まで進める \|/,
+  );
+
+  // §6 (merge column): the ordinary path needs no Full; master's Full is the
+  // operational cover; a release PR and the release tag keep Full.
+  const mergeColumn = normalizeSection(
+    sectionFromHeading(record, "## 6. merge 列と各 PR の手順"),
+  );
+  assert.match(mergeColumn, /各 PR の手順（U4。merge の条件は U7 で変更した。/);
+  assert.match(
+    mergeColumn,
+    /`git fetch origin master` の後、最新の `origin\/master` が候補 HEAD の祖先であることを確かめる/,
+  );
+  // Review P3: the lanes are pushed branches, and rebasing a pushed branch needs
+  // a force push that ship-branch 3.4 forbids without the user's explicit word,
+  // so the step says "sync" and points to ship-branch 2.3 for the method.
+  assert.match(
+    mergeColumn,
+    /1\. 最新の `origin\/master` に同期して freeze する（`\/ship-branch` §2\.3。未 push の branch は rebase し、push 済みの branch は force push の明示がなければ `origin\/master` を取り込む）。`git fetch origin master` の後、/,
+  );
+  assert.doesNotMatch(
+    mergeColumn,
+    /rebase して freeze する|rebase して 1 からやり直す|rebase と Quick はやり直さない/,
+    "the merge column must not tell pushed lanes to rebase without a force push",
+  );
+  assert.match(
+    mergeColumn,
+    /complete な Quick receipt を得る。hosted の Quick は、branch を push し、remote HEAD が `candidate_head` と一致することを確かめてから dispatch する/,
+  );
+  assert.match(
+    mergeColumn,
+    /同じ head の `ci\.yml` checks（opt-in lane を含む）と Quick を green にする。通常の PR のために canonical Full は dispatch しない/,
+  );
+  assert.match(
+    mergeColumn,
+    /`gh pr merge --squash --match-head-commit <candidate_head>` で merge する。merge 直前に base が `candidate_base` と一致することは要求しない。Quick の後に `origin\/master` が進んでも、衝突がなく PR HEAD が `candidate_head` のままなら、同期（手順 1）と Quick はやり直さない。衝突があるか候補を変えるときは、同期して 1 からやり直す/,
+  );
+  assert.match(
+    mergeColumn,
+    /first parent が `candidate_base` と違っても失敗にしない/,
+  );
+  assert.match(
+    mergeColumn,
+    /merge した担当は、master の head で hosted の canonical Full を dispatch する。実行中なら、終わった後に最新の master head で 1 本だけ dispatch する。次の merge はこの Full の完了を待たない。dispatch した run の id は integrator へ引き継ぎ、完了の見届けと赤のときの対応の開始は integrator が行う（`\/ship-branch` §8\.3）。master の Full が赤になったら（判定は `\/ship-branch` §8\.5。全 job を再実行している間も赤のままである）、次の merge の前に、全 job の再実行で再現するか、どの merge が持ち込んだかを切り分け、修正か revert を他の PR より先に merge する。他のレーンの PR を revert するかどうかは integrator が判断する/,
+  );
+  assert.match(
+    mergeColumn,
+    /release PR と release tag は、従来どおり complete な hosted Full と verify を要求する（release PR は merge 前、tag は merge 後の release commit 自身）/,
+  );
+  assert.doesNotMatch(
+    mergeColumn,
+    /base が `candidate_base` と一致することを確かめる|approved merge base と照合する|profile=full|Full（7 part と `full-aggregate` の verify）を green にする/,
+    "§6 must not keep the pre-merge Full steps",
+  );
+  assert.match(
+    normalizeSection(sectionFromHeading(record, "## 2. 計画の要約")),
+    /保守の失敗で PR の Security job が止まった場合は、merge 列を止めて実装を続け、ユーザーに報告する。master の Full が赤になった場合は、§6 の優先対応に従う（U7）/,
+  );
   assert.match(record, /2026-10-12 にユーザーが承認済み/);
   assert.match(
     record,
@@ -3948,6 +4778,43 @@ test("NIR-1 continuation record keeps verbatim user decisions and the bounded de
     "policies/quality/iron-laws.md",
     "GDX-PRECHECK-001",
   );
+});
+
+test("records that state the old Full-before-merge rule say so and point to the current rule", async () => {
+  // U7 (2026-10-13), review P3: these September records and an unapproved draft
+  // still said, in the present tense, that every merge needs a Full. Their
+  // original sentences stay as written (they are history); a note beside each
+  // says it is the rule of its time and where the current conditions live, so
+  // that resuming the work from the record does not revive the old gate.
+  for (const [planPath, note] of [
+    [
+      "docs/plans/nir1-l5-acceptance.md",
+      /マージには最新baseを含むclean HEADでFull-from-stage-1＋verifyが別途必要である。（この一文は当時の規則の記録である。2026-10-13のmerge条件の変更（\[続行計画\]\(nir1-continuation-2026-10\.md\)の§1 U7）以降、通常のPRのmergeにFullは要求されない。現行の条件は\[GDX-TRACE-001\]\(\.\.\/\.\.\/policies\/quality\/iron-laws\.md#GDX-TRACE-001\)に従う。）/,
+    ],
+    [
+      "docs/plans/chronicle-modality-gate-implementation.md",
+      /Fullはmerge前のclean commitで必要となる別gateであり、部分実行やdirty候補のQuick\/Journeyで置き換えない。（Fullをmerge前に必要とするのは当時の規則である。2026-10-13のmerge条件の変更（\[続行計画\]\(\.\/nir1-continuation-2026-10\.md\)の§1 U7）以降、通常のPRのmergeにFullは要求されない。現行の条件は\[GDX-TRACE-001\]\(\.\.\/\.\.\/policies\/quality\/iron-laws\.md#GDX-TRACE-001\)に従う。部分実行やdirty候補で置き換えない点は変わらない。）/,
+    ],
+    [
+      "docs/plans/nir1-related-scenes-precheck.md",
+      /Merge requires clean Full-from-stage-1 and verify \(the rule when this draft was written; since 2026-10-13 an ordinary PR's merge conditions follow \[GDX-TRACE-001\]\(\.\.\/\.\.\/policies\/quality\/iron-laws\.md#GDX-TRACE-001\), see U7 in \[the continuation record\]\(nir1-continuation-2026-10\.md\), and Full is required only for a release PR and the release tag\)/,
+    ],
+  ]) {
+    const source = await assertLocalMarkdownLink(
+      planPath,
+      "policies/quality/iron-laws.md",
+      "GDX-TRACE-001",
+    );
+    assert.match(
+      normalizeSection(source),
+      note,
+      `${planPath} must mark its Full-before-merge sentence as the old rule`,
+    );
+    await assertLocalMarkdownLink(
+      planPath,
+      "docs/plans/nir1-continuation-2026-10.md",
+    );
+  }
 });
 
 test("AI authoring delegates once to the conditional canonical quality gate", async () => {
