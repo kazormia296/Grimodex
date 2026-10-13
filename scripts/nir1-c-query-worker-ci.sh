@@ -228,7 +228,9 @@ if [[ "${1:-}" == lifecycle ]]; then
     native_worker_exits_after_owner_process_dies_after_request_admission \
     native_worker_quarantines_when_cleanup_proof_is_unobserved \
     native_worker_quarantine_blocks_w1_restore_and_retains_shared_lease \
-    native_worker_cleanup_unproved_without_file_identity_retains_participant_and_blocks_io; do
+    native_worker_cleanup_unproved_without_file_identity_retains_participant_and_blocks_io \
+    native_worker_child_environment_is_cleared_and_cwd_is_worker_dir \
+    native_worker_projects_owned_dto_after_lease_drop; do
     run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
   done
   run_lifecycle_case native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph \

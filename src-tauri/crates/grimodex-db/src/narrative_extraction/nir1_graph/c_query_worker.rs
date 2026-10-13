@@ -2,7 +2,7 @@
 use std::{
     cell::UnsafeCell,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread::{self, JoinHandle},
@@ -16,12 +16,13 @@ use anyhow::{anyhow, ensure, Result};
 
 use crate::{
     state::{ActiveWorkspaceSnapshot, CQueryChildClaim, CQueryReadyWorkspace},
-    workspace_lifecycle::{WorkspaceParticipant, WorkspaceQuarantineFence},
+    workspace_lifecycle::{LifecycleError, WorkspaceParticipant, WorkspaceQuarantineFence},
     WorkspaceAuthority,
 };
 
 use super::{
     worker_frame::{self, FrameView, UnavailableReason},
+    worker_projection::Nir1GraphProjection,
     Nir1GraphRequest, QUERY_DEADLINE,
 };
 
@@ -199,6 +200,30 @@ fn startup_exit_error_from_bytes(bytes: &[u8]) -> anyhow::Error {
         }
     }
     anyhow!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: {stage}")
+}
+
+/// The worker reads no parent environment (only test seams, re-added below).
+/// Run it from its own directory, never PATH-resolved, with no console window.
+fn configure_worker_process(command: &mut Command, worker: &Path) -> Result<()> {
+    ensure!(worker.is_absolute(), "NIR1_GRAPH_WORKER_PATH");
+    let directory = worker
+        .parent()
+        .filter(|directory| directory.is_absolute())
+        .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?;
+    command.env_clear();
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Some(system_root) = std::env::var_os("SystemRoot") {
+            if Path::new(&system_root).is_absolute() {
+                command.env("SystemRoot", system_root);
+            }
+        }
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command.current_dir(directory);
+    Ok(())
 }
 
 /// Per-query owner state; fixed request/result buffers do not cap other process memory.
@@ -1361,6 +1386,23 @@ impl CQueryWorkerOwner {
         self.query_once_inner(request, Some(cancellation))
     }
 
+    /// One query, projected into an owned DTO while the result lease is held,
+    /// then the lease is dropped (child exit + EOF + reader join, or quarantine)
+    /// before the DTO is returned. Nothing returned borrows the Native region.
+    pub fn query_projected(
+        &mut self,
+        request: &Nir1GraphRequest,
+        cancellation: &AtomicBool,
+    ) -> Result<Nir1GraphProjection> {
+        let lease = self.query_once_with_cancellation(request, cancellation)?;
+        let elapsed = lease.elapsed();
+        let projection = lease
+            .frame()
+            .and_then(|view| Nir1GraphProjection::from_frame(&view, elapsed));
+        drop(lease);
+        projection
+    }
+
     fn query_once_inner<'a>(
         &'a mut self,
         request: &'a Nir1GraphRequest,
@@ -1525,7 +1567,12 @@ impl CQueryWorkerOwner {
             .worker
             .take()
             .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_PATH"))?;
-        let mut command = Command::new(worker);
+        ensure!(
+            authority.path().is_absolute(),
+            "NIR1_GRAPH_WORKER_WORKSPACE_PATH"
+        );
+        let mut command = Command::new(&worker);
+        configure_worker_process(&mut command, &worker)?;
         command
             .arg(authority.path())
             .arg(project_id)
@@ -2869,6 +2916,115 @@ impl CQueryWorkerOwner {
     }
 }
 
+/// What a C-query owner still holds. `Quarantined` resources are detached for
+/// the process lifetime; the slot must never start another worker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CQueryRetirement {
+    /// No workspace pin, child, writer, claim, Native region or lease remains.
+    Retired,
+    /// Not yet prepared, READY or mid-query: a workspace pin or child resources are still owned.
+    Holding,
+    /// Cleanup was not proved; resources are detached until process exit.
+    Quarantined,
+}
+
+impl CQueryWorkerOwner {
+    pub fn retirement(&self) -> CQueryRetirement {
+        if self.region.quarantined {
+            CQueryRetirement::Quarantined
+        } else if self.workspace.is_some()
+            || self.session.is_some()
+            || self.request_writer_present()
+            || self.region.claim.is_some()
+            || self.region.storage.is_some()
+            || self.region.lease_held
+        {
+            CQueryRetirement::Holding
+        } else {
+            CQueryRetirement::Retired
+        }
+    }
+
+    /// Retire now and report the outcome; the same proof as Drop (kill, then
+    /// exit + EOF + reader join within the existing 500 ms, else quarantine).
+    pub fn retire(mut self) -> CQueryRetirement {
+        if (self.session.is_some() || self.request_writer_present())
+            && !self.region.quarantined
+            && self.stop_and_reap().is_err()
+        {
+            self.region.quarantined = true;
+        }
+        if self.region.quarantined {
+            self.detach_quarantined_resources();
+            CQueryRetirement::Quarantined
+        } else {
+            self.release_claim_after_retirement();
+            CQueryRetirement::Retired
+        }
+        // Drop then finds nothing left (both helpers are idempotent).
+    }
+}
+
+/// Closed classification of an owner failure for the product owner. Markers
+/// stay private to this module; callers never parse error text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CQueryFailure {
+    /// A frame's allowlisted unavailable reason.
+    Unavailable(UnavailableReason),
+    Deadline,
+    Cancelled,
+    BindingLost,
+    CapacityBusy,
+    CleanupUnproved,
+    StartupRegistrationRefused,
+    WorkerStartup,
+    Other,
+}
+
+/// Order matters: cleanup-unproved wraps other markers, so it is checked first.
+pub fn classify_c_query_failure(error: &anyhow::Error) -> CQueryFailure {
+    let text = format!("{error:#}");
+    if text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED") {
+        return CQueryFailure::CleanupUnproved;
+    }
+    if let Some(unavailable) = error.downcast_ref::<CQueryWorkerUnavailable>() {
+        return CQueryFailure::Unavailable(unavailable.reason);
+    }
+    if text.contains("NIR1_GRAPH_QUERY_DEADLINE_") {
+        return CQueryFailure::Deadline;
+    }
+    if text.contains("NIR1_GRAPH_WORKER_CALLER_CANCELLED") {
+        return CQueryFailure::Cancelled;
+    }
+    if text.contains("NIR1_GRAPH_WORKER_CAPACITY_BUSY") || text.contains("NIR1_GRAPH_WORKER_BUSY")
+    {
+        return CQueryFailure::CapacityBusy;
+    }
+    if text.contains("NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED") {
+        return CQueryFailure::StartupRegistrationRefused;
+    }
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<LifecycleError>().is_some())
+        || text.contains("NEX_WORKSPACE_BINDING_UNAVAILABLE")
+        || text.contains("NIR1_GRAPH_WORKER_OWNER_CLOSED")
+    {
+        return CQueryFailure::BindingLost;
+    }
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+        || text.contains("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY")
+        || text.contains("NIR1_GRAPH_WORKER_START_TIMEOUT")
+        || text.contains("NIR1_GRAPH_WORKER_READY_PIPE_CLOSED")
+        || text.contains("NIR1_GRAPH_WORKER_PATH")
+        || text.contains("NIR1_GRAPH_WORKER_WORKSPACE_PATH")
+    {
+        return CQueryFailure::WorkerStartup;
+    }
+    CQueryFailure::Other
+}
+
 impl Drop for CQueryWorkerOwner {
     fn drop(&mut self) {
         if (self.session.is_some() || self.request_writer_present())
@@ -3298,6 +3454,7 @@ mod tests {
             let error = owner.cleanup_error(error);
             assert!(error.to_string().contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"));
             assert!(owner.region.quarantined);
+            assert_eq!(owner.retirement(), CQueryRetirement::Quarantined);
             assert!(!owner.cleanup_proved_for_test());
             assert!(authority.claim_c_query_child().is_none());
             drop(owner);
@@ -3685,6 +3842,163 @@ mod tests {
         let view = worker_frame::validate(&bytes[..frame.len()])?;
         assert_eq!(view.project(), request.project_id);
         assert_eq!(view.query_scene(), request.query_scene_id);
+        Ok(())
+    }
+
+    #[test]
+    fn failure_classification_covers_every_owner_marker() {
+        let unavailable = anyhow::Error::from(CQueryWorkerUnavailable {
+            reason: UnavailableReason::RegistrationDrift,
+        });
+        assert_eq!(
+            classify_c_query_failure(&unavailable),
+            CQueryFailure::Unavailable(UnavailableReason::RegistrationDrift)
+        );
+        let cases = [
+            ("NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME", CQueryFailure::Deadline),
+            ("NIR1_GRAPH_WORKER_CALLER_CANCELLED", CQueryFailure::Cancelled),
+            ("NEX_WORKSPACE_BINDING_UNAVAILABLE", CQueryFailure::BindingLost),
+            ("NIR1_GRAPH_WORKER_OWNER_CLOSED", CQueryFailure::BindingLost),
+            ("NIR1_GRAPH_WORKER_CAPACITY_BUSY", CQueryFailure::CapacityBusy),
+            ("NIR1_GRAPH_WORKER_BUSY", CQueryFailure::CapacityBusy),
+            ("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED", CQueryFailure::CleanupUnproved),
+            (
+                "NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED",
+                CQueryFailure::StartupRegistrationRefused,
+            ),
+            ("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY", CQueryFailure::WorkerStartup),
+            ("NIR1_GRAPH_WORKER_START_TIMEOUT", CQueryFailure::WorkerStartup),
+            ("NIR1_GRAPH_WORKER_READY_PIPE_CLOSED", CQueryFailure::WorkerStartup),
+            ("NIR1_GRAPH_WORKER_PATH", CQueryFailure::WorkerStartup),
+            ("NIR1_GRAPH_WORKER_WORKSPACE_PATH", CQueryFailure::WorkerStartup),
+            ("unclassified owner text", CQueryFailure::Other),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(classify_c_query_failure(&anyhow!(text)), expected, "{text}");
+        }
+        assert_eq!(
+            classify_c_query_failure(&startup_exit_error_from_bytes(
+                b"NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED\n"
+            )),
+            CQueryFailure::StartupRegistrationRefused
+        );
+        assert_eq!(
+            classify_c_query_failure(&startup_exit_error_from_bytes(b"")),
+            CQueryFailure::WorkerStartup
+        );
+        let io = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(classify_c_query_failure(&io), CQueryFailure::WorkerStartup);
+        let lifecycle = anyhow::Error::from(LifecycleError::InvalidState);
+        assert_eq!(classify_c_query_failure(&lifecycle), CQueryFailure::BindingLost);
+        let wrapped = anyhow!(
+            "NIR1_GRAPH_WORKER_CLEANUP_UNPROVED: NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME"
+        );
+        assert_eq!(
+            classify_c_query_failure(&wrapped),
+            CQueryFailure::CleanupUnproved
+        );
+    }
+
+    #[test]
+    fn worker_command_is_cleared_rooted_and_absolute_only() -> Result<()> {
+        let directory =
+            std::env::temp_dir().join(format!("grimodex-c-query-command-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory)?;
+        let worker = directory.join("nir1-c-query-worker");
+        let mut command = Command::new(&worker);
+        command.env("NIR1_GRAPH_PARENT_ONLY_SENTINEL", "must-not-survive");
+        configure_worker_process(&mut command, &worker)?;
+        assert_eq!(command.get_current_dir(), Some(directory.as_path()));
+        #[cfg(unix)]
+        assert_eq!(command.get_envs().count(), 0);
+        // Windows keeps exactly one name: an absolute SystemRoot copied from the parent.
+        #[cfg(windows)]
+        {
+            let kept: Vec<_> = command.get_envs().collect();
+            assert_eq!(kept.len(), 1);
+            assert_eq!(kept[0].0, std::ffi::OsStr::new("SystemRoot"));
+            assert!(kept[0]
+                .1
+                .is_some_and(|value| Path::new(value).is_absolute()));
+        }
+        let kept_before_sentinel = command.get_envs().count();
+        command.env("NIR1_C_QUERY_TEST_SENTINEL", "re-added-after-clear");
+        assert_eq!(command.get_envs().count(), kept_before_sentinel + 1);
+        assert!(configure_worker_process(
+            &mut Command::new("nir1-c-query-worker"),
+            Path::new("nir1-c-query-worker")
+        )
+        .is_err());
+        assert!(configure_worker_process(&mut Command::new("/"), Path::new("/")).is_err());
+        std::fs::remove_dir_all(&directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn retirement_reports_holding_then_retired_and_releases_capacity() -> Result<()> {
+        let _slot = native_slot_test_guard();
+        use crate::state::{ActiveWorkspace, WorkspaceState};
+        use crate::workspace_lifecycle::{LiveBinding, WorkspaceLifecycleCompatibilityView};
+
+        let path = std::env::temp_dir().join(format!(
+            "grimodex-c-query-retirement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let db = crate::Database::new(std::path::Path::new(":memory:"))?;
+        let authority = WorkspaceAuthority::from_database_for_test(db, path.clone())?;
+        let binding = LiveBinding::new(
+            authority.path().to_string_lossy().into_owned(),
+            format!("test-workspace:{}", authority.identity()),
+            authority.identity(),
+            0,
+        );
+        let state = WorkspaceState {
+            inner: std::sync::Mutex::new(Some(ActiveWorkspace::new(std::sync::Arc::clone(
+                &authority,
+            )))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: std::sync::Mutex::new(Default::default()),
+        };
+        let core = state.lifecycle_core();
+        core.set_ready(binding)?;
+
+        // An unprepared owner keeps only its snapshot: Holding until retired.
+        let snapshot = crate::state::active_workspace_snapshot(&state)?;
+        let owner = CQueryWorkerOwner::new(snapshot, PathBuf::new());
+        assert_eq!(owner.retirement(), CQueryRetirement::Holding);
+        assert_eq!(owner.retire(), CQueryRetirement::Retired);
+        assert_eq!(core.workspace_participant_count()?, 0);
+
+        // A READY-like owner keeps the child claim and Native region until retired.
+        let snapshot = crate::state::active_workspace_snapshot(&state)?;
+        let claim = snapshot
+            .authority
+            .claim_c_query_child()
+            .ok_or_else(|| anyhow!("test child claim unavailable"))?;
+        let mut owner = CQueryWorkerOwner::new(snapshot, PathBuf::new());
+        owner.region.claim = Some(claim);
+        owner.region.storage = Some(reserve_storage()?);
+        owner
+            .region
+            .native_region()
+            .ok_or_else(|| anyhow!("test Native region unavailable"))?
+            .mailbox
+            .events
+            .fetch_or(READER_READY, Ordering::Release);
+        drop(state.inner.lock().expect("workspace lock").take());
+        drop(authority);
+        owner.release_authority_after_ready()?;
+        assert_eq!(owner.retirement(), CQueryRetirement::Holding);
+        assert!(C_QUERY_CAPACITY_IN_USE.load(Ordering::Acquire));
+        assert_eq!(owner.retire(), CQueryRetirement::Retired);
+        assert!(!C_QUERY_CAPACITY_IN_USE.load(Ordering::Acquire));
+        assert_eq!(core.workspace_participant_count()?, 0);
+        drop(
+            crate::workspace_lease::acquire_exclusive(&path, Duration::ZERO)
+                .expect("retired claim releases its exact file lease"),
+        );
+        let _ = std::fs::remove_dir_all(path);
         Ok(())
     }
 

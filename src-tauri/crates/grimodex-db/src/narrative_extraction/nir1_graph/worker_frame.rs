@@ -2441,4 +2441,33 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn owned_projection_round_trips_every_record_and_refuses_unavailable_frames() -> Result<()> {
+        use crate::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let bytes = encode(&sample_response())?;
+        let view = validate(&bytes)?;
+        let projection = Nir1GraphProjection::from_frame(&view, Duration::from_millis(3))?;
+        assert_eq!(projection.elapsed, Duration::from_millis(3));
+        let graph = &projection.graph;
+        for edge in &graph.edges {
+            for endpoint in [&edge.from, &edge.to] {
+                let node = graph
+                    .nodes
+                    .iter()
+                    .find(|node| *node.entity == **endpoint)
+                    .expect("sample edge endpoints are Graph nodes");
+                assert!(Arc::ptr_eq(&node.entity, endpoint));
+            }
+        }
+        assert_eq!(encode(&projection.into_response())?, bytes);
+
+        let unavailable = encode(&unavailable_response("registration-drift"))?;
+        let view = validate(&unavailable)?;
+        assert!(Nir1GraphProjection::from_frame(&view, Duration::ZERO).is_err());
+        Ok(())
+    }
 }
