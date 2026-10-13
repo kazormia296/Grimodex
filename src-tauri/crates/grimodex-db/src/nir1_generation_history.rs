@@ -1019,7 +1019,7 @@ mod generation_storage_adapter {
                             | (MessageOrigin::Human, InputRole::User)
                     );
                     message.version.project_id == attempt.binding.project_id
-                        && message.version.session_id == attempt.binding.session_id
+                        && message.version.session_id == attempt.binding.chat_session_id
                         && message.version.parent_attempt_id.as_ref() == parent_attempt_id.as_ref()
                         && origin_shape_matches
                         && role_matches
@@ -1133,8 +1133,9 @@ mod generation_storage_adapter {
         stored: &StoredAttempt,
         resolve_lineage: bool,
     ) -> Result<AttemptSnapshot> {
-        // AttemptBinding currently exposes only digests and purpose, not the
-        // confirmed full history tuple. Do not reconstruct Scope axes here.
+        // AttemptBinding exposes coarse digests, purpose and the query Scene
+        // binding, not the confirmed full history tuple. Do not reconstruct
+        // Scope axes here.
         let inputs = stored
             .inputs
             .iter()
@@ -1149,7 +1150,7 @@ mod generation_storage_adapter {
             inputs,
             terminal: terminal_receipt(stored.terminal.as_ref()),
             project_id: Some(stored.binding.project_id.clone()),
-            session_id: Some(stored.binding.session_id.clone()),
+            session_id: Some(stored.binding.chat_session_id.clone()),
         })
     }
 
@@ -1390,7 +1391,8 @@ mod generation_storage_adapter {
         use super::*;
         use crate::narrative_extraction::{ValidationTerminated, ValidationTerminationReason};
         use crate::nir1_generation::{
-            create_attempt, AttemptBinding, GenerationPurpose, NewAttempt, ReadBudget,
+            create_attempt, read_attempt_scene_binding_in_tx, AttemptBinding,
+            AttemptBindingVersion, AttemptCallerBinding, GenerationPurpose, NewAttempt, ReadBudget,
         };
         use crate::recovery::SafeModeState;
         use crate::state::{
@@ -1527,32 +1529,62 @@ mod generation_storage_adapter {
                     [],
                 )?;
                 connection.execute(
-                    "INSERT OR IGNORE INTO chat_sessions(id,project_id) VALUES ('generation-session','generation-project')",
+                    "INSERT OR IGNORE INTO tree_nodes
+                       (id,project_id,node_type,title,sort_order,version,created_at,updated_at)
+                     VALUES ('generation-scene','generation-project','scene','Scene','a0',0,
+                             '2026-10-11 00:00:00','2026-10-11 00:00:00')",
+                    [],
+                )?;
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    connection,
+                    "generation-project",
+                    "generation-scene",
+                    "2026-10-11 00:00:00",
+                )?;
+                connection.execute(
+                    "INSERT OR IGNORE INTO chat_sessions(id,project_id,node_id)
+                     VALUES ('generation-session','generation-project','generation-scene')",
                     [],
                 )?;
                 Ok(())
             })
             .expect("generation fixture");
+            let scene = db
+                .with_read_transaction(|connection| {
+                    read_attempt_scene_binding_in_tx(
+                        connection,
+                        "generation-project",
+                        "generation-scene",
+                    )
+                })
+                .expect("generation Scene binding");
             let digest = format!("sha256:{}", "0".repeat(64));
             create_attempt(
                 db,
                 NewAttempt {
                     binding: AttemptBinding {
+                        binding_version: AttemptBindingVersion::V2,
                         project_id: "generation-project".into(),
-                        session_id: "generation-session".into(),
-                        profile_id: "profile".into(),
-                        caller_id: "caller".into(),
-                        caller_epoch: 1,
+                        chat_session_id: "generation-session".into(),
+                        scene,
+                        caller: AttemptCallerBinding {
+                            profile_id: "profile".into(),
+                            caller_id: "caller".into(),
+                            caller_epoch: 1,
+                            caller_session_id: "caller-session".into(),
+                        },
                         workspace_binding_digest: digest.clone(),
+                        route_revision: "route".into(),
                         purpose: GenerationPurpose::Writing,
                         scope_digest: digest.clone(),
                         material_digest: digest.clone(),
                         d1_digest: digest.clone(),
-                        route_revision: "route".into(),
                         provider: "local".into(),
                         model: "test".into(),
                         api: "chat".into(),
                         endpoint_identity: digest.clone(),
+                        history_turn_context: None,
+                        durable_workspace_identity: None,
                     },
                     payload_digest: digest,
                     inputs: Vec::new(),

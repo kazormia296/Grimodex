@@ -1,14 +1,20 @@
 //! Tests for the DT-2 generation attempt owner. Acceptance IDs in the
-//! comments refer to the DT-2 test plan (O1-O17, DG-2, DG-3).
+//! comments refer to the DT-2 test plan (O1-O17, DG-2, DG-3); the S4 and
+//! DT-3 tests cover AttemptBinding v2 (separate Main caller session and chat
+//! session, Scene incarnation checks).
 
 use super::*;
 use crate::nir1_prepared_request::accept_current_chat_submission;
 use grimodex_core::narrative_nir1_receipt::{
     Completion, OutputChannel, OutputObserver, ParseStatus, ProviderTerminal, TerminalStatus,
 };
+use grimodex_db::domain_writes::{
+    tree_node_create, tree_node_delete, TreeNodeCreatePayload, TreeNodeDeletePayload,
+};
+use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::nir1_generation::{
-    FailureClassification, GenerationPurpose, InputReference, InputRole, InputTarget,
-    NewChatInputSubmission, Nir1GenerationFailpoint, ReadBudget, StoredAttempt,
+    AttemptSceneBinding, FailureClassification, GenerationPurpose, InputReference, InputRole,
+    InputTarget, NewChatInputSubmission, Nir1GenerationFailpoint, ReadBudget, StoredAttempt,
 };
 use grimodex_db::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority};
 use grimodex_db::workspace_lifecycle::{AdmissionKind, LifecycleEdge, WorkspaceLifecycleObserver};
@@ -292,26 +298,62 @@ fn workspace_root() -> PathBuf {
             "INSERT INTO projects(id,title) VALUES (?1,'Owner')",
             [PROJECT],
         )?;
-        conn.execute(
-            "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
-             VALUES (?1, ?2, 'scene', 'Scene', '')",
-            [SCENE, PROJECT],
-        )?;
         for session in SESSIONS {
             conn.execute(
-                "INSERT INTO chat_sessions(id,project_id,title,node_id) VALUES (?1,?2,'Owner',?3)",
-                [session, PROJECT, SCENE],
+                "INSERT INTO chat_sessions(id,project_id,title) VALUES (?1,?2,'Owner')",
+                [session, PROJECT],
             )?;
         }
         Ok(())
     })
     .expect("workspace rows");
+    create_scene(&db, "initial");
     root
+}
+
+/// Create the live Scene through the Native tree writer, which mints its A1
+/// scope incarnation, and attach every chat session of the project to it.
+/// `tag` keeps the writer's request and event keys unique when the Scene is
+/// created again.
+fn create_scene(db: &grimodex_db::Database, tag: &str) {
+    tree_node_create(
+        db,
+        TreeNodeCreatePayload {
+            id: SCENE.into(),
+            project_id: PROJECT.into(),
+            request_id: format!("{SCENE}-create-{tag}"),
+            session_id: SESSIONS[0].into(),
+            event_uid: format!("{SCENE}-create-event-{tag}"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            parent_id: None,
+            node_type: "scene".into(),
+            title: "Scene".into(),
+            sort_order: "a0".into(),
+            synopsis: None,
+            status: None,
+            source_uri: None,
+            source_mtime: None,
+            content: Some(r#"{"type":"doc","content":[]}"#.into()),
+            canonical_payload: None,
+        },
+    )
+    .expect("Scene through the Native tree writer");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_sessions SET node_id=?1 WHERE project_id=?2",
+            [SCENE, PROJECT],
+        )?;
+        Ok(())
+    })
+    .expect("attach the chat sessions to the Scene");
 }
 
 /// One Native process with the workspace Ready (an identity-bearing binding
 /// published by the real adapter), its startup gate Open after a real sweep,
-/// and one registered main caller per chat session.
+/// and one registered main caller per chat session. A caller's Main session
+/// is a random UUID; the chat session of caller `i` is `SESSIONS[i]`.
 struct OwnerFixture {
     root: PathBuf,
     state: Arc<AppState>,
@@ -355,17 +397,17 @@ impl OwnerFixture {
             .expect("restricted profile");
         let locator = root.to_string_lossy().into_owned();
         state.profile_egress.bind_workspace(Some(locator.clone()));
-        let callers = SESSIONS
-            .iter()
-            .enumerate()
-            .map(|(index, session)| {
+        let callers = (0..SESSIONS.len())
+            .map(|index| {
                 let caller = CallerIdentity {
                     profile_id: status.profile_id.clone(),
                     caller_id: format!("owner-caller-{index}"),
                     caller_epoch: status.caller_epoch,
                     sender_id: u64::try_from(index + 1).expect("sender"),
                     workspace_id: Some(locator.clone()),
-                    session_id: (*session).into(),
+                    // Main issues one random session per sender. It is the
+                    // caller's session, never a chat session.
+                    session_id: uuid::Uuid::new_v4().to_string(),
                 };
                 state
                     .profile_egress
@@ -392,15 +434,20 @@ impl OwnerFixture {
     }
 
     fn accept(&self, session: usize, key: &str) -> NativeAcceptedChatSubmission {
-        self.accept_as(&self.callers[session], key)
+        self.accept_as(&self.callers[session], SESSIONS[session], key)
     }
 
-    /// Accept one current Human submission in `caller`'s chat session.
-    fn accept_as(&self, caller: &CallerIdentity, key: &str) -> NativeAcceptedChatSubmission {
+    /// Accept one current Human submission by `caller` in `chat_session`.
+    fn accept_as(
+        &self,
+        caller: &CallerIdentity,
+        chat_session: &str,
+        key: &str,
+    ) -> NativeAcceptedChatSubmission {
         let submission = NewChatInputSubmission::new(
             format!("owner-submission-{key}"),
             format!("owner-message-{key}"),
-            caller.session_id.clone(),
+            chat_session.into(),
             SCENE.into(),
             format!("Human turn {key}"),
             "2026-10-13T00:00:00.000Z".into(),
@@ -411,8 +458,8 @@ impl OwnerFixture {
     }
 
     /// One more scene-bound chat session of the project, with its own
-    /// registered main caller.
-    fn add_session(&self, index: usize) -> CallerIdentity {
+    /// registered main caller (and that caller's own Main session).
+    fn add_session(&self, index: usize) -> (CallerIdentity, String) {
         let session = format!("owner-session-extra-{index:02}");
         self.authority
             .db()
@@ -428,14 +475,65 @@ impl OwnerFixture {
         let caller = CallerIdentity {
             caller_id: format!("owner-caller-extra-{index:02}"),
             sender_id: u64::try_from(100 + index).expect("sender"),
-            session_id: session,
+            session_id: uuid::Uuid::new_v4().to_string(),
             ..self.callers[0].clone()
         };
         self.state
             .profile_egress
             .register_caller(&caller)
             .expect("caller");
-        caller
+        (caller, session)
+    }
+
+    /// The current Scene binding, read the way the coordinator reads it: in
+    /// one read transaction.
+    fn scene_binding(&self) -> AttemptSceneBinding {
+        self.authority
+            .db()
+            .with_read_transaction(|conn| {
+                storage::read_attempt_scene_binding_in_tx(conn, PROJECT, SCENE)
+            })
+            .expect("Scene binding")
+    }
+
+    /// Delete and recreate the Scene with the same id and body, both through
+    /// the Native tree writer: the A1 writer mints a new incarnation for the
+    /// recreated row. `tag` keeps the writer's request keys unique.
+    fn replace_scene(&self, tag: &str) {
+        tree_node_delete(
+            self.authority.db(),
+            TreeNodeDeletePayload {
+                project_id: PROJECT.into(),
+                request_id: format!("{SCENE}-delete-{tag}"),
+                session_id: SESSIONS[0].into(),
+                event_uid: format!("{SCENE}-delete-event-{tag}"),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                node_id: SCENE.into(),
+                canonical_payload: None,
+            },
+        )
+        .expect("delete the Scene through the Native tree writer");
+        create_scene(self.authority.db(), tag);
+    }
+
+    /// A tree patch may change the body without a new token.
+    fn edit_scene_body_in_place(&self) {
+        self.authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET content=?3 WHERE id=?1 AND project_id=?2",
+                    [
+                        SCENE,
+                        PROJECT,
+                        r#"{"type":"doc","content":[{"type":"paragraph"}]}"#,
+                    ],
+                )?;
+                Ok(())
+            })
+            .expect("edit the Scene body");
     }
 
     fn owner(
@@ -459,6 +557,8 @@ impl OwnerFixture {
         let digest = canonical_json_digest(&json!("owner-fixture")).expect("digest");
         FinalDispatchRequest {
             project_id: PROJECT.into(),
+            chat_session_id: submission.chat_session_id().into(),
+            scene: self.scene_binding(),
             route_revision: owner.route_revision().into(),
             purpose: GenerationPurpose::Writing,
             scope_digest: digest.clone(),
@@ -1404,9 +1504,11 @@ fn o9b_exhausted_zero_send_leaves_the_slot_unresolved_without_quarantine() {
 fn o10_owner_operations_fail_typed_and_the_connection_is_reused() {
     let fixture = OwnerFixture::new();
     let submission = fixture.accept(0, "o10");
-    let (release, holder) = hold_connection(&fixture.authority);
     let owner = fixture.owner(0, &submission).expect("owner");
+    // The request carries a Scene binding read from the database, so it is
+    // built before the connection mutex is held.
     let request = fixture.request(&owner, &submission);
+    let (release, holder) = hold_connection(&fixture.authority);
     let started = Instant::now();
     assert_eq!(
         owner.create(request).err(),
@@ -1982,6 +2084,7 @@ fn o15_the_seventeenth_session_capture_is_refused_and_keeps_nothing() {
         .callers
         .iter()
         .cloned()
+        .zip(SESSIONS.iter().map(|session| (*session).to_owned()))
         .chain(
             (fixture.callers.len()..=NIR1_GENERATION_MAX_TRACKED_SESSIONS)
                 .map(|index| fixture.add_session(index)),
@@ -1991,12 +2094,14 @@ fn o15_the_seventeenth_session_capture_is_refused_and_keeps_nothing() {
     let submissions = callers
         .iter()
         .enumerate()
-        .map(|(index, caller)| fixture.accept_as(caller, &format!("o15-{index:02}")))
+        .map(|(index, (caller, chat_session))| {
+            fixture.accept_as(caller, chat_session, &format!("o15-{index:02}"))
+        })
         .collect::<Vec<_>>();
     let capture = |index: usize| {
         Nir1GenerationOwner::capture(
             Arc::clone(&fixture.state),
-            callers[index].clone(),
+            callers[index].0.clone(),
             &submissions[index],
         )
     };
@@ -2038,57 +2143,95 @@ fn o15_the_seventeenth_session_capture_is_refused_and_keeps_nothing() {
     assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
 }
 
-/// O16: an owner serves only its own caller's capture. A caller of another
-/// chat session is refused at capture and a request for another project at
-/// create (`SubmissionMismatch`). A second registered caller of the same chat
-/// session passes capture, but the store's capture-owner check refuses its
-/// create. No refusal writes an attempt or keeps a slot.
+/// O16: an owner serves only its own capture. A request for another project,
+/// chat session or Scene is refused at create (`SubmissionMismatch`). Another
+/// registered caller passes capture, but the store's capture-owner check
+/// refuses its create: for a different caller, and also for the same caller
+/// reached through another Main sender with its own session (DT-3: the Main
+/// caller session is part of the process-local caller binding, never the chat
+/// session). No refusal writes an attempt or keeps a slot.
 #[test]
-fn o16_capture_and_create_refuse_another_session_project_or_caller() {
+fn o16_create_refuses_another_project_session_scene_or_caller() {
     let fixture = OwnerFixture::new();
     let submission = fixture.accept(0, "o16");
     let core = fixture.state.ws.lifecycle_core();
     let participants = core.workspace_participant_count().expect("participants");
-    assert_eq!(
-        fixture.owner(1, &submission).err(),
-        Some(Nir1GenerationRefusal::SubmissionMismatch)
+
+    type Tamper = fn(&mut FinalDispatchRequest);
+    let tampers: [(&str, Tamper); 3] = [
+        ("project", |request| {
+            request.project_id = "another-project".into()
+        }),
+        ("chat session", |request| {
+            request.chat_session_id = SESSIONS[1].into()
+        }),
+        ("scene", |request| {
+            request.scene.scene_id = "another-scene".into()
+        }),
+    ];
+    for (name, tamper) in tampers {
+        let owner = fixture.owner(0, &submission).expect("owner");
+        let mut request = fixture.request(&owner, &submission);
+        tamper(&mut request);
+        assert_eq!(
+            owner.create(request).err(),
+            Some(Nir1GenerationRefusal::SubmissionMismatch),
+            "{name}"
+        );
+        assert_eq!(fixture.attempt_count(), 0, "{name}");
+        assert_eq!(
+            fixture.state.nir1_generation_registry.tracked_sessions(),
+            0,
+            "{name}"
+        );
+    }
+
+    let another_caller = CallerIdentity {
+        caller_id: "owner-caller-second".into(),
+        sender_id: 99,
+        ..fixture.callers[0].clone()
+    };
+    let another_main_session = CallerIdentity {
+        sender_id: 98,
+        session_id: uuid::Uuid::new_v4().to_string(),
+        ..fixture.callers[0].clone()
+    };
+    assert_ne!(
+        another_main_session.session_id,
+        fixture.callers[0].session_id
     );
-    assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+    for (name, caller) in [
+        ("another caller", another_caller),
+        (
+            "another Main session of the same caller",
+            another_main_session,
+        ),
+    ] {
+        fixture
+            .state
+            .profile_egress
+            .register_caller(&caller)
+            .expect(name);
+        let owner = Nir1GenerationOwner::capture(Arc::clone(&fixture.state), caller, &submission)
+            .expect("the capture itself is not caller-checked by the owner");
+        let request = fixture.request(&owner, &submission);
+        assert_eq!(
+            owner.create(request).err(),
+            Some(Nir1GenerationRefusal::Store(Nir1StoreFailure::Conflict)),
+            "{name}"
+        );
+        assert_eq!(fixture.attempt_count(), 0, "{name}");
+        assert_eq!(
+            fixture.state.nir1_generation_registry.tracked_sessions(),
+            0,
+            "{name}"
+        );
+    }
     assert_eq!(
         core.workspace_participant_count().expect("participants"),
         participants
     );
     assert_eq!(fixture.gate().active_lease_count(), 0);
-
-    let owner = fixture.owner(0, &submission).expect("owner");
-    let request = FinalDispatchRequest {
-        project_id: "another-project".into(),
-        ..fixture.request(&owner, &submission)
-    };
-    assert_eq!(
-        owner.create(request).err(),
-        Some(Nir1GenerationRefusal::SubmissionMismatch)
-    );
-
-    let second = CallerIdentity {
-        caller_id: "owner-caller-second".into(),
-        sender_id: 99,
-        ..fixture.callers[0].clone()
-    };
-    fixture
-        .state
-        .profile_egress
-        .register_caller(&second)
-        .expect("a second caller of the same chat session");
-    let owner = Nir1GenerationOwner::capture(Arc::clone(&fixture.state), second, &submission)
-        .expect("the chat session matches");
-    let request = fixture.request(&owner, &submission);
-    assert_eq!(
-        owner.create(request).err(),
-        Some(Nir1GenerationRefusal::Store(Nir1StoreFailure::Conflict))
-    );
-    assert_eq!(fixture.attempt_count(), 0);
-    assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
 
     // The capture owner's own caller still creates the one attempt.
     let owner = fixture.owner(0, &submission).expect("owner");
@@ -2158,6 +2301,141 @@ fn o17_unknown_create_resolved_absent_is_refused_like_not_committed() {
     let prepared = owner.create(request).expect("the submission's one attempt");
     assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
     assert_eq!(fixture.attempt_count(), 1);
+}
+
+/// S4 (DT-3): Main issues one random `sessionId` per sender
+/// (electron/main/profileEgress.ts:648). It is a process-local caller binding
+/// and never a `chat_sessions` row, so the attempt binds the DB-validated chat
+/// session separately from the Main caller session, and the same owner claims
+/// and starts it.
+#[test]
+fn s4_production_caller_session_binds_chat_session_separately() {
+    let fixture = OwnerFixture::new();
+    let caller = fixture.callers[0].clone();
+    assert!(
+        uuid::Uuid::parse_str(&caller.session_id).is_ok() && caller.session_id != SESSIONS[0],
+        "the fixture caller has a Main-shaped session, not a chat session"
+    );
+    let recorder = AtomicUsize::new(0);
+    let submission = fixture.accept(0, "s4");
+    let owner = fixture.owner(0, &submission).expect("owner");
+    let request = fixture.request(&owner, &submission);
+    let prepared = owner
+        .create(request)
+        .expect("a Main caller session is not validated as a chat session");
+    let stored = fixture.attempt(prepared.attempt_id());
+    assert_eq!(stored.binding.chat_session_id, SESSIONS[0]);
+    assert_eq!(stored.binding.caller.caller_session_id, caller.session_id);
+    assert_eq!(stored.binding.scene.scene_id, SCENE);
+    let column: String = fixture
+        .authority
+        .db()
+        .with_read_transaction(|conn| {
+            Ok(conn.query_row(
+                "SELECT session_id FROM nir1_generation_attempts WHERE id=?1",
+                [prepared.attempt_id()],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("stored chat session");
+    assert_eq!(column, SESSIONS[0], "the row keeps the DB chat session");
+    let Nir1TransportDecision::Start(transport) = prepared.claim_for_transport() else {
+        panic!("the owner that persisted the request claims it");
+    };
+    record_send(transport, &recorder, "s4-output");
+    assert_eq!(recorder.load(Ordering::SeqCst), 1);
+}
+
+/// DT-3: the claim re-reads the Scene in its own transaction. A Scene that was
+/// deleted and recreated between create and claim is a new incarnation, so
+/// the claim is refused before COMMIT (the store tests cover the restore
+/// paths in which the token repeats as well); the owner writes its one
+/// zero-send terminal (the pinned writer needs no current Scene) and nothing
+/// is sent.
+#[test]
+fn dt3_scene_replaced_between_create_and_claim_writes_one_zero_send() {
+    let fixture = OwnerFixture::new();
+    let prepared = fixture.prepared(0, "dt3-aba");
+    let id = prepared.attempt_id().to_owned();
+    let hooks = prepared.hooks();
+    let before = fixture.attempt(&id).binding.scene;
+    fixture.replace_scene("aba");
+    let after = fixture.scene_binding();
+    assert_ne!(
+        after.scene_incarnation_id, before.scene_incarnation_id,
+        "the Native A1 writer minted a new incarnation"
+    );
+    let terminal = zero_send(prepared.claim_for_transport());
+    assert_eq!(terminal.attempt_id, id);
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::DispatchUnavailable)
+    );
+    let stored = fixture.attempt(&id);
+    assert!(stored.claimed_at_ms.is_none(), "no claim reached COMMIT");
+    assert_eq!(stored.terminal, Some(terminal));
+    assert!(
+        hooks
+            .test_hooks()
+            .failures()
+            .iter()
+            .any(|(stage, _)| *stage == "claim"),
+        "the claim writer refused"
+    );
+    assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+}
+
+/// DT-3: a Scene snapshot that is no longer the stored Scene is refused at
+/// create in the create transaction. Nothing is durable and the slot is
+/// released; a fresh snapshot creates the submission's one attempt.
+#[test]
+fn dt3_stale_scene_snapshot_is_refused_at_create() {
+    let fixture = OwnerFixture::new();
+    let submission = fixture.accept(0, "dt3-stale");
+    let owner = fixture.owner(0, &submission).expect("owner");
+    let stale = fixture.request(&owner, &submission);
+    fixture.edit_scene_body_in_place();
+    assert!(matches!(
+        owner.create(stale).err(),
+        Some(Nir1GenerationRefusal::Store(_))
+    ));
+    assert_eq!(fixture.attempt_count(), 0);
+    assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+
+    let owner = fixture.owner(0, &submission).expect("a fresh owner");
+    let request = fixture.request(&owner, &submission);
+    let prepared = owner.create(request).expect("a fresh snapshot creates");
+    assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
+    assert_eq!(fixture.attempt_count(), 1);
+}
+
+/// DT-3: the process-local part of the stored binding must be this owner's
+/// live caller (with its Main session). An owner whose caller registration no
+/// longer matches the attempt does not claim it; it writes the zero-send
+/// terminal and nothing is sent.
+#[test]
+fn dt3_owner_does_not_claim_a_binding_that_is_not_its_own() {
+    let fixture = OwnerFixture::new();
+    let mut prepared = fixture.prepared(0, "dt3-foreign");
+    let id = prepared.attempt_id().to_owned();
+    prepared
+        .inner
+        .as_mut()
+        .expect("prepared")
+        .core
+        .caller
+        .session_id = uuid::Uuid::new_v4().to_string();
+    let terminal = zero_send(prepared.claim_for_transport());
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::DispatchUnavailable)
+    );
+    let stored = fixture.attempt(&id);
+    assert!(
+        stored.claimed_at_ms.is_none(),
+        "the foreign owner never claimed"
+    );
+    assert_eq!(stored.terminal, Some(terminal));
 }
 
 /// A-1: no N-API attribute reaches the owner module.

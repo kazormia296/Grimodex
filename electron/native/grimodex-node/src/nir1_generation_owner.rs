@@ -15,6 +15,13 @@
 //!    lease, then linearizes the start decision with `cancel` on its phase
 //!    mutex. Only a `Started` owner may use a transport.
 //!
+//! The attempt's `AttemptBinding` is the v2 shape. The DB-validated chat
+//! session and the query Scene incarnation (re-read by the store inside the
+//! create and the claim transaction) are separate from the process-local
+//! caller, workspace and route values, which the owner compares with its live
+//! registration before it claims. The Main-issued caller session is part of
+//! the caller; it is never the chat session.
+//!
 //! Every stop before the start decision writes exactly one transport-less
 //! (zero-send) terminal through the pinned writer, which observes neither the
 //! owner's cancel nor lifecycle stops. An unknown COMMIT outcome is resolved
@@ -30,10 +37,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use grimodex_core::canonical_json_digest;
 use grimodex_core::narrative_nir1_receipt::TerminalObservation;
 use grimodex_db::nir1_generation::{
-    self as storage, AcceptedChatInputCapture, AttemptBinding, NewAttempt, NewMessageBody,
-    Nir1AdmissionProbe, Nir1AdmissionSqlBudget, Nir1ClaimOutcome, Nir1CommitState,
-    Nir1ExpectedAttempt, Nir1ExpectedClaim, Nir1PinnedSqlBudget, Nir1StoreFailure,
-    Nir1ZeroSendCompletion, StoredTerminal,
+    self as storage, AcceptedChatInputCapture, AttemptBinding, AttemptBindingVersion,
+    AttemptCallerBinding, NewAttempt, NewMessageBody, Nir1AdmissionProbe, Nir1AdmissionSqlBudget,
+    Nir1ClaimOutcome, Nir1CommitState, Nir1ExpectedAttempt, Nir1ExpectedClaim, Nir1PinnedSqlBudget,
+    Nir1StoreFailure, Nir1ZeroSendCompletion, StoredTerminal,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
@@ -395,6 +402,27 @@ impl OwnerCore {
         route_revision(&self.state).is_ok_and(|revision| revision == self.route_revision)
     }
 
+    /// The process-local caller binding of this owner. It carries the
+    /// Main-issued caller session; the DB chat session is not part of it.
+    fn caller_binding(&self) -> AttemptCallerBinding {
+        AttemptCallerBinding {
+            profile_id: self.caller.profile_id.clone(),
+            caller_id: self.caller.caller_id.clone(),
+            caller_epoch: self.caller.caller_epoch,
+            caller_session_id: self.caller.session_id.clone(),
+        }
+    }
+
+    /// Whether the process-local values stored in `binding` are this
+    /// owner's live caller, workspace and route. The store only keeps these
+    /// values and compares them with the claimant's; it cannot know the live
+    /// registration.
+    fn owns_binding(&self, binding: &AttemptBinding) -> bool {
+        binding.caller == self.caller_binding()
+            && binding.workspace_binding_digest == self.workspace_digest
+            && binding.route_revision == self.route_revision
+    }
+
     fn mark_unresolved(&self, slot: Nir1SessionSlotGuard) {
         slot.mark_unresolved(self.gate().current_epoch());
     }
@@ -594,11 +622,9 @@ impl Nir1GenerationOwner {
             return Err(Nir1GenerationRefusal::WorkspaceNotReady);
         }
         let capture: AcceptedChatInputCapture = (**submission).clone();
-        // Legacy AttemptBinding shape (DT-3 separates them): the caller's
-        // session is the DB-validated chat session of this capture.
-        if capture.chat_session_id() != caller.session_id {
-            return Err(Nir1GenerationRefusal::SubmissionMismatch);
-        }
+        // The chat session is the capture's and the store validates it. The
+        // Main-issued caller session is a different, process-local value: the
+        // store compares it with the capture owner's at create.
         let route = state
             .profile_egress
             .with_authorized_dispatch(&permit, Some(&caller), Some(&live_binding.locator), || {
@@ -674,7 +700,10 @@ impl Nir1GenerationOwner {
         if request.route_revision != core.route_revision {
             return Err(Nir1GenerationRefusal::RouteChanged);
         }
-        if request.project_id != core.capture.project_id() {
+        if request.project_id != core.capture.project_id()
+            || request.chat_session_id != core.capture.chat_session_id()
+            || request.scene.scene_id != core.capture.scene_id()
+        {
             return Err(Nir1GenerationRefusal::SubmissionMismatch);
         }
         let (canonical_payload, payload_digest) = canonical_final_payload(&request.payload)
@@ -683,21 +712,23 @@ impl Nir1GenerationOwner {
             .map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
         let read_budget = request.budget;
         let binding = AttemptBinding {
+            binding_version: AttemptBindingVersion::V2,
             project_id: request.project_id,
-            session_id: core.caller.session_id.clone(),
-            profile_id: core.caller.profile_id.clone(),
-            caller_id: core.caller.caller_id.clone(),
-            caller_epoch: core.caller.caller_epoch,
+            chat_session_id: request.chat_session_id,
+            scene: request.scene,
+            caller: core.caller_binding(),
             workspace_binding_digest: core.workspace_digest.clone(),
+            route_revision: core.route_revision.clone(),
             purpose: request.purpose,
             scope_digest: request.scope_digest,
             material_digest: request.material_digest,
             d1_digest: request.d1_digest,
-            route_revision: core.route_revision.clone(),
             provider: request.provider,
             model: request.model,
             api: request.api,
             endpoint_identity: request.endpoint_identity,
+            history_turn_context: None,
+            durable_workspace_identity: None,
         };
         let attempt = NewAttempt {
             binding: binding.clone(),
@@ -895,9 +926,11 @@ impl PreparedInner {
                 Nir1ExpectedClaim::Unclaimed,
             ));
         };
-        // 2. Checks before BEGIN.
+        // 2. Checks before BEGIN. The stored process-local binding (caller
+        //    with its Main session, workspace, route) must be this owner's.
         if core.permit.ensure_open().is_err()
             || !core.route_is_current()
+            || !core.owns_binding(&expected.binding)
             || core.control.cancel_requested()
         {
             drop(lease);
