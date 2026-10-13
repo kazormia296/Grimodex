@@ -1,18 +1,25 @@
 use super::*;
 use crate::narrative_extraction::incremental_freshness::run_incremental_freshness_cycle;
 use crate::narrative_extraction::nir1_entity_relation::{
-    create_nir1_entity_relation_revision,
-    tests::{approve_typed_revision, prepare_a3_scope_fixture, request, seed_run_and_catalog},
+    create_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
+    tests::{
+        approve_typed_revision, bounded_writer_bundle, prepare_a3_scope_fixture, request,
+        seed_run_and_catalog, writer_input_bytes,
+    },
+    Nir1EntityRelationRevisionRead,
 };
 use crate::narrative_extraction::nir1_entity_relation_index::{
-    prepare_graph_index_build, publish_nir1_entity_relation_index_in_tx,
+    prepare_graph_index_build, publish_nir1_entity_relation_index_in_tx, read_eligibility_source,
+};
+use crate::narrative_extraction::{
+    narrative_extraction_append_human_decision, AppendDecisionPayload,
 };
 use crate::state::{active_workspace_snapshot, ActiveWorkspace, WorkspaceState};
 use crate::workspace_lifecycle::{
     AdmissionKind, AdmissionOutcome, AdmissionTicket, LiveBinding,
     WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
 };
-use grimodex_core::narrative_nir1::ScopeValue;
+use grimodex_core::narrative_nir1::{EntityRelationBundle, EvidenceInput, ScopeValue};
 use std::{
     path::PathBuf,
     sync::{
@@ -169,15 +176,7 @@ impl Fixture {
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
-        let runtime = authority.nir_chronicle_index_runtime();
-        let snapshot = authority
-            .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
-        authority.with_conn(|conn| {
-            let tx = conn.unchecked_transaction()?;
-            publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
-            tx.commit()?;
-            Ok(())
-        })?;
+        publish_graph_index(&authority)?;
         Ok(Self {
             authority,
             lifecycle: WorkspaceLifecycleCore::new(),
@@ -6662,6 +6661,676 @@ fn measure_scene_join_capacity_and_frame_bytes() -> Result<()> {
         measured.steps,
         measured.wall,
         measured.admission
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// C-resource boundaries (CR-2, proposal/6): G-1 B publish, G-2 per-Revision
+// preflight, G-3 wait 0, and G-4 proposal/5 negatives. They run in-process, on
+// the ordinary reader and on the worker-shaped reader over the authority
+// connection. `worker_query` is the production worker configuration: the
+// maintenance owner and the production SQL step budget. It runs under the
+// ordinary allocator, not the real worker binary's fixed arena, so none of these
+// tests shows what the real worker can process.
+// ---------------------------------------------------------------------------
+
+/// Per-Revision preflight limit: `input::INPUT_BYTES` (proposal/6 RB-2).
+const PER_REVISION_PREFLIGHT_BYTES: usize = 2 * 1024 * 1024;
+
+/// Upper bound for a refused query to return. Against a held write lock a query
+/// meets SQLITE_BUSY at its first read and again at its post-cleanup stamp, so a
+/// busy timeout T costs about 2T. This bound therefore detects a timeout of
+/// about 0.5 s or more, such as SQLite's 5 s default; a short non-zero timeout
+/// still passes.
+const BUSY_WAIT_BOUND: Duration = Duration::from_secs(1);
+
+/// Extra Codex objects and directed Relations added to the seed Revision.
+/// The seed's alice, bob, and nir1-edge are always present.
+#[derive(Default)]
+struct GraphPlan {
+    entities: Vec<String>,
+    relations: Vec<(String, String, String)>,
+}
+
+/// Same scope edits as the seed Revision, so every Entity is A3-eligible for
+/// the `nir1` query scene.
+fn seed_scope_edits(bundle: &mut EntityRelationBundle) {
+    for entity in &mut bundle.entities {
+        entity.scope.reading = ScopeValue::Exact {
+            value: "scene:a3-source".into(),
+        };
+        entity.scope.phase = "draft".into();
+    }
+}
+
+fn publish_graph_index(authority: &WorkspaceAuthority) -> Result<()> {
+    let runtime = authority.nir_chronicle_index_runtime();
+    let snapshot = authority
+        .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
+    authority.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+/// The Evidence identifier used for an Entity, e.g. `nir1-alice` ->
+/// `nir1-evidence-alice`, matching the seed Revision.
+fn evidence_id_for(entity: &str) -> String {
+    format!("nir1-evidence-{}", entity.trim_start_matches("nir1-"))
+}
+
+fn worker_query(reader: &mut Nir1GraphReader, seed: &str) -> Result<Nir1GraphResponse> {
+    reader.query_for_worker_with_maintenance_deadline(&graph_request(seed), Duration::from_secs(2))
+}
+
+fn assert_refused_without_graph(response: &Nir1GraphResponse) {
+    assert_eq!(response.status, "unavailable", "{:?}", response.reason);
+    assert!(
+        response.graph.is_none(),
+        "a refused query must not expose a partial Graph"
+    );
+    assert!(response.scope_revision.is_none());
+}
+
+/// A refusal on the production worker configuration that is not a step or
+/// deadline artifact. The fixtures behind it fit the production step budget, so
+/// the refusal belongs to the limit under test.
+fn assert_refused_within_budget(response: &Nir1GraphResponse) {
+    assert_refused_without_graph(response);
+    let reason = response.reason.as_deref().unwrap_or_default();
+    assert!(
+        !reason.contains("steps") && !reason.contains("deadline"),
+        "the refusal is a budget artifact: {reason}"
+    );
+}
+
+fn hop_map(graph: &Nir1QualifiedGraph) -> BTreeMap<String, u8> {
+    graph
+        .nodes
+        .iter()
+        .map(|node| (node.entity.entity_id.clone(), node.hop))
+        .collect()
+}
+
+fn edge_ids(graph: &Nir1QualifiedGraph) -> Vec<String> {
+    let mut ids: Vec<String> = graph
+        .edges
+        .iter()
+        .map(|edge| edge.relation.edge_id.clone())
+        .collect();
+    ids.sort();
+    ids
+}
+
+impl Fixture {
+    /// The seed Revision plus the objects in `plan`, all in one approved typed
+    /// Revision published once.
+    fn with_graph(plan: &GraphPlan) -> Result<Self> {
+        let directory = TestDirectory(
+            std::env::temp_dir().join(format!("nir1-c-graph-{}", uuid::Uuid::new_v4())),
+        );
+        std::fs::create_dir_all(&directory.0)?;
+        let db = crate::Database::new(&directory.0.join("grimodex.db"))?;
+        db.migrate()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        db.with_conn(|conn| {
+            for entity in &plan.entities {
+                conn.execute(
+                    "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
+                     VALUES (?1, 'default-project', 'character', ?1, ?1, '2026-09-12T00:00:00Z')",
+                    [entity],
+                )?;
+            }
+            for (edge, from, to) in &plan.relations {
+                conn.execute(
+                    "INSERT INTO codex_relations
+                        (id, project_id, from_codex_id, to_codex_id, relation_type,
+                         directionality, version, updated_at)
+                     VALUES (?1, 'default-project', ?2, ?3, 'knows', 'directed', 1,
+                             '2026-09-12T00:00:00Z')",
+                    params![edge, from, to],
+                )?;
+            }
+            Ok(())
+        })?;
+        run_incremental_freshness_cycle(&db)?;
+        let mut typed = request(&db);
+        seed_scope_edits(&mut typed.bundle);
+        let template = typed.bundle.entities[0].clone();
+        for entity in &plan.entities {
+            typed.bundle.entities.push(EntityInput {
+                entity_id: entity.clone(),
+                entity_type: template.entity_type.clone(),
+                label: entity.clone(),
+                source_token: format!("codex:{entity}@2026-09-12T00:00:00Z"),
+                scope: template.scope.clone(),
+                evidence: vec![EvidenceInput {
+                    evidence_id: evidence_id_for(entity),
+                    source_ref: format!("codex:{entity}"),
+                    start_utf16: 0,
+                    end_utf16: entity.encode_utf16().count(),
+                    quote: entity.clone(),
+                }],
+            });
+        }
+        for (edge, from, to) in &plan.relations {
+            typed.bundle.relations.push(GraphEdgeInput {
+                edge_id: edge.clone(),
+                from_entity_id: from.clone(),
+                to_entity_id: to.clone(),
+                relation_type: "knows".into(),
+                directionality: "directed".into(),
+                source_token: format!("v1@2026-09-12T00:00:00Z:relation:{edge}"),
+                evidence_ids: vec![evidence_id_for(from), evidence_id_for(to)],
+            });
+        }
+        let created = create_nir1_entity_relation_revision(&db, typed)?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
+        publish_graph_index(&authority)?;
+        Ok(Self {
+            authority,
+            lifecycle: WorkspaceLifecycleCore::new(),
+            revision: created["revisionId"].as_str().unwrap().to_owned(),
+            _directory: directory,
+        })
+    }
+
+    fn republish_graph_index(&self) -> Result<()> {
+        publish_graph_index(&self.authority)
+    }
+
+    /// A2 admitted bytes for one typed Revision, from the reader's own preflight.
+    /// `Err` is the per-Revision refusal.
+    fn a2_admission(&self, revision: &str) -> Result<usize> {
+        self.authority.with_conn(|conn| {
+            let admission = super::input::preflight_revision(
+                conn,
+                PROJECT,
+                revision,
+                MAX_GRAPH_RECORDS,
+                MAX_GRAPH_INPUT_BYTES,
+            )?
+            .ok_or_else(|| anyhow::anyhow!("candidate is not a typed Revision"))?;
+            Ok(admission.bytes)
+        })
+    }
+
+    /// One more approved typed Revision for the seed Entities. The serial has a
+    /// fixed width, so every candidate shares the same base admission bytes.
+    /// `decision_padding` grows the approval's `decision_json`, which A2 counts
+    /// once in the Revision's preflight, so each padding byte is one admitted
+    /// byte. The Graph response does not carry it.
+    fn add_candidate_revision(&self, serial: usize, decision_padding: usize) -> Result<String> {
+        let db = self.authority.db();
+        let mut payload = request(db);
+        payload.proposal_key = format!("nir1:review:candidate-{serial:04}");
+        seed_scope_edits(&mut payload.bundle);
+        let created = create_nir1_entity_relation_revision(db, payload)?;
+        let revision = created["revisionId"].as_str().unwrap().to_owned();
+        narrative_extraction_append_human_decision(
+            db,
+            AppendDecisionPayload {
+                run_id: "nir1-run".into(),
+                project_id: PROJECT.into(),
+                proposal_id: created["proposalId"].as_str().unwrap().into(),
+                revision_id: revision.clone(),
+                decision: "approved".into(),
+                decision_json: Some(serde_json::json!({
+                    "pad": "p".repeat(decision_padding)
+                })),
+                created_by: Some("renderer-reviewer".into()),
+            },
+        )?;
+        Ok(revision)
+    }
+
+    /// Decision padding that makes a candidate admit exactly `target` A2 bytes.
+    /// Two probes on a throwaway fixture measure the base and the slope, so the
+    /// fixture under test keeps one candidate beside the seed Revision: every
+    /// further approved Revision costs about 33,400 SQL steps against the
+    /// production budget of 100,000. The probes are approved like the candidate,
+    /// because the approval's bytes are part of the admission.
+    fn candidate_padding_for(target: usize) -> Result<usize> {
+        let calibration = Self::new()?;
+        let probe = calibration.add_candidate_revision(1, 0)?;
+        let base = calibration.a2_admission(&probe)?;
+        let grown = calibration.add_candidate_revision(2, 1000)?;
+        ensure!(
+            calibration.a2_admission(&grown)? - base == 1000,
+            "one decision byte must add exactly one admitted byte"
+        );
+        target
+            .checked_sub(base)
+            .ok_or_else(|| anyhow::anyhow!("target is below the base admission"))
+    }
+}
+
+/// A Relation fan of `count` Entities around alice (proposal/5 Entity 12).
+fn star_plan(count: usize) -> GraphPlan {
+    GraphPlan {
+        entities: (0..count)
+            .map(|index| format!("nir1-n{index:02}"))
+            .collect(),
+        relations: (0..count)
+            .map(|index| {
+                (
+                    format!("nir1-edge-n{index:02}"),
+                    "nir1-alice".to_owned(),
+                    format!("nir1-n{index:02}"),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// `count` parallel Relations from alice to bob, each a distinct edge
+/// (proposal/5 edge expansion 144).
+fn parallel_plan(count: usize) -> GraphPlan {
+    GraphPlan {
+        entities: Vec::new(),
+        relations: (0..count)
+            .map(|index| {
+                (
+                    format!("nir1-par-{index:03}"),
+                    "nir1-alice".to_owned(),
+                    "nir1-bob".to_owned(),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// SQL step budget large enough that the cap never binds. A refusal under it
+/// can only come from a semantic limit; the production budget is
+/// `QUERY_SQL_STEPS`. Only the G-4 Entity and edge limits use it, on the
+/// ordinary reader: it separates their semantic refusal from the step cap, and
+/// the 144-edge fan exceeds the production budget before its edge limit. The
+/// G-1 and G-2 tests stay within the production budget.
+const UNCAPPED_SQL_STEPS: u64 = 10_000_000;
+
+fn query_with_steps(
+    reader: &mut Nir1GraphReader,
+    seed: &str,
+    sql_steps: u64,
+) -> Result<Nir1GraphResponse> {
+    reader.query_with_deadline(&graph_request(seed), Duration::from_secs(2), sql_steps)
+}
+
+// G-1 (RB-1): a Revision of 2.5 MiB counted bytes, above the C-query preflight
+// (2 MiB) and below the writer limit, is saved, read by the A2 reader, and
+// published by the B build. The C-query refuses any query that reaches it
+// (proposal/6: 2-6 MiB Revisions are stored and read, but not used by the Graph).
+//
+// What decides B here is its per-component guard on the saved documents, not the
+// counted bytes. B reads the stored payload and the stored reconciliation
+// envelope and refuses the whole build when either is over 6,291,456 B
+// (NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT). This padded shape stores an
+// envelope of about 2.07x its counted bytes, so 2.5 MiB counted (envelope about
+// 5.4 MB) is inside the guard. Near the writer limit it is not: 3,145,728
+// counted bytes (payload + envelope about 9.7 MB, inside the 16 MiB whole set) is
+// already refused by the component guard, and the exact writer limit by the
+// whole set. RB-1's B positive for a Revision near the writer limit is therefore
+// not covered by this test.
+#[test]
+fn b_publishes_a_revision_within_its_component_guard_that_the_c_query_refuses() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let db = fixture.authority.db();
+    let template = request(db).bundle;
+    let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
+    let mut payload = request(db);
+    payload.bundle =
+        bounded_writer_bundle(&template, 507, B_COMPONENT_GUARD_CONTAINED_BYTES - base);
+    assert_eq!(
+        writer_input_bytes(&payload.bundle),
+        B_COMPONENT_GUARD_CONTAINED_BYTES
+    );
+    let created = create_nir1_entity_relation_revision(db, payload)?;
+    approve_typed_revision(db, "nir1-run", &created)?;
+    let revision = created["revisionId"].as_str().unwrap().to_owned();
+    let read = fixture.authority.with_read_transaction(|conn| {
+        read_nir1_entity_relation_revision(conn, PROJECT, &revision)
+    })?;
+    assert!(
+        matches!(read, Nir1EntityRelationRevisionRead::Available(_)),
+        "the Revision must be readable by the A2 reader"
+    );
+    fixture.republish_graph_index()?;
+    let source = fixture
+        .authority
+        .with_read_transaction(|conn| read_eligibility_source(conn, PROJECT))?;
+    assert!(
+        source
+            .roster
+            .iter()
+            .any(|entry| entry.revision_id == revision),
+        "B must publish the Revision's material"
+    );
+    // The refusal below is the per-Revision preflight's: A2's own admission of
+    // this Revision is over the 2 MiB limit, rather than another guard, such as
+    // the record limit, being the one that refuses the query.
+    let refusal = fixture
+        .a2_admission(&revision)
+        .expect_err("a Revision above the per-Revision preflight is refused");
+    assert!(
+        refusal
+            .to_string()
+            .contains("NIR1_GRAPH_REVISION_INPUT_LIMIT"),
+        "{refusal}"
+    );
+    let mut worker = fixture.worker_reader()?;
+    assert_refused_within_budget(&worker_query(&mut worker, "nir1-alice")?);
+    Ok(())
+}
+
+/// Counted bytes of one Revision that B publishes: above the C-query preflight
+/// (2 MiB), and its stored envelope (about 2.07x the counted bytes for this
+/// padded shape) stays inside B's 6,291,456 B per-component guard.
+const B_COMPONENT_GUARD_CONTAINED_BYTES: usize = 2_621_440;
+
+// G-2 (RB-2): a candidate of exactly the per-Revision preflight limit is an
+// ordinary Graph contribution on the production worker configuration: the
+// maintenance owner and the production SQL step budget (`worker_query`). The
+// fixture is the seed Revision plus this one candidate. Each approved Revision
+// costs about 33,400 SQL steps, so two use about 67,000 of the production
+// budget of 100,000 and four would use about 134,000.
+//
+// This does not show that the real worker binary can process such a candidate.
+// Its fixed query arena is 4,718,592 B, and the release worker leaves during its
+// startup registration on a project that holds this exact candidate.
+#[test]
+fn worker_query_admits_a_candidate_at_exactly_the_per_revision_preflight_limit() -> Result<()> {
+    let padding = Fixture::candidate_padding_for(PER_REVISION_PREFLIGHT_BYTES)?;
+    let fixture = Fixture::new()?;
+    let candidate = fixture.add_candidate_revision(1, padding)?;
+    assert_eq!(
+        fixture.a2_admission(&candidate)?,
+        PER_REVISION_PREFLIGHT_BYTES
+    );
+    fixture.republish_graph_index()?;
+    let mut reader = fixture.worker_reader()?;
+    let response = worker_query(&mut reader, "nir1-alice")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    let graph = response
+        .graph
+        .expect("an available response carries the Graph");
+    for revision in [&fixture.revision, &candidate] {
+        assert!(
+            graph
+                .edges
+                .iter()
+                .any(|edge| &edge.binding.revision_id == revision),
+            "Revision {revision} must contribute its Relation"
+        );
+    }
+    Ok(())
+}
+
+// G-2 (RB-2): one byte over the per-Revision preflight refuses the whole query
+// on the same production worker configuration. The seed-only Graph is available
+// first, and no partial Graph is returned. The same construction admits the
+// exact limit (the test above), so only the one extra byte changes the outcome,
+// and the refusal is the preflight's rather than a step or deadline artifact.
+#[test]
+fn query_refuses_the_whole_graph_when_a_candidate_is_one_byte_over() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut baseline = fixture.registered_reader()?;
+    assert_eq!(query(&mut baseline, "nir1-alice")?.status, "available");
+
+    let padding = Fixture::candidate_padding_for(PER_REVISION_PREFLIGHT_BYTES + 1)?;
+    let candidate = fixture.add_candidate_revision(1, padding)?;
+    let refusal = fixture
+        .a2_admission(&candidate)
+        .expect_err("one byte over the per-Revision preflight is refused");
+    assert!(
+        refusal
+            .to_string()
+            .contains("NIR1_GRAPH_REVISION_INPUT_LIMIT"),
+        "{refusal}"
+    );
+
+    fixture.republish_graph_index()?;
+    let mut worker = fixture.worker_reader()?;
+    assert_refused_within_budget(&worker_query(&mut worker, "nir1-alice")?);
+    Ok(())
+}
+
+// G-3 (RB-4): a busy database ends a query at once as an unavailable response
+// on both reader paths: no partial Graph, a return in under a second, and a
+// normal answer again once the lock is released.
+//
+// How SQLITE_BUSY is injected, and what that covers. A WAL reader never waits
+// on another connection's write lock, and an EXCLUSIVE-locking-mode holder
+// cannot be created while reader connections are open, so this fixture
+// switches the database to the rollback journal (journal_mode=DELETE). There a
+// second connection's BEGIN EXCLUSIVE makes readers return SQLITE_BUSY at once.
+// Not covered: busy causes that exist only in WAL (recovery, SQLite's internal
+// WAL retries). The ordinary reader is checked against its own busy timeout of
+// 0. The worker path runs under the production maintenance scope, which sets
+// the busy timeout to 0 itself, so it checks that production setting rather
+// than the borrowed connection's own. The 1 s bound (BUSY_WAIT_BOUND) detects a
+// timeout of about 0.5 s or more.
+#[test]
+fn busy_database_refuses_both_reader_paths_without_waiting() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.authority.db().with_conn(|conn| {
+        let mode: String = conn.query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))?;
+        anyhow::ensure!(mode == "delete", "journal mode is {mode}");
+        Ok(())
+    })?;
+    let mut ordinary = fixture.registered_reader()?;
+    let mut worker = fixture.worker_reader()?;
+    assert_eq!(query(&mut ordinary, "nir1-alice")?.status, "available");
+    assert_eq!(worker_query(&mut worker, "nir1-alice")?.status, "available");
+
+    let path = fixture.authority.path().join("grimodex.db");
+    let writer = Connection::open(&path)?;
+    writer.busy_timeout(Duration::ZERO)?;
+    writer.execute_batch("BEGIN EXCLUSIVE")?;
+    let probe = Connection::open(&path)?;
+    probe.busy_timeout(Duration::ZERO)?;
+    let busy = probe
+        .query_row("SELECT COUNT(*) FROM codex_entries", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect_err("another connection's write lock must make readers busy");
+    assert!(
+        matches!(
+            busy.sqlite_error_code(),
+            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        ),
+        "{busy}"
+    );
+    drop(probe);
+
+    let started = Instant::now();
+    let response = query(&mut ordinary, "nir1-alice")?;
+    let elapsed = started.elapsed();
+    assert_refused_without_graph(&response);
+    assert!(
+        elapsed < BUSY_WAIT_BOUND,
+        "the ordinary reader waited {elapsed:?} on a busy database"
+    );
+
+    let started = Instant::now();
+    let response = worker_query(&mut worker, "nir1-alice")?;
+    let elapsed = started.elapsed();
+    assert_refused_without_graph(&response);
+    assert!(
+        elapsed < BUSY_WAIT_BOUND,
+        "the worker reader waited {elapsed:?} on a busy database"
+    );
+
+    writer.execute_batch("ROLLBACK")?;
+    drop(writer);
+    assert_eq!(query(&mut ordinary, "nir1-alice")?.status, "available");
+    assert_eq!(worker_query(&mut worker, "nir1-alice")?.status, "available");
+    Ok(())
+}
+
+// G-4 (RB-8): an unknown seed, and a seed that exists only in another project,
+// are refused as `seed-not-found` on both reader paths. A registered seed still
+// answers afterwards.
+#[test]
+fn unknown_and_foreign_seeds_are_refused_as_seed_not_found_on_both_reader_paths() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.authority.db().with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects (id) VALUES ('nir1-foreign-project')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
+             VALUES ('nir1-foreign', 'nir1-foreign-project', 'character',
+                     'nir1-foreign', 'nir1-foreign', '2026-09-12T00:00:00Z')",
+            [],
+        )?;
+        Ok(())
+    })?;
+    let mut ordinary = fixture.registered_reader()?;
+    assert_unavailable(&query(&mut ordinary, "nir1-missing")?, "seed-not-found");
+    assert_unavailable(&query(&mut ordinary, "nir1-foreign")?, "seed-not-found");
+    let mut worker = fixture.worker_reader()?;
+    assert_unavailable(
+        &worker_query(&mut worker, "nir1-missing")?,
+        "seed-not-found",
+    );
+    assert_unavailable(
+        &worker_query(&mut worker, "nir1-foreign")?,
+        "seed-not-found",
+    );
+    assert_eq!(worker_query(&mut worker, "nir1-alice")?.status, "available");
+    Ok(())
+}
+
+// G-4 (RB-8): proposal/5's two-hop limit. From alice, the third hop (dave) is
+// never reached; from bob, dave is exactly two hops away and is admitted. The
+// ordinary reader checks the traversal logic; the worker-shaped reader repeats it
+// on the production worker configuration (`worker_query`: the maintenance owner
+// and the production SQL step budget), so the multi-hop walk also runs under the
+// worker's stop and progress control. The fixture is one approved Revision and
+// fits the production step budget.
+#[test]
+fn two_hop_limit_stops_before_a_third_hop() -> Result<()> {
+    let fixture = Fixture::with_graph(&GraphPlan {
+        entities: vec!["nir1-carol".into(), "nir1-dave".into()],
+        relations: vec![
+            (
+                "nir1-edge-bc".into(),
+                "nir1-bob".into(),
+                "nir1-carol".into(),
+            ),
+            (
+                "nir1-edge-cd".into(),
+                "nir1-carol".into(),
+                "nir1-dave".into(),
+            ),
+        ],
+    })?;
+    let from_alice_hops = BTreeMap::from([
+        ("nir1-alice".to_owned(), 0),
+        ("nir1-bob".to_owned(), 1),
+        ("nir1-carol".to_owned(), 2),
+    ]);
+    let mut reader = fixture.registered_reader()?;
+
+    let from_alice = query(&mut reader, "nir1-alice")?;
+    assert_eq!(from_alice.status, "available", "{:?}", from_alice.reason);
+    let graph = from_alice.graph.unwrap();
+    assert_eq!(hop_map(&graph), from_alice_hops);
+    assert_eq!(edge_ids(&graph), vec!["nir1-edge", "nir1-edge-bc"]);
+
+    let from_bob = query(&mut reader, "nir1-bob")?;
+    assert_eq!(from_bob.status, "available", "{:?}", from_bob.reason);
+    assert_eq!(hop_map(&from_bob.graph.unwrap()).get("nir1-dave"), Some(&2));
+
+    let mut worker = fixture.worker_reader()?;
+    let worker_from_alice = worker_query(&mut worker, "nir1-alice")?;
+    assert_eq!(
+        worker_from_alice.status, "available",
+        "{:?}",
+        worker_from_alice.reason
+    );
+    let worker_graph = worker_from_alice.graph.unwrap();
+    assert_eq!(hop_map(&worker_graph), from_alice_hops);
+    assert_eq!(edge_ids(&worker_graph), vec!["nir1-edge", "nir1-edge-bc"]);
+
+    let worker_from_bob = worker_query(&mut worker, "nir1-bob")?;
+    assert_eq!(
+        worker_from_bob.status, "available",
+        "{:?}",
+        worker_from_bob.reason
+    );
+    assert_eq!(
+        hop_map(&worker_from_bob.graph.unwrap()).get("nir1-dave"),
+        Some(&2)
+    );
+    Ok(())
+}
+
+// G-4 (RB-8): the discovered-Entity limit is 12 including the seed. Twelve are
+// admitted at the production budget. The thirteenth is refused with no partial
+// Graph at the production budget, and the same refusal repeats with the step
+// cap uncapped, so it does not depend on the step cap. The ordinary reader
+// checks the limit's logic; the worker-shaped reader repeats both cases on the
+// production worker configuration (`worker_query`), where the thirteenth is
+// refused for a reason other than steps or the deadline. Both fixtures are one
+// approved Revision and fit the production step budget.
+#[test]
+fn twelve_discovered_entities_are_admitted_and_the_thirteenth_is_refused() -> Result<()> {
+    let twelve = Fixture::with_graph(&star_plan(10))?;
+    let mut reader = twelve.registered_reader()?;
+    let response = query(&mut reader, "nir1-alice")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    assert_eq!(response.graph.unwrap().nodes.len(), 12);
+    let mut worker = twelve.worker_reader()?;
+    let response = worker_query(&mut worker, "nir1-alice")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    assert_eq!(response.graph.unwrap().nodes.len(), 12);
+
+    let thirteen = Fixture::with_graph(&star_plan(11))?;
+    let mut reader = thirteen.registered_reader()?;
+    assert_unavailable(
+        &query_with_steps(&mut reader, "nir1-alice", UNCAPPED_SQL_STEPS)?,
+        "query-budget-or-validation-failed",
+    );
+    assert_unavailable(
+        &query(&mut reader, "nir1-alice")?,
+        "query-budget-or-validation-failed",
+    );
+    let mut worker = thirteen.worker_reader()?;
+    assert_refused_within_budget(&worker_query(&mut worker, "nir1-alice")?);
+    Ok(())
+}
+
+// G-4 (RB-8): the distinct-edge limit is 144. With the step cap uncapped, the
+// 144th distinct edge is admitted and the 145th is refused with no partial
+// Graph. At the production 100,000-step budget this 144-edge fan exceeds the
+// step cap before the edge limit is reached, so the edge limit itself is tested
+// with the cap lifted. The 145-edge fan is refused at the production budget too.
+#[test]
+fn one_hundred_forty_four_distinct_edges_are_admitted_and_the_145th_is_refused() -> Result<()> {
+    let at_limit = Fixture::with_graph(&parallel_plan(143))?;
+    let mut reader = at_limit.registered_reader()?;
+    let response = query_with_steps(&mut reader, "nir1-alice", UNCAPPED_SQL_STEPS)?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    let graph = response.graph.unwrap();
+    assert_eq!(graph.edges.len(), 144);
+    assert_eq!(graph.nodes.len(), 2);
+
+    let over_limit = Fixture::with_graph(&parallel_plan(144))?;
+    let mut reader = over_limit.registered_reader()?;
+    assert_unavailable(
+        &query_with_steps(&mut reader, "nir1-alice", UNCAPPED_SQL_STEPS)?,
+        "query-budget-or-validation-failed",
+    );
+    assert_unavailable(
+        &query(&mut reader, "nir1-alice")?,
+        "query-budget-or-validation-failed",
     );
     Ok(())
 }

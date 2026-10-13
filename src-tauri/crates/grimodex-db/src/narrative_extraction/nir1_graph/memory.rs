@@ -1,9 +1,10 @@
 //! Request-local retained-memory accounting for the native Graph reader.
 //!
-//! `RetainedLedger` is a monotonic, pre-allocation admission ledger. It never
-//! measures the process allocator or SQLite/serde internals, and it only gives
-//! a hard result after every live structure is charged by the caller. Keep the
-//! C reader on hold while any of those structures remain outside this ledger.
+//! `RetainedLedger` is a monotonic, pre-allocation admission ledger. It is a
+//! defensive logical limit on input and retained estimates, not a physical
+//! memory proof. It never measures the process allocator or SQLite/serde
+//! internals, so the caller charges every live structure before allocating it;
+//! an uncharged structure stays outside the limit.
 
 use std::mem::size_of;
 
@@ -24,7 +25,7 @@ pub(super) enum RetainedPart {
     CandidatePage = 1,
     #[expect(
         dead_code,
-        reason = "Revision-cache charging is not yet integrated; the hard-memory claim remains HOLD"
+        reason = "Revision-cache charging is not yet connected; the ledger is a defensive logical limit, not a physical-memory claim"
     )]
     RevisionCache = 2,
     A2A3Material = 3,
@@ -39,7 +40,7 @@ impl RetainedPart {
 
 /// Monotonic accounting is intentionally stricter than simultaneous liveness:
 /// once charged, bytes stay charged until the query ends. This avoids a release
-/// ordering proof, but it is not a complete memory certification by itself.
+/// ordering proof. It is a defensive logical limit, not a memory certification.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RetainedLedger {
     limit: usize,
@@ -223,7 +224,7 @@ pub(super) fn retained_binding(binding: &Nir1GraphMaterialBinding) -> Result<usi
 
 #[expect(
     dead_code,
-    reason = "material accounting is an unconnected foundation, not hard-memory acceptance"
+    reason = "material accounting is an unconnected foundation for the defensive logical limit, not a physical-memory proof"
 )]
 pub(super) fn retained_material(material: &QualifiedGraphMaterial) -> Result<usize> {
     let mut total = size_of::<QualifiedGraphMaterial>();
@@ -251,7 +252,7 @@ pub(super) fn retained_material(material: &QualifiedGraphMaterial) -> Result<usi
 
 #[expect(
     dead_code,
-    reason = "response accounting is an unconnected foundation, not hard-memory acceptance"
+    reason = "response accounting is an unconnected foundation for the defensive logical limit, not a physical-memory proof"
 )]
 pub(super) fn retained_response(response: &Nir1GraphResponse) -> Result<usize> {
     let mut total = size_of::<Nir1GraphResponse>();
