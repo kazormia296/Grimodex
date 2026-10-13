@@ -23,6 +23,7 @@ mod nir1_generation;
 #[cfg(test)]
 mod nir1_graph_activation_tests;
 mod nir1_prepared_request;
+mod nir1_startup_barrier;
 mod post_effect_runtime;
 mod profile_egress;
 mod related_scenes;
@@ -3120,6 +3121,8 @@ pub(crate) fn publish_workspace_lifecycle_closed(
 }
 
 async fn finish_workspace_shutdown(state: Arc<AppState>) -> Result<()> {
+    // Independent of the Core edge, so a poisoned Core cannot keep it open.
+    state.workspace_lifecycle.nir1_startup_gate().close_for_shutdown();
     state.post_effect_abort.abort_all();
     state.semantic.semantic_cancel_background();
     let _ = state.related_scenes.stop_for_workspace_transition();

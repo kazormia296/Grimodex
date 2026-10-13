@@ -7,7 +7,7 @@
 //! never serializes a workspace path, authority id, recovery candidate id, or
 //! durable Run identity.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use grimodex_db::state::{PinnedWorkspaceDb, WorkspaceState};
 use grimodex_db::workspace_lifecycle::JoinedTransitionOutcome;
@@ -21,6 +21,10 @@ use grimodex_db::{
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::nir1_startup_barrier::{
+    Nir1StartupAdmissionGate, Nir1StartupDrainError, NIR1_STARTUP_LEASE_DRAIN_LIMIT,
+};
 
 pub(crate) const WORKSPACE_LIFECYCLE_EVENT: &str = "workspace:lifecycle-state";
 pub(crate) const WORKSPACE_LIFECYCLE_SCHEMA_VERSION: u8 = 1;
@@ -67,6 +71,8 @@ pub(crate) struct WorkspaceLifecycleView {
 pub(crate) struct WorkspaceLifecycleViewAdapter {
     core: WorkspaceLifecycleCore,
     projection: Mutex<ProjectionState>,
+    /// Observes the Core seam; opened only by the post-Ready recovery owner.
+    nir1_startup_gate: Nir1StartupAdmissionGate,
 }
 
 /// Operation-scoped terminal classification retained until the Native
@@ -107,10 +113,24 @@ impl Default for WorkspaceLifecycleViewAdapter {
 
 impl WorkspaceLifecycleViewAdapter {
     pub(crate) fn new(core: WorkspaceLifecycleCore) -> Self {
+        let nir1_startup_gate = Nir1StartupAdmissionGate::new();
+        // A failed registration leaves the gate in its initial Closed state:
+        // it never observes a Ready entry, so it can never open.
+        if let Err(error) = core.register_observer(Arc::new(nir1_startup_gate.clone())) {
+            tracing::warn!(
+                ?error,
+                "NIR-1 startup gate is not registered with the lifecycle Core; it stays Closed"
+            );
+        }
         Self {
             core,
             projection: Mutex::new(ProjectionState::default()),
+            nir1_startup_gate,
         }
+    }
+
+    pub(crate) fn nir1_startup_gate(&self) -> &Nir1StartupAdmissionGate {
+        &self.nir1_startup_gate
     }
 
     /// Return the current core snapshot for Native-only recovery decisions.
@@ -761,6 +781,27 @@ impl WorkspaceLifecycleViewAdapter {
                 self.lock_projection()?.previous_ready_token = None;
                 self.core
                     .require_recovery(&ticket, ticket.original_binding.clone(), None)?;
+                self.lock_projection()?.last_terminal_kind =
+                    Some(LifecycleTerminalKind::RecoveryRequired);
+            } else if has_authority
+                && self
+                    .nir1_startup_gate
+                    .drain_before_ready(ticket.operation_id, NIR1_STARTUP_LEASE_DRAIN_LIMIT)
+                    == Err(Nir1StartupDrainError::TimedOut)
+            {
+                // NIR-1 startup leases from the previous Ready entry did not
+                // drop within the limit. No lock is held while draining. Do
+                // not publish Ready over them: the transition becomes
+                // RecoveryRequired and the startup gate stays Closed. A stale
+                // drain (shutdown) falls through to the Core's own rejection;
+                // a poisoned gate stays Closed without blocking the workspace.
+                self.lock_projection()?.previous_ready_token = None;
+                let expected_binding = match ticket.original_binding.clone() {
+                    Some(binding) => binding,
+                    None => live_binding(workspace, snapshot.revision.saturating_add(1))?,
+                };
+                self.core
+                    .require_recovery(&ticket, Some(expected_binding), None)?;
                 self.lock_projection()?.last_terminal_kind =
                     Some(LifecycleTerminalKind::RecoveryRequired);
             } else if has_authority {
