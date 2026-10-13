@@ -1496,8 +1496,17 @@ mod tests {
             .expect("capture recovery coordinator")
             .expect("trusted reopened coordinator");
         let db = Arc::clone(&coordinator.workspace.authority);
+        // This test pins keyset paging, not timing. Keep the production page
+        // and item cutoffs but give the ~260 bounded operations of an
+        // unoptimized build on a loaded CI runner room under the time cutoffs
+        // (the 250 ms per-operation limit elapsed there once).
+        let paging_limits = GenerationRecoveryLimits {
+            time: Duration::from_secs(120),
+            operation_time: Duration::from_secs(10),
+            ..GenerationRecoveryLimits::SAFETY_LIMITS
+        };
         let summary = coordinator
-            .recover_all_pending_attempts()
+            .recover_all_pending_attempts_with_limits(paging_limits)
             .expect("recover complete all-project sweep");
 
         assert_eq!(summary.project_pages, 3);
