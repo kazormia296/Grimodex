@@ -3,7 +3,9 @@
 //! Windows では置き換え先（あるいは直前に書いた置き換え元）を別のプロセス
 //! （ユーザーのエディタ、ウイルス対策、同期クライアント等）が一時的に開いていると、
 //! 上書き rename が `PermissionDenied`（ERROR_ACCESS_DENIED = 5）や
-//! ERROR_SHARING_VIOLATION（32）で失敗する。この状態は通常すぐ解消するため、
+//! ERROR_SHARING_VIOLATION（32）で失敗する。ReplaceFileW は置き換え先を削除できない
+//! 場合に ERROR_UNABLE_TO_REMOVE_REPLACED（1175）を返す（両ファイルとも元の名前のまま
+//! 残ると文書化されている）。これらの状態は通常すぐ解消するため、
 //! Windows かつこれらのエラーのときだけ短く待って再試行する。
 //!
 //! 方針（Electron main の `renameWithRetry` と同じ）:
@@ -26,13 +28,20 @@ const MAX_TOTAL_WAIT: Duration = Duration::from_secs(2);
 
 const ERROR_ACCESS_DENIED: i32 = 5;
 const ERROR_SHARING_VIOLATION: i32 = 32;
+/// ReplaceFileW 専用。置き換え先も置き換え元も変わっていないので再試行してよい。
+/// 1176／1177 は置き換え先が消えた・改名された状態を含むため対象にしない。
+const ERROR_UNABLE_TO_REMOVE_REPLACED: i32 = 1175;
 
-/// 再試行対象の一時的な競合エラーか（EPERM／EACCES／EBUSY 相当）。
+/// 再試行対象の一時的な競合エラーか（EPERM／EACCES／EBUSY 相当と、ReplaceFileW の 1175）。
+/// raw os error の番号は Windows の意味で判定する。呼び出し側の `retry_with` は
+/// Windows 以外では再試行しないので、他 OS の同じ番号（EIO 等）では使われない。
 pub fn is_transient_replace_error(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::PermissionDenied
         || matches!(
             error.raw_os_error(),
-            Some(ERROR_ACCESS_DENIED) | Some(ERROR_SHARING_VIOLATION)
+            Some(ERROR_ACCESS_DENIED)
+                | Some(ERROR_SHARING_VIOLATION)
+                | Some(ERROR_UNABLE_TO_REMOVE_REPLACED)
         )
 }
 
@@ -104,22 +113,43 @@ mod tests {
     }
 
     #[test]
-    fn raw_sharing_violation_is_retried() {
-        let calls = Cell::new(0);
-        let result = retry_with(
-            || {
-                calls.set(calls.get() + 1);
-                if calls.get() == 1 {
-                    Err(io::Error::from_raw_os_error(32))
-                } else {
-                    Ok(())
-                }
-            },
-            true,
-            |_| {},
-        );
-        assert!(result.is_ok());
-        assert_eq!(calls.get(), 2);
+    fn raw_sharing_violation_and_replace_file_busy_are_retried() {
+        // 32 = ERROR_SHARING_VIOLATION, 1175 = ERROR_UNABLE_TO_REMOVE_REPLACED
+        for code in [32, 1175] {
+            let calls = Cell::new(0);
+            let result = retry_with(
+                || {
+                    calls.set(calls.get() + 1);
+                    if calls.get() == 1 {
+                        Err(io::Error::from_raw_os_error(code))
+                    } else {
+                        Ok(())
+                    }
+                },
+                true,
+                |_| {},
+            );
+            assert!(result.is_ok(), "code {code}");
+            assert_eq!(calls.get(), 2, "code {code}");
+        }
+    }
+
+    #[test]
+    fn replace_file_errors_that_may_lose_the_destination_are_not_retried() {
+        // 1176 / 1177 can leave the destination deleted or renamed.
+        for code in [1176, 1177] {
+            let calls = Cell::new(0);
+            let result = retry_with(
+                || {
+                    calls.set(calls.get() + 1);
+                    Err(io::Error::from_raw_os_error(code))
+                },
+                true,
+                |_| panic!("must not sleep for code {code}"),
+            );
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(code));
+            assert_eq!(calls.get(), 1);
+        }
     }
 
     #[test]
