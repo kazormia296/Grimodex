@@ -105,6 +105,17 @@ impl Fixture {
     }
 
     fn with_extra_relation(direction: &str, extra_relation: bool) -> Result<Self> {
+        Self::build(direction, extra_relation, &[])
+    }
+
+    /// Root Scenes ordered after the fixture's own reading order. Scenes are
+    /// part of the live Scope authority, so they precede the typed Revision
+    /// that records it; pins may be added until registration.
+    fn with_scenes(scenes: &[String]) -> Result<Self> {
+        Self::build("directed", false, scenes)
+    }
+
+    fn build(direction: &str, extra_relation: bool, scenes: &[String]) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-c-graph-{}", uuid::Uuid::new_v4())),
         );
@@ -124,6 +135,14 @@ impl Fixture {
                      (id,project_id,from_codex_id,to_codex_id,relation_type,directionality,version,updated_at)
                      VALUES ('nir1-edge-b','default-project','nir1-alice','nir1-bob','related',?1,1,'2026-09-12T00:00:00Z')",
                     [direction],
+                )?;
+            }
+            for (index, scene) in scenes.iter().enumerate() {
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, node_type, title, content, sort_order, updated_at)
+                     VALUES (?1, ?2, 'scene', 'Pinned', '{}', ?3, '2026-10-13T00:00:00.000Z')",
+                    params![scene, PROJECT, format!("z{index:04}")],
                 )?;
             }
             Ok(())
@@ -174,6 +193,51 @@ impl Fixture {
     fn registered_reader(&self) -> Result<Nir1GraphReader> {
         let mut reader = self.reader()?;
         assert!(reader.register_with_control(PROJECT, &mut RegistrationOwner)?);
+        Ok(reader)
+    }
+
+    fn add_pins(&self, pins: &[(&str, &str)]) -> Result<()> {
+        self.authority.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            for (scene, entry) in pins {
+                tx.execute(
+                    "INSERT INTO scene_codex_pins (scene_id, entry_id, created_at)
+                     VALUES (?1, ?2, '2026-10-13T00:00:01.000Z')",
+                    params![scene, entry],
+                )?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// The isolated worker's reader state over the authority connection,
+    /// prepared as the worker binary prepares it. The connection is then
+    /// query-only, so fixture writes must precede this call.
+    fn worker_reader(&self) -> Result<Nir1GraphReader> {
+        self.authority.db().with_conn(|conn| {
+            conn.busy_timeout(Duration::ZERO)?;
+            conn.execute_batch(
+                "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
+                 CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
+                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
+                 );",
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
+                [uuid::Uuid::new_v4().to_string()],
+            )?;
+            conn.execute_batch("PRAGMA query_only=ON")?;
+            Ok(())
+        })?;
+        let mut reader = Nir1GraphReader::open_for_worker(
+            Arc::clone(&self.authority),
+            self.lifecycle.begin_workspace_participant()?,
+        )?;
+        ensure!(
+            reader.register_with_worker_maintenance(PROJECT, || true)?,
+            "worker registration was refused"
+        );
         Ok(reader)
     }
 
@@ -1633,6 +1697,42 @@ fn q2_gold_scope_value(
     Ok(())
 }
 
+/// The C-resource fixtures query seed-only Graphs: one node, no edges and,
+/// without a reached Entity, no Scene association.
+fn seed_only_frame_graph<'a>(
+    frame: &super::worker_frame::FrameView<'a>,
+    project: &str,
+    query_scene: &str,
+    seed: &str,
+) -> Result<super::worker_frame::GraphView<'a>> {
+    assert_eq!(frame.project(), project);
+    assert_eq!(frame.query_scene(), query_scene);
+    let graph = *frame
+        .graph()
+        .ok_or_else(|| anyhow::anyhow!("seed-only worker frame was unavailable"))?;
+    assert_eq!(graph.seed(), seed);
+    assert!(!graph.scope_revision().is_empty());
+    assert!(graph.generation() > 0);
+    assert_eq!((graph.node_count(), graph.edge_count()), (1, 0));
+    assert_eq!(
+        (graph.scene_count(), graph.diagnostic_scene_total()),
+        (0, 0)
+    );
+    Ok(graph)
+}
+
+/// The only record of a one-record typed projection.
+fn single_record<T>(mut records: impl Iterator<Item = Result<T>>) -> Result<T> {
+    let record = records
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("typed projection is empty"))??;
+    ensure!(
+        records.next().is_none(),
+        "typed projection has more than one record"
+    );
+    Ok(record)
+}
+
 fn canonical_single_node_gold_frame(
     project: &str,
     query_scene: &str,
@@ -1644,7 +1744,7 @@ fn canonical_single_node_gold_frame(
         entity.evidence.len() == 1,
         "official single-node Gold must have one Evidence"
     );
-    let mut frame = b"NQG1".to_vec();
+    let mut frame = b"NQG2".to_vec();
     frame.push(1);
     q2_gold_text(&mut frame, project)?;
     q2_gold_text(&mut frame, query_scene)?;
@@ -1688,6 +1788,9 @@ fn canonical_single_node_gold_frame(
     ] {
         q2_gold_text(&mut frame, value)?;
     }
+    // A seed-only Graph reaches no Entity: scene_total 0 and scene_count 0.
+    frame.extend_from_slice(&0_u16.to_le_bytes());
+    frame.extend_from_slice(&0_u16.to_le_bytes());
     Ok(frame)
 }
 
@@ -3449,11 +3552,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             );
             {
                 let frame = lease.frame()?;
-                assert_eq!(frame.project, PROJECT);
-                assert_eq!(frame.scene, QUERY_SCENE);
-                assert_eq!(frame.seed, Some(ENTITY));
-                assert_eq!(frame.node_count, 1);
-                assert_eq!(frame.edge_count, 0);
+                seed_only_frame_graph(&frame, PROJECT, QUERY_SCENE, ENTITY)?;
             }
             ensure!(
                 authority.claim_c_query_child().is_none(),
@@ -3659,11 +3758,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             );
             {
                 let frame = lease.frame()?;
-                assert_eq!(frame.project, PROJECT);
-                assert_eq!(frame.scene, QUERY_SCENE);
-                assert_eq!(frame.seed, Some(ENTITY));
-                assert_eq!(frame.node_count, 1);
-                assert_eq!(frame.edge_count, 0);
+                seed_only_frame_graph(&frame, PROJECT, QUERY_SCENE, ENTITY)?;
             }
             lease.wait_for_child_exit_code_for_test(23)?;
             ensure!(
@@ -3729,16 +3824,8 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         }
         {
             let frame = lease.frame()?;
-            assert_eq!(frame.project, PROJECT);
-            assert_eq!(frame.scene, QUERY_SCENE);
-            assert_eq!(frame.seed, Some(ENTITY));
-            assert!(frame.scope.is_some_and(|scope| !scope.is_empty()));
-            assert!(frame.generation.is_some_and(|generation| generation > 0));
-            assert_eq!(frame.node_count, 1);
-            assert_eq!(frame.edge_count, 0);
-            let node = frame
-                .first_node
-                .ok_or_else(|| anyhow::anyhow!("Q2 worker node missing"))?;
+            let graph = seed_only_frame_graph(&frame, PROJECT, QUERY_SCENE, ENTITY)?;
+            let node = single_record(graph.nodes())?;
             assert_eq!(node.hop, 0);
             assert_eq!(node.entity.id, ENTITY);
             assert_eq!(node.entity.kind, "character");
@@ -3748,22 +3835,17 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 format!("codex:{ENTITY}@2026-09-17T00:00:00Z")
             );
             assert!(
-                matches!(node.entity.reading, super::worker_frame::ScopeView::Exact(value) if value == format!("scene:{SOURCE_SCENE}"))
+                matches!(node.entity.scope.reading, super::worker_frame::ScopeView::Exact(value) if value == format!("scene:{SOURCE_SCENE}"))
             );
-            assert_eq!(node.entity.evidence_count, 1);
-            let evidence = node
-                .entity
-                .first_evidence
-                .ok_or_else(|| anyhow::anyhow!("Q2 worker evidence missing"))?;
+            assert_eq!(node.entity.evidence_count(), 1);
+            let evidence = single_record(node.entity.evidence())?;
             assert_eq!(evidence.id, format!("nir1:capacity:evidence:0:{ENTITY}"));
             assert_eq!(evidence.source, format!("codex:{ENTITY}"));
             assert_eq!(evidence.quote, format!("fixture source {ENTITY} 日本語"));
             assert_eq!(evidence.start, 0);
             assert_eq!(evidence.end as usize, evidence.quote.encode_utf16().count());
-            assert_eq!(node.binding_count, 1);
-            let binding = node
-                .first_binding
-                .ok_or_else(|| anyhow::anyhow!("Q2 worker binding missing"))?;
+            assert_eq!(node.binding_count(), 1);
+            let binding = single_record(node.bindings())?;
             assert_eq!(binding.revision_id, revision);
             assert!(!binding.decision_id.is_empty());
         }
@@ -3823,11 +3905,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         );
         {
             let frame = lease.frame()?;
-            assert_eq!(frame.project, PROJECT);
-            assert_eq!(frame.scene, QUERY_SCENE);
-            assert_eq!(frame.seed, Some(ENTITY));
-            assert_eq!(frame.node_count, 1);
-            assert_eq!(frame.edge_count, 0);
+            seed_only_frame_graph(&frame, PROJECT, QUERY_SCENE, ENTITY)?;
         }
         drop(lease);
         ensure!(
@@ -4613,15 +4691,8 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                 );
             }
             let frame = lease.frame()?;
-            assert_eq!(frame.project, PROJECT);
-            assert_eq!(frame.scene, QUERY_SCENE);
-            assert_eq!(frame.seed, Some(SEED));
-            assert!(frame.scope.is_some_and(|scope| !scope.is_empty()));
-            assert!(frame.generation.is_some_and(|generation| generation > 0));
-            assert_eq!((frame.node_count, frame.edge_count), (1, 0));
-            let node = frame
-                .first_node
-                .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted its node"))?;
+            let graph = seed_only_frame_graph(&frame, PROJECT, QUERY_SCENE, SEED)?;
+            let node = single_record(graph.nodes())?;
             assert_eq!(node.hop, 0);
             assert_eq!(node.entity.id, SEED);
             assert_eq!(node.entity.kind, "character");
@@ -4631,24 +4702,19 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                 format!("codex:{SEED}@2026-09-17T00:00:00Z")
             );
             assert!(matches!(
-                node.entity.reading,
+                node.entity.scope.reading,
                 super::worker_frame::ScopeView::Exact(value)
                     if value == "scene:nir1-capacity-scene"
             ));
-            assert_eq!(node.entity.evidence_count, 1);
-            let evidence = node
-                .entity
-                .first_evidence
-                .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted Evidence"))?;
+            assert_eq!(node.entity.evidence_count(), 1);
+            let evidence = single_record(node.entity.evidence())?;
             assert_eq!(evidence.id, format!("nir1:capacity:evidence:shared:{SEED}"));
             assert_eq!(evidence.source, format!("codex:{SEED}"));
             assert_eq!(evidence.quote, format!("fixture source {SEED} 日本語"));
             assert_eq!(evidence.start, 0);
             assert_eq!(evidence.end as usize, evidence.quote.encode_utf16().count());
-            assert_eq!(node.binding_count, 1);
-            let binding = node
-                .first_binding
-                .ok_or_else(|| anyhow::anyhow!("Q512 worker projection omitted its binding"))?;
+            assert_eq!(node.binding_count(), 1);
+            let binding = single_record(node.bindings())?;
             assert_eq!(binding.revision_id, revision_id);
             assert_eq!(binding.decision_id, decision_id);
         }
@@ -4959,9 +5025,16 @@ fn exhausted_deadline_or_sql_budget_rolls_back_actual_connection() -> Result<()>
 
 #[test]
 fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
+    let reason = |site, error: &anyhow::Error, deadline, steps, status| {
+        let reason = worker_refusal_reason(site, error, deadline, steps, status);
+        let text = reason.to_string();
+        // Every composed reason round-trips through the frame allowlist.
+        assert_eq!(UnavailableReason::parse(&text), Some(reason), "{text}");
+        text
+    };
     let deadline = validation_terminated(ValidationTerminationReason::TimedOut, "private detail");
     assert_eq!(
-        worker_refusal_reason(WorkerRefusalSite::Work, &deadline, false, false, None),
+        reason(WorkerSite::Work, &deadline, false, false, None),
         "query-worker-work-deadline"
     );
 
@@ -4970,11 +5043,11 @@ fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
         "private detail",
     );
     assert_eq!(
-        worker_refusal_reason(WorkerRefusalSite::PostStamp, &capacity, false, true, None),
+        reason(WorkerSite::PostStamp, &capacity, false, true, None),
         "query-worker-post-stamp-steps"
     );
     assert_eq!(
-        worker_refusal_reason(WorkerRefusalSite::Work, &capacity, true, true, None),
+        reason(WorkerSite::Work, &capacity, true, true, None),
         "query-worker-work-deadline-or-steps"
     );
 
@@ -4983,7 +5056,7 @@ fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
         "private detail",
     );
     assert_eq!(
-        worker_refusal_reason(WorkerRefusalSite::PostStamp, &known, false, false, None),
+        reason(WorkerSite::PostStamp, &known, false, false, None),
         "query-worker-post-stamp-validation-workspace-generation-changed"
     );
     let sqlite_nomem: anyhow::Error = rusqlite::Error::SqliteFailure(
@@ -4992,18 +5065,18 @@ fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
     )
     .into();
     assert_eq!(
-        worker_refusal_reason(WorkerRefusalSite::Work, &sqlite_nomem, false, false, None),
+        reason(WorkerSite::Work, &sqlite_nomem, false, false, None),
         "query-worker-work-sqlite-nomem"
     );
     let record_limit = anyhow::anyhow!("NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT");
     assert_eq!(
-        worker_refusal_reason(WorkerRefusalSite::Work, &record_limit, false, false, None),
+        reason(WorkerSite::Work, &record_limit, false, false, None),
         "query-worker-work-disclosure-record-limit"
     );
     let record_status = worker_work_status(&Err::<(), _>(record_limit), false, false);
     assert_eq!(
-        worker_refusal_reason(
-            WorkerRefusalSite::Work,
+        reason(
+            WorkerSite::Work,
             &anyhow::anyhow!("NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT"),
             false,
             false,
@@ -5011,9 +5084,42 @@ fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
         ),
         "query-worker-work-disclosure-record-limit-pre-cleanup-work-failed-disclosure-record-limit"
     );
+    // A Scene-join resource refusal, even through a shared QueryUsage
+    // marker, is `scene-limit`; steps keep their typed cause.
+    let scene_limit = scene_join_failure(anyhow::anyhow!("NIR1_GRAPH_QUERY_RESOURCE_LIMIT"));
+    let scene_status = worker_work_status(&Err::<(), _>(scene_limit), false, false);
+    assert_eq!(
+        scene_status,
+        PreCleanup::WorkFailed(WorkerCause::SceneLimit)
+    );
+    assert_eq!(
+        reason(
+            WorkerSite::Work,
+            &scene_join_failure(anyhow::anyhow!("NIR1_GRAPH_SCENE_PIN_LIMIT")),
+            false,
+            false,
+            Some(scene_status),
+        ),
+        "query-worker-work-scene-limit-pre-cleanup-work-failed-scene-limit"
+    );
+    let scene_steps = scene_join_failure(validation_terminated(
+        ValidationTerminationReason::CapacityExceeded,
+        "private detail",
+    ));
+    assert_eq!(
+        reason(WorkerSite::Work, &scene_steps, false, true, None),
+        "query-worker-work-steps"
+    );
+    assert_eq!(
+        UnavailableReason::parse(
+            "query-worker-work-scene-limit-pre-cleanup-work-failed-scene-limit"
+        )
+        .map(UnavailableReason::category),
+        Some(super::worker_frame::UnavailableCategory::Limit)
+    );
     let other = anyhow::anyhow!("private detail");
     assert_eq!(
-        worker_refusal_reason(WorkerRefusalSite::Work, &other, false, false, None),
+        reason(WorkerSite::Work, &other, false, false, None),
         "query-worker-work-other"
     );
     let generic_unavailable = unavailable_response(&graph_request("seed"), "reader-unavailable");
@@ -5026,13 +5132,7 @@ fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
     let success = Ok::<(), anyhow::Error>(());
     let work_ok = worker_work_status(&success, false, false);
     assert_eq!(
-        worker_refusal_reason(
-            WorkerRefusalSite::PostStamp,
-            &deadline,
-            true,
-            false,
-            Some(work_ok),
-        ),
+        reason(WorkerSite::PostStamp, &deadline, true, false, Some(work_ok),),
         "query-worker-post-stamp-deadline-pre-cleanup-work-ok"
     );
 
@@ -5042,8 +5142,8 @@ fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
     ));
     let work_failed = worker_work_status(&failure, false, true);
     assert_eq!(
-        worker_refusal_reason(
-            WorkerRefusalSite::PostStamp,
+        reason(
+            WorkerSite::PostStamp,
             &deadline,
             true,
             false,
@@ -5054,8 +5154,8 @@ fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
 
     let late_work = worker_work_status(&success, true, false);
     assert_eq!(
-        worker_refusal_reason(
-            WorkerRefusalSite::PostStamp,
+        reason(
+            WorkerSite::PostStamp,
             &deadline,
             true,
             false,
@@ -5121,5 +5221,1367 @@ fn cancellation_is_sticky_and_close_releases_physical_connection_and_participant
         .query(&graph_request("nir1-alice"))
         .expect_err("a closed reader must refuse queries");
     assert!(error.to_string().contains("NIR1_GRAPH_READER_CLOSED"));
+    Ok(())
+}
+
+// CP-1: the worker-side Scene pin join. Synthetic paths run against the real
+// schema; the join reads only Codex entries, Scenes, pins and A1 bindings.
+
+const SCENE_UPDATED_AT: &str = "2026-10-13T00:00:00.000Z";
+const PIN_CREATED_AT: &str = "2026-10-13T00:00:01.000Z";
+
+fn synthetic_entity(id: &str) -> Arc<EntityInput> {
+    Arc::new(EntityInput {
+        entity_id: id.into(),
+        entity_type: "character".into(),
+        label: id.into(),
+        source_token: format!("codex:{id}@v1"),
+        scope: grimodex_core::narrative_nir1::ScopeBinding {
+            reading: ScopeValue::LegacyAbsent,
+            story: ScopeValue::LegacyAbsent,
+            auto: ScopeValue::LegacyAbsent,
+            phase: "draft".into(),
+            reveal: "visible".into(),
+            pov: None,
+            authority_revision: "scope-authority".into(),
+        },
+        evidence: Vec::new(),
+    })
+}
+
+fn synthetic_binding() -> Arc<Nir1GraphMaterialBinding> {
+    Arc::new(Nir1GraphMaterialBinding {
+        revision_id: "revision".into(),
+        decision_id: "decision".into(),
+        decision_token: "decision-token".into(),
+        freshness_token: "freshness-token".into(),
+        scope_authority_revision: "scope-authority".into(),
+        query_scene_source_token: "v0@query".into(),
+        query_scene_scope_token: "query-scope".into(),
+        query_scene_incarnation_id: "query-incarnation".into(),
+        reveal_state_token: "reveal".into(),
+    })
+}
+
+fn synthetic_node(id: &str, hop: u8) -> Nir1GraphNode {
+    Nir1GraphNode {
+        entity: synthetic_entity(id),
+        hop,
+        bindings: vec![synthetic_binding()],
+    }
+}
+
+fn synthetic_edge(edge_id: &str, from: &str, to: &str, directionality: &str) -> Nir1GraphEdge {
+    Nir1GraphEdge {
+        relation: Arc::new(GraphEdgeInput {
+            edge_id: edge_id.into(),
+            from_entity_id: from.into(),
+            to_entity_id: to.into(),
+            relation_type: "knows".into(),
+            directionality: directionality.into(),
+            source_token: format!("v1@{edge_id}"),
+            evidence_ids: Vec::new(),
+        }),
+        from: synthetic_entity(from),
+        to: synthetic_entity(to),
+        binding: synthetic_binding(),
+    }
+}
+
+/// Seed s and one reached Entity x.
+fn one_hop_graph() -> (Vec<Nir1GraphNode>, Vec<Nir1GraphEdge>) {
+    (
+        vec![synthetic_node("s", 0), synthetic_node("x", 1)],
+        vec![synthetic_edge("e-sx", "s", "x", "directed")],
+    )
+}
+
+/// b ranks before a (e-1 < e-2); c is at hop 2 through both, and its
+/// minimum path starts with the smaller first edge, through b.
+fn ranked_graph() -> (Vec<Nir1GraphNode>, Vec<Nir1GraphEdge>) {
+    (
+        vec![
+            synthetic_node("s", 0),
+            synthetic_node("a", 1),
+            synthetic_node("b", 1),
+            synthetic_node("c", 2),
+        ],
+        vec![
+            synthetic_edge("e-2", "s", "a", "directed"),
+            synthetic_edge("e-1", "s", "b", "directed"),
+            synthetic_edge("e-3", "a", "c", "directed"),
+            synthetic_edge("e-4", "b", "c", "directed"),
+        ],
+    )
+}
+
+fn pin_workspace(entities: &[&str]) -> Result<crate::Database> {
+    let db = crate::Database::new(std::path::Path::new(":memory:"))?;
+    db.migrate()?;
+    db.with_conn(|conn| {
+        for entity in entities {
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
+                 VALUES (?1, ?2, 'character', ?1, ?1, '2026-10-13T00:00:00Z')",
+                params![entity, PROJECT],
+            )?;
+        }
+        Ok(())
+    })?;
+    Ok(db)
+}
+
+/// Pins in the given order; each new Scene is a live root Scene.
+fn add_scene_pins(db: &crate::Database, pins: &[(&str, &str)]) -> Result<()> {
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        for (scene, entry) in pins {
+            tx.execute(
+                "INSERT OR IGNORE INTO tree_nodes
+                    (id, project_id, node_type, title, content, sort_order, updated_at)
+                 VALUES (?1, ?2, 'scene', 'Pinned', '{}', 'z0', ?3)",
+                params![scene, PROJECT, SCENE_UPDATED_AT],
+            )?;
+            tx.execute(
+                "INSERT INTO scene_codex_pins (scene_id, entry_id, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![scene, entry, PIN_CREATED_AT],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    })
+}
+
+fn run_join(
+    db: &crate::Database,
+    nodes: &[Nir1GraphNode],
+    edges: &[Nir1GraphEdge],
+    usage: &mut QueryUsage,
+    control: &mut dyn GraphWorkControl,
+) -> Result<(usize, Vec<Nir1GraphSceneAssociation>)> {
+    db.with_read_transaction(|conn| {
+        join_scene_pins(conn, &graph_request("s"), nodes, edges, usage, control)
+    })
+}
+
+fn join(
+    db: &crate::Database,
+    nodes: &[Nir1GraphNode],
+    edges: &[Nir1GraphEdge],
+) -> Result<(usize, Vec<Nir1GraphSceneAssociation>, QueryUsage)> {
+    let mut usage = QueryUsage::default();
+    let (total, scenes) = run_join(db, nodes, edges, &mut usage, &mut RegistrationOwner)?;
+    Ok((total, scenes, usage))
+}
+
+type SceneTuple = (String, String, Vec<String>);
+
+/// (Scene, representative Entity, traversal-order edge IDs).
+fn scene_tuples(scenes: &[Nir1GraphSceneAssociation], edges: &[Nir1GraphEdge]) -> Vec<SceneTuple> {
+    scenes
+        .iter()
+        .map(|scene| {
+            (
+                scene.scene_id.clone(),
+                scene.pin_entry_id.clone(),
+                scene
+                    .path_edge_indices
+                    .iter()
+                    .map(|index| edges[usize::from(*index)].relation.edge_id.clone())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn scene_tuple(scene: &str, entry: &str, path: &[&str]) -> SceneTuple {
+    (
+        scene.into(),
+        entry.into(),
+        path.iter().map(|edge| (*edge).to_owned()).collect(),
+    )
+}
+
+fn scene_ids(count: usize) -> Vec<String> {
+    (0..count)
+        .map(|index| format!("scene-{index:03}"))
+        .collect()
+}
+
+/// The worker's cause once query_in_snapshot marks a join failure.
+fn join_failure_cause(error: anyhow::Error) -> WorkerCause {
+    worker_refusal_cause(&scene_join_failure(error), false, false)
+}
+
+#[test]
+fn reached_entity_rank_orders_hop_then_edge_ids_then_entity() -> Result<()> {
+    // c and d share their only edge ID (one Relation in two Revisions), so
+    // the Entity ID decides; the seed itself is never ranked.
+    let nodes = vec![
+        synthetic_node("s", 0),
+        synthetic_node("a", 1),
+        synthetic_node("b", 1),
+        synthetic_node("c", 1),
+        synthetic_node("d", 1),
+        synthetic_node("z", 2),
+    ];
+    let edges = vec![
+        synthetic_edge("e-2", "s", "a", "directed"),
+        synthetic_edge("e-1", "s", "b", "directed"),
+        synthetic_edge("e-3", "s", "d", "directed"),
+        synthetic_edge("e-3", "s", "c", "directed"),
+        synthetic_edge("e-0", "a", "z", "directed"),
+    ];
+    let ranked = rank_reached_entities("s", &nodes, &edges)?;
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|entity| (entity.entity_id, entity.hop, entity.path().to_vec()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("b", 1, vec![1]),
+            ("a", 1, vec![0]),
+            ("c", 1, vec![3]),
+            ("d", 1, vec![2]),
+            ("z", 2, vec![0, 4]),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn representative_path_uses_byte_order_and_frame_index_tie_break() -> Result<()> {
+    let nodes = vec![
+        synthetic_node("s", 0),
+        synthetic_node("x", 1),
+        synthetic_node("y", 1),
+        synthetic_node("w", 1),
+        synthetic_node("z", 2),
+    ];
+    let edges = vec![
+        synthetic_edge("e-b", "s", "x", "directed"),
+        synthetic_edge("e-a", "s", "x", "directed"),
+        // The same Relation ID in two Revisions: the lower frame index wins.
+        synthetic_edge("e-y", "s", "y", "directed"),
+        synthetic_edge("e-y", "s", "y", "directed"),
+        // U+FF5E precedes U+1F600 in UTF-8 bytes, not in UTF-16 units.
+        synthetic_edge("\u{1F600}", "s", "w", "directed"),
+        synthetic_edge("\u{FF5E}", "s", "w", "directed"),
+        synthetic_edge("e-z2", "y", "z", "directed"),
+        synthetic_edge("e-z1", "x", "z", "directed"),
+    ];
+    let ranked = rank_reached_entities("s", &nodes, &edges)?;
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|entity| (entity.entity_id, entity.path().to_vec()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("x", vec![1]),
+            ("y", vec![2]),
+            ("w", vec![5]),
+            // (e-a, e-z1) through x precedes (e-y, e-z2) through y.
+            ("z", vec![1, 7]),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn symmetric_edges_traverse_both_ways_for_paths() -> Result<()> {
+    // y is reached through a symmetric edge stored as y->s; the smaller
+    // directed y->s edge is not traversable from the seed.
+    let nodes = vec![
+        synthetic_node("s", 0),
+        synthetic_node("y", 1),
+        synthetic_node("z", 2),
+    ];
+    let edges = vec![
+        synthetic_edge("e-1", "y", "s", "symmetric"),
+        synthetic_edge("e-0", "y", "s", "directed"),
+        synthetic_edge("e-2", "z", "y", "symmetric"),
+    ];
+    let ranked = rank_reached_entities("s", &nodes, &edges)?;
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|entity| (entity.entity_id, entity.path().to_vec()))
+            .collect::<Vec<_>>(),
+        vec![("y", vec![0]), ("z", vec![0, 2])]
+    );
+    // A reached Entity without a traversable path fails closed.
+    let error = rank_reached_entities("s", &nodes[..2], &edges[1..2])
+        .expect_err("a hop-1 node needs an edge from the seed");
+    assert!(error.to_string().contains("NIR1_GRAPH_SCENE_PATH_MISSING"));
+    Ok(())
+}
+
+#[test]
+fn scene_join_enumerates_zero_sixteen_and_seventeen_pins_across_keyset_pages() -> Result<()> {
+    let (nodes, edges) = one_hop_graph();
+    for (pins, pages) in [(0usize, 1usize), (16, 2), (17, 2)] {
+        let db = pin_workspace(&["s", "x"])?;
+        let scenes = scene_ids(pins);
+        add_scene_pins(
+            &db,
+            &scenes
+                .iter()
+                .map(|scene| (scene.as_str(), "x"))
+                .collect::<Vec<_>>(),
+        )?;
+        let (total, associations, usage) = join(&db, &nodes, &edges)?;
+        let returned = pins.min(MAX_GRAPH_SCENES);
+        assert_eq!((total, usage.pages), (pins, pages), "{pins} pins");
+        // Every pin row and each returned Scene row is admitted.
+        assert_eq!(usage.rows, pins + returned, "{pins} pins");
+        assert_eq!(
+            scene_tuples(&associations, &edges),
+            scenes[..returned]
+                .iter()
+                .map(|scene| scene_tuple(scene, "x", &["e-sx"]))
+                .collect::<Vec<_>>()
+        );
+        for association in &associations {
+            assert!(association.pin_rowid > 0);
+            assert_eq!(association.pin_created_at, PIN_CREATED_AT);
+            assert_eq!(
+                association.scene_source_token,
+                format!("v0@{SCENE_UPDATED_AT}")
+            );
+            assert_eq!(
+                (
+                    &association.scene_incarnation_id,
+                    &association.scene_scope_token
+                ),
+                (&None, &None)
+            );
+            assert_eq!(association.path_hop, 1);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn scene_join_reads_a1_binding_tokens_for_bound_scenes() -> Result<()> {
+    let (nodes, edges) = one_hop_graph();
+    let db = pin_workspace(&["s", "x"])?;
+    add_scene_pins(&db, &[("bound", "x"), ("unbound", "x")])?;
+    db.with_conn(|conn| {
+        crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+            conn,
+            PROJECT,
+            "bound",
+            SCENE_UPDATED_AT,
+        )
+    })?;
+    let (incarnation, scope): (String, String) = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT scene_incarnation_id, source_token FROM narrative_scene_scope_bindings
+              WHERE project_id=?1 AND scene_id='bound'",
+            [PROJECT],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    })?;
+    let (total, associations, usage) = join(&db, &nodes, &edges)?;
+    assert_eq!(total, 2);
+    assert_eq!(associations[0].scene_id, "bound");
+    assert_eq!(
+        associations[0].scene_incarnation_id.as_deref(),
+        Some(incarnation.as_str())
+    );
+    assert_eq!(
+        associations[0].scene_scope_token.as_deref(),
+        Some(scope.as_str())
+    );
+    assert_eq!(
+        (
+            &associations[1].scene_incarnation_id,
+            &associations[1].scene_scope_token
+        ),
+        (&None, &None)
+    );
+    // Two pins, two Scene rows and one binding row.
+    assert_eq!(usage.rows, 5);
+    Ok(())
+}
+
+#[test]
+fn scene_join_excludes_seed_pins() -> Result<()> {
+    let (nodes, edges) = one_hop_graph();
+    let db = pin_workspace(&["s", "x"])?;
+    add_scene_pins(
+        &db,
+        &[
+            ("seed-only", "s"),
+            ("shared", "s"),
+            ("shared", "x"),
+            ("x-only", "x"),
+        ],
+    )?;
+    let (total, associations, usage) = join(&db, &nodes, &edges)?;
+    assert_eq!(total, 2);
+    assert_eq!(
+        scene_tuples(&associations, &edges),
+        vec![
+            scene_tuple("shared", "x", &["e-sx"]),
+            scene_tuple("x-only", "x", &["e-sx"]),
+        ]
+    );
+    // Only the reached Entity's page is read.
+    assert_eq!(usage.pages, 1);
+
+    // A seed-only Graph contributes nothing and reads no pin.
+    let (total, associations, usage) = join(&db, &nodes[..1], &[])?;
+    assert_eq!(
+        (total, associations.len(), usage.rows, usage.pages),
+        (0, 0, 0, 0)
+    );
+    Ok(())
+}
+
+#[test]
+fn scene_join_dedups_each_scene_to_its_minimum_tuple() -> Result<()> {
+    let (nodes, edges) = ranked_graph();
+    let db = pin_workspace(&["s", "a", "b", "c"])?;
+    // Inserted against the tuple order.
+    add_scene_pins(
+        &db,
+        &[
+            ("all", "c"),
+            ("all", "a"),
+            ("all", "b"),
+            ("a-and-c", "c"),
+            ("a-and-c", "a"),
+            ("c-only", "c"),
+        ],
+    )?;
+    let (total, associations, _) = join(&db, &nodes, &edges)?;
+    assert_eq!(total, 3);
+    assert_eq!(
+        scene_tuples(&associations, &edges),
+        vec![
+            scene_tuple("all", "b", &["e-1"]),
+            scene_tuple("a-and-c", "a", &["e-2"]),
+            scene_tuple("c-only", "c", &["e-1", "e-4"]),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn scene_join_orders_scene_ids_by_utf8_bytes() -> Result<()> {
+    let (nodes, edges) = one_hop_graph();
+    let db = pin_workspace(&["s", "x"])?;
+    add_scene_pins(
+        &db,
+        &[
+            ("\u{1F600}", "x"),
+            ("\u{FF5E}", "x"),
+            ("a", "x"),
+            ("Z", "x"),
+        ],
+    )?;
+    let (_, associations, _) = join(&db, &nodes, &edges)?;
+    assert_eq!(
+        associations
+            .iter()
+            .map(|scene| scene.scene_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Z", "a", "\u{FF5E}", "\u{1F600}"]
+    );
+    Ok(())
+}
+
+#[test]
+fn scene_join_truncates_to_eight_and_reports_scene_total() -> Result<()> {
+    let (nodes, edges) = one_hop_graph();
+    let db = pin_workspace(&["s", "x"])?;
+    let scenes = scene_ids(10);
+    // Reverse insertion: rowid order differs from the byte order.
+    add_scene_pins(
+        &db,
+        &scenes
+            .iter()
+            .rev()
+            .map(|scene| (scene.as_str(), "x"))
+            .collect::<Vec<_>>(),
+    )?;
+    let (total, associations, usage) = join(&db, &nodes, &edges)?;
+    assert_eq!(total, 10);
+    assert_eq!(
+        associations
+            .iter()
+            .map(|scene| scene.scene_id.clone())
+            .collect::<Vec<_>>(),
+        scenes[..MAX_GRAPH_SCENES].to_vec()
+    );
+    // Tokens are read only for the returned eight.
+    assert_eq!(usage.rows, 10 + MAX_GRAPH_SCENES);
+    Ok(())
+}
+
+#[test]
+fn scene_join_budget_is_graph_wide_not_per_entity() -> Result<()> {
+    let nodes = vec![
+        synthetic_node("s", 0),
+        synthetic_node("x", 1),
+        synthetic_node("y", 1),
+    ];
+    let edges = vec![
+        synthetic_edge("e-x", "s", "x", "directed"),
+        synthetic_edge("e-y", "s", "y", "directed"),
+    ];
+    let db = pin_workspace(&["s", "x", "y"])?;
+    let pins = (0..9)
+        .flat_map(|index| [(format!("x-{index}"), "x"), (format!("y-{index}"), "y")])
+        .collect::<Vec<_>>();
+    add_scene_pins(
+        &db,
+        &pins
+            .iter()
+            .map(|(scene, entry)| (scene.as_str(), *entry))
+            .collect::<Vec<_>>(),
+    )?;
+    let (total, _, fresh) = join(&db, &nodes, &edges)?;
+    assert_eq!((total, fresh.rows), (18, 18 + MAX_GRAPH_SCENES));
+    // Each Entity's nine pins fit in 15 rows; together they do not.
+    let mut usage = QueryUsage {
+        rows: MAX_GRAPH_RECORDS - 15,
+        ..QueryUsage::default()
+    };
+    let error = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)
+        .expect_err("the shared remainder covers both Entities");
+    assert_eq!(join_failure_cause(error), WorkerCause::SceneLimit);
+    Ok(())
+}
+
+#[test]
+fn scene_join_rows_n_available_n_plus_one_limit() -> Result<()> {
+    let (nodes, edges) = one_hop_graph();
+    let db = pin_workspace(&["s", "x"])?;
+    let scenes = scene_ids(20);
+    add_scene_pins(
+        &db,
+        &scenes
+            .iter()
+            .map(|scene| (scene.as_str(), "x"))
+            .collect::<Vec<_>>(),
+    )?;
+    let (_, expected, fresh) = join(&db, &nodes, &edges)?;
+    // Twenty pin rows and the eight returned Scene rows.
+    let needed = fresh.rows;
+    assert_eq!(needed, 20 + MAX_GRAPH_SCENES);
+    let mut usage = QueryUsage {
+        rows: MAX_GRAPH_RECORDS - needed,
+        ..QueryUsage::default()
+    };
+    let (total, associations) = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)?;
+    assert_eq!((total, associations), (20, expected));
+    assert_eq!(usage.rows, MAX_GRAPH_RECORDS);
+    let mut usage = QueryUsage {
+        rows: MAX_GRAPH_RECORDS - needed + 1,
+        ..QueryUsage::default()
+    };
+    let error = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)
+        .expect_err("one row over the shared remainder");
+    assert_eq!(join_failure_cause(error), WorkerCause::SceneLimit);
+    Ok(())
+}
+
+#[test]
+fn scene_join_pages_n_available_n_plus_one_limit() -> Result<()> {
+    let (nodes, edges) = one_hop_graph();
+    // Sixteen pins need one full page and the has-more probe; seventeen need
+    // a second page.
+    for (pins, pages_needed) in [(16usize, 1usize), (17, 2)] {
+        let db = pin_workspace(&["s", "x"])?;
+        let scenes = scene_ids(pins);
+        add_scene_pins(
+            &db,
+            &scenes
+                .iter()
+                .map(|scene| (scene.as_str(), "x"))
+                .collect::<Vec<_>>(),
+        )?;
+        let mut usage = QueryUsage {
+            pages: QUERY_MAX_PAGES - pages_needed,
+            ..QueryUsage::default()
+        };
+        let (total, _) = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)?;
+        assert_eq!((total, usage.pages), (pins, QUERY_MAX_PAGES), "{pins} pins");
+        let mut usage = QueryUsage {
+            pages: QUERY_MAX_PAGES - pages_needed + 1,
+            ..QueryUsage::default()
+        };
+        let error = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)
+            .expect_err("one page over the shared 32");
+        assert_eq!(
+            join_failure_cause(error),
+            WorkerCause::SceneLimit,
+            "{pins} pins"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn scene_join_bytes_exhaustion_is_limit() -> Result<()> {
+    let (nodes, edges) = one_hop_graph();
+    let db = pin_workspace(&["s", "x"])?;
+    add_scene_pins(&db, &[("scene-a", "x"), ("scene-b", "x"), ("scene-c", "x")])?;
+    let (_, expected, fresh) = join(&db, &nodes, &edges)?;
+    let needed = fresh.bytes;
+    assert!(needed > 0);
+    let mut usage = QueryUsage {
+        bytes: MAX_GRAPH_INPUT_BYTES - needed,
+        ..QueryUsage::default()
+    };
+    let (_, associations) = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)?;
+    assert_eq!(associations, expected);
+    assert_eq!(usage.bytes, MAX_GRAPH_INPUT_BYTES);
+    for mut usage in [
+        QueryUsage {
+            bytes: MAX_GRAPH_INPUT_BYTES - needed + 1,
+            ..QueryUsage::default()
+        },
+        // The retained ledger is the same shared budget.
+        QueryUsage {
+            retained_bytes: MAX_GRAPH_INPUT_BYTES,
+            ..QueryUsage::default()
+        },
+    ] {
+        let error = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)
+            .expect_err("bytes over the shared remainder");
+        assert_eq!(join_failure_cause(error), WorkerCause::SceneLimit);
+    }
+    Ok(())
+}
+
+#[test]
+fn scene_join_scene_section_n_available_n_plus_one_limit() -> Result<()> {
+    let without_id = super::worker_frame::SceneAssociationLengths {
+        scene_id: 0,
+        scene_incarnation_id: None,
+        scene_source_token: format!("v0@{SCENE_UPDATED_AT}").len(),
+        scene_scope_token: None,
+        pin_entry_id: "x".len(),
+        pin_created_at: PIN_CREATED_AT.len(),
+        path_edge_count: 1,
+    }
+    .encoded_bytes()
+    .expect("small association");
+    let exact = MAX_SCENE_SECTION_BYTES - SCENE_SECTION_HEADER_BYTES - without_id;
+    for (id_bytes, admitted) in [(exact, true), (exact + 1, false)] {
+        let (nodes, edges) = one_hop_graph();
+        let db = pin_workspace(&["s", "x"])?;
+        let scene = "s".repeat(id_bytes);
+        add_scene_pins(&db, &[(scene.as_str(), "x")])?;
+        let result = join(&db, &nodes, &edges);
+        if !admitted {
+            let Err(error) = result else {
+                panic!("the Scene section is one byte over its cap");
+            };
+            assert!(format!("{error:#}").contains("NIR1_GRAPH_SCENE_FRAME_LIMIT"));
+            assert_eq!(join_failure_cause(error), WorkerCause::SceneLimit);
+            continue;
+        }
+        let (scene_total, scenes, _) = result?;
+        // The worker's pre-check is the encoded size: the frame is exact.
+        let response = Nir1GraphResponse {
+            status: "available",
+            project_id: PROJECT.into(),
+            query_scene_id: "nir1".into(),
+            scope_revision: Some("scope-authority".into()),
+            graph: Some(Nir1QualifiedGraph {
+                seed_entity_id: "s".into(),
+                generation: 1,
+                nodes,
+                edges,
+                scene_total,
+                scenes,
+            }),
+            reason: None,
+        };
+        let frame = super::worker_frame::encode(&response)?;
+        let view = super::worker_frame::validate(&frame)?;
+        assert_eq!(view.graph().map(|graph| graph.scene_count()), Some(1));
+    }
+    Ok(())
+}
+
+/// Stops at the n-th owner check, as a cancellation or deadline would.
+struct StopAtCheck {
+    checks: usize,
+    stop_at: usize,
+}
+
+impl GraphWorkControl for StopAtCheck {
+    fn check(&mut self, _: GraphWorkStage) -> Result<()> {
+        self.checks += 1;
+        if self.checks == self.stop_at {
+            return Err(validation_terminated(
+                ValidationTerminationReason::Cancelled,
+                "test stop",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn scene_join_cancellation_returns_no_partial_result() -> Result<()> {
+    let (nodes, edges) = ranked_graph();
+    let db = pin_workspace(&["s", "a", "b", "c"])?;
+    let scenes = scene_ids(17);
+    add_scene_pins(
+        &db,
+        &scenes
+            .iter()
+            .map(|scene| (scene.as_str(), "c"))
+            .chain([("a-scene", "a"), ("b-scene", "b")])
+            .collect::<Vec<_>>(),
+    )?;
+    let mut complete = StopAtCheck {
+        checks: 0,
+        stop_at: usize::MAX,
+    };
+    let (total, _) = run_join(
+        &db,
+        &nodes,
+        &edges,
+        &mut QueryUsage::default(),
+        &mut complete,
+    )?;
+    assert_eq!(total, 19);
+    assert!(complete.checks > 19, "{}", complete.checks);
+    for stop_at in 1..=complete.checks {
+        let mut control = StopAtCheck { checks: 0, stop_at };
+        let error = run_join(
+            &db,
+            &nodes,
+            &edges,
+            &mut QueryUsage::default(),
+            &mut control,
+        )
+        .expect_err("a stopped join returns no result");
+        // A stop keeps its typed cause; it is never relabelled as a limit.
+        assert_eq!(
+            join_failure_cause(error),
+            WorkerCause::ValidationCancelled,
+            "check {stop_at}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn scene_join_never_reads_scene_body() -> Result<()> {
+    use rusqlite::hooks::{AuthAction, Authorization};
+
+    let (nodes, edges) = ranked_graph();
+    let db = pin_workspace(&["s", "a", "b", "c"])?;
+    add_scene_pins(&db, &[("scene-a", "a"), ("scene-c", "c")])?;
+    db.with_conn(|conn| {
+        crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+            conn,
+            PROJECT,
+            "scene-c",
+            SCENE_UPDATED_AT,
+        )
+    })?;
+    let reads = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let observed = Arc::clone(&reads);
+    db.with_conn(|conn| {
+        conn.authorizer(Some(move |context: rusqlite::hooks::AuthContext<'_>| {
+            if let AuthAction::Read {
+                table_name,
+                column_name,
+            } = context.action
+            {
+                observed
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((table_name.to_owned(), column_name.to_owned()));
+            }
+            Authorization::Allow
+        }))?;
+        Ok(())
+    })?;
+    let joined = join(&db, &nodes, &edges);
+    let control: Option<String> = db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT content FROM tree_nodes WHERE id='scene-a'",
+                [],
+                |row| row.get(0),
+            )
+            .ok())
+    })?;
+    db.with_conn(|conn| {
+        conn.authorizer(None::<fn(rusqlite::hooks::AuthContext<'_>) -> Authorization>)?;
+        Ok(())
+    })?;
+    let (total, associations, _) = joined?;
+    assert_eq!(total, 2);
+    assert!(associations[1].scene_scope_token.is_some());
+    assert!(control.is_some());
+    let reads = reads
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let content_reads = reads
+        .iter()
+        .filter(|(table, column)| table == "tree_nodes" && column == "content")
+        .count();
+    // Only the control statement after the join selected the body.
+    assert_eq!(content_reads, 1, "{reads:?}");
+    assert!(reads
+        .iter()
+        .any(|(table, column)| table == "scene_codex_pins" && column == "entry_id"));
+    assert!(reads.iter().any(
+        |(table, column)| table == "narrative_scene_scope_bindings" && column == "source_token"
+    ));
+    Ok(())
+}
+
+#[test]
+fn scene_join_steps_do_not_follow_unrelated_pins() -> Result<()> {
+    const UNRELATED_PINS: [usize; 3] = [0, 600, 6_000];
+    const UNRELATED_SCENES: usize = 100;
+    let (nodes, edges) = one_hop_graph();
+    // Unrelated Entities sort after the reached one, so every index seek may
+    // meet an unrelated key instead of the end of the index.
+    let unrelated = (0..UNRELATED_PINS[2] / UNRELATED_SCENES)
+        .map(|index| format!("zz-unrelated-{index:02}"))
+        .collect::<Vec<_>>();
+    let mut entities = vec!["s", "x"];
+    entities.extend(unrelated.iter().map(String::as_str));
+    let db = pin_workspace(&entities)?;
+    add_scene_pins(&db, &[("scene-a", "x"), ("scene-b", "x"), ("scene-c", "x")])?;
+    let mut measurements = Vec::new();
+    let mut added = 0;
+    for target in UNRELATED_PINS {
+        let pins = (added..target)
+            .map(|pin| {
+                (
+                    format!("unrelated-scene-{:03}", pin % UNRELATED_SCENES),
+                    unrelated[pin / UNRELATED_SCENES].as_str(),
+                )
+            })
+            .collect::<Vec<_>>();
+        add_scene_pins(
+            &db,
+            &pins
+                .iter()
+                .map(|(scene, entry)| (scene.as_str(), *entry))
+                .collect::<Vec<_>>(),
+        )?;
+        added = target;
+        let steps = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = Arc::clone(&steps);
+        let mut usage = QueryUsage::default();
+        let result = db.with_read_transaction(|conn| {
+            crate::set_sqlite_progress_handler(
+                conn,
+                1,
+                Some(move || {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    false
+                }),
+            )?;
+            let result = join_scene_pins(
+                conn,
+                &graph_request("s"),
+                &nodes,
+                &edges,
+                &mut usage,
+                &mut RegistrationOwner,
+            );
+            crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>)?;
+            result
+        })?;
+        measurements.push((
+            steps.load(Ordering::Relaxed),
+            (usage.rows, usage.bytes, usage.pages),
+            result,
+        ));
+    }
+    let [(none, admission, result), (some, some_admission, some_result), (many, many_admission, many_result)] =
+        measurements.as_slice()
+    else {
+        panic!("three measurements");
+    };
+    assert!(*none > 0);
+    assert_eq!(some_admission, admission);
+    assert_eq!(many_admission, admission);
+    assert_eq!(some_result, result);
+    assert_eq!(many_result, result);
+    assert_eq!(some, many, "600 -> 6,000 unrelated pins must not add steps");
+    // The nonpositive-rowid probe and the one page may each compare one
+    // following unrelated key instead of reaching the end of the index.
+    assert!((*none..=*none + 2).contains(some), "{none} -> {some}");
+    Ok(())
+}
+
+#[test]
+fn scene_join_output_is_deterministic() -> Result<()> {
+    let (nodes, edges) = ranked_graph();
+    let pins = [
+        ("all", "c"),
+        ("all", "a"),
+        ("all", "b"),
+        ("a-and-c", "c"),
+        ("a-and-c", "a"),
+        ("c-only", "c"),
+        ("b-only", "b"),
+    ];
+    let forward = pin_workspace(&["s", "a", "b", "c"])?;
+    add_scene_pins(&forward, &pins)?;
+    let reversed = pin_workspace(&["s", "a", "b", "c"])?;
+    add_scene_pins(&reversed, &pins.iter().rev().copied().collect::<Vec<_>>())?;
+
+    let frame = |db: &crate::Database| -> Result<(Vec<u8>, Vec<SceneTuple>)> {
+        let (nodes, edges) = ranked_graph();
+        let (scene_total, scenes, _) = join(db, &nodes, &edges)?;
+        let tuples = scene_tuples(&scenes, &edges);
+        let response = Nir1GraphResponse {
+            status: "available",
+            project_id: PROJECT.into(),
+            query_scene_id: "nir1".into(),
+            scope_revision: Some("scope-authority".into()),
+            graph: Some(Nir1QualifiedGraph {
+                seed_entity_id: "s".into(),
+                generation: 1,
+                nodes,
+                edges,
+                scene_total,
+                scenes,
+            }),
+            reason: None,
+        };
+        Ok((super::worker_frame::encode(&response)?, tuples))
+    };
+    let (first, tuples) = frame(&forward)?;
+    let (second, _) = frame(&forward)?;
+    assert_eq!(
+        first, second,
+        "the same snapshot yields the same frame bytes"
+    );
+    let (_, reversed_tuples) = frame(&reversed)?;
+    // Pin rowids follow insertion; the tuple order does not.
+    assert_eq!(reversed_tuples, tuples);
+    assert_eq!(
+        tuples,
+        vec![
+            scene_tuple("all", "b", &["e-1"]),
+            scene_tuple("b-only", "b", &["e-1"]),
+            scene_tuple("a-and-c", "a", &["e-2"]),
+            scene_tuple("c-only", "c", &["e-1", "e-4"]),
+        ]
+    );
+    let (direct_total, _, _) = join(&forward, &nodes, &edges)?;
+    assert_eq!(direct_total, 4);
+    Ok(())
+}
+
+fn graph_shape(response: &Nir1GraphResponse) -> (Vec<(String, u8)>, Vec<String>) {
+    let graph = response.graph.as_ref().expect("available Graph");
+    (
+        graph
+            .nodes
+            .iter()
+            .map(|node| (node.entity.entity_id.clone(), node.hop))
+            .collect(),
+        graph
+            .edges
+            .iter()
+            .map(|edge| edge.relation.edge_id.clone())
+            .collect(),
+    )
+}
+
+#[test]
+fn reader_and_worker_return_scene_associations_with_the_graph() -> Result<()> {
+    let scenes = ["pinned-b", "pinned-a", "seed-pin"].map(String::from);
+    let fixture = Fixture::with_scenes(&scenes)?;
+    fixture.add_pins(&[
+        ("pinned-b", "nir1-bob"),
+        ("pinned-a", "nir1-bob"),
+        ("seed-pin", "nir1-alice"),
+    ])?;
+    let response = query(&mut fixture.registered_reader()?, "nir1-alice")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    // Scenes after the reading order leave the Graph's own material as is.
+    let baseline = Fixture::new()?;
+    assert_eq!(
+        graph_shape(&response),
+        graph_shape(&query(&mut baseline.registered_reader()?, "nir1-alice")?)
+    );
+    let graph = response.graph.as_ref().expect("available Graph");
+    assert_eq!(graph.scene_total, 2);
+    assert_eq!(
+        scene_tuples(&graph.scenes, &graph.edges),
+        vec![
+            scene_tuple("pinned-a", "nir1-bob", &["nir1-edge"]),
+            scene_tuple("pinned-b", "nir1-bob", &["nir1-edge"]),
+        ]
+    );
+
+    let mut worker = fixture.worker_reader()?;
+    let worker_response = worker.query_for_worker_with_maintenance_deadline(
+        &graph_request("nir1-alice"),
+        Duration::from_secs(2),
+    )?;
+    assert_eq!(
+        worker_response.status, "available",
+        "{:?}",
+        worker_response.reason
+    );
+    let frame = super::worker_frame::encode(&worker_response)?;
+    let view = super::worker_frame::validate(&frame)?;
+    let projected = view.graph().expect("available frame");
+    assert_eq!(projected.diagnostic_scene_total(), 2);
+    let mut projected_scenes = Vec::new();
+    for scene in projected.scenes() {
+        let scene = scene?;
+        let path = projected.scene_path(&scene)?;
+        let steps = path
+            .steps()
+            .map(|step| {
+                (
+                    step.edge.relation.edge_id.to_owned(),
+                    step.from.to_owned(),
+                    step.to.to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        projected_scenes.push((scene.scene_id.to_owned(), steps));
+    }
+    let step = || {
+        vec![(
+            "nir1-edge".to_owned(),
+            "nir1-alice".to_owned(),
+            "nir1-bob".to_owned(),
+        )]
+    };
+    assert_eq!(
+        projected_scenes,
+        vec![
+            ("pinned-a".to_owned(), step()),
+            ("pinned-b".to_owned(), step())
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn graph_with_pin_overflow_is_unavailable_without_partial_graph() -> Result<()> {
+    // Seed reverse-index decoys take most of the shared 512 rows and 32
+    // pages, so the reached Entity's pins cannot all be enumerated.
+    let scenes = (0..64)
+        .map(|index| format!("overflow-{index:02}"))
+        .collect::<Vec<_>>();
+    let fixture = Fixture::with_scenes(&scenes)?;
+    // The Graph's own admission before the join: both reverse-index pages
+    // and the one Revision's A2/A3 rows (Scenes add A3 rows too).
+    let candidate_rows = fixture.authority.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id=?1
+                AND source_object_identity IN ('codex:nir1-alice', 'codex:nir1-bob')",
+            [PROJECT],
+            |row| row.get::<_, i64>(0),
+        )?)
+    })?;
+    let seed = fixture.seed_a2_a3_usage()?;
+    let graph_rows = usize::try_from(candidate_rows)? + seed.a2_rows + seed.a3_rows;
+    const REMAINING_ROWS: usize = 24;
+    fixture.add_decoys(
+        MAX_GRAPH_RECORDS - graph_rows - REMAINING_ROWS,
+        "codex:nir1-alice",
+    )?;
+    let baseline = query(&mut fixture.registered_reader()?, "nir1-alice")?;
+    assert_eq!(baseline.status, "available", "{:?}", baseline.reason);
+    fixture.add_pins(
+        &scenes
+            .iter()
+            .map(|scene| (scene.as_str(), "nir1-bob"))
+            .collect::<Vec<_>>(),
+    )?;
+    let mut reader = fixture.registered_reader()?;
+    assert_unavailable(
+        &query(&mut reader, "nir1-alice")?,
+        "query-budget-or-validation-failed",
+    );
+    assert!(reader.connection.as_ref().unwrap().is_autocommit());
+
+    let mut worker = fixture.worker_reader()?;
+    let response = worker.query_for_worker_with_maintenance_deadline(
+        &graph_request("nir1-alice"),
+        Duration::from_secs(2),
+    )?;
+    let reason = response
+        .reason
+        .as_deref()
+        .and_then(UnavailableReason::parse)
+        .expect("an allowlisted worker reason");
+    assert_unavailable(&response, &reason.to_string());
+    assert_eq!(
+        reason,
+        UnavailableReason::Worker {
+            site: WorkerSite::Work,
+            cause: WorkerCause::SceneLimit,
+            pre_cleanup: Some(PreCleanup::WorkFailed(WorkerCause::SceneLimit)),
+        }
+    );
+    assert_eq!(
+        reason.category(),
+        super::worker_frame::UnavailableCategory::Limit
+    );
+    let frame = super::worker_frame::encode(&response)?;
+    assert_eq!(
+        super::worker_frame::validate(&frame)?.unavailable_reason(),
+        Some(reason)
+    );
+    Ok(())
+}
+
+struct JoinMeasurement {
+    steps: u64,
+    wall: Duration,
+    /// (rows, bytes, pages) charged to the QueryUsage.
+    admission: (usize, usize, usize),
+    scene_total: usize,
+}
+
+/// Join steps, admission and wall for one shared QueryUsage, measured on a
+/// fresh read transaction. Steps use a cadence-one progress handler; wall is
+/// a separate run without it.
+fn measure_join(
+    db: &crate::Database,
+    nodes: &[Nir1GraphNode],
+    edges: &[Nir1GraphEdge],
+) -> Result<JoinMeasurement> {
+    let steps = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let counter = Arc::clone(&steps);
+    let mut usage = QueryUsage::default();
+    let (total, _) = db.with_read_transaction(|conn| {
+        crate::set_sqlite_progress_handler(
+            conn,
+            1,
+            Some(move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )?;
+        let result = join_scene_pins(
+            conn,
+            &graph_request("s"),
+            nodes,
+            edges,
+            &mut usage,
+            &mut RegistrationOwner,
+        );
+        crate::set_sqlite_progress_handler(conn, 0, None::<fn() -> bool>)?;
+        result
+    })?;
+    let mut wall = Duration::MAX;
+    for _ in 0..5 {
+        let started = Instant::now();
+        run_join(
+            db,
+            nodes,
+            edges,
+            &mut QueryUsage::default(),
+            &mut RegistrationOwner,
+        )?;
+        wall = wall.min(started.elapsed());
+    }
+    Ok(JoinMeasurement {
+        steps: steps.load(Ordering::Relaxed),
+        wall,
+        admission: (usage.rows, usage.bytes, usage.pages),
+        scene_total: total,
+    })
+}
+
+#[test]
+#[ignore = "CP-1 measurement only: Scene-join steps/wall and NQG2 Scene-section bytes"]
+fn measure_scene_join_capacity_and_frame_bytes() -> Result<()> {
+    // Scene section bytes for realistic identifiers: the sample project's
+    // pins and G-01-shaped UUIDs, each bound to an A1 row, behind a 2-hop
+    // path (the largest path encoding).
+    let sample_pins = include_str!("../../../../../resources/sample_project/v2.sql")
+        .lines()
+        .filter_map(|line| {
+            let values = line.strip_prefix(
+                "INSERT OR IGNORE INTO scene_codex_pins (scene_id, entry_id, created_at) VALUES ('",
+            )?;
+            let (scene, rest) = values.split_once("', '")?;
+            let (entry, _) = rest.split_once('\'')?;
+            Some((scene.to_owned(), entry.to_owned()))
+        })
+        .collect::<Vec<_>>();
+    assert!(!sample_pins.is_empty());
+    let uuid_pins = (0..MAX_GRAPH_SCENES)
+        .map(|_| {
+            (
+                uuid::Uuid::new_v4().to_string(),
+                uuid::Uuid::new_v4().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (label, pins, updated_at) in [
+        // The sample seeder stamps rows with chrono's RFC 3339 nanoseconds.
+        (
+            "sample",
+            &sample_pins,
+            "2026-10-13T00:00:00.123456789+00:00",
+        ),
+        ("uuid", &uuid_pins, "2026-10-13T00:00:00.000Z"),
+    ] {
+        let mut entities = pins
+            .iter()
+            .map(|(_, entry)| entry.as_str())
+            .collect::<Vec<_>>();
+        entities.sort_unstable();
+        entities.dedup();
+        let mut all = vec!["s", "m"];
+        all.extend(entities.iter().copied());
+        let db = pin_workspace(&all)?;
+        db.with_conn(|conn| {
+            for (scene, entry) in pins {
+                conn.execute(
+                    "INSERT OR IGNORE INTO tree_nodes
+                        (id, project_id, node_type, title, content, sort_order, version, updated_at)
+                     VALUES (?1, ?2, 'scene', 'Pinned', '{}', 'z0', 9999, ?3)",
+                    params![scene, PROJECT, updated_at],
+                )?;
+                conn.execute(
+                    "INSERT INTO scene_codex_pins (scene_id, entry_id, created_at)
+                     VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    params![scene, entry],
+                )?;
+                crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                    conn, PROJECT, scene, updated_at,
+                )?;
+            }
+            Ok(())
+        })?;
+        let mut nodes = vec![synthetic_node("s", 0), synthetic_node("m", 1)];
+        let mut edges = vec![synthetic_edge(
+            &uuid::Uuid::new_v4().to_string(),
+            "s",
+            "m",
+            "directed",
+        )];
+        for entity in &entities {
+            nodes.push(synthetic_node(entity, 2));
+            edges.push(synthetic_edge(
+                &uuid::Uuid::new_v4().to_string(),
+                "m",
+                entity,
+                "directed",
+            ));
+        }
+        let (total, scenes, _) = join(&db, &nodes, &edges)?;
+        let lengths = scenes
+            .iter()
+            .map(|scene| {
+                super::worker_frame::SceneAssociationLengths::of(scene)
+                    .encoded_bytes()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let max = lengths.iter().copied().max().unwrap_or(0);
+        eprintln!(
+            "CP-1 Scene section: shape={label}; pins={}; scene_total={total}; returned={}; association_bytes_max={max}; section_bytes={}; eight_at_max={}; cap={MAX_SCENE_SECTION_BYTES}",
+            pins.len(),
+            scenes.len(),
+            SCENE_SECTION_HEADER_BYTES + lengths.iter().sum::<usize>(),
+            SCENE_SECTION_HEADER_BYTES + MAX_GRAPH_SCENES * max,
+        );
+    }
+
+    // Steps and wall: pins on one reached Entity, bodies of 200 B and 200 KB,
+    // and the same budget spread over eleven reached Entities.
+    let body = |bytes: usize| {
+        serde_json::json!({
+            "type": "doc",
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": "x".repeat(bytes)}]}]
+        })
+        .to_string()
+    };
+    for body_bytes in [200usize, 200 * 1024] {
+        for pins in [0usize, 16, 17, 256, 496] {
+            let (nodes, edges) = one_hop_graph();
+            let db = pin_workspace(&["s", "x"])?;
+            let content = body(body_bytes);
+            db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                for scene in scene_ids(pins) {
+                    tx.execute(
+                        "INSERT INTO tree_nodes
+                            (id, project_id, node_type, title, content, sort_order, updated_at)
+                         VALUES (?1, ?2, 'scene', 'Pinned', ?3, 'z0', ?4)",
+                        params![scene, PROJECT, content, SCENE_UPDATED_AT],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO scene_codex_pins (scene_id, entry_id, created_at)
+                         VALUES (?1, 'x', ?2)",
+                        params![scene, PIN_CREATED_AT],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })?;
+            let measured = measure_join(&db, &nodes, &edges)?;
+            eprintln!(
+                "CP-1 Scene join: entities=1; pins={pins}; body_bytes={body_bytes}; scene_total={}; steps={}; wall_min_of_5={:?}; (rows, bytes, pages)={:?}",
+                measured.scene_total, measured.steps, measured.wall, measured.admission
+            );
+        }
+    }
+    let mut nodes = vec![synthetic_node("s", 0)];
+    let mut edges = Vec::new();
+    let entities = (0..MAX_GRAPH_NODES - 1)
+        .map(|index| format!("e{index:02}"))
+        .collect::<Vec<_>>();
+    for entity in &entities {
+        nodes.push(synthetic_node(entity, 1));
+        edges.push(synthetic_edge(
+            &format!("edge-{entity}"),
+            "s",
+            entity,
+            "directed",
+        ));
+    }
+    let mut all = vec!["s"];
+    all.extend(entities.iter().map(String::as_str));
+    let db = pin_workspace(&all)?;
+    let spread = entities
+        .iter()
+        // 31 pins are two pages per Entity: 22 of the shared 32 pages.
+        .flat_map(|entity| {
+            (0..31).map(move |index| (format!("{entity}-scene-{index:02}"), entity.clone()))
+        })
+        .collect::<Vec<_>>();
+    add_scene_pins(
+        &db,
+        &spread
+            .iter()
+            .map(|(scene, entity)| (scene.as_str(), entity.as_str()))
+            .collect::<Vec<_>>(),
+    )?;
+    let measured = measure_join(&db, &nodes, &edges)?;
+    eprintln!(
+        "CP-1 Scene join: entities=11; pins={}; scene_total={}; steps={}; wall_min_of_5={:?}; (rows, bytes, pages)={:?}",
+        spread.len(),
+        measured.scene_total,
+        measured.steps,
+        measured.wall,
+        measured.admission
+    );
     Ok(())
 }

@@ -4,6 +4,11 @@
 //! body mention, or a substitute for the Entity/Relation A2/A3 proof.  The
 //! caller must independently validate the target Scene scope and keep the
 //! read-identity bracket around both the pin read and the returned result.
+//!
+//! The C-query worker uses only the locator readers (pin pages, the has-more
+//! probe and the Scene token reader). It never reads a Scene body: the body
+//! reader and the Scene scope/recheck helpers belong to the parent-side
+//! qualification (CB-4) and carry item-level dead-code expectations.
 
 use anyhow::{ensure, Result};
 use grimodex_core::narrative_scene_scope::{
@@ -56,10 +61,24 @@ impl SceneJoinBudget {
         Ok(())
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "cumulative-budget accessors for the parent-side CB-4 reader"
+        )
+    )]
     pub(super) const fn rows(&self) -> usize {
         self.rows
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "cumulative-budget accessors for the parent-side CB-4 reader"
+        )
+    )]
     pub(super) const fn bytes(&self) -> usize {
         self.bytes
     }
@@ -140,14 +159,17 @@ struct PinLengths {
     created_at_bytes: usize,
 }
 
-const PIN_PAGE_ROWS: usize = 16;
+/// One keyset page; the C-query also counts every page against its 32.
+pub(super) const PIN_PAGE_ROWS: usize = 16;
 const MAX_PIN_FIELD_BYTES: usize = 2 * 1024 * 1024;
 const SHA256_DIGEST_BYTES: usize = "sha256:".len() + 64;
 const SOURCE_KEY_PREFIX: &str = "project:scene:";
 const MAX_I64_DECIMAL_BYTES: usize = 20;
+// The exact Entity key and keyset cursor use the entry index; a missing index
+// fails statement preparation instead of silently scanning the pin table.
 const PIN_LENGTHS_SQL: &str = "SELECT p.rowid,
     octet_length(p.scene_id), octet_length(p.entry_id), octet_length(p.created_at)
-    FROM scene_codex_pins p
+    FROM scene_codex_pins p INDEXED BY idx_scene_codex_pins_entry
     JOIN tree_nodes scene
       ON scene.id = p.scene_id AND scene.project_id = ?1 AND scene.node_type = 'scene'
      AND scene.archived_at IS NULL
@@ -155,6 +177,39 @@ const PIN_LENGTHS_SQL: &str = "SELECT p.rowid,
       ON entry.id = p.entry_id AND entry.project_id = ?1
    WHERE p.entry_id = ?2 AND p.rowid > ?3
    ORDER BY p.rowid LIMIT ?4";
+
+/// Has-more probe with exactly the page filters; it reads no row values.
+const PIN_REMAIN_SQL: &str = "SELECT EXISTS(SELECT 1
+    FROM scene_codex_pins p INDEXED BY idx_scene_codex_pins_entry
+    JOIN tree_nodes scene
+      ON scene.id = p.scene_id AND scene.project_id = ?1 AND scene.node_type = 'scene'
+     AND scene.archived_at IS NULL
+    JOIN codex_entries entry
+      ON entry.id = p.entry_id AND entry.project_id = ?1
+   WHERE p.entry_id = ?2 AND p.rowid > ?3)";
+
+/// The keyset starts after rowid 0. Producer writes allocate positive rowids;
+/// any other pin of this Entity would be skipped, so it refuses enumeration.
+const PIN_NONPOSITIVE_ROWID_SQL: &str = "SELECT EXISTS(SELECT 1
+    FROM scene_codex_pins INDEXED BY idx_scene_codex_pins_entry
+   WHERE entry_id = ?1 AND rowid <= 0)";
+
+const SCENE_TOKEN_LENGTHS_SQL: &str = "SELECT version, octet_length(updated_at)
+    FROM tree_nodes
+   WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene' AND archived_at IS NULL";
+
+const SCENE_TOKEN_SQL: &str = "SELECT updated_at
+    FROM tree_nodes
+   WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene' AND archived_at IS NULL";
+
+const SCENE_BINDING_LENGTHS_SQL: &str = "SELECT octet_length(scene_incarnation_id),
+    octet_length(source_token)
+    FROM narrative_scene_scope_bindings
+   WHERE project_id = ?1 AND scene_id = ?2";
+
+const SCENE_BINDING_SQL: &str = "SELECT scene_incarnation_id, source_token
+    FROM narrative_scene_scope_bindings
+   WHERE project_id = ?1 AND scene_id = ?2";
 
 const PIN_POINT_LENGTHS_SQL: &str = "SELECT octet_length(p.scene_id),
     octet_length(p.entry_id), octet_length(p.created_at)
@@ -209,8 +264,27 @@ fn source_metadata_bytes(scene_id: &str, updated_at: &str) -> Result<usize> {
         .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_INPUT_LIMIT"))
 }
 
+/// Scratch held by [`read_scene_pin_page_with_admission`] while it
+/// materializes one page: the scalar-length Vec and the locator Vec. The
+/// returned strings are charged separately as input bytes.
+pub(super) fn pin_page_scratch_bytes(limit: usize) -> Result<usize> {
+    let limit = limit.min(PIN_PAGE_ROWS);
+    let lengths = limit
+        .checked_mul(std::mem::size_of::<PinLengths>())
+        .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_INPUT_LIMIT"))?;
+    let locators = limit
+        .checked_mul(std::mem::size_of::<ScenePinLocator>())
+        .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_INPUT_LIMIT"))?;
+    std::mem::size_of::<Vec<PinLengths>>()
+        .checked_add(lengths)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Vec<ScenePinLocator>>()))
+        .and_then(|bytes| bytes.checked_add(locators))
+        .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_INPUT_LIMIT"))
+}
+
 /// Read one indexed pin page.  The reverse index is constrained by the exact
 /// Entity ID and both project owners; mentions/cache rows are never consulted.
+#[cfg(test)]
 pub(super) fn read_scene_pin_page(
     conn: &Connection,
     project_id: &str,
@@ -219,6 +293,32 @@ pub(super) fn read_scene_pin_page(
     requested_limit: usize,
     budget: &mut SceneJoinBudget,
     check: &mut dyn FnMut() -> Result<()>,
+) -> Result<Vec<ScenePinLocator>> {
+    read_scene_pin_page_with_admission(
+        conn,
+        project_id,
+        entry_id,
+        cursor,
+        requested_limit,
+        budget,
+        check,
+        |_, _| Ok(()),
+    )
+}
+
+/// Read one indexed pin page and invoke `admit` after the page's scalar
+/// lengths were charged to `budget` but before any pin string is
+/// materialized. The C-query charges its shared QueryUsage at that boundary.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn read_scene_pin_page_with_admission(
+    conn: &Connection,
+    project_id: &str,
+    entry_id: &str,
+    cursor: i64,
+    requested_limit: usize,
+    budget: &mut SceneJoinBudget,
+    check: &mut dyn FnMut() -> Result<()>,
+    admit: impl FnOnce(usize, usize) -> Result<()>,
 ) -> Result<Vec<ScenePinLocator>> {
     ensure!(
         !conn.is_autocommit(),
@@ -237,6 +337,10 @@ pub(super) fn read_scene_pin_page(
         .min(budget.remaining_rows());
     if limit == 0 {
         return Ok(Vec::new());
+    }
+    if cursor == 0 {
+        ensure_positive_pin_rowids(conn, entry_id)?;
+        check()?;
     }
 
     let mut statement = conn.prepare(PIN_LENGTHS_SQL)?;
@@ -262,6 +366,7 @@ pub(super) fn read_scene_pin_page(
     }
     drop(rows);
     budget.admit(lengths.len(), page_bytes)?;
+    admit(lengths.len(), page_bytes)?;
     check()?;
 
     let mut point = conn.prepare(PIN_POINT_SQL)?;
@@ -281,10 +386,176 @@ pub(super) fn read_scene_pin_page(
     Ok(result)
 }
 
+/// Whether the Entity has another pin after `cursor` under the page filters.
+/// It consumes no row admission; the caller probes before refusing a page.
+pub(super) fn scene_pins_remain(
+    conn: &Connection,
+    project_id: &str,
+    entry_id: &str,
+    cursor: i64,
+    check: &mut dyn FnMut() -> Result<()>,
+) -> Result<bool> {
+    ensure!(
+        !conn.is_autocommit(),
+        "Scene pin probe requires a read transaction"
+    );
+    require_identity(project_id, "project_id")?;
+    require_identity(entry_id, "entry_id")?;
+    ensure!(cursor >= 0, "NIR1_GRAPH_SCENE_INVALID_PIN_CURSOR");
+    check()?;
+    if cursor == 0 {
+        ensure_positive_pin_rowids(conn, entry_id)?;
+        check()?;
+    }
+    Ok(conn.query_row(
+        PIN_REMAIN_SQL,
+        params![project_id, entry_id, cursor],
+        |row| row.get(0),
+    )?)
+}
+
+/// A keyset that starts after rowid 0 would silently skip other pins.
+fn ensure_positive_pin_rowids(conn: &Connection, entry_id: &str) -> Result<()> {
+    let nonpositive: bool =
+        conn.query_row(PIN_NONPOSITIVE_ROWID_SQL, params![entry_id], |row| {
+            row.get(0)
+        })?;
+    ensure!(!nonpositive, "NIR1_GRAPH_SCENE_INVALID_PIN_CURSOR");
+    Ok(())
+}
+
+/// Scalar lengths of one Scene's frame tokens, admitted before the strings
+/// are materialized.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct SceneFrameTokenLengths {
+    /// The Scene row plus its A1 binding row when one exists.
+    pub rows: usize,
+    pub source_token: usize,
+    pub incarnation_id: Option<usize>,
+    pub scope_token: Option<usize>,
+}
+
+impl SceneFrameTokenLengths {
+    pub(super) fn bytes(&self) -> Result<usize> {
+        self.source_token
+            .checked_add(self.incarnation_id.unwrap_or(0))
+            .and_then(|bytes| bytes.checked_add(self.scope_token.unwrap_or(0)))
+            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_INPUT_LIMIT"))
+    }
+}
+
+/// Exact tokens of a pinned Scene. None of them is the Scene body.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SceneFrameTokens {
+    /// `v{version}@{updated_at}`, the same form as the Scene source token.
+    pub source_token: String,
+    pub incarnation_id: Option<String>,
+    pub scope_token: Option<String>,
+}
+
+fn decimal_bytes(value: i64) -> usize {
+    let digits = value
+        .unsigned_abs()
+        .checked_ilog10()
+        .map_or(1, |log| log as usize + 1);
+    digits + usize::from(value < 0)
+}
+
+/// Read the source token and the A1 binding tokens of one live pinned
+/// Scene. Lengths are charged to `budget` and passed to `admit` before any
+/// string is selected; `content` is never selected.
+pub(super) fn read_scene_frame_tokens(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+    budget: &mut SceneJoinBudget,
+    check: &mut dyn FnMut() -> Result<()>,
+    admit: impl FnOnce(SceneFrameTokenLengths) -> Result<()>,
+) -> Result<SceneFrameTokens> {
+    ensure!(
+        !conn.is_autocommit(),
+        "Scene tokens require a read transaction"
+    );
+    require_identity(project_id, "project_id")?;
+    require_identity(scene_id, "scene_id")?;
+    check()?;
+    let (version, updated_at_bytes): (i64, i64) = conn
+        .query_row(
+            SCENE_TOKEN_LENGTHS_SQL,
+            params![scene_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_SOURCE_UNAVAILABLE"))?;
+    let updated_at_bytes = checked_length(updated_at_bytes)?;
+    check()?;
+    let binding: Option<(i64, i64)> = conn
+        .query_row(
+            SCENE_BINDING_LENGTHS_SQL,
+            params![project_id, scene_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let binding = binding
+        .map(|(incarnation, scope)| {
+            Ok::<_, anyhow::Error>((checked_length(incarnation)?, checked_length(scope)?))
+        })
+        .transpose()?;
+    let lengths = SceneFrameTokenLengths {
+        rows: 1 + usize::from(binding.is_some()),
+        // `v`, the decimal version, `@` and updated_at.
+        source_token: decimal_bytes(version)
+            .checked_add(2)
+            .and_then(|bytes| bytes.checked_add(updated_at_bytes))
+            .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCENE_INPUT_LIMIT"))?,
+        incarnation_id: binding.map(|(incarnation, _)| incarnation),
+        scope_token: binding.map(|(_, scope)| scope),
+    };
+    budget.admit(lengths.rows, lengths.bytes()?)?;
+    admit(lengths)?;
+    check()?;
+
+    let updated_at: String =
+        conn.query_row(SCENE_TOKEN_SQL, params![scene_id, project_id], |row| {
+            row.get(0)
+        })?;
+    ensure!(
+        updated_at.len() == updated_at_bytes,
+        "NIR1_GRAPH_SCENE_SOURCE_UNAVAILABLE"
+    );
+    let (incarnation_id, scope_token) = match binding {
+        Some((incarnation_bytes, scope_bytes)) => {
+            check()?;
+            let (incarnation, scope): (String, String) =
+                conn.query_row(SCENE_BINDING_SQL, params![project_id, scene_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?;
+            ensure!(
+                incarnation.len() == incarnation_bytes && scope.len() == scope_bytes,
+                "NIR1_GRAPH_SCENE_SCOPE_UNAVAILABLE"
+            );
+            (Some(incarnation), Some(scope))
+        }
+        None => (None, None),
+    };
+    Ok(SceneFrameTokens {
+        source_token: format!("v{version}@{updated_at}"),
+        incarnation_id,
+        scope_token,
+    })
+}
+
 /// Re-read the exact pin row after the query snapshot.  This is deliberately
 /// separate from body-source reading: a changed body Source token alone does
 /// not invalidate a pin.  The caller must also compare its full connection
 /// read identity before accepting the result.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "parent-side CB-4 pin recheck; the worker reads pins only by page"
+    )
+)]
 pub(super) fn recheck_scene_pin(
     conn: &Connection,
     project_id: &str,
@@ -340,6 +611,13 @@ fn digest(bytes: &[u8]) -> String {
 /// admitted before materializing `content`; canonical JSON processing checks
 /// the owner between bounded pieces and the first non-empty line is the only
 /// anchor retained in the result.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "parent-side CB-4 reader; the worker never reads Scene bodies"
+    )
+)]
 pub(super) fn read_scene_source_bounded(
     conn: &Connection,
     project_id: &str,
@@ -499,6 +777,13 @@ fn matches_query_axis(constraint: &NarrativeScopeConstraintV1, expected: &str) -
 /// intentionally does not inspect or accept Entity/Relation POV/phase fields,
 /// project authority, reveal state, or lifecycle/read-identity proof; the
 /// path's full A2/A3 proof remains a separate input owned by the C-query.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "parent-side CB-4 Scene scope qualification; the worker never qualifies Scenes"
+    )
+)]
 pub(super) fn validate_scene_scope(
     binding: &NarrativeSceneScopeBindingV1,
     expected: &SceneScopeExpectation<'_>,
@@ -884,5 +1169,371 @@ mod tests {
         wrong_scope.scope_token = "scope-other";
         let error = validate_scene_scope(&binding, &wrong_scope).expect_err("scope mismatch");
         assert!(error.to_string().contains("SCOPE_DRIFT"));
+    }
+
+    // Same method as candidates.rs: inspect the current-schema plan rather
+    // than trusting row counts from a small fixture.
+    #[test]
+    fn pin_sqls_use_entry_index_keyset_without_scan_or_temp_btree() {
+        let db = crate::Database::new(std::path::Path::new(":memory:")).unwrap();
+        db.migrate().unwrap();
+        db.with_conn(|conn| {
+            let plan = |sql: &str| -> Vec<String> {
+                let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+                let parameters = statement.parameter_count();
+                statement
+                    .query_map(
+                        rusqlite::params_from_iter(std::iter::repeat_n("x", parameters)),
+                        |row| row.get::<_, String>(3),
+                    )
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            };
+            let keyset = "idx_scene_codex_pins_entry (entry_id=? AND rowid>?)";
+            for (label, sql, seek) in [
+                ("page", PIN_LENGTHS_SQL, Some(keyset)),
+                ("probe", PIN_REMAIN_SQL, Some(keyset)),
+                (
+                    "nonpositive rowid",
+                    PIN_NONPOSITIVE_ROWID_SQL,
+                    Some("idx_scene_codex_pins_entry (entry_id=? AND rowid<"),
+                ),
+                ("point", PIN_POINT_SQL, None),
+                ("token lengths", SCENE_TOKEN_LENGTHS_SQL, None),
+                ("token", SCENE_TOKEN_SQL, None),
+                ("binding lengths", SCENE_BINDING_LENGTHS_SQL, None),
+                ("binding", SCENE_BINDING_SQL, None),
+            ] {
+                let plan = plan(sql);
+                // `SELECT EXISTS(...)` scans only its one constant row.
+                assert!(
+                    plan.iter().all(|line| (!line.starts_with("SCAN")
+                        || line == "SCAN CONSTANT ROW")
+                        && !line.contains("TEMP B-TREE")
+                        && !line.contains("AUTOMATIC")),
+                    "{label}: {plan:?}"
+                );
+                assert!(
+                    plan.iter().any(|line| line.starts_with("SEARCH")),
+                    "{label}: {plan:?}"
+                );
+                if let Some(seek) = seek {
+                    assert!(
+                        plan.iter().any(|line| line.contains(seek)),
+                        "{label}: {plan:?}"
+                    );
+                }
+            }
+            // Negative control: the pin table without its Entity key scans.
+            let control = plan("SELECT rowid FROM scene_codex_pins WHERE created_at = ?1");
+            assert!(
+                control.iter().any(|line| line.starts_with("SCAN")),
+                "{control:?}"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn pin_page_admission_sees_octet_lengths_before_point_reads() {
+        let conn = connection();
+        for (scene, created_at) in [
+            ("scene-bb", "t"),
+            ("scene-ccc😊", "2026-09-22T00:00:02.000Z"),
+        ] {
+            conn.execute(
+                "INSERT INTO tree_nodes(id, project_id, node_type, version, updated_at, content)
+                 VALUES (?1, 'project-a', 'scene', 1, '2026-09-22T00:00:00Z', '{}')",
+                [scene],
+            )
+            .expect("scene");
+            conn.execute(
+                "INSERT INTO scene_codex_pins(scene_id, entry_id, created_at)
+                 VALUES (?1, 'entry-a', ?2)",
+                [scene, created_at],
+            )
+            .expect("pin");
+        }
+        conn.execute_batch("BEGIN").expect("begin");
+        let events = RefCell::new(Vec::new());
+        let mut budget = SceneJoinBudget::new(32, 1024);
+        let page = read_scene_pin_page_with_admission(
+            &conn,
+            "project-a",
+            "entry-a",
+            0,
+            16,
+            &mut budget,
+            &mut || {
+                events.borrow_mut().push("check");
+                Ok(())
+            },
+            |rows, bytes| {
+                events.borrow_mut().push("admit");
+                assert_eq!(rows, 3);
+                assert_eq!(bytes, budget_bytes_for_test());
+                Ok(())
+            },
+        )
+        .expect("page");
+        let materialized = page
+            .iter()
+            .map(|pin| pin.scene_id.len() + pin.entry_id.len() + pin.created_at.len())
+            .sum::<usize>();
+        assert_eq!(materialized, budget_bytes_for_test());
+        assert_eq!((budget.rows(), budget.bytes()), (3, materialized));
+        // One check after admission and one per point read follow it.
+        let events = events.into_inner();
+        let admitted_at = events
+            .iter()
+            .position(|event| *event == "admit")
+            .expect("admission");
+        assert_eq!(events.len() - admitted_at - 1, 1 + page.len());
+
+        // A refused admission returns before any pin string is selected.
+        let events = RefCell::new(Vec::new());
+        let mut budget = SceneJoinBudget::new(32, 1024);
+        let error = read_scene_pin_page_with_admission(
+            &conn,
+            "project-a",
+            "entry-a",
+            0,
+            16,
+            &mut budget,
+            &mut || {
+                events.borrow_mut().push("check");
+                Ok(())
+            },
+            |_, _| {
+                events.borrow_mut().push("admit");
+                anyhow::bail!("admission refused")
+            },
+        )
+        .expect_err("refused admission");
+        assert!(error.to_string().contains("admission refused"));
+        assert_eq!(events.into_inner().last(), Some(&"admit"));
+    }
+
+    /// Bytes of the three pins in `pin_page_admission_sees_octet_lengths_before_point_reads`.
+    fn budget_bytes_for_test() -> usize {
+        ["scene-a", "scene-bb", "scene-ccc😊"]
+            .iter()
+            .map(|scene| scene.len() + "entry-a".len())
+            .sum::<usize>()
+            + "2026-09-22T00:00:01Z".len()
+            + "t".len()
+            + "2026-09-22T00:00:02.000Z".len()
+    }
+
+    #[test]
+    fn frame_tokens_read_lengths_first_and_absent_binding_is_none() {
+        let conn = connection();
+        conn.execute_batch(
+            "CREATE TABLE narrative_scene_scope_bindings (
+                project_id TEXT NOT NULL, scene_id TEXT NOT NULL,
+                scene_incarnation_id TEXT NOT NULL, source_token TEXT NOT NULL,
+                PRIMARY KEY(project_id, scene_id)
+             );",
+        )
+        .expect("binding table");
+        conn.execute_batch("BEGIN").expect("begin");
+        let mut budget = SceneJoinBudget::new(32, 1024);
+        let mut admitted = None;
+        let tokens = read_scene_frame_tokens(
+            &conn,
+            "project-a",
+            "scene-a",
+            &mut budget,
+            &mut check(),
+            |lengths| {
+                admitted = Some(lengths);
+                Ok(())
+            },
+        )
+        .expect("unbound tokens");
+        assert_eq!(
+            tokens,
+            SceneFrameTokens {
+                source_token: "v3@2026-09-22T00:00:00Z".into(),
+                incarnation_id: None,
+                scope_token: None,
+            }
+        );
+        assert_eq!(
+            admitted,
+            Some(SceneFrameTokenLengths {
+                rows: 1,
+                source_token: tokens.source_token.len(),
+                incarnation_id: None,
+                scope_token: None,
+            })
+        );
+        assert_eq!(
+            (budget.rows(), budget.bytes()),
+            (1, tokens.source_token.len())
+        );
+        conn.execute_batch("ROLLBACK").expect("rollback");
+
+        let scope = format!("sha256:{}", "a".repeat(64));
+        conn.execute(
+            "INSERT INTO narrative_scene_scope_bindings VALUES ('project-a', 'scene-a', 'incarnation-a', ?1)",
+            [&scope],
+        )
+        .expect("binding");
+        conn.execute_batch("BEGIN").expect("begin");
+        let mut budget = SceneJoinBudget::new(32, 1024);
+        let mut admitted = None;
+        let tokens = read_scene_frame_tokens(
+            &conn,
+            "project-a",
+            "scene-a",
+            &mut budget,
+            &mut check(),
+            |lengths| {
+                admitted = Some(lengths);
+                Ok(())
+            },
+        )
+        .expect("bound tokens");
+        assert_eq!(tokens.incarnation_id.as_deref(), Some("incarnation-a"));
+        assert_eq!(tokens.scope_token.as_deref(), Some(scope.as_str()));
+        let lengths = admitted.expect("admitted lengths");
+        assert_eq!(lengths.rows, 2);
+        assert_eq!(lengths.incarnation_id, Some("incarnation-a".len()));
+        assert_eq!(lengths.scope_token, Some(scope.len()));
+        assert_eq!(budget.bytes(), lengths.bytes().expect("bytes"));
+
+        // A refused admission returns the refusal and no token.
+        let mut budget = SceneJoinBudget::new(32, 1024);
+        let error = read_scene_frame_tokens(
+            &conn,
+            "project-a",
+            "scene-a",
+            &mut budget,
+            &mut check(),
+            |_| anyhow::bail!("admission refused"),
+        )
+        .expect_err("refused admission");
+        assert!(error.to_string().contains("admission refused"));
+        // So does the cumulative budget, before the caller's admission.
+        let mut exhausted = SceneJoinBudget::new(1, 1024);
+        let error = read_scene_frame_tokens(
+            &conn,
+            "project-a",
+            "scene-a",
+            &mut exhausted,
+            &mut check(),
+            |_| panic!("the budget refuses first"),
+        )
+        .expect_err("two rows over a one-row budget");
+        assert!(error.to_string().contains("QUERY_RESOURCE_LIMIT"));
+        conn.execute_batch("ROLLBACK").expect("rollback");
+
+        conn.execute(
+            "UPDATE tree_nodes SET archived_at='2026-09-22T00:00:03Z' WHERE id='scene-a'",
+            [],
+        )
+        .expect("archive");
+        conn.execute_batch("BEGIN").expect("begin");
+        let mut budget = SceneJoinBudget::new(32, 1024);
+        let error = read_scene_frame_tokens(
+            &conn,
+            "project-a",
+            "scene-a",
+            &mut budget,
+            &mut check(),
+            |_| Ok(()),
+        )
+        .expect_err("archived Scene");
+        assert!(error.to_string().contains("SOURCE_UNAVAILABLE"));
+        conn.execute_batch("ROLLBACK").expect("rollback");
+
+        for value in [0, 9, 10, 99, 100, -1, -10, i64::MIN, i64::MAX] {
+            assert_eq!(decimal_bytes(value), value.to_string().len(), "{value}");
+        }
+    }
+
+    #[test]
+    fn pins_remain_probe_matches_page_filters() {
+        let conn = connection();
+        conn.execute_batch(
+            "INSERT INTO codex_entries(id, project_id) VALUES ('entry-foreign', 'project-b');
+             INSERT INTO tree_nodes(id, project_id, node_type, version, updated_at, content, archived_at)
+             VALUES ('scene-archived', 'project-a', 'scene', 1, 't', '{}', 't'),
+                    ('scene-foreign', 'project-b', 'scene', 1, 't', '{}', NULL),
+                    ('note-a', 'project-a', 'note', 1, 't', '{}', NULL);
+             INSERT INTO scene_codex_pins(scene_id, entry_id, created_at)
+             VALUES ('scene-archived', 'entry-a', 't'),
+                    ('scene-foreign', 'entry-a', 't'),
+                    ('note-a', 'entry-a', 't'),
+                    ('scene-a', 'entry-foreign', 't');",
+        )
+        .expect("filtered pins");
+        conn.execute_batch("BEGIN").expect("begin");
+        let mut budget = SceneJoinBudget::new(32, 1024);
+        let mut check = check();
+        let page = read_scene_pin_page(
+            &conn,
+            "project-a",
+            "entry-a",
+            0,
+            16,
+            &mut budget,
+            &mut check,
+        )
+        .expect("page");
+        assert_eq!(
+            page.iter()
+                .map(|pin| pin.scene_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["scene-a"]
+        );
+        assert!(scene_pins_remain(&conn, "project-a", "entry-a", 0, &mut check).expect("probe"));
+        // The archived, foreign and non-Scene rows after it are not "more".
+        assert!(
+            !scene_pins_remain(&conn, "project-a", "entry-a", page[0].rowid, &mut check)
+                .expect("probe")
+        );
+        // A pin of another project's Entity is not this project's pin.
+        assert!(
+            !scene_pins_remain(&conn, "project-a", "entry-foreign", 0, &mut check).expect("probe")
+        );
+        assert_eq!(budget.rows(), 1);
+    }
+
+    #[test]
+    fn nonpositive_pin_rowid_refuses_the_keyset() {
+        let conn = connection();
+        conn.execute_batch(
+            "INSERT INTO tree_nodes(id, project_id, node_type, version, updated_at, content)
+             VALUES ('scene-z', 'project-a', 'scene', 1, 't', '{}');
+             INSERT INTO scene_codex_pins(rowid, scene_id, entry_id, created_at)
+             VALUES (-1, 'scene-z', 'entry-a', 't');",
+        )
+        .expect("nonpositive pin");
+        conn.execute_batch("BEGIN").expect("begin");
+        let mut budget = SceneJoinBudget::new(32, 1024);
+        let mut check = check();
+        let error = read_scene_pin_page(
+            &conn,
+            "project-a",
+            "entry-a",
+            0,
+            16,
+            &mut budget,
+            &mut check,
+        )
+        .expect_err("a keyset after rowid 0 would skip the pin");
+        assert!(error
+            .to_string()
+            .contains("NIR1_GRAPH_SCENE_INVALID_PIN_CURSOR"));
+        let error = scene_pins_remain(&conn, "project-a", "entry-a", 0, &mut check)
+            .expect_err("the probe refuses the same pin");
+        assert!(error
+            .to_string()
+            .contains("NIR1_GRAPH_SCENE_INVALID_PIN_CURSOR"));
+        assert_eq!(budget.rows(), 0);
     }
 }
