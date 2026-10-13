@@ -11,6 +11,7 @@ use crate::narrative_extraction::maintenance_runtime::{
     foreground_system_work_barrier_requested, AutomaticRunKind, DesiredWork,
     MaintenanceCycleControl, MaintenanceDispatchOutcome,
 };
+use crate::narrative_extraction::nir1_graph_index_maintenance::Nir1GraphCycleContext;
 use crate::Database;
 use rusqlite::OptionalExtension;
 
@@ -71,9 +72,44 @@ const ROUTE_REGISTRY: [RouteEntry; 3] = [
     },
 ];
 
+/// Pre-activation routes. They are deliberately outside `route_descriptors()`,
+/// the `route_descriptor_*` lookups and the policy parity set: a gated route is
+/// not part of the automatic production surface until PUB-G activates it.
+/// Their adapters receive the cycle's Graph context, so they cannot be
+/// invoked without the gate value that the context carries.
+type GatedDispatchAdapter = for<'a, 'b> fn(
+    &Database,
+    &DesiredWork,
+    Option<&MaintenanceCycleControl<'a>>,
+    &Nir1GraphCycleContext<'b>,
+) -> anyhow::Result<MaintenanceDispatchOutcome>;
+
+#[derive(Clone, Copy)]
+struct GatedRouteEntry {
+    descriptor: MaintenanceRouteDescriptor,
+    dispatch: GatedDispatchAdapter,
+}
+
+const GATED_PREACTIVATION_ROUTE: [GatedRouteEntry; 1] = [GatedRouteEntry {
+    descriptor: MaintenanceRouteDescriptor {
+        route_id: "nir1-graph-index-build",
+        run_kind: AutomaticRunKind::Nir1GraphIndexBuild,
+    },
+    dispatch: super::nir1_graph_index_maintenance::dispatch_graph_index_build,
+}];
+
 /// Return the complete closed route set for policy parity checks.
 pub fn route_descriptors() -> &'static [MaintenanceRouteDescriptor] {
     &ROUTE_DESCRIPTORS
+}
+
+/// Diagnostic identity of a gated pre-activation route. It is never returned
+/// by the production lookups above.
+pub(crate) fn gated_route_id_for_run_kind(run_kind: AutomaticRunKind) -> Option<&'static str> {
+    GATED_PREACTIVATION_ROUTE
+        .iter()
+        .find(|entry| entry.descriptor.run_kind == run_kind)
+        .map(|entry| entry.descriptor.route_id)
 }
 
 /// Return the descriptor for one automatic kind, if it is registered.
@@ -99,13 +135,28 @@ pub fn route_id_for_run_kind(run_kind: AutomaticRunKind) -> Option<&'static str>
     route_descriptor_for_run_kind(run_kind).map(|descriptor| descriptor.route_id)
 }
 
-/// Dispatch one validated work item through its registered production adapter.
+/// Dispatch one validated work item through its registered production adapter,
+/// or through a gated pre-activation adapter whose gate is open.
 pub(crate) fn dispatch_enabled_work(
     db: &Database,
     item: &DesiredWork,
     coordinates: Option<&MaintenanceContractCoordinates>,
     control: Option<&MaintenanceCycleControl<'_>>,
+    graph: &Nir1GraphCycleContext<'_>,
 ) -> anyhow::Result<MaintenanceDispatchOutcome> {
+    if let Some(gated) = GATED_PREACTIVATION_ROUTE
+        .iter()
+        .find(|entry| entry.descriptor.run_kind == item.run_kind)
+    {
+        // Re-check the gate before any SQL. A forged or stale item reaching
+        // this table while the gate is closed settles without a connection.
+        if !graph.gate_is_open() {
+            return Ok(MaintenanceDispatchOutcome::CompletedWithoutFinalization {
+                rediscover: false,
+            });
+        }
+        return (gated.dispatch)(db, item, control, graph);
+    }
     let entry = ROUTE_REGISTRY
         .iter()
         .find(|entry| entry.descriptor.run_kind == item.run_kind)
@@ -292,6 +343,28 @@ mod tests {
             AutomaticRunKind::RebuildDerived.route_id(),
             "dependency-rebuild-derived"
         );
+    }
+
+    #[test]
+    fn gated_graph_route_is_never_a_production_route() {
+        // The production registry stays the exact three-route parity set.
+        assert_eq!(route_descriptors().len(), 3);
+        let gated = AutomaticRunKind::Nir1GraphIndexBuild;
+        assert!(route_descriptors()
+            .iter()
+            .all(|descriptor| descriptor.run_kind != gated));
+        assert_eq!(route_descriptor_for_run_kind(gated), None);
+        assert_eq!(route_descriptor_by_id("nir1-graph-index-build"), None);
+        assert_eq!(route_id_for_run_kind(gated), None);
+        // Its identity exists only for diagnostics of the gated table.
+        assert_eq!(
+            gated_route_id_for_run_kind(gated),
+            Some("nir1-graph-index-build")
+        );
+        for production in AutomaticRunKind::all() {
+            assert_eq!(gated_route_id_for_run_kind(production), None);
+        }
+        assert_eq!(gated.route_id(), "nir1-graph-index-build");
     }
 
     #[test]

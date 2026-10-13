@@ -71,7 +71,6 @@ pub enum GraphWorkStage {
     CompleteRegistration,
     Coverage,
     Restore,
-    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     ColdReopen,
     Sort,
     Digest,
@@ -2343,7 +2342,9 @@ pub fn publish_nir1_entity_relation_index_in_tx(
     })
 }
 
-#[cfg(any(test, feature = "nir1-material-diagnostics"))]
+/// Owned-control publication for the gated maintenance route and the
+/// capacity diagnostics. The caller owns the write transaction, the no-wait
+/// connection scope and the finalization grant; this writer is unchanged.
 pub(crate) fn publish_nir1_entity_relation_index_in_tx_with_control(
     conn: &Connection,
     runtime: &NirChronicleIndexRuntime,
@@ -2357,9 +2358,8 @@ pub(crate) fn publish_nir1_entity_relation_index_in_tx_with_control(
 /// runtime's caller-owned transaction. This keeps cold-reopen validation under
 /// the same cancellation and foreground-preemption owner as build/publish.
 ///
-/// Capacity-diagnostics-only: no production reader reopens a registration
-/// outside a measured diagnostic mode.
-#[cfg(feature = "nir1-material-diagnostics")]
+/// Used by the gated maintenance route (closed until PUB-G) and the capacity
+/// diagnostics. No query or renderer path reaches it.
 pub(crate) fn cold_reopen_graph_index_with_control(
     conn: &Connection,
     project: &str,

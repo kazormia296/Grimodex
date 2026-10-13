@@ -428,6 +428,9 @@ fn insert_canonical_maintenance_run(
             format!(r#"{{"verifyContractVersion":"{VERIFY_RUN_KIND_CONTRACT_VERSION}"}}"#)
         }
         AutomaticRunKind::RebuildDerived => "{}".to_string(),
+        AutomaticRunKind::Nir1GraphIndexBuild => {
+            unreachable!("the gated Graph Index build is ledgerless")
+        }
     };
     let spec_value: serde_json::Value = serde_json::from_str(&spec_json).expect("valid spec JSON");
     let spec_digest = format!("sha256:{}", digest_plan(&spec_value));

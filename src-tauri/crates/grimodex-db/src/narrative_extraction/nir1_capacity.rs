@@ -650,6 +650,25 @@ pub(crate) fn with_attempt<T>(operation: impl FnOnce() -> anyhow::Result<T>) -> 
     operation()
 }
 
+/// Test-only: run `operation` under an exact pre-shaped attempt budget, so a
+/// route test can present an exhausted SQL budget or an elapsed deadline to
+/// the owner's `with_attempt` without changing any ratified number.
+#[cfg(test)]
+pub(crate) fn with_attempt_budget_for_test<T>(
+    budget: Arc<CapacityBudget>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    let _scope = AttemptScope(ATTEMPT.with(|slot| slot.replace(Some(budget))));
+    operation()
+}
+
+/// Test-only: mark `used` SQL progress counts as already charged to an
+/// attempt budget. `used == SQL_PROGRESS_LIMIT` makes the next count N+1.
+#[cfg(test)]
+pub(crate) fn set_used_steps_for_test(budget: &CapacityBudget, used: u64) {
+    budget.steps.store(used, Ordering::Relaxed);
+}
+
 /// Once validation returns, its owner must be able to record failure and
 /// release the exact Run/connection even when the validation budget is spent.
 pub(crate) fn without_attempt<T>(operation: impl FnOnce() -> T) -> T {

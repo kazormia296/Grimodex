@@ -84,6 +84,9 @@ fn request(run_kind: AutomaticRunKind) -> MaintenanceCycleRequest {
         AutomaticRunKind::Backfill => (LEGACY_BACKFILL_WORK_KEY, None),
         AutomaticRunKind::Verify => (VERIFY_WORK_KEY_PREFIX, Some(EPOCH_ID)),
         AutomaticRunKind::RebuildDerived => (REBUILD_DERIVED_WORK_KEY, Some(EPOCH_ID)),
+        AutomaticRunKind::Nir1GraphIndexBuild => {
+            unreachable!("the gated Graph Index build is ledgerless")
+        }
     };
     let work_key = if run_kind == AutomaticRunKind::Verify {
         format!("{work_key}{EPOCH_ID}")
@@ -593,6 +596,9 @@ fn completed_foreground_duplicate_validates_phase_outcome_before_idempotency() {
                         }
                         AutomaticRunKind::RebuildDerived => {
                             outcome["summaryDigest"] = json!("sha256:tampered");
+                        }
+                        AutomaticRunKind::Nir1GraphIndexBuild => {
+                            unreachable!("the gated Graph Index build is ledgerless")
                         }
                     }
                     Some(outcome.to_string())
