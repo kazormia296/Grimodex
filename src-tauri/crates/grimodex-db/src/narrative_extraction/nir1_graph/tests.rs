@@ -6973,8 +6973,10 @@ fn query_with_steps(
 //
 // What decides B here is its per-component guard on the saved documents, not the
 // counted bytes. B reads the stored payload and the stored reconciliation
-// envelope and refuses the whole build when either is over 6,291,456 B
-// (NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT). This padded shape stores an
+// envelope and refuses the whole build when either is over 6,291,456 B and the
+// Revision is approved (a typed capacity refusal, limit
+// persisted-revision-component-bytes; a Revision that is not approved is skipped
+// instead, whatever its size). This padded shape stores an
 // envelope of about 2.07x its counted bytes, so 2.5 MiB counted (envelope about
 // 5.4 MB) is inside the guard. Near the writer limit it is not: 3,145,728
 // counted bytes (payload + envelope about 9.7 MB, inside the 16 MiB whole set) is
@@ -7036,6 +7038,33 @@ fn b_publishes_a_revision_within_its_component_guard_that_the_c_query_refuses() 
 /// (2 MiB), and its stored envelope (about 2.07x the counted bytes for this
 /// padded shape) stays inside B's 6,291,456 B per-component guard.
 const B_COMPONENT_GUARD_CONTAINED_BYTES: usize = 2_621_440;
+
+// B-GUARD: the component refusal of an approved Revision reaches the C-query
+// worker through the roster that the reader's registration resolves again. The
+// worker reports it as a limit (`validation-capacity-exceeded`), not as `other`.
+#[test]
+fn an_approved_revision_over_the_component_limit_is_a_limit_refusal_for_the_worker() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.authority.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_proposal_revisions
+                SET payload_json = payload_json || printf('%.*c', ?1, ' ')
+              WHERE id = ?2",
+            params![i64::try_from(MAX_GRAPH_INPUT_BYTES)? + 1, fixture.revision],
+        )?;
+        Ok(())
+    })?;
+    let error = fixture
+        .authority
+        .with_read_transaction(|conn| read_eligibility_source(conn, PROJECT))
+        .expect_err("an approved Revision over the component limit must refuse the roster");
+    assert_eq!(
+        worker_refusal_cause(&error, false, false),
+        WorkerCause::ValidationCapacityExceeded,
+        "{error:#}"
+    );
+    Ok(())
+}
 
 // G-2 (RB-2): a candidate of exactly the per-Revision preflight limit is an
 // ordinary Graph contribution on the production worker configuration: the
