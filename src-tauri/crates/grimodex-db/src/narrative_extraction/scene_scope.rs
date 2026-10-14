@@ -25,6 +25,8 @@ use super::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+#[cfg(test)]
+use super::nir1_capacity::project_read_probe;
 use super::task_leases::with_immediate_transaction;
 use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
@@ -136,6 +138,8 @@ fn read_registry_in_tx(
     conn: &Connection,
     project_id: &str,
 ) -> Result<NarrativeSceneScopeRegistryV1> {
+    #[cfg(test)]
+    project_read_probe::record(project_read_probe::Read::RegistryFull);
     let Some((registry_version, timeline, worldline, layer, version, source_token)) = conn
         .query_row(
             "SELECT registry_version, timeline_refs_json, worldline_refs_json,
@@ -350,6 +354,8 @@ pub fn read_narrative_scene_scope(
         !project_id.trim().is_empty() && !scene_id.trim().is_empty(),
         "scene scope projectId and sceneId are required"
     );
+    #[cfg(test)]
+    project_read_probe::record(project_read_probe::Read::SceneScope);
     let storage_tables_present = table_exists(conn, "narrative_scope_registries")?
         && table_exists(conn, "narrative_scene_scope_bindings")?;
     if !storage_tables_present {
@@ -706,24 +712,42 @@ fn insert_binding_in_tx(conn: &Connection, binding: &NarrativeSceneScopeBindingV
     Ok(())
 }
 
-/// Digest of the Native-owned Scope observations that extend the project's
-/// base Scope authority: the registry (revision, source token) and every
-/// Scene binding (version, source token, updatedAt included).
+/// The Scene-scope part of a project's Scope authority: its digest, which is
+/// part of the authority's revision token, and, when asked for, the binding of
+/// every Scene as a single-Scene read ([`read_narrative_scene_scope`]) returns
+/// it. The digest read already parses and validates every binding row against
+/// the registry, the tree and the principals; keeping the valid ones lets a
+/// caller that needs several Scenes' bindings in one snapshot read them once.
 ///
+/// The digest covers the Native-owned Scope observations that extend the
+/// project's base Scope authority: the registry (revision, source token) and
+/// every Scene binding (version, source token, updatedAt included).
 /// `tree_nodes.version`/`updated_at` are deliberately not part of it. ADR009
 /// keeps titles, bodies and display labels, and operations on empty folders
 /// and notes, out of this Source, so the Source must not move for them.
-pub(crate) fn scope_extension_digest(
+#[derive(Debug)]
+pub(crate) struct ScopeExtension {
+    pub(crate) digest: String,
+    /// Empty unless the read was asked to collect them. A Scene whose row is
+    /// missing or fails any check a single-Scene read makes is absent.
+    pub(crate) scene_bindings: BTreeMap<String, NarrativeSceneScopeBindingV1>,
+}
+
+pub(crate) fn read_scope_extension(
     conn: &Connection,
     project_id: &str,
-) -> Result<Option<String>> {
+    collect_scene_bindings: bool,
+) -> Result<ScopeExtension> {
     anyhow::ensure!(
         table_exists(conn, "narrative_scope_registries")?
             && table_exists(conn, "narrative_scene_scope_bindings")?,
         "NEX_SCENE_SCOPE_AUTHORITY_UNAVAILABLE: scene scope storage tables are missing"
     );
+    #[cfg(test)]
+    project_read_probe::record(project_read_probe::Read::ScopeExtension);
     let registry = read_registry_in_tx(conn, project_id)?;
     let (registry_revision, registry_source_token, _) = read_registry_row(conn, project_id)?;
+    let mut scene_bindings = BTreeMap::new();
     let mut bindings = Vec::new();
     let mut statement = conn.prepare(
         "SELECT b.scene_id, b.scene_incarnation_id, b.compatibility_marker,
@@ -832,7 +856,12 @@ pub(crate) fn scope_extension_digest(
             Ok(Some(binding))
         })();
         match binding {
-            Ok(Some(binding)) => bindings.push(serde_json::to_value(binding)?),
+            Ok(Some(binding)) => {
+                if collect_scene_bindings {
+                    scene_bindings.insert(binding.scene_id.clone(), binding.clone());
+                }
+                bindings.push(serde_json::to_value(binding)?)
+            }
             Ok(None) => {}
             Err(_) => bindings.push(json!({
                 "sceneId": scene_id_hint,
@@ -841,7 +870,7 @@ pub(crate) fn scope_extension_digest(
             })),
         }
     }
-    Ok(Some(grimodex_core::canonical_json_digest(&json!({
+    let digest = grimodex_core::canonical_json_digest(&json!({
         "contractId": narrative_scene_scope::NARRATIVE_SCENE_SCOPE_CONTRACT_ID,
         "registry": registry,
         // Native-owned monotonic/source observations remain in the authority
@@ -860,7 +889,11 @@ pub(crate) fn scope_extension_digest(
         "registryRevision": registry_revision,
         "registrySourceToken": registry_source_token,
         "bindings": bindings,
-    }))?))
+    }))?;
+    Ok(ScopeExtension {
+        digest,
+        scene_bindings,
+    })
 }
 
 fn scene_scope_digest_raw_value(value: &SqlValue) -> Value {
@@ -1561,6 +1594,8 @@ pub fn update_narrative_scene_scope_registry(
 }
 
 fn read_registry_row(conn: &Connection, project_id: &str) -> Result<(i64, String, String)> {
+    #[cfg(test)]
+    project_read_probe::record(project_read_probe::Read::RegistryRow);
     let row: Option<(i64, String, String)> = conn
         .query_row(
             "SELECT version, source_token, updated_at

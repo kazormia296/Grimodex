@@ -112,14 +112,25 @@ original B/Editor prerequisites and all final gates remain mandatory.
   double-charging the observation alias. Numerical CPU inventory and recipes
   are unchanged; disjoint environment placement is unsupported, not zero demand.
 - Fixture DB scenario starts from the acquired official schema DB. Each of
-  the literal2/140 materials reserves one4KiB leaf page for each of
+  the literal2/164 materials reserves one4KiB leaf page for each of
   21 Source/Codex table-index/proposal-payload surfaces; a revision
   separately reserves one page for each of93 narrative/qualification
-  table-index objects and0/3 actual A3 scope refs. Grouped authority/schema
+  table-index objects and0/5 actual A3 scope refs; and each of the 0/60
+  materialless filler Scenes the Q512 project holds (CQ-AVAIL: a Scene row and
+  its Scene Scope binding, no material) reserves one page for each of 20
+  table-index objects its rows write: tree_nodes (the table, seven indexes and
+  the primary-key autoindex), its two FTS5 tables (three and four written
+  shadow tables; the fixture project is English, so both triggers fire) and
+  narrative_scene_scope_bindings (the table, two indexes and the primary-key
+  autoindex). Grouped authority/schema
   objects are NOT multiplied by materials. This explicit density scenario is
-  not SQLite page_count or100000 SQL steps as rows. Whole WAL
+  not SQLite page_count or100000 SQL steps as rows. Pages are the 679-page
+  official baseline plus 21 per material, 93 per revision, the scope refs and
+  20 per filler Scene: Q2 is 814 pages and Q512 is 5421
+  (679 + 21*164 + 93 + 5 + 20*60). Whole WAL
   images/frame headers,32KiB SHM regions, journals and construction images are
-  separate. Producer owns7/3 pristine+input copies. Official backup, standalone
+  separate (a WAL adds its 32-byte header and 24 bytes per page, rounded up to
+  whole 4KiB pages). Producer owns7/3 pristine+input copies. Official backup, standalone
   and manifest remain positive and simultaneous. The full original C2-ZC
   construction inventory is charged to Node's os.tmpdir() (`node-temp`), as
   createC2ZcRestoreFixtureContext actually allocates it. Its retained original
@@ -127,7 +138,11 @@ original B/Editor prerequisites and all final gates remain mandatory.
   `workspace`; only those three roles are copied, and staged publication is a
   rename, not another copy. Distinct devices each need their own capacity;
   aliases sum these two distinct allocations once each. This intentionally broad
-  page-density assumption is not a SQLite page_count observation.
+  page-density assumption is not a SQLite page_count observation. The journey
+  inventories below keep the size class #610 fixed (the schema baseline plus the
+  3715-page Q512 mutation image): they size product-journey writes, not this
+  capacity fixture, which no journey harness opens, so the Q512 re-derivation
+  above does not change them.
 - Each of33 journey cases reserves the whole case/restarts/owned workspaces,
   schema+Q512 mutation image, full desktop/renderer/log image as userData profile envelope,
   full renderer-assets/RGBA surface image as disk/GPU cache envelope, complete logs/receipts, additional workspace image,
@@ -244,7 +259,7 @@ privileged hold/late attachment/control protocol or trial/replacement root.
 existing immutable input/estimate. Its task coverage is derived from all68
 consumers; no replacement commands, reduced default12, fixture change or new
 profile/measurement framework. All14 positive byte-only terms add to
-**13206208512B** (other-full-consumers charges the one task slot) before the27 separately charged surface/probe scenarios and
+**13290184704B** (other-full-consumers charges the one task slot) before the27 separately charged surface/probe scenarios and
 sole-root tmpfs writes. This is a deliberately conservative **planning scenario**,
 not an RSS observation, hard cap, free-memory threshold or claim an installed
 runner fits. No capacity value was used to choose these numbers.
@@ -264,7 +279,7 @@ artifact and shaped-reference hashes above retain their original scopes:
 | Daemon/clients | One16MiB continuous foreground daemon plus two16MiB overlapping client/malformed-daemon images. Not replacement owners or second qualifications; no daemon installation/semantic success inferred. Python probes have separate interpreter terms. |
 | Electron/native | Seven independently charged application ensembles, **each** with128MiB main +256MiB renderer +64MiB utility/GPU/zygote combined working sets **plus one288808960B native-output and one90669056B ORT-root full-residency hypothesis per ensemble**. Thus seven native-output images plus seven ORT-root images contribute2656346112B; seven448MiB process working sets contribute3288334336B, totaling5944680448B. These are the seven canonical journey shard consumers, not seven B owners. Their dependencies need not allow seven apps simultaneously: the additive all-shard scenario deliberately takes no scheduler/cleanup or cross-process sharing credit. Charging only one native/ORT pair for the whole group would instead give3667812352B, a2276868096B reduction; that is NOT the chosen hypothesis. These acquired native38023515626/1 payloads are not measured RSS, guaranteed loaded extents, proven private physical pages or sharing savings. Native dictionary/ORT initialization, Chromium process multiplicity and restarted app heaps can exceed the scenario; pagecache/sharing is not subtracted. Existing framebuffer/shared surfaces/tmpfs are separately charged. |
 | Pipes/kernel | Nineteen consumer paths (seven journeys plus default12 slots), each sixteen64KiB pipe/socket/stream backing images. This covers supervisor/probe stdio and listener buffers as an additive topology envelope, not actual kernel pipe sizes or a cap. Slab/page-table/socket growth beyond it is included in the independent pressure term, not treated as measured zero. |
-| Other Full consumers | Twelve1GiB task-slot working sets (each256MiB coordinator plus four192MiB nested worker/compiler/test images), covering setup/install, JavaScript/typecheck/lint/unit/browser/electron tests, Cargo/Rust/tests/DB, contracts/security, CPU and report/artifact operations. Deliberately charged even with all seven journey ensembles above: **no unproven scheduler/serial/fail-fast savings**. Not every task actually uses four workers; nested test workers/rustc/AST allocations may exceed this finite typical-current-workload hypothesis. Add the existing1155235840B four-link-image scratch hypothesis (native output reference),1575354368B locked CPU hypothesis (1038483456B whole acquired environment residency plus512MiB tensor/import/conversion scratch),287883264B synthetic DB working images (all7 Q2 +3 Q512 inventories and official fixture), and440786944B setup hypothesis (two complete220393472B Node payload working copies). Setup38011068810/1, DB38007676893/1, CPU38017460514/1 and native38023515626/1 remain allocation references, **not memory measurements**. This additive cross-consumer model does not promise compiler/tensor/model/allocation maxima for arbitrary inputs. |
+| Other Full consumers | Twelve1GiB task-slot working sets (each256MiB coordinator plus four192MiB nested worker/compiler/test images), covering setup/install, JavaScript/typecheck/lint/unit/browser/electron tests, Cargo/Rust/tests/DB, contracts/security, CPU and report/artifact operations. Deliberately charged even with all seven journey ensembles above: **no unproven scheduler/serial/fail-fast savings**. Not every task actually uses four workers; nested test workers/rustc/AST allocations may exceed this finite typical-current-workload hypothesis. Add the existing1155235840B four-link-image scratch hypothesis (native output reference),1575354368B locked CPU hypothesis (1038483456B whole acquired environment residency plus512MiB tensor/import/conversion scratch),371859456B synthetic DB working images (all7 Q2 +3 Q512 inventories and official fixture), and440786944B setup hypothesis (two complete220393472B Node payload working copies). Setup38011068810/1, DB38007676893/1, CPU38017460514/1 and native38023515626/1 remain allocation references, **not memory measurements**. This additive cross-consumer model does not promise compiler/tensor/model/allocation maxima for arbitrary inputs. |
 | Pressure uncertainty | Independent1215430656B reserve: twelve64MiB task-growth images, one288808960B native-size exceptional allocator/kernel/page-table image, and one121315328B complete-log-image dirty-page/cache scenario. Separate from ordinary heaps, link/CPU/DB/setup hypotheses, surfaces and private tmpfs. It covers unsampled process/kernel/pagecache/log growth only at this practical scale; it is not a percentage, all-pressure upper bound or maximum allowed log size. |
 
 All hypotheses are exposed to complete changed-unit independent P2 credibility

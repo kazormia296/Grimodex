@@ -53,7 +53,7 @@ impl std::fmt::Display for CQueryWorkerUnavailable {
 
 impl std::error::Error for CQueryWorkerUnavailable {}
 
-/// Accept one complete published frame for `request`. Only NQG2 validates;
+/// Accept one complete published frame for `request`. Only NQG3 validates;
 /// the project, query Scene and seed must be the request's, and a refusal
 /// becomes a typed [`CQueryWorkerUnavailable`]. Pure: no process state.
 fn accept_published_frame<'a>(
@@ -72,7 +72,9 @@ fn accept_published_frame<'a>(
     if let Some(reason) = view.unavailable_reason() {
         return Err(CQueryWorkerUnavailable { reason }.into());
     }
-    // validate() already proved a non-empty scope and a positive generation.
+    // validate() already proved that a Scope revision, when there is one, is
+    // non-empty (and present whenever the Graph has a node), and a positive
+    // generation.
     let graph = view
         .graph()
         .ok_or_else(|| anyhow!("NIR1_GRAPH_WORKER_FRAME_INVALID"))?;
@@ -3246,7 +3248,7 @@ mod tests {
     }
 
     fn unavailable_test_frame_for(project: &str, reason: &str) -> Vec<u8> {
-        let mut frame = b"NQG2\0".to_vec();
+        let mut frame = b"NQG3\0".to_vec();
         for value in [project, "s", reason] {
             frame.extend_from_slice(&(value.len() as u32).to_le_bytes());
             frame.extend_from_slice(value.as_bytes());
@@ -3511,15 +3513,17 @@ mod tests {
             assert!(error.downcast_ref::<CQueryWorkerUnavailable>().is_none());
             assert_eq!(error.to_string(), "NIR1_GRAPH_FRAME_REASON");
         }
-        // Only NQG2 is accepted.
-        let mut retired = unavailable_test_frame(TEST_REASON);
-        retired[..4].copy_from_slice(b"NQG1");
-        assert_eq!(
-            accept_published_frame(&retired, &request)
-                .expect_err("NQG1 frame")
-                .to_string(),
-            "NIR1_GRAPH_FRAME_VERSION"
-        );
+        // Only NQG3 is accepted.
+        for retired_magic in [b"NQG1", b"NQG2"] {
+            let mut retired = unavailable_test_frame(TEST_REASON);
+            retired[..4].copy_from_slice(retired_magic);
+            assert_eq!(
+                accept_published_frame(&retired, &request)
+                    .expect_err("retired frame")
+                    .to_string(),
+                "NIR1_GRAPH_FRAME_VERSION"
+            );
+        }
         assert_eq!(
             accept_published_frame(&unavailable_test_frame_for("other", TEST_REASON), &request)
                 .expect_err("another project")

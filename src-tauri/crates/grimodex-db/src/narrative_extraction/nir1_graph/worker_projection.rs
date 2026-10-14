@@ -1,4 +1,4 @@
-//! Owned projection of one validated NQG2 frame. Built while the result lease
+//! Owned projection of one validated NQG3 frame. Built while the result lease
 //! is held; nothing here borrows the Native region. Counts are checked before
 //! any allocation. Manuscript bodies are never part of a frame.
 use std::sync::Arc;
@@ -25,7 +25,8 @@ use super::{
 pub struct Nir1GraphProjection {
     pub project_id: String,
     pub query_scene_id: String,
-    pub scope_revision: String,
+    /// None exactly when no Revision qualified: an available, empty Graph.
+    pub scope_revision: Option<String>,
     /// The same owned type as the in-process reader.
     pub graph: Nir1QualifiedGraph,
     /// Admission→lease of the worker query. Diagnostic only.
@@ -68,13 +69,17 @@ impl Nir1GraphProjection {
             let node = node?;
             let entity = Arc::new(entity_input(&node.entity)?);
             let mut bindings = Vec::with_capacity(node.binding_count());
-            for binding in node.bindings() {
-                bindings.push(Arc::new(material_binding(&binding?)));
+            let mut binding_scopes = Vec::with_capacity(node.binding_count());
+            for item in node.bindings() {
+                let item = item?;
+                bindings.push(Arc::new(material_binding(&item.binding)));
+                binding_scopes.push(Arc::new(scope_binding(&item.scope)));
             }
             nodes.push(Nir1GraphNode {
                 entity,
                 hop: node.hop,
                 bindings,
+                binding_scopes,
             });
         }
 
@@ -92,7 +97,7 @@ impl Nir1GraphProjection {
         Ok(Self {
             project_id: view.project().to_owned(),
             query_scene_id: view.query_scene().to_owned(),
-            scope_revision: graph.scope_revision().to_owned(),
+            scope_revision: graph.scope_revision().map(str::to_owned),
             graph: Nir1QualifiedGraph {
                 seed_entity_id: graph.seed().to_owned(),
                 generation: graph.generation(),
@@ -111,7 +116,7 @@ impl Nir1GraphProjection {
             status: "available",
             project_id: self.project_id,
             query_scene_id: self.query_scene_id,
-            scope_revision: Some(self.scope_revision),
+            scope_revision: self.scope_revision,
             graph: Some(self.graph),
             reason: None,
         }

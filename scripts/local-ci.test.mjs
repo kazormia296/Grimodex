@@ -496,7 +496,7 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
   assert.match(allocatorSource, new RegExp(`fn ${allocatorTest}\\(`));
   assert.ok(
     workerScriptBody.includes(
-      '"id":"Q512/R2/A3-eligible-shared","qualifiedMaterials":140,"qualifiedRevisions":1,"ineligibleCandidates":0',
+      '"id":"Q512/R2/A3-eligible-shared","qualifiedMaterials":164,"qualifiedRevisions":1,"ineligibleCandidates":0',
     ),
   );
   assert.ok(

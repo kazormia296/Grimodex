@@ -67,11 +67,15 @@ use super::repository::{
     REVIEW_RESUMABLE_RUN_PREDICATE_SQL,
 };
 use super::revision_eligibility::pending;
-use super::semantic_epoch::get_current_epoch;
+use super::semantic_epoch::{get_current_epoch, CurrentEpoch};
 use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
+
+mod project_reads;
+pub(crate) use project_reads::Nir1ProjectReads;
+use project_reads::{load_a3_query_context, A3QueryOutcome, SceneScopes};
 
 /// Reserved ProposalSet kind. Generic proposal persistence cannot use this
 /// value; the typed adapter below is the only writer for this contract.
@@ -1157,12 +1161,31 @@ pub(crate) fn typed_source_token_for_incremental(
     resolve_typed_source_token(conn, project_id, source_object_identity, None)
 }
 
+/// The project's latest Semantic Epoch. A Graph query reads it once for all
+/// its Revisions ([`Nir1ProjectReads`]); every other caller reads it here.
+fn read_current_epoch(conn: &Connection, project_id: &str) -> anyhow::Result<Option<CurrentEpoch>> {
+    #[cfg(test)]
+    super::nir1_capacity::project_read_probe::record(
+        super::nir1_capacity::project_read_probe::Read::CurrentEpoch,
+    );
+    get_current_epoch(conn, project_id)
+}
+
 fn typed_run_matches_current_epoch(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
+    shared: Option<&Nir1ProjectReads>,
 ) -> anyhow::Result<bool> {
-    let Some(epoch) = get_current_epoch(conn, project_id)? else {
+    let read_epoch;
+    let epoch = match shared {
+        Some(shared) => shared.epoch(),
+        None => {
+            read_epoch = read_current_epoch(conn, project_id)?;
+            read_epoch.as_ref()
+        }
+    };
+    let Some(epoch) = epoch else {
         return Ok(false);
     };
     let run_epoch: Option<String> = conn
@@ -1188,17 +1211,26 @@ fn read_typed_canonical_freshness(
     revision_id: &str,
     material: &MaterialBasis,
     scope_authority: &NarrativeProjectScopeAuthorityV1,
+    shared: Option<&Nir1ProjectReads>,
 ) -> anyhow::Result<Option<Nir1EntityRelationFreshness>> {
     if !is_generic_freshness_canonical(conn)? {
         return Ok(None);
     }
-    let Some(epoch) = get_current_epoch(conn, project_id)? else {
+    let read_epoch;
+    let epoch = match shared {
+        Some(shared) => shared.epoch(),
+        None => {
+            read_epoch = read_current_epoch(conn, project_id)?;
+            read_epoch.as_ref()
+        }
+    };
+    let Some(epoch) = epoch else {
         return Ok(None);
     };
     // A restore/migration creates a new Epoch and invalidates every old Run.
     // This check is deliberately tied to the existing Run/Epoch authority,
     // so rebuilding the old rows cannot make this Revision eligible again.
-    if !typed_run_matches_current_epoch(conn, project_id, run_id)? {
+    if !typed_run_matches_current_epoch(conn, project_id, run_id, shared)? {
         return Ok(None);
     }
 
@@ -1337,7 +1369,7 @@ fn read_typed_canonical_freshness(
         }
     }
     Ok(Some(Nir1EntityRelationFreshness {
-        semantic_epoch_id: epoch.id,
+        semantic_epoch_id: epoch.id.clone(),
         dependency_set_digest: expected_digest,
         declaration_set_id: declaration.declaration_set_id,
         declaration_set_digest: declaration.dependency_set_digest,
@@ -1399,7 +1431,7 @@ fn create_in_tx(
     bundle.revision_id = revision_id.clone();
     validate_entity_relation_bundle(&bundle)
         .map_err(|error| anyhow::anyhow!("NIR1_ENTITY_RELATION_INPUT_INVALID: {error}"))?;
-    let authority = validate_live_sources(conn, &request.project_id, &bundle)?;
+    let authority = validate_live_sources(conn, &request.project_id, &bundle, None)?;
 
     let payload = StoredNir1EntityRelationPayload {
         schema_version: 1,
@@ -1885,19 +1917,24 @@ fn read_typed_revision_core(
         project_id,
         revision_id,
         allow_draft,
+        None,
         |revision, _authority| Ok(revision),
     )?
     .into_current_read())
 }
 
+/// The typed current reader. `shared` is the project-level reads a Graph query
+/// made once for all its Revisions; without it this reads them itself, as
+/// every other caller does.
 fn read_typed_revision_core_with_scope_authority<T>(
     conn: &Connection,
     project_id: &str,
     revision_id: &str,
     allow_draft: bool,
+    shared: Option<&Nir1ProjectReads>,
     on_available: impl FnOnce(
         Box<Nir1EntityRelationRevision>,
-        NarrativeProjectScopeAuthorityV1,
+        &NarrativeProjectScopeAuthorityV1,
     ) -> anyhow::Result<T>,
 ) -> anyhow::Result<TypedRevisionCoreRead<T>> {
     if conn.is_autocommit() {
@@ -2036,7 +2073,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
     // Epoch rotation is an irreversible invalidation boundary. Even if an
     // old Freshness row is rebuilt in place and the old decision remains in
     // the ledger, the old Run cannot qualify this Revision after restore.
-    if !typed_run_matches_current_epoch(conn, project_id, &run_id)? {
+    if !typed_run_matches_current_epoch(conn, project_id, &run_id, shared)? {
         return Ok(unavailable("revision-restore-invalidated"));
     }
     let payload: StoredNir1EntityRelationPayload =
@@ -2110,7 +2147,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
     if validate_entity_relation_bundle(&payload.bundle).is_err() {
         return Ok(unavailable("source-revision-changed"));
     }
-    let authority = match validate_live_sources(conn, project_id, &payload.bundle) {
+    let authority = match validate_live_sources(conn, project_id, &payload.bundle, shared) {
         Ok(authority) => authority,
         Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(unavailable("source-revision-changed")),
@@ -2148,6 +2185,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
         revision_id,
         &expected_material,
         &authority,
+        shared,
     )? {
         Some(snapshot) => snapshot,
         None => return Ok(unavailable("canonical-freshness-unavailable")),
@@ -2168,7 +2206,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
     });
     if human_approved {
         Ok(TypedRevisionCoreRead::Available(on_available(
-            revision, authority,
+            revision, &authority,
         )?))
     } else {
         Ok(TypedRevisionCoreRead::Draft { revision })
@@ -2189,6 +2227,35 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     revision_id: &str,
     query_scene_id: &str,
 ) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
+    evaluate_disclosure(conn, project_id, revision_id, query_scene_id, None)
+}
+
+/// [`evaluate_nir1_entity_relation_disclosure`] for a caller that evaluates
+/// several Revisions against one query Scene in one read snapshot: the
+/// project-level reads in `shared` were made once, so this reads only what
+/// belongs to the Revision. The result is the one the unshared evaluation
+/// gives.
+pub(crate) fn evaluate_nir1_entity_relation_disclosure_shared(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+    query_scene_id: &str,
+    shared: &Nir1ProjectReads,
+) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
+    anyhow::ensure!(
+        shared.is_for(project_id, query_scene_id),
+        "NIR1_ENTITY_RELATION_A3_SHARED_READS_MISMATCH"
+    );
+    evaluate_disclosure(conn, project_id, revision_id, query_scene_id, Some(shared))
+}
+
+fn evaluate_disclosure(
+    conn: &Connection,
+    project_id: &str,
+    revision_id: &str,
+    query_scene_id: &str,
+    shared: Option<&Nir1ProjectReads>,
+) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
     anyhow::ensure!(
         !conn.is_autocommit(),
         "NIR1_ENTITY_RELATION_A3_REQUIRES_READ_TRANSACTION"
@@ -2208,6 +2275,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
         project_id,
         revision_id,
         false,
+        shared,
         |revision, authority| {
             evaluate_nir1_entity_relation_disclosure_with_authority(
                 conn,
@@ -2216,6 +2284,7 @@ pub fn evaluate_nir1_entity_relation_disclosure(
                 query_scene_id,
                 revision,
                 authority,
+                shared,
             )
         },
     )?;
@@ -2236,7 +2305,8 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
     revision_id: &str,
     query_scene_id: &str,
     revision: Box<Nir1EntityRelationRevision>,
-    authority: NarrativeProjectScopeAuthorityV1,
+    authority: &NarrativeProjectScopeAuthorityV1,
+    shared: Option<&Nir1ProjectReads>,
 ) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
     anyhow::ensure!(
         revision.project_id == project_id && revision.revision_id == revision_id,
@@ -2251,97 +2321,50 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
     // comparator. Recomputing it per pair would both waste work and make it
     // too easy for callers to accidentally mix axes.
     check_active_work(conn)?;
-    let story_statuses = build_a3_story_status_index(&authority);
+    let own_story_statuses;
+    let story_statuses = match shared {
+        Some(shared) => shared.story_statuses(),
+        None => {
+            own_story_statuses = build_a3_story_status_index(authority);
+            &own_story_statuses
+        }
+    };
     check_active_work(conn)?;
 
-    let query_source = match super::retrieval_admission::read_retrieval_scene_source(
-        conn,
-        project_id,
-        query_scene_id,
-    )? {
-        super::retrieval_admission::RetrievalSceneSourceRead::Available(source)
-            if !source.archived =>
-        {
-            source
+    // The gates on the query Scene do not depend on the Revision: a query that
+    // evaluates several of them decided them once, and each meets that outcome
+    // at the place the gates run.
+    let scenes = match shared {
+        Some(shared) => shared.scene_scopes(),
+        None => SceneScopes::Read { conn, project_id },
+    };
+    let own_query;
+    let query = match shared {
+        Some(shared) => shared.query()?,
+        None => {
+            own_query = load_a3_query_context(
+                conn,
+                project_id,
+                query_scene_id,
+                authority,
+                story_statuses,
+                &scenes,
+            )?;
+            &own_query
         }
-        _ => {
+    };
+    let query = match query {
+        A3QueryOutcome::Ready(query) => query,
+        A3QueryOutcome::Unavailable(reason) => {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-                reason: "a3-query-scene-unavailable".into(),
+                reason: (*reason).into(),
             });
         }
     };
-    let axis = match super::retrieval_admission::scene_axis::resolve(
-        &authority,
-        &query_source.phase_resolution_mode,
-        query_scene_id,
-    ) {
-        Ok(axis) => axis,
-        Err(error) if is_validation_terminated(&error) => return Err(error),
-        Err(_) => {
-            return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-                reason: "a3-query-axis-unavailable".into(),
-            });
-        }
-    };
-    let Some(effective_axis) = axis.axis_used.as_deref() else {
-        return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-            reason: "a3-query-axis-unavailable".into(),
-        });
-    };
-    let Some(query_mapping) = authority
-        .mappings
-        .iter()
-        .find(|mapping| mapping.scene_ref == format!("scene:{query_scene_id}"))
-    else {
-        return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-            reason: "a3-query-scene-unavailable".into(),
-        });
-    };
-    if effective_axis == "story"
-        && !matches!(
-            story_statuses.status(&query_mapping.scene_ref),
-            A3StoryKeyStatus::Resolved(_)
-        )
-    {
-        return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-            reason: "a3-query-axis-unavailable".into(),
-        });
-    }
-
-    let query_scope =
-        match super::scene_scope::read_narrative_scene_scope(conn, project_id, query_scene_id) {
-            Ok(scope) => scope,
-            Err(error) if is_validation_terminated(&error) => return Err(error),
-            Err(_) => {
-                return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-                    reason: "a3-query-scope-unavailable".into(),
-                });
-            }
-        };
-    if query_scope.binding.compatibility_marker != NarrativeScopeCompatibilityMarkerV1::Explicit
-        || !query_identity_is_resolved(&query_scope.binding.query_identity)
-    {
-        // Extended profile has no legacy/unknown/unresolved fallback.  In
-        // particular a query Any is never manufactured from a missing value.
-        return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-            reason: "a3-query-scope-unavailable".into(),
-        });
-    }
-    let query_viewpoint = match read_scene_viewpoint(conn, project_id, query_scene_id) {
-        Ok(viewpoint) => viewpoint,
-        Err(error) if is_validation_terminated(&error) => return Err(error),
-        Err(error)
-            if error.downcast_ref::<rusqlite::Error>().is_some()
-                || error.downcast_ref::<std::io::Error>().is_some() =>
-        {
-            return Err(error)
-        }
-        Err(_) => {
-            return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
-                reason: "a3-query-viewpoint-unavailable".into(),
-            });
-        }
-    };
+    let query_mapping = &authority.mappings[query.mapping_index];
+    let effective_axis = query.effective_axis.as_str();
+    let query_scope = &query.scope;
+    let query_viewpoint = query.viewpoint.as_deref();
     let query_scope_authority_revision = authority.source.revision_token.clone();
     let mut material_scene_proofs = Vec::new();
     let mut proof_by_scene = HashMap::<String, usize>::new();
@@ -2355,7 +2378,7 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
                 reason: "a3-scope-authority-stale".into(),
             });
         }
-        let Some(source_mapping) = find_reading_mapping(&authority, &entity.scope.reading) else {
+        let Some(source_mapping) = find_reading_mapping(authority, &entity.scope.reading) else {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                 reason: "a3-reading-scope-unavailable".into(),
             });
@@ -2373,11 +2396,7 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
             });
         };
         if !proof_by_scene.contains_key(source_scene_id) {
-            let source_scope = match super::scene_scope::read_narrative_scene_scope(
-                conn,
-                project_id,
-                source_scene_id,
-            ) {
+            let source_scope = match scenes.binding(source_scene_id) {
                 Ok(scope) => scope,
                 Err(error) if is_validation_terminated(&error) => return Err(error),
                 Err(_) => {
@@ -2386,17 +2405,13 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
                     });
                 }
             };
-            if source_scope.binding.compatibility_marker
-                != NarrativeScopeCompatibilityMarkerV1::Explicit
-                || !material_constraints_match_query(&source_scope.binding, &query_scope.binding)
+            if source_scope.compatibility_marker != NarrativeScopeCompatibilityMarkerV1::Explicit
+                || !material_constraints_match_query(&source_scope, query_scope)
                 || !principal_matches(
-                    &source_scope.binding.knowledge_holder,
-                    &query_scope.binding.knowledge_holder,
+                    &source_scope.knowledge_holder,
+                    &query_scope.knowledge_holder,
                 )
-                || !principal_matches(
-                    &source_scope.binding.audience,
-                    &query_scope.binding.audience,
-                )
+                || !principal_matches(&source_scope.audience, &query_scope.audience)
             {
                 return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                     reason: "a3-material-scope-mismatch".into(),
@@ -2405,8 +2420,8 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
             let index = material_scene_proofs.len();
             material_scene_proofs.push(Nir1EntityRelationMaterialSceneProof {
                 scene_id: source_scene_id.to_owned(),
-                scene_incarnation_id: source_scope.binding.scene_incarnation_id,
-                scene_scope_token: source_scope.binding.source_token,
+                scene_incarnation_id: source_scope.scene_incarnation_id,
+                scene_scope_token: source_scope.source_token,
             });
             proof_by_scene.insert(source_scene_id.to_owned(), index);
         }
@@ -2415,10 +2430,10 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
             conn,
             project_id,
             &entity.entity_id,
-            &authority,
+            authority,
             query_mapping,
             effective_axis,
-            &story_statuses,
+            story_statuses,
         )?;
         if let Some(reason) = reveal.failure_reason {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
@@ -2433,24 +2448,24 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
         check_active_work(conn)?;
         let phase_resolution = evaluate_a3_phase(
             &entity.scope.phase,
-            &authority,
+            authority,
             query_mapping,
-            &query_source.phase_resolution_mode,
+            &query.phase_resolution_mode,
             effective_axis,
             &phases,
-            &story_statuses,
+            story_statuses,
         );
         check_active_work(conn)?;
         if let Some(reason) = evaluate_a3_entity_scope(
             conn,
             project_id,
             entity,
-            &authority,
+            authority,
             query_mapping,
-            query_viewpoint.as_deref(),
+            query_viewpoint,
             effective_axis,
             &reveal,
-            &story_statuses,
+            story_statuses,
             &phase_resolution,
         )? {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
@@ -2488,7 +2503,7 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
     let reveal_state_token = canonical_json_digest(&json!({
         "projectId": project_id,
         "querySceneId": query_scene_id,
-        "phaseResolutionMode": query_source.phase_resolution_mode,
+        "phaseResolutionMode": query.phase_resolution_mode,
         "effectiveAxis": effective_axis,
         "scopeAuthorityRevision": query_scope_authority_revision,
         "queryViewpoint": query_viewpoint,
@@ -2502,12 +2517,12 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
             decision_token,
             freshness_token,
             query_scene_id: query_scene_id.to_owned(),
-            query_scene_source_token: query_source.query_source.revision_token,
-            query_scene_incarnation_id: query_scope.binding.scene_incarnation_id,
-            query_scene_scope_token: query_scope.binding.source_token,
+            query_scene_source_token: query.source_token.clone(),
+            query_scene_incarnation_id: query_scope.scene_incarnation_id.clone(),
+            query_scene_scope_token: query_scope.source_token.clone(),
             scope_authority_revision: query_scope_authority_revision,
             effective_axis: effective_axis.to_owned(),
-            axis_fallback_reason: axis.fallback_reason,
+            axis_fallback_reason: query.axis_fallback_reason.clone(),
             reveal_state_token,
             material_scene_proofs,
         },
@@ -3393,16 +3408,26 @@ fn unavailable<T>(reason: &str) -> TypedRevisionCoreRead<T> {
 /// Bind the typed input to the real current Codex/Relation rows. This is a
 /// source observation, not a new authority: a later edit makes cold reopen
 /// unavailable until a new immutable typed Revision is reviewed.
-fn validate_live_sources(
+fn validate_live_sources<'a>(
     conn: &Connection,
     project_id: &str,
     bundle: &EntityRelationBundle,
-) -> anyhow::Result<NarrativeProjectScopeAuthorityV1> {
-    let authority = load_live_project_scope_authority(
-        conn,
-        project_id,
-        &format!("project:scope-authority:{project_id}"),
-    )?;
+    shared: Option<&'a Nir1ProjectReads>,
+) -> anyhow::Result<std::borrow::Cow<'a, NarrativeProjectScopeAuthorityV1>> {
+    use std::borrow::Cow;
+    let authority =
+        match shared {
+            // The query's own read of the same snapshot; the failure to load it is
+            // the failure each Revision would have met loading it itself.
+            Some(shared) => Cow::Borrowed(shared.authority().ok_or_else(|| {
+                anyhow::anyhow!("NIR1_ENTITY_RELATION_SCOPE_AUTHORITY_UNAVAILABLE")
+            })?),
+            None => Cow::Owned(load_live_project_scope_authority(
+                conn,
+                project_id,
+                &format!("project:scope-authority:{project_id}"),
+            )?),
+        };
     for entity in &bundle.entities {
         check_active_work(conn)?;
         let current: Option<(String, String, Option<String>, String)> = conn
@@ -4300,7 +4325,8 @@ pub(super) mod tests {
             revision_id,
             query_scene_id,
             revision,
-            authority,
+            &authority,
+            None,
         )
     }
 
@@ -5609,7 +5635,8 @@ pub(super) mod tests {
         let bundle = request(&db).bundle;
         let observed_at = "2026-09-15T00:00:00.000Z";
         let (authority, reused_material, reloaded_material) = db.with_read_transaction(|conn| {
-            let authority = super::validate_live_sources(conn, "default-project", &bundle)?;
+            let authority =
+                super::validate_live_sources(conn, "default-project", &bundle, None)?.into_owned();
             let reused_material = super::build_typed_material_basis(
                 conn,
                 "default-project",

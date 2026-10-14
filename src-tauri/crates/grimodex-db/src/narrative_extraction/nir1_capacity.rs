@@ -640,6 +640,58 @@ fn current_attempt() -> Option<Arc<CapacityBudget>> {
 }
 
 #[cfg(test)]
+pub(crate) mod project_read_probe {
+    //! Counts of the project-level reads one Graph query makes, to check that
+    //! a read the query shares is made once however many Revisions it
+    //! evaluates (CQ-AVAIL). Test-only; recording is off until
+    //! [`recording`] turns it on for a closure.
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    pub(crate) enum Read {
+        /// The project's live tree and the Scope authority built from it.
+        AuthorityTree,
+        /// The Scene-scope extension of the Scope authority: the registry, every
+        /// Scene binding and the principals they name.
+        ScopeExtension,
+        /// The Scope registry, whole (two statements make up one extension read).
+        RegistryFull,
+        RegistryRow,
+        /// The latest Semantic Epoch.
+        CurrentEpoch,
+        /// The query Scene's saved source and the project's phase mode.
+        QueryScene,
+        /// The query Scene's POV character.
+        QueryViewpoint,
+        /// A single Scene's scope read by its own statements.
+        SceneScope,
+    }
+
+    thread_local! {
+        static COUNTS: RefCell<Option<BTreeMap<Read, usize>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn record(read: Read) {
+        COUNTS.with(|counts| {
+            if let Some(counts) = counts.borrow_mut().as_mut() {
+                *counts.entry(read).or_insert(0) += 1;
+            }
+        });
+    }
+
+    /// Run `operation`, counting the reads it makes on this thread.
+    pub(crate) fn recording<T>(operation: impl FnOnce() -> T) -> (T, BTreeMap<Read, usize>) {
+        let previous = COUNTS.with(|counts| counts.replace(Some(BTreeMap::new())));
+        let result = operation();
+        let counts = COUNTS
+            .with(|counts| counts.replace(previous))
+            .unwrap_or_default();
+        (result, counts)
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod materialization_probe {
     thread_local! {
         pub(crate) static READS: std::cell::RefCell<Option<Vec<(bool, bool)>>> = const { std::cell::RefCell::new(None) };

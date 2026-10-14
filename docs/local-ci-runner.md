@@ -399,16 +399,20 @@ unchanged. The profile is not in the local CI registry and joins no Full part:
 `scripts/ci-pause.test.mjs` pins the profile set, the twelve-step worker job and the
 absence from `registry.profiles`.
 
-This branch runs the 14 ignored cases that no other lane names, in this order. Two
+This branch runs the 17 ignored cases that no other lane names, in this order. Two
 are in-process readers that start no worker: `production_query_has_an_available_100ms_success_path`
-and `ordinary_reader_registers_and_queries_fixed_q2_fixture`. Twelve drive a real
-worker child. Five use the normal worker build:
+and `ordinary_reader_registers_and_queries_fixed_q2_fixture`. Fifteen drive a real
+worker child. Eight use the normal worker build:
 `native_worker_exits_after_owner_process_dies_after_request_admission`,
 `native_worker_quarantines_when_cleanup_proof_is_unobserved`,
 `native_worker_quarantine_blocks_w1_restore_and_retains_shared_lease`,
-`native_worker_cleanup_unproved_without_file_identity_retains_participant_and_blocks_io`
-and `native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph`, the
-last on a `Q512/R1/E12/registry33` fixture that this mode alone builds. Seven use the
+`native_worker_cleanup_unproved_without_file_identity_retains_participant_and_blocks_io`,
+`native_worker_child_environment_is_cleared_and_cwd_is_worker_dir`,
+`native_worker_projects_owned_dto_after_lease_drop`,
+`cq_avail::native_worker_answers_a_project_reviewed_scene_by_scene` (it builds its own
+novel-shaped project in the test and needs no preseed) and
+`native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph`, the
+last on a `Q512/R1/E144/registry33` fixture that this mode alone builds. Seven use the
 seam-enabled build: `native_worker_handles_backpressured_request_writes`,
 `native_worker_reaps_live_committed_child_after_result_lease`,
 `native_worker_quarantines_result_lease_when_exit_proof_transfer_is_unavailable`,
@@ -436,7 +440,7 @@ observes SIGKILL. The kernel aborts a pipe core dump when the limit is 1 (kernel
 whose hard limit is already 0 makes `prlimit` fail with EPERM, so the lane fails closed
 before any case runs; the hosted `ubuntu-latest` runner does not hit this.
 
-A lane pass proves only these 14 cases at that candidate on one Linux runner. It is not
+A lane pass proves only these 17 cases at that candidate on one Linux runner. It is not
 macOS/Windows coverage (several cases use a subreaper, SIGSTOP, `/proc` or SIGABRT),
 universal lifecycle acceptance, B/Full prerequisites or merge readiness, and it never
 stands in for the three-OS lanes above. If a case reaches its timeout, `timeout`

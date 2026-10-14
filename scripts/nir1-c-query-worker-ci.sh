@@ -47,7 +47,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 printf '%s' \
-  '{"schemaVersion":"nir1-capacity/1","diagnosticOnly":true,"fixtures":[{"id":"Q2/R1/D0-local","qualifiedMaterials":2,"qualifiedRevisions":1,"ineligibleCandidates":0},{"id":"Q512/R2/A3-eligible-shared","qualifiedMaterials":140,"qualifiedRevisions":1,"ineligibleCandidates":0}]}' \
+  '{"schemaVersion":"nir1-capacity/1","diagnosticOnly":true,"fixtures":[{"id":"Q2/R1/D0-local","qualifiedMaterials":2,"qualifiedRevisions":1,"ineligibleCandidates":0},{"id":"Q512/R2/A3-eligible-shared","qualifiedMaterials":164,"qualifiedRevisions":1,"ineligibleCandidates":0}]}' \
   > "$fixture_dir/manifest.json"
 
 q2_fixture_file="$fixture_dir/q2-preseed.db"
@@ -164,16 +164,16 @@ if [[ "${1:-}" == lifecycle ]]; then
   q2_fixture_checksum="$(cksum < "$q2_fixture_file")"
   registry33_fixture_file="$fixture_dir/registry33-preseed.db"
   printf '%s' \
-    '{"schemaVersion":"nir1-capacity/1","diagnosticOnly":true,"fixtures":[{"id":"Q512/R1/E12/registry33","qualifiedMaterials":24,"qualifiedRevisions":1,"ineligibleCandidates":0}]}' \
+    '{"schemaVersion":"nir1-capacity/1","diagnosticOnly":true,"fixtures":[{"id":"Q512/R1/E144/registry33","qualifiedMaterials":288,"qualifiedRevisions":1,"ineligibleCandidates":0}]}' \
     > "$fixture_dir/registry33-manifest.json"
   cargo run --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --features nir1-material-diagnostics \
     --bin nir1-material-capacity -- \
-    fixture "$fixture_dir/registry33-manifest.json" Q512/R1/E12/registry33 "$registry33_fixture_file" \
+    fixture "$fixture_dir/registry33-manifest.json" Q512/R1/E144/registry33 "$registry33_fixture_file" \
     > "$fixture_dir/registry33-fixture-report.json"
-  grep -Fq '"caseId": "Q512/R1/E12/registry33"' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"caseId": "Q512/R1/E144/registry33"' "$fixture_dir/registry33-fixture-report.json"
   grep -Fq '"diagnosticOnly": true' "$fixture_dir/registry33-fixture-report.json"
-  grep -Fq '"qualifiedMaterials": 24' "$fixture_dir/registry33-fixture-report.json"
+  grep -Fq '"qualifiedMaterials": 288' "$fixture_dir/registry33-fixture-report.json"
   grep -Fq '"qualifiedRevisions": 1' "$fixture_dir/registry33-fixture-report.json"
   grep -Fq '"ineligibleCandidates": 0' "$fixture_dir/registry33-fixture-report.json"
   grep -Fq '"walBytes": 0' "$fixture_dir/registry33-fixture-report.json"
@@ -190,7 +190,8 @@ if [[ "${1:-}" == lifecycle ]]; then
   # intentionally quarantine process-global worker capacity until process exit.
   run_lifecycle_case() {
     local name="$1" source="$2" source_checksum="$3"
-    local input="$fixture_dir/$name-input.db" log="$fixture_dir/$name.log"
+    local label="${name//::/-}"
+    local input="$fixture_dir/$label-input.db" log="$fixture_dir/$label.log"
     cp -- "$source" "$input"
     test "$(cksum < "$input")" = "$source_checksum"
     assert_closed_fixture "$input"
@@ -230,7 +231,8 @@ if [[ "${1:-}" == lifecycle ]]; then
     native_worker_quarantine_blocks_w1_restore_and_retains_shared_lease \
     native_worker_cleanup_unproved_without_file_identity_retains_participant_and_blocks_io \
     native_worker_child_environment_is_cleared_and_cwd_is_worker_dir \
-    native_worker_projects_owned_dto_after_lease_drop; do
+    native_worker_projects_owned_dto_after_lease_drop \
+    cq_avail::native_worker_answers_a_project_reviewed_scene_by_scene; do
     run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
   done
   run_lifecycle_case native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph \
@@ -311,7 +313,7 @@ cargo run --locked --release --manifest-path src-tauri/Cargo.toml \
   > "$fixture_dir/q512-fixture-report.json"
 grep -Fq '"caseId": "Q512/R2/A3-eligible-shared"' "$fixture_dir/q512-fixture-report.json"
 grep -Fq '"diagnosticOnly": true' "$fixture_dir/q512-fixture-report.json"
-grep -Fq '"qualifiedMaterials": 140' "$fixture_dir/q512-fixture-report.json"
+grep -Fq '"qualifiedMaterials": 164' "$fixture_dir/q512-fixture-report.json"
 grep -Fq '"qualifiedRevisions": 1' "$fixture_dir/q512-fixture-report.json"
 grep -Fq '"ineligibleCandidates": 0' "$fixture_dir/q512-fixture-report.json"
 grep -Fq '"walBytes": 0' "$fixture_dir/q512-fixture-report.json"

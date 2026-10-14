@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Result};
 use grimodex_core::narrative_nir1::{
-    EntityInput, GraphEdgeInput, ScopeValue, MAX_GRAPH_EDGES, MAX_GRAPH_HOPS,
+    EntityInput, GraphEdgeInput, ScopeBinding, ScopeValue, MAX_GRAPH_EDGES, MAX_GRAPH_HOPS,
     MAX_GRAPH_INPUT_BYTES, MAX_GRAPH_NODES, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -46,9 +46,11 @@ use serde::{Deserialize, Serialize};
 
 use super::nir1_capacity::{self, CapacityBudget};
 use super::nir1_chronicle_index::read_identity::ReadIdentity;
+#[cfg(test)]
+use super::nir1_entity_relation::evaluate_nir1_entity_relation_disclosure;
 use super::nir1_entity_relation::{
-    evaluate_nir1_entity_relation_disclosure, Nir1EntityRelationDisclosure,
-    Nir1EntityRelationDisclosureRead,
+    evaluate_nir1_entity_relation_disclosure_shared, Nir1EntityRelationDisclosure,
+    Nir1EntityRelationDisclosureRead, Nir1ProjectReads,
 };
 use super::nir1_entity_relation_index::{
     is_complete_registered_with_scratch, GraphProgressCallback, GraphWorkControl, GraphWorkStage,
@@ -85,11 +87,30 @@ const TRANSIENT_BYTES_PER_ROW: usize = 4 * 1024;
 
 #[cfg(test)]
 thread_local! {
+    /// Test-only: every Revision of a query reads the project-level state
+    /// itself, as `evaluate_nir1_entity_relation_disclosure` does, instead of
+    /// using the reads the query made once. The admission is unchanged: this
+    /// is the oracle for the response, not for the budget.
+    static UNSHARED_PROJECT_READS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+thread_local! {
     /// SQL VM steps charged to the latest `query_with_deadline_observed` on
     /// this thread (the budget's own count, so it is the quantity capped by
     /// `QUERY_SQL_STEPS`). Test-only; a query that returns before it creates its
     /// budget leaves the previous value.
     static LAST_QUERY_SQL_STEPS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Records the latest query on this thread admitted for an available
+    /// Graph (`QueryUsage::rows`, the quantity capped by `MAX_GRAPH_RECORDS`).
+    /// Test-only: the query's own count, so tests compare it with the stored
+    /// rows instead of re-deriving it. A query that does not reach an
+    /// available Graph leaves the previous value.
+    static LAST_QUERY_ROWS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(feature = "nir1-material-diagnostics")]
@@ -222,15 +243,28 @@ pub struct Nir1GraphMaterialBinding {
     pub reveal_state_token: String,
 }
 
+/// One Entity reached through one or more qualified Revisions.
+///
+/// The node's identity is the Entity ID and every field of its `EntityInput`
+/// except the Scope (type, label, source token, Evidence): a Revision that
+/// carries the same Entity ID with different identity fields contradicts the
+/// first one and refuses the whole Graph. The Scope belongs to the binding
+/// (the Revision) that carries it: a person reviewed under several Scenes has
+/// one Scope per review, so `binding_scopes[i]` is the Scope of this Entity in
+/// `bindings[i]`'s Revision, and no version is dropped or renamed away.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Nir1GraphNode {
     /// Shared with every edge that references this endpoint.  Graph output is
     /// still serialized as the same object shape, but the reader does not
-    /// retain one deep EntityInput clone per incident edge.
+    /// retain one deep EntityInput clone per incident edge.  This is the
+    /// first binding's version, so its Scope is `binding_scopes[0]`; read the
+    /// Scope of a binding from `binding_scopes`.
     pub entity: Arc<EntityInput>,
     pub hop: u8,
     pub bindings: Vec<Arc<Nir1GraphMaterialBinding>>,
+    /// Same length and order as `bindings`.
+    pub binding_scopes: Vec<Arc<ScopeBinding>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1311,6 +1345,12 @@ fn worker_refusal_cause(
     // QueryUsage ones it reaches, so it is matched first.
     for (marker, cause) in [
         (SCENE_LIMIT_MARKER, WorkerCause::SceneLimit),
+        (NODE_LIMIT_MARKER, WorkerCause::NodeLimit),
+        (EDGE_LIMIT_MARKER, WorkerCause::EdgeLimit),
+        (
+            VERSION_CONFLICT_MARKER,
+            WorkerCause::EndpointVersionConflict,
+        ),
         (
             "NIR1_GRAPH_CANDIDATE_LIMIT",
             WorkerCause::CandidateRecordLimit,
@@ -1575,25 +1615,27 @@ fn retained_scope_value(value: &ScopeValue) -> usize {
         }
 }
 
+fn retained_scope_binding(scope: &ScopeBinding) -> Result<usize> {
+    let mut total = std::mem::size_of::<ScopeBinding>();
+    retained_add(&mut total, retained_scope_value(&scope.reading))?;
+    retained_add(&mut total, retained_scope_value(&scope.story))?;
+    retained_add(&mut total, retained_scope_value(&scope.auto))?;
+    retained_add(&mut total, retained_string(&scope.phase))?;
+    retained_add(&mut total, retained_string(&scope.reveal))?;
+    if let Some(pov) = &scope.pov {
+        retained_add(&mut total, retained_string(pov))?;
+    }
+    retained_add(&mut total, retained_string(&scope.authority_revision))?;
+    Ok(total)
+}
+
 fn retained_entity(entity: &EntityInput) -> Result<usize> {
     let mut total = std::mem::size_of::<EntityInput>();
     retained_add(&mut total, retained_string(&entity.entity_id))?;
     retained_add(&mut total, retained_string(&entity.entity_type))?;
     retained_add(&mut total, retained_string(&entity.label))?;
     retained_add(&mut total, retained_string(&entity.source_token))?;
-    retained_add(&mut total, std::mem::size_of_val(&entity.scope))?;
-    retained_add(&mut total, retained_scope_value(&entity.scope.reading))?;
-    retained_add(&mut total, retained_scope_value(&entity.scope.story))?;
-    retained_add(&mut total, retained_scope_value(&entity.scope.auto))?;
-    retained_add(&mut total, retained_string(&entity.scope.phase))?;
-    retained_add(&mut total, retained_string(&entity.scope.reveal))?;
-    if let Some(pov) = &entity.scope.pov {
-        retained_add(&mut total, retained_string(pov))?;
-    }
-    retained_add(
-        &mut total,
-        retained_string(&entity.scope.authority_revision),
-    )?;
+    retained_add(&mut total, retained_scope_binding(&entity.scope)?)?;
     retained_add(
         &mut total,
         std::mem::size_of::<Vec<grimodex_core::narrative_nir1::EvidenceInput>>()
@@ -1716,6 +1758,11 @@ fn query_in_snapshot(
     )?;
     let mut revisions: HashMap<String, Option<Arc<QualifiedGraphMaterial>>> =
         HashMap::with_capacity(revision_capacity);
+    // The project-level reads shared by every Revision of this query, read at
+    // the first Revision that reaches A3 (see the A3 block below), and the
+    // bytes they were admitted for.
+    let mut project_reads: Option<Nir1ProjectReads> = None;
+    let mut project_read_bytes = 0usize;
     let mut frontier = VecDeque::with_capacity(frontier_capacity);
     frontier.push_back((request.seed_entity_id.clone(), 0u8));
     usage.admit_retained(
@@ -1827,24 +1874,57 @@ fn query_in_snapshot(
                     usage.admit(revision_admission.rows, revision_admission.bytes)?;
                     #[cfg(feature = "nir1-material-diagnostics")]
                     let a3_preflight_started = _observation.as_ref().map(|_| Instant::now());
+                    // The reads every Revision of this query shares (the live
+                    // Scope authority, the latest Epoch, the query Scene) are
+                    // admitted once, here, before the first of them, and read
+                    // once below. What belongs to one Revision is admitted for
+                    // each.
+                    let first_project_reads = project_reads.is_none();
+                    if first_project_reads {
+                        #[cfg(feature = "nir1-material-diagnostics")]
+                        let shared_preflight = input::preflight_project_reads_observed(
+                            conn,
+                            &request.project_id,
+                            &request.query_scene_id,
+                            MAX_GRAPH_RECORDS - usage.rows,
+                            MAX_GRAPH_INPUT_BYTES - usage.bytes,
+                            _observation.as_deref_mut().map(|value| &mut value.a3_sql),
+                        );
+                        #[cfg(not(feature = "nir1-material-diagnostics"))]
+                        let shared_preflight = input::preflight_project_reads(
+                            conn,
+                            &request.project_id,
+                            &request.query_scene_id,
+                            MAX_GRAPH_RECORDS - usage.rows,
+                            MAX_GRAPH_INPUT_BYTES - usage.bytes,
+                        );
+                        let shared_admission = shared_preflight?;
+                        usage.admit(shared_admission.rows, shared_admission.bytes)?;
+                        usage.admit_transient_material_reserve(
+                            shared_admission.bytes,
+                            shared_admission.rows,
+                            worker_path,
+                        )?;
+                        project_read_bytes = shared_admission.bytes;
+                    }
                     #[cfg(feature = "nir1-material-diagnostics")]
-                    let disclosure_preflight = input::preflight_disclosure_observed(
+                    let disclosure_preflight = input::preflight_disclosure_revision_observed(
                         conn,
                         &request.project_id,
                         &revision_id,
-                        &request.query_scene_id,
                         revision_admission.payload_bytes,
+                        project_read_bytes,
                         MAX_GRAPH_RECORDS - usage.rows,
                         MAX_GRAPH_INPUT_BYTES - usage.bytes,
                         _observation.as_deref_mut().map(|value| &mut value.a3_sql),
                     );
                     #[cfg(not(feature = "nir1-material-diagnostics"))]
-                    let disclosure_preflight = input::preflight_disclosure_with_payload_bytes(
+                    let disclosure_preflight = input::preflight_disclosure_revision(
                         conn,
                         &request.project_id,
                         &revision_id,
-                        &request.query_scene_id,
                         revision_admission.payload_bytes,
+                        project_read_bytes,
                         MAX_GRAPH_RECORDS - usage.rows,
                         MAX_GRAPH_INPUT_BYTES - usage.bytes,
                     );
@@ -1870,11 +1950,42 @@ fn query_in_snapshot(
                     control.check(GraphWorkStage::A2)?;
                     #[cfg(feature = "nir1-material-diagnostics")]
                     let a3_started = _observation.as_ref().map(|_| Instant::now());
-                    let qualified = evaluate_nir1_entity_relation_disclosure(
+                    if first_project_reads {
+                        project_reads = Some(Nir1ProjectReads::load(
+                            conn,
+                            &request.project_id,
+                            &request.query_scene_id,
+                        )?);
+                    }
+                    let reads = project_reads
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_PROJECT_READS_MISSING"))?;
+                    #[cfg(test)]
+                    let qualified = if UNSHARED_PROJECT_READS.get() {
+                        // The Revision reading the project-level state itself:
+                        // the oracle the shared evaluation is compared with.
+                        evaluate_nir1_entity_relation_disclosure(
+                            conn,
+                            &request.project_id,
+                            &revision_id,
+                            &request.query_scene_id,
+                        )
+                    } else {
+                        evaluate_nir1_entity_relation_disclosure_shared(
+                            conn,
+                            &request.project_id,
+                            &revision_id,
+                            &request.query_scene_id,
+                            reads,
+                        )
+                    };
+                    #[cfg(not(test))]
+                    let qualified = evaluate_nir1_entity_relation_disclosure_shared(
                         conn,
                         &request.project_id,
                         &revision_id,
                         &request.query_scene_id,
+                        reads,
                     );
                     #[cfg(feature = "nir1-material-diagnostics")]
                     record_observed_stage(_observation, ObservedStage::A3Evaluation, a3_started);
@@ -1944,7 +2055,7 @@ fn query_in_snapshot(
                 &relation.from_entity_id
             };
             if !hops.contains_key(target) {
-                ensure!(hops.len() < MAX_GRAPH_NODES, "NIR1_GRAPH_NODE_LIMIT");
+                ensure!(hops.len() < MAX_GRAPH_NODES, NODE_LIMIT_MARKER);
                 usage.admit_retained(
                     retained_string(target) * 2
                         + std::mem::size_of::<(String, u8)>() * 2
@@ -1964,7 +2075,7 @@ fn query_in_snapshot(
             if edges.contains_key(&key) {
                 continue;
             }
-            ensure!(edges.len() < MAX_GRAPH_EDGES, "NIR1_GRAPH_EDGE_LIMIT");
+            ensure!(edges.len() < MAX_GRAPH_EDGES, EDGE_LIMIT_MARKER);
             let from = material
                 .entity(&relation.from_entity_id)
                 .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ENDPOINT_MISSING"))?;
@@ -2065,8 +2176,17 @@ fn query_in_snapshot(
         serde_json::to_writer(&mut counter, &response)?;
         control.check(GraphWorkStage::Serialization)?;
     }
+    #[cfg(test)]
+    LAST_QUERY_ROWS.set(Some(usage.rows));
     Ok(response)
 }
+
+/// The semantic Graph limits and the contradiction check, each with the
+/// marker its refusal carries. The worker maps every marker to its own typed
+/// cause; the ordinary reader keeps its single generic reason.
+const NODE_LIMIT_MARKER: &str = "NIR1_GRAPH_NODE_LIMIT";
+const EDGE_LIMIT_MARKER: &str = "NIR1_GRAPH_EDGE_LIMIT";
+const VERSION_CONFLICT_MARKER: &str = "NIR1_GRAPH_ENDPOINT_VERSION_CONFLICT";
 
 /// Context for every resource refusal of the Scene join (category `limit`).
 const SCENE_LIMIT_MARKER: &str = "NIR1_GRAPH_SCENE_LIMIT";
@@ -2384,6 +2504,27 @@ fn join_scene_pins(
     Ok((scene_total, associations))
 }
 
+/// Whether two versions of an Entity are one node: every field but the Scope.
+/// The Scope is the one field a review legitimately changes for the same
+/// Entity (the Scene the review was made under), so it is compared per
+/// binding, never here. The exhaustive destructuring makes a new
+/// `EntityInput` field a compile error until it is classified.
+fn same_node_identity(node: &EntityInput, other: &EntityInput) -> bool {
+    let EntityInput {
+        entity_id,
+        entity_type,
+        label,
+        source_token,
+        scope: _,
+        evidence,
+    } = node;
+    *entity_id == other.entity_id
+        && *entity_type == other.entity_type
+        && *label == other.label
+        && *source_token == other.source_token
+        && *evidence == other.evidence
+}
+
 fn add_node(
     nodes: &mut BTreeMap<String, Nir1GraphNode>,
     usage: &mut QueryUsage,
@@ -2393,19 +2534,22 @@ fn add_node(
 ) -> Result<()> {
     if let Some(node) = nodes.get_mut(&entity.entity_id) {
         ensure!(
-            node.entity.as_ref() == entity.as_ref(),
-            "NIR1_GRAPH_ENDPOINT_VERSION_CONFLICT"
+            same_node_identity(&node.entity, &entity),
+            VERSION_CONFLICT_MARKER
         );
         if !node
             .bindings
             .iter()
             .any(|b| b.revision_id == binding.revision_id)
         {
-            // Every node owns one bounded binding Vec. Reserve its complete
-            // possible capacity before the first allocation; subsequent
-            // pushes therefore cannot trigger an uncharged Vec growth and do
-            // not pay MAX_GRAPH_RECORDS again for every edge.
+            // Every node owns two bounded Vecs, one binding and one Scope per
+            // Revision. Their complete possible capacity was reserved (and
+            // charged) with the node, so these pushes cannot trigger an
+            // uncharged Vec growth and do not pay MAX_GRAPH_RECORDS again for
+            // every edge. What each push adds is the Scope it keeps.
+            usage.admit_retained(binding_scope_retained_bytes(&entity.scope)?)?;
             node.bindings.push(binding);
+            node.binding_scopes.push(Arc::new(entity.scope.clone()));
         }
     } else {
         usage.admit_retained(
@@ -2413,8 +2557,12 @@ fn add_node(
                 + std::mem::size_of::<Nir1GraphNode>()
                 + std::mem::size_of::<Vec<Arc<Nir1GraphMaterialBinding>>>()
                 + MAX_GRAPH_RECORDS * std::mem::size_of::<Arc<Nir1GraphMaterialBinding>>()
+                + std::mem::size_of::<Vec<Arc<ScopeBinding>>>()
+                + MAX_GRAPH_RECORDS * std::mem::size_of::<Arc<ScopeBinding>>()
+                + binding_scope_retained_bytes(&entity.scope)?
                 + 8 * std::mem::size_of::<usize>(),
         )?;
+        let scope = Arc::new(entity.scope.clone());
         nodes.insert(
             entity.entity_id.clone(),
             Nir1GraphNode {
@@ -2425,10 +2573,23 @@ fn add_node(
                     bindings.push(binding);
                     bindings
                 },
+                binding_scopes: {
+                    let mut scopes = Vec::with_capacity(MAX_GRAPH_RECORDS);
+                    scopes.push(scope);
+                    scopes
+                },
             },
         );
     }
     Ok(())
+}
+
+/// The bytes one node keeps for one binding's Scope: the Scope, its `Arc`
+/// control block and the pointer the node's Vec holds.
+fn binding_scope_retained_bytes(scope: &ScopeBinding) -> Result<usize> {
+    let mut total = retained_scope_binding(scope)?;
+    retained_add(&mut total, 2 * std::mem::size_of::<usize>())?;
+    Ok(total)
 }
 
 struct OutputCounter<'a> {

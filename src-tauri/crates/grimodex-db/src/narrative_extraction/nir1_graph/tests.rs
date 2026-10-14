@@ -33,6 +33,7 @@ use std::{
 const PROJECT: &str = "default-project";
 const STARTUP_REFUSAL_PROJECT_ID: &str = "nir1-project-that-does-not-exist";
 
+mod cq_avail;
 mod cq_opt;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -362,12 +363,13 @@ impl Fixture {
         )?
         .ok_or_else(|| anyhow::anyhow!("seed Revision did not pass A2"))?;
         let a2_steps = steps.load(Ordering::Relaxed);
-        let a3 = super::input::preflight_disclosure_with_payload_bytes(
+        // The shared project-level reads and this Revision's own, as a query
+        // that evaluates only this Revision charges them.
+        let a3 = super::input::preflight_disclosure(
             &conn,
             PROJECT,
             &self.revision,
             "nir1",
-            a2.payload_bytes,
             MAX_GRAPH_RECORDS - a2.rows,
             MAX_GRAPH_INPUT_BYTES - a2.bytes,
         )?;
@@ -1731,7 +1733,9 @@ fn seed_only_frame_graph<'a>(
         .graph()
         .ok_or_else(|| anyhow::anyhow!("seed-only worker frame was unavailable"))?;
     assert_eq!(graph.seed(), seed);
-    assert!(!graph.scope_revision().is_empty());
+    assert!(graph
+        .scope_revision()
+        .is_some_and(|scope| !scope.is_empty()));
     assert!(graph.generation() > 0);
     assert_eq!((graph.node_count(), graph.edge_count()), (1, 0));
     assert_eq!(
@@ -1764,27 +1768,31 @@ fn canonical_single_node_gold_frame(
         entity.evidence.len() == 1,
         "official single-node Gold must have one Evidence"
     );
-    let mut frame = b"NQG2".to_vec();
+    let mut frame = b"NQG3".to_vec();
     frame.push(1);
     q2_gold_text(&mut frame, project)?;
     q2_gold_text(&mut frame, query_scene)?;
-    q2_gold_text(&mut frame, &binding.scope_authority_revision)?;
+    // The Scope revision is optional in NQG3: present (1) for a Graph with a node.
+    q2_gold_optional_text(&mut frame, Some(&binding.scope_authority_revision))?;
     frame.extend_from_slice(&generation.to_le_bytes());
     q2_gold_text(&mut frame, &entity.entity_id)?;
     frame.extend_from_slice(&1_u16.to_le_bytes());
     frame.extend_from_slice(&0_u16.to_le_bytes());
 
+    let gold_scope = |frame: &mut Vec<u8>| -> Result<()> {
+        q2_gold_scope_value(frame, &entity.scope.reading)?;
+        q2_gold_scope_value(frame, &entity.scope.story)?;
+        q2_gold_scope_value(frame, &entity.scope.auto)?;
+        q2_gold_text(frame, &entity.scope.phase)?;
+        q2_gold_text(frame, &entity.scope.reveal)?;
+        q2_gold_optional_text(frame, entity.scope.pov.as_deref())?;
+        q2_gold_text(frame, &entity.scope.authority_revision)
+    };
     q2_gold_text(&mut frame, &entity.entity_id)?;
     q2_gold_text(&mut frame, &entity.entity_type)?;
     q2_gold_text(&mut frame, &entity.label)?;
     q2_gold_text(&mut frame, &entity.source_token)?;
-    q2_gold_scope_value(&mut frame, &entity.scope.reading)?;
-    q2_gold_scope_value(&mut frame, &entity.scope.story)?;
-    q2_gold_scope_value(&mut frame, &entity.scope.auto)?;
-    q2_gold_text(&mut frame, &entity.scope.phase)?;
-    q2_gold_text(&mut frame, &entity.scope.reveal)?;
-    q2_gold_optional_text(&mut frame, entity.scope.pov.as_deref())?;
-    q2_gold_text(&mut frame, &entity.scope.authority_revision)?;
+    gold_scope(&mut frame)?;
     frame.extend_from_slice(&u16::try_from(entity.evidence.len())?.to_le_bytes());
     for evidence in &entity.evidence {
         q2_gold_text(&mut frame, &evidence.evidence_id)?;
@@ -1808,6 +1816,8 @@ fn canonical_single_node_gold_frame(
     ] {
         q2_gold_text(&mut frame, value)?;
     }
+    // The binding is followed by the Scope the node's Entity has in its Revision.
+    gold_scope(&mut frame)?;
     // A seed-only Graph reaches no Entity: scene_total 0 and scene_count 0.
     frame.extend_from_slice(&0_u16.to_le_bytes());
     frame.extend_from_slice(&0_u16.to_le_bytes());
@@ -2424,21 +2434,15 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
                 // Isolate the retained C-query claim from the disposable DB authority.
                 drop(owner);
                 drop(authority);
-                let active = native_state
-                    .inner
-                    .lock()
-                    .expect("workspace lock")
-                    .take();
+                let active = native_state.inner.lock().expect("workspace lock").take();
                 drop(active);
                 ensure!(
                     authority_weak.upgrade().is_none(),
                     "test still retained the W1 DB authority"
                 );
-                let lease_error = crate::workspace_lease::acquire_exclusive(
-                    &workspace_path,
-                    Duration::ZERO,
-                )
-                .expect_err("cleanup-unproved W1 claim must retain its shared file lease");
+                let lease_error =
+                    crate::workspace_lease::acquire_exclusive(&workspace_path, Duration::ZERO)
+                        .expect_err("cleanup-unproved W1 claim must retain its shared file lease");
                 ensure!(
                     lease_error.code() == "WORKSPACE_EXCLUSIVE_LEASE_TIMEOUT",
                     "exclusive lease failed for a reason other than shared-lock contention: {lease_error}"
@@ -2735,7 +2739,10 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
         #[cfg(target_os = "linux")]
         if scenario == Q2WorkerScenario::ChildEnvironment {
             let pid = owner.child_pid_for_test()?;
-            ensure!(pid > 0, "accepted READY did not retain a real child session");
+            ensure!(
+                pid > 0,
+                "accepted READY did not retain a real child session"
+            );
             let environ = std::fs::read(format!("/proc/{pid}/environ"))?;
             ensure!(
                 environ.is_empty(),
@@ -2753,7 +2760,11 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             );
             drop(owner);
             ensure!(
-                native_state.switching.core().workspace_participant_count()? == 0,
+                native_state
+                    .switching
+                    .core()
+                    .workspace_participant_count()?
+                    == 0,
                 "worker child retained a workspace participant after owner drop"
             );
             return Ok(());
@@ -3929,9 +3940,12 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
             assert_eq!(evidence.start, 0);
             assert_eq!(evidence.end as usize, evidence.quote.encode_utf16().count());
             assert_eq!(node.binding_count(), 1);
-            let binding = single_record(node.bindings())?;
+            let node_binding = single_record(node.bindings())?;
+            let binding = node_binding.binding;
             assert_eq!(binding.revision_id, revision);
             assert!(!binding.decision_id.is_empty());
+            // The Scope the node keeps for its one binding is the Entity's own.
+            assert_eq!(node_binding.scope, node.entity.scope);
         }
         assert!(
             authority.claim_c_query_child().is_none(),
@@ -4146,14 +4160,30 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     Ok(())
 }
 
+// The A3 rows of the two official fixtures under the two-part accounting
+// (`input::preflight_project_reads` once, `preflight_disclosure_revision` per
+// Revision). Each fixture is sized so that the seed's candidate rows, its A2
+// rows and these add up to 511, and the traversal's own first row makes 512.
+// Q512 is a project of 62 Scenes (60 of them hold no material) and 82
+// Entities; the registry33 fixture keeps the two Scenes, a 33-row registry
+// and 144 Entities, the heavier Entity work for the same 512.
+const Q512_ENTITIES: usize = 82;
+const Q512_REGISTRY_ROWS: usize = 6;
+const Q512_SHARED_ROWS: usize = 263;
+const Q512_REVISION_ROWS: usize = 1 + Q512_ENTITIES;
+const REGISTRY33_ENTITIES: usize = 144;
+const REGISTRY33_SHARED_ROWS: usize = 77;
+const REGISTRY33_REVISION_ROWS: usize = 1 + REGISTRY33_ENTITIES;
+
 #[test]
 #[ignore = "requires official A3-eligible Q512/R2 shared-material preseed and normal worker binary"]
 fn native_worker_returns_canonical_512_a3_eligible_seed_local_graph() -> Result<()> {
     run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(Canonical512FixtureCase {
         label: "Q512",
-        entity_count: 70,
-        registry_rows: 4,
-        a3_rows: 370,
+        entity_count: Q512_ENTITIES,
+        registry_rows: Q512_REGISTRY_ROWS,
+        shared_rows: Q512_SHARED_ROWS,
+        revision_rows: Q512_REVISION_ROWS,
         add_unrelated_seed_edge: false,
         native_runs: 1,
     })
@@ -4164,9 +4194,10 @@ fn native_worker_returns_canonical_512_a3_eligible_seed_local_graph() -> Result<
 fn native_worker_practical_retention_q512_30x() -> Result<()> {
     run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(Canonical512FixtureCase {
         label: "Q512-retention-30x",
-        entity_count: 70,
-        registry_rows: 4,
-        a3_rows: 370,
+        entity_count: Q512_ENTITIES,
+        registry_rows: Q512_REGISTRY_ROWS,
+        shared_rows: Q512_SHARED_ROWS,
+        revision_rows: Q512_REVISION_ROWS,
         add_unrelated_seed_edge: false,
         native_runs: 30,
     })
@@ -4177,22 +4208,24 @@ fn native_worker_practical_retention_q512_30x() -> Result<()> {
 fn native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge() -> Result<()> {
     run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(Canonical512FixtureCase {
         label: "Q513-unrelated-seed-edge",
-        entity_count: 70,
-        registry_rows: 4,
-        a3_rows: 370,
+        entity_count: Q512_ENTITIES,
+        registry_rows: Q512_REGISTRY_ROWS,
+        shared_rows: Q512_SHARED_ROWS,
+        revision_rows: Q512_REVISION_ROWS,
         add_unrelated_seed_edge: true,
         native_runs: 1,
     })
 }
 
 #[test]
-#[ignore = "requires official Q512/R1/E12/registry33 preseed and normal worker binary"]
+#[ignore = "requires official Q512/R1/E144/registry33 preseed and normal worker binary"]
 fn native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph() -> Result<()> {
     run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(Canonical512FixtureCase {
         label: "N512-registry33",
-        entity_count: 12,
+        entity_count: REGISTRY33_ENTITIES,
         registry_rows: 33,
-        a3_rows: 486,
+        shared_rows: REGISTRY33_SHARED_ROWS,
+        revision_rows: REGISTRY33_REVISION_ROWS,
         add_unrelated_seed_edge: false,
         native_runs: 1,
     })
@@ -4203,7 +4236,12 @@ struct Canonical512FixtureCase {
     label: &'static str,
     entity_count: usize,
     registry_rows: usize,
-    a3_rows: usize,
+    /// A3 rows read once for the query: the project's tree, Scene bindings and
+    /// registry (twice), its phase mode, the latest Epoch and the query Scene.
+    shared_rows: usize,
+    /// A3 rows bound to the one Revision: its Decision and its Entities' Codex
+    /// rows.
+    revision_rows: usize,
     add_unrelated_seed_edge: bool,
     native_runs: usize,
 }
@@ -4257,8 +4295,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     };
     ensure!(
         !observe_practical
-            || (cfg!(target_os = "linux")
-                && matches!(case.label, "Q512" | "Q512-retention-30x")),
+            || (cfg!(target_os = "linux") && matches!(case.label, "Q512" | "Q512-retention-30x")),
         "practical observation requires Linux and the original Q512 fixture"
     );
 
@@ -4305,6 +4342,17 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     let mut a2_rows = 0usize;
     let mut a3_rows = 0usize;
     let mut charged_rows = candidate_ids.len();
+    // The reads every Revision of the query shares are charged once, before
+    // the first Revision's own.
+    let shared = super::input::preflight_project_reads(
+        &source_db,
+        PROJECT,
+        QUERY_SCENE,
+        MAX_GRAPH_RECORDS - charged_rows,
+        MAX_GRAPH_INPUT_BYTES,
+    )?;
+    assert_eq!(shared.rows, case.shared_rows);
+    charged_rows += shared.rows;
     for revision_id in &candidate_ids {
         let (entities, relations, evidence): (i64, i64, i64) = source_db.query_row(
             "SELECT json_array_length(payload_json,'$.bundle.entities'),
@@ -4336,21 +4384,21 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         assert_eq!(a2.rows, entities + relations + evidence);
         a2_rows += a2.rows;
         charged_rows += a2.rows;
-        let a3 = super::input::preflight_disclosure_with_payload_bytes(
+        let a3 = super::input::preflight_disclosure_revision(
             &source_db,
             PROJECT,
             revision_id,
-            QUERY_SCENE,
             a2.payload_bytes,
+            shared.bytes,
             MAX_GRAPH_RECORDS - charged_rows,
-            MAX_GRAPH_INPUT_BYTES - a2.bytes,
+            MAX_GRAPH_INPUT_BYTES - shared.bytes - a2.bytes,
         )?;
         a3_rows += a3.rows;
         charged_rows += a3.rows;
     }
     assert_eq!(material_rows, 2 * case.entity_count);
     assert_eq!(a2_rows, 2 * case.entity_count);
-    assert_eq!(a3_rows, case.a3_rows);
+    assert_eq!(a3_rows, case.revision_rows);
     assert_eq!(charged_rows, MAX_GRAPH_RECORDS - 1);
     assert_eq!(MAX_GRAPH_RECORDS, 512);
     assert_eq!(MAX_GRAPH_INPUT_BYTES, 6_291_456);
@@ -4579,6 +4627,9 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             }
         }
         let mut a2_rows = 0usize;
+        let mut shared_rows = 0usize;
+        let mut shared_bytes = 0usize;
+        let mut shared_charged = false;
         let mut a3_rows = 0usize;
         let mut first_refusal = None;
         for revision_id in candidates.iter() {
@@ -4604,24 +4655,35 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                 break;
             }
             a2_rows += a2.rows;
-            if case.add_unrelated_seed_edge {
-                let shape = super::input::preflight_disclosure_with_payload_bytes(
+            if !shared_charged {
+                // The first Revision to reach A3 admits the shared reads.
+                let shared = match super::input::preflight_project_reads(
                     conn,
                     PROJECT,
-                    revision_id,
                     QUERY_SCENE,
-                    a2.payload_bytes,
-                    MAX_GRAPH_RECORDS,
+                    MAX_GRAPH_RECORDS - usage.rows,
                     MAX_GRAPH_INPUT_BYTES - usage.bytes,
-                )?;
-                a3_rows += shape.rows;
+                ) {
+                    Ok(admission) => admission,
+                    Err(error) => {
+                        first_refusal = Some(format!("A3 shared: {error}"));
+                        break;
+                    }
+                };
+                if let Err(error) = usage.admit(shared.rows, shared.bytes) {
+                    first_refusal = Some(format!("A3 shared QueryUsage::admit: {error}"));
+                    break;
+                }
+                shared_rows = shared.rows;
+                shared_bytes = shared.bytes;
+                shared_charged = true;
             }
-            let a3 = match super::input::preflight_disclosure_with_payload_bytes(
+            let a3 = match super::input::preflight_disclosure_revision(
                 conn,
                 PROJECT,
                 revision_id,
-                QUERY_SCENE,
                 a2.payload_bytes,
+                shared_bytes,
                 MAX_GRAPH_RECORDS - usage.rows,
                 MAX_GRAPH_INPUT_BYTES - usage.bytes,
             ) {
@@ -4637,19 +4699,18 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             }
             a3_rows += a3.rows;
         }
-        let attempted_rows = candidate_rows + a2_rows + a3_rows;
         Ok((
             candidate_rows,
             candidates.len(),
             a2_rows,
+            shared_rows,
             a3_rows,
             usage.rows,
-            attempted_rows,
             first_refusal,
         ))
     })?;
     eprintln!(
-        "{} post-maintenance preflight: candidate_rows={} canonical_candidates={} A2_rows={} A3_rows={} admitted_rows={} attempted_rows={} first_refusal={:?}",
+        "{} post-maintenance preflight: candidate_rows={} canonical_candidates={} A2_rows={} A3_shared_rows={} A3_revision_rows={} admitted_rows={} first_refusal={:?}",
         case.label,
         post_maintenance.0,
         post_maintenance.1,
@@ -4663,15 +4724,22 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     let expected_refusal = case
         .add_unrelated_seed_edge
         .then(|| "A3: NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT".to_owned());
+    // One more candidate row (the decoy) leaves the Revision's own A3 rows one
+    // short of the budget: the shared rows were admitted, the Revision's were
+    // refused, and nothing of them stays admitted.
     assert_eq!(
         post_maintenance,
         (
             2 + extra,
             1,
             2 * case.entity_count,
-            case.a3_rows,
-            if extra == 0 { MAX_GRAPH_RECORDS } else { 143 },
-            MAX_GRAPH_RECORDS + extra,
+            case.shared_rows,
+            if extra == 0 { case.revision_rows } else { 0 },
+            if extra == 0 {
+                MAX_GRAPH_RECORDS
+            } else {
+                2 + extra + 2 * case.entity_count + case.shared_rows
+            },
             expected_refusal,
         )
     );
@@ -4798,9 +4866,11 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             assert_eq!(evidence.start, 0);
             assert_eq!(evidence.end as usize, evidence.quote.encode_utf16().count());
             assert_eq!(node.binding_count(), 1);
-            let binding = single_record(node.bindings())?;
+            let node_binding = single_record(node.bindings())?;
+            let binding = node_binding.binding;
             assert_eq!(binding.revision_id, revision_id);
             assert_eq!(binding.decision_id, decision_id);
+            assert_eq!(node_binding.scope, node.entity.scope);
         }
         assert!(
             authority.claim_c_query_child().is_none(),
@@ -5201,6 +5271,53 @@ fn worker_refusal_reason_is_allowlisted_by_site_cause_and_pre_cleanup_status() {
         .map(UnavailableReason::category),
         Some(super::worker_frame::UnavailableCategory::Limit)
     );
+    // The semantic Graph limits and the contradiction between Revisions are
+    // typed; they used to be `other`.
+    for (marker, expected, category) in [
+        (
+            "NIR1_GRAPH_NODE_LIMIT",
+            "query-worker-work-node-limit",
+            super::worker_frame::UnavailableCategory::Limit,
+        ),
+        (
+            "NIR1_GRAPH_EDGE_LIMIT",
+            "query-worker-work-edge-limit",
+            super::worker_frame::UnavailableCategory::Limit,
+        ),
+        (
+            "NIR1_GRAPH_ENDPOINT_VERSION_CONFLICT",
+            "query-worker-work-endpoint-version-conflict",
+            super::worker_frame::UnavailableCategory::Failed,
+        ),
+    ] {
+        let error = anyhow::anyhow!(marker);
+        assert_eq!(
+            reason(WorkerSite::Work, &error, false, false, None),
+            expected
+        );
+        // The marker is found under added context, as the Scene join's is.
+        let wrapped = error.context("while evaluating");
+        let status = worker_work_status(&Err::<(), _>(wrapped), false, false);
+        let full = reason(
+            WorkerSite::Work,
+            &anyhow::anyhow!(marker),
+            false,
+            false,
+            Some(status),
+        );
+        assert_eq!(
+            full,
+            format!(
+                "{expected}-pre-cleanup-work-failed-{}",
+                &expected["query-worker-work-".len()..]
+            )
+        );
+        assert_eq!(
+            UnavailableReason::parse(&full).map(UnavailableReason::category),
+            Some(category),
+            "{marker}"
+        );
+    }
     let other = anyhow::anyhow!("private detail");
     assert_eq!(
         reason(WorkerSite::Work, &other, false, false, None),
@@ -5348,8 +5465,10 @@ fn synthetic_binding() -> Arc<Nir1GraphMaterialBinding> {
 }
 
 fn synthetic_node(id: &str, hop: u8) -> Nir1GraphNode {
+    let entity = synthetic_entity(id);
     Nir1GraphNode {
-        entity: synthetic_entity(id),
+        binding_scopes: vec![Arc::new(entity.scope.clone())],
+        entity,
         hop,
         bindings: vec![synthetic_binding()],
     }

@@ -1,8 +1,17 @@
-//! NQG2: the one-query finite wire format from the isolated C-query worker to
+//! NQG3: the one-query finite wire format from the isolated C-query worker to
 //! Native. All lengths are checked *before* obtaining borrowed slices. Native
 //! validates the entire frame in one allocation-free pass; the typed
 //! projection can only be obtained from that validation and re-reads the
 //! validated bytes with the same parsers.
+//!
+//! NQG3 differs from NQG2 in two places. The Graph section's Scope revision is
+//! optional: a seed with no qualified Revision is an available, empty Graph
+//! (no node, no edge, no Scene), as it is for the in-process reader. And a
+//! node carries the Scope of its Entity per binding: each binding is followed
+//! by the Scope the Entity has in that binding's Revision, so one Entity
+//! reached through Revisions that scoped it differently stays one node and
+//! keeps every exact version (post-B 6.3). A node binds a Revision at most
+//! once, so a binding's Scope is the one Scope its Revision gives the Entity.
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -17,9 +26,11 @@ use grimodex_core::narrative_nir1::{
 };
 
 pub const FRAME_BYTES: usize = super::c_query_worker::FRAME_BYTES;
-const MAGIC: &[u8; 4] = b"NQG2";
-/// The retired layout without a Scene section. Native accepts only NQG2.
-const RETIRED_MAGIC: &[u8; 4] = b"NQG1";
+const MAGIC: &[u8; 4] = b"NQG3";
+/// The retired layouts: NQG1 has no Scene section, NQG2 has neither the
+/// optional Scope revision nor the per-binding node Scope. Native accepts only
+/// NQG3.
+const RETIRED_MAGICS: [&[u8; 4]; 2] = [b"NQG1", b"NQG2"];
 /// Fixed v1 terminal commit on the dedicated worker stdout pipe.
 pub const TERMINAL_SUCCESS_COMMIT: &[u8; 5] = b"NQGC1";
 /// Defensive bound (`nir1-defensive-resource-limits`) on the Scene section,
@@ -174,13 +185,18 @@ impl Writer {
     fn node(&mut self, n: &Nir1GraphNode) -> Result<()> {
         self.entity(&n.entity)?;
         self.byte(n.hop)?;
+        // A node exists because a qualified Revision carries it, and every
+        // binding comes with the Scope its Entity has in that Revision.
         ensure!(
-            n.bindings.len() <= MAX_GRAPH_RECORDS,
+            !n.bindings.is_empty()
+                && n.bindings.len() <= MAX_GRAPH_RECORDS
+                && n.binding_scopes.len() == n.bindings.len(),
             "NIR1_GRAPH_FRAME_COUNT"
         );
         self.u16(n.bindings.len())?;
-        for b in &n.bindings {
-            self.binding(b)?;
+        for (binding, scope) in n.bindings.iter().zip(&n.binding_scopes) {
+            self.binding(binding)?;
+            self.scope(scope)?;
         }
         Ok(())
     }
@@ -207,7 +223,8 @@ impl Writer {
     }
 }
 
-/// Encoded byte lengths of one NQG2 Scene association. The worker derives
+/// Encoded byte lengths of one NQG3 Scene association (the layout NQG2
+/// introduced). The worker derives
 /// them from SQLite `octet_length` values before materializing any token,
 /// and encode uses the same arithmetic before writing.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -302,12 +319,18 @@ pub fn encode(response: &Nir1GraphResponse) -> Result<Vec<u8>> {
             response.status == "available" && response.reason.is_none(),
             "NIR1_GRAPH_FRAME_STATUS"
         );
-        w.text(
+        // The Scope revision is the one every qualified Revision agreed on;
+        // with no qualified Revision there is none, and nothing else either.
+        ensure!(
             response
                 .scope_revision
                 .as_deref()
-                .ok_or_else(|| anyhow!("NIR1_GRAPH_FRAME_SCOPE"))?,
-        )?;
+                .is_none_or(|scope| !scope.is_empty())
+                && (response.scope_revision.is_some()
+                    || (graph.nodes.is_empty() && graph.edges.is_empty())),
+            "NIR1_GRAPH_FRAME_SCOPE"
+        );
+        w.optional(response.scope_revision.as_deref())?;
         w.i64(graph.generation)?;
         w.text(&graph.seed_entity_id)?;
         ensure!(
@@ -379,6 +402,14 @@ pub enum WorkerCause {
     DisclosureRecordLimit,
     ReadRecordLimit,
     SceneLimit,
+    /// More than `MAX_GRAPH_NODES` Entities reached (Entity 12).
+    NodeLimit,
+    /// More than `MAX_GRAPH_EDGES` distinct edges expanded (edge 144).
+    EdgeLimit,
+    /// Two qualified Revisions carry the same Entity ID with different
+    /// identity fields (type, label, source token, Evidence). A different
+    /// Scope is not a conflict: each binding keeps its own.
+    EndpointVersionConflict,
     Deadline,
     DeadlineOrSteps,
     Steps,
@@ -393,13 +424,16 @@ pub enum WorkerCause {
 }
 
 impl WorkerCause {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 20] = [
         Self::SqliteNoMem,
         Self::CandidateRecordLimit,
         Self::RevisionRecordLimit,
         Self::DisclosureRecordLimit,
         Self::ReadRecordLimit,
         Self::SceneLimit,
+        Self::NodeLimit,
+        Self::EdgeLimit,
+        Self::EndpointVersionConflict,
         Self::Deadline,
         Self::DeadlineOrSteps,
         Self::Steps,
@@ -421,6 +455,9 @@ impl WorkerCause {
             Self::DisclosureRecordLimit => "disclosure-record-limit",
             Self::ReadRecordLimit => "read-record-limit",
             Self::SceneLimit => "scene-limit",
+            Self::NodeLimit => "node-limit",
+            Self::EdgeLimit => "edge-limit",
+            Self::EndpointVersionConflict => "endpoint-version-conflict",
             Self::Deadline => "deadline",
             Self::DeadlineOrSteps => "deadline-or-steps",
             Self::Steps => "steps",
@@ -447,6 +484,8 @@ impl WorkerCause {
             | Self::DisclosureRecordLimit
             | Self::ReadRecordLimit
             | Self::SceneLimit
+            | Self::NodeLimit
+            | Self::EdgeLimit
             | Self::Steps
             | Self::ValidationCapacityExceeded => UnavailableCategory::Limit,
             Self::Deadline | Self::DeadlineOrSteps => UnavailableCategory::Timeout,
@@ -454,9 +493,13 @@ impl WorkerCause {
             | Self::ValidationClosed
             | Self::ValidationForegroundPreempted => UnavailableCategory::Cancelled,
             Self::ValidationWorkspaceGenerationChanged => UnavailableCategory::Invalidated,
-            Self::ValidationContextUnavailable | Self::ValidationCleanupFailed | Self::Other => {
-                UnavailableCategory::Failed
-            }
+            // Not a resource limit and not transient: the approved Revisions
+            // contradict each other about one Entity, which only a new review
+            // resolves. It is the generic failure, never an invalidation.
+            Self::EndpointVersionConflict
+            | Self::ValidationContextUnavailable
+            | Self::ValidationCleanupFailed
+            | Self::Other => UnavailableCategory::Failed,
         }
     }
 }
@@ -481,7 +524,7 @@ pub enum UnavailableCategory {
     Failed,
 }
 
-/// The closed allowlist of reasons an unavailable NQG2 frame may carry:
+/// The closed allowlist of reasons an unavailable NQG3 frame may carry:
 /// six fixed values and `query-worker-{site}-{cause}{pre-cleanup}`.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UnavailableReason {
@@ -727,20 +770,31 @@ pub struct BindingView<'a> {
     pub reveal_state_token: &'a str,
 }
 
+/// One binding of a node and the Scope the node's Entity has in that
+/// binding's Revision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NodeBindingView<'a> {
+    pub binding: BindingView<'a>,
+    pub scope: ScopeBindingView<'a>,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct NodeView<'a> {
+    /// The Entity as its first binding carries it; validate proves that this
+    /// Scope is the first binding's.
     pub entity: EntityView<'a>,
     pub hop: u8,
     bindings: RecordRun<'a>,
 }
 
 impl<'a> NodeView<'a> {
+    /// Always at least one.
     pub fn binding_count(&self) -> usize {
         self.bindings.count
     }
 
-    pub fn bindings(&self) -> Records<'a, BindingView<'a>> {
-        self.bindings.records(Cursor::binding)
+    pub fn bindings(&self) -> Records<'a, NodeBindingView<'a>> {
+        self.bindings.records(Cursor::node_binding)
     }
 }
 
@@ -867,7 +921,7 @@ impl<'a> ScenePath<'a> {
 #[derive(Clone, Copy, Debug)]
 pub struct GraphView<'a> {
     bytes: &'a [u8],
-    scope_revision: &'a str,
+    scope_revision: Option<&'a str>,
     generation: i64,
     seed: &'a str,
     node_count: usize,
@@ -881,7 +935,9 @@ pub struct GraphView<'a> {
 }
 
 impl<'a> GraphView<'a> {
-    pub fn scope_revision(&self) -> &'a str {
+    /// The Scope revision every qualified Revision agreed on. None exactly
+    /// when no Revision qualified, which is an empty Graph.
+    pub fn scope_revision(&self) -> Option<&'a str> {
         self.scope_revision
     }
 
@@ -1176,12 +1232,25 @@ impl<'a> Cursor<'a> {
             reveal_state_token: self.text()?,
         })
     }
+    fn node_binding(&mut self) -> Result<NodeBindingView<'a>> {
+        Ok(NodeBindingView {
+            binding: self.binding()?,
+            scope: self.scope()?,
+        })
+    }
     fn node(&mut self) -> Result<NodeView<'a>> {
         let entity = self.entity()?;
         let hop = self.byte()?;
         ensure!(hop <= MAX_GRAPH_HOPS, "NIR1_GRAPH_FRAME_HOP");
         let count = self.u16()?;
-        let bindings = self.run(count, Cursor::binding)?;
+        ensure!(count > 0, "NIR1_GRAPH_FRAME_NODE_BINDING");
+        let bindings = self.run(count, Cursor::node_binding)?;
+        // The node's Entity is the one its first binding's Revision carries.
+        let first = bindings
+            .records(Cursor::node_binding)
+            .next()
+            .ok_or_else(|| anyhow!("NIR1_GRAPH_FRAME_NODE_BINDING"))??;
+        ensure!(first.scope == entity.scope, "NIR1_GRAPH_FRAME_NODE_SCOPE");
         Ok(NodeView {
             entity,
             hop,
@@ -1284,8 +1353,11 @@ impl NodeTable<'_> {
 }
 
 fn validate_graph<'a>(c: &mut Cursor<'a>) -> Result<GraphView<'a>> {
-    let scope_revision = c.text()?;
-    ensure!(!scope_revision.is_empty(), "NIR1_GRAPH_FRAME_SCOPE");
+    let scope_revision = c.optional()?;
+    ensure!(
+        scope_revision.is_none_or(|scope| !scope.is_empty()),
+        "NIR1_GRAPH_FRAME_SCOPE"
+    );
     let generation = c.i64()?;
     ensure!(generation > 0, "NIR1_GRAPH_FRAME_GENERATION");
     let seed = c.text()?;
@@ -1296,12 +1368,19 @@ fn validate_graph<'a>(c: &mut Cursor<'a>) -> Result<GraphView<'a>> {
         node_count <= MAX_GRAPH_NODES && edge_count <= MAX_GRAPH_EDGES,
         "NIR1_GRAPH_FRAME_COUNT"
     );
+    // No qualified Revision means no Scope revision, no node and no edge.
+    ensure!(
+        scope_revision.is_some() || (node_count == 0 && edge_count == 0),
+        "NIR1_GRAPH_FRAME_SCOPE"
+    );
     let nodes_start = c.position;
     let mut nodes = NodeTable {
         ids: [""; MAX_GRAPH_NODES],
         hops: [0; MAX_GRAPH_NODES],
         count: 0,
     };
+    // The Revisions one node is bound to, reused by every node.
+    let mut revisions = [""; MAX_GRAPH_RECORDS];
     for _ in 0..node_count {
         let node = c.node()?;
         // A path endpoint must name exactly one node and therefore one hop.
@@ -1309,6 +1388,18 @@ fn validate_graph<'a>(c: &mut Cursor<'a>) -> Result<GraphView<'a>> {
             nodes.hop(node.entity.id).is_none(),
             "NIR1_GRAPH_FRAME_NODE_DUPLICATE"
         );
+        // A node keeps one Scope per binding, and a Revision gives it one
+        // Scope: a Revision bound twice has no single Scope. At most
+        // MAX_GRAPH_RECORDS bindings per node (the run is already bounded), so
+        // this is a bounded comparison over borrowed text.
+        for (position, binding) in node.bindings().enumerate() {
+            let revision_id = binding?.binding.revision_id;
+            ensure!(
+                !revisions[..position].contains(&revision_id),
+                "NIR1_GRAPH_FRAME_NODE_BINDING_DUPLICATE"
+            );
+            revisions[position] = revision_id;
+        }
         nodes.ids[nodes.count] = node.entity.id;
         nodes.hops[nodes.count] = node.hop;
         nodes.count += 1;
@@ -1399,7 +1490,12 @@ pub fn validate(bytes: &[u8]) -> Result<FrameView<'_>> {
     ensure!(bytes.len() <= FRAME_BYTES, "NIR1_GRAPH_FRAME_LIMIT");
     let mut c = Cursor::at(bytes, 0);
     let magic = c.take(4)?;
-    ensure!(magic != RETIRED_MAGIC, "NIR1_GRAPH_FRAME_VERSION");
+    ensure!(
+        !RETIRED_MAGICS
+            .iter()
+            .any(|retired| magic == retired.as_slice()),
+        "NIR1_GRAPH_FRAME_VERSION"
+    );
     ensure!(magic == MAGIC, "NIR1_GRAPH_FRAME_MAGIC");
     let available = match c.byte()? {
         0 => false,
@@ -1460,7 +1556,7 @@ mod tests {
     #[test]
     fn malformed_child_frame_rejected_before_view() -> Result<()> {
         let mut raw =
-            b"NQG2\x00\x01\x00\x00\x00x\x01\x00\x00\x00s\x11\x00\x00\x00query-invalidated".to_vec();
+            b"NQG3\x00\x01\x00\x00\x00x\x01\x00\x00\x00s\x11\x00\x00\x00query-invalidated".to_vec();
         assert_eq!(
             validate(&raw)?.unavailable_reason(),
             Some(UnavailableReason::QueryInvalidated)
@@ -1563,9 +1659,28 @@ mod tests {
         }
     }
 
+    /// The Scope of an Entity in the `index`-th Revision that carries it: the
+    /// first is the Entity's own, each later one was reviewed under another
+    /// Scene.
+    fn binding_scope(entity: &EntityInput, index: usize, revision: &str) -> Arc<ScopeBinding> {
+        let mut scope = entity.scope.clone();
+        if index > 0 {
+            scope.reading = ScopeValue::Exact {
+                value: format!("scene:{revision}"),
+            };
+        }
+        Arc::new(scope)
+    }
+
     fn node(id: &str, hop: u8, revisions: &[&str]) -> Nir1GraphNode {
+        let entity = entity(id);
         Nir1GraphNode {
-            entity: entity(id),
+            binding_scopes: revisions
+                .iter()
+                .enumerate()
+                .map(|(index, revision)| binding_scope(&entity, index, revision))
+                .collect(),
+            entity,
             hop,
             bindings: revisions.iter().map(|revision| binding(revision)).collect(),
         }
@@ -1650,7 +1765,7 @@ mod tests {
         w.byte(1).unwrap();
         w.text(&response.project_id).unwrap();
         w.text(&response.query_scene_id).unwrap();
-        w.text(response.scope_revision.as_deref().unwrap()).unwrap();
+        w.optional(response.scope_revision.as_deref()).unwrap();
         w.i64(generation).unwrap();
         w.text(&graph.seed_entity_id).unwrap();
         w.u16(graph.nodes.len()).unwrap();
@@ -1680,6 +1795,18 @@ mod tests {
         }
     }
 
+    fn scope_binding_view(scope: &ScopeBinding) -> ScopeBindingView<'_> {
+        ScopeBindingView {
+            reading: scope_view(&scope.reading),
+            story: scope_view(&scope.story),
+            auto: scope_view(&scope.auto),
+            phase: &scope.phase,
+            reveal: &scope.reveal,
+            pov: scope.pov.as_deref(),
+            authority_revision: &scope.authority_revision,
+        }
+    }
+
     fn assert_entity(view: &EntityView<'_>, entity: &EntityInput) -> Result<()> {
         assert_eq!(
             (view.id, view.kind, view.label, view.source),
@@ -1690,18 +1817,7 @@ mod tests {
                 entity.source_token.as_str()
             )
         );
-        assert_eq!(
-            view.scope,
-            ScopeBindingView {
-                reading: scope_view(&entity.scope.reading),
-                story: scope_view(&entity.scope.story),
-                auto: scope_view(&entity.scope.auto),
-                phase: &entity.scope.phase,
-                reveal: &entity.scope.reveal,
-                pov: entity.scope.pov.as_deref(),
-                authority_revision: &entity.scope.authority_revision,
-            }
-        );
+        assert_eq!(view.scope, scope_binding_view(&entity.scope));
         assert_eq!(view.evidence_count(), entity.evidence.len());
         let evidence = view.evidence().collect::<Result<Vec<_>>>()?;
         assert_eq!(evidence.len(), entity.evidence.len());
@@ -1739,7 +1855,7 @@ mod tests {
     }
 
     #[test]
-    fn nqg2_round_trip_projects_every_node_edge_binding_and_scene() -> Result<()> {
+    fn nqg3_round_trip_projects_every_node_edge_binding_and_scene() -> Result<()> {
         let response = sample_response();
         let bytes = encode(&response)?;
         let view = validate(&bytes)?;
@@ -1748,7 +1864,7 @@ mod tests {
         assert_eq!(view.query_scene(), "query-scene");
         assert_eq!(view.unavailable_reason(), None);
         let graph = view.graph().expect("available frame");
-        assert_eq!(graph.scope_revision(), "scope-authority");
+        assert_eq!(graph.scope_revision(), Some("scope-authority"));
         assert_eq!(graph.generation(), 7);
         assert_eq!(graph.seed(), "s");
 
@@ -1764,7 +1880,11 @@ mod tests {
                 bindings,
                 node.bindings
                     .iter()
-                    .map(|binding| binding_view(binding))
+                    .zip(&node.binding_scopes)
+                    .map(|(binding, scope)| NodeBindingView {
+                        binding: binding_view(binding),
+                        scope: scope_binding_view(scope),
+                    })
                     .collect::<Vec<_>>()
             );
         }
@@ -1872,7 +1992,7 @@ mod tests {
     }
 
     #[test]
-    fn nqg2_rejects_every_strict_prefix_and_any_trailing_byte() -> Result<()> {
+    fn nqg3_rejects_every_strict_prefix_and_any_trailing_byte() -> Result<()> {
         for response in [
             sample_response(),
             unavailable_response("registration-drift"),
@@ -1890,8 +2010,8 @@ mod tests {
     }
 
     #[test]
-    fn nqg2_rejects_nqg1_frames() -> Result<()> {
-        // An NQG1 frame is the NQG2 body without its Scene section.
+    fn nqg3_rejects_the_retired_frames() -> Result<()> {
+        // An NQG1 frame is the current body without its Scene section.
         let mut response = sample_response();
         let graph = response.graph.as_mut().unwrap();
         graph.scene_total = 0;
@@ -1899,25 +2019,288 @@ mod tests {
         let current = encode(&response)?;
         validate(&current)?;
         let mut nqg1 = current[..current.len() - SCENE_SECTION_HEADER_BYTES].to_vec();
-        nqg1[..4].copy_from_slice(b"NQG1");
-        assert_eq!(error_text(validate(&nqg1)), "NIR1_GRAPH_FRAME_VERSION");
-        // The old body cannot pass as NQG2 either.
+        for retired in [b"NQG1", b"NQG2"] {
+            nqg1[..4].copy_from_slice(retired);
+            assert_eq!(error_text(validate(&nqg1)), "NIR1_GRAPH_FRAME_VERSION");
+        }
+        // The old body cannot pass as NQG3 either.
         nqg1[..4].copy_from_slice(MAGIC);
-        assert_eq!(error_text(validate(&nqg1)), "NIR1_GRAPH_FRAME_TRUNCATED");
+        assert!(validate(&nqg1).is_err());
 
         let mut unavailable = encode(&unavailable_response("query-invalidated"))?;
-        unavailable[..4].copy_from_slice(b"NQG1");
-        assert_eq!(
-            error_text(validate(&unavailable)),
-            "NIR1_GRAPH_FRAME_VERSION"
-        );
-        unavailable[..4].copy_from_slice(b"NQG3");
+        for retired in [b"NQG1", b"NQG2"] {
+            unavailable[..4].copy_from_slice(retired);
+            assert_eq!(
+                error_text(validate(&unavailable)),
+                "NIR1_GRAPH_FRAME_VERSION"
+            );
+        }
+        unavailable[..4].copy_from_slice(b"NQG4");
         assert_eq!(error_text(validate(&unavailable)), "NIR1_GRAPH_FRAME_MAGIC");
         Ok(())
     }
 
+    fn empty_graph_response() -> Nir1GraphResponse {
+        Nir1GraphResponse {
+            status: "available",
+            project_id: "project".into(),
+            query_scene_id: "query-scene".into(),
+            scope_revision: None,
+            graph: Some(Nir1QualifiedGraph {
+                seed_entity_id: "s".into(),
+                generation: 7,
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                scene_total: 0,
+                scenes: Vec::new(),
+            }),
+            reason: None,
+        }
+    }
+
+    // A seed with no qualified Revision is an available, empty Graph in the
+    // in-process reader; the frame can say so (it used to fail to encode,
+    // which ended the worker with exit 1).
     #[test]
-    fn nqg2_scene_invariants_reject_corrupt_associations() -> Result<()> {
+    fn nqg3_carries_an_empty_graph_without_a_scope_revision() -> Result<()> {
+        let response = empty_graph_response();
+        let bytes = encode(&response)?;
+        let view = validate(&bytes)?;
+        let graph = view.graph().expect("an empty Graph is available");
+        assert_eq!(graph.scope_revision(), None);
+        assert_eq!(graph.generation(), 7);
+        assert_eq!(graph.seed(), "s");
+        assert_eq!(
+            (graph.node_count(), graph.edge_count(), graph.scene_count()),
+            (0, 0, 0)
+        );
+        assert_eq!(graph.diagnostic_scene_total(), 0);
+
+        use crate::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
+        let projection = Nir1GraphProjection::from_frame(&view, std::time::Duration::ZERO)?;
+        assert_eq!(projection.scope_revision, None);
+        assert!(projection.graph.nodes.is_empty() && projection.graph.edges.is_empty());
+        assert_eq!(encode(&projection.into_response())?, bytes);
+
+        // A qualified Revision that does not hold the seed gives a Scope
+        // revision and still no node.
+        let mut scoped = empty_graph_response();
+        scoped.scope_revision = Some("scope-authority".into());
+        validate(&encode(&scoped)?)?;
+
+        // No Scope revision cannot carry a node or an edge, and a present one
+        // is never empty.
+        let mut with_node = sample_response();
+        with_node.scope_revision = None;
+        assert_eq!(error_text(encode(&with_node)), "NIR1_GRAPH_FRAME_SCOPE");
+        let mut empty_scope = empty_graph_response();
+        empty_scope.scope_revision = Some(String::new());
+        assert_eq!(error_text(encode(&empty_scope)), "NIR1_GRAPH_FRAME_SCOPE");
+        // The same refusals on the validating side, from raw frames.
+        let forge = |response: &Nir1GraphResponse, scope: Option<&str>| -> Vec<u8> {
+            let graph = response.graph.as_ref().unwrap();
+            let mut w = Writer::new();
+            w.add(MAGIC).unwrap();
+            w.byte(1).unwrap();
+            w.text(&response.project_id).unwrap();
+            w.text(&response.query_scene_id).unwrap();
+            w.optional(scope).unwrap();
+            w.i64(graph.generation).unwrap();
+            w.text(&graph.seed_entity_id).unwrap();
+            w.u16(graph.nodes.len()).unwrap();
+            w.u16(graph.edges.len()).unwrap();
+            for node in &graph.nodes {
+                w.node(node).unwrap();
+            }
+            for edge in &graph.edges {
+                w.edge(edge).unwrap();
+            }
+            w.u16(0).unwrap();
+            w.u16(0).unwrap();
+            w.bytes
+        };
+        assert_eq!(
+            error_text(validate(&forge(&sample_response(), None))),
+            "NIR1_GRAPH_FRAME_SCOPE"
+        );
+        assert_eq!(
+            error_text(validate(&forge(&empty_graph_response(), Some("")))),
+            "NIR1_GRAPH_FRAME_SCOPE"
+        );
+        validate(&forge(&empty_graph_response(), None))?;
+        Ok(())
+    }
+
+    // A node keeps one exact Scope per binding, and its Entity is the first
+    // binding's version.
+    #[test]
+    fn nqg3_node_scopes_are_per_binding_and_anchored_to_the_first() -> Result<()> {
+        let response = sample_response();
+        let bytes = encode(&response)?;
+        let view = validate(&bytes)?;
+        let nodes = view.graph().unwrap().nodes().collect::<Result<Vec<_>>>()?;
+        // x is reached through r1 and r2, which scoped it differently.
+        let x = nodes.iter().find(|node| node.entity.id == "x").unwrap();
+        assert_eq!(x.binding_count(), 2);
+        let scopes = x
+            .bindings()
+            .map(|item| item.map(|item| item.scope))
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(scopes[0], x.entity.scope);
+        assert_ne!(scopes[0], scopes[1]);
+        assert_eq!(scopes[1].reading, ScopeView::Exact("scene:r2"));
+
+        let forge = |change: &dyn Fn(&mut Nir1GraphNode)| -> Vec<u8> {
+            let mut response = sample_response();
+            change(&mut response.graph.as_mut().unwrap().nodes[1]);
+            raw_frame(&response, 7, 4, &response.graph.as_ref().unwrap().scenes)
+        };
+        // A node without a binding, a Scope list shorter than its bindings
+        // and a first Scope that is not the Entity's cannot be forged past
+        // encode, and validate refuses them in a forged frame.
+        let mut hollow = sample_response();
+        hollow.graph.as_mut().unwrap().nodes[1].bindings.clear();
+        hollow.graph.as_mut().unwrap().nodes[1]
+            .binding_scopes
+            .clear();
+        assert_eq!(error_text(encode(&hollow)), "NIR1_GRAPH_FRAME_COUNT");
+        let mut short = sample_response();
+        short.graph.as_mut().unwrap().nodes[1].binding_scopes.pop();
+        assert_eq!(error_text(encode(&short)), "NIR1_GRAPH_FRAME_COUNT");
+        let moved = forge(&|node| {
+            let mut scope = (*node.binding_scopes[0]).clone();
+            scope.phase = "another-phase".into();
+            node.binding_scopes[0] = Arc::new(scope);
+        });
+        assert_eq!(error_text(validate(&moved)), "NIR1_GRAPH_FRAME_NODE_SCOPE");
+        // A node with no bindings, written as a count of zero.
+        let mut zero = forge(&|_| {});
+        let mut raw_hollow = sample_response();
+        {
+            let node = &mut raw_hollow.graph.as_mut().unwrap().nodes[1];
+            node.bindings.clear();
+            node.binding_scopes.clear();
+        }
+        let hollow_node = {
+            let mut w = Writer::new();
+            w.entity(&raw_hollow.graph.as_ref().unwrap().nodes[1].entity)
+                .unwrap();
+            w.byte(1).unwrap();
+            w.u16(0).unwrap();
+            w.bytes
+        };
+        let full_node = {
+            let mut w = Writer::new();
+            w.node(&sample_response().graph.unwrap().nodes[1]).unwrap();
+            w.bytes
+        };
+        let at = zero
+            .windows(full_node.len())
+            .position(|window| window == full_node.as_slice())
+            .expect("the forged frame holds the node");
+        zero.splice(at..at + full_node.len(), hollow_node);
+        assert_eq!(error_text(validate(&zero)), "NIR1_GRAPH_FRAME_NODE_BINDING");
+        Ok(())
+    }
+
+    /// `count` distinct Revision ids.
+    fn revision_ids(count: usize) -> Vec<String> {
+        (0..count).map(|index| format!("rev-{index:03}")).collect()
+    }
+
+    /// The frame of `sample_response` with node `x` bound by `revisions`, each
+    /// with the Scope its review gave. Written with the Writer's parts so the
+    /// node can break what the parent's `validate` checks: `encode` refuses a
+    /// node over the cap, and the worker never writes a repeated Revision.
+    fn frame_with_x_bound_by(revisions: &[String]) -> Vec<u8> {
+        let response = sample_response();
+        let graph = response.graph.as_ref().unwrap();
+        let x = &graph.nodes[1];
+        let original = {
+            let mut w = Writer::new();
+            w.node(x).unwrap();
+            w.bytes
+        };
+        let replacement = {
+            let mut w = Writer::new();
+            w.entity(&x.entity).unwrap();
+            w.byte(x.hop).unwrap();
+            w.u16(revisions.len()).unwrap();
+            for (index, revision) in revisions.iter().enumerate() {
+                w.binding(&binding(revision)).unwrap();
+                w.scope(&binding_scope(&x.entity, index, revision)).unwrap();
+            }
+            w.bytes
+        };
+        let mut frame = raw_frame(&response, 7, 4, &graph.scenes);
+        let at = frame
+            .windows(original.len())
+            .position(|window| window == original.as_slice())
+            .expect("the frame holds the node");
+        frame.splice(at..at + original.len(), replacement);
+        frame
+    }
+
+    // A node holds at most MAX_GRAPH_RECORDS bindings: 512 pass encode and
+    // validate and are read back one by one; a 513th is refused on both sides.
+    #[test]
+    fn nqg3_node_binding_cap_admits_512_and_refuses_513() -> Result<()> {
+        let response_with = |count: usize| {
+            let revisions = revision_ids(count);
+            let refs = revisions.iter().map(String::as_str).collect::<Vec<_>>();
+            let mut response = sample_response();
+            response.graph.as_mut().unwrap().nodes[1] = node("x", 1, &refs);
+            response
+        };
+        let at_cap = revision_ids(MAX_GRAPH_RECORDS);
+        let bytes = encode(&response_with(MAX_GRAPH_RECORDS))?;
+        assert_eq!(bytes, frame_with_x_bound_by(&at_cap));
+        let view = validate(&bytes)?;
+        let nodes = view.graph().unwrap().nodes().collect::<Result<Vec<_>>>()?;
+        let x = nodes.iter().find(|node| node.entity.id == "x").unwrap();
+        assert_eq!(x.binding_count(), MAX_GRAPH_RECORDS);
+        let listed = x
+            .bindings()
+            .map(|item| item.map(|item| item.binding.revision_id.to_owned()))
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(listed, at_cap);
+
+        assert_eq!(
+            error_text(encode(&response_with(MAX_GRAPH_RECORDS + 1))),
+            "NIR1_GRAPH_FRAME_COUNT"
+        );
+        let forged = frame_with_x_bound_by(&revision_ids(MAX_GRAPH_RECORDS + 1));
+        assert_eq!(error_text(validate(&forged)), "NIR1_GRAPH_FRAME_COUNT");
+        Ok(())
+    }
+
+    // A Revision gives a node one Scope. A frame that binds the same Revision
+    // twice, each time with a Scope of its own, has no single Scope for it and
+    // is refused wherever the repeat is; the same Revision in different nodes
+    // is the ordinary case.
+    #[test]
+    fn nqg3_refuses_a_node_that_binds_one_revision_twice() -> Result<()> {
+        let duplicate = "NIR1_GRAPH_FRAME_NODE_BINDING_DUPLICATE";
+        let twice = frame_with_x_bound_by(&["r1".to_owned(), "r1".to_owned()]);
+        assert_eq!(error_text(validate(&twice)), duplicate);
+        for repeat_at in [1, MAX_GRAPH_RECORDS / 2, MAX_GRAPH_RECORDS - 1] {
+            let mut revisions = revision_ids(MAX_GRAPH_RECORDS);
+            revisions[repeat_at] = revisions[0].clone();
+            assert_eq!(
+                error_text(validate(&frame_with_x_bound_by(&revisions))),
+                duplicate,
+                "the first Revision repeated at {repeat_at}"
+            );
+        }
+        let distinct = frame_with_x_bound_by(&revision_ids(MAX_GRAPH_RECORDS));
+        validate(&distinct)?;
+        // r1 binds s, x and y in the sample.
+        validate(&encode(&sample_response())?)?;
+        Ok(())
+    }
+
+    #[test]
+    fn nqg3_scene_invariants_reject_corrupt_associations() -> Result<()> {
         // e3 is a crafted shortcut from the seed straight to the hop-2 node z.
         let mut response = sample_response();
         let graph = response.graph.as_mut().unwrap();
@@ -2210,7 +2593,7 @@ mod tests {
     }
 
     #[test]
-    fn nqg2_scene_order_is_utf8_byte_order_not_utf16() -> Result<()> {
+    fn nqg3_scene_order_is_utf8_byte_order_not_utf16() -> Result<()> {
         // U+FF5E sorts before U+1F600 in UTF-8 bytes but after it in UTF-16
         // code units; `Z` sorts before `a`.
         let tilde = "\u{FF5E}";
@@ -2236,7 +2619,7 @@ mod tests {
     }
 
     #[test]
-    fn nqg2_scene_section_cap_admits_n_and_refuses_n_plus_one() -> Result<()> {
+    fn nqg3_scene_section_cap_admits_n_and_refuses_n_plus_one() -> Result<()> {
         let template = association("", true, 7, "x", &[0]);
         let without_id = SceneAssociationLengths::of(&template)
             .encoded_bytes()
@@ -2299,10 +2682,10 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_reason_allowlist_round_trips_all_686_and_rejects_others() {
+    fn unavailable_reason_allowlist_round_trips_all_926_and_rejects_others() {
         let reasons = every_allowlisted_reason();
-        assert_eq!(reasons.len(), 6 + 2 * 17 * (3 + 17));
-        assert_eq!(reasons.len(), 686);
+        assert_eq!(reasons.len(), 6 + 2 * 20 * (3 + 20));
+        assert_eq!(reasons.len(), 926);
         let mut texts = HashSet::new();
         for reason in &reasons {
             let text = reason.to_string();
@@ -2403,6 +2786,8 @@ mod tests {
             | "disclosure-record-limit"
             | "read-record-limit"
             | "scene-limit"
+            | "node-limit"
+            | "edge-limit"
             | "steps"
             | "validation-capacity-exceeded" => Limit,
             "deadline" | "deadline-or-steps" => Timeout,
@@ -2410,7 +2795,10 @@ mod tests {
                 Cancelled
             }
             "validation-workspace-generation-changed" => Invalidated,
-            "validation-context-unavailable" | "validation-cleanup-failed" | "other" => Failed,
+            "endpoint-version-conflict"
+            | "validation-context-unavailable"
+            | "validation-cleanup-failed"
+            | "other" => Failed,
             other => panic!("unclassified cause {other}"),
         };
         for site in WorkerSite::ALL {

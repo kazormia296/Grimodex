@@ -13,7 +13,7 @@
 | [broute-decisions.md](broute-decisions.md) | B-ROUTE（#643） | 会話記録から復元 |
 | [cp2a-decisions.md](cp2a-decisions.md) | CP-2a（#655） | integrator の作業領域の写し |
 | [x1a-decisions.md](x1a-decisions.md) | X1-1（DR-X1-1。実装中） | integrator の作業領域の写し（mutation の前の記録） |
-| [cqavail-decisions.md](cqavail-decisions.md) | CQ-AVAIL（DR-CQA-1〜3。実装中） | 同上 |
+| [cqavail-decisions.md](cqavail-decisions.md) | CQ-AVAIL（DR-CQA-1〜5） | 同上（DR-CQA-4、5 はレビュー指摘の修正の前に足した記録） |
 | [cqmem-decisions.md](cqmem-decisions.md) | CQ-MEM（DR-CQM-1。実装中） | 同上 |
 
 復元した7本は、2026-10-14 の worktree の片付けで、gitignore の対象（`.ralph/`）の置き場所ごと消えたものである。PROVENANCE.md に、ファイルごとの最終版の根拠、確からしさ、PR 本文との差を書いた。PR 本文との差は、decisions 文書が最後に書かれた後の修正か、PR の側の書き足しによるもので、復元の誤りではない。

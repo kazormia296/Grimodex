@@ -286,6 +286,12 @@ fn retained_graph(graph: &Nir1QualifiedGraph) -> Result<usize> {
             &mut total,
             retained_vec::<std::sync::Arc<Nir1GraphMaterialBinding>>(node.bindings.capacity())?,
         )?;
+        add(
+            &mut total,
+            retained_vec::<std::sync::Arc<grimodex_core::narrative_nir1::ScopeBinding>>(
+                node.binding_scopes.capacity(),
+            )?,
+        )?;
     }
     Ok(total)
 }

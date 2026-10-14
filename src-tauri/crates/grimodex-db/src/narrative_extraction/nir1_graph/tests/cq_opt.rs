@@ -280,7 +280,7 @@ fn pinned_scenes_fixture() -> Result<Fixture> {
 
 /// What the plain seed query returns for a shape.
 #[derive(Clone, Copy, Debug)]
-enum Expect {
+pub(super) enum Expect {
     /// An available Graph.
     Graph {
         nodes: usize,
@@ -292,27 +292,32 @@ enum Expect {
     Limit { worker_reason: &'static str },
 }
 
-struct Shape {
+pub(super) struct Shape {
     /// Names the files of the before/after recorder.
-    label: &'static str,
-    build: fn() -> Result<Fixture>,
-    expect: Expect,
+    pub(super) label: &'static str,
+    pub(super) build: fn() -> Result<Fixture>,
+    pub(super) expect: Expect,
     /// Also fix the other requests (another end of the edge and the
     /// unavailable reasons), not only the plain seed query.
-    all_requests: bool,
+    pub(super) all_requests: bool,
 }
 
 /// The shapes the response and the steps are fixed for: the seed Revision
 /// alone, 3 and 5 Revisions, 10, 70 and 144 Relations, and the boundaries
 /// whose refusal reason must not move.
-fn shapes() -> Vec<Shape> {
+pub(super) fn shapes() -> Vec<Shape> {
     let graph = |nodes, edges| Expect::Graph {
         nodes,
         edges,
         scenes: 0,
     };
-    let other = Expect::Limit {
-        worker_reason: "query-worker-work-other-pre-cleanup-work-failed-other",
+    // The worker names the semantic limit it met (CQ-AVAIL typed them; they
+    // used to be `other`).
+    let edge_limit = Expect::Limit {
+        worker_reason: "query-worker-work-edge-limit-pre-cleanup-work-failed-edge-limit",
+    };
+    let node_limit = Expect::Limit {
+        worker_reason: "query-worker-work-node-limit-pre-cleanup-work-failed-node-limit",
     };
     vec![
         Shape {
@@ -373,26 +378,27 @@ fn shapes() -> Vec<Shape> {
             },
             all_requests: false,
         },
-        // One past the edge and Entity limits, and past the record limit:
-        // refused whatever the step budget.
+        // One past the edge and Entity limits: refused whatever the step
+        // budget. (Ten approved Revisions of the same Entities used to be past
+        // the record limit too, and are an available Graph now: the
+        // project-level reads are admitted once, so a Revision costs its own
+        // rows.)
         Shape {
             label: "relations-145",
             build: || relations_fixture(145),
-            expect: other,
+            expect: edge_limit,
             all_requests: false,
         },
         Shape {
             label: "star-11",
             build: || Fixture::with_plan(&star_plan(11)),
-            expect: other,
+            expect: node_limit,
             all_requests: false,
         },
         Shape {
             label: "revisions-10",
             build: || revisions_fixture(10),
-            expect: Expect::Limit {
-                worker_reason: "query-worker-work-disclosure-record-limit-pre-cleanup-work-failed-disclosure-record-limit",
-            },
+            expect: graph(2, 10),
             all_requests: false,
         },
     ]
@@ -401,7 +407,7 @@ fn shapes() -> Vec<Shape> {
 /// Requests besides the plain seed query: another end of the directed edge, and
 /// the answers the Graph gives inside the pinned snapshot when nothing is
 /// eligible or the seed is unknown.
-fn request_variants() -> Vec<(&'static str, Nir1GraphRequest)> {
+pub(super) fn request_variants() -> Vec<(&'static str, Nir1GraphRequest)> {
     let request = |seed: &str, scene: &str| Nir1GraphRequest {
         project_id: PROJECT.into(),
         query_scene_id: scene.into(),
@@ -1040,6 +1046,36 @@ fn record_shape_responses() -> Result<()> {
                 let stem = format!("{}.{name}.{lane:?}", shape.label);
                 std::fs::write(dir.join(format!("{stem}.json")), &measured.json)?;
                 writeln!(steps_file, "{stem}\t{}", measured.steps)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// CQ-AVAIL recorder (ignored): writes every shape's response, per lane and
+// request, to the directory named by `CQ_AVAIL_DUMP_DIR`, so a run before a
+// change and a run after it can be compared byte for byte.
+#[test]
+#[ignore = "CQ-AVAIL recorder: set CQ_AVAIL_DUMP_DIR"]
+fn dump_every_shape_response() -> Result<()> {
+    let directory = std::path::PathBuf::from(
+        std::env::var_os("CQ_AVAIL_DUMP_DIR")
+            .ok_or_else(|| anyhow::anyhow!("CQ_AVAIL_DUMP_DIR missing"))?,
+    );
+    std::fs::create_dir_all(&directory)?;
+    for shape in shapes() {
+        let fixture = (shape.build)()?;
+        for lane in [Lane::Reader, Lane::Worker] {
+            for (name, request) in request_variants() {
+                if name != "seed" && !shape.all_requests {
+                    continue;
+                }
+                let measured = measure(&fixture, lane, Cap::Production, &request)?;
+                let file = directory.join(format!("{}.{lane:?}.{name}.json", shape.label));
+                std::fs::write(
+                    &file,
+                    format!("{}\nsteps={}\n", measured.json, measured.steps),
+                )?;
             }
         }
     }
