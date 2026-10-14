@@ -5738,6 +5738,231 @@ pub(super) mod tests {
         Ok(())
     }
 
+    /// Writer-level typed Revision for the proposal/6 limits. The writer counts
+    /// `1 + Entities + Relations + Evidence` records. `alice_evidence` sets
+    /// Alice's Evidence count (Bob keeps one). `id_padding` grows only the last
+    /// Alice Evidence identifier, which no Relation references, so every padding
+    /// byte is counted exactly once. Every quote stays a live Codex anchor.
+    pub(crate) fn bounded_writer_bundle(
+        template: &EntityRelationBundle,
+        alice_evidence: usize,
+        id_padding: usize,
+    ) -> EntityRelationBundle {
+        assert!(
+            alice_evidence >= 2,
+            "the padded Evidence must be unreferenced by any Relation"
+        );
+        let mut bundle = template.clone();
+        // The writer replaces this with a 36-byte UUID before validation.
+        bundle.revision_id = "r".repeat(36);
+        let anchor = bundle.entities[0].evidence[0].clone();
+        let mut evidence: Vec<EvidenceInput> = (0..alice_evidence)
+            .map(|index| EvidenceInput {
+                evidence_id: format!("nir1-evidence-alice-{index}"),
+                ..anchor.clone()
+            })
+            .collect();
+        let unreferenced = alice_evidence - 1;
+        evidence[unreferenced]
+            .evidence_id
+            .push_str(&"p".repeat(id_padding));
+        bundle.relations[0].evidence_ids =
+            vec![evidence[0].evidence_id.clone(), "nir1-evidence-bob".into()];
+        bundle.entities[0].evidence = evidence;
+        bundle
+    }
+
+    /// Mirrors the validator's counted Revision input (proposal/5's counting):
+    /// project, revision, and producer identities, every Entity field and Scope
+    /// value, every Evidence field, and every Relation field.
+    pub(crate) fn writer_input_bytes(bundle: &EntityRelationBundle) -> usize {
+        fn scope_value(value: &ScopeValue) -> usize {
+            match value {
+                ScopeValue::Any { purpose } => purpose.as_deref().map_or(0, str::len),
+                ScopeValue::Exact { value } => value.len(),
+                ScopeValue::NotApplicable { reason } | ScopeValue::Unavailable { reason } => {
+                    reason.len()
+                }
+                ScopeValue::LegacyAbsent | ScopeValue::Unresolved => 0,
+            }
+        }
+        fn scope_binding(scope: &ScopeBinding) -> usize {
+            scope_value(&scope.reading)
+                + scope_value(&scope.story)
+                + scope_value(&scope.auto)
+                + scope.phase.len()
+                + scope.reveal.len()
+                + scope.pov.as_deref().map_or(0, str::len)
+                + scope.authority_revision.len()
+        }
+        let mut total = bundle.project_id.len() + bundle.revision_id.len() + bundle.producer.len();
+        for entity in &bundle.entities {
+            total += entity.entity_id.len()
+                + entity.entity_type.len()
+                + entity.label.len()
+                + entity.source_token.len()
+                + scope_binding(&entity.scope);
+            for item in &entity.evidence {
+                total += item.evidence_id.len() + item.source_ref.len() + item.quote.len();
+            }
+        }
+        for relation in &bundle.relations {
+            total += relation.edge_id.len()
+                + relation.from_entity_id.len()
+                + relation.to_entity_id.len()
+                + relation.relation_type.len()
+                + relation.directionality.len()
+                + relation.source_token.len()
+                + relation.evidence_ids.iter().map(String::len).sum::<usize>();
+        }
+        total
+    }
+
+    /// The validator's record count: the Revision object plus every Entity,
+    /// Relation, and Evidence item.
+    fn writer_record_count(bundle: &EntityRelationBundle) -> usize {
+        1 + bundle.entities.len()
+            + bundle.relations.len()
+            + bundle
+                .entities
+                .iter()
+                .map(|entity| entity.evidence.len())
+                .sum::<usize>()
+    }
+
+    /// Row counts for every user table, so a refused writer call can prove it
+    /// left no partial rows behind.
+    fn writer_table_counts(
+        db: &crate::Database,
+    ) -> anyhow::Result<std::collections::BTreeMap<String, i64>> {
+        db.with_conn(|conn| {
+            let tables: Vec<String> = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master
+                      WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+                      ORDER BY name",
+                )?
+                .query_map([], |row| row.get(0))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut counts = std::collections::BTreeMap::new();
+            for table in tables {
+                let count: i64 =
+                    conn.query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
+                        row.get(0)
+                    })?;
+                counts.insert(table, count);
+            }
+            Ok(counts)
+        })
+    }
+
+    fn writer_stored_payload(db: &crate::Database, revision_id: &str) -> anyhow::Result<String> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1",
+                [revision_id],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
+    // proposal/6 RB-1 (G-1): the writer admits exactly 512 records and
+    // 6,291,456 counted input bytes, and nothing above them.
+    #[test]
+    fn typed_writer_saves_512_records_at_exactly_6_291_456_input_bytes() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let template = request(&db).bundle;
+        let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
+        let at_limit = bounded_writer_bundle(&template, 507, MAX_GRAPH_INPUT_BYTES - base);
+        assert_eq!(writer_record_count(&at_limit), 512);
+        assert_eq!(writer_input_bytes(&at_limit), MAX_GRAPH_INPUT_BYTES);
+        grimodex_core::narrative_nir1::validate_entity_relation_bundle(&at_limit)
+            .expect("512 records at the exact input byte limit are admitted");
+
+        let mut payload = request(&db);
+        payload.bundle = at_limit;
+        let created = create_nir1_entity_relation_revision(&db, payload)
+            .expect("the exact-limit typed Revision is saved");
+        let revision_id = created["revisionId"]
+            .as_str()
+            .expect("the exact-limit Revision has an identity")
+            .to_owned();
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let read = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision(conn, "default-project", &revision_id)
+        })?;
+        assert!(
+            matches!(read, Nir1EntityRelationRevisionRead::Available(_)),
+            "the exact-limit Revision must be readable by the A2 reader"
+        );
+        Ok(())
+    }
+
+    // proposal/6 RB-1 (G-1): 513 records, or one counted byte over the limit,
+    // is refused with a typed error. The refused call leaves every table and
+    // the existing typed Revision unchanged.
+    #[test]
+    fn typed_writer_refuses_over_limit_revisions_without_partial_rows() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let template = request(&db).bundle;
+        let existing = create_nir1_entity_relation_revision(&db, request(&db))?;
+        let existing_id = existing["revisionId"].as_str().unwrap().to_owned();
+        let existing_payload = writer_stored_payload(&db, &existing_id)?;
+        let before = writer_table_counts(&db)?;
+
+        let over_records = bounded_writer_bundle(&template, 508, 0);
+        assert_eq!(writer_record_count(&over_records), 513);
+        let mut payload = request(&db);
+        payload.bundle = over_records;
+        let error = create_nir1_entity_relation_revision(&db, payload)
+            .expect_err("513 records must not be saved");
+        assert!(
+            error
+                .to_string()
+                .contains("NIR1_ENTITY_RELATION_INPUT_INVALID"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("exceeds the request envelope"),
+            "{error}"
+        );
+
+        let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
+        let over_bytes = bounded_writer_bundle(&template, 507, MAX_GRAPH_INPUT_BYTES - base + 1);
+        assert_eq!(writer_record_count(&over_bytes), 512);
+        assert_eq!(writer_input_bytes(&over_bytes), MAX_GRAPH_INPUT_BYTES + 1);
+        let mut payload = request(&db);
+        payload.bundle = over_bytes;
+        let error = create_nir1_entity_relation_revision(&db, payload)
+            .expect_err("one counted byte over the input limit must not be saved");
+        assert!(
+            error
+                .to_string()
+                .contains("NIR1_ENTITY_RELATION_INPUT_INVALID"),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("graph input exceeds the request memory envelope"),
+            "{error}"
+        );
+
+        assert_eq!(
+            writer_table_counts(&db)?,
+            before,
+            "a refused writer call leaves no partial rows"
+        );
+        assert_eq!(writer_stored_payload(&db, &existing_id)?, existing_payload);
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit(), "a refused writer call must roll back");
+            Ok(())
+        })?;
+        Ok(())
+    }
+
     #[test]
     fn generic_revision_append_cannot_mutate_a_typed_revision() -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;

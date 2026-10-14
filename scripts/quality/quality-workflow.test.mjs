@@ -4291,8 +4291,13 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   // the C-resource acceptance HOLD on the CR-1 lane evidence recorded in the
   // acceptance ledger. The release condition is the CR-1 merge and the green
   // final-head Quick, PR checks and lanes; by U7 (2026-10-13) Full is no longer
-  // a merge condition and runs on master after the merge. The ledger's unmet
-  // items stay a separate HOLD row, followed up by CR-2.
+  // a merge condition and runs on master after the merge. CR-2 (2026-10-14)
+  // added the tests for the ledger's unmet items (G-1 to G-4) and released
+  // what they close; its release condition is the CR-2 merge and the green
+  // final-head PR checks. Two items stay open as separate [precheck] HOLD rows,
+  // because the confirmed contract and the implementation disagree (G-1: the B
+  // publish near the writer limit; G-2: the positive case on the real worker
+  // with its fixed allocator). Scene 8 moves to the CP-1 acceptance.
   assert.match(
     executionPlan,
     /^\| Revision上限の整合 \|[^\n]*\| 解消（K1 確認）。2026-10-12に `nir1-l6-l9-contract-proposal\/6#graph-limited-binding` で `512 records`／`6,291,456 B` を確認し、確認台帳に記録した \|$/m,
@@ -4305,8 +4310,23 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
   assert.match(
     executionPlan,
-    /^\| C-resourceの境界試験（台帳§7のG-1〜G-4） \|[^\n]*\| HOLD。[^\n]*後続はCR-2（branch claude\/nir1-cr2、試験だけのPR、進行中[^\n]*台帳に追記してから解除する \|$/m,
-    "the ledger's unmet C-resource items stay an open HOLD followed up by CR-2",
+    /^\| C-resourceの境界試験（台帳§7のG-1〜G-4） \|[^\n]*\| 解除（CR-2、2026-10-14）。[^\n]*\]\(nir1-c-query-acceptance-2026-10\.md\)[^\n]*条件：CR-2のmergeと最終headのPR checksのgreen。[^\n]*残る部分は次の3行のとおり、2点は\[precheck\]でHOLDのまま、Scene 8はCP-1の受入れに移す \|$/m,
+    "the tested part of the ledger's unmet C-resource items is released by CR-2 under the CR-2 merge and the green final-head PR checks",
+  );
+  assert.match(
+    executionPlan,
+    /^\| C-resourceのBの上限近傍のpublish（台帳§7\.1のG-1） \|[^\n]*\| HOLD（\[precheck\]）。試験を足しても満たせない。[^\n]*単位が違う[^\n]*build全体を止める[^\n]*ユーザーの確認が要る[^\n]*\|$/m,
+    "the B publish near the writer limit stays an open [precheck] HOLD",
+  );
+  assert.match(
+    executionPlan,
+    /^\| C-resourceの実workerでの上限近傍の候補（台帳§7\.2のG-2） \|[^\n]*\| HOLD（\[precheck\]）。確認済みの2つの固定値が両立しない。[^\n]*SIGABRT[^\n]*ユーザーの確認が要る[^\n]*\|$/m,
+    "the real-worker positive case stays an open [precheck] HOLD",
+  );
+  assert.match(
+    executionPlan,
+    /^\| Scene 8の上限（台帳§7\.3のG-4） \|[^\n]*\| 移管。C-resourceのHOLDからは外し、CP-1の受入れ（C-product）で確かめる。[^\n]*\|$/m,
+    "Scene 8 moves from the C-resource HOLD to the CP-1 acceptance",
   );
   // Every place that records the release names its condition (the CR-1 merge
   // and the green final-head Quick, PR checks and lanes), the CR-1 squash
@@ -4378,8 +4398,95 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
   assert.match(
     ledger,
-    /CR-2（branch `claude\/nir1-cr2`、試験だけの PR、進行中）/,
-    "the acceptance ledger must name CR-2 as the follow-up of its unmet items",
+    /CR-2（branch `claude\/nir1-cr2`、試験と本台帳の更新）/,
+    "the acceptance ledger must name CR-2 as the change that added the tests for its unmet items",
+  );
+  for (const [id, state] of [
+    [
+      "G-1",
+      /一部充足。writer の N／N\+1、上限ちょうどの保存、A2 の読取は充足。B の上限近傍の publish は \[precheck\]（§7\.1）で、HOLD のまま \|$/,
+    ],
+    [
+      "G-2",
+      /一部充足。[^\n]*固定 allocator の実 worker での正例は \[precheck\]（§7\.2）で、HOLD のまま \|$/,
+    ],
+    [
+      "G-3",
+      /充足。rollback journal での注入で、WAL 固有の busy は対象外。[^\n]*HOLD を解除する \|$/,
+    ],
+    [
+      "G-4",
+      /一部充足。[^\n]*Scene 8 は CP-1 の受入れに移す（§7\.3）。Scene 8 以外は HOLD を解除する \|$/,
+    ],
+  ]) {
+    const row = ledger.match(new RegExp(`^\\| ${id} \\|[^\\n]*$`, "m"));
+    assert.ok(row, `the acceptance ledger must keep a row for ${id}`);
+    assert.match(
+      row[0],
+      state,
+      `the acceptance ledger's ${id} row must carry its state after CR-2`,
+    );
+  }
+  for (const heading of [
+    /^### 7\.1\. \[precheck\] G-1：B の上限近傍の publish$/m,
+    /^### 7\.2\. \[precheck\] G-2：実 worker での正例$/m,
+    /^### 7\.3\. G-4：Scene 8 は CP-1 の受入れに移す$/m,
+  ]) {
+    assert.match(
+      ledger,
+      heading,
+      "the acceptance ledger must keep the record of each open or moved item",
+    );
+  }
+  // Review corrections to the CR-2 record (2026-10-14). The Scene 8 row names
+  // the old CR-2 base, which predates the Scene join. Section 7.1 separates the
+  // product shape of a Revision from the shape only the create IPC can build,
+  // and says CR-2 changed neither the B values nor the B implementation. RB-7
+  // records B-ROUTE (#643) as wired, with the product start closed until PUB-G.
+  // RB-8 says which reader paths the G-4 logic tests run on.
+  assert.match(
+    executionPlan,
+    /^\| Scene 8の上限（台帳§7\.3のG-4） \|[^\n]*CR-2の旧基点`fbdc8588`ではreaderの応答にSceneが無く[^\n]*\|$/m,
+    "the Scene 8 row must name the old CR-2 base, which predates the Scene join",
+  );
+  assert.match(
+    ledger,
+    /製品形（UI の prepare で作る形）の単独 Revision は、counted 約 5\.4〜5\.8 MB から whole-set で、約 6\.15 MB から成分 guard で止まる/,
+    "the ledger must give the thresholds of the product shape for the B build",
+  );
+  assert.match(
+    ledger,
+    /envelope が counted の約 2 倍になる形（試験形）は、counted 約 3 MiB 超で成分 guard が止める。[^\n]*create IPC[^\n]*でだけ作れる/,
+    "the ledger must say the doubled-envelope shape is only reachable through the create IPC",
+  );
+  assert.match(
+    ledger,
+    /CR-2 は B の値も実装も変えていない。/,
+    "the ledger must say that CR-2 changed neither the B values nor the B implementation",
+  );
+  assert.doesNotMatch(
+    ledger,
+    /CR-2 は値も実装も変えていない/,
+    "the ledger must not say that CR-2 changed no implementation at all (D9 closed the ordinary reader)",
+  );
+  const rb7 = ledger.match(/^#### RB-7：[\s\S]*?(?=^#### RB-8：)/m);
+  assert.ok(rb7, "the acceptance ledger must keep the RB-7 section");
+  assert.match(
+    rb7[0],
+    /B-ROUTE（#643）で maintenance の経路[^\n]*に配線済み[^\n]*製品の自動実行は PUB-G まで閉じたまま/,
+    "RB-7 must record B-ROUTE as wired and the product start as closed until PUB-G",
+  );
+  assert.doesNotMatch(
+    rb7[0],
+    /まだ配線されておらず/,
+    "RB-7 must not call the B build route unwired after B-ROUTE merged",
+  );
+  const rb8 = ledger.match(/^#### RB-8：[\s\S]*?(?=^### 2\.7\.)/m);
+  assert.ok(rb8, "the acceptance ledger must keep the RB-8 section");
+  assert.match(
+    rb8[0],
+    /3 hop と Entity 12／13 の試験は、ordinary reader[^\n]*論理を確かめる試験で、同じ fixture を本番の worker 構成[^\n]*でも確かめる/,
+    "RB-8 must say the 3 hop and Entity 12 / 13 tests are ordinary-reader logic tests that also run on the production worker configuration",
   );
   assert.match(
     executionPlan,

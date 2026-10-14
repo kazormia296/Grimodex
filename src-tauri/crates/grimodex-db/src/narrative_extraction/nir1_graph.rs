@@ -3,6 +3,13 @@
 //! Discovery borrows the existing Revision -> Source reverse index. A private
 //! registration proves the complete B binding on this exact read connection;
 //! changed committed state requires owned maintenance, never a query-time scan.
+//!
+//! The ordinary reader (`open`, `register_with_control`, `query`) owns its own
+//! connection and is compiled only for tests and the material diagnostics. Its
+//! logical ledger also charges the transient estimates that the product
+//! worker's fixed arena replaces, so it is not the product query path. The
+//! product query is the isolated worker (`open_for_worker`,
+//! `query_for_worker_with_maintenance`).
 
 pub mod c_query_freshness;
 pub mod c_query_worker;
@@ -12,7 +19,7 @@ mod input;
     not(test),
     expect(
         dead_code,
-        reason = "retained-memory seams remain unconnected; Graph memory acceptance is HOLD"
+        reason = "retained-memory seams remain unconnected; the ledger is a defensive logical limit, not a physical-memory proof"
     )
 )]
 mod memory;
@@ -34,7 +41,7 @@ use grimodex_core::narrative_nir1::{
     EntityInput, GraphEdgeInput, ScopeValue, MAX_GRAPH_EDGES, MAX_GRAPH_HOPS,
     MAX_GRAPH_INPUT_BYTES, MAX_GRAPH_NODES, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
 };
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::nir1_capacity::{self, CapacityBudget};
@@ -357,16 +364,20 @@ impl Nir1GraphCancellation {
 }
 
 /// Native-internal owner of Graph reader state and its completeness proof.
-/// Ordinary readers own a dedicated connection; the isolated worker borrows its
-/// authority Database connection so registration and query share one handle.
+/// Ordinary readers (tests and diagnostics only) own a dedicated connection; the
+/// isolated worker borrows its authority Database connection so registration
+/// and query share one handle.
 enum ReaderConnection {
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     Owned(Connection),
     Borrowed,
     Closed,
 }
 
 enum QueryPath<'a> {
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     Reader,
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     Worker,
     WorkerMaintenance(&'a mut dyn GraphWorkControl),
 }
@@ -398,6 +409,9 @@ pub struct Nir1GraphReader {
 }
 
 impl Nir1GraphReader {
+    /// Ordinary reader on its own read-only connection. Tests and diagnostics
+    /// only: the product query runs in the isolated worker (`open_for_worker`).
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     pub fn open(
         authority: Arc<WorkspaceAuthority>,
         participant: WorkspaceParticipant,
@@ -405,7 +419,7 @@ impl Nir1GraphReader {
         ensure!(!participant.stop_requested()?, "NIR1_GRAPH_READER_CLOSED");
         let conn = Connection::open_with_flags(
             authority.path().join("grimodex.db"),
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
         )?;
         conn.busy_timeout(Duration::ZERO)?;
         conn.execute_batch("PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
@@ -461,7 +475,9 @@ impl Nir1GraphReader {
 
     /// Full validation belongs to an already-admitted maintenance owner. This
     /// runs after publication on a fresh read transaction; no write transaction
-    /// or supplied generation can mint a registration.
+    /// or supplied generation can mint a registration. Ordinary readers only
+    /// (tests and diagnostics).
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     pub fn register_with_control(
         &mut self,
         project: &str,
@@ -723,6 +739,9 @@ impl Nir1GraphReader {
         Ok(())
     }
 
+    /// Ordinary reader query. Tests and diagnostics only: it charges the
+    /// transient estimates that the product worker's fixed arena replaces.
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     pub fn query(&mut self, request: &Nir1GraphRequest) -> Result<Nir1GraphResponse> {
         let conn = self.take_owned_connection()?;
         let result = self.query_with_deadline_observed(
@@ -738,6 +757,8 @@ impl Nir1GraphReader {
     }
 
     /// Diagnostic reason tags for the isolated worker binary only; not a product API.
+    /// It needs an ordinary reader's connection, so it is tests and diagnostics only.
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     #[doc(hidden)]
     pub fn query_for_worker(&mut self, request: &Nir1GraphRequest) -> Result<Nir1GraphResponse> {
         let conn = self.take_owned_connection()?;
@@ -858,7 +879,9 @@ impl Nir1GraphReader {
     ) -> Result<Nir1GraphResponse> {
         let deadline = Instant::now() + duration;
         let (worker_path, external_owner) = match path {
+            #[cfg(any(test, feature = "nir1-material-diagnostics"))]
             QueryPath::Reader => (false, None),
+            #[cfg(any(test, feature = "nir1-material-diagnostics"))]
             QueryPath::Worker => (true, None),
             QueryPath::WorkerMaintenance(owner) => (true, Some(owner)),
         };
@@ -1163,6 +1186,7 @@ impl Nir1GraphReader {
         self.registration = None;
         self.pending_registration = None;
         match std::mem::replace(&mut self.connection, ReaderConnection::Closed) {
+            #[cfg(any(test, feature = "nir1-material-diagnostics"))]
             ReaderConnection::Owned(conn) => {
                 if let Err((conn, _)) = conn.close() {
                     self.connection = ReaderConnection::Owned(conn);
@@ -1188,6 +1212,7 @@ impl Nir1GraphReader {
         matches!(self.connection, ReaderConnection::Closed) && self.participant.is_none()
     }
 
+    #[cfg(any(test, feature = "nir1-material-diagnostics"))]
     fn take_owned_connection(&mut self) -> Result<Connection> {
         match std::mem::replace(&mut self.connection, ReaderConnection::Closed) {
             ReaderConnection::Owned(conn) => Ok(conn),
@@ -1452,8 +1477,8 @@ struct QueryUsage {
     retained_bytes: usize,
     /// One monotonic peak ledger covers the raw input, retained estimates and
     /// bytes actually handed to serde.  It is deliberately conservative: a
-    /// caller must still account every live container before claiming the
-    /// hard bound.
+    /// caller must still account every live container before relying on the
+    /// defensive logical bound, which is not a physical-memory proof.
     peak: RetainedLedger,
 }
 impl QueryUsage {
