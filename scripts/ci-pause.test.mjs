@@ -1047,6 +1047,35 @@ else if (args[0] === 'run') {
   }
 });
 
+test("the lifecycle lane runs the real-worker per-Revision preflight boundary on the normal-build worker", async () => {
+  // CR-2 2-C: a candidate of exactly 2,097,152 B is an ordinary Graph contribution on the
+  // real worker and its fixed arena, and one byte more refuses the whole query, whether the
+  // bytes are in the approval or in the stored envelope. The four cases need the normal
+  // build (the seam build exits 23 after every frame), so they sit after the registry33
+  // case and before the seam worker is built.
+  const source = await readFile(path.join(repoRoot, "scripts/nir1-c-query-worker-ci.sh"), "utf8");
+  const tests = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs"), "utf8");
+  const cases = [
+    "native_worker_uses_a_candidate_at_exactly_the_per_revision_preflight_limit",
+    "native_worker_uses_a_candidate_whose_envelope_fills_the_per_revision_preflight_limit",
+    "native_worker_refuses_the_whole_graph_when_a_candidate_is_one_byte_over",
+    "native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over",
+  ];
+  const lifecycleStart = source.indexOf('if [[ "${1:-}" == lifecycle ]]; then');
+  const lifecycle = source.slice(lifecycleStart, source.indexOf("# These opt-in lanes never replay Q512", lifecycleStart));
+  const registry33 = lifecycle.indexOf("native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph");
+  const seamBuild = lifecycle.indexOf("--features nir1-c-query-test-seam --bin nir1-c-query-worker");
+  assert.ok(lifecycleStart >= 0 && registry33 > 0 && seamBuild > registry33);
+  const normalBuildRegion = lifecycle.slice(registry33, seamBuild);
+  for (const name of cases) {
+    assert.equal(lifecycle.split(name).length - 1, 1, `${name} is run exactly once`);
+    assert.ok(normalBuildRegion.includes(name), `${name} runs after the registry33 case and before the seam build`);
+    assert.match(tests, new RegExp(`#\\[test\\]\\s*#\\[ignore = "[^"]*"\\]\\s*fn ${name}\\(\\s*\\)`, "u"));
+  }
+  // The runner gives each case its own input copy and the normal-build worker path.
+  assert.match(normalBuildRegion, /run_lifecycle_case "\$name" "\$q2_fixture_file" "\$q2_fixture_checksum"/u);
+});
+
 test("grouped setup observations preserve contracts/defaults and exclude other profiles", async () => {
   const { jobs: { canonical: { steps } } } = await readWorkflow(".github/workflows/canonical-ci.yml");
   const observation = steps.find(({ id }) => id === "setup_observation");

@@ -54,5 +54,5 @@ pub mod writes;
 
 pub use canonical_json::{
     canonical_json_bytes, canonical_json_digest, canonical_json_sha256, canonical_json_string,
-    CanonicalJsonError,
+    CanonicalDigestSink, CanonicalJsonError, CanonicalJsonStream,
 };

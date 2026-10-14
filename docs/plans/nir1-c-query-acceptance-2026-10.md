@@ -1,24 +1,25 @@
 # NIR-1 C-query 受入れ台帳（CR-REC、2026-10）
 
-更新日: 2026-10-14（CR-2。G-1〜G-4 に関わる節と、B-ROUTE（#643）の merge で古くなった記述）。2026-10-13 の CR-REC の記入は、ここで触れていない節では変えていない。2026-10-14 の CQ-AVAIL（branch `claude/nir1-cqavail`）の追記は §2.12、§4.1、§8 の最後の行
+更新日: 2026-10-14（CR-2。G-1〜G-4 に関わる節と、B-ROUTE（#643）の merge で古くなった記述）。2026-10-13 の CR-REC の記入は、ここで触れていない節では変えていない。2026-10-14 の CQ-AVAIL（branch `claude/nir1-cqavail`）の追記は §2.12、§4.1、§8 の最後の行。2026-10-14 の CQ-MEM（branch `claude/nir1-cqmem`。G-2 に関わる §1、§2.2、RB-2、§3.4、§3.5、§5.2、§6.2、§7.1 の B-GUARD の後の注記、§7.2、§7.4、§8）の追記は、CQ-AVAIL の merge（#663）の後に載せ直した
 
 | 項目 | 値 |
 |---|---|
-| 状態 | CR-1（#636）は 2026-10-13T14:06:23Z に merge された（squash commit `750741183cf4d75ccf18b3904a5751b762284bda`）。HOLD の解除は有効。CR-2（branch `claude/nir1-cr2`、試験と本台帳の更新）が G-1〜G-4 の試験を足した。G-3 と、G-1／G-2／G-4 の試験を足した部分は充足とする。HOLD のまま残すのは [precheck] の2点（G-1 の B の上限近傍の publish、G-2 の実 worker の正例）で、Scene 8 は CP-1 の受入れに移す（§7）。merge 後の master の Full は実行中（CR-REC の時点の記入） |
+| 状態 | CR-1（#636）は 2026-10-13T14:06:23Z に merge された（squash commit `750741183cf4d75ccf18b3904a5751b762284bda`）。HOLD の解除は有効。CR-2（branch `claude/nir1-cr2`、試験と本台帳の更新）が G-1〜G-4 の試験を足した。G-3 と、G-1／G-2／G-4 の試験を足した部分は充足とする。HOLD のまま残すのは [precheck] の2点（G-1 の B の上限近傍の publish、G-2 の実 worker の正例）で、Scene 8 は CP-1 の受入れに移す（§7）。merge 後の master の Full は実行中（CR-REC の時点の記入）。CQ-MEM（branch `claude/nir1-cqmem`、B-GUARD の commit `aa3eb94e` の上の 1 commit。B-GUARD の PR #660 は未 merge）は、実 worker の registration の Rust 側の確保を S の scope で行い、query の複製を減らした。decision の形と envelope の形は、実 worker で 2,097,152 B（N）の正例と 2,097,153 B（N+1）の全体拒否が通るようになり、lifecycle lane に 4 case を配線した（§7.2）。G-2 のうち製品形（日本語の summary を持つ Revision）は、SQLite の JSON と応答 frame の上限のため 2,097,152 B に届かず、[precheck] のまま残る |
 | 対象 | C-resource: C-query の functional／resource-safety、100 ms result lease、SQL、cleanup。[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の残HOLD表にある「C-queryのfunctional/resource-safety・100 ms lease、SQL・cleanup」の行 |
 | 契約 | `nir1-l6-l9-contract-proposal/6#graph-limited-binding` と `nir1-l6-l9-contract-proposal/6#nir1-defensive-resource-limits`（どちらも 2026-10-12 に確認済み）。固定値と閾値は変えない |
 | 条件の正本 | [post-B §12](nir1-post-b-execution-plan.md#12-必須試験の追跡表) の CQ-1〜3 と [§6.4](nir1-post-b-execution-plan.md#64-受け入れ)、L6〜L9実行計画の proposal/6 節（Acceptance implications）、[C-query 資源・lifecycle 境界](nir1-c-query-memory-enforcement-v1-draft.md) の「維持する機能・workload・認可契約」 |
 | 候補 | CR-1（[PR #636](https://github.com/kazormia296/Grimodex/pull/636)、branch `claude/nir1-cres`、merge 済み）。head は §3.1。run は `kazormia296/Grimodex` の GitHub Actions の run ID。CR-2（branch `claude/nir1-cr2`、1 commit）。base は master `87f0da94`（HP-1、#632）で、ローカルの検証は §3.4 |
 | 位置づけ | 受入れの記録。契約の批准、閾値の変更、製品公開（Graph、local 送信）の根拠にしない。製品の Graph 入口は閉じたまま（A-1） |
-| 残る確認 | CR-2 の PR の最終 head の PR checks の green（CR-2 の充足の条件。§3.4）。merge 後の master の Full（run `38410553482`）は実行中で、結果は master の Full の記録で追う（CR-REC の時点の記入）。[precheck] の2点（§7.1、§7.2）はユーザーの確認を待つ。それ以外の欄は記入済み（§8） |
+| 残る確認 | CR-2 の PR の最終 head の PR checks の green（CR-2 の充足の条件。§3.4）。merge 後の master の Full（run `38410553482`）は実行中で、結果は master の Full の記録で追う（CR-REC の時点の記入）。[precheck] の2点（§7.1、§7.2。G-2 は CQ-MEM の後、製品形に絞られた）はユーザーの確認を待つ。CQ-MEM の充足の条件は、CQ-MEM の PR の最終 head の PR checks と、opt-in の lifecycle lane（新しい 4 case を含む）の green（ローカルの結果は §3.5）。それ以外の欄は記入済み（§8） |
 
 ## 1. 結論と HOLD の扱い
 
 - 本台帳は C-resource の受入れ条件を一つずつ挙げ、CR-1（#636）と CR-2 の試験、lane の run に対応づける（§2）。対応する証跡が無い条件は「未充足」とし、他の証跡で代えていない（§7）。
 - 解除する範囲は、§2 で「充足」とした行（CQ-1〜3、RB-3〜RB-7、LC-1〜LC-9、NB-1、PF-1、A-1）と、「一部充足」とした行（RB-1、RB-2、RB-8）のうち試験がある部分である。RB-4 は CR-2 の G-3 の試験で充足になった。
-- 残す HOLD は、§7 の [precheck] の2点である。G-1 の B の上限近傍の publish（§7.1）と、G-2 の実 worker の正例（§7.2）で、どちらも対応する試験が無いからではなく、確認済みの契約と実装が食い違うため、試験を足しても通せない。固定値か文言の判断がユーザーに要る。G-4 の Scene 8 は CP-1 の受入れに移す（§7.3）。
+- 残す HOLD は、§7 の [precheck] の2点である。G-1 の B の上限近傍の publish（§7.1）と、G-2 の実 worker の正例（§7.2）で、どちらも対応する試験が無いからではなく、確認済みの契約と実装が食い違うため、試験を足しても通せない。固定値か文言の判断がユーザーに要る。G-2 は CQ-MEM（2026-10-14）で範囲が狭まった。decision と envelope の形は、実 worker で N／N+1 が通り、lifecycle lane に配線した。製品形（payload・envelope・live Source に日本語の summary を持つ形）は、SQLite の JSON と応答 frame の上限のため、実 worker では 2,097,152 B に届かない（§7.2）。この NOMEM は registration で起き、per-Revision preflight の外にあって承認状態に関わらない（下書きや却下の製品形でも同じ。§7.2）。G-4 の Scene 8 は CP-1 の受入れに移す（§7.3）。
 - CR-1 の解除の条件は、CR-1（#636）の merge と、最終 head の Quick・PR checks・lane 6本の green で、いずれも満たした（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。結果は §3.2。U7（2026-10-13 のユーザー決定）により Full は merge 後の master で走らせる。
 - CR-2 の解除の条件は、CR-2 の merge と、最終 head の PR checks の green である。CR-2 の試験は共有 Rust の試験で、新しい lane は無い。ローカルの検証は §3.4。
+- CQ-MEM の充足の条件は、CQ-MEM の PR の最終 head で、`Shared Rust crates` を含む PR checks と、opt-in の lifecycle lane（実 worker の新しい 4 case を含む）が green になることである。ローカルの検証は §3.5。
 - 製品の Graph 入口は閉じたまま（A-1）。Graph の公開には A3 + B + C + D2a と公開時の承認がさらに要る。local 送信、新しい authority・保存先・送信先、固定値と閾値、確認台帳の各行は変えない。
 
 ## 2. 受入れ条件と証跡の対応
@@ -39,7 +40,7 @@
 - 試験が走った run の green は、§3.2 と §3.3 の H3（`fbdc8588`、最終 head）の列で確かめた。Full は merge の条件ではなく（U7）、H3 の Full は取り消したので、Full の証跡は H2 の run と、merge 後の master の Full（§3.2）で追う。H2 の列は経過の記録として残す。
 - CR-2 の試験は（共有 Rust）の試験で、hosted の run はまだ無い。判定の条件は §3.4 に書いた。CR-1 の run の green では代えていない。
 - query の試験が使う経路は二つある。製品の query は worker 経路（`open_for_worker` と `query_for_worker_with_maintenance`）だけである。ordinary reader（`open`、`register_with_control`、`query`）は、試験と `nir1-material-diagnostics` feature の診断用の経路で、製品の経路ではない。CR-2 は ordinary reader を `cfg(any(test, feature = "nir1-material-diagnostics"))` に閉じ、製品 build から外した（D9）。ordinary reader の論理 ledger は、worker の固定 allocator が置き換える一時見積り（raw bytes の 8 倍と、行ごとの 4 KiB）も retained の上限 6,291,456 B に計上するので、worker 経路より厳しい。steps の上限を外した実験（commit した試験ではない）では、600,000 B の候補でも `NIR1_GRAPH_RETAINED_LIMIT` で拒否した。worker 経路はこの計上を省く。そのため RB-2 の正例の証跡には worker 経路の試験を使い、ordinary reader の結果は使わない。
-- worker 経路の試験でも、CR-2 の試験は通常の allocator の in-process である。worker binary の固定 allocator で処理できることは示さない。実 worker は、既定 worker と lifecycle などの lane、および G-2 の [precheck]（§7.2）で扱う。
+- worker 経路の試験でも、CR-2 の試験は通常の allocator の in-process である。worker binary の固定 allocator で処理できることは示さない。実 worker は、既定 worker と lifecycle などの lane で扱う。G-2 のうち decision と envelope の形の N／N+1 は、CQ-MEM が lifecycle lane に配線した。製品形は [precheck] のまま残る（§7.2）。
 
 ### 2.2. 一覧
 
@@ -49,7 +50,7 @@
 | CQ-2 | seed 近傍を固定して無関係な Revision を増やしても、全件 scan・JSON 展開に退行せず、query の資源の内 | 充足 |
 | CQ-3 | 非開示 bridge・方向違い・巨大行・上限・取消 → 禁止寄与 0、部分 Graph なし、Raw 非占有、実 cleanup | 充足 |
 | RB-1 | Revision の上限（512 records／6,291,456 B）の N／N+1 と正例 | 一部充足（G-1。writer の N／N+1 と上限ちょうどの保存は充足。B の上限近傍の publish は [precheck]） |
-| RB-2 | per-Revision preflight（2,097,152 B）の N／N+1 と query 全体の拒否 | 一部充足（G-2。本番の worker 構成の in-process は充足。実 worker の正例は [precheck]） |
+| RB-2 | per-Revision preflight（2,097,152 B）の N／N+1 と query 全体の拒否 | 一部充足（G-2。本番の worker 構成の in-process と、実 worker の decision・envelope の形の N／N+1 は充足。製品形の実 worker の正例は [precheck]） |
 | RB-3 | Packing の入力の合計（2 MiB）の typed refusal | 充足 |
 | RB-4 | query の上限（read／admission 512、batch 16x32、SQL 100,000 steps、request・frame、後続 bytes、枠の使用中、reader／busy） | 充足（G-3。rollback journal での注入。WAL 固有の busy は対象外） |
 | RB-5 | 100 ms result lease（Q512 の admission→lease、期限後の結果の不採用） | 充足 |
@@ -150,9 +151,15 @@ query の上限は 100,000 steps で、変えていない。index なしでは d
   - `tests.rs::worker_query_admits_a_candidate_at_exactly_the_per_revision_preflight_limit`：候補の A2 の admission がちょうど 2,097,152 B のとき、query は available で、seed と候補の両方の edge が Graph に入る（共有 Rust）。
   - `query_refuses_the_whole_graph_when_a_candidate_is_one_byte_over`：seed だけの Graph は先に available。候補が 2,097,153 B になると、A2 の admission が `NIR1_GRAPH_REVISION_INPUT_LIMIT` で拒否され、同じ構成の query は全体が unavailable になって Graph と scope_revision を持たない。理由は steps と deadline の artifact ではない（共有 Rust）。
   - G-1 の `b_publishes_a_revision_within_its_component_guard_that_the_c_query_refuses`：B が publish した counted 2,621,440 B の Revision を含む query も、同じ構成で全体が拒否される（RB-1）。
-- 経路と限界：上の試験は worker 経路で、ordinary reader の結果ではない（§2.1）。通常の allocator の in-process なので、worker binary の固定 allocator（query 4,718,592 B）が N の候補を処理できることは示さない。release の実 worker は、ちょうど N の候補を持つ project の起動時の registration で異常終了した（G-2 の [precheck]、§7.2）。
+- 実 worker の N／N+1（CQ-MEM）：release の worker binary（固定 allocator。query 4,718,592 B）を、Native の owner と 100 ms の lease で動かす。fixture は seed の Revision と、承認済みの候補 1 件で、候補は A2 の admission をちょうど目標の bytes に合わせる。4 件とも ignored の試験で、lifecycle lane の通常 build の区間（registry33 の case の後、seam を足した worker の build の前）に、1 case 1 process で配線した（`scripts/nir1-c-query-worker-ci.sh`）。
+  - `tests.rs::native_worker_uses_a_candidate_at_exactly_the_per_revision_preflight_limit`：decision 行の padding で、A2 の admission がちょうど 2,097,152 B の候補。worker は起動時の registration を通って READY になり、query は available で、seed と候補の edge が Graph に入る（node 2、edge 2。seed だけなら edge 1）。lease の内で返ることも assert する。
+  - `native_worker_uses_a_candidate_whose_envelope_fills_the_per_revision_preflight_limit`：同じ N を、保存された envelope の末尾の空白 padding で作る。envelope の canonical digest は空白を無視するので検証は通る。A2 が Rust で parse する文書そのものを大きくする形である。
+  - `native_worker_refuses_the_whole_graph_when_a_candidate_is_one_byte_over`：decision の padding で 2,097,153 B。A2 の admission は `NIR1_GRAPH_REVISION_INPUT_LIMIT` で拒否し、実 worker は READY になったあと query 全体を `NIR1_GRAPH_WORKER_UNAVAILABLE` にする（部分 Graph なし）。拒否の理由は記録した `query-worker-work-other-pre-cleanup-work-failed-other` で、試験はこの文字列を assert する。Q の枯渇による `sqlite-nomem`、steps、deadline の unavailable では通らない（以前の試験は steps と deadline を含まないことしか見ておらず、Q の枯渇による unavailable でも通る形だった）。
+  - `native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over`：envelope の末尾の空白 padding で 2,097,153 B。A2 の admission は同じ `NIR1_GRAPH_REVISION_INPUT_LIMIT` で拒否し、実 worker は READY になったあと query 全体を、同じ理由 `query-worker-work-other-pre-cleanup-work-failed-other` で unavailable にする。envelope の bytes の数え方が小さくなる退行（たとえば envelope を 1 MiB までしか数えない変異）は、この case だけが検出する。decision の形の candidate は envelope が小さいので、その変異に影響されない（一時的な変異で確かめた。§3.5）。
+  - どの case も、child の exit と stdout EOF と reader の join の後にだけ claim を解放できることと、owner が workspace の participant を残さないことを確かめる。
+- 経路と限界：in-process の試験は worker 経路で、ordinary reader の結果ではない（§2.1）。通常の allocator なので、worker binary の固定 allocator が N の候補を処理できることは示さない。それは上の実 worker の 4 件が示す。ただし示すのは decision と envelope の形だけである。payload の形（製品の Codex review。日本語の summary を payload、envelope、live Source の 3 か所に持つ形）は、実 worker の registration と query の SQLite の JSON と、応答 frame の上限のため 2,097,152 B に届かない（G-2 の [precheck]、§7.2）。
 
-判定：一部充足。preflight の N／N+1（A2 の admission が 2,097,152 B と一致し、2,097,153 B は `NIR1_GRAPH_REVISION_INPUT_LIMIT`）と、本番の worker 構成（in-process）での query 全体の正例と負例は充足（CR-2）。固定 allocator の実 worker での正例は、確認済みの 2 つの固定値（per-Revision preflight 2,097,152 B と worker の Q arena 4,718,592 B）が両立しないため [precheck]（G-2、§7.2）。
+判定：一部充足。preflight の N／N+1（A2 の admission が 2,097,152 B と一致し、2,097,153 B は `NIR1_GRAPH_REVISION_INPUT_LIMIT`）と、本番の worker 構成（in-process）での query 全体の正例と負例は充足（CR-2）。固定 allocator の実 worker での decision と envelope の形の N／N+1 は充足（CQ-MEM。lifecycle lane）。製品形の実 worker での正例は、確認済みの固定値（per-Revision preflight 2,097,152 B、worker の Q arena 4,718,592 B）と応答 frame の上限のもとでは届かないため [precheck]（G-2、§7.2）。
 
 #### RB-3：Packing の入力の合計（2 MiB）
 
@@ -450,8 +457,27 @@ CR-2 の PR はまだ hosted の run を持たない。次はローカルの結�
 | 文書の契約 | `fnm exec --using=22 -- node --test scripts/quality/quality-workflow.test.mjs`：21 件すべて pass |
 | verify:quality | `CI=1 fnm exec --using=22 -- pnpm verify:quality`：node 574 件（573 pass、0 fail、1 skipped）と vitest 83 ファイル 760 件がすべて pass。`CI=1` は、`vitest.config.ts` の hosted CI と同じ timeout（30 s）にするために付けた。付けない実行は、負荷の高い共有機で既定の 5 s の timeout を超え、`src/lib/browser-mock.persistence-contract.test.ts` などが失敗した（CR-2 が触れない試験で、単独では pass） |
 | 製品コードの変更 | `nir1_graph.rs` の cfg（ordinary reader を製品 build から外す。D9）と、それに伴う import の整理（`OpenFlags` を完全修飾にした）、論理 ledger の位置づけを直すコメント。`memory.rs` は doc、コメント、`expect` の reason だけ。worker、NQG1、閾値、製品の Graph 入口は変えていない |
-| 足さなかったもの | 実 worker の N／N+1 の試験は commit していない。lifecycle lane への配線もしていない（赤い lane を足さない）。経緯は §7.2 |
-| 実 worker の測定 | release の worker binary を、lifecycle lane と同じ手順（`prlimit` の core 1:1、1 case 1 process）で測った。結果は §7.2。測定の元データは git 管理外のローカルの測定メモ（`cr2-precheck-real-worker-measurements.txt`） |
+| 足さなかったもの | 実 worker の N／N+1 の試験は commit していない。lifecycle lane への配線もしていない（赤い lane を足さない）。経緯は §7.2。CQ-MEM（§3.5）が decision と envelope の形の試験を足し、配線した |
+| 実 worker の測定 | release の worker binary を、lifecycle lane と同じ手順（`prlimit` の core 1:1、1 case 1 process）で測った。結果は §7.2 の「CQ-MEM の前」。測定の元データは git 管理外のローカルの測定メモ（`cr2-precheck-real-worker-measurements.txt`）。CQ-MEM の前後の測定は §3.5 と §7.2 |
+
+### 3.5. CQ-MEM のローカルの検証
+
+CQ-MEM の PR はまだ hosted の run を持たない。次はローカルの結果で、CI の証跡ではない。CQ-MEM の充足の判定は、CQ-MEM の PR の最終 head で、`Shared Rust crates` を含む PR checks と、opt-in の lifecycle lane（実 worker の新しい 4 case を含む）が green になることを条件とする。
+
+| 項目 | 値 |
+|---|---|
+| base | master `92f9badd`（CQ-OPT、#657）の上に、B-GUARD（#660。未 merge）の commit `aa3eb94e` を cherry-pick した枝。CQ-MEM は `aa3eb94e` の上の 1 commit で、B-GUARD の commit は変えていない |
+| 試験（grimodex-db lib） | `cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib`：1983 passed、0 failed、41 ignored（試験の時間 609.32 秒。他 lane の build が並行し、load average は約 15）。レビュー指摘の修正の後の実行で、envelope 形の N+1 の ignored の case が 1 件増えた（40 → 41）。通常の試験の数は変わらない |
+| 試験（grimodex-core） | `cargo test --locked --manifest-path src-tauri/Cargo.toml -p grimodex-core`：すべて pass（lib 141、`canonical_json` 4、`canonical_json_stream` 7 ほか、合計 221）。レビュー指摘の修正の後の再実行も同じ（core は変えていない） |
+| 試験（db の統合試験） | 最終の木で `narrative_nir1_*` 7 本、`narrative_c2a_persistence`、`narrative_reconciliation_envelope`、`narrative_reconciliation_envelope_golden`、`narrative_extraction`、`narrative_semantic_build_graph_adversarial`、`narrative_nir0_c2b_material_basis`、`narrative_scope_authority_runtime`、`narrative_project_scope_authority_runtime`、`nir1_capacity_boundaries` を実行：238 passed、0 failed（`nir1_capacity_boundaries` は既定 feature では 0 件）。CQ-MEM の commit の時点の実行で、レビュー指摘の修正（comment、lib の試験、script、doc）の後は再実行していない（統合試験は crate の公開 API だけを使い、runtime の code は変えていない） |
+| 新しい試験 | grimodex-core の `tests/canonical_json_stream.rs` 7 件（旧実装との byte と digest の一致、3 MiB の escape の負荷、UTF-16 の key 順、誤用の拒否、4 MiB の文字列の digest で heap が 128 KiB 未満しか増えないこと）。`nir1_entity_relation.rs` 6 件（`a3_decision_token_is_the_legacy_canonical_digest_of_every_decision_row`、`a3_decision_token_has_the_pinned_canonical_form`、`a2_leaves_the_payload_and_envelope_unread_until_the_revision_is_accepted`、`graph_index_read_leaves_the_decision_body_in_sqlite`、`graph_disclosure_reads_the_decision_for_approval_and_binds_it_by_token`、`registration_reads_each_revision_in_the_scratch_scope_and_checks_outside_it`）。`nir1_graph/candidates.rs` 2 件（`registration_proof_parses_the_payload_of_nothing_but_its_subject`、`gated_proof_agrees_with_the_ungated_proof_on_every_failure_class`）。`nir1_graph/tests.rs` の実 worker 4 件（ignored。§2.6 の RB-2。拒否の 2 件は理由 `query-worker-work-other-pre-cleanup-work-failed-other` も assert する）。`scripts/ci-pause.test.mjs` 1 件（lifecycle lane が実 worker の 4 case を通常 build の worker で走らせる静的な契約）。`scripts/quality/quality-workflow.test.mjs` の台帳の契約（registration は per-Revision preflight の外、(a) 単独では起動時の終了を防がない、表 5、D13、D14） |
+| lifecycle lane | `env -u TMPDIR -u TMP -u TEMP bash scripts/nir1-c-query-worker-ci.sh lifecycle`：rc=0。20 case が 1 case 1 process で ok（元の 16 case と新しい 4 case）。N の候補の query は decision 形で 11.2 ms、envelope 形で 18.1 ms（100 ms の lease の内。他 lane の build が並行していた可能性がある診断値）。所要は 2 分 48 秒 |
+| 既定 mode／practical | 既定 mode（原 11 case）と `practical-retention`：rc=0。レビュー指摘の修正の後にも再実行し、どちらも rc=0 |
+| clippy | `cargo clippy --locked --manifest-path src-tauri/Cargo.toml -p grimodex-db -p grimodex-core --all-targets -- -D warnings`：警告 0。レビュー指摘の修正の後も同じ。`cargo check --locked --manifest-path src-tauri/Cargo.toml -p grimodex-db --features nir1-material-diagnostics --all-targets` も成功する（警告は feature 付きの dead_code） |
+| node | `scripts/ci-pause.test.mjs`：51 件 pass（新しい 1 件を含む）。`scripts/quality/quality-workflow.test.mjs`：21 件 pass（CQ-MEM の記録の契約を足した）。`scripts/local-ci.test.mjs`：76 件 pass。`scripts/quality/validate-*.mjs` の validator 11 本：rc=0。lane の script の sha256 は `scripts/local-ci-full-workload-allocation.json` に最終の内容で合わせた。node の試験は worktree に `node_modules` が無いので、root の `node_modules` の各 entry への symlink を並べた実 directory を一時的に置いて実行し、直後に消した（`node_modules` 自体を symlink にすると、`local-ci.test.mjs` の候補の hash が untracked の symlink で失敗する） |
+| 変異による確認 | 一時的な変異（commit していない。すべて元に戻した）で、足した試験が退行を検出することを確かめた。結合順の反転（statement 1 は plan の検査、statement 3 は decoy 9 種の parse で失敗）、A2 が先に payload を読む形（`Invalid column type Blob` で失敗）、token から列を落とす形（golden と旧実装の oracle で失敗）、key 順の入れ替え（`KeyOrder`）、Graph が `Complete` の読取に戻る形（2 試験が失敗）、A2 の読取を S の scope の外に出す形（`prepared outside the scratch scope` で失敗）、digest を buffer 化する形（`digest grew the heap by 8388743 B` で失敗）。CQ-MEM の前の worker（S0）に新しい実 worker の 2 case を当てると、`NIR1_GRAPH_WORKER_EXIT_BEFORE_READY` で失敗する（現在の worker では pass）。レビュー指摘の修正の後の変異（scratch の複製に当てて worker を build し、元に戻した。試験の binary は同じ）：envelope を per-Revision preflight に 1 MiB までしか数えない変異では、新しい envelope 形の N+1 の case だけが `a candidate over the preflight limit returned a Graph` で失敗した（ほかの 3 case は pass）。preflight の拒否を `sqlite-nomem` に誤分類する変異では、decision 形と envelope 形の N+1 の両方が `the real worker's refusal changed: NIR1_GRAPH_WORKER_UNAVAILABLE: query-worker-work-sqlite-nomem-pre-cleanup-work-failed-sqlite-nomem` で失敗した（以前の assert は steps と deadline を含まないことしか見ておらず、この文字列はどちらも含まないので通る）。N の 2 case はどちらの変異でも pass し、変異の無い worker では 4 case とも pass する。台帳の契約は、(a) の注記と計画の G-2 の行の記述を消すと、`quality-workflow.test.mjs` が失敗する |
+| steps | 表 4（§7.2）。承認済みの Revision 1 件あたり約 +17 steps（実行ごとに ±3 の揺れ）で、budget 100,000 に影響しない。`tests/cq_opt.rs` の応答の一致の試験は変更前と同じ |
+| 変更しないもの | Q、S、per-Revision preflight、whole-set の値、worker の lifecycle、NQG1、Native（`electron/native`）、IPC、preload、製品の Graph 入口（A-1） |
 
 ## 4. practical lane の観測値
 
@@ -533,6 +559,19 @@ CR-2 の試験の commit を、実装とは別の担当が read-only で調べ�
 | P3 | G-1 の B の試験の名前とコメントが、RB-1 の whole-set の条件の正例に読める。実際に効くのは、保存された payload と envelope にかかる成分ごとの guard である | 直した。名前を `b_publishes_a_revision_within_its_component_guard_that_the_c_query_refuses` に改めた。効いている条件と、counted 約 3 MiB 以上は成分 guard、上限ちょうどは whole-set で B が拒否することをコメントに書き、roster にその Revision が入る assert を足した。上限近傍の正例は [precheck]（§7.1） |
 | P3 | G-3 の待ち時間の上限 1 秒は、約 0.5 秒以上の timeout しか検出しない。方式と範囲が、試験にも台帳にも書かれていなかった | 直した。doc とコメントに、検出できる範囲、rollback journal での注入、WAL 固有の busy が対象外であることを書き、台帳の RB-4 に記録した |
 
+### 5.2. CQ-MEM の中間レビュー（独立受入れではない）
+
+CQ-MEM の commit を、実装とは別の担当が read-only で調べた。P2 が 1 件、P3 が 5 件の指摘があり、いずれも直して commit に取り込んだ。修正の後の独立受入れ（Fable high）は、この commit の時点では行っていない。
+
+| 指摘 | 内容 | 扱い |
+|---|---|---|
+| P2 | 製品形の [precheck] の材料が不完全で、選択肢 (a)（per-Revision preflight を下げる）が効くように読めた。registration は per-Revision preflight を使わず、成分 guard だけを見て、承認状態に関わらず current な Revision の payload を SQLite の JSON（Q）で処理し、そこで READY の前に NOMEM になる。台帳（§7.2 の (a)、計画の G-2 の行）はこれを書いておらず、D13 の「未承認の Revision の本文は読まない」も、registration の A2 が `allow_draft` で下書きの本文を読むことと食い違っていた | 直した。§7.2 の理由、選択肢 (a)、計画の G-2 の行に、registration は preflight の外にあること、下書きや却下でも同じ NOMEM が起きること、したがって (a) は単独では起動時の終了を防がないことを書き、D13 を直した。下書きと却下の製品形（X = 360,000／380,000）を最終の木の worker で測り、表 5 に記録した。どちらも承認済みと同じ閾値で READY の前に NOMEM になった |
+| P3 | 台帳が envelope 形の N+1 も lifecycle lane の充足としていたが、lane に配線したのは 3 case だった | 直した。envelope 形の N+1 の case を足し、`nir1-c-query-worker-ci.sh` と `ci-pause.test.mjs` に配線した。lifecycle lane は 20 case になった。envelope の数え方が小さくなる変異は、この case だけが検出する（§3.5） |
+| P3 | `revision_is_approved` の doc が、CQ-MEM が止めた SQLite の評価順（下書き・却下・非 current の payload が JSON の関数に渡りうること）を前提にしていた | 直した。CQ-MEM 以降は承認済み・current の集合を先に作り、主キーで到達するので、それ以外の payload は JSON の関数に渡らない、と書いた |
+| P3 | registration の S の scope の comment と D14 が、roster の行も次の Revision の前に解放されると書いていた。実際は roster の buffer と行の文字列が最初の push で S に確保され、source を破棄するまで S に残る | 直した。comment と D14 に、statement、A2 の payload と envelope、qualified Revision は scope の終わりに解放すること、roster は source を破棄するまで（129 件以上は sort の merge で Q に移るまで）S に残ること、封止の前に解放されること、scope の外で伸ばしてはならないことを書いた |
+| P3 | 実 worker の N+1 の case が、拒否の理由に steps と deadline が含まれないことしか見ておらず、Q の枯渇による `sqlite-nomem` の unavailable でも通った | 直した。記録した理由 `query-worker-work-other-pre-cleanup-work-failed-other` を assert し、`nomem` と `oom` を含まないことも見る。理由を `sqlite-nomem` に誤分類する変異で、decision 形と envelope 形の N+1 の両方が失敗する（§3.5） |
+| P3 | S の scope の外へ出る値と owner の check についての 2 か所の comment（`edges_match_source_with_control` の「borrowed key と token は Q-owned」と、`in_scratch` の「owner の check は scope の中で走らない」）が実態と合わない | 直した。roster の key と token は 128 件以下なら S、merge の後は Q にあり、ここでは借用するだけで伸ばさないこと、`control` 引数の owner check は scope の外で行うが、SQLite の progress handler と `check_active_work` の callback は scope の中でも走り、成功経路で確保を残さないことを書いた |
+
 ## 6. CR-1 の判断（D1〜D8）
 
 CR-1 の判断は U3 の委任（[作業記録](nir1-continuation-2026-10.md) の §3）に基づく。D1、D2、D6、D7、D8 は PR #636 本文の「判断と信頼境界（U3 委任）」にある。D3〜D5 は PR 本文に個別の ID が無く、CR-1 の作業記録（`claude-nir1-cres` worktree の `.ralph/agent/decisions.md`。git 管理外）の要旨をここに転記する。
@@ -562,6 +601,22 @@ CR-2 の判断は U3 の委任（[作業記録](nir1-continuation-2026-10.md) �
 
 CR-2 も、外部送信、新しい送信先、新しい authority、閾値の変更を含まない。
 
+### 6.2. CQ-MEM の判断（D12〜D18）
+
+CQ-MEM の判断は U3 の委任（[作業記録](nir1-continuation-2026-10.md) の §3）の範囲にあり、委任判断の記録 DR-CQM-1（作業記録。git 管理外）に、実装の前に記録した。Q（4,718,592 B）、S（64 MiB）、per-Revision preflight（2,097,152 B）、whole-set（16 MiB）の値は変えていない。fail-safe（上限を超えたら部分 Graph なしで unavailable になり、R+IR に戻る）は保つ。Q を広げることと preflight を下げることは、確認済みの固定値の変更なので実施せず、[precheck] に残した（§7.2）。
+
+| ID | 判断 | 要旨 |
+|---|---|---|
+| D12 | Graph の読取は Decision の body を持たず、token は streaming | Graph の読取（registration の source の読取と query）は、承認の事実（id、revision、decision、actor、created_at）だけを持つ `Approval` の読取を使う。`decision_json`、`created_by`、`authority_scope`、`override_field_paths_json` の body は Rust の String にしない。A3 の decision token は、SQLite の列の借用から canonical の形のまま hasher に流す（`grimodex-core` の `CanonicalJsonStream`。key は UTF-16 の昇順を検査し、違えば `KeyOrder` で拒否する）。`canonical_json_digest` も、一時の String を作らない書き方にした。token の値は変わらない：旧実装（`json!` と String で作って hash する版）の digest と byte 一致することを試験で固定し、独立実装（Python）の golden 値でも形を固定した。Packing は完全な Decision（`Complete`）を読む。変えない |
+| D13 | A2 の読取は承認を先に確かめ、本文は借用から parse して早く捨てる | 最初に identity と承認の小さい列だけを読み、current、origin、status、Decision、epoch の判定の後に、payload、envelope の順で読む。却下・保留と非 current の Revision の本文は、どの読取でも読まない。下書き（status が `unreviewed` で Decision が無い）の本文は、`allow_draft` の読取だけが読む。Graph の registration の A2（`read_nir1_entity_relation_revision_current_for_graph_index`）は `allow_draft` で読むので、下書きの payload と envelope を読んで parse し、Draft として返す（roster には入れない）。Graph の A3 の A2 の読取は `allow_draft` ではないので、下書きの本文を読まない（`a2_leaves_the_payload_and_envelope_unread_until_the_revision_is_accepted` が、この区別と、却下・非 current が本文を読まないことを確かめる）。query の preflight の SQL が候補の行を承認状態に関わらず数えることは、この D13 の外にある（§7.1）。payload は SQLite の列の借用から parse し、digest を先に確かめてから Value を捨てる。envelope が NULL のときは従来どおり `canonical-freshness-unavailable` である。読む内容と拒否の分類は変えない |
+| D14 | registration の Revision ごとの資格確認を S の scope で行う | `read_eligibility_source_counted` の Revision ごとの処理を 3 つの scope に分ける：(1) input stats、(2) basis と live の preflight、(3) A2 の読取、件数の検査、admission、roster への追加。Rust 側の確保は S に置かれる。statement、A2 の payload と envelope、qualified Revision は scope の終わりに解放する。roster の buffer と行の文字列は例外で、最初の push で S に確保され、source を破棄するまで S に残る（129 件以上なら、sort の merge で Q に複製され、S の分は解放される）。source は封止の前に破棄され、roster は scope の外で伸ばさない（S の確保は scope の外で realloc できず、伸ばすと worker が abort する）。SQLite の確保は従来どおり Q である。`control` 引数の owner check（A2 の stage の check と Material の check）は scope の外で行い、Material の check は append した record の数だけ scope の後で行う（回数は従来と同じ）。SQLite の progress handler と、A2 の `check_active_work` が呼ぶ owner の callback は scope の中でも走るが、成功経路で確保を残さない。S の 64 MiB は変えない |
+| D15 | `verify_complete_source_index` は結合順を固定する | 4 文を、承認済み・current・同 project／surface／set_kind／proposal kind／origin の Revision の集合（`qualifying`。MATERIALIZED）から始め、`CROSS JOIN` で各 Revision に主キーで到達する形にした。未承認・却下・非 current の Revision の payload は JSON の関数に渡らない。`CASE WHEN … THEN r.payload_json ELSE '{}' END` の gate は、SQLite の定数伝播で式が恒真になり、decoy の payload が解析されたので採用しなかった（`CASE` と `IN` の組合せは、subquery の分だけ Q も使う）。EXPLAIN QUERY PLAN と JSON 関数の呼出しの記録で確かめる試験を置いた（§7.1） |
+| D16 | 長さの SQL は `octet_length` | `read_revision_input_stats` と `preflight_live_source_lengths` の `length(CAST(x AS BLOB))` を `octet_length(x)` にした。値は同じ（UTF-8 の bytes）で、SQLite が列の本体を Q に複製しない。DR-CQM-1 の本文はこの書換えを挙げていないが、Q と S の値を変えず、registration の SQLite 側の確保だけを減らす範囲の変更である |
+| D17 | 試験のための dev-dependency | `grimodex-db` の dev-dependencies の `rusqlite` に `functions` feature を足した。JSON 関数の呼出しを記録する試験（D15）だけが使う。`Cargo.lock` は変わらない。`scripts/local-ci-full-workload-allocation.json` の `Cargo.toml` の sha256 を更新した |
+| D18 | 実 worker の N／N+1 を lifecycle lane に配線する | CR-2 の 2-C を実施した。decision の形と envelope の形のそれぞれで、ちょうど N の正例と N+1 の全体拒否の 4 case を、lifecycle lane の通常 build の区間に足した（`scripts/nir1-c-query-worker-ci.sh`、`scripts/ci-pause.test.mjs`、`scripts/local-ci-full-workload-allocation.json` の script の sha256）。拒否の 2 case は、記録した理由 `query-worker-work-other-pre-cleanup-work-failed-other` も assert する（Q の枯渇による `sqlite-nomem` の unavailable では通らない）。2,097,152 B の正例に届いたのは decision と envelope の形だけなので、製品形の case は足していない（足せば赤い lane になる） |
+
+CQ-MEM も、外部送信、新しい送信先、保存範囲の拡大、閾値の緩和、新しい authority を含まない。
+
 ## 7. G-1〜G-4 の状態と HOLD の扱い
 
 §2 で「一部充足」とした条件の、足りない部分を記録した。いずれも CR-1 の試験では固定されていない境界で、実装の欠陥を見つけたものではなく、対応する試験が無いことの記録だった。探索の範囲は `src-tauri/crates` と `electron/native` の `git grep` で、対応する試験を確認できなかったものを未充足とした。CR-2（branch `claude/nir1-cr2`、試験と本台帳の更新）で試験を足し、worker、NQG1、閾値は変えていない。試験で閉じられた部分は充足とした。閉じられなかった部分は、試験の不足ではなく、確認済みの契約と実装の食い違いなので、[precheck] として HOLD のまま残す。
@@ -569,7 +624,7 @@ CR-2 も、外部送信、新しい送信先、新しい authority、閾値の�
 | ID | 条件（出典） | 証跡（CR-1 まで、CR-2） | 状態 |
 |---|---|---|---|
 | G-1 | Revision の513 records と 6,291,457 B は writer が保存しない。上限の内の Revision は保存、A2 の読取、B build の publish ができる（RB-1） | CR-1：B の保存済み成分の guard の N／N+1（`persisted_revision_components_are_guarded_independently`）と、承認済みの Revision の 6 MiB 超の payload の拒否（`graph_index_rejects_oversized_revision_before_parse_and_reuses_connection`。B-GUARD で typed `CapacityExceeded` にし、未承認・却下の候補は除くようにした）。CR-2：writer の 512／513 records と 6,291,456／6,291,457 B の N／N+1、上限ちょうどの保存と A2 の読取（`typed_writer_saves_512_records_at_exactly_6_291_456_input_bytes`、`typed_writer_refuses_over_limit_revisions_without_partial_rows`）。counted 2,621,440 B の Revision の B の publish（`b_publishes_a_revision_within_its_component_guard_that_the_c_query_refuses`） | 一部充足。writer の N／N+1、上限ちょうどの保存、A2 の読取は充足。B の上限近傍の publish は [precheck]（§7.1）で、HOLD のまま |
-| G-2 | per-Revision preflight の 2,097,152 B は通り、2,097,153 B の Revision が候補にあれば query 全体が unavailable になる（RB-2） | CR-1：preflight の N+1 の拒否（A2 の payload と envelope、A3 の payload・本文・phase・scope）。CR-2：本番の worker 構成（in-process。maintenance owner、SQL 100,000 steps）で、ちょうど 2,097,152 B の候補が Graph に使われること（`worker_query_admits_a_candidate_at_exactly_the_per_revision_preflight_limit`）と、2,097,153 B の候補で query 全体が拒否されること（`query_refuses_the_whole_graph_when_a_candidate_is_one_byte_over`） | 一部充足。preflight の N／N+1 と、本番の worker 構成（in-process）での正例と負例は充足。固定 allocator の実 worker での正例は [precheck]（§7.2）で、HOLD のまま |
+| G-2 | per-Revision preflight の 2,097,152 B は通り、2,097,153 B の Revision が候補にあれば query 全体が unavailable になる（RB-2） | CR-1：preflight の N+1 の拒否（A2 の payload と envelope、A3 の payload・本文・phase・scope）。CR-2：本番の worker 構成（in-process。maintenance owner、SQL 100,000 steps）で、ちょうど 2,097,152 B の候補が Graph に使われること（`worker_query_admits_a_candidate_at_exactly_the_per_revision_preflight_limit`）と、2,097,153 B の候補で query 全体が拒否されること（`query_refuses_the_whole_graph_when_a_candidate_is_one_byte_over`）。CQ-MEM：固定 allocator の実 worker で、decision の padding と envelope の padding のそれぞれで、ちょうど 2,097,152 B の候補が Graph に使われること（`native_worker_uses_a_candidate_at_exactly_the_per_revision_preflight_limit`、`native_worker_uses_a_candidate_whose_envelope_fills_the_per_revision_preflight_limit`）と、そのそれぞれで 2,097,153 B にすると query 全体が拒否されること（`native_worker_refuses_the_whole_graph_when_a_candidate_is_one_byte_over`、`native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over`。拒否の理由 `query-worker-work-other-pre-cleanup-work-failed-other` も assert する）。lifecycle lane に 4 case を配線した | 一部充足。preflight の N／N+1、本番の worker 構成（in-process）での正例と負例、実 worker の decision・envelope の形の N／N+1 は充足。製品形に限り、固定 allocator の実 worker での正例は [precheck]（§7.2）で、HOLD のまま |
 | G-3 | reader／busy の競合で待たずに unavailable になる（wait 0。RB-4） | CR-1：枠の使用中（`NIR1_GRAPH_WORKER_BUSY`、`NIR1_GRAPH_WORKER_CAPACITY_BUSY`）、Restore の admission、外部 write との競合。CR-2：`busy_database_refuses_both_reader_paths_without_waiting`（rollback journal で別接続の `BEGIN EXCLUSIVE` を注入する。ordinary と worker の両経路が 1 秒未満で、部分 Graph なしに unavailable になり、解放後に回復する） | 充足。rollback journal での注入で、WAL 固有の busy は対象外。待ち時間の上限 1 秒が検出するのは約 0.5 秒以上の timeout（RB-4）。HOLD を解除する |
 | G-4 | proposal/5 の負例のうち、wrong／unknown seed、3 hop、Entity 12／edge 展開 144／Scene 8 の上限（RB-8） | CR-1：実在する seed の正例と、2 hop の正例（`seed_local_two_hop_query_matches_independent_canonical_projection`）。CR-2：`unknown_and_foreign_seeds_are_refused_as_seed_not_found_on_both_reader_paths`、`two_hop_limit_stops_before_a_third_hop`、`twelve_discovered_entities_are_admitted_and_the_thirteenth_is_refused`、`one_hundred_forty_four_distinct_edges_are_admitted_and_the_145th_is_refused` | 一部充足。unknown seed、3 hop、Entity 12／13、edge 144／145 は充足（12／13 の拒否と 144／145 は、steps の上限を外した条件を含む論理の試験。144 本に届く形は本番では steps が先に効く。§2.11）。Scene 8 は CP-1 の受入れに移す（§7.3）。Scene 8 以外は HOLD を解除する |
 
@@ -608,7 +663,7 @@ B-GUARD の後（2026-10-14、branch `claude/nir1-bguard`）：選択肢 1-A を
 - 変更：B の成分 guard（payload と envelope をそれぞれ 6,291,456 B と比べる）を、承認状態で分けた。承認状態は payload を読む前に、proposal の status と最新の Decision から scalar で確かめる（`nir1_entity_relation_index.rs::revision_is_approved`。status が `approved`、または最新の Decision が `approved` のとき承認済みと扱い、二つが食い違うときは承認済みの側に倒す）。
   - 承認されていない Revision（下書き、却下、保留）は、大きさに関わらず roster に入らない。A2 reader は status が `approved` でない Revision を qualified にしない（Graph の経路では下書きの `unreviewed` を読み進めて Draft として返すが、roster には入れない）。成分 guard の位置で、parse も確保もせずに除き、build を続ける。
   - 承認済みで成分を超える Revision は、build 全体を typed `CapacityExceeded` で拒否する。限界の名前は `persisted-revision-component-bytes`。部分 roster は出さず、旧 sealed generation を残す。型の無い `NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT` は無くなった。
-  - source の読取は、build、publish 時の再読取、complete registration（`is_complete_registered`、Verify、Rebuild、reader の登録）が同じ関数なので、同じ規則がすべてに当たる。reader の登録が payload を検査する `verify_complete_source_index` は、論理上は status が `approved` の current な Revision だけを対象にし、自前の大きさの検査を持たない。承認済みの判定にこの status を含めてあるので、その Revision は必ず先に成分 guard を通る。ただし、これは論理上の対象である。SQLite は JSON の関数を status や current の絞り込みより先に評価しうるので、下書き、却下、非 current の Revision の payload もこの SQL で解析されうる（in-loop レビューが、同じ index を持つ最小の schema で、EXPLAIN QUERY PLAN と `json_valid` の呼出しの記録から確かめた）。この解析の大きさは成分 guard では区切られない。current な候補の bytes は whole-set の 16 MiB に数えられ、非 current の Revision の解析は B-GUARD の前からある。worker では、解析が arena を超えると NOMEM などで登録が失敗し、Graph は unavailable になる（安全側）。JSON の式を承認状態と current で gate する（`CASE WHEN … THEN r.payload_json ELSE '{}' END` の形）か、結合順を固定する案は、worker の登録時のメモリを扱う後続の lane で検討する。
+  - source の読取は、build、publish 時の再読取、complete registration（`is_complete_registered`、Verify、Rebuild、reader の登録）が同じ関数なので、同じ規則がすべてに当たる。reader の登録が payload を検査する `verify_complete_source_index` は、論理上は status が `approved` の current な Revision だけを対象にし、自前の大きさの検査を持たない。承認済みの判定にこの status を含めてあるので、その Revision は必ず先に成分 guard を通る。ただし、これは論理上の対象である。SQLite は JSON の関数を status や current の絞り込みより先に評価しうるので、下書き、却下、非 current の Revision の payload もこの SQL で解析されうる（in-loop レビューが、同じ index を持つ最小の schema で、EXPLAIN QUERY PLAN と `json_valid` の呼出しの記録から確かめた）。この解析の大きさは成分 guard では区切られない。current な候補の bytes は whole-set の 16 MiB に数えられ、非 current の Revision の解析は B-GUARD の前からある。worker では、解析が arena を超えると NOMEM などで登録が失敗し、Graph は unavailable になる（安全側）。この解析は CQ-MEM（2026-10-14）で止めた。`verify_complete_source_index` の 4 文は、承認済み・current の Revision の集合（`qualifying`）を先に作り、各 Revision に主キーで到達する結合順になったので、未承認・却下・非 current の Revision の payload は JSON の関数に渡らない（D15、§7.2 の「CQ-MEM の後」）。JSON の式を `CASE WHEN … THEN r.payload_json ELSE '{}' END` で gate する案は、SQLite の定数伝播で式が恒真になり、一部の payload が解析されたので採らなかった。
 - whole-set の数え方は変えていない。key、payload、envelope、metadata／Decision の bytes は、scan した候補ごとに、承認状態に関わらず 16 MiB に数える。B-close の定義（[B-close completion evidence](nir1-b-close-completion-2026-09-22.md) の「Admitted Source input per scan」: key、payload、envelope、metadata／Decision、live Source の bytes を materialization の前に数える）に承認の条件は無い。境界の fixture（`nir1_capacity_fixtures.rs::pad_ineligible_source_input`）は、不適格な候補（承認されていない decisionless と rejected を含む）の payload を詰めてちょうど 16 MiB を作る。B-ROUTE の試験（未承認の候補の 16 MiB + 1 が `input-bytes`）も、承認されていない候補を数える前提で書かれている。U6 の試験（`whole_set_input_limit_refuses_without_replacing_the_sealed_generation`）は、候補を承認済みにして、成分の guard の上限ちょうど（6,291,456 B の admit）と、成分がその大きさのままの whole-set だけの拒否を、B-GUARD の前と同じ大きさで確かめる。未承認の候補は成分の guard では除かれるので、候補を未承認のままにすると control が上限ちょうどの境界を押さえなくなる（guard に off-by-one を入れても prepare が通ることを実測した）。そのため、未承認で 1 B 超の候補が除かれながら whole-set には数えられることは、承認を取り消した同じ候補で後段に確かめる（未承認の超過を数える前に除く変異では、この後段が失敗することを実測した）。これらを弱めずに、成分 guard だけを承認状態で分けた。
 - maintenance の経路（B-ROUTE、#643）から見た分類：承認済みの超過は `classify_build_failure` の capacity の枝に入り、`Refuse { code: NIR1_GRAPH_CAPACITY_EXCEEDED, limit: persisted-revision-component-bytes }` として記録される（以前は型が無く、文字列の `NIR1_GRAPH_` token から `code: NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT`、limit なしで拒否された）。入力が変わらない間は再 build されず（`RefusedUnchanged`）、承認の取消（approved → rejected。製品の操作）で入力が変わると、次の owned build が publish する。C-query の worker は同じ error を `validation-capacity-exceeded`（上限）に分類する（以前は `other`）。
 - 判断の記録（fail-safe を弱めたと読む余地について）：承認済みの Revision は、これまでどおり build 全体を拒否し、部分 roster を出さず、旧 sealed を残す。除くのは、A2 reader が qualified にしない Revision だけである。承認の判定は A2 の必要条件（status が `approved`）を含み、さらに Decision も見て食い違いを承認済みの側に倒すので、roster に入りうる Revision を除くことはない。
@@ -619,26 +674,154 @@ B-GUARD の後（2026-10-14、branch `claude/nir1-bguard`）：選択肢 1-A を
 
 ### 7.2. [precheck] G-2：実 worker での正例
 
-条件（proposal/6）：Acceptance の正例「per-Revision preflight が `2,097,152 B` の内の Revision は、通常どおり Graph に使われる」を、製品の worker binary でも満たす。確認済みの固定値は、per-Revision preflight の `2,097,152 B` と、worker の固定 allocator の query `4,718,592 B`（緩めるには再確認が要る）である。
+条件（proposal/6）：Acceptance の正例「per-Revision preflight が `2,097,152 B` の内の Revision は、通常どおり Graph に使われる」を、製品の worker binary でも満たす。確認済みの固定値は、per-Revision preflight の `2,097,152 B`、worker の固定 allocator の query `4,718,592 B`（Q）、registration の scratch `64 MiB`（S）である（緩めるには再確認が要る）。
+
+状態：CQ-MEM（2026-10-14）の後、decision の形と envelope の形の正例と負例は満たした（lifecycle lane に配線した）。製品形（日本語の summary を payload、envelope、live Source に持つ形）は満たせないので、[precheck] のまま残る。この制約は registration で起き、per-Revision preflight の外にあって承認状態に関わらないので、下書きや却下の製品形でも同じである（表 5）。
+
+#### CQ-MEM の前（CR-2 の測定）
 
 事実（release の worker binary を、lifecycle lane と同じ手順で測った。fixture は seed の Revision と、承認済みの候補 1 件。A2 は候補を 1 回数え、Graph の応答は載せない）：
 
 - ちょうど N（2,097,152 B）にした候補（decision 行の padding 2,085,131 B）を持つ project で、worker は起動時の registration の最中に SIGABRT した（stderr：`memory allocation of 2085141 bytes failed`）。N+1（2,097,153 B）も同じ（`2085142 bytes`）。owner の prepare は `NIR1_GRAPH_WORKER_EXIT_BEFORE_READY` になる。READY の前に落ちるので、N の正例も N+1 の拒否も、実 worker では確かめられない。
 - decision padding を変えた走査（1 case 1 process）：A2 の admission が約 312 KB（padding 300,000）までは、query が成功する（10〜17 ms）。約 412 KB から約 1.61 MB（padding 400,000〜1,600,000）は、registration は通るが query の最中に worker が終了する（`NIR1_GRAPH_WORKER_PIPE_TRUNCATED`）。約 1.7 MB 以上（padding 1,700,000〜2,000,000）は起動時に終了する（`NIR1_GRAPH_WORKER_EXIT_BEFORE_READY`）。閾値は 312 KB と 412 KB の間にあり、2 MiB の preflight の約 15〜20% である。
 - payload 側の padding（`evidence_id` を typed writer で伸ばした形。A2 は padding の約 3 倍）：padding 200,000（A2 約 612 KB）で、起動時の registration が SQLite の NOMEM（`NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX`）で失敗する。registration は project 全体なので、該当する Revision が 1 件あるだけで、その project の実 worker は起動できない。（padding 0〜150,000 の拒否は、padding 0 でも起きた別の理由で、その probe の形は調べていない。容量の根拠にしない。）
-- メモリの行き先（コードの読み。コピーごとには測っていない）：2.08 MB の `decision_json` の String が、起動時に 4.5 MiB の Q arena に取れない。`read_a3_decision_token` が `decisionJson` を含む `json!` を作り、`canonical_json_digest` が倍々に伸びる String を作る間、A2 の Decision の構造体が同じ String を持つ。
+- メモリの行き先（コードの読み。CR-2 の時点ではコピーごとには測っていない。CQ-MEM の測定が裏づけた）：2.08 MB の `decision_json` の String が、起動時に 4.5 MiB の Q arena に取れない。`read_a3_decision_token` が `decisionJson` を含む `json!` を作り、`canonical_json_digest` が倍々に伸びる String を作る間、A2 の Decision の構造体が同じ String を持つ。
 - 通常の allocator の in-process では、同じ fixture が N で available、N+1 で preflight の拒否になる（CR-2 の試験）。
 
-結果は安全側である。worker が異常終了し、Graph は unavailable になり、部分 Graph は出ない。ただし利用者に見えるのは preflight の拒否ではなく worker の異常終了で、registration が project 全体なので、1 件の Revision で project の実 worker が起動しなくなる。
+結果は安全側だった。worker が異常終了し、Graph は unavailable になり、部分 Graph は出ない。ただし利用者に見えるのは preflight の拒否ではなく worker の異常終了で、registration が project 全体なので、1 件の Revision で project の実 worker が起動しなくなる。CR-2 は、確認済みの 2 つの固定値が両立しないので値を変えない限り通らない、と判断し、選択肢 (a)〜(d) を挙げた。
 
-確認済みの 2 つの固定値が両立しないので、値を変えない限り通らない。選択肢（どれも確認済みの値か、大きな変更に触れる）：
+#### CQ-MEM の後（2026-10-14、branch `claude/nir1-cqmem`）
 
-- (a) per-Revision preflight を、実 worker が処理できる値まで下げる（decision の形で約 0.3 MB。payload の形ではさらに小さい）。
-- (b) worker の Q arena を広げる（allocator の値と memory 需要の再確認）。
-- (c) 値を保ったまま、A2／A3 のメモリの増幅（decision_json の複製、`read_a3_decision_token` の `json!`、canonical 文字列の倍々の増加、payload と envelope の Value）を減らす実装の変更。payload の形では 2 MiB に届かない可能性があり、先に測定が要る。
-- (d) 両方の値を保ち、RB-2 の正例は実 worker では未達と記録する。worker が異常終了して Graph が unavailable になる fail-safe は保たれるが、利用者に見えるのは preflight の拒否ではない。
+CQ-MEM は、CR-2 の選択肢 (c)（値を保ったまま、A2／A3 のメモリの増幅を減らす実装の変更）を、DR-CQM-1 の範囲で実施した。Q、S、preflight、whole-set の値は変えていない。変更は段に分けて測った。
 
-決まったら、lifecycle lane の通常 build の区間（registry33 の case の後、seam を足した worker の build の前）に、N と N+1 の実 worker の case を 2 つ足し、`scripts/local-ci-full-workload-allocation.json` の script の sha256 を更新する（先例は CR-1 の `75074118`）。実 worker の試験 2 件の草稿は commit していない。
+- S1：Graph の読取が持つ Decision を承認の事実に絞り、A3 の decision token を streaming にした（D12）。
+- S2：A2 の読取を、承認先行・借用 parse・payload の digest 先行にした（D13）。
+- S3：registration の Revision ごとの資格確認を S の scope で行う（D14）。
+- S4：`verify_complete_source_index` の結合順を固定した（D15）。
+- S5：長さの SQL を `octet_length` にした（D16）。S5 の値は、最終の木に計測用の counter だけを足した worker で再測定し、同じ値になった（decision 形 d-0、d-300000、d-360000、d-380000、d-1000000、d-1700000、d-2085131、d-2085132、envelope 形 e-2085131、e-2085132、製品形 p-100000、p-300000、p-360000、p-380000。reg／query の hw、結果、frame のすべて）。
+
+測定の方法：各段の release の worker binary を、lifecycle lane と同じ手順（`prlimit` の core 1:1、1 case 1 process）で動かした。Q は 4,718,592 B のまま固定し、「hw」は計測専用の counter（commit していない）で読んだ Q の allocated bytes の high-water である。reg は起動時の registration、query は 1 回の query を表す。fixture は 3 種類：decision 形（`d-<padding>`。approval の `decision_json` の padding。payload 1,678 B、envelope 5,158 B。A2 の admission は padding + 12,021 B）、envelope 形（`e-<padding>`。保存された envelope の末尾の空白。A2 の admission は padding + 12,022 B）、製品形（`p-<X>`。Entity 12、Scene 1、承認済み。日本語の summary の合計 X B を payload、envelope、live Source の 3 か所に持つ）。records、bytes、結果のように負荷に左右されない値を主に記録した。wall 時間は、他の lane の build が並行していたので主指標にしない（worker の query は約 8〜25 ms、READY までは約 15〜55 ms で、参考値）。
+
+**段ごとの結果（A2 の admission がちょうど N = 2,097,152 B の候補。reg／query の hw）**
+
+| 段 | 内容 | decision 形 | envelope 形 |
+|---|---|---|---|
+| S0 | CQ-MEM の前 | READY の前に SIGABRT（2,085,141 B の確保失敗） | READY の前に SIGABRT（2,090,289 B の確保失敗） |
+| S1 | + Decision の絞込みと streaming token | 成功（3,184,584／3,241,811） | READY の前に SIGABRT（S0 と同じ） |
+| S2 | + A2 の読取 | 成功（S1 と同じ） | 成功（3,207,702／3,254,671） |
+| S3 | + registration の S scope | 成功（S1 と同じ） | 成功（3,184,359／3,254,671） |
+| S4 | + JSON の gate | 成功（S1 と同じ） | 成功（S3 と同じ） |
+| S5 | + `octet_length`（最終） | 成功（1,224,291／3,241,811） | 成功（3,166,524／3,254,671） |
+
+N+1（2,097,153 B）：S0 は N と同じく READY の前に SIGABRT した（decision 形 `2085142 bytes`、envelope 形 `2090290 bytes`）。最終の形は、worker が READY になり、query 全体を unavailable の frame（98 B）で返す。理由は `query-worker-work-other-pre-cleanup-work-failed-other` で、steps でも deadline でもない。部分 Graph は出ない。decision 形と envelope 形のどちらも、lifecycle lane の試験がこの理由を assert する。
+
+**表 1：decision 形（S0 と S5）** 単位は B。「-」は値が取れなかったこと（worker が終了した）を表す。
+
+| A2 の admission | S0（前）の結果 | S0 の reg／query | S5（後）の結果 | S5 の reg／query |
+|---|---|---|---|---|
+| 312,021 | 成功 | 1,688,208／2,955,939 | 成功 | 1,224,284／1,453,182 |
+| 372,021 | 成功 | 1,810,374／3,306,049 | 成功 | 1,224,284／1,503,412 |
+| 382,021 | query で SIGABRT（740,656 B） | 1,828,344／- | 成功 | 1,224,284／1,523,318 |
+| 392,021 | query で SIGABRT（760,656 B） | 1,850,406／- | 成功 | 1,224,284／1,523,444 |
+| 402,021 | 成功（断片化で単調ではない） | 1,870,430／3,495,939 | 成功 | 1,224,284／1,543,358 |
+| 412,021 | query で SIGABRT（800,656 B） | 1,888,400／- | 成功 | 1,224,284／1,553,374 |
+| 612,021 | query で SIGABRT（1,200,024 B） | 2,290,838／- | 成功 | 1,224,284／1,743,876 |
+| 1,012,021 | query で SIGABRT（1,000,010 B） | 3,089,586／- | 成功 | 1,224,291／2,144,670 |
+| 1,412,021 | query で SIGABRT（1,400,010 B） | 3,892,416／- | 成功 | 1,224,291／2,545,454 |
+| 1,712,021 | READY の前に SIGABRT（1,700,010 B） | -／- | 成功 | 1,224,291／2,855,928 |
+| 2,097,152（N） | READY の前に SIGABRT（2,085,141 B） | -／- | 成功 | 1,224,291／3,241,811 |
+| 2,097,153（N+1） | READY の前に SIGABRT（2,085,142 B） | -／- | READY の後に全体拒否 | 1,224,291／1,182,018 |
+
+registration の hw は大きさによらず 1,224,284〜1,224,291 B で一定になった。registration が `decision_json` を Rust でも SQLite でも複製しなくなったためである。query の hw は N で 3,241,811 B（Q の約 69%）で、base 約 1.15 MB に、SQLite が token の hash の間に保持する `decision_json` の列（N の約 1 倍）が加わる。
+
+**表 2：envelope 形（S0、S2、S5）** 単位は B。
+
+| A2 の admission | S0（前） | S2（A2 の読取の後） | S5（後） |
+|---|---|---|---|
+| 312,021 | 成功 1,700,039／1,756,898 | 成功 1,419,073／1,475,932 | 成功 1,377,895／1,475,932 |
+| 1,012,021 | 成功 3,099,358／3,158,276 | 成功 2,118,405／2,177,310 | 成功 2,079,132／2,177,310 |
+| 1,512,021 | 成功 4,102,393／4,159,252 | 成功 2,621,427／2,678,286 | 成功 2,580,249／2,678,286 |
+| 1,912,021 | READY の前に SIGABRT（1,905,158 B） | 成功 3,020,165／3,069,180 | 成功 2,980,892／3,069,180 |
+| 2,012,021 | READY の前に SIGABRT（2,005,158 B） | 成功 3,120,357／3,179,262 | 成功 3,081,084／3,179,262 |
+| 2,097,152（N） | READY の前に SIGABRT（2,090,289 B） | 成功 3,207,702／3,254,671 | 成功 3,166,524／3,254,671 |
+| 2,097,153（N+1） | READY の前に SIGABRT（2,090,290 B） | READY の後に全体拒否 | READY の後に全体拒否 |
+
+S3 以降の registration の効果は、envelope 形の N で 23,343 B（3,207,702 → 3,184,359）と小さい。registration の Rust 側の大きな確保は S1 と S2 で既に無くなっていて、S3 は、残る Revision ごとの Rust 側の確保（statement、qualified Revision、roster の行）を S に移して封止の前に解放する構造にした。
+
+**表 3：製品形（`p-<X>`。S0 と S5 は同じ結果）** Rust 側の改善は効かなかった。単位は B。
+
+| X（summary の合計） | A2 の admission | 結果 | reg／query の hw（S0） | reg／query の hw（S5） | 応答 frame |
+|---|---|---|---|---|---|
+| 100,000 | 348,641 | 成功 | 2,072,160／1,914,117 | 2,072,112／1,914,117 | 306,879 |
+| 300,000 | 948,689 | 成功 | 3,838,268／3,331,681 | 3,838,220／3,331,681 | 873,591 |
+| 360,000 | 1,128,845 | 成功（成功する最大） | 4,369,853／3,757,303 | 4,369,805／3,757,303 | 1,043,727 |
+| 380,000 | 1,188,677 | registration が SQLite の NOMEM（`NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX`）で終了 | - | - | - |
+| 400,000〜660,000 | 1,248,725〜2,028,701 | 同上 | - | - | - |
+
+Q を 32 MiB にした計測専用の worker（commit していない）で、製品形が必要とする量を測った。
+
+| X | A2 の admission | reg／query の必要量 | 結果 |
+|---|---|---|---|
+| 500,000 | 1,548,749 | 5,604,477／4,749,287 | 成功（frame 1,440,303 B） |
+| 550,000 | 1,698,653 | 6,044,633／5,103,435 | 応答 frame が `FRAME_BYTES`（約 1.55 MB）を超え、worker が exit 1 |
+| 600,000 | 1,848,773 | 6,485,339／5,458,073 | 同上 |
+| 660,000 | 2,028,701 | 7,016,265／5,883,139 | 同上 |
+
+decision 形の baseline（S0）は、Q が 32 MiB でも N の query の hw が 13,666,735 B で、4,718,592 B に収まらなかった（S5 は 3,241,811 B）。
+
+**表 4：SQL steps（ordinary reader。`tests/cq_opt.rs` の shape）** steps は SQL VM の命令数で、負荷には左右されない。fixture の ID が乱数なので、実行ごとに ±3 steps 程度揺れる（最終の木を 4 回測った範囲）。「前」は CQ-MEM の前の単発の測定である。
+
+| shape | 前 | 後（4 回の範囲） | 差 |
+|---|---|---|---|
+| seed | 5,409 | 5,424〜5,427 | +15〜+18 |
+| revisions-3 | 15,409 | 15,460〜15,463 | +51〜+54 |
+| revisions-5 | 25,409 | 25,496〜25,499 | +87〜+90 |
+| relations-10 | 8,370 | 8,385〜8,388 | +15〜+18 |
+| relations-70 | 28,107 | 28,125〜28,128 | +18〜+21 |
+| relations-144 | 52,456 | 52,471〜52,474 | +15〜+18 |
+| star-10 | 16,396 | 16,414〜16,417 | +18〜+21 |
+
+承認済みの Revision 1 件あたり約 +17 steps（seed の約 0.3%）で、100,000 steps の budget に影響しない。`tests/cq_opt.rs` の応答の一致の試験は変更前と同じである。
+
+**結果**
+
+- decision の形と envelope の形：実 worker の固定 allocator で、ちょうど N（2,097,152 B）の候補が Graph に使われ（lease の内。診断値は decision 形 12.0 ms、envelope 形 18.5 ms で、他 lane の build が並行していた可能性がある）、N+1（2,097,153 B）は query 全体が拒否される。RB-2 の正例と負例を満たす。lifecycle lane に 4 case を配線した（D18）。
+- 製品形：A2 の admission が約 1.13 MB（X = 360,000）までは成功するが、約 1.19 MB（X = 380,000）以上は registration の SQLite の NOMEM で READY の前に終了する。2,097,152 B の正例に届かないので、[precheck] である。CQ-MEM の前後で値が変わらないのは、残る増幅が Rust 側ではなく SQLite の JSON と応答 frame にあるためである。
+- 下書きと却下の製品形：承認済みと同じ閾値で registration が NOMEM になる（表 5）。registration は per-Revision preflight の外にあり、SQLite の JSON を承認状態で gate していないので、約 1.19 MB 以上の製品形の Revision が 1 件あるだけで、承認前の下書きでも、その project の worker は READY に達せず、project の Graph はすべて unavailable になる（R+IR に戻る fail-safe は保たれる）。
+- 4 件の製品形 Revision を持つ project（`pm-300000`。A2 の admission は 1 件あたり 948,689 B）は、S0〜S2 では query が `revision-record-limit`（in-process の正解と同じ）で unavailable になり、S3 以降は断片化により `sqlite-nomem` で unavailable になる。どちらも unavailable で R+IR に戻る（fail-safe）が、拒否の理由の分類は変わった。
+
+**製品形が届かない理由**（instrumentation（commit していない）での読み。製品形 X = 300,000：payload 309,591 B、envelope 316,076 B。各処理の中での増分で、同時に存在するとは限らない）：
+
+- registration の `preflight_revision_source_basis` の SQLite の JSON が約 +2.77 MB（payload の約 8.9 倍）、`read_revision_input_stats` の JSON の件数が約 +1.18 MB（約 3.8 倍）。SQLite の確保は S に移せず、Q に置かれる。
+- query の preflight の集計 SQL（`COUNT_SQL` など）の JSON が約 +2.21 MB（約 7.1 倍）。
+- registration は per-Revision preflight（`nir1_graph/input.rs` の 2,097,152 B）を使わない（コードの読みと、表 5 の実測）。registration の guard は成分 guard（payload と envelope のそれぞれ 6,291,456 B。承認済みの超過だけを typed に拒否し、未承認は除く）だけで、それ以下の current な Revision は、承認状態に関わらず、Q の SQLite の JSON（`read_revision_input_stats` の件数と `preflight_revision_source_basis` の jsonb）で処理される。承認で gate しているのは `verify_complete_source_index`（D15）だけで、registration のこの 2 つの SQL は gate していない。A2 の読取は、却下・保留の Revision の本文は読まないが、下書きの本文は読む（registration は `allow_draft` で呼ぶ。D13）。このため NOMEM は、承認済みに限らず、下書きと却下の製品形でも同じ大きさ（A2 の admission が約 1.19 MB）で起き、per-Revision preflight（2,097,152 B）の約 54〜57% の大きさで registration が先に終了する。
+- A2 の Rust 側は、CQ-MEM の後で約 +1.3 MB（前は約 +1.9 MB）。応答 frame の encode が約 +1.6 MB。
+- 応答 frame の上限：製品形の応答は A2 の admission の約 0.88〜0.93 倍の大きさで、Native の region（`PARENT_BYTES` 1,572,864 B）から request などを引いた `FRAME_BYTES`（約 1.55 MB）を、A2 の admission が約 1.7 MB 以上で超える。Q を広げても、2,097,152 B の製品形の応答は frame に入らない。
+- Q の必要量：A2 の admission が 2,028,701 B の製品形に、registration で約 7.0 MB、query で約 5.9 MB が要る（上の 32 MiB の測定）。Q の 4,718,592 B を超える。
+
+**表 5：下書きと却下の製品形（registration の NOMEM は承認状態に関わらない）** 最終の木の release worker（通常 build）を、lifecycle lane と同じ手順（`prlimit` の core 1:1、1 case 1 process）で動かした。fixture は表 3 の製品形（Entity 12、1 場面、日本語の summary の合計 X B を payload、envelope、live Source の 3 か所に持つ）で、状態だけが違う。`p` は承認済み、`pd` は下書き（Decision なし）、`pr` は却下（rejected の Decision）。
+
+| fixture | X | A2 の admission | 結果 |
+|---|---|---|---|
+| `p-360000`（承認済み） | 360,000 | 1,128,845 | READY に達し、応答 frame 1,043,727 B |
+| `p-380000`（承認済み） | 380,000 | 1,188,677 | registration が `NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX` で終了（READY の前） |
+| `pd-360000`（下書き） | 360,000 | 1,128,581 | READY に達する |
+| `pd-380000`（下書き） | 380,000 | 1,188,413 | registration が `NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX` で終了（READY の前） |
+| `pr-360000`（却下） | 360,000 | 1,128,845 | READY に達する |
+| `pr-380000`（却下） | 380,000 | 1,188,677 | registration が `NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX` で終了（READY の前） |
+
+下書きと却下の fixture は、seed が Graph の source にならないので、READY の後の query は frame を返さない（exit 1）。ここで見るのは registration が READY に達するかどうかだけである。終了する段は、どれも `SEMANTIC_INDEX`（`is_complete_registered_with_scratch`。roster の Revision ごとの処理を含む）で、D15 で gate した `SOURCE_INDEX`（`verify_complete_source_index`）ではない。A2 の admission 1.19 MB は per-Revision preflight（2,097,152 B）の内に収まる大きさだが、registration は preflight を通らないので、preflight の内の Revision でも起動できない。
+
+**製品形の選択肢**（どれも確認済みの値か、大きな変更に触れる。proposal/7 の候補）：
+
+- (a) per-Revision preflight を、製品形が処理できる値まで下げる。製品形の成功する最大は A2 の admission で約 1.13 MB（Revision の形で変わる）。ただし、これだけでは起動時の終了を防がない。registration は per-Revision preflight を使わず、成分 guard だけで、承認状態に関わらず current な Revision の payload を SQLite の JSON（Q）で処理して NOMEM になる（上の理由と表 5）。preflight を約 1.13 MB に下げても、約 1.19 MB 以上の製品形の Revision（writer は 512 records／6,291,456 B まで保存できる）が 1 件あれば、承認前の下書きでも、その project の worker は READY に達せず、project の Graph はすべて unavailable になる。CR-2 が問題にした「1 件の Revision で project の実 worker が起動しない」状態は、(a) では解消しない。(a) が変えるのは query 側の拒否の位置だけなので、registration 側の扱い（例：未承認の Revision の SQL の JSON を承認で gate する。承認済みには効かない）か (b)／(c) と組み合わせる必要がある。
+- (b) Q と応答 frame の上限（Native の region の 1.5 MiB）をともに広げる。製品形で 2,097,152 B を通すには、Q が registration で約 7.0 MB 以上、frame が約 2 MB 以上要る。どちらも確認済みの値で、緩めるには再確認が要る。
+- (c) registration と query の preflight で、payload と envelope の件数を SQLite の JSON 関数で数えるのをやめ、`sqlite3_blob_open` の incremental I/O と Rust の streaming parser で数える（設計のみ。実施していない）。SQLite の JSON の約 7〜9 倍の確保を、buffer の大きさに抑えられる見込みである。ただし、件数の数え方と B-close の定義に触れる大きな変更で、応答 frame の上限は別に残る。
+- (d) 両方の値を保ち、製品形の RB-2 の正例は実 worker では未達と記録する。worker が起動時の NOMEM で終了するか、query 全体が unavailable になり、Graph が R+IR に戻る fail-safe は保たれる。
+
+調査の推奨（未決定）：(d) を当面の記録とし、(a) と (b) と (c) のどれで扱うかをユーザーに確認する。(a) は、registration 側の扱いか (b)／(c) と組み合わせない限り、起動時の終了を防がない。
+
+実施した配線：lifecycle lane の通常 build の区間（registry33 の case の後、seam を足した worker の build の前）に、decision の形と envelope の形のそれぞれで N の正例と N+1 の全体拒否の 4 case を足し、`scripts/local-ci-full-workload-allocation.json` の script の sha256 を更新した（先例は CR-1 の `75074118`）。製品形の case は、赤い lane になるので足していない。
 
 ### 7.3. G-4：Scene 8 は CP-1 の受入れに移す
 
@@ -651,7 +834,8 @@ B-GUARD の後（2026-10-14、branch `claude/nir1-bguard`）：選択肢 1-A を
 
 - 解除済み：CR-1 の範囲。§1 に挙げた「充足」の行と、「一部充足」の行のうち試験がある部分。条件は、CR-1（#636）の merge と最終 head の Quick・PR checks・lane 6本の green（CR-1 の squash commit：750741183cf4d75ccf18b3904a5751b762284bda）。U7（2026-10-13 のユーザー決定）により Full は merge 後の master で走らせる。
 - CR-2 で解除する：G-3 と、G-1、G-2、G-4 のうち試験を足した部分（writer の N／N+1 と上限ちょうどの保存と A2 の読取、preflight の N／N+1 と本番の worker 構成の正例・負例、unknown seed、3 hop、Entity 12、edge 144）。条件は、CR-2 の merge と最終 head の PR checks の green（§3.4）。
-- 残す：[precheck] の2点。G-1 の B の上限近傍の publish（§7.1）と、G-2 の実 worker の正例（§7.2）。L6〜L9実行計画の残HOLD表に、別の行として記録した。
+- CQ-MEM で解除する：G-2 のうち、decision と envelope の形の実 worker の N／N+1（§7.2）。条件は、CQ-MEM の merge と、最終 head の PR checks と lifecycle lane の green（§3.5）。
+- 残す：[precheck] の2点。G-1 の B の上限近傍の publish（§7.1）と、G-2 の実 worker の製品形の正例（§7.2）。L6〜L9実行計画の残HOLD表に、別の行として記録した。
 - 移す：G-4 の Scene 8。CP-1 の受入れ（§7.3）。
 - 変えない：製品の Graph 入口（A-1）。Graph の公開、local 送信、固定値と閾値、確認台帳の各行。K2〜K6 の内容。
 
@@ -666,6 +850,8 @@ B-GUARD の後（2026-10-14、branch `claude/nir1-bguard`）：選択肢 1-A を
 | PR 本文の D3〜D5 | §6 の書き方のまま |
 | CR-2 の hosted checks | CR-2 の PR の最終 head の PR checks（`Shared Rust crates` を含む）の green。CR-2 の充足の条件（§3.4） |
 | CR-2 の中間レビュー | §5.1。P2 が 1 件、P3 が 2 件で、いずれも直した。修正の後の独立受入れは行っていない |
-| 残 HOLD | [precheck] の2点：G-1 の B の上限近傍の publish（§7.1）、G-2 の実 worker の正例（§7.2）。ユーザーの確認を待つ。G-3 と、G-1／G-2／G-4 の試験を足した部分は、CR-2 の merge で解除する。G-4 の Scene 8 は CP-1 の受入れに移す（§7.3） |
+| 残 HOLD | [precheck] の2点：G-1 の B の上限近傍の publish（§7.1）、G-2 の実 worker の正例のうち製品形（§7.2。decision と envelope の形は CQ-MEM の試験で充足）。ユーザーの確認を待つ。G-3 と、G-1／G-2／G-4 の試験を足した部分は、CR-2 の merge で解除する。G-2 の decision と envelope の形は、CQ-MEM の merge で解除する。G-4 の Scene 8 は CP-1 の受入れに移す（§7.3） |
 | 観測した制約 | SQL steps、records、版の衝突、Entity 12（§2.11）。受け入れるかどうかの確認を待つ。records の数え方と版の衝突は CQ-AVAIL（§2.12）が委任の内で直した |
 | CQ-AVAIL | 本変更の PR の hosted checks の green。hosted の 3 OS での Q512 の call（新しい fixture。変更前の base は ubuntu 18.7 ms、macos 15.3 ms、windows 26.3 ms）は、最初の run で観測して §4.1 に足す。50 場面の主人公級が 512 に届くことは、上限の値の見直し（proposal/7）に残る（§2.12）。Full workload allocation の `worker.q512` の再導出（DR-CQA-4）は dataset の変更なので、独立 review の対象にする |
+| CQ-MEM の中間レビュー | §5.2。P2 が 1 件、P3 が 5 件で、いずれも直した。修正の後の独立受入れは行っていない |
+| CQ-MEM の hosted checks | CQ-MEM の PR の最終 head の PR checks（`Shared Rust crates` を含む）と、opt-in の lifecycle lane（`workflow_dispatch`。新しい 4 case を含む）の green。CQ-MEM の充足の条件（§3.5） |

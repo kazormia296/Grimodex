@@ -49,7 +49,7 @@ use super::nir1_chronicle_index::read_identity::ReadIdentity;
 #[cfg(test)]
 use super::nir1_entity_relation::evaluate_nir1_entity_relation_disclosure;
 use super::nir1_entity_relation::{
-    evaluate_nir1_entity_relation_disclosure_shared, Nir1EntityRelationDisclosure,
+    evaluate_nir1_entity_relation_disclosure_for_graph, Nir1EntityRelationDisclosure,
     Nir1EntityRelationDisclosureRead, Nir1ProjectReads,
 };
 use super::nir1_entity_relation_index::{
@@ -1964,28 +1964,29 @@ fn query_in_snapshot(
                     let qualified = if UNSHARED_PROJECT_READS.get() {
                         // The Revision reading the project-level state itself:
                         // the oracle the shared evaluation is compared with.
-                        evaluate_nir1_entity_relation_disclosure(
+                        evaluate_nir1_entity_relation_disclosure_for_graph(
                             conn,
                             &request.project_id,
                             &revision_id,
                             &request.query_scene_id,
+                            None,
                         )
                     } else {
-                        evaluate_nir1_entity_relation_disclosure_shared(
+                        evaluate_nir1_entity_relation_disclosure_for_graph(
                             conn,
                             &request.project_id,
                             &revision_id,
                             &request.query_scene_id,
-                            reads,
+                            Some(reads),
                         )
                     };
                     #[cfg(not(test))]
-                    let qualified = evaluate_nir1_entity_relation_disclosure_shared(
+                    let qualified = evaluate_nir1_entity_relation_disclosure_for_graph(
                         conn,
                         &request.project_id,
                         &revision_id,
                         &request.query_scene_id,
-                        reads,
+                        Some(reads),
                     );
                     #[cfg(feature = "nir1-material-diagnostics")]
                     record_observed_stage(_observation, ObservedStage::A3Evaluation, a3_started);

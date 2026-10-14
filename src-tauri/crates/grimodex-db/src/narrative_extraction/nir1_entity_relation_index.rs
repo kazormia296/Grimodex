@@ -646,7 +646,7 @@ pub(crate) fn read_eligibility_source_with_control(
     })
 }
 
-fn read_eligibility_source_with_control_and_scratch(
+pub(crate) fn read_eligibility_source_with_control_and_scratch(
     conn: &Connection,
     project: &str,
     control: &mut dyn GraphWorkControl,
@@ -765,6 +765,34 @@ fn read_eligibility_source_bounded(
 }
 
 type ScratchScopeCallback<'a> = &'a mut dyn FnMut(&mut dyn FnMut()) -> bool;
+
+/// Run `work` in the worker's scratch scope S when there is one, and directly
+/// otherwise (the ordinary allocator). Rust allocations made by `work` land in S
+/// and must be freed before the worker seals S; SQLite's own allocations stay in
+/// Q either way. S memory cannot be reallocated from outside a scope, so a
+/// container whose buffer is in S may only grow inside one.
+///
+/// The owner checks of the `control` argument run outside the scope, in Q. The
+/// SQLite progress handler and `check_active_work` (which the A2 reader calls
+/// while it parses) still invoke the installed owner's callbacks inside it; on
+/// the success path they leave nothing allocated.
+fn in_scratch<T>(
+    scratch_scope: &mut Option<ScratchScopeCallback<'_>>,
+    work: impl FnOnce() -> T,
+) -> Result<T> {
+    let Some(scratch_scope) = scratch_scope.as_deref_mut() else {
+        return Ok(work());
+    };
+    let mut work = Some(work);
+    let mut result = None;
+    let mut run = || {
+        if let Some(work) = work.take() {
+            result = Some(work());
+        }
+    };
+    ensure!(scratch_scope(&mut run), "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED");
+    result.ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCRATCH_SCOPE_SKIPPED"))
+}
 
 fn read_eligibility_source_counted(
     conn: &Connection,
@@ -908,17 +936,29 @@ fn read_eligibility_source_counted(
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
-            let Some(input_stats) =
-                read_revision_input_stats(conn, project, &revision_id, admission, capacity)?
+            // Each step below reads one Revision's documents. In the worker the
+            // Rust side of that work is allocated in S. The statements, the A2
+            // reader's payload and envelope, and the qualified Revision are
+            // freed when their scope ends, so Q keeps what only SQLite may use.
+            // The roster is the exception: its buffer and its row strings are
+            // allocated in S by the first push and stay there until the source
+            // is dropped (a roster of more than 128 rows moves to Q when the
+            // sort merges it), which happens before the worker seals S. The
+            // roster may only grow inside a scope. Owner checks of `control`
+            // run between the steps, in Q.
+            let Some(input_stats) = in_scratch(&mut scratch_scope, || {
+                read_revision_input_stats(conn, project, &revision_id, admission, capacity)
+            })??
             else {
                 continue;
             };
             check_graph_work(&mut control, GraphWorkStage::A2)?;
-            if !preflight_revision_source_basis(conn, project, &revision_id, admission)? {
-                continue;
-            }
-            let Some(live_bytes) =
-                preflight_live_source_lengths(conn, project, &revision_id, admission)?
+            let Some(live_bytes) = in_scratch(&mut scratch_scope, || -> Result<Option<usize>> {
+                if !preflight_revision_source_basis(conn, project, &revision_id, admission)? {
+                    return Ok(None);
+                }
+                preflight_live_source_lengths(conn, project, &revision_id, admission)
+            })??
             else {
                 continue;
             };
@@ -930,43 +970,54 @@ fn read_eligibility_source_counted(
                 }
             }
             check_graph_work(&mut control, GraphWorkStage::A2)?;
-            let Some((revision, decision_id)) =
-                read_nir1_entity_relation_revision_current_for_graph_index(
-                    conn,
-                    project,
-                    &revision_id,
-                )?
+            let Some(appended) = in_scratch(&mut scratch_scope, || -> Result<Option<usize>> {
+                let Some((revision, decision_id)) =
+                    read_nir1_entity_relation_revision_current_for_graph_index(
+                        conn,
+                        project,
+                        &revision_id,
+                    )?
+                else {
+                    return Ok(None);
+                };
+                if let Some(admission) = admission {
+                    admission.ensure_current(conn)?;
+                }
+                let material_records = revision
+                    .bundle
+                    .entities
+                    .len()
+                    .checked_add(revision.bundle.relations.len())
+                    .and_then(|count| count.checked_add(revision.material_basis.evidence_set.len()))
+                    .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_REVISION_RECORD_LIMIT"))?;
+                ensure!(
+                    material_records == input_stats.material_records,
+                    "NIR1_GRAPH_ROSTER_RECORD_MISMATCH"
+                );
+                admit_capacity(
+                    &mut capacity.qualified_revisions,
+                    1,
+                    nir1_capacity::REVISION_LIMIT,
+                    "qualified-revisions",
+                )?;
+                admit_capacity(
+                    &mut capacity.materials,
+                    material_records,
+                    nir1_capacity::MATERIAL_LIMIT,
+                    "qualified-materials",
+                )?;
+                admit_roster_bytes(capacity, &revision, &decision_id)?;
+                append_revision_roster(&mut roster, &revision, &decision_id);
+                Ok(Some(material_records))
+            })??
             else {
                 continue;
             };
-            if let Some(admission) = admission {
-                admission.ensure_current(conn)?;
+            // One owner check per appended record, as the append used to make
+            // between records; they cannot run inside the scope.
+            for _ in 0..appended {
+                check_graph_work(&mut control, GraphWorkStage::Material)?;
             }
-            let material_records = revision
-                .bundle
-                .entities
-                .len()
-                .checked_add(revision.bundle.relations.len())
-                .and_then(|count| count.checked_add(revision.material_basis.evidence_set.len()))
-                .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_REVISION_RECORD_LIMIT"))?;
-            ensure!(
-                material_records == input_stats.material_records,
-                "NIR1_GRAPH_ROSTER_RECORD_MISMATCH"
-            );
-            admit_capacity(
-                &mut capacity.qualified_revisions,
-                1,
-                nir1_capacity::REVISION_LIMIT,
-                "qualified-revisions",
-            )?;
-            admit_capacity(
-                &mut capacity.materials,
-                material_records,
-                nir1_capacity::MATERIAL_LIMIT,
-                "qualified-materials",
-            )?;
-            admit_roster_bytes(capacity, &revision, &decision_id)?;
-            append_revision_roster(&mut roster, &revision, &decision_id, &mut control)?;
             if let Some(admission) = admission {
                 admission.ensure_current(conn)?;
             }
@@ -998,17 +1049,17 @@ fn read_revision_input_stats(
     // payload or walking its material arrays.
     let lengths: Option<(i64, i64, i64)> = conn
         .query_row(
-            "SELECT COALESCE(length(CAST(revision.payload_json AS BLOB)), 0),
-                    COALESCE(length(CAST(revision.reconciliation_envelope_json AS BLOB)), 0),
-                    COALESCE(length(CAST(proposal_set.id AS BLOB)), 0) +
-                    COALESCE(length(CAST(proposal_set.run_id AS BLOB)), 0) +
-                    COALESCE(length(CAST(proposal.id AS BLOB)), 0) +
-                    COALESCE(length(CAST(proposal.current_revision_id AS BLOB)), 0) +
-                    COALESCE(length(CAST(proposal.status AS BLOB)), 0) +
-                    COALESCE(length(CAST(revision.origin_kind AS BLOB)), 0) +
-                    COALESCE(length(CAST(revision.reconciliation_envelope_digest AS BLOB)), 0) +
-                    COALESCE(length(CAST(revision.created_at AS BLOB)), 0) +
-                    COALESCE((SELECT SUM(COALESCE(length(CAST(d.id AS BLOB)), 0) + COALESCE(length(CAST(d.revision_id AS BLOB)), 0) + COALESCE(length(CAST(d.decision AS BLOB)), 0) + COALESCE(length(CAST(d.decision_json AS BLOB)), 0) + COALESCE(length(CAST(d.created_at AS BLOB)), 0) + COALESCE(length(CAST(d.created_by AS BLOB)), 0) + COALESCE(length(CAST(d.actor_kind AS BLOB)), 0) + COALESCE(length(CAST(d.actor_id AS BLOB)), 0) + COALESCE(length(CAST(d.authority_scope AS BLOB)), 0) + COALESCE(length(CAST(d.override_field_paths_json AS BLOB)), 0))
+            "SELECT COALESCE(octet_length(revision.payload_json), 0),
+                    COALESCE(octet_length(revision.reconciliation_envelope_json), 0),
+                    COALESCE(octet_length(proposal_set.id), 0) +
+                    COALESCE(octet_length(proposal_set.run_id), 0) +
+                    COALESCE(octet_length(proposal.id), 0) +
+                    COALESCE(octet_length(proposal.current_revision_id), 0) +
+                    COALESCE(octet_length(proposal.status), 0) +
+                    COALESCE(octet_length(revision.origin_kind), 0) +
+                    COALESCE(octet_length(revision.reconciliation_envelope_digest), 0) +
+                    COALESCE(octet_length(revision.created_at), 0) +
+                    COALESCE((SELECT SUM(COALESCE(octet_length(d.id), 0) + COALESCE(octet_length(d.revision_id), 0) + COALESCE(octet_length(d.decision), 0) + COALESCE(octet_length(d.decision_json), 0) + COALESCE(octet_length(d.created_at), 0) + COALESCE(octet_length(d.created_by), 0) + COALESCE(octet_length(d.actor_kind), 0) + COALESCE(octet_length(d.actor_id), 0) + COALESCE(octet_length(d.authority_scope), 0) + COALESCE(octet_length(d.override_field_paths_json), 0))
                         FROM narrative_proposal_decisions d WHERE d.proposal_id=proposal.id AND d.revision_id=revision.id), 0)
                FROM narrative_proposal_revisions revision
                JOIN narrative_proposals proposal
@@ -1185,10 +1236,9 @@ fn persisted_revision_components_within_limit(payload_bytes: usize, envelope_byt
 /// whose status is `approved` (`nir1_graph::candidates::verify_complete_source_index`)
 /// and has no size check of its own. This probe answers `true` whenever that
 /// status holds, so such a Revision always meets the component guard first.
-/// That is the logical scope only: SQLite may evaluate the JSON functions of
-/// that check before the status and current-revision filters, so the payload
-/// of a draft, a rejection or a non-current Revision can be parsed there too,
-/// and this guard does not bound that parse.
+/// Since CQ-MEM that check builds the set of approved, current Revisions first
+/// and reaches each one by its primary key, so the payload of a draft, a
+/// rejection or a non-current Revision is never passed to a JSON function there.
 fn revision_is_approved(conn: &Connection, revision_id: &str) -> Result<bool> {
     let approved: Option<bool> = conn
         .query_row(
@@ -1466,20 +1516,20 @@ fn preflight_live_source_lengths(
                     ELSE 0
                 END),
                 COALESCE(SUM(
-                    COALESCE(length(CAST(basis.source_key AS BLOB)), 0)
-                  + COALESCE(length(CAST(basis.revision_token AS BLOB)), 0)
-                  + COALESCE(length(CAST(entry.id AS BLOB)), 0)
-                  + COALESCE(length(CAST(entry.type AS BLOB)), 0)
-                  + COALESCE(length(CAST(entry.name AS BLOB)), 0)
-                  + COALESCE(length(CAST(entry.summary AS BLOB)), 0)
-                  + COALESCE(length(CAST(entry.updated_at AS BLOB)), 0)
-                  + COALESCE(length(CAST(relation.id AS BLOB)), 0)
-                  + COALESCE(length(CAST(relation.from_codex_id AS BLOB)), 0)
-                  + COALESCE(length(CAST(relation.to_codex_id AS BLOB)), 0)
-                  + COALESCE(length(CAST(relation.relation_type AS BLOB)), 0)
-                  + COALESCE(length(CAST(relation.directionality AS BLOB)), 0)
-                  + COALESCE(length(CAST(relation.version AS BLOB)), 0)
-                  + COALESCE(length(CAST(relation.updated_at AS BLOB)), 0)
+                    COALESCE(octet_length(basis.source_key), 0)
+                  + COALESCE(octet_length(basis.revision_token), 0)
+                  + COALESCE(octet_length(entry.id), 0)
+                  + COALESCE(octet_length(entry.type), 0)
+                  + COALESCE(octet_length(entry.name), 0)
+                  + COALESCE(octet_length(entry.summary), 0)
+                  + COALESCE(octet_length(entry.updated_at), 0)
+                  + COALESCE(octet_length(relation.id), 0)
+                  + COALESCE(octet_length(relation.from_codex_id), 0)
+                  + COALESCE(octet_length(relation.to_codex_id), 0)
+                  + COALESCE(octet_length(relation.relation_type), 0)
+                  + COALESCE(octet_length(relation.directionality), 0)
+                  + COALESCE(octet_length(relation.version), 0)
+                  + COALESCE(octet_length(relation.updated_at), 0)
                 ), 0)
            FROM narrative_revision_source_basis basis
            LEFT JOIN codex_entries entry
@@ -1622,14 +1672,14 @@ fn admit_roster_bytes(
     Ok(())
 }
 
+/// Append one Revision's roster rows. This only pushes; the owner checks that
+/// belong with it run in Q, after the scratch scope that calls this.
 fn append_revision_roster(
     roster: &mut Vec<GraphObjectRosterEntry>,
     revision: &Nir1EntityRelationRevision,
     decision_id: &str,
-    control: &mut Option<&mut dyn GraphWorkControl>,
-) -> Result<()> {
+) {
     for entity in &revision.bundle.entities {
-        check_graph_work(control, GraphWorkStage::Material)?;
         roster.push(GraphObjectRosterEntry {
             material_kind: "entity".to_owned(),
             material_id: entity.entity_id.clone(),
@@ -1640,7 +1690,6 @@ fn append_revision_roster(
         });
     }
     for relation in &revision.bundle.relations {
-        check_graph_work(control, GraphWorkStage::Material)?;
         roster.push(GraphObjectRosterEntry {
             material_kind: "relation".to_owned(),
             material_id: relation.edge_id.clone(),
@@ -1651,7 +1700,6 @@ fn append_revision_roster(
         });
     }
     for evidence in &revision.material_basis.evidence_set {
-        check_graph_work(control, GraphWorkStage::Material)?;
         roster.push(GraphObjectRosterEntry {
             material_kind: "evidence".to_owned(),
             material_id: evidence.evidence_ref.clone(),
@@ -1661,7 +1709,6 @@ fn append_revision_roster(
             source_token: evidence.revision_token.clone(),
         });
     }
-    Ok(())
 }
 
 /// Capacity-diagnostics-only binding read: production readers enter through
@@ -2159,7 +2206,9 @@ fn edges_match_source_with_control(
     control: &mut dyn GraphWorkControl,
     scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
 ) -> Result<bool> {
-    // Only tree nodes enter S; every borrowed key and token remains Q-owned.
+    // Only tree nodes enter S. Every key and token is borrowed and never grown
+    // here: the roster's are in S while it holds 128 rows or fewer and in Q after
+    // the sort has merged it; the edges' are in Q.
     let mut expected = BTreeMap::<&str, BTreeSet<&str>>::new();
     let project_key = source_key(project);
     let mut insert_project = || {

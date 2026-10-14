@@ -451,12 +451,12 @@ fn replay(fixture: &Fixture, seed: &str, query_scene: &str) -> Result<Replay> {
                             usize::MAX / 4,
                         )?;
                         out.a3_rows += a3.rows;
-                        match evaluate_nir1_entity_relation_disclosure_shared(
+                        match evaluate_nir1_entity_relation_disclosure_for_graph(
                             &conn,
                             PROJECT,
                             &revision,
                             query_scene,
-                            shared.as_ref().expect("loaded above"),
+                            shared.as_ref(),
                         )? {
                             Nir1EntityRelationDisclosureRead::Eligible(disclosure) => {
                                 out.eligible += 1;
@@ -1685,8 +1685,8 @@ fn a_broken_scope_authority_leaves_every_revision_unavailable_shared_or_not() ->
         assert_eq!(revisions.len(), 3);
         for revision in revisions {
             let own = evaluate_nir1_entity_relation_disclosure(conn, PROJECT, &revision, "nir1")?;
-            let shared = evaluate_nir1_entity_relation_disclosure_shared(
-                conn, PROJECT, &revision, "nir1", &shared,
+            let shared = evaluate_nir1_entity_relation_disclosure_for_graph(
+                conn, PROJECT, &revision, "nir1", Some(&shared),
             )?;
             match (own, shared) {
                 (

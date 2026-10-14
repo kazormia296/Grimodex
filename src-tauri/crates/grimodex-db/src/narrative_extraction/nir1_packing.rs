@@ -1253,7 +1253,12 @@ fn decision_binding(
     require_non_empty(decision.created_at(), "decision.createdAt")?;
     require_non_empty(decision.actor_kind(), "decision.actorKind")?;
     require_non_empty(decision.actor_id(), "decision.actorId")?;
-    let authority_scope = decision
+    // Packing binds and counts every Decision column, so it reads the Decision
+    // completely (`evaluate_nir1_entity_relation_disclosure`).
+    let detail = decision.detail().ok_or_else(|| {
+        anyhow::anyhow!("NIR-1 Native Decision was read without its free-form columns")
+    })?;
+    let authority_scope = detail
         .authority_scope()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("NIR-1 Native Decision authority scope is empty"))?;
@@ -1267,7 +1272,7 @@ fn decision_binding(
             && authority_scope == expected_scope,
         "NIR-1 Native Decision is not the exact current human approval"
     );
-    let override_field_paths: Value = serde_json::from_str(decision.override_field_paths_json())?;
+    let override_field_paths: Value = serde_json::from_str(detail.override_field_paths_json())?;
     ensure!(
         override_field_paths.is_array(),
         "NIR-1 Native Decision override paths are not an array"
@@ -1276,13 +1281,13 @@ fn decision_binding(
         id: decision.id().to_owned(),
         revision_id: decision.revision_id().to_owned(),
         decision: decision.decision().to_owned(),
-        decision_json: decision.decision_json().to_owned(),
+        decision_json: detail.decision_json().to_owned(),
         created_at: decision.created_at().to_owned(),
-        created_by: decision.created_by().to_owned(),
+        created_by: detail.created_by().to_owned(),
         actor_kind: decision.actor_kind().to_owned(),
         actor_id: decision.actor_id().to_owned(),
         authority_scope: authority_scope.to_owned(),
-        override_field_paths_json: decision.override_field_paths_json().to_owned(),
+        override_field_paths_json: detail.override_field_paths_json().to_owned(),
     })
 }
 

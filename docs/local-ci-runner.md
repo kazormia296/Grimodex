@@ -399,10 +399,10 @@ unchanged. The profile is not in the local CI registry and joins no Full part:
 `scripts/ci-pause.test.mjs` pins the profile set, the twelve-step worker job and the
 absence from `registry.profiles`.
 
-This branch runs the 17 ignored cases that no other lane names, in this order. Two
+This branch runs the 21 ignored cases that no other lane names, in this order. Two
 are in-process readers that start no worker: `production_query_has_an_available_100ms_success_path`
-and `ordinary_reader_registers_and_queries_fixed_q2_fixture`. Fifteen drive a real
-worker child. Eight use the normal worker build:
+and `ordinary_reader_registers_and_queries_fixed_q2_fixture`. Nineteen drive a real
+worker child. Twelve use the normal worker build:
 `native_worker_exits_after_owner_process_dies_after_request_admission`,
 `native_worker_quarantines_when_cleanup_proof_is_unobserved`,
 `native_worker_quarantine_blocks_w1_restore_and_retains_shared_lease`,
@@ -412,8 +412,19 @@ worker child. Eight use the normal worker build:
 `cq_avail::native_worker_answers_a_project_reviewed_scene_by_scene` (it builds its own
 novel-shaped project in the test and needs no preseed) and
 `native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph`, the
-last on a `Q512/R1/E144/registry33` fixture that this mode alone builds. Seven use the
-seam-enabled build: `native_worker_handles_backpressured_request_writes`,
+last on a `Q512/R1/E144/registry33` fixture that this mode alone builds, and the four
+per-Revision preflight cases
+`native_worker_uses_a_candidate_at_exactly_the_per_revision_preflight_limit`,
+`native_worker_uses_a_candidate_whose_envelope_fills_the_per_revision_preflight_limit`,
+`native_worker_refuses_the_whole_graph_when_a_candidate_is_one_byte_over` and
+`native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over`. Each
+of those four builds its own fixture inside the test, so the runner's Q2 copy is only its
+shared argument; they run a candidate of exactly 2,097,152 B and one of 2,097,153 B, each
+with the bytes in the approval or in the stored envelope, on the real worker and its
+fixed allocator. The two refusals also require the recorded reason of the whole-query
+refusal (`query-worker-work-other-pre-cleanup-work-failed-other`), so an exhausted
+arena (`sqlite-nomem`) does not pass for a refused preflight.
+Seven use the seam-enabled build: `native_worker_handles_backpressured_request_writes`,
 `native_worker_reaps_live_committed_child_after_result_lease`,
 `native_worker_quarantines_result_lease_when_exit_proof_transfer_is_unavailable`,
 `native_worker_quarantines_result_lease_when_reader_join_fails`,
@@ -440,7 +451,7 @@ observes SIGKILL. The kernel aborts a pipe core dump when the limit is 1 (kernel
 whose hard limit is already 0 makes `prlimit` fail with EPERM, so the lane fails closed
 before any case runs; the hosted `ubuntu-latest` runner does not hit this.
 
-A lane pass proves only these 17 cases at that candidate on one Linux runner. It is not
+A lane pass proves only these 21 cases at that candidate on one Linux runner. It is not
 macOS/Windows coverage (several cases use a subreaper, SIGSTOP, `/proc` or SIGABRT),
 universal lifecycle acceptance, B/Full prerequisites or merge readiness, and it never
 stands in for the three-OS lanes above. If a case reaches its timeout, `timeout`
