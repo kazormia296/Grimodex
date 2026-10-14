@@ -3885,6 +3885,12 @@ pub const NIR1_GENERATION_SQLITE_BUSY_LIMIT: Duration = Duration::from_millis(10
 /// Upper bound for one bounded generation operation, measured from its start
 /// and including the connection mutex wait.
 pub const NIR1_GENERATION_OPERATION_LIMIT: Duration = Duration::from_millis(250);
+/// Per-operation limit of a budget made with `for_untimed_test`, and of the
+/// Native recovery sweep in test builds: a test that does not examine the
+/// per-operation limit runs under it. It exists only in test builds and with
+/// the `workspace-maintenance-test-support` feature, never in a release build.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub const NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT: Duration = Duration::from_secs(10);
 
 /// True only while the caller is still inside its admission. It must read
 /// atomics only: it runs from the SQLite progress hook while the connection
@@ -3905,7 +3911,9 @@ impl Nir1SqlLimits {
         operation: NIR1_GENERATION_OPERATION_LIMIT,
     };
 
-    /// Tests may only tighten the plan defaults, never relax them.
+    /// Tests may only tighten the plan defaults, never relax them. The one
+    /// exception is a test that does not examine the per-operation limit: it
+    /// widens that limit alone through `untimed_for_test`.
     #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
     fn tightened(mutex: Duration, busy: Duration, operation: Duration) -> Self {
         assert!(
@@ -3918,6 +3926,18 @@ impl Nir1SqlLimits {
             mutex,
             busy,
             operation,
+        }
+    }
+
+    /// The per-operation limit widened to the untimed-test limit; the mutex
+    /// and busy limits are unchanged.
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    fn untimed_for_test(self) -> Self {
+        Self {
+            operation: self
+                .operation
+                .max(NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT),
+            ..self
         }
     }
 
@@ -3976,6 +3996,20 @@ impl Nir1AdmissionSqlBudget {
     #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
     pub fn tightened(mut self, mutex: Duration, busy: Duration, operation: Duration) -> Self {
         self.limits = Nir1SqlLimits::tightened(mutex, busy, operation);
+        self
+    }
+
+    /// For a test that does not examine the per-operation limit: widens that
+    /// limit alone, to [`NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT`], so a
+    /// loaded CI runner cannot turn an unrelated assertion into `TimedOut` by
+    /// overrunning the plan's 250 ms. The mutex and busy limits stay the
+    /// plan's, so a test of either still sees it end the wait. Only a test of
+    /// the per-operation limit itself, or of which limit takes effect first (a
+    /// mutex wait that must end before the plan's operation limit would),
+    /// keeps the plan's budget and does not call this.
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    pub fn for_untimed_test(mut self) -> Self {
+        self.limits = self.limits.untimed_for_test();
         self
     }
 
@@ -4041,6 +4075,14 @@ impl Nir1PinnedSqlBudget {
     #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
     pub fn tightened(mut self, mutex: Duration, busy: Duration, operation: Duration) -> Self {
         self.limits = Nir1SqlLimits::tightened(mutex, busy, operation);
+        self
+    }
+
+    /// For a test that does not examine the per-operation limit; see
+    /// [`Nir1AdmissionSqlBudget::for_untimed_test`].
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    pub fn for_untimed_test(mut self) -> Self {
+        self.limits = self.limits.untimed_for_test();
         self
     }
 

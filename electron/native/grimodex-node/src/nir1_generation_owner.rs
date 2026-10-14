@@ -395,7 +395,10 @@ impl OwnerCore {
     }
 
     fn pinned_budget(&self) -> Nir1PinnedSqlBudget {
-        Nir1PinnedSqlBudget::new()
+        let budget = Nir1PinnedSqlBudget::new();
+        #[cfg(test)]
+        let budget = self.control.hooks.decorate_pinned(budget);
+        budget
     }
 
     fn route_is_current(&self) -> bool {
@@ -1186,6 +1189,10 @@ pub(crate) mod test_hooks {
         probes: Mutex<Vec<(Nir1OwnerProbePoint, Probe)>>,
         failpoints: Mutex<Vec<(&'static str, Nir1GenerationFailpoint)>>,
         failures: Mutex<Vec<(&'static str, Nir1StoreFailure)>>,
+        /// Set by a test of the per-operation limit, or of which limit takes
+        /// effect first: the owner keeps the plan's per-operation limit
+        /// instead of the widened one for tests that do not examine it.
+        examines_time: AtomicBool,
     }
 
     impl Nir1OwnerTestHooks {
@@ -1202,6 +1209,16 @@ pub(crate) mod test_hooks {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push((stage, failpoint));
+        }
+
+        /// The test examines the per-operation limit, or which limit takes
+        /// effect first: this owner's writers run under the plan's 250 ms.
+        /// Without this call their budgets are made `for_untimed_test`, so a
+        /// loaded CI runner cannot turn an unrelated assertion into `TimedOut`
+        /// by overrunning that limit. A test of the mutex or busy limit does
+        /// not need it: those limits are the plan's either way.
+        pub(crate) fn examine_time(&self) {
+            self.examines_time.store(true, Ordering::Release);
         }
 
         pub(crate) fn failures(&self) -> Vec<(&'static str, Nir1StoreFailure)> {
@@ -1237,6 +1254,11 @@ pub(crate) mod test_hooks {
             stage: &'static str,
             budget: Nir1AdmissionSqlBudget,
         ) -> Nir1AdmissionSqlBudget {
+            let budget = if self.examines_time.load(Ordering::Acquire) {
+                budget
+            } else {
+                budget.for_untimed_test()
+            };
             let mut failpoints = self
                 .failpoints
                 .lock()
@@ -1244,6 +1266,14 @@ pub(crate) mod test_hooks {
             match failpoints.iter().position(|(armed, _)| *armed == stage) {
                 Some(index) => budget.with_failpoint(failpoints.remove(index).1),
                 None => budget,
+            }
+        }
+
+        pub(super) fn decorate_pinned(&self, budget: Nir1PinnedSqlBudget) -> Nir1PinnedSqlBudget {
+            if self.examines_time.load(Ordering::Acquire) {
+                budget
+            } else {
+                budget.for_untimed_test()
             }
         }
     }
