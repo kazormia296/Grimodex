@@ -91,6 +91,7 @@ pub(crate) use scene_scope::ensure_scene_scope_binding_in_tx;
 pub(crate) use scene_scope::ensure_scope_registry_in_tx;
 pub(crate) use scene_scope::refresh_scene_scope_source_token_for_scene_in_tx;
 pub(crate) use scene_scope::refresh_scene_scope_source_token_in_tx;
+pub(crate) use scene_scope::refresh_scene_scope_source_tokens_in_tx;
 #[cfg(test)]
 pub(crate) use scene_scope::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT;
 pub(crate) use scene_scope::{
