@@ -14,6 +14,8 @@
 
 決定日は 2026-10-12（JST）。ただし U7 は 2026-10-13（JST）。integrator セッション（`3754f9a7-620d-4e21-ad37-3096691a96be`）の会話記録にあるユーザー自身の回答を、G0 で照合して逐語で転記した。U7 は同じセッションの会話記録にあるユーザー自身のメッセージを、merge 規則の変更時（2026-10-13）に逐語で転記した。選択肢を選んだ回答は、その選択肢の label を逐語とする。問いは要旨である。
 
+SB-1〜SB-5 は、Session B の前にユーザーが出した決定と選択である（SB-1 は 2026-10-13、SB-2〜SB-5 は 2026-10-14、JST）。同じセッションの会話記録にあるユーザー自身のメッセージと構造化質問への回答を、2026-10-14 に照合して逐語で転記した（時刻は会話記録の timestamp）。どれも契約の確認文ではない。契約は、書き直した draft に対して、ユーザーが逐語の確認文を打ったときだけ確認される。契約の draft によっては、同じ決定を別の名前（K3 の /2 と K2 の /3 の UB1・UB2、K5 の /3 の UB-K5）で引く。
+
 | ID | 時刻（JST） | 問い（要旨） | ユーザーの回答（逐語） | 計画での扱い |
 |---|---|---|---|---|
 | U1 | 17:22 | 2026-09-25/26 に Codex で回答された off-master 承認を master の確認台帳へ記録し、承認済み draft を保全してよいか | 「使わずに計画し直す」 | 9/25-26 の承認と WIP は参照扱いにとどめる。契約は最新 master 前提で、新しい draftRef（K1〜K6）として起案し直す。移植するコードは新しい候補として再試験・再レビューし、旧 review 証跡は流用しない |
@@ -26,6 +28,11 @@
 | U5 | 17:28 | CI 保守（ProduceSkia allowance 10-17、pnpm audit 例外 GHSA-ch52-4w7c-c8xp 10-18、Dependabot 10件）をどう進めるか | 「この計画では扱わない」 | CI 保守はこの計画では扱わない |
 | U3 変更 | 23:05 | Ralph（Claude Code backend）の新しい起動が、auto mode の安全判定（Create Unsafe Agents。Ralph が子の Claude Code を `--dangerously-skip-permissions` で動かすため）で拒否された。今後どうするか | 「Workflow subagent で続ける（推奨）」 | 以後の実装は Ralph ではなく Workflow subagent で行う（builder → Fable による reviewer → fix の順。§5）。Ralph で起動済みの最初の3レーン（CR-1、DT-1、HP-1）の記述は記録として残す |
 | U7 | 10-13 22:22 | 問いへの回答ではない。CR-1 の Full 待ちなどの途中経過の報告の後に、ユーザーが出した merge 条件の変更の指示 | 「FullCIに時間が掛かり、Full中の並列PRのmergeによるbase stale 問題などが発生している。merge条件からCanonicalFullの合格を外す。「merge の直前に base が master と完全に一致していること」という条件も、一緒に緩める。たとえば「rebase して Quick が通れば可」にします。masterのfullで赤が出た場合、優先して対応するなどの運用でカバーする。ReleaseではFullCIのままにする。」 | 通常の PR の merge 条件から canonical Full を外し、rebase 済みの Quick と同じ head の `ci.yml` checks で merge する。merge 直前の base の完全一致も要求しない。merge 後に master の head で hosted Full を走らせ、赤は優先して直す。release PR と release tag は従来どおり Full を要求する（[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)。§6） |
+| SB-1 | 10-13 19:40 | 問いへの回答ではない。K3 と K5 の書き直しの提案（renderer が乗っ取られうる前提は保ち、守る場所を「平文を外へ出す経路」に絞る。外へ出ない機能は制限モードでも開く〔K3 の O-2〕。local 送信の同意は送信先ごとに1回〔K5 の B〕）への返答 | 「それで行きましょう。K5はCで。ローカルLLMを使う人は基本的にリテラシーが高いと思うので釈迦に説法でしょう。」 | K3 は O-2、K5 は C（Main の同意ダイアログを置かず、利用者の AI 使用ポリシーと接続先の設定を同意とみなす）で書き直す。乗っ取られた renderer が設定を変えて送信を始めうることなどは残余として開示する。確認は、書き直した版（K3 の /2、K5 の /3 など）に対して逐語の確認文で行う |
+| SB-2 | 10-14 04:06 | 問いへの回答ではない。K3 の /2 のレビューが、Web Editor の handoff の取込みを根拠に防御の追加を求めていたときの、ユーザーの指示 | 「web editorは廃止し、再公開の予定もないのでhandoffの考慮は不要です」 | Web Editor の handoff の取込みと、Web Editor を前提にした脅威・同意の議論は、K2〜K6 の契約と設計の考慮の対象外とする。製品からの取込み経路の削除は、別に依頼されたときだけ行う |
+| SB-3 | 10-14 10:02 | 場面の本文を保存するたびに承認済みの型付き Revision がすべて失効し、執筆中は Graph が実質使えない（X1）。確認済みの契約は「本文・題名・順序の更新で旧 Revision を失効させる」と書くが、どの Revision かは書かず、L9 と post-B は本文の保存の後も履歴が続くことを求める。どう扱うか（選択肢は「本文では失効させない (推奨)」「依存するものだけ失効」「今のまま」） | 「依存するものだけ失効」 | 編集した場面の Scope の解決に依存する Revision だけを失効させる（L5 の `nir1-scope-dependency-delta/1` と同じ投影型の考え方）。新しい draftRef（`nir1-scene-scope-projection-proposal/1`）を起案して確認を求める。確認文が要らない委任の範囲の修正（X1-1。DR-X1-1）は先に進める |
+| SB-4 | 10-14 10:02 | 50場面・場面ごとに review した現実の形では、主人公は約40件の Revision に入り、値を変えない最適化の後でも records 約900（上限512）、steps 約21万（上限10万）が要る。時間は最大 37.7 ms で 100 ms に収まる。資源の上限をどう進めるか（選択肢は「実測から決め直す (推奨)」「review の粒度を見直す」「今の値のまま」） | 「実測から決め直す (推奨)」 | 委任の範囲の最適化と数え方の修正（CQ-OPT、B-GUARD、CQ-AVAIL、CQ-MEM）の後に、現実の形の fixture で測り直す。その実測から records と steps の値、worker のメモリ（RB-2）と Revision の大きさの数え方（RB-1）を見直す資源契約の新しい版（proposal/7）を起案して確認を求める。100 ms の時間の上限は防御として残す |
+| SB-5 | 10-14 10:02 | 主人公級の人物を seed にすると、2 hop で Entity が 12 を超えることが多い。確認済みの契約は「超えたら Graph 全体を出さない」。超えたときの挙動をどうするか（選択肢は「上限を上げる (推奨)」「決定的に打ち切る」「今のまま」） | 「上限を上げる (推奨)」 | 値は proposal/7 で実測から決める。それでも超えたときは、今どおり Graph 全体を出さない（部分的な Graph は出さない） |
 
 計画は 2026-10-12 21:51（JST）に承認された。U3 の「1」が指す選択肢の提示文は「#610 型の委任（worker/owner/終了処理/lifecycle の技術判断を作業記録に残して進める）を NIR-1 残レーンへ広げ、表記を 100 ms／aggregate cap なしへ更新する。新しい送信先・保存範囲・閾値緩和・製品公開・新しい契約は従来どおり確認する。AGENTS/iron-laws を更新する PR が必要。」である。表記の扱いは、承認済みの計画に従い、確認台帳の現行閾値と Gold への参照に置き換える。判断の記録先は §3.2 の形式に従う。提示文はユーザーの発言ではなく、選ばれた選択肢の範囲を示す記録として残す。
 
@@ -88,6 +95,18 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 - CP-2a: C-query の製品 owner、pre-warm、BUSY 時の扱い、env の方針。
 - lifecycle の typed seam（DT-1、CB-2、CP-2a のうち最初に merge するものが導入する）。
 - B-ROUTE: C-product の前提として、B の build と publish を製品の maintenance 経路に配線する（起動は PUB-G まで閉じる）。
+- CQ-OPT（#657）: C-query の SQL の表の存在確認と relation bytes の読取を軽くし、steps を減らす。上限の値は変えない。
+- B-GUARD（#660）: B の whole-project build で、承認されていない Revision は成分の大きさに関わらず除いて build を続け、承認済みで成分を超える Revision だけを typed に拒否する。whole-set の数え方と数値は変えない。
+- X1-1（DR-X1-1）: project の Scope authority から tree の世代を外し、生きた Scene を含む folder の構造の変更で配下の Scene の Scope 世代を進める（ADR009 と NIR-0 C2B への整合）。
+- CQ-AVAIL（DR-CQA-1〜3）: Graph の node の同一性から Scope を外し（本当の版の矛盾だけを拒否）、理由を型付きにし、空の Graph を worker でも返し、project 単位の読取を query で1回だけ読んで1回だけ数える。上限の値は変えない。
+- CQ-MEM（DR-CQM-1）: C-query の worker の registration を S の領域で行い、未承認や非 current の Revision の JSON を解析しないようにし、query の一時的な複製を減らす。Q と S の値は変えない。
+
+
+### 3.3. レーンの判断記録の置き場所
+
+各レーンの判断記録（§3.2 の行と、その根拠を書いた decisions 文書）は、追跡される [nir1-lane-decisions](nir1-lane-decisions/README.md) に置く。gitignore の対象（`.ralph/` など）や session の一時領域（/tmp）だけに置かない。PR 本文への転記は従来どおり行う。
+
+DOC-REC（2026-10-14）で、それまで worktree の `.ralph/agent/decisions.md` にあった記録（DT-1、DT-2、DT-3、CR-1、HP-1、CP-1、B-ROUTE）と、integrator の作業領域にあった記録（CP-2a、X1-1、CQ-AVAIL、CQ-MEM）をここに置いた。worktree の片付けで消えた記録は会話記録から復元したもので、ファイルごとの根拠と確からしさは同じ場所の `PROVENANCE.md` に書いた。復元した記録は、当時の判断の記録として読む。後から本文を直さない。
 
 ## 4. レーン表
 
@@ -173,8 +192,26 @@ U5（計画外）への依存: M0（CI 保守。期限と Dependabot への対�
 | `claude-nir1-spike` | `claude/nir1-spike` | `a153743b` | SPIKE S1〜S6（merge しない） |
 | `claude-nir1-contracts` | `claude/nir1-contracts` | `a153743b` | 契約 K1〜K6 の起案（merge しない branch で SHA を固定） |
 | `claude-nir1-crrec` | `claude/nir1-crrec` | `dabbed14`（`origin/master`） | CR-REC（受入れ台帳と HOLD の解除。docs だけ） |
+| `claude-nir1-cp2a` | `claude/nir1-cp2a` | `e405e80d`（`claude/nir1-dt2`）に CP-1 を cherry-pick | CP-2a |
+| `claude-merge-gate` | `claude/merge-gate-quick` | `dabbed14`（`origin/master`） | U7 の merge 規則（#654） |
+| `claude-nir1-cr2` | `claude/nir1-cr2` | `fbdc8588`（`origin/claude/nir1-cres`） | CR-2（C-resource の残る境界の試験） |
+| `claude-ci-pin` | `claude/ci-pin-c2zc-base` | `75074118`（`origin/master`） | CI の C2-ZC の base の固定（#651） |
+| `claude-flaky-sampler` | `claude/flaky-runtime-sampler-pid` | `8ff9d559`（`origin/master`） | runtime-perf の pid の flake（#652） |
+| `claude-nir1-cqopt` | `claude/nir1-cqopt` | `8ff9d559`（`origin/master`） | CQ-OPT（#657） |
+| `claude-journey-create` | `claude/journey-idempotent-create` | `532fd927`（`origin/master`） | journey の作成の冪等化（#653） |
+| `claude-flaky-x` | `claude/flaky-x` | `254553a8`（`origin/master`） | 不安定な試験3種（#658） |
+| `claude-flaky-y` | `claude/flaky-y` | `254553a8`（`origin/master`） | 回復の試験の期限（#659） |
+| `claude-nir1-bguard` | `claude/nir1-bguard` | `f9680f07`（`origin/master`） | B-GUARD（#660） |
+| `claude-nir1-x1a` | `claude/nir1-x1a` | `826b3c97`（`origin/master`） | X1-1（DR-X1-1） |
+| `claude-nir1-cqavail` | `claude/nir1-cqavail` | `92f9badd`（`origin/master`） | CQ-AVAIL（DR-CQA-1〜3） |
+| `claude-nir1-cqmem` | `claude/nir1-cqmem` | `92f9badd`（`origin/master`）に B-GUARD を cherry-pick | CQ-MEM（DR-CQM-1） |
+| `claude-nir1-docrec` | `claude/nir1-docrec` | `7ec6a400`（`origin/master`） | DOC-REC（ユーザー決定の転記、worktree 台帳、判断記録の保全。docs だけ） |
 
 `origin/master` の基点はいずれも `a153743b3f672b7274bdd748f15ef9c216dc9961`（#629）。`claude-nir1-dt2` は 2026-10-12 23:17 JST に、`claude/nir1-dt1` の DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-dt3` は 2026-10-12 23:34 JST に、同じ DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-cp1` は 2026-10-13 00:11 JST に、`claude/nir1-cres` の CR-1b commit `0e041537e8c56c43be38afea490c26857bb488a7` から作った。`claude-nir1-broute` は 2026-10-13 00:47 JST に `origin/master` の `a153743b` から作った（SPIKE S1 で、製品に B の sealed binding を publish する経路が無いことが分かったため、B-ROUTE レーンを追加した）。`claude-nir1-crrec` は 2026-10-13 22:07 JST に `origin/master` の `dabbed14711561693b0a86de0241873a9beafa04`（#649）から作り、CR-1 の merge の後に、その squash commit `750741183cf4d75ccf18b3904a5751b762284bda`（#636）へ載せ替えた。作成時刻は各 branch の reflog（`git reflog show --date=iso <branch>`）の作成記録で確かめた。以後に作る worktree は、作成時に本表へ追記する。merge 済みのレーンの worktree は、この計画で作ったものに限って片付ける。
+
+`claude-nir1-crrec` より後の行は、DOC-REC（2026-10-14）でまとめて追記した。作成時刻（JST）は各 branch の reflog の作成記録で確かめた：`claude/nir1-cp2a` 10-13 22:13、`claude/merge-gate-quick` 22:27、`claude/nir1-cr2` 23:03、`claude/ci-pin-c2zc-base` 23:34、`claude/flaky-runtime-sampler-pid` 10-14 01:47、`claude/nir1-cqopt` 02:13、`claude/journey-idempotent-create` 02:23、`claude/flaky-x` と `claude/flaky-y` 04:34、`claude/nir1-bguard` 10:13、`claude/nir1-x1a` 12:20、`claude/nir1-cqavail` と `claude/nir1-cqmem` 12:36、`claude/nir1-docrec` 14:10。
+
+2026-10-14 に、merge 済みのレーンの worktree を片付けた。対象は、HEAD が merge 済みの PR の head と一致し、追跡されるファイルに未 commit の変更が無いものに限った。12:25 に `claude-ci-pin`、`claude-flaky-sampler`、`claude-flaky-x`、`claude-journey-create`、`claude-merge-gate`、`claude-nir1-broute`、`claude-nir1-cp0`、`claude-nir1-cp1`、`claude-nir1-cp2a`、`claude-nir1-cr2`、`claude-nir1-cres`、`claude-nir1-crrec`、`claude-nir1-dt1`、`claude-nir1-dt2`、`claude-nir1-dt3`、`claude-nir1-hp` を、13:17 に `claude-flaky-y` と `claude-nir1-cqopt` を片付けた（時刻は会話記録の timestamp）。branch は残した。このとき、gitignore の対象（`.ralph/`）に置かれていた lane の判断記録（DT-1、DT-2、DT-3、CR-1、HP-1、CP-1、B-ROUTE の `.ralph/agent/decisions.md`）も一緒に消えた。消えた記録は会話記録から復元し、§3.3 の記録先に置いた。以後は、worktree を片付ける前に `git status --porcelain --ignored` で ignore 対象を確かめ、記録を退避してから消す。
 
 ## 8. 2026-09-25/26 の off-master 承認と WIP（不採用・参照のみ）
 
