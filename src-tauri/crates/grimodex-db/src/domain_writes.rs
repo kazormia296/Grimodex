@@ -2669,12 +2669,11 @@ fn select_tree_subtree(
         .collect()
 }
 
-fn live_scene_subtree_count(
-    conn: &rusqlite::Connection,
-    project_id: &str,
-    root_id: &str,
-) -> anyhow::Result<i64> {
-    let count = conn.query_row(
+/// Recursive walk over the subtree of `?1` in project `?2`. A Scene is live when
+/// neither it nor any node on the path from the root (inclusive) down to it is
+/// archived. Shared by the count and the id list so the two cannot disagree.
+macro_rules! live_scene_subtree_cte {
+    () => {
         "WITH RECURSIVE subtree(id, node_type, ancestor_live, path) AS (
            SELECT id,
                   node_type,
@@ -2691,14 +2690,59 @@ fn live_scene_subtree_count(
              JOIN subtree ON child.parent_id = subtree.id
             WHERE child.project_id = ?2
               AND instr(subtree.path, char(31) || child.id || char(31)) = 0
-         )
+         )"
+    };
+}
+
+fn live_scene_subtree_count(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    root_id: &str,
+) -> anyhow::Result<i64> {
+    let count = conn.query_row(
+        concat!(
+            live_scene_subtree_cte!(),
+            "
          SELECT COUNT(*)
            FROM subtree
-          WHERE node_type = 'scene' AND ancestor_live",
+          WHERE node_type = 'scene' AND ancestor_live"
+        ),
         params![root_id, project_id],
         |row| row.get::<_, i64>(0),
     )?;
     Ok(count)
+}
+
+/// The Scenes `live_scene_subtree_count` counts, in ascending id order. Like the
+/// count it looks only at the root and below, so a folder hidden under an
+/// archived ancestor can yield Scenes that are not live in the project; that
+/// only over-approximates (an extra Scope refresh), it never misses a Scene.
+fn live_scene_subtree_ids(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    root_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut statement = conn.prepare(concat!(
+        live_scene_subtree_cte!(),
+        "
+         SELECT id
+           FROM subtree
+          WHERE node_type = 'scene' AND ancestor_live
+          ORDER BY id"
+    ))?;
+    let ids = statement
+        .query_map(params![root_id, project_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+/// True when a tree node's placement or archive state differs between two
+/// snapshots: the fields that decide where the live Scenes below a folder sit
+/// in the project's Reading order.
+fn tree_node_scope_placement_changed(before: &Value, after: &Value) -> bool {
+    ["parentId", "sortOrder", "archivedAt"]
+        .into_iter()
+        .any(|field| before.get(field) != after.get(field))
 }
 
 fn live_scene_subtree_count_from_snapshots(root_id: &str, snapshots: &[Value]) -> i64 {
@@ -3702,6 +3746,23 @@ pub fn tree_node_patch_with_authority(
         } else {
             None
         };
+        // A folder's parentId / sortOrder / archivedAt decide where every live
+        // Scene below it sits in the project's Reading order, and the project
+        // Scope authority no longer observes the tree's own version/updatedAt.
+        // Remember which Scenes were live below the folder before the write so
+        // their Scope generation can advance in this same transaction.
+        let folder_scope_placement_patch = before_live_scene_subtree_count.is_some()
+            && payload
+                .patch
+                .keys()
+                .any(|key| matches!(key.as_str(), "parentId" | "sortOrder" | "archivedAt"));
+        let before_live_scene_ids = if folder_scope_placement_patch
+            && before_live_scene_subtree_count.unwrap_or(0) > 0
+        {
+            live_scene_subtree_ids(tx, &payload.project_id, &payload.node_id)?
+        } else {
+            Vec::new()
+        };
         if payload.change_event.is_some() {
             let already_exists = tx
                 .query_row(
@@ -3870,6 +3931,28 @@ pub fn tree_node_patch_with_authority(
         } else {
             None
         };
+        // Advance the Scope generation of every Scene that was or is live below
+        // a folder whose placement or archive state really changed.
+        let mut folder_scene_scope_refresh_events = Vec::new();
+        if folder_scope_placement_patch && tree_node_scope_placement_changed(&before, &row) {
+            let mut affected_scene_ids = before_live_scene_ids
+                .into_iter()
+                .collect::<BTreeSet<String>>();
+            if live_scene_subtree_impact.is_some_and(|(_, after_count)| after_count > 0) {
+                affected_scene_ids.extend(live_scene_subtree_ids(
+                    tx,
+                    &payload.project_id,
+                    &payload.node_id,
+                )?);
+            }
+            folder_scene_scope_refresh_events =
+                crate::narrative_extraction::refresh_scene_scope_source_tokens_in_tx(
+                    tx,
+                    &payload.project_id,
+                    &affected_scene_ids,
+                    &payload.updated_at,
+                )?;
+        }
         let canonical_payload = payload
             .canonical_payload
             .clone()
@@ -3923,6 +4006,7 @@ pub fn tree_node_patch_with_authority(
         if let Some(scene_scope_refresh_event) = scene_scope_refresh_event {
             feed_events.push(scene_scope_refresh_event);
         }
+        feed_events.extend(folder_scene_scope_refresh_events);
         let append = append_tree_feed_result(
             tx,
             TreeFeedAppend {
@@ -5350,6 +5434,24 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 );
             }
         }
+        // A folder placement moves every live Scene below it, and the project
+        // Scope authority no longer observes the tree's own version/updatedAt.
+        // Remember who was live there before any write of this plan.
+        let mut before_live_scene_ids = BTreeMap::<String, Vec<String>>::new();
+        for update in &payload.updates {
+            if update.placement.is_some()
+                && before_live_scene_subtree_counts
+                    .get(&update.id)
+                    .copied()
+                    .unwrap_or(0)
+                    > 0
+            {
+                before_live_scene_ids.insert(
+                    update.id.clone(),
+                    live_scene_subtree_ids(&tx, &payload.project_id, &update.id)?,
+                );
+            }
+        }
 
         for create in &payload.creates {
             let existing_project = tx
@@ -5498,6 +5600,51 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 select_tree_node(&tx, &payload.project_id, id)?,
             );
         }
+        // Advance the Scope generation of every Scene that was or is live below
+        // a folder this plan really re-placed. Scenes the plan updates itself
+        // were refreshed above and Scenes it creates hold a brand-new binding,
+        // so neither is refreshed again.
+        let mut folder_scene_ids = BTreeSet::<String>::new();
+        for update in &payload.updates {
+            let (Some(before_snapshot), Some(after_snapshot)) =
+                (before.get(&update.id), after.get(&update.id))
+            else {
+                continue;
+            };
+            if update.placement.is_none()
+                || before_snapshot.get("nodeType").and_then(Value::as_str) != Some("folder")
+                || !tree_node_scope_placement_changed(before_snapshot, after_snapshot)
+            {
+                continue;
+            }
+            folder_scene_ids.extend(
+                before_live_scene_ids
+                    .get(&update.id)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            folder_scene_ids.extend(live_scene_subtree_ids(
+                &tx,
+                &payload.project_id,
+                &update.id,
+            )?);
+        }
+        for (id, snapshot) in &before {
+            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
+                folder_scene_ids.remove(id);
+            }
+        }
+        for create in &payload.creates {
+            folder_scene_ids.remove(&create.id);
+        }
+        scene_scope_refresh_events.extend(
+            crate::narrative_extraction::refresh_scene_scope_source_tokens_in_tx(
+                &tx,
+                &payload.project_id,
+                &folder_scene_ids,
+                &payload.updated_at,
+            )?,
+        );
         let created_ids = payload
             .creates
             .iter()
@@ -5746,6 +5893,23 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                 );
             }
         }
+        // Restoring a folder's placement moves every live Scene below it, and
+        // the project Scope authority no longer observes the tree's own
+        // version/updatedAt. Remember who is live there before any write.
+        let mut before_live_scene_ids = BTreeMap::<String, Vec<String>>::new();
+        for id in &restored_ids {
+            if before_live_scene_subtree_counts
+                .get(*id)
+                .copied()
+                .unwrap_or(0)
+                > 0
+            {
+                before_live_scene_ids.insert(
+                    (*id).to_string(),
+                    live_scene_subtree_ids(&tx, &payload.project_id, id)?,
+                );
+            }
+        }
 
         let mut after = BTreeMap::<String, Value>::new();
         let mut scene_scope_refresh_events = Vec::new();
@@ -5812,6 +5976,39 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                 id
             );
         }
+        // Advance the Scope generation of every Scene that was or is live below
+        // a folder this undo really re-placed. Scenes restored directly were
+        // refreshed above and nodes the plan created no longer exist.
+        let mut folder_scene_ids = BTreeSet::<String>::new();
+        for id in &restored_ids {
+            let (Some(before_snapshot), Some(after_snapshot)) = (before.get(*id), after.get(*id))
+            else {
+                continue;
+            };
+            if before_snapshot.get("nodeType").and_then(Value::as_str) != Some("folder")
+                || !tree_node_scope_placement_changed(before_snapshot, after_snapshot)
+            {
+                continue;
+            }
+            folder_scene_ids.extend(before_live_scene_ids.get(*id).cloned().unwrap_or_default());
+            folder_scene_ids.extend(live_scene_subtree_ids(&tx, &payload.project_id, id)?);
+        }
+        for (id, snapshot) in &before {
+            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
+                folder_scene_ids.remove(id);
+            }
+        }
+        for id in &journal.created_ids {
+            folder_scene_ids.remove(id);
+        }
+        scene_scope_refresh_events.extend(
+            crate::narrative_extraction::refresh_scene_scope_source_tokens_in_tx(
+                &tx,
+                &payload.project_id,
+                &folder_scene_ids,
+                &payload.updated_at,
+            )?,
+        );
 
         let mut events = Vec::new();
         for id in &affected_ids {
@@ -6065,6 +6262,63 @@ mod tests {
             Ok(())
         })
         .expect("seed AI tree field authority");
+    }
+
+    #[test]
+    fn live_scene_subtree_ids_match_the_count_and_skip_archived_branches() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes
+                   (id, project_id, parent_id, node_type, title, sort_order, archived_at)
+                 VALUES
+                   ('lss-root', 'p1', NULL, 'folder', 'Root', 'b0', NULL),
+                   ('lss-live', 'p1', 'lss-root', 'scene', 'Live', 'a0', NULL),
+                   ('lss-archived-scene', 'p1', 'lss-root', 'scene', 'Archived', 'b0',
+                    '2026-08-13T00:00:00Z'),
+                   ('lss-inner', 'p1', 'lss-root', 'folder', 'Inner', 'c0', NULL),
+                   ('lss-deep', 'p1', 'lss-inner', 'scene', 'Deep', 'a0', NULL),
+                   ('lss-hidden-folder', 'p1', 'lss-root', 'folder', 'Hidden', 'd0',
+                    '2026-08-13T00:00:00Z'),
+                   ('lss-hidden-scene', 'p1', 'lss-hidden-folder', 'scene', 'Hidden scene',
+                    'a0', NULL),
+                   ('lss-note', 'p1', 'lss-root', 'note', 'Note', 'e0', NULL),
+                   ('lss-archived-root', 'p1', NULL, 'folder', 'Archived root', 'c0',
+                    '2026-08-13T00:00:00Z'),
+                   ('lss-under-archived-root', 'p1', 'lss-archived-root', 'scene', 'Under',
+                    'a0', NULL);",
+            )?;
+            Ok(())
+        })
+        .expect("seed a nested tree");
+
+        db.with_conn(|conn| {
+            for (root, expected) in [
+                ("lss-root", vec!["lss-deep", "lss-live"]),
+                ("lss-inner", vec!["lss-deep"]),
+                ("lss-hidden-folder", vec![]),
+                ("lss-archived-root", vec![]),
+                ("lss-note", vec![]),
+                ("missing-node", vec![]),
+            ] {
+                assert_eq!(
+                    live_scene_subtree_ids(conn, "p1", root)?,
+                    expected,
+                    "{root}"
+                );
+                assert_eq!(
+                    live_scene_subtree_count(conn, "p1", root)?,
+                    i64::try_from(expected.len())?,
+                    "the count and the id list share one walk: {root}"
+                );
+            }
+            assert!(
+                live_scene_subtree_ids(conn, "p2", "lss-root")?.is_empty(),
+                "the walk never crosses a project boundary"
+            );
+            Ok(())
+        })
+        .expect("compare the id list with the count");
     }
 
     fn project_create_payload(project_id: &str, request_id: &str) -> ProjectCreatePayload {

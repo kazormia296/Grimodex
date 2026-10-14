@@ -658,6 +658,30 @@ pub(crate) fn refresh_scene_scope_source_token_for_scene_in_tx(
     refresh_scene_scope_source_token_in_tx(conn, &project_id, scene_id, updated_at)
 }
 
+/// Advance the Scope generation (binding version, source token, updatedAt) of
+/// every Scene in `scene_ids` and return one feed event per Scene, in
+/// ascending Scene id order.
+///
+/// A folder's `parentId`, `sortOrder` and `archivedAt` decide where every live
+/// Scene below it sits in the project's Reading order, but the project Scope
+/// authority no longer observes the tree's own version/updatedAt. The writers
+/// that change such a folder call this in the same transaction with the live
+/// Scenes below it from before and after the change, so the project token
+/// cannot return to an earlier value after the live structure moved.
+pub(crate) fn refresh_scene_scope_source_tokens_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    scene_ids: &BTreeSet<String>,
+    updated_at: &str,
+) -> Result<Vec<NarrativeChangeEventInput>> {
+    scene_ids
+        .iter()
+        .map(|scene_id| {
+            refresh_scene_scope_source_token_in_tx(conn, project_id, scene_id, updated_at)
+        })
+        .collect()
+}
+
 fn insert_binding_in_tx(conn: &Connection, binding: &NarrativeSceneScopeBindingV1) -> Result<()> {
     conn.execute(
         "INSERT INTO narrative_scene_scope_bindings (
@@ -682,10 +706,16 @@ fn insert_binding_in_tx(conn: &Connection, binding: &NarrativeSceneScopeBindingV
     Ok(())
 }
 
+/// Digest of the Native-owned Scope observations that extend the project's
+/// base Scope authority: the registry (revision, source token) and every
+/// Scene binding (version, source token, updatedAt included).
+///
+/// `tree_nodes.version`/`updated_at` are deliberately not part of it. ADR009
+/// keeps titles, bodies and display labels, and operations on empty folders
+/// and notes, out of this Source, so the Source must not move for them.
 pub(crate) fn scope_extension_digest(
     conn: &Connection,
     project_id: &str,
-    tree_source_generation: &str,
 ) -> Result<Option<String>> {
     anyhow::ensure!(
         table_exists(conn, "narrative_scope_registries")?
@@ -815,11 +845,20 @@ pub(crate) fn scope_extension_digest(
         "contractId": narrative_scene_scope::NARRATIVE_SCENE_SCOPE_CONTRACT_ID,
         "registry": registry,
         // Native-owned monotonic/source observations remain in the authority
-        // digest even for compatibility-only bindings. This prevents an
-        // A->B->A or same-timestamp write from recreating an old token.
+        // digest even for compatibility-only bindings: the registry revision
+        // and source token, and every binding's version, source token and
+        // updatedAt. They keep an A->B->A or same-timestamp write from
+        // recreating an old token.
+        //
+        // The tree's own `version`/`updated_at` are NOT observed here. A
+        // writer that changes where live Scenes sit therefore has to advance
+        // the affected Scenes' binding generation in the same transaction: a
+        // Scene patch refreshes its own binding, and a folder's
+        // parentId/sortOrder/archivedAt change refreshes every live Scene
+        // below it (`refresh_scene_scope_source_tokens_in_tx`). Empty folders
+        // and notes carry no Scene, so they never move this digest.
         "registryRevision": registry_revision,
         "registrySourceToken": registry_source_token,
-        "treeSourceGeneration": tree_source_generation,
         "bindings": bindings,
     }))?))
 }
@@ -2011,7 +2050,7 @@ mod tests {
     }
 
     #[test]
-    fn authority_digest_tracks_native_revisions_and_tree_generation() {
+    fn authority_digest_tracks_native_revisions_but_not_the_trees_own_version() {
         let db = migrated_db();
         let digest_a = scope_digest(&db);
         let same_timestamp = "2026-09-13T00:10:00.000Z";
@@ -2062,9 +2101,86 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("bump canonical tree source generation");
+        .expect("bump the tree row's own version and updatedAt");
         let digest_after_tree_bump = scope_digest(&db);
-        assert_ne!(digest_a_again, digest_after_tree_bump);
+        assert_eq!(
+            digest_a_again, digest_after_tree_bump,
+            "titles, bodies and labels move tree_nodes.version/updated_at; ADR009 keeps them \
+             out of the project Scope authority"
+        );
+    }
+
+    #[test]
+    fn batch_refresh_advances_each_named_scene_once_and_moves_the_authority_digest() {
+        let db = migrated_db();
+        db.with_conn(|conn| {
+            for scene_id in ["s2", "s3"] {
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, node_type, title, sort_order)
+                     VALUES (?1, 'p1', 'scene', ?1, ?1)",
+                    [scene_id],
+                )?;
+                ensure_scene_scope_binding_in_tx(conn, "p1", scene_id, "2026-09-13T00:05:00.000Z")?;
+            }
+            Ok(())
+        })
+        .expect("seed additional scenes");
+        let version = |db: &Database, scene_id: &str| {
+            db.with_read_transaction(|conn| {
+                Ok(read_narrative_scene_scope(conn, "p1", scene_id)?
+                    .binding
+                    .version)
+            })
+            .expect("read binding version")
+        };
+        let before = scope_digest(&db);
+
+        // The BTreeSet argument already makes the Scene ids unique. Out-of-order
+        // input still yields one refresh per Scene and events in ascending
+        // Scene id order; the untouched Scene keeps its generation.
+        let scene_ids = ["s3", "s1"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        let events = db
+            .with_conn(|conn| {
+                refresh_scene_scope_source_tokens_in_tx(
+                    conn,
+                    "p1",
+                    &scene_ids,
+                    "2026-09-13T00:06:00.000Z",
+                )
+            })
+            .expect("batch refresh");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.object_key.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                json!({ "kind": SCENE_SCOPE_OBJECT_KIND, "sceneId": "s1" }),
+                json!({ "kind": SCENE_SCOPE_OBJECT_KIND, "sceneId": "s3" }),
+            ]
+        );
+        assert_eq!(version(&db, "s1"), 2);
+        assert_eq!(version(&db, "s2"), 1);
+        assert_eq!(version(&db, "s3"), 2);
+        let after = scope_digest(&db);
+        assert_ne!(before, after);
+
+        let none = db
+            .with_conn(|conn| {
+                refresh_scene_scope_source_tokens_in_tx(
+                    conn,
+                    "p1",
+                    &BTreeSet::new(),
+                    "2026-09-13T00:07:00.000Z",
+                )
+            })
+            .expect("empty batch refresh");
+        assert!(none.is_empty(), "an empty set refreshes nothing");
+        assert_eq!(scope_digest(&db), after);
     }
 
     #[test]

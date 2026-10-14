@@ -4,6 +4,15 @@
 //! mutable head. It reads one SQLite snapshot, derives the live Scene list in
 //! persisted Reading DFS order, and delegates the three typed axis projections
 //! and aggregate revision token to Core.
+//!
+//! The token deliberately does not fold in `tree_nodes.version` or
+//! `tree_nodes.updated_at` (ADR009: titles, bodies and display labels, and
+//! operations on empty folders and notes, never advance this Source). The live
+//! Scene order and Story keys come from the base projection; monotonicity comes
+//! from the per-Scene Scope binding generation, which a writer that changes
+//! where live Scenes sit advances in the same transaction (a Scene patch
+//! refreshes its own binding, a folder `parentId`/`sortOrder`/`archivedAt`
+//! change refreshes every live Scene below it).
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -13,7 +22,6 @@ use grimodex_core::narrative_project_scope_authority::{
     NarrativeProjectScopeAuthorityV1,
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::json;
 
 const PROJECT_SCOPE_AUTHORITY_SOURCE_PREFIX: &str = "project:scope-authority:";
 const PROJECT_SCOPE_AUTHORITY_SNAPSHOT: &str = "narrative_project_scope_authority_snapshot";
@@ -25,9 +33,6 @@ struct PersistedProjectTreeNode {
     node_type: String,
     sort_order: String,
     story_time_order: Option<String>,
-    archived_at: Option<String>,
-    version: i64,
-    updated_at: String,
     archived: bool,
 }
 
@@ -185,32 +190,6 @@ fn derive_live_scene_projection(
     Ok(scenes)
 }
 
-fn canonical_tree_source_generation(
-    project_id: &str,
-    nodes: &[PersistedProjectTreeNode],
-) -> anyhow::Result<String> {
-    let rows = nodes
-        .iter()
-        .map(|node| {
-            json!({
-                "id": node.id,
-                "parentId": node.parent_id,
-                "nodeType": node.node_type,
-                "sortOrder": node.sort_order,
-                "storyTimeOrder": node.story_time_order,
-                "archivedAt": node.archived_at,
-                "version": node.version,
-                "updatedAt": node.updated_at,
-            })
-        })
-        .collect::<Vec<_>>();
-    Ok(grimodex_core::canonical_json_digest(&json!({
-        "contractId": "narrative-tree-source-generation/1",
-        "projectId": project_id,
-        "nodes": rows,
-    }))?)
-}
-
 fn load_live_project_scope_authority_in_snapshot(
     conn: &Connection,
     project_id: &str,
@@ -229,8 +208,7 @@ fn load_live_project_scope_authority_in_snapshot(
     );
 
     let mut statement = conn.prepare(
-        "SELECT id, parent_id, node_type, sort_order, story_time_order,
-                archived_at, version, updated_at
+        "SELECT id, parent_id, node_type, sort_order, story_time_order, archived_at
            FROM tree_nodes
           WHERE project_id = ?1
           ORDER BY id",
@@ -243,19 +221,13 @@ fn load_live_project_scope_authority_in_snapshot(
                 node_type: row.get(2)?,
                 sort_order: row.get(3)?,
                 story_time_order: row.get(4)?,
-                archived_at: row.get(5)?,
-                version: row.get(6)?,
-                updated_at: row.get(7)?,
                 archived: row.get::<_, Option<String>>(5)?.is_some(),
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let tree_source_generation = canonical_tree_source_generation(project_id, &nodes)?;
     let scenes = derive_live_scene_projection(&nodes)?;
     let mut authority = build_narrative_project_scope_authority_v1(project_id, &scenes)?;
-    if let Some(extension_digest) =
-        super::scope_extension_digest(conn, project_id, &tree_source_generation)?
-    {
+    if let Some(extension_digest) = super::scope_extension_digest(conn, project_id)? {
         authority.source.revision_token =
             grimodex_core::canonical_json_digest(&serde_json::json!({
                 "baseRevisionToken": authority.source.revision_token,
