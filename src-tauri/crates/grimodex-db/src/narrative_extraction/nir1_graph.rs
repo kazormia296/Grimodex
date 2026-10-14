@@ -60,6 +60,7 @@ use super::source_revision::{
 use crate::narrative_maintenance_connection::{
     with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
 };
+use crate::nir1_pinned_snapshot::with_pinned_snapshot;
 use crate::state::WorkspaceAuthority;
 use crate::workspace_lifecycle::WorkspaceParticipant;
 
@@ -81,6 +82,15 @@ const QUERY_MAX_PAGES: usize = 32;
 // is a fail-closed guard, not an allocator measurement or a completion claim.
 const TRANSIENT_JSON_MULTIPLIER: usize = 8;
 const TRANSIENT_BYTES_PER_ROW: usize = 4 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    /// SQL VM steps charged to the latest `query_with_deadline_observed` on
+    /// this thread (the budget's own count, so it is the quantity capped by
+    /// `QUERY_SQL_STEPS`). Test-only; a query that returns before it creates its
+    /// budget leaves the previous value.
+    static LAST_QUERY_SQL_STEPS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
 
 #[cfg(feature = "nir1-material-diagnostics")]
 #[derive(Debug, Default)]
@@ -978,14 +988,22 @@ impl Nir1GraphReader {
                         |row| row.get(0),
                     )?;
                 }
-                query_in_snapshot(
-                    conn,
-                    request,
-                    &expected_seal,
-                    control,
-                    &mut _observation,
-                    worker_path,
-                )
+                // The seal read above is an ordinary table-reading statement of
+                // this transaction: SQLite compared the pinned snapshot's schema
+                // cookie with the connection's schema cache when it started, so
+                // the cache is now the snapshot's schema. Only this window
+                // answers table presence from it; registration and every other
+                // reader keep their SQL checks.
+                with_pinned_snapshot(conn, || {
+                    query_in_snapshot(
+                        conn,
+                        request,
+                        &expected_seal,
+                        control,
+                        &mut _observation,
+                        worker_path,
+                    )
+                })
             },
         );
         let pre_cleanup_status = worker_path.then(|| {
@@ -1108,6 +1126,8 @@ impl Nir1GraphReader {
                 }
             }
         }
+        #[cfg(test)]
+        LAST_QUERY_SQL_STEPS.set(Some(budget.sql_steps_used()));
         query_outcome
     }
 

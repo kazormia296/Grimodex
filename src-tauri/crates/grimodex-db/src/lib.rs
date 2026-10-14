@@ -18,6 +18,7 @@ use std::sync::{
 use std::time::Duration;
 
 pub(crate) mod narrative_maintenance_connection;
+pub(crate) mod nir1_pinned_snapshot;
 pub use narrative_maintenance_connection::ParticipantSqlOperationBudget;
 use narrative_maintenance_connection::ConnectionHealth;
 
