@@ -41,8 +41,10 @@ import {
   assertForegroundPatchRunObservation,
   assertForegroundTargetBaseline,
   assertForegroundRunMarker,
+  assertRetryablePreemptionMarker,
   assertTerminalFailureEvidence,
   assertTransientAttemptEvidence,
+  assertTransientRunSequence,
   foregroundMarkedRuns,
   isSettledFreshnessCursor,
   assertNoAutomaticRepair,
@@ -141,7 +143,9 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
       status TEXT NOT NULL,
       started_at TEXT NOT NULL,
       completed_at TEXT,
-      failure_code TEXT
+      failure_code TEXT,
+      retry_disposition TEXT,
+      error_message TEXT
     );
   `);
 
@@ -194,7 +198,7 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
     ],
   );
   insert(
-    "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code, retry_disposition, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     [
       "attempt-2b",
       "task-1",
@@ -202,10 +206,12 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
       "failed",
       "2026-08-23T00:00:03.000Z",
       NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+      "retryable",
+      "latest-attempt-message",
     ],
   );
   insert(
-    "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code) VALUES (?, ?, ?, ?, ?, ?)",
+    "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code, retry_disposition, error_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     [
       "attempt-foreign",
       "task-2",
@@ -213,6 +219,8 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
       "failed",
       "2026-08-23T00:00:04.000Z",
       "foreign-run-code",
+      "terminal",
+      "foreign-run-message",
     ],
   );
 
@@ -236,6 +244,8 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
       maxAttemptNumber: row.maxAttemptNumber,
       lastAttemptStatus: row.lastAttemptStatus,
       lastAttemptFailureCode: row.lastAttemptFailureCode,
+      lastAttemptRetryDisposition: row.lastAttemptRetryDisposition,
+      lastAttemptErrorMessage: row.lastAttemptErrorMessage,
     })),
     [
       {
@@ -244,6 +254,8 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
         maxAttemptNumber: 2,
         lastAttemptStatus: "failed",
         lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+        lastAttemptRetryDisposition: "retryable",
+        lastAttemptErrorMessage: "latest-attempt-message",
       },
       {
         id: "run-2",
@@ -251,6 +263,8 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
         maxAttemptNumber: 9,
         lastAttemptStatus: "failed",
         lastAttemptFailureCode: "foreign-run-code",
+        lastAttemptRetryDisposition: "terminal",
+        lastAttemptErrorMessage: "foreign-run-message",
       },
     ],
     "attempts from another task/Run must not contaminate any Run evidence",
@@ -923,6 +937,258 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
         },
       ]),
     /completed Run must be final/,
+  );
+});
+
+function transientRetryFixtures() {
+  const base = {
+    projectId: "project-1",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v3",
+    semanticEpochId: "epoch-1",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
+  };
+  // One lifecycle per second so every fixture sorts strictly by createdAt.
+  const lifecycle = (second) => ({
+    createdAt: `2026-08-23T00:00:${second}.000000001Z`,
+    startedAt: `2026-08-23T00:00:${second}.000000001Z`,
+    taskCreatedAt: `2026-08-23T00:00:${second}.000000002Z`,
+    taskStartedAt: `2026-08-23T00:00:${second}.000000003Z`,
+    lastAttemptStartedAt: `2026-08-23T00:00:${second}.000000003Z`,
+    completedAt: `2026-08-23T00:00:${second}.000000004Z`,
+    taskCompletedAt: `2026-08-23T00:00:${second}.000000004Z`,
+    lastAttemptCompletedAt: `2026-08-23T00:00:${second}.000000004Z`,
+  });
+  const failed = {
+    ...base,
+    ...lifecycle("01"),
+    id: "failed-run",
+    status: "failed",
+    terminalReasonCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+    taskStatus: "failed",
+    lastAttemptStatus: "failed",
+    lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+  };
+  // Native closes a preempted Run's lifecycle in one transaction: the Run and
+  // Task are cancelled, Attempt #1 fails as a retryable preemption.
+  const preempted = (id, second) => ({
+    ...base,
+    ...lifecycle(second),
+    id,
+    status: "cancelled",
+    terminalReasonCode: NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
+    taskStatus: "cancelled",
+    lastAttemptStatus: "failed",
+    lastAttemptFailureCode: NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
+    lastAttemptRetryDisposition: "retryable",
+    lastAttemptErrorMessage:
+      "NEX_MAINTENANCE_CONNECTION_PREEMPTED: retrying deferred cleanup",
+  });
+  const completed = {
+    ...base,
+    ...lifecycle("04"),
+    id: "completed-run",
+    status: "completed",
+    taskStatus: "completed",
+    lastAttemptStatus: "completed",
+    outcomeSummaryJson: JSON.stringify({
+      maintenancePhase: "backfill-complete",
+      backfillAlgorithmVersion: "3",
+      semanticEpochId: "epoch-1",
+      summary: {
+        epoch_created: false,
+        contributions_created: 0,
+        edges_created: 0,
+        applications_without_run_id: 0,
+      },
+    }),
+  };
+  return { failed, preempted, completed, lifecycle };
+}
+
+test("transient retry accepts a foreground-preempted retry Run as a strictly closed cancelled lifecycle", () => {
+  const { failed, preempted, completed } = transientRetryFixtures();
+  const cancelled = preempted("preempted-run", "02");
+
+  assert.equal(assertRetryablePreemptionMarker(cancelled), cancelled);
+  assert.doesNotThrow(() =>
+    assertTransientRunSequence([failed, cancelled, completed]),
+  );
+  // A preemption requeues the work without spending the bounded retry budget,
+  // so a recurrence does not count against the two-or-three Run bound.
+  assert.doesNotThrow(() =>
+    assertTransientRunSequence([
+      failed,
+      cancelled,
+      preempted("second-preempted-run", "03"),
+      completed,
+    ]),
+  );
+  // The bound still applies to every other Run.
+  assert.throws(
+    () => assertTransientRunSequence([failed, cancelled]),
+    /at least two/,
+    "a failed Run and its preempted retry alone never completed",
+  );
+  assert.throws(
+    () =>
+      assertTransientRunSequence([
+        failed,
+        cancelled,
+        completed,
+        { ...completed, id: "third-completed" },
+        { ...completed, id: "fourth-completed" },
+      ]),
+    /at most three/,
+  );
+});
+
+test("transient retry keeps every cancelled Run that is not a strict preemption red", () => {
+  const { failed, preempted, completed, lifecycle } = transientRetryFixtures();
+  const cancelled = preempted("preempted-run", "02");
+
+  for (const [name, overrides, expected] of [
+    [
+      "a cancellation with another terminal reason",
+      { terminalReasonCode: NARRATIVE_MAINTENANCE_INTERRUPTED_CODE },
+      /not a cancelled connection preemption/,
+    ],
+    [
+      "a cancellation without a terminal reason",
+      { terminalReasonCode: null },
+      /not a cancelled connection preemption/,
+    ],
+    [
+      "a Task that is still running",
+      { taskStatus: "running" },
+      /status mismatch/,
+    ],
+    [
+      "an Attempt that mirrors the cancelled Task",
+      { lastAttemptStatus: "cancelled" },
+      /status mismatch/,
+    ],
+    [
+      "a transient Attempt failure",
+      { lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE },
+      /did not close as a retryable connection preemption/,
+    ],
+    [
+      "a terminal Attempt disposition",
+      { lastAttemptRetryDisposition: "terminal" },
+      /did not close as a retryable connection preemption/,
+    ],
+    [
+      "a missing Attempt disposition",
+      { lastAttemptRetryDisposition: null },
+      /did not close as a retryable connection preemption/,
+    ],
+    [
+      "a lifecycle stop",
+      {
+        lastAttemptErrorMessage:
+          "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution",
+      },
+      /controlled stop/,
+    ],
+    [
+      "an Attempt cancellation",
+      {
+        lastAttemptErrorMessage:
+          "NEX_MAINTENANCE_ATTEMPT_CANCELLED: cancel won before finalization",
+      },
+      /controlled stop/,
+    ],
+    ["a second Attempt", { attemptCount: 2 }, /exactly one Task and Attempt/],
+    ["an Attempt #2", { lastAttemptNumber: 2 }, /Attempt #1/],
+    ["no terminal instant", { completedAt: null }, /one terminal timestamp/],
+    [
+      "a Task closed at another instant",
+      { taskCompletedAt: "2026-08-23T00:00:02.000000005Z" },
+      /one terminal timestamp/,
+    ],
+    [
+      "a terminal instant that does not follow creation",
+      {
+        completedAt: cancelled.createdAt,
+        taskCompletedAt: cancelled.createdAt,
+        lastAttemptCompletedAt: cancelled.createdAt,
+      },
+      /terminal completedAt must be after/,
+    ],
+    [
+      "another work identity",
+      { workKey: "other-work" },
+      /changed same-work identity field workKey/,
+    ],
+  ]) {
+    const broken = { ...cancelled, ...overrides };
+    assert.throws(
+      () => assertTransientRunSequence([failed, broken, completed]),
+      expected,
+      `${name} must not be hidden inside a transient sequence`,
+    );
+    if (!("workKey" in overrides)) {
+      assert.throws(
+        () => assertRetryablePreemptionMarker(broken),
+        expected,
+        `${name} is not a preemption marker`,
+      );
+    }
+  }
+
+  assert.throws(
+    () =>
+      assertTransientRunSequence([
+        failed,
+        completed,
+        preempted("late-preempted-run", "05"),
+      ]),
+    /completed Run must be final/,
+    "a cancelled Run created after the completed Run cannot be its predecessor",
+  );
+  assert.throws(
+    () =>
+      assertTransientRunSequence([
+        preempted("early-preempted-run", "00"),
+        failed,
+        completed,
+      ]),
+    /must begin with a failed Run/,
+    "a preemption cannot precede the injected transient failure",
+  );
+  assert.throws(
+    () =>
+      assertTransientRunSequence([
+        failed,
+        cancelled,
+        completed,
+        { ...completed, ...lifecycle("05"), id: "second-completed-run" },
+      ]),
+    /completed Run must be final/,
+    "a preempted Run does not excuse a duplicate completed Run",
+  );
+  assert.throws(
+    () =>
+      assertTransientRunSequence([
+        failed,
+        cancelled,
+        { ...cancelled },
+        completed,
+      ]),
+    /distinct same-work Run ids/,
+  );
+  assert.throws(
+    () => assertRetryablePreemptionMarker({ ...completed }),
+    /not a cancelled connection preemption/,
+    "a completed Run is never a preemption marker",
   );
 });
 
@@ -2240,7 +2506,8 @@ test("restore fixture backup contract serializes and preserves evidence reads", 
         );
         CREATE TABLE narrative_extraction_attempts (
           id TEXT, task_id TEXT, attempt_number INTEGER, started_at TEXT,
-          status TEXT, failure_code TEXT, completed_at TEXT
+          status TEXT, failure_code TEXT, completed_at TEXT,
+          retry_disposition TEXT, error_message TEXT
         );
         CREATE TABLE narrative_dependency_edges (
           id TEXT, project_id TEXT, consumer_kind TEXT, consumer_key TEXT,
@@ -2266,7 +2533,7 @@ test("restore fixture backup contract serializes and preserves evidence reads", 
            '2026-09-13T00:00:02Z', '2026-09-13T00:00:02Z', '2026-09-13T00:00:03Z');
         INSERT INTO narrative_extraction_attempts VALUES
           ('attempt-1', 'task-1', 1, '2026-09-13T00:00:02Z', 'completed', NULL,
-           '2026-09-13T00:00:03Z');
+           '2026-09-13T00:00:03Z', NULL, NULL);
         INSERT INTO narrative_dependency_edges VALUES
           ('edge-1', '${projectId}', 'narrative-extraction-run', 'consumer-1',
            'project:scene:source', '[{"token":"token-1"}]', 'tx-1',
@@ -2909,6 +3176,134 @@ test("settled interruption recovery rejects duplicate, non-terminal, and stale r
     /at or before the stale Run completedAt/,
     "a recovery created before stale completion must remain red",
   );
+
+  // A foreground preemption can cancel a recovery Run before the Run that
+  // replaces it completes. The cancelled Run is strict evidence of its own and
+  // is not a second recovery.
+  const preempted = ({
+    id = "preempted-recovery",
+    createdAt = "2026-08-23T00:00:02.500Z",
+    completedAt = "2026-08-23T00:00:02.800Z",
+    ...overrides
+  } = {}) => ({
+    ...makeRun({
+      id,
+      status: "cancelled",
+      terminalReasonCode: NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
+      createdAt,
+      completedAt,
+    }),
+    taskStatus: "cancelled",
+    lastAttemptStatus: "failed",
+    lastAttemptFailureCode: NARRATIVE_MAINTENANCE_CONNECTION_PREEMPTED_CODE,
+    lastAttemptRetryDisposition: "retryable",
+    lastAttemptErrorMessage:
+      "NEX_MAINTENANCE_CONNECTION_PREEMPTED: retrying deferred cleanup",
+    ...overrides,
+  });
+  assert.equal(
+    selectInterruptedRecoveryFromStableLedger(
+      [...postExit, preempted(), recovery],
+      postExit,
+      stale,
+    ).id,
+    "recovery",
+  );
+  assert.equal(
+    selectInterruptedRecoveryFromStableLedger(
+      [
+        ...postExit,
+        preempted(),
+        preempted({
+          id: "second-preempted-recovery",
+          createdAt: "2026-08-23T00:00:02.900Z",
+          completedAt: "2026-08-23T00:00:02.950Z",
+        }),
+        recovery,
+      ],
+      postExit,
+      stale,
+    ).id,
+    "recovery",
+    "a recurring preemption does not become a second recovery",
+  );
+  assert.throws(
+    () =>
+      selectInterruptedRecoveryFromStableLedger(
+        [...postExit, preempted()],
+        postExit,
+        stale,
+      ),
+    /exactly one new same-work recovery Run/,
+    "a preempted Run alone is not a recovery",
+  );
+  assert.throws(
+    () =>
+      selectInterruptedRecoveryFromStableLedger(
+        [
+          ...postExit,
+          preempted(),
+          recovery,
+          { ...recovery, id: "duplicate-recovery" },
+        ],
+        postExit,
+        stale,
+      ),
+    /exactly one new same-work recovery Run/,
+    "a preempted Run must not hide a duplicate completed recovery",
+  );
+  for (const [name, overrides, expected] of [
+    [
+      "a cancellation with another terminal reason",
+      { terminalReasonCode: NARRATIVE_MAINTENANCE_INTERRUPTED_CODE },
+      /not a cancelled connection preemption/,
+    ],
+    [
+      "an Attempt that mirrors the cancelled Task",
+      { lastAttemptStatus: "cancelled" },
+      /status mismatch/,
+    ],
+    [
+      "a Task closed at another instant",
+      { taskCompletedAt: "2026-08-23T00:00:02.900Z" },
+      /one terminal timestamp/,
+    ],
+    [
+      "a lifecycle stop",
+      {
+        lastAttemptErrorMessage:
+          "NEX_MAINTENANCE_LIFECYCLE_STOP_REQUESTED: transition is draining this execution",
+      },
+      /controlled stop/,
+    ],
+    [
+      "a Run created before the stale Run completed",
+      {
+        createdAt: "2026-08-23T00:00:01.000Z",
+        completedAt: "2026-08-23T00:00:01.500Z",
+      },
+      /must be created after the stale Run completedAt/,
+    ],
+    [
+      "a Run created after the recovery Run",
+      {
+        createdAt: "2026-08-23T00:00:03.500Z",
+        completedAt: "2026-08-23T00:00:03.900Z",
+      },
+      /before the recovery Run/,
+    ],
+  ]) {
+    assert.throws(
+      () =>
+        selectInterruptedRecoveryFromStableLedger(
+          [...postExit, preempted(overrides), recovery],
+          postExit,
+          stale,
+        ),
+      expected,
+      `${name} must remain red`,
+    );
+  }
 });
 
 test("stable ledger allows slow reads while retaining delayed Repair and timeout checks", async (t) => {

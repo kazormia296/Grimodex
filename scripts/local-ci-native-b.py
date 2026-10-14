@@ -886,9 +886,24 @@ def qualify_bus(mode):
             # flushing, and a buffered write would reenter that BufferedWriter.
             os.write(sys.stdout.fileno(), b"cancelled-before-input\n")
             sys.exit(0)
+        # CPython's C handler only trips a flag. The Python handler runs at the
+        # next interpreter check or when a blocked syscall returns EINTR, and
+        # read(2) never looks at the flag before it sleeps. A SIGTERM consumed
+        # between the barrier and the wait would leave this client asleep until
+        # its parent exits. The C handler also writes the signal number to the
+        # wakeup fd, so selecting on it returns for a SIGTERM that landed at any
+        # point after the handler was installed. The fd comes first so that no
+        # delivery can find the handler without it.
+        wake_read, wake_write = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        signal.set_wakeup_fd(wake_write, warn_on_full_buffer=False)
         signal.signal(signal.SIGTERM, cancelled)
         print("ready-for-input", flush=True)
-        sys.stdin.buffer.read(4097)
+        stdin_fd = sys.stdin.fileno()
+        ready, _, _ = select.select([stdin_fd, wake_read], [], [])
+        # A tripped SIGTERM runs `cancelled` right after select returns, so
+        # only late input (or EOF) can reach the read below.
+        if stdin_fd in ready:
+            sys.stdin.buffer.read(4097)
         raise NativeBRefusal("native B late cancelled client admitted")
     data = sys.stdin.buffer.read(4097)
     require(len(data) <= 4096, "native B client request overflow")

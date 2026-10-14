@@ -1480,3 +1480,86 @@ print("actual cancelled known child exit/EOF/join; native proof NOTRUN")
   assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
   assert.equal(result.cleanup.complete, true);
 });
+
+test("native B pending client cancellation survives a SIGTERM taken off the waiting thread", async (t) => {
+  const root = await fixture(t);
+  // The barrier only proves "ready-for-input" was flushed, not that the client
+  // already sleeps in its wait. CPython's C handler merely trips a flag; the
+  // Python handler runs at the next interpreter check or when a blocked syscall
+  // returns EINTR. A SIGTERM consumed between the barrier and the wait therefore
+  // left the client asleep until its parent exited (hosted "child barrier/EOF
+  // timed out"). Rebuild that state without relying on scheduling luck: once the
+  // barrier is out and the main thread is observed asleep, a helper thread sends
+  // SIGTERM to itself. Only its C handler runs, the main thread's syscall is not
+  // interrupted, and the cancellation must still arrive through the wakeup fd.
+  // The parent neither signals nor writes input here.
+  const source = String.raw`
+import os, runpy, select, signal, sys, threading, time
+module = runpy.run_path(sys.argv[1])
+qualify = module["qualify_bus"]
+qualify.__globals__["client_boundary"] = lambda: {}
+read, write = os.pipe()
+output, out_write = os.pipe()
+errors, err_write = os.pipe()
+pid = os.fork()
+if pid == 0:
+    os.dup2(read, 0); os.dup2(out_write, 1); os.dup2(err_write, 2)
+    os.closerange(3, os.sysconf("SC_OPEN_MAX"))
+    barrier_flushed = threading.Event()
+    emit = print
+    def barrier_print(*args, **kwargs):
+        emit(*args, **kwargs)
+        barrier_flushed.set()
+    qualify.__globals__["print"] = barrier_print
+    waiting_thread = threading.get_native_id()
+    def waiting_state():
+        try:
+            with open("/proc/self/task/%d/stat" % waiting_thread, "rb") as stat:
+                data = stat.read()
+        except OSError:
+            return None
+        return data[data.rindex(b")") + 2:][:1]
+    def take_signal_off_the_waiting_thread():
+        barrier_flushed.wait(30)
+        # Wait for the main thread to leave the CPU (parked in its wait); a
+        # missing procfs falls back to a fixed settle. Signalling early can
+        # only hide the old defect, never fail a correct client.
+        for _ in range(5000):
+            state = waiting_state()
+            if state != b"R":
+                break
+            time.sleep(0.001)
+        time.sleep(0.3 if state is None else 0.05)
+        signal.pthread_kill(threading.get_ident(), signal.SIGTERM)
+    threading.Thread(target=take_signal_off_the_waiting_thread, daemon=True).start()
+    sys.exit(qualify("--cancel-client"))
+os.close(read); os.close(out_write); os.close(err_write)
+def read_line(descriptor):
+    data = bytearray()
+    while not data.endswith(b"\n"):
+        assert select.select([descriptor], [], [], 10)[0], "child barrier/EOF timed out"
+        chunk = os.read(descriptor, 1)
+        assert chunk, "child closed before barrier"
+        data.extend(chunk)
+    return bytes(data)
+try:
+    assert read_line(output) == b"ready-for-input\n"
+    assert read_line(output) == b"cancelled-before-input\n"
+    joined, status = os.waitpid(pid, 0)
+    assert joined == pid and os.waitstatus_to_exitcode(status) == 0
+    pid = 0
+    assert os.read(output, 1) == b"" and os.read(errors, 1) == b""
+finally:
+    if pid:
+        os.kill(pid, signal.SIGKILL)
+        os.waitpid(pid, 0)
+    for descriptor in (write, output, errors):
+        os.close(descriptor)
+print("thread-directed SIGTERM cancelled known child; native proof NOTRUN")
+`;
+  const result = await runLocalCiCommand({ command: "python3", cwd: ".", env: {},
+    args: ["-I", "-c", source, fileURLToPath(new URL("./local-ci-native-b.py", import.meta.url))] },
+  { root, logDirectory: ".logs", taskId: "native-b-client-cancel-thread-signal", timeoutMs: 30_000 });
+  assert.equal(result.exitCode, 0, await readFile(path.join(root, result.logs.stderr.path), "utf8"));
+  assert.equal(result.cleanup.complete, true);
+});

@@ -21,6 +21,13 @@ const manifestPath = path.join(root, "evals/nir1-capacity/manifest.v1.json");
 const schemaPath = path.join(root, "evals/nir1-capacity/schema.v1.json");
 const probePath = path.join(root, "scripts/nir1-material-capacity-probe.mjs");
 const fixtureId = "Q513/R3/D0";
+// A leaked descendant never ends within any plausible run. Its absence after the
+// owner returns therefore proves the owner killed it, and an owner that waited
+// for it would hang into the guard below instead of racing a wall clock.
+const LEAKED_SLEEP_SECONDS = 3600;
+// Hang guard only, never a pass/fail threshold: a wedged owner must fail this
+// test, not the whole job.
+const HANG_GUARD = { timeout: 60_000, killSignal: "SIGKILL" };
 
 function makeWorkspace(selectedFixture = fixtureId) {
   const directory = mkdtempSync(path.join(tmpdir(), "nir1-capacity-script-test-"));
@@ -111,19 +118,43 @@ function makeChild(directory, options) {
 }
 
 function makePipeLeakingChild(directory, { detached = false } = {}) {
-  // Exercise owned-pipe cleanup, not a second Node runtime's startup time.
-  // Keep the existing 100 ms child budget and two-second descendant lifetime.
+  // Exercise owned-pipe cleanup, not a second Node runtime's startup time. The
+  // target exits at once and leaves a descendant holding its output pipes; the
+  // descendant's PID goes to the project-id argument ($3) so cleanup can find it.
   const binary = path.join(directory, "pipe-leaking-child.sh");
   const child = detached
     // Record the real escaped PID only after setsid and env -i have succeeded.
-    ? `setsid env -i /bin/sh -c 'printf "%s" "$$" > "$1"; exec sleep 2' sh "$3" &\nwhile [ ! -s "$3" ]; do sleep 0.001; done`
-    : "sleep 2 &";
+    // The wait is bounded so a broken setsid fails the marker assertion instead
+    // of leaving a busy loop behind once no probe timeout is left to end it.
+    ? `setsid env -i /bin/sh -c 'printf "%s" "$$" > "$1"; exec sleep ${LEAKED_SLEEP_SECONDS}' sh "$3" &\nn=0\nwhile [ ! -s "$3" ] && [ "$n" -lt 20000 ]; do sleep 0.001; n=$((n + 1)); done`
+    : `sleep ${LEAKED_SLEEP_SECONDS} &\nprintf "%s" "$!" > "$3"`;
   writeFileSync(binary, `#!/bin/sh\n${child}\nexit 0\n`);
   chmodSync(binary, 0o755);
   return binary;
 }
 
-function runProbe(workspace, binary, extraArgs = [], nodeArgs = []) {
+// Never leave the long-lived descendant behind when the owner failed to kill it.
+// The recorded PID is trusted only while it still names the exact sleep we
+// spawned (and, for the setsid variant, its own session leader).
+function killLeakedSleep(pidPath, { escaped = false } = {}) {
+  if (process.platform !== "linux") return;
+  try {
+    const pid = Number(readFileSync(pidPath, "utf8"));
+    if (!Number.isInteger(pid) || pid <= 0) return;
+    const cmdline = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const command = stat.slice(stat.indexOf("(") + 1, stat.lastIndexOf(")"));
+    const sessionId = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[3]);
+    if (command === "sleep" && cmdline === `sleep\0${LEAKED_SLEEP_SECONDS}\0` && (!escaped || sessionId === pid)) {
+      process.kill(pid, "SIGKILL");
+    }
+  } catch (error) {
+    // No marker yet, or the descendant is already gone.
+    if (error.code !== "ENOENT" && error.code !== "ESRCH") throw error;
+  }
+}
+
+function runProbe(workspace, binary, extraArgs = [], nodeArgs = [], execOptions = {}) {
   return execFileSync(
     process.execPath,
     [
@@ -135,7 +166,7 @@ function runProbe(workspace, binary, extraArgs = [], nodeArgs = []) {
       workspace.outputDirectory,
       ...extraArgs,
     ],
-    { encoding: "utf8" },
+    { encoding: "utf8", ...execOptions },
   );
 }
 
@@ -698,19 +729,23 @@ test("child timeout is bounded and reports the fixture/run context", () => {
 
 test("inherited child pipes are a terminal lifecycle failure and stay bounded", () => {
   const workspace = makeWorkspace();
+  const descendantPidPath = path.join(workspace.directory, "descendant.pid");
   try {
     const binary = makePipeLeakingChild(workspace.directory);
-    const started = Date.now();
+    // No --timeout-ms: the manifest budget never fires, so the lifecycle failure
+    // cannot lose a race against the target's own startup. The descendant never
+    // ends, so returning at all shows the owner does not wait for it.
     assert.throws(
-      () => runProbe(workspace, binary, ["--fixture", fixtureId, "--runs", "5", "--timeout-ms", "100", "--kill-grace-ms", "40"]),
+      () => runProbe(workspace, binary, [descendantPidPath, "--fixture", fixtureId, "--runs", "5", "--kill-grace-ms", "40"], [], HANG_GUARD),
       (error) => {
+        assert.notEqual(error.code, "ETIMEDOUT", "the owner must not wait for the leaked descendant");
         assert.match(error.stderr, /lifecycle failure: .*output streams did not close/);
         assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
         return true;
       },
     );
-    assert.ok(Date.now() - started < 1000, "inherited pipes must not extend the owner beyond its bound");
   } finally {
+    killLeakedSleep(descendantPidPath);
     rmSync(workspace.directory, { recursive: true, force: true });
   }
 });
@@ -719,8 +754,8 @@ for (const delayedCapture of [false, true]) {
   test(`setsid descendants are killed and absent before the owner returns${delayedCapture ? " with delayed pipe capture" : ""}`, () => {
     if (process.platform !== "linux") return;
     const workspace = makeWorkspace();
+    const descendantPidPath = path.join(workspace.directory, "descendant.pid");
     try {
-      const descendantPidPath = path.join(workspace.directory, "descendant.pid");
       const binary = makePipeLeakingChild(workspace.directory, { detached: true });
       const nodeArgs = [];
       if (delayedCapture) {
@@ -739,7 +774,10 @@ for (const delayedCapture of [false, true]) {
         `);
         nodeArgs.push("--import", hook);
       }
-      const started = Date.now();
+      // No --timeout-ms: the target exits only after the descendant has left its
+      // process group and recorded its PID, so the owner always reaches the
+      // lifecycle failure for an escaped descendant instead of a timeout race.
+      // The timed-out path is covered by its own 20 ms test above.
       let failureStderr;
       assert.throws(
         () =>
@@ -749,13 +787,12 @@ for (const delayedCapture of [false, true]) {
             fixtureId,
             "--runs",
             "5",
-            "--timeout-ms",
-            "100",
             "--kill-grace-ms",
             "40",
-          ], nodeArgs),
+          ], nodeArgs, HANG_GUARD),
         (error) => {
           failureStderr = error.stderr;
+          assert.notEqual(error.code, "ETIMEDOUT", "the owner must not wait for the escaped descendant");
           assert.match(error.stderr, /lifecycle failure:/);
           assert.equal(existsSync(path.join(workspace.outputDirectory, "capacity-report.json")), false);
           return true;
@@ -764,7 +801,7 @@ for (const delayedCapture of [false, true]) {
       assert.ok(existsSync(descendantPidPath), "escaped child must publish its PID readiness marker before lifecycle assertions");
       const descendantPid = Number(readFileSync(descendantPidPath, "utf8"));
       assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
-      assert.ok(Date.now() - started < 1000, "setsid descendants must remain bounded");
+      // The descendant sleeps for an hour, so its absence now is the owner's kill.
       // Retain the actual process state and owner error if immediate absence fails.
       let stat = null;
       try {
@@ -774,6 +811,7 @@ for (const delayedCapture of [false, true]) {
       }
       assert.equal(existsSync(`/proc/${descendantPid}`), false, `${failureStderr}\n${stat}`);
     } finally {
+      killLeakedSleep(descendantPidPath, { escaped: true });
       rmSync(workspace.directory, { recursive: true, force: true });
     }
   });
