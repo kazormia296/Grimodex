@@ -23,8 +23,9 @@ use crate::narrative_extraction::nir1_chronicle_index::invalidate::suspend_proje
 use crate::narrative_extraction::nir1_entity_relation::{
     create_nir1_entity_relation_revision,
     tests::{
-        approve_typed_revision, prepare_a3_scope_fixture, request, request_for_run,
-        seed_run_and_catalog,
+        append_typed_decision, approve_typed_revision, bounded_writer_bundle,
+        prepare_a3_scope_fixture, request, request_for_run, seed_run_and_catalog,
+        writer_input_bytes,
     },
 };
 use crate::narrative_extraction::nir1_entity_relation_index::{
@@ -38,7 +39,7 @@ use crate::narrative_extraction::repository::SystemRunWorkKeyReuse;
 use crate::narrative_extraction::restore_rebuild::ensure_restore_epochs_for_workspace;
 use crate::state::WorkspaceAuthority;
 use crate::workspace_lifecycle::WorkspaceLifecycleCore;
-use grimodex_core::narrative_nir1::ScopeValue;
+use grimodex_core::narrative_nir1::{ScopeValue, MAX_GRAPH_INPUT_BYTES};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -540,6 +541,82 @@ fn add_second_reviewed_revision(db: &Database, proposal_key: &str) -> Result<()>
     let created = create_nir1_entity_relation_revision(db, typed)?;
     approve_typed_revision(db, "nir1-run", &created)?;
     Ok(())
+}
+
+fn revision_id_of(created: &serde_json::Value) -> Result<String> {
+    Ok(created["revisionId"]
+        .as_str()
+        .ok_or_else(|| anyhow!("typed revision id missing"))?
+        .to_owned())
+}
+
+/// Extend a stored payload with JSON whitespace until it is over B's 6 MiB
+/// per-component limit. The padding changes nothing the payload says. (The
+/// stored envelope is immutable, so only the payload can be padded.)
+fn pad_payload(db: &Database, revision_id: &str) -> Result<()> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_proposal_revisions
+                SET payload_json = payload_json || printf('%.*c', ?1, ' ')
+              WHERE id = ?2",
+            params![i64::try_from(MAX_GRAPH_INPUT_BYTES)? + 1, revision_id],
+        )?;
+        Ok(())
+    })
+}
+
+/// A new typed Revision through the ordinary A2 writer, left a draft, whose
+/// stored payload is then padded over B's 6 MiB per-component limit.
+fn add_revision_with_oversized_payload(
+    db: &Database,
+    proposal_key: &str,
+) -> Result<serde_json::Value> {
+    let mut typed = request_for_run(db, "nir1-run", proposal_key);
+    qualified_scope(&mut typed);
+    let created = create_nir1_entity_relation_revision(db, typed)?;
+    pad_payload(db, &revision_id_of(&created)?)?;
+    Ok(created)
+}
+
+/// A new typed Revision, left a draft, that the A2 writer accepts as it is (3 MiB
+/// of counted bytes, half the 6 MiB writer limit) but whose stored
+/// reconciliation envelope is over B's 6 MiB per-component limit: the
+/// envelope carries about twice the counted bytes for this shape.
+fn add_revision_with_oversized_envelope(
+    db: &Database,
+    proposal_key: &str,
+) -> Result<serde_json::Value> {
+    let mut typed = request_for_run(db, "nir1-run", proposal_key);
+    qualified_scope(&mut typed);
+    let template = typed.bundle.clone();
+    let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
+    typed.bundle = bounded_writer_bundle(&template, 507, 3 * 1024 * 1024 - base);
+    let created = create_nir1_entity_relation_revision(db, typed)?;
+    let revision_id = revision_id_of(&created)?;
+    let (payload_bytes, envelope_bytes): (i64, i64) = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT octet_length(payload_json), octet_length(reconciliation_envelope_json)
+               FROM narrative_proposal_revisions WHERE id = ?1",
+            [revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    })?;
+    let limit = i64::try_from(MAX_GRAPH_INPUT_BYTES)?;
+    ensure!(
+        payload_bytes <= limit && envelope_bytes > limit,
+        "fixture premise: payload {payload_bytes} B within, envelope {envelope_bytes} B over {limit} B"
+    );
+    Ok(created)
+}
+
+/// The reader's own complete registration of the sealed binding, without a
+/// query. `Err` is a registration that could not resolve the full roster.
+fn reader_registers(fixture: &Fixture) -> Result<bool> {
+    let mut reader = Nir1GraphReader::open(
+        Arc::clone(&fixture.authority),
+        fixture.lifecycle.begin_workspace_participant()?,
+    )?;
+    reader.register_with_control(PROJECT, &mut RegistrationOwner)
 }
 
 fn er_proposal_set_id(db: &Database) -> Result<String> {
@@ -1501,6 +1578,153 @@ fn capacity_n_plus_one_is_refused_without_partial_and_retried_on_change() -> Res
     let recorder = Recorder::default();
     assert_eq!(fixture.dispatch(&recorder)?, no_finalization(false));
     assert_eq!(fixture.record(), refused_capacity("candidate-rows"));
+    assert_eq!(generation(fixture.db())?, Some(1));
+    Ok(())
+}
+
+// B-GUARD: the roster never holds a Revision that is not approved, so a draft
+// or a rejection whose stored payload or envelope is over the 6 MiB component
+// limit must not stop the build, however large it is. The roster, and so the
+// source digest, is exactly the approved Revision's, and the reader registers
+// the new generation with both oversized candidates still in the project.
+//
+// The reader's query is deliberately not asserted here: it has its own 2 MiB
+// per-Revision preflight, and refuses a query whose candidates include an
+// oversized Revision whatever its approval (the candidate pager reads every
+// proposal-revision edge of the seed's Entities).
+#[test]
+fn oversized_drafts_and_rejections_do_not_stop_the_build() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    let first = sealed(fixture.db())?.expect("generation 1");
+    add_revision_with_oversized_payload(fixture.db(), "nir1:review:oversized-draft")?;
+    let rejected =
+        add_revision_with_oversized_envelope(fixture.db(), "nir1:review:oversized-rejected")?;
+    append_typed_decision(fixture.db(), "nir1-run", &rejected, "rejected")?;
+    fixture.mark_dirty()?;
+    assert_eq!(
+        fixture.judge()?,
+        build(
+            Nir1GraphIndexBuildMode::Rebuild,
+            Nir1GraphIndexBuildReason::BindingDirty
+        )
+    );
+
+    let recorder = Recorder::default();
+    assert_eq!(
+        fixture.dispatch(&recorder)?,
+        MaintenanceDispatchOutcome::Completed
+    );
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
+    assert_eq!(Recorder::graph(&recorder.grants).len(), 1);
+    let second = sealed(fixture.db())?.expect("generation 2");
+    assert_eq!((second.0, second.1), (2, 0));
+    assert_eq!(
+        second.2, first.2,
+        "neither oversized candidate is in the roster, so the digest is unchanged"
+    );
+    assert!(complete_registered(fixture.db())?);
+    assert!(reader_registers(&fixture)?);
+    assert_eq!(
+        fixture.judge()?,
+        skip(Nir1GraphIndexSkipReason::BindingCurrent)
+    );
+    Ok(())
+}
+
+// B-GUARD: an approved Revision is one the roster has to hold, and B cannot
+// read it within the limit, so no complete roster exists. The whole build is a
+// typed capacity refusal (code NIR1_GRAPH_CAPACITY_EXCEEDED with the exceeded
+// bound as its limit), the sealed generation is untouched, and the unchanged
+// input is not rebuilt on every wake. Cancelling the approval is an ordinary
+// product action, and it makes the next owned build publish again.
+#[test]
+fn oversized_approved_revision_is_a_typed_refusal_until_its_approval_is_cancelled() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    let created =
+        add_revision_with_oversized_payload(fixture.db(), "nir1:review:oversized-approved")?;
+    approve_typed_revision(fixture.db(), "nir1-run", &created)?;
+    fixture.mark_dirty()?;
+    let before = sealed(fixture.db())?;
+
+    let recorder = Recorder::default();
+    assert_eq!(fixture.dispatch(&recorder)?, no_finalization(false));
+    assert_eq!(
+        fixture.record(),
+        refused_capacity("persisted-revision-component-bytes")
+    );
+    assert_eq!(sealed(fixture.db())?, before);
+    assert_eq!(generation(fixture.db())?, Some(1));
+    assert!(Recorder::graph(&recorder.grants).is_empty());
+    assert!(fixture.db().connection_reusable());
+    assert_eq!(
+        fixture.judge()?,
+        skip(Nir1GraphIndexSkipReason::RefusedUnchanged)
+    );
+    let plan = fixture.plan()?;
+    assert!(!plan.preempts_durable_chain());
+    assert!(plan.into_work().is_none());
+
+    // The approval is cancelled through the ordinary human Decision writer; the
+    // Revision is then rejected, so the roster no longer has to hold it.
+    append_typed_decision(fixture.db(), "nir1-run", &created, "rejected")?;
+    assert_eq!(
+        fixture.judge()?,
+        build(
+            Nir1GraphIndexBuildMode::Rebuild,
+            Nir1GraphIndexBuildReason::BindingDirty
+        )
+    );
+    let recorder = Recorder::default();
+    assert_eq!(
+        fixture.dispatch(&recorder)?,
+        MaintenanceDispatchOutcome::Completed
+    );
+    assert_eq!(fixture.record(), Some(RecordedOutcome::Published));
+    assert_eq!(generation(fixture.db())?, Some(2));
+    assert!(complete_registered(fixture.db())?);
+    assert!(reader_registers(&fixture)?);
+    Ok(())
+}
+
+// B-GUARD: the reader's complete registration re-resolves the same roster, so
+// the stored payload of an approved Revision that grows past the limit after
+// sealing (an import, a restore, an edit outside the app) fails the
+// registration with the same typed capacity refusal, and never reports the
+// binding complete. A candidate that is not approved does not (the first test).
+#[test]
+fn oversized_approved_revision_refuses_the_readers_registration() -> Result<()> {
+    use crate::narrative_extraction::source_revision::is_validation_capacity_exceeded;
+
+    let _serial = serial();
+    let fixture = Fixture::published()?;
+    assert!(complete_registered(fixture.db())?);
+    let revision_id: String = fixture.db().with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT proposal.current_revision_id
+               FROM narrative_proposals proposal
+               JOIN narrative_proposal_sets proposal_set
+                 ON proposal_set.id = proposal.proposal_set_id
+              WHERE proposal_set.project_id = ?1 AND proposal_set.set_kind = ?2
+                AND proposal.current_revision_id IS NOT NULL",
+            params![PROJECT, NIR1_ENTITY_RELATION_SET_KIND],
+            |row| row.get(0),
+        )?)
+    })?;
+    pad_payload(fixture.db(), &revision_id)?;
+
+    let error = complete_registered(fixture.db())
+        .expect_err("an oversized approved Revision must fail the complete registration");
+    assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+    assert!(
+        error_text(&error).contains("persisted-revision-component-bytes"),
+        "{error:#}"
+    );
+    let error = reader_registers(&fixture)
+        .expect_err("the reader must not register a binding it cannot resolve completely");
+    assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+    // The sealed generation itself is untouched.
     assert_eq!(generation(fixture.db())?, Some(1));
     Ok(())
 }

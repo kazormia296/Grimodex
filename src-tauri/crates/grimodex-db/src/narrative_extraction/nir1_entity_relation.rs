@@ -4250,7 +4250,7 @@ pub(super) mod tests {
         Ok(())
     }
 
-    fn append_typed_decision(
+    pub(crate) fn append_typed_decision(
         db: &crate::Database,
         run_id: &str,
         created: &serde_json::Value,
@@ -9858,6 +9858,12 @@ pub(super) mod tests {
             Ok::<_, anyhow::Error>(())
         })?;
 
+        // The Revision is approved, so the roster has to account for it. B
+        // cannot read it within the limit, which is a typed capacity refusal of
+        // the whole build (never an ordinary ineligible Revision), whichever
+        // reader of the full roster meets it.
+        let expected =
+            format!("persisted-revision-component-bytes exceeds {MAX_GRAPH_INPUT_BYTES}");
         let prepare_error = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
         }) {
@@ -9865,10 +9871,14 @@ pub(super) mod tests {
             Err(error) => error,
         };
         assert!(
-            prepare_error
-                .to_string()
-                .contains("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT"),
-            "persisted-size overflow must remain distinct from ordinary ineligibility: {prepare_error}"
+            crate::narrative_extraction::source_revision::is_validation_capacity_exceeded(
+                &prepare_error
+            ),
+            "persisted-size overflow must remain distinct from ordinary ineligibility: {prepare_error:#}"
+        );
+        assert!(
+            format!("{prepare_error:#}").contains(&expected),
+            "{prepare_error:#}"
         );
         let source_error = match db.with_read_transaction(|conn| {
             nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
@@ -9877,10 +9887,34 @@ pub(super) mod tests {
             Err(error) => error,
         };
         assert!(
-            source_error
-                .to_string()
-                .contains("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT"),
-            "source reading must not publish a partial roster: {source_error}"
+            crate::narrative_extraction::source_revision::is_validation_capacity_exceeded(
+                &source_error
+            ),
+            "source reading must not publish a partial roster: {source_error:#}"
+        );
+        assert!(
+            format!("{source_error:#}").contains(&expected),
+            "{source_error:#}"
+        );
+        let registration_error = match db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::is_complete_registered(
+                conn,
+                "default-project",
+                nir1_entity_relation_index::INDEX_KEY,
+            )
+        }) {
+            Ok(_) => anyhow::bail!("an oversized persisted component must abort registration"),
+            Err(error) => error,
+        };
+        assert!(
+            crate::narrative_extraction::source_revision::is_validation_capacity_exceeded(
+                &registration_error
+            ),
+            "registration must refuse the same way as the build: {registration_error:#}"
+        );
+        assert!(
+            format!("{registration_error:#}").contains(&expected),
+            "{registration_error:#}"
         );
         let generation: i64 = db.with_conn(|conn| {
             conn.query_row(
@@ -9917,6 +9951,127 @@ pub(super) mod tests {
             Ok::<_, anyhow::Error>(binding)
         })?;
         assert_eq!(binding.generation, 2);
+        assert_graph_binding_usable(&db)
+    }
+
+    // B-GUARD: the roster never holds a Revision that is not approved, so an
+    // oversized draft or rejection must not stop the build or the registration.
+    // The component guard refuses the whole build only for an approved
+    // Revision, and cancelling that approval lifts the refusal.
+    #[test]
+    fn graph_index_builds_around_oversized_drafts_and_rejections_until_one_is_approved(
+    ) -> anyhow::Result<()> {
+        use crate::narrative_extraction::source_revision::is_validation_capacity_exceeded;
+
+        let (db, runtime, _approved) = published_graph_fixture()?;
+        let roster = |db: &crate::Database| {
+            db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::read_eligibility_source(conn, "default-project")
+            })
+        };
+        let rebuild = |db: &crate::Database| -> anyhow::Result<i64> {
+            let snapshot = db.with_read_transaction(|conn| {
+                nir1_entity_relation_index::prepare_graph_index_build(
+                    conn,
+                    &runtime,
+                    "default-project",
+                )
+            })?;
+            db.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                let binding = nir1_entity_relation_index::publish_nir1_entity_relation_index_in_tx(
+                    &tx, &runtime, snapshot,
+                )?;
+                tx.commit()?;
+                Ok::<_, anyhow::Error>(binding.generation)
+            })
+        };
+        // The stored envelope is immutable, so only a payload can be padded.
+        let pad_payload = |revision_id: &str| -> anyhow::Result<()> {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_proposal_revisions
+                        SET payload_json = payload_json || printf('%.*c', ?1, ' ')
+                      WHERE id = ?2",
+                    params![i64::try_from(MAX_GRAPH_INPUT_BYTES)? + 1, revision_id],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+        };
+        let revision_id = |created: &serde_json::Value| -> anyhow::Result<String> {
+            Ok(created["revisionId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("typed revision id missing"))?
+                .to_owned())
+        };
+        let baseline = roster(&db)?;
+        assert!(!baseline.roster.is_empty());
+
+        // A draft whose payload is over the component limit, and a rejected
+        // Revision that the writer accepted as it is (3 MiB of counted bytes,
+        // half of the writer limit) whose stored envelope is over it: the
+        // envelope carries about twice the counted bytes for this shape.
+        // Neither is ever qualified, whatever its size.
+        let draft = create_nir1_entity_relation_revision(
+            &db,
+            request_for_run(&db, "nir1-run", "nir1:review:oversized-draft"),
+        )?;
+        pad_payload(&revision_id(&draft)?)?;
+        let mut oversized = request_for_run(&db, "nir1-run", "nir1:review:oversized-rejected");
+        let template = oversized.bundle.clone();
+        let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
+        oversized.bundle = bounded_writer_bundle(&template, 507, 3 * 1024 * 1024 - base);
+        let rejected = create_nir1_entity_relation_revision(&db, oversized)?;
+        let (payload_bytes, envelope_bytes): (i64, i64) = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT octet_length(payload_json), octet_length(reconciliation_envelope_json)
+                   FROM narrative_proposal_revisions WHERE id=?1",
+                [revision_id(&rejected)?],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })?;
+        let limit = i64::try_from(MAX_GRAPH_INPUT_BYTES)?;
+        assert!(
+            payload_bytes <= limit && envelope_bytes > limit,
+            "fixture premise: payload {payload_bytes} B within, envelope {envelope_bytes} B over {limit} B"
+        );
+        append_typed_decision(&db, "nir1-run", &rejected, "rejected")?;
+
+        assert_eq!(
+            roster(&db)?,
+            baseline,
+            "an oversized draft or rejection is not part of the roster"
+        );
+        assert_eq!(rebuild(&db)?, 2);
+        assert_graph_binding_usable(&db)?;
+
+        // Approving the oversized draft makes the roster responsible for it.
+        // The whole build is refused with a typed capacity failure, and the
+        // sealed generation is left alone.
+        approve_typed_revision(&db, "nir1-run", &draft)?;
+        let error = match db.with_read_transaction(|conn| {
+            nir1_entity_relation_index::prepare_graph_index_build(conn, &runtime, "default-project")
+        }) {
+            Ok(_) => anyhow::bail!("an approved oversized Revision must refuse the build"),
+            Err(error) => error,
+        };
+        assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+        let generation: i64 = db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT generation FROM narrative_semantic_index_metadata
+                  WHERE project_id='default-project' AND index_key=?1",
+                [nir1_entity_relation_index::INDEX_KEY],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })?;
+        assert_eq!(generation, 2);
+
+        // Cancelling the approval takes the draft out of the roster again.
+        append_typed_decision(&db, "nir1-run", &draft, "rejected")?;
+        assert_eq!(roster(&db)?, baseline);
+        assert_eq!(rebuild(&db)?, 3);
         assert_graph_binding_usable(&db)
     }
 

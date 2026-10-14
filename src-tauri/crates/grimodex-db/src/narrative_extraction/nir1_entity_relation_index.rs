@@ -1047,11 +1047,28 @@ fn read_revision_input_stats(
     // C-query per-Revision preflight (nir1_graph/input.rs), not this build.
     // The persisted envelope carries basis and provenance JSON in addition to
     // the bundle, so guard each stored component independently before the A2
-    // reader allocates both strings. This is an operational resource failure,
-    // not an ordinary ineligible Revision: abort the source build so a partial
-    // roster can never be published as complete.
+    // reader allocates both strings.
+    //
+    // What an oversized component means depends on whether the roster has to
+    // account for the Revision. An approved Revision is expected in a complete
+    // roster, and B cannot read it within the limit, so no complete roster can
+    // be built. That is an operational resource failure, not an ordinary
+    // ineligible Revision: refuse the whole build with a typed capacity
+    // failure, which keeps the sealed generation and can never publish a
+    // partial roster as complete. A Revision that is not approved (a draft, a
+    // rejection, a hold) is never qualified whatever its size, so it is not
+    // part of any roster: skip it before any of its bytes is parsed or
+    // allocated and let the build continue. The bytes of every scanned
+    // candidate, approved or not, were already charged to the whole-set Source
+    // input above, as the B-close contract counts them.
     if !persisted_revision_components_within_limit(payload_bytes, envelope_bytes) {
-        anyhow::bail!("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT");
+        if revision_is_approved(conn, revision_id)? {
+            return Err(capacity_exceeded(
+                "persisted-revision-component-bytes",
+                REVISION_INPUT_BYTE_LIMIT,
+            ));
+        }
+        return Ok(None);
     }
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
@@ -1149,6 +1166,56 @@ fn read_revision_input_stats(
 
 fn persisted_revision_components_within_limit(payload_bytes: usize, envelope_bytes: usize) -> bool {
     payload_bytes <= REVISION_INPUT_BYTE_LIMIT && envelope_bytes <= REVISION_INPUT_BYTE_LIMIT
+}
+
+/// Scalar approval probe for one Revision. It reads the proposal status and
+/// the latest Decision's verdict only, never the payload or the envelope, so
+/// it can run before the size guard decides whether those documents may be
+/// loaded at all.
+///
+/// `true` means the Revision may belong in the roster: the proposal status is
+/// `approved`, or the latest Decision approves it. Either signal is enough, so
+/// the probe fails closed if they ever disagree. `false` means both say the
+/// Revision is not approved (a draft, a rejection, a hold). The A2 reader
+/// qualifies a Revision only with the `approved` status (a draft is read on
+/// as a Draft, which no roster includes), so it can never qualify such a
+/// Revision and the roster is complete without it.
+///
+/// The reader's registration checks the payload of every current Revision
+/// whose status is `approved` (`nir1_graph::candidates::verify_complete_source_index`)
+/// and has no size check of its own. This probe answers `true` whenever that
+/// status holds, so such a Revision always meets the component guard first.
+/// That is the logical scope only: SQLite may evaluate the JSON functions of
+/// that check before the status and current-revision filters, so the payload
+/// of a draft, a rejection or a non-current Revision can be parsed there too,
+/// and this guard does not bound that parse.
+fn revision_is_approved(conn: &Connection, revision_id: &str) -> Result<bool> {
+    let approved: Option<bool> = conn
+        .query_row(
+            "SELECT COALESCE(proposal.status = 'approved', 0)
+                 OR EXISTS (
+                     SELECT 1
+                       FROM narrative_proposal_decisions decision
+                      WHERE decision.proposal_id = proposal.id
+                        AND decision.revision_id = revision.id
+                        AND decision.decision = 'approved'
+                        AND decision.created_at = (
+                            SELECT MAX(latest.created_at)
+                              FROM narrative_proposal_decisions latest
+                             WHERE latest.proposal_id = proposal.id
+                               AND latest.revision_id = revision.id
+                        )
+                 )
+               FROM narrative_proposal_revisions revision
+               JOIN narrative_proposals proposal
+                 ON proposal.id = revision.proposal_id
+              WHERE revision.id = ?1",
+            params![revision_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // A Revision the probe cannot resolve is not proven unapproved.
+    Ok(approved.unwrap_or(true))
 }
 
 /// Confirm that the sealed payload names exactly the material Sources bound by
@@ -1474,16 +1541,21 @@ struct SourceCapacity {
     roster_bytes: usize,
 }
 
+/// The typed capacity failure of the whole-project build. `field` names the
+/// exceeded bound; the maintenance route reads it back as the refusal's
+/// `limit`, so it stays one lowercase kebab-case token.
+fn capacity_exceeded(field: &str, maximum: usize) -> anyhow::Error {
+    super::source_revision::validation_terminated(
+        super::source_revision::ValidationTerminationReason::CapacityExceeded,
+        format!("NIR1_GRAPH_CAPACITY_EXCEEDED: {field} exceeds {maximum}"),
+    )
+}
+
 fn admit_capacity(value: &mut usize, additional: usize, maximum: usize, field: &str) -> Result<()> {
     let total = value
         .checked_add(additional)
         .filter(|total| *total <= maximum)
-        .ok_or_else(|| {
-            super::source_revision::validation_terminated(
-                super::source_revision::ValidationTerminationReason::CapacityExceeded,
-                format!("NIR1_GRAPH_CAPACITY_EXCEEDED: {field} exceeds {maximum}"),
-            )
-        })?;
+        .ok_or_else(|| capacity_exceeded(field, maximum))?;
     *value = total;
     Ok(())
 }
@@ -2578,8 +2650,9 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn revision_input_stats_use_jsonb_for_arrays_and_preserve_string_counts() -> Result<()> {
+    /// The smallest schema `read_revision_input_stats` reads: one typed
+    /// review Run and ProposalSet of `project-1`, and no proposal yet.
+    fn stats_connection() -> Result<Connection> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(
             "CREATE TABLE narrative_proposal_revisions (
@@ -2610,6 +2683,152 @@ mod tests {
             "INSERT INTO narrative_proposal_sets VALUES ('set-1', 'run-1', 'project-1', ?1)",
             [crate::narrative_extraction::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND],
         )?;
+        Ok(conn)
+    }
+
+    /// One current Revision of `project-1` with the given proposal status and
+    /// Decisions (`(verdict, created_at)`, in insertion order). `column` is
+    /// stored as `bytes` filler characters; the other document is `{}`.
+    fn insert_stats_revision(
+        conn: &Connection,
+        status: &str,
+        decisions: &[(&str, &str)],
+        column: &str,
+        bytes: usize,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1', 'revision-1', ?1)",
+            [status],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_revisions
+             VALUES ('revision-1', 'proposal-1', '{}', '{}', 'human', 'digest', 'now')",
+            [],
+        )?;
+        conn.execute(
+            &format!("UPDATE narrative_proposal_revisions SET {column} = printf('%.*c', ?1, 'x')"),
+            [i64::try_from(bytes)?],
+        )?;
+        for (index, (verdict, created_at)) in decisions.iter().enumerate() {
+            conn.execute(
+                "INSERT INTO narrative_proposal_decisions
+                 VALUES (?1, 'proposal-1', 'revision-1', ?2, '{}', ?3, 'test', 'human',
+                         'electron:human-review', 'human-review', '[]')",
+                params![format!("decision-{index}"), verdict, created_at],
+            )?;
+        }
+        Ok(())
+    }
+
+    // B-GUARD: an oversized stored component refuses the whole build only
+    // when the roster has to account for the Revision, that is when it is
+    // approved. A draft, a rejection or a hold can never be qualified, so it
+    // is skipped before any of its bytes is parsed and the build goes on.
+    // Either way its stored bytes were charged to the whole-set Source input.
+    #[test]
+    fn oversized_component_refuses_the_build_only_for_an_approved_revision() -> Result<()> {
+        use crate::narrative_extraction::source_revision::is_validation_capacity_exceeded;
+
+        const T1: &str = "2026-10-14T00:00:00.001Z";
+        const T2: &str = "2026-10-14T00:00:00.002Z";
+        // (case, proposal status, Decisions, approved)
+        type Case<'a> = (&'a str, &'a str, &'a [(&'a str, &'a str)], bool);
+        let cases: [Case<'_>; 9] = [
+            ("approved", "approved", &[("approved", T1)], true),
+            ("approved status alone", "approved", &[], true),
+            (
+                "approving Decision alone",
+                "unreviewed",
+                &[("approved", T1)],
+                true,
+            ),
+            ("draft", "unreviewed", &[], false),
+            ("rejected", "rejected", &[("rejected", T1)], false),
+            (
+                "approval cancelled",
+                "rejected",
+                &[("approved", T1), ("rejected", T2)],
+                false,
+            ),
+            ("held", "held", &[("held", T1)], false),
+            ("deferred", "deferred", &[("deferred", T1)], false),
+            ("unknown status", "accepted", &[], false),
+        ];
+        for column in ["payload_json", "reconciliation_envelope_json"] {
+            for (name, status, decisions, approved) in cases {
+                let conn = stats_connection()?;
+                insert_stats_revision(
+                    &conn,
+                    status,
+                    decisions,
+                    column,
+                    REVISION_INPUT_BYTE_LIMIT + 1,
+                )?;
+                let mut capacity = SourceCapacity::default();
+                let result = read_revision_input_stats(
+                    &conn,
+                    "project-1",
+                    "revision-1",
+                    None,
+                    &mut capacity,
+                );
+                if approved {
+                    let error = result
+                        .err()
+                        .unwrap_or_else(|| panic!("{name}/{column}: must refuse the build"));
+                    assert!(
+                        is_validation_capacity_exceeded(&error),
+                        "{name}/{column}: {error:#}"
+                    );
+                    assert!(
+                        format!("{error:#}").contains(&format!(
+                            "NIR1_GRAPH_CAPACITY_EXCEEDED: persisted-revision-component-bytes exceeds {REVISION_INPUT_BYTE_LIMIT}"
+                        )),
+                        "{name}/{column}: {error:#}"
+                    );
+                } else {
+                    assert!(
+                        result?.is_none(),
+                        "{name}/{column}: an unapproved Revision is skipped, not refused"
+                    );
+                }
+                assert!(
+                    capacity.input_bytes > REVISION_INPUT_BYTE_LIMIT,
+                    "{name}/{column}: the stored bytes count toward the whole set either way"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn component_exactly_at_the_limit_is_inside_the_guard_whatever_the_approval() -> Result<()> {
+        for column in ["payload_json", "reconciliation_envelope_json"] {
+            for (status, decisions) in [
+                ("approved", &[("approved", "2026-10-14T00:00:00.001Z")][..]),
+                ("unreviewed", &[][..]),
+            ] {
+                let conn = stats_connection()?;
+                insert_stats_revision(&conn, status, decisions, column, REVISION_INPUT_BYTE_LIMIT)?;
+                let stats = read_revision_input_stats(
+                    &conn,
+                    "project-1",
+                    "revision-1",
+                    None,
+                    &mut SourceCapacity::default(),
+                )?;
+                assert!(
+                    stats.is_some(),
+                    "{status}/{column}: N bytes must stay inside the component guard"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn revision_input_stats_use_jsonb_for_arrays_and_preserve_string_counts() -> Result<()> {
+        let conn = stats_connection()?;
 
         for (revision_id, proposal_id, payload, expected_records) in [
             (
@@ -3195,8 +3414,13 @@ mod tests {
         result
     }
 
-    // U6 safe failure: every stored component of the one Revision stays within
-    // its 6 MiB limit, but the whole-set 16 MiB scan budget is exhausted.
+    // U6 safe failure: every stored component of the one approved candidate is
+    // exactly at its 6 MiB limit, but the whole-set 16 MiB scan budget is
+    // exhausted. The candidate is approved on purpose. The component guard
+    // refuses only a Revision that the roster has to hold (B-GUARD), so only an
+    // approved candidate puts the exact limit in play, in the control and in
+    // the refusal alike. The last part takes the approval away and shows that
+    // an unapproved candidate one byte over is skipped, yet still counted.
     #[test]
     fn whole_set_input_limit_refuses_without_replacing_the_sealed_generation() -> Result<()> {
         use crate::narrative_extraction::incremental_freshness::run_incremental_freshness_cycle;
@@ -3270,8 +3494,11 @@ mod tests {
         assert!(matches!(sealed.0, BindingRead::Registered(_)));
 
         // One unrelated candidate whose payload and envelope are each exactly
-        // at REVISION_INPUT_BYTE_LIMIT. JSON validity is irrelevant: the
-        // scalar length gate runs before any JSON function.
+        // at REVISION_INPUT_BYTE_LIMIT, on an approved proposal so that the
+        // component guard applies to it. JSON validity is irrelevant: the
+        // scalar length gate runs before any JSON function. It has no Source
+        // basis, so past the guard the build skips it as ineligible and it
+        // never reaches the A2 reader.
         let revision_id = "u6-whole-set-revision";
         authority.with_conn(|conn| {
             let proposal_set: String = conn.query_row(
@@ -3286,7 +3513,7 @@ mod tests {
                 "INSERT INTO narrative_proposals
                     (id, proposal_set_id, proposal_key, kind, status, payload_json,
                      current_revision_id, created_at, updated_at)
-                 VALUES ('u6-whole-set-proposal', ?1, 'u6', 'u6', 'accepted', '{}', ?2,
+                 VALUES ('u6-whole-set-proposal', ?1, 'u6', 'u6', 'approved', '{}', ?2,
                          '2026-09-22T00:00:00Z', '2026-09-22T00:00:00Z')",
                 params![proposal_set, revision_id],
             )?;
@@ -3315,56 +3542,118 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?)
         };
-        // Control: 12 MiB of components is still inside the 16 MiB whole set,
-        // so the same candidate is admitted (and skipped as ineligible).
-        authority.with_read_transaction(|conn| {
-            assert_eq!(
-                stored_bytes(conn)?,
-                (
-                    REVISION_INPUT_BYTE_LIMIT as i64,
-                    REVISION_INPUT_BYTE_LIMIT as i64
-                )
+        let at_limit = (
+            REVISION_INPUT_BYTE_LIMIT as i64,
+            REVISION_INPUT_BYTE_LIMIT as i64,
+        );
+        // The whole set refuses the build as a typed capacity failure, and the
+        // component guard is not the bound that spoke.
+        let assert_whole_set_refusal = || {
+            let error = authority
+                .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))
+                .err()
+                .expect("whole-set input over 16 MiB must refuse the build");
+            assert!(is_validation_capacity_exceeded(&error), "{error:#}");
+            let text = format!("{error:#}");
+            assert!(
+                text.contains(&format!(
+                    "input-bytes exceeds {}",
+                    nir1_capacity::INPUT_BYTES
+                )),
+                "{text}"
             );
+            assert!(
+                !text.contains("persisted-revision-component-bytes"),
+                "{text}"
+            );
+        };
+        // No partial generation reached storage; the old sealed binding and
+        // every stored Graph surface are byte-identical and still registered.
+        let assert_sealed_intact = || {
+            authority.with_read_transaction(|conn| {
+                ensure!(is_registered(conn, PROJECT, INDEX_KEY)?);
+                assert_eq!(read(conn, PROJECT)?, sealed.0);
+                assert_eq!(stored_rows(conn)?, sealed.1);
+                Ok(())
+            })
+        };
+
+        // Control: 12 MiB of components is still inside the 16 MiB whole set.
+        // The candidate is approved and each component is exactly at the
+        // limit, so the component guard has to let N bytes through. A guard
+        // that refused the limit itself (`<` for `<=`) would fail this build
+        // with persisted-revision-component-bytes. Past the guard the
+        // candidate is skipped as ineligible.
+        authority.with_read_transaction(|conn| {
+            assert_eq!(stored_bytes(conn)?, at_limit);
             prepare_graph_index_build(conn, runtime, PROJECT).map(drop)
         })?;
 
-        // A 5 MiB Decision for the same Revision pushes only the sum over.
+        // A 5 MiB Decision for the same Revision pushes only the sum over:
+        // payload and envelope are still exactly at the limit, so the whole set
+        // is the only bound that refuses.
         authority.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO narrative_proposal_decisions
                     (id, proposal_id, revision_id, decision, decision_json, created_at, created_by)
-                 VALUES ('u6-whole-set-decision', 'u6-whole-set-proposal', ?1, 'approve', ?2,
+                 VALUES ('u6-whole-set-decision', 'u6-whole-set-proposal', ?1, 'approved', ?2,
                          '2026-09-22T00:00:00Z', 'u6')",
                 params![revision_id, padded_json(r#"{"padding":""#, 5 * 1024 * 1024)],
             )?;
             Ok(())
         })?;
-        let error = authority
-            .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))
-            .err()
-            .expect("whole-set input over 16 MiB must refuse the build");
-        assert!(is_validation_capacity_exceeded(&error), "{error:#}");
-        let text = format!("{error:#}");
-        assert!(
-            text.contains(&format!(
-                "input-bytes exceeds {}",
-                nir1_capacity::INPUT_BYTES
-            )),
-            "{text}"
-        );
-        assert!(
-            !text.contains("NIR1_GRAPH_PERSISTED_REVISION_INPUT_LIMIT"),
-            "{text}"
-        );
-
-        // No partial generation reached storage; the old sealed binding and
-        // every stored Graph surface are byte-identical and still registered.
         authority.with_read_transaction(|conn| {
-            ensure!(is_registered(conn, PROJECT, INDEX_KEY)?);
-            assert_eq!(read(conn, PROJECT)?, sealed.0);
-            assert_eq!(stored_rows(conn)?, sealed.1);
+            assert_eq!(stored_bytes(conn)?, at_limit);
             Ok(())
         })?;
+        assert_whole_set_refusal();
+        assert_sealed_intact()?;
+
+        // B-GUARD: take the approval away from the same candidate (the
+        // proposal and its Decision both say rejected) and put its payload one
+        // byte over the component limit. The roster can never hold a Revision
+        // that is not approved, so the component guard has nothing to refuse.
+        // The candidate's bytes are still counted: the 5 MiB Decision pushes
+        // the sum over the whole set just as before.
+        authority.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposals SET status = 'rejected'
+                  WHERE id = 'u6-whole-set-proposal'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposal_decisions SET decision = 'rejected'
+                  WHERE id = 'u6-whole-set-decision'",
+                [],
+            )?;
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET payload_json = payload_json || ' '
+                  WHERE id = ?1",
+                [revision_id],
+            )?;
+            Ok(())
+        })?;
+        authority.with_read_transaction(|conn| {
+            assert_eq!(stored_bytes(conn)?.0, REVISION_INPUT_BYTE_LIMIT as i64 + 1);
+            Ok(())
+        })?;
+        assert_whole_set_refusal();
+
+        // Shrinking only the Decision brings the sum back inside the whole
+        // set, and the build goes on: the oversized payload is skipped, not
+        // refused.
+        authority.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_decisions SET decision_json = '{}'
+                  WHERE id = 'u6-whole-set-decision'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        authority.with_read_transaction(|conn| {
+            prepare_graph_index_build(conn, runtime, PROJECT).map(drop)
+        })?;
+        assert_sealed_intact()?;
         Ok(())
     }
 }
