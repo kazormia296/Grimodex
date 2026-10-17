@@ -34,3 +34,66 @@ lane: DA-1（branch `claude/nir1-da1`、base `a0ce11aa`）。出所の確認済�
 | Y-1 の probe の窓（ST1、ST4） | probe の実行ごとに起動し、終了で消える。一時 userData と一時 dist を作り、終了で削除する | — | probe の終了で窓を閉じ、listener を閉じ、net log を保存する。timeout で Electron の process を kill する | 記録 file（Electron の版つき）が証拠 | 異常終了では記録を採り直す。desktop への副作用が出たら報告 |
 
 ST2 以降の行（Native の旧 AI の 8 入口、license の client、NIR の区分の Native の入口）は、それぞれの ST の commit で埋める。
+
+## ST1 の実装後の追記（2026-10-17。上の表の本文は直さない）
+
+### 実装で決めたこと（DR-DA1-5、DR-DA1-6 の範囲内）
+
+- guard の既定は `app.getPath("userData")` を呼出しごとに解決する `profileDataGuardDefault.ts`。mount の manager は guard を option で受け、省略すると何も通さない（fail closed）。`index.ts` が既定の guard と `isProfileRestricted: () => restricted || unavailable` を渡し、静的な検査（`rendererIsolation.static.test.ts`）が配線を固定する。
+- 比較は、対象の最も近い既存の祖先まで `realpath` し、祖先の鎖の identity（device と inode）に profile data directory が入るか、または canonical path の包含（Windows と macOS は大文字小文字を区別しない）で見る。絶対 path でない、`..` を含む、NUL を含む、ENOENT 以外の error、dangling symlink、ENOTDIR は拒否する。
+- 保存 dialog の guard は `showSavePathDialog` の既定の引数なので、`export_save_*` と `vivliostyle_save_output` の両方が通る。拒否の理由は `PROFILE_DATA_DIR_REJECTED: <reason>` で、path を含まない。
+- download の guard は、既定の session と `app.on("session-created")` で後から作られる session の両方に付ける。保存先は mkdtemp の固定名 file。完了後に `showSavePathDialog` で利用者に選ばせ、guard で検査してから copy する。実機で `<a download>` が `will-download` に来て、保存先を同期に決めれば Electron の既定の dialog が開かないこと、状態ファイルへの保存が拒否されること、通常の保存先へは書けることを probe で確かめた（`renderer-isolation-probe.record.json` の downloads）。
+- `<iframe src=…>` で octet-stream の応答を開くと Chromium の download が起きる（probe で観測）。同じ guard を通る。
+- 窓の title は `BrowserWindow` の `page-title-updated` を取り消す（`win.on`）。title の固定は供給されるまで固定する側（fail closed）。`resetWindowTitles()` は生成時の title に戻す（呼出しは DA-2）。
+- 長さの上限は 120 code point、拡張子は 17 文字（`.` を含む）まで残す。surrogate pair を割らない。
+- 版上げの検知は採った（DR-DA1-6 の (4)）。`electron/main/rendererIsolationProbeRecord.test.ts` が記録の Electron の版と `package.json` の版を比べる。
+
+### 残余として記録するもの（委任の範囲では閉じない。新しい経路ではない）
+
+- hard link: profile data directory の file への hard link を外に置いても、保存 dialog の `writeFile` は同じ inode を書く。renderer は hard link を作る経路を持たない（同じ OS ユーザーの process は Out-of-scope）。置き場所で見るので guard は通す（`profileDataGuard.test.ts` で固定）。
+- check と use の競合: renderer は symlink を作れない。同じ OS ユーザーの process による差し替えは Out-of-scope。呼出しごとの検査と、書込みの直前の再解決で縮めた。
+- Windows の短縮名と大文字小文字だけの違い: Linux では実機で試せない。identity（NTFS の file ID）と canonical path の大文字小文字を区別しない比較の両方で拒否する設計で、比較関数は platform を指定して単体試験している。実機の確認は Windows の独立受入れ。
+
+### E-3: FE が `.md` だけを渡すことの確認（K3/2 の DA-1 の確認事項）
+
+`external_mount_read_file`／`_write_file`／`_file_mtime` を呼ぶ FE の箇所は 4 つで、`relPath` の出所はすべて `.md` に限られる。
+- `src/features/external-mount/api.ts` の 3 つの wrapper の呼出し元は、`mountManager.ts:1684-1686`（`handleFileChanged`）、`mountManager.ts:2181`（conflict の書き戻し）、`writeBack.ts:96`（`flushWriteBack`）だけ。
+- `handleFileChanged` の `relPath` は main の watcher の event（`externalMount.ts` の `onFsEvent` が `.md` 以外を捨てる。`externalMount.test.ts` の「非 .md イベントは無視」が固定）。conflict の `relPath` と `writeBack` の `sourceUri` の `relPath` は、scan（`.md` だけ）か同じ watcher の event から作った Scene の `sourceUri` に由来する。`buildSourceUri` の呼出し 15 箇所を確かめた。
+- `.md` 以外を渡す呼出しは見つからなかった（[precheck] は不要）。
+
+### 棚卸し: renderer が渡す値で書く file の path が決まる経路（最終候補で ST4 が再実行する）
+
+`electron/main` の fs の書込み（`writeFile`、`appendFile`、`copyFile`、`rename`、`rm`、`mkdir`、`createWriteStream` と同期版）を `git grep` した結果は次のとおり（K3/2 の結果から増えていない）。
+- renderer の値で path が決まるもの: `external_mount_write_file`（SF-1 と E-3 の対象）、`export_save_text`／`export_save_bytes`／`vivliostyle_save_output`（保存 dialog。SF-1 の 7）、Chromium の download（`will-download`。SF-1 の 8）。
+- 固定の path か、renderer が名前を決められないもの: `keyStore.ts`、`windowState.ts`、`credentialMigration.ts` の marker、`mcpSidecarInstall.ts`、`mozkeyInstaller.ts`（名前は GitHub の release の asset）、`codexAppServer/isolatedHome.ts`、`narrativeMaintenanceCiSeam.ts`（CI の env）、`vivliostyle.ts` の入力（`book.html`／`theme.css` の allowlist だけ。`ALLOWED_FILE_NAMES`）、ログ（`~/.grimodex/logs`）。
+- N-API: path を受けるのは `open_workspace`（固定の名前の file だけを書く）と `restore_backup`（`grimodex-*.db` の basename だけ）。
+- File System Access API: `showSaveFilePicker`／`showOpenFilePicker`／`showDirectoryPicker` は存在する（probe で確認）。利用者の操作を模して呼ぶと native の dialog が開く（probe では 4 秒後も pending）。picker で選んだ後の書込みは `fileSystem` permission を要し、`isAllowedRendererPermission` の allowlist にないので拒否される設計だが、dialog の中の操作は probe では自動化できていない。**未確認の項目として独立受入れの実機に渡す**（利用者が profile data directory の file を picker で選び、書込みが拒否されること）。
+- `window.print()`: 利用者の操作を模して呼ぶと printing の utility process が起動し 4 秒後も pending（native の印刷 dialog と思われる）。dialog の中の「ファイルへ印刷」で保存先を選べる場合、保存先は利用者が選ぶが、profile data directory の検査は通らない。**新しい経路の候補として独立受入れの実機に渡す**（Linux の GTK の印刷 dialog に「ファイルへ印刷」があるか、初期の名前が `document.title` から決まるか）。閉じられない場合は [precheck]。
+
+### Y-1 の試走（ST1。`node electron/scripts/renderer-isolation-probe.mjs`）
+
+環境: Electron 43.5.0（Chromium 150）。`scripts/local-ci-xvfb.mjs` を host namespace で使い、`WAYLAND_DISPLAY`、`XDG_SESSION_TYPE`、`DBUS_SESSION_BUS_ADDRESS` と env の proxy を外し、`ELECTRON_OZONE_PLATFORM_HINT=x11`。`unshare -n` は使っていない。process の sandbox は有効（`--no-sandbox` なし）。遮断と記録は `--host-resolver-rules`（`*.probe.test` だけを loopback の canary へ、ほかは `~NOTFOUND`）と net log（Everything）。試走の前後で `/tmp/.X11-unix` は X0、X1 のままで、desktop への副作用は出なかった（最初の試走が正常終了せず Xvfb が 1 つ残ったので、その pid だけを止めた）。
+
+**製品の候補（`renderer-isolation-probe.record.json`）の結果**
+- 外向きの試みが網に届いたもの: **WebRTC の ICE server 経由だけ**（`webrtc.turn-tcp`、`webrtc.turns-tls`、同一 origin の realm からの同じ試み）。`RTCPeerConnection` に `turn:host:port?transport=tcp` か `turns:host:port` を渡すと、Chromium は名前を解決して TCP に接続し、`turns:` では TLS の ClientHello（SNI）まで送る。接続先の host 名と port に、画面が読めるデータを載せられる。CSP の `connect-src` も permission も止めない。UDP の STUN／TURN は canary に届かなかった。
+- 0 件だったもの: fetch、no-cors の fetch、XHR、WebSocket、EventSource、sendBeacon、img、CSS／script／iframe／media、form、meta refresh、`window.open`（窓は増えない）、`<a ping>`、dns-prefetch／preconnect／prefetch／prerender／preload／modulepreload、同梱 script から作る classic と module の worker（fetch と importScripts は CSP で止まる）、blob／data／外部 URL の worker、service worker（登録は TypeError で拒否）、HTML 以外の応答（json、png、js、md、未知の拡張子）と 404 と `%2e%2e` の応答を開いた realm（応答に CSP が付き、その realm からの fetch／beacon／img／WebSocket／XHR は止まる）。
+- 同梱の force-layout worker は CSP の下で動く（3 node の layout が `done`）。
+- 窓の title: restricted の固定で `document.title` を変えても製品名のまま。固定を外した対照では変わる（検査が検出できる）。
+- `<a download>` で名前を `profile-egress.json` にし、保存先に状態ファイルが選ばれる攻撃は拒否され、状態ファイルは変わらない。通常の保存先へは書ける。
+- clipboard は利用者の操作なしでは書けない（NotAllowedError）。通知は allowlist にあり、`permission:granted`（開示の残余）。geolocation、camera、microphone、clipboard-read、midi、persistent-storage、background-sync、screen-wake-lock は拒否される。`navigator.mediaSession.metadata` と `navigator.setAppBadge` は設定できる（OS に渡るかは、D-Bus の session を外した probe では未確認）。
+- marker のない外向きの観測: spellchecker の辞書の取得（`redirector.gvt1.com`。X-1 の開示の「続く通信」）と、Chromium の IPv6 到達性の確認（`[2001:4860:4860::8888]:443` への UDP connect。データは送らない）だけ。
+- 対照（DA-1 の前の挙動に戻した `--legacy-control`）では、CSP のない同一 origin の realm と worker からの fetch／beacon／img／WebSocket／XHR が網に届く（検出できる）。
+
+**Main の設定で塞げるかの試験（`--countermeasure`／`--electron-arg`。どれも製品には入れていない）**
+
+| 候補 | WebRTC の経路 |
+|---|---|
+| `webContents.setWebRTCIPHandlingPolicy("disable_non_proxied_udp")` | 塞がらない（TCP と TLS の TURN は残る） |
+| `--force-webrtc-ip-handling-policy=disable_non_proxied_udp` | 塞がらない |
+| `--webrtc-ip-handling-policy=disable_non_proxied_udp` | 塞がらない |
+| CSP に `webrtc 'block'` を足す | 効かなかった（Chromium 150 の既定では効かない。CSP の directive の変更は再確認の対象でもある） |
+| `--disable-webrtc` | 効かない |
+| `--disable-blink-features=RTCPeerConnection` | 効かない |
+| `--proxy-server=socks5://127.0.0.1:9`（全 Chromium の通信を blackhole の proxy へ） | 塞がる。ただし更新・spellchecker を含む Chromium の通信すべてを止める（unrestricted の挙動を変える） |
+
+**判断**: 委任の範囲で塞げる設定がない。塞ぐ候補（PAC による allowlist の proxy、窓だけの partition など）は unrestricted の更新と spellchecker の通信、または保存済みの renderer のデータを変えうるので、U3 の委任の外（新しい network 設定、再確認）。したがって **ST3 の「`own-data-read` の開放を有効にする」commit は入れない**（TASK §4 の依存と §10）。`rendererIsolationProbeRecord.test.ts` の `OPEN_FINDINGS` が、この finding だけが残っていることを固定する。
