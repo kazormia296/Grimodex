@@ -89,11 +89,11 @@
     },
     {
       "path": "scripts/nir1-c-query-worker-ci.sh",
-      "sha256": "d6d04ff8f2f47506c8a2252395bbcf08403059b8dbf3c1257b47fe4db8c9015a"
+      "sha256": "e68897272291cd84794bc4c7de20ef247c73a180347aac86a27a7ac9b9a5a062"
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
-      "sha256": "c34b1db9287aced4937eca2ac519e75b0a0104c68e9f3517aab93d008871a194"
+      "sha256": "96b52ceef674afcace84c1b69abc442dc8e91e89188346888565b6c7f54887b1"
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",
@@ -121,7 +121,7 @@
     },
     {
       "path": "docs/pr610-full-workload-risk.md",
-      "sha256": "fd615f7b063fb4ec9cf1deaa885cd412cfdb0568d4f9aefe47313a86c9f5cb49"
+      "sha256": "852aa62cc6a09c0df00a29cc675c8ff7acc1e44060f8211e7b81985bc88dae6c"
     },
     {
       "path": "scripts/local-ci-native-b.py",
@@ -195,7 +195,7 @@
         "operation": "Review current locked CPU workload and explicit whole-environment working hypothesis; no acquisition replay or free-RAM inference from disk"
       },
       {
-        "component": "other-full-consumers", "kind": "transient", "bytes": "287883264", "sources": [21, 22, 23, 29],
+        "component": "other-full-consumers", "kind": "transient", "bytes": "371859456", "sources": [21, 22, 23, 29],
         "basis": "All7 Q2 plus3 Q512 inventory images plus official C2-ZC fixture as ADDITIONAL full-residency/copy working-set hypotheses. Existing schema-density scenarios and DB38007676893/1 scoped provenance/hashes in risk doc are payload references, not SQLite RSS/cache/step maxima. No file-cache release/alias saving assumed.",
         "operation": "Review synthetic DB working-image credibility and copy topology; preserve Q2/Q512/fullGold, no unchanged fixture/test replay"
       },
@@ -967,17 +967,17 @@
         2,
         29
       ],
-      "basis": "Official schema DB baseline; source literal140 qualified materials. Per material one independent4KiB leaf page for each of21 Source/Codex table-index/proposal-payload surfaces; per revision one page for each of93 narrative/qualification table-index objects, plus3 actual A3 scope refs. Explicit page-density scenario, NOT391 schema objects per material or page_count observation. WAL/frame headers, SHM, rollback journal and construction images separate; producer owns7/3 copies.",
+      "basis": "Official schema DB baseline; source literal164 qualified materials. Per material one independent4KiB leaf page for each of21 Source/Codex table-index/proposal-payload surfaces; per revision one page for each of93 narrative/qualification table-index objects, plus5 actual A3 scope refs; per materialless filler Scene (60 here) one page for each of20 tree-node/FTS/Scene-binding table-index objects. 5421 pages =679+21*164+93+5+20*60. Explicit page-density scenario, NOT391 schema objects per material or page_count observation. WAL/frame headers, SHM, rollback journal and construction images separate; producer owns7/3 copies.",
       "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
       "items": [
         {
           "role": "db",
-          "bytes": "15216640",
+          "bytes": "22204416",
           "inodes": "1"
         },
         {
           "role": "wal",
-          "bytes": "15306752",
+          "bytes": "22335488",
           "inodes": "1"
         },
         {
@@ -987,12 +987,12 @@
         },
         {
           "role": "journal",
-          "bytes": "15216640",
+          "bytes": "22204416",
           "inodes": "1"
         },
         {
           "role": "construction",
-          "bytes": "15216640",
+          "bytes": "22204416",
           "inodes": "1"
         }
       ]

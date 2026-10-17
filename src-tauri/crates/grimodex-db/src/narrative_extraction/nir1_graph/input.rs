@@ -883,12 +883,37 @@ mod tests {
     }
 }
 
-/// Admit A3 auxiliary stored inputs before disclosure evaluation. The caller
-/// must first admit the typed Revision; this helper does not re-charge A2.
-/// Scope registry reads repeat per material scene, so the entity count gives
-/// a conservative upper bound (multiple entities may share one scene).
+/// How many times the shared read of the Scope authority reads the registry:
+/// its Scene-scope extension makes two statements (the whole registry, then
+/// its version row), once for the query however many Revisions it evaluates.
+/// Reading is counted, not estimated: before CQ-AVAIL each Revision's check
+/// was charged `entities + 2` reads of the registry.
+pub(super) const SHARED_REGISTRY_READS: usize = 2;
+
+/// The stored inputs an A3 disclosure check reads, charged in two parts
+/// (post-B 6.2: read/admission is one budget per query, "同一query/snapshot/
+/// Scopeの同じRevisionはrequest-localで重複検証を抑える").
+///
+/// Shared by every Revision of a query: the project's tree, Scene bindings and
+/// registry (the Scope authority), its phase mode, the latest Semantic Epoch,
+/// and the query Scene's source and POV. They are read once in the pinned
+/// snapshot (`Nir1ProjectReads`), so [`preflight_project_reads`] counts them
+/// once, before that first read.
+///
+/// Bound to one Revision: its Decision, and the Codex rows its Entities name.
+/// [`preflight_disclosure_revision`] counts those for each Revision. Neither
+/// part re-charges A2, which the caller admits first.
+///
 /// This is scalar input/cardinality accounting, not a bound on JSON/PM
 /// expansion or heap size.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DisclosureReads {
+    Shared,
+    PerRevision,
+}
+
+/// A single Revision alone: the shared reads and its own, as a query that
+/// evaluates only this Revision charges them. Tests only.
 #[cfg(test)]
 pub(super) fn preflight_disclosure(
     conn: &Connection,
@@ -906,36 +931,41 @@ pub(super) fn preflight_disclosure(
         |row| row.get(0),
     )?;
     let payload_bytes = usize::try_from(payload_bytes).map_err(|_| anyhow::anyhow!(ERROR))?;
-    preflight_disclosure_with_payload_bytes(
+    let shared = preflight_project_reads(
+        conn,
+        project,
+        query_scene_id,
+        remaining_rows,
+        remaining_bytes,
+    )?;
+    let own = preflight_disclosure_revision(
         conn,
         project,
         revision_id,
-        query_scene_id,
         payload_bytes,
-        remaining_rows,
-        remaining_bytes,
-    )
+        shared.bytes,
+        remaining_rows - shared.rows,
+        remaining_bytes - shared.bytes,
+    )?;
+    Ok(DisclosureAdmission {
+        rows: shared.rows + own.rows,
+        bytes: shared.bytes + own.bytes,
+    })
 }
 
-/// A2 has already admitted the payload's scalar byte length before any JSON1
-/// work. Reuse that result for A3 instead of issuing the same octet_length
-/// query again. The entity cardinality query remains a separate step so an
-/// oversized payload is rejected before JSON1 parses it.
-pub(super) fn preflight_disclosure_with_payload_bytes(
+/// The shared project-level reads of A3 (see [`DisclosureReads`]), admitted
+/// once per query before the first of them.
+pub(super) fn preflight_project_reads(
     conn: &Connection,
     project: &str,
-    revision_id: &str,
     query_scene_id: &str,
-    payload_bytes: usize,
     remaining_rows: usize,
     remaining_bytes: usize,
 ) -> anyhow::Result<DisclosureAdmission> {
-    preflight_disclosure_inner(
+    preflight_project_reads_inner(
         conn,
         project,
-        revision_id,
         query_scene_id,
-        payload_bytes,
         remaining_rows,
         remaining_bytes,
         #[cfg(feature = "nir1-material-diagnostics")]
@@ -944,57 +974,42 @@ pub(super) fn preflight_disclosure_with_payload_bytes(
 }
 
 #[cfg(feature = "nir1-material-diagnostics")]
-pub(super) fn preflight_disclosure_observed(
+pub(super) fn preflight_project_reads_observed(
     conn: &Connection,
     project: &str,
-    revision_id: &str,
     query_scene_id: &str,
-    payload_bytes: usize,
     remaining_rows: usize,
     remaining_bytes: usize,
     observation: Option<&mut A3SqlObservation>,
 ) -> anyhow::Result<DisclosureAdmission> {
-    preflight_disclosure_inner(
+    preflight_project_reads_inner(
         conn,
         project,
-        revision_id,
         query_scene_id,
-        payload_bytes,
         remaining_rows,
         remaining_bytes,
         observation,
     )
 }
 
-fn preflight_disclosure_inner(
+fn preflight_project_reads_inner(
     conn: &Connection,
     project: &str,
-    revision_id: &str,
     query_scene_id: &str,
-    payload_bytes: usize,
     remaining_rows: usize,
     remaining_bytes: usize,
     #[cfg(feature = "nir1-material-diagnostics")] mut observation: Option<&mut A3SqlObservation>,
 ) -> anyhow::Result<DisclosureAdmission> {
     const ERROR: &str = "NIR1_GRAPH_DISCLOSURE_INPUT_LIMIT";
-    anyhow::ensure!(payload_bytes <= INPUT_BYTES, ERROR);
-    #[cfg(feature = "nir1-material-diagnostics")]
-    let started = start_a3_sql_timer(&observation);
-    let entity_count_query: rusqlite::Result<i64> =
-        conn.query_row(DISCLOSURE_ENTITY_COUNT_SQL, [revision_id], |row| row.get(0));
-    #[cfg(feature = "nir1-material-diagnostics")]
-    record_a3_sql_query(&mut observation, 0, started, entity_count_query.is_err());
-    let entity_count = entity_count_query?;
-    let registry_reads = usize::try_from(entity_count)
-        .ok()
-        .and_then(|count| count.checked_add(2))
-        .ok_or_else(|| anyhow::anyhow!(ERROR))?;
     let mut rows = 0usize;
     #[cfg(feature = "nir1-material-diagnostics")]
     let global_row_queries = DISCLOSURE_GLOBAL_ROWS_SQL.iter().enumerate();
     #[cfg(not(feature = "nir1-material-diagnostics"))]
     let global_row_queries = DISCLOSURE_GLOBAL_ROWS_SQL.iter().map(|query| ((), query));
     for (_index, &(sql, multiplier, parameters)) in global_row_queries {
+        if parameters == DisclosureGlobalRowsParams::Revision {
+            continue;
+        }
         #[cfg(feature = "nir1-material-diagnostics")]
         let started = start_a3_sql_timer(&observation);
         let value_query: rusqlite::Result<i64> = match parameters {
@@ -1002,9 +1017,7 @@ fn preflight_disclosure_inner(
             DisclosureGlobalRowsParams::ProjectScene => {
                 conn.query_row(sql, params![project, query_scene_id], |row| row.get(0))
             }
-            DisclosureGlobalRowsParams::Revision => {
-                conn.query_row(sql, [revision_id], |row| row.get(0))
-            }
+            DisclosureGlobalRowsParams::Revision => continue,
         };
         #[cfg(feature = "nir1-material-diagnostics")]
         record_a3_sql_query(
@@ -1015,11 +1028,143 @@ fn preflight_disclosure_inner(
         );
         let value = value_query?;
         let multiplier = if multiplier == 0 {
-            registry_reads
+            SHARED_REGISTRY_READS
         } else {
             multiplier
         };
         admit_rows(&mut rows, value, multiplier, remaining_rows)?;
+    }
+    let mut bytes = 0usize;
+    #[cfg(feature = "nir1-material-diagnostics")]
+    let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate();
+    #[cfg(not(feature = "nir1-material-diagnostics"))]
+    let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().map(|query| ((), query));
+    for (_index, &(sql, multiplier, reads)) in global_byte_queries {
+        if reads != DisclosureReads::Shared {
+            continue;
+        }
+        #[cfg(feature = "nir1-material-diagnostics")]
+        let started = start_a3_sql_timer(&observation);
+        // The statements bind a Revision slot only as a non-null guard.
+        let value_query: rusqlite::Result<i64> =
+            conn.query_row(sql, params![project, "", query_scene_id], |row| row.get(0));
+        #[cfg(feature = "nir1-material-diagnostics")]
+        record_a3_sql_query(
+            &mut observation,
+            10 + _index as u8,
+            started,
+            value_query.is_err(),
+        );
+        let value = value_query?;
+        let multiplier = if multiplier == 0 {
+            SHARED_REGISTRY_READS
+        } else {
+            multiplier
+        };
+        let additional = usize::try_from(value)
+            .ok()
+            .and_then(|value| value.checked_mul(multiplier))
+            .ok_or_else(|| anyhow::anyhow!(ERROR))?;
+        bytes = bytes
+            .checked_add(additional)
+            .filter(|value| *value <= remaining_bytes.min(INPUT_BYTES))
+            .ok_or_else(|| anyhow::anyhow!(ERROR))?;
+    }
+    Ok(DisclosureAdmission { rows, bytes })
+}
+
+/// The A3 reads bound to one Revision (see [`DisclosureReads`]). A2 has
+/// already admitted the payload's scalar byte length before any JSON1 work;
+/// `payload_bytes` reuses it. `shared_bytes` are the bytes
+/// [`preflight_project_reads`] admitted: the check of one Revision still sees
+/// the shared reads it evaluates against, so shared and own bytes together
+/// stay within the per-Revision preflight (2 MiB), as before CQ-AVAIL.
+pub(super) fn preflight_disclosure_revision(
+    conn: &Connection,
+    project: &str,
+    revision_id: &str,
+    payload_bytes: usize,
+    shared_bytes: usize,
+    remaining_rows: usize,
+    remaining_bytes: usize,
+) -> anyhow::Result<DisclosureAdmission> {
+    preflight_disclosure_revision_inner(
+        conn,
+        project,
+        revision_id,
+        payload_bytes,
+        shared_bytes,
+        remaining_rows,
+        remaining_bytes,
+        #[cfg(feature = "nir1-material-diagnostics")]
+        None,
+    )
+}
+
+#[cfg(feature = "nir1-material-diagnostics")]
+pub(super) fn preflight_disclosure_revision_observed(
+    conn: &Connection,
+    project: &str,
+    revision_id: &str,
+    payload_bytes: usize,
+    shared_bytes: usize,
+    remaining_rows: usize,
+    remaining_bytes: usize,
+    observation: Option<&mut A3SqlObservation>,
+) -> anyhow::Result<DisclosureAdmission> {
+    preflight_disclosure_revision_inner(
+        conn,
+        project,
+        revision_id,
+        payload_bytes,
+        shared_bytes,
+        remaining_rows,
+        remaining_bytes,
+        observation,
+    )
+}
+
+fn preflight_disclosure_revision_inner(
+    conn: &Connection,
+    project: &str,
+    revision_id: &str,
+    payload_bytes: usize,
+    shared_bytes: usize,
+    remaining_rows: usize,
+    remaining_bytes: usize,
+    #[cfg(feature = "nir1-material-diagnostics")] mut observation: Option<&mut A3SqlObservation>,
+) -> anyhow::Result<DisclosureAdmission> {
+    const ERROR: &str = "NIR1_GRAPH_DISCLOSURE_INPUT_LIMIT";
+    anyhow::ensure!(payload_bytes <= INPUT_BYTES, ERROR);
+    // The Revision's own bytes may use what the query's budget has left (the
+    // shared bytes were admitted from it already) and what the shared reads
+    // leave of the per-Revision preflight.
+    let byte_limit = remaining_bytes.min(
+        INPUT_BYTES
+            .checked_sub(shared_bytes)
+            .ok_or_else(|| anyhow::anyhow!(ERROR))?,
+    );
+    let mut rows = 0usize;
+    #[cfg(feature = "nir1-material-diagnostics")]
+    let global_row_queries = DISCLOSURE_GLOBAL_ROWS_SQL.iter().enumerate();
+    #[cfg(not(feature = "nir1-material-diagnostics"))]
+    let global_row_queries = DISCLOSURE_GLOBAL_ROWS_SQL.iter().map(|query| ((), query));
+    for (_index, &(sql, multiplier, parameters)) in global_row_queries {
+        if parameters != DisclosureGlobalRowsParams::Revision {
+            continue;
+        }
+        #[cfg(feature = "nir1-material-diagnostics")]
+        let started = start_a3_sql_timer(&observation);
+        let value_query: rusqlite::Result<i64> =
+            conn.query_row(sql, [revision_id], |row| row.get(0));
+        #[cfg(feature = "nir1-material-diagnostics")]
+        record_a3_sql_query(
+            &mut observation,
+            1 + _index as u8,
+            started,
+            value_query.is_err(),
+        );
+        admit_rows(&mut rows, value_query?, multiplier, remaining_rows)?;
     }
     #[cfg(feature = "nir1-material-diagnostics")]
     let started = start_a3_sql_timer(&observation);
@@ -1044,13 +1189,14 @@ fn preflight_disclosure_inner(
     let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().enumerate();
     #[cfg(not(feature = "nir1-material-diagnostics"))]
     let global_byte_queries = DISCLOSURE_GLOBAL_BYTES_SQL.iter().map(|query| ((), query));
-    for (_index, &(sql, multiplier)) in global_byte_queries {
+    for (_index, &(sql, multiplier, reads)) in global_byte_queries {
+        if reads != DisclosureReads::PerRevision {
+            continue;
+        }
         #[cfg(feature = "nir1-material-diagnostics")]
         let started = start_a3_sql_timer(&observation);
         let value_query: rusqlite::Result<i64> =
-            conn.query_row(sql, params![project, revision_id, query_scene_id], |row| {
-                row.get(0)
-            });
+            conn.query_row(sql, params![project, revision_id, ""], |row| row.get(0));
         #[cfg(feature = "nir1-material-diagnostics")]
         record_a3_sql_query(
             &mut observation,
@@ -1058,19 +1204,13 @@ fn preflight_disclosure_inner(
             started,
             value_query.is_err(),
         );
-        let value = value_query?;
-        let multiplier = if multiplier == 0 {
-            registry_reads
-        } else {
-            multiplier
-        };
-        let additional = usize::try_from(value)
+        let additional = usize::try_from(value_query?)
             .ok()
             .and_then(|value| value.checked_mul(multiplier))
             .ok_or_else(|| anyhow::anyhow!(ERROR))?;
         bytes = bytes
             .checked_add(additional)
-            .filter(|value| *value <= remaining_bytes.min(INPUT_BYTES))
+            .filter(|value| *value <= byte_limit)
             .ok_or_else(|| anyhow::anyhow!(ERROR))?;
     }
     #[cfg(feature = "nir1-material-diagnostics")]
@@ -1092,17 +1232,13 @@ fn preflight_disclosure_inner(
         let value = value_query?;
         bytes = bytes
             .checked_add(usize::try_from(value).map_err(|_| anyhow::anyhow!(ERROR))?)
-            .filter(|value| *value <= remaining_bytes.min(INPUT_BYTES))
+            .filter(|value| *value <= byte_limit)
             .ok_or_else(|| anyhow::anyhow!(ERROR))?;
     }
     Ok(DisclosureAdmission { rows, bytes })
 }
 
-const DISCLOSURE_ENTITY_COUNT_SQL: &str = "SELECT CASE WHEN json_valid(payload_json)
-                     THEN COALESCE(json_array_length(payload_json,'$.bundle.entities'),0)
-                     ELSE 0 END FROM narrative_proposal_revisions WHERE id=?1";
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum DisclosureGlobalRowsParams {
     Project,
     ProjectScene,
@@ -1195,7 +1331,7 @@ const DISCLOSURE_MATERIAL_ROWS_SQL: &str = "WITH material AS MATERIALIZED (
          (SELECT COUNT(*) FROM codex_entries c JOIN material m ON c.id=m.pov_id
            WHERE c.project_id=?1)";
 
-const DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize)] = &[
+const DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize, DisclosureReads)] = &[
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(t.id), 0) +
                 COALESCE(octet_length(t.parent_id), 0) +
                 COALESCE(octet_length(t.node_type), 0) +
@@ -1204,14 +1340,14 @@ const DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize)] = &[
                 COALESCE(octet_length(t.archived_at), 0) +
                 COALESCE(octet_length(t.version), 0) +
                 COALESCE(octet_length(t.updated_at), 0)), 0)
-         FROM tree_nodes t WHERE t.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 2),
+         FROM tree_nodes t WHERE t.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 2, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(r.registry_version), 0) +
                 COALESCE(octet_length(r.timeline_refs_json), 0) +
                 COALESCE(octet_length(r.worldline_refs_json), 0) +
                 COALESCE(octet_length(r.narrative_layer_refs_json), 0) +
                 2 * COALESCE(octet_length(r.source_token), 0) +
                 COALESCE(octet_length(r.updated_at), 0)), 0)
-         FROM narrative_scope_registries r WHERE r.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 0),
+         FROM narrative_scope_registries r WHERE r.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 0, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(b.scene_id), 0) +
                 COALESCE(octet_length(b.scene_incarnation_id), 0) +
                 COALESCE(octet_length(b.compatibility_marker), 0) +
@@ -1221,20 +1357,20 @@ const DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize)] = &[
                 COALESCE(octet_length(b.audience_json), 0) +
                 COALESCE(octet_length(b.source_token), 0) +
                 COALESCE(octet_length(b.updated_at), 0)), 0)
-         FROM narrative_scene_scope_bindings b WHERE b.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 2),
+         FROM narrative_scene_scope_bindings b WHERE b.project_id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 2, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(p.phase_resolution_mode), 0)), 0)
-         FROM projects p WHERE p.id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1),
+         FROM projects p WHERE p.id=?1) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(t.content), 0) +
                 COALESCE(octet_length(t.updated_at), 0) +
                 COALESCE(octet_length(t.archived_at), 0) +
                 COALESCE(octet_length(t.pov_character_id), 0)), 0)
-         FROM tree_nodes t WHERE t.project_id=?1 AND t.id=?3 AND t.node_type='scene') SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1),
+         FROM tree_nodes t WHERE t.project_id=?1 AND t.id=?3 AND t.node_type='scene') SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(c.type), 0)), 0)
-         FROM codex_entries c JOIN tree_nodes t ON t.pov_character_id=c.id AND t.project_id=c.project_id WHERE t.project_id=?1 AND t.id=?3 AND t.node_type='scene') SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1),
+         FROM codex_entries c JOIN tree_nodes t ON t.pov_character_id=c.id AND t.project_id=c.project_id WHERE t.project_id=?1 AND t.id=?3 AND t.node_type='scene') SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(e.id), 0) +
                 COALESCE(octet_length(e.reason), 0) +
                 COALESCE(octet_length(e.created_at), 0)), 0)
-         FROM (SELECT id, reason, created_at FROM narrative_semantic_epochs WHERE project_id=?1 ORDER BY epoch_number DESC LIMIT 1) e ) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1),
+         FROM (SELECT id, reason, created_at FROM narrative_semantic_epochs WHERE project_id=?1 ORDER BY epoch_number DESC LIMIT 1) e ) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::Shared),
     ("WITH admission(value) AS (SELECT COALESCE(SUM(COALESCE(octet_length(d.id), 0) +
                 COALESCE(octet_length(d.decision), 0) +
                 COALESCE(octet_length(d.decision_json), 0) +
@@ -1244,7 +1380,7 @@ const DISCLOSURE_GLOBAL_BYTES_SQL: &[(&str, usize)] = &[
                 COALESCE(octet_length(d.actor_id), 0) +
                 COALESCE(octet_length(d.authority_scope), 0) +
                 COALESCE(octet_length(d.override_field_paths_json), 0)), 0)
-         FROM narrative_proposal_decisions d JOIN narrative_proposal_revisions r ON r.id=d.revision_id AND r.proposal_id=d.proposal_id WHERE r.id=?2) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1),
+         FROM narrative_proposal_decisions d JOIN narrative_proposal_revisions r ON r.id=d.revision_id AND r.proposal_id=d.proposal_id WHERE r.id=?2) SELECT value FROM admission WHERE ?2 IS NOT NULL AND ?3 IS NOT NULL", 1, DisclosureReads::PerRevision),
 ];
 
 const DISCLOSURE_MATERIAL_BYTES_SQL: &[&str] = &[
@@ -1430,49 +1566,66 @@ mod disclosure_tests {
     #[test]
     fn observed_a3_keeps_admission_and_fixed_sql_slots() {
         let conn = fixture();
-        let expected = preflight_disclosure_with_payload_bytes(
+        let expected = preflight_disclosure(
             &conn,
             "project",
             "r",
             "scene",
-            0,
             MAX_GRAPH_RECORDS,
             INPUT_BYTES,
         )
         .unwrap();
+        let payload_bytes = 0;
         let mut observation = A3SqlObservation::default();
-        let observed = preflight_disclosure_observed(
+        let shared = preflight_project_reads_observed(
             &conn,
             "project",
-            "r",
             "scene",
-            0,
             MAX_GRAPH_RECORDS,
             INPUT_BYTES,
             Some(&mut observation),
         )
         .unwrap();
-        assert_eq!(observed, expected);
-        assert!(observation.timings_ns.iter().all(Option::is_some));
+        let own = preflight_disclosure_revision_observed(
+            &conn,
+            "project",
+            "r",
+            payload_bytes,
+            shared.bytes,
+            MAX_GRAPH_RECORDS - shared.rows,
+            INPUT_BYTES - shared.bytes,
+            Some(&mut observation),
+        )
+        .unwrap();
+        assert_eq!(
+            DisclosureAdmission {
+                rows: shared.rows + own.rows,
+                bytes: shared.bytes + own.bytes,
+            },
+            expected
+        );
+        // Slot 0 was the entity count that scaled the registry reads; the
+        // registry is now charged for the reads it gets, so nothing runs there.
+        assert!(observation.timings_ns[0].is_none());
+        assert!(observation.timings_ns[1..].iter().all(Option::is_some));
         assert_eq!(observation.error_slot, None);
         assert_eq!(observation.overflow_mask, 0);
 
         conn.execute_batch("DROP TABLE narrative_scope_registries")
             .unwrap();
         let mut failed = A3SqlObservation::default();
-        assert!(preflight_disclosure_observed(
+        assert!(preflight_project_reads_observed(
             &conn,
             "project",
-            "r",
             "scene",
-            0,
             MAX_GRAPH_RECORDS,
             INPUT_BYTES,
             Some(&mut failed),
         )
         .is_err());
         assert_eq!(failed.error_slot, Some(2));
-        assert!(failed.timings_ns[..=2].iter().all(Option::is_some));
+        assert!(failed.timings_ns[0].is_none());
+        assert!(failed.timings_ns[1..=2].iter().all(Option::is_some));
         assert!(failed.timings_ns[3..].iter().all(Option::is_none));
 
         let mut overflow = A3SqlObservation::default();
@@ -1496,7 +1649,9 @@ mod disclosure_tests {
         )
         .unwrap();
         let bytes = admission.bytes;
-        assert_eq!(admission.rows, 11); // 9 global + 1 entity + 1 phase
+        // 8 shared (tree 2, registry 2, bindings 2, project 1, query Scene 1)
+        // + 1 entity + 1 phase of the Revision
+        assert_eq!(admission.rows, 10);
         assert!(bytes > 0);
         let payload_bytes: usize = conn
             .query_row(
@@ -1507,26 +1662,35 @@ mod disclosure_tests {
             .unwrap()
             .try_into()
             .unwrap();
+        // The two parts a query charges, shared once and own per Revision,
+        // add up to the Revision alone.
+        let shared =
+            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_RECORDS, INPUT_BYTES)
+                .unwrap();
+        let own = preflight_disclosure_revision(
+            &conn,
+            "project",
+            "r",
+            payload_bytes,
+            shared.bytes,
+            MAX_GRAPH_RECORDS - shared.rows,
+            INPUT_BYTES - shared.bytes,
+        )
+        .unwrap();
         assert_eq!(
-            preflight_disclosure_with_payload_bytes(
-                &conn,
-                "project",
-                "r",
-                "scene",
-                payload_bytes,
-                MAX_GRAPH_RECORDS,
-                INPUT_BYTES,
-            )
-            .unwrap(),
+            DisclosureAdmission {
+                rows: shared.rows + own.rows,
+                bytes: shared.bytes + own.bytes,
+            },
             admission
         );
         assert_eq!(
-            preflight_disclosure_with_payload_bytes(
+            preflight_disclosure_revision(
                 &conn,
                 "project",
                 "r",
-                "scene",
                 INPUT_BYTES + 1,
+                shared.bytes,
                 MAX_GRAPH_RECORDS,
                 INPUT_BYTES,
             )
@@ -1565,6 +1729,137 @@ mod disclosure_tests {
                 "NIR1_GRAPH_DISCLOSURE_INPUT_LIMIT"
             );
         }
+    }
+
+    // The per-Revision preflight (2 MiB) still covers what a Revision's check
+    // sees: the shared project-level bytes and its own together. The shared
+    // bytes are admitted to the query once, but each Revision's own bytes are
+    // held to what they leave.
+    #[test]
+    fn a_revisions_own_bytes_share_the_per_revision_preflight_with_the_shared_ones() {
+        let conn = fixture();
+        let own = preflight_disclosure_revision(
+            &conn,
+            "project",
+            "r",
+            0,
+            0,
+            MAX_GRAPH_RECORDS,
+            INPUT_BYTES,
+        )
+        .unwrap()
+        .bytes;
+        assert!(own > 0);
+        let shared_at_the_cap = INPUT_BYTES - own;
+        // Shared bytes that leave exactly the Revision's own: admitted.
+        let admitted = preflight_disclosure_revision(
+            &conn,
+            "project",
+            "r",
+            0,
+            shared_at_the_cap,
+            MAX_GRAPH_RECORDS,
+            INPUT_BYTES,
+        )
+        .unwrap();
+        assert_eq!(admitted.bytes, own);
+        // One shared byte more, and the same Revision no longer fits.
+        assert_eq!(
+            preflight_disclosure_revision(
+                &conn,
+                "project",
+                "r",
+                0,
+                shared_at_the_cap + 1,
+                MAX_GRAPH_RECORDS,
+                INPUT_BYTES,
+            )
+            .unwrap_err()
+            .to_string(),
+            "NIR1_GRAPH_DISCLOSURE_INPUT_LIMIT"
+        );
+        // The query's own remaining budget caps it as well, independently.
+        assert!(preflight_disclosure_revision(
+            &conn,
+            "project",
+            "r",
+            0,
+            0,
+            MAX_GRAPH_RECORDS,
+            own - 1,
+        )
+        .is_err());
+        // Shared bytes alone above the cap leave nothing for any Revision.
+        assert!(preflight_disclosure_revision(
+            &conn,
+            "project",
+            "r",
+            0,
+            INPUT_BYTES + 1,
+            MAX_GRAPH_RECORDS,
+            INPUT_BYTES,
+        )
+        .is_err());
+    }
+
+    // The two parts are disjoint: the shared part does not read the Revision,
+    // and a Revision's part does not read the project.
+    #[test]
+    fn shared_and_revision_parts_read_disjoint_statements() {
+        let conn = fixture();
+        let shared =
+            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_RECORDS, INPUT_BYTES)
+                .unwrap();
+        let own = preflight_disclosure_revision(
+            &conn,
+            "project",
+            "r",
+            0,
+            0,
+            MAX_GRAPH_RECORDS,
+            INPUT_BYTES,
+        )
+        .unwrap();
+        // The Revision changes: the shared part does not.
+        conn.execute_batch(
+            "UPDATE narrative_proposal_revisions SET payload_json='{\"bundle\":{\"entities\":[]}}' WHERE id='r';
+             INSERT INTO narrative_proposal_decisions (id,proposal_id,revision_id,decision_json)
+                VALUES ('d','p','r','{}');",
+        )
+        .unwrap();
+        assert_eq!(
+            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_RECORDS, INPUT_BYTES)
+                .unwrap(),
+            shared
+        );
+        // The project changes: the Revision's part does not.
+        let revision_part = |conn: &Connection| {
+            preflight_disclosure_revision(
+                conn,
+                "project",
+                "r",
+                0,
+                0,
+                MAX_GRAPH_RECORDS,
+                INPUT_BYTES,
+            )
+            .unwrap()
+        };
+        let before = revision_part(&conn);
+        assert_ne!(before, own, "the Revision's own rows changed");
+        for index in 0..20 {
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type) VALUES (?1, 'project', 'note')",
+                [format!("more-{index}")],
+            )
+            .unwrap();
+        }
+        assert_eq!(revision_part(&conn), before);
+        assert_ne!(
+            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_RECORDS, INPUT_BYTES)
+                .unwrap(),
+            shared
+        );
     }
 
     #[test]
@@ -1614,9 +1909,11 @@ mod disclosure_tests {
             INPUT_BYTES,
         )
         .unwrap();
-        assert_eq!(admission.rows, 18); // 10 global + 2 each for entity, phase, link, POV
+        // 8 shared (tree 2, registry 2, bindings 2, project 1, query Scene 1)
+        // + 2 each for entity, phase, link, POV of the Revision
+        assert_eq!(admission.rows, 16);
         assert_eq!(
-            preflight_disclosure(&conn, "project", "r", "scene", 17, INPUT_BYTES)
+            preflight_disclosure(&conn, "project", "r", "scene", 15, INPUT_BYTES)
                 .unwrap_err()
                 .to_string(),
             DISCLOSURE_ROW_LIMIT
@@ -1665,7 +1962,6 @@ mod plan_tests {
         let mut statements = vec![
             ("A2 length".to_owned(), LENGTH_SQL),
             ("A2 count".to_owned(), COUNT_SQL),
-            ("A3 entity count".to_owned(), DISCLOSURE_ENTITY_COUNT_SQL),
             ("A3 material rows".to_owned(), DISCLOSURE_MATERIAL_ROWS_SQL),
         ];
         statements.extend(
@@ -1766,7 +2062,7 @@ mod plan_tests {
         db.migrate().unwrap();
         db.with_conn(|conn| {
             let statements = a2_a3_statements();
-            assert_eq!(statements.len(), 4 + 10 + 8 + 8 + 5);
+            assert_eq!(statements.len(), 3 + 10 + 8 + 8 + 5);
             for (label, sql) in &statements {
                 let plan = query_plan(conn, sql);
                 let violations = plan_violations(label, sql, &plan);

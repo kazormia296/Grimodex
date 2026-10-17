@@ -94,9 +94,7 @@ pub(crate) use scene_scope::refresh_scene_scope_source_token_in_tx;
 pub(crate) use scene_scope::refresh_scene_scope_source_tokens_in_tx;
 #[cfg(test)]
 pub(crate) use scene_scope::MATERIAL_SCOPE_PRELOAD_QUERY_COUNT;
-pub(crate) use scene_scope::{
-    canonical_scene_scope_snapshot, canonical_scope_registry_snapshot, scope_extension_digest,
-};
+pub(crate) use scene_scope::{canonical_scene_scope_snapshot, canonical_scope_registry_snapshot};
 pub(crate) use scene_scope::{
     ensure_character_reference_mutation_allowed_in_tx,
     ensure_character_snapshot_restore_allowed_in_tx,

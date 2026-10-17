@@ -145,7 +145,7 @@ fn projection(request: &Nir1GraphRequest) -> Nir1GraphProjection {
     Nir1GraphProjection {
         project_id: request.project_id.clone(),
         query_scene_id: request.query_scene_id.clone(),
-        scope_revision: "scope-revision".into(),
+        scope_revision: Some("scope-revision".into()),
         graph: Nir1QualifiedGraph {
             seed_entity_id: request.seed_entity_id.clone(),
             generation: 1,
@@ -1478,6 +1478,26 @@ fn worker_reason_categories_map_to_the_closed_set() {
             GraphUnavailable::Invalidated,
         ),
         ("query-worker-work-other", GraphUnavailable::Failed),
+        // The semantic Graph limits are limits; a contradiction between two
+        // approved Revisions is the generic failure, never a limit or a stale.
+        ("query-worker-work-node-limit", GraphUnavailable::Limit),
+        ("query-worker-work-edge-limit", GraphUnavailable::Limit),
+        (
+            "query-worker-work-node-limit-pre-cleanup-work-failed-node-limit",
+            GraphUnavailable::Limit,
+        ),
+        (
+            "query-worker-work-edge-limit-pre-cleanup-work-failed-edge-limit",
+            GraphUnavailable::Limit,
+        ),
+        (
+            "query-worker-work-endpoint-version-conflict",
+            GraphUnavailable::Failed,
+        ),
+        (
+            "query-worker-work-endpoint-version-conflict-pre-cleanup-work-failed-endpoint-version-conflict",
+            GraphUnavailable::Failed,
+        ),
     ] {
         let reason = UnavailableReason::parse(text).expect("allowlisted worker reason");
         assert_eq!(

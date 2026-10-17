@@ -935,7 +935,7 @@ else if (args[0] === 'run') {
   const q2 = args.at(-2) === 'Q2/R1/D0-local';
   fs.writeFileSync(file, 'synthetic closed script-contract source');
   console.log(JSON.stringify({ caseId: args.at(-2), diagnosticOnly: true,
-    qualifiedMaterials: q2 ? 2 : 140, qualifiedRevisions: 1, ineligibleCandidates: 0,
+    qualifiedMaterials: q2 ? 2 : 164, qualifiedRevisions: 1, ineligibleCandidates: 0,
     walBytes: 0, shmBytes: 0, reopenedReadOnly: process.env.FAIL_PHASE !== 'report' }, null, 2));
 } else if (args[0] === 'build') {
   if (process.env.FAIL_PHASE === 'build') process.exit(7);
@@ -2394,7 +2394,7 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
   assert.equal(estimate.tasks.length, 68);
   assert.deepEqual(estimate.fullMemoryRisk, { tasks: estimate.tasks, ...data.fullMemoryRisk });
   assert.equal(estimate.fullMemoryRisk.components.length, 8);
-  assert.equal(validateFullMemoryRisk(estimate, plan), 13206208512n, "finite planning hypotheses, not measured RSS, limits or an admitted capacity");
+  assert.equal(validateFullMemoryRisk(estimate, plan), 13290184704n, "finite planning hypotheses, not measured RSS, limits or an admitted capacity");
   const inventoryBytes = (id) => data.inventories.find((entry) => entry.id === id).items.reduce((sum, item) => sum + BigInt(item.bytes), 0n);
   const memoryTerms = estimate.fullMemoryRisk.terms;
   const appEnsembles = BigInt(plan.tasks.filter(({ id }) => /^journeys\.shard-[1-7]$/u.test(id)).length);
@@ -2614,6 +2614,61 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
     const rejected = await produce(malformed);
     await assert.rejects(validateWorkloadEstimate(rejected, binding, plan, preparation, repoRoot), /\[precheck\]/u);
   }
+});
+
+test("Reviewed worker.q2 and worker.q512 inventories are the page-density scenario of the fixtures they size", async () => {
+  // docs/pr610-full-workload-risk.md: pages = 679 official baseline + 21 per
+  // material + 93 per revision + A3 scope refs + 20 per materialless filler
+  // Scene; a WAL adds its 32-byte header and 24 bytes per page, rounded up to
+  // whole 4 KiB pages. A fixture that changes shape must re-derive these bytes:
+  // matching source digests only prove the files were read, not that the
+  // reviewed inventory still describes them.
+  const data = JSON.parse(await readFile(path.join(repoRoot, "scripts/local-ci-full-workload-allocation.json"), "utf8"));
+  const script = await readFile(path.join(repoRoot, "scripts/nir1-c-query-worker-ci.sh"), "utf8");
+  const fixtures = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs"), "utf8");
+  const risk = (await readFile(path.join(repoRoot, "docs/pr610-full-workload-risk.md"), "utf8")).replace(/\s+/gu, " ");
+  const declared = (id) => {
+    const match = script.match(new RegExp(`"id":"${id}","qualifiedMaterials":(\\d+),"qualifiedRevisions":(\\d+)`, "u"));
+    assert.ok(match, `${id} is declared in the worker script`);
+    return { materials: Number(match[1]), revisions: Number(match[2]) };
+  };
+  const constant = (pattern, what) => {
+    const match = fixtures.match(pattern);
+    assert.ok(match, `${what} is declared in the capacity fixtures`);
+    return Number(match[1]);
+  };
+  const q512Refs = constant(/A3_ELIGIBLE_SHARED_Q512_CASE => Some\((\d+)\)/u, "the Q512 registry reference count");
+  const q512Fillers = constant(/const Q512_FILLER_SCENES: usize = (\d+);/u, "the Q512 filler Scene count");
+  const page = 4096n;
+  const pagesPerFixture = new Map();
+  for (const [inventoryId, caseId, refs, fillers] of [
+    ["worker.q2", "Q2/R1/D0-local", 0, 0],
+    ["worker.q512", "Q512/R2/A3-eligible-shared", q512Refs, q512Fillers],
+  ]) {
+    const shape = declared(caseId);
+    const pages = BigInt(679 + 21 * shape.materials + 93 * shape.revisions + refs + 20 * fillers);
+    const db = pages * page;
+    const wal = db + (32n + 24n * pages + page - 1n) / page * page;
+    const inventory = data.inventories.find(({ id }) => id === inventoryId);
+    const bytes = Object.fromEntries(inventory.items.map(({ role, bytes }) => [role, BigInt(bytes)]));
+    assert.deepEqual(bytes, { db, wal, shm: 32768n, journal: db, construction: db }, `${inventoryId} is ${pages} pages`);
+    assert.ok(inventory.basis.includes(`literal${shape.materials} qualified materials`), `${inventoryId} names its ${shape.materials} materials`);
+    assert.ok(inventory.basis.includes(`plus${refs} actual A3 scope refs`), `${inventoryId} names its ${refs} scope refs`);
+    if (fillers > 0) assert.ok(inventory.basis.includes(`(${fillers} here)`), `${inventoryId} names its ${fillers} filler Scenes`);
+    pagesPerFixture.set(inventoryId, { pages, ...shape, refs, fillers });
+  }
+  // The risk document states the same shapes and the totals derived from them.
+  const q2 = pagesPerFixture.get("worker.q2");
+  const q512 = pagesPerFixture.get("worker.q512");
+  assert.ok(risk.includes(`literal2/${q512.materials} materials`));
+  assert.ok(risk.includes(`and0/${q512.refs} actual A3 scope refs`));
+  assert.ok(risk.includes(`0/${q512.fillers} materialless filler Scenes`));
+  assert.ok(risk.includes(`Q2 is ${q2.pages} pages and Q512 is ${q512.pages} (679 + 21*${q512.materials} + 93 + ${q512.refs} + 20*${q512.fillers})`));
+  const inventoryBytes = (id) => data.inventories.find((entry) => entry.id === id).items.reduce((sum, item) => sum + BigInt(item.bytes), 0n);
+  const databaseImages = 7n * inventoryBytes("worker.q2") + 3n * inventoryBytes("worker.q512") + inventoryBytes("c2zc.fixture");
+  const memoryTotal = data.fullMemoryRisk.terms.reduce((sum, term) => sum + BigInt(term.bytes), 0n);
+  assert.ok(risk.includes(`${databaseImages}B synthetic DB working images`));
+  assert.ok(risk.includes(`**${memoryTotal}B** (other-full-consumers charges the one task slot)`));
 });
 
 test("Full native memory acquisition keeps all cgroup ancestors, swap and incomplete risk separate", async () => {

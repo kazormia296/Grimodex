@@ -17,10 +17,13 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 
+use std::collections::BTreeMap;
+
 use grimodex_core::narrative_project_scope_authority::{
     build_narrative_project_scope_authority_v1, NarrativeProjectScopeAuthoritySceneInputV1,
     NarrativeProjectScopeAuthorityV1,
 };
+use grimodex_core::narrative_scene_scope::NarrativeSceneScopeBindingV1;
 use rusqlite::{params, Connection, OptionalExtension};
 
 const PROJECT_SCOPE_AUTHORITY_SOURCE_PREFIX: &str = "project:scope-authority:";
@@ -190,10 +193,22 @@ fn derive_live_scene_projection(
     Ok(scenes)
 }
 
+/// The live Scope authority and, from the same read, the validated binding of
+/// every Scene (see [`load_live_project_scope_authority_with_scene_bindings`]).
+pub(crate) struct LiveProjectScopeRead {
+    pub(crate) authority: NarrativeProjectScopeAuthorityV1,
+    pub(crate) scene_bindings: BTreeMap<String, NarrativeSceneScopeBindingV1>,
+}
+
 fn load_live_project_scope_authority_in_snapshot(
     conn: &Connection,
     project_id: &str,
-) -> anyhow::Result<NarrativeProjectScopeAuthorityV1> {
+    collect_scene_bindings: bool,
+) -> anyhow::Result<LiveProjectScopeRead> {
+    #[cfg(test)]
+    super::nir1_capacity::project_read_probe::record(
+        super::nir1_capacity::project_read_probe::Read::AuthorityTree,
+    );
     let project_exists = conn
         .query_row(
             "SELECT 1 FROM projects WHERE id = ?1",
@@ -227,14 +242,16 @@ fn load_live_project_scope_authority_in_snapshot(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let scenes = derive_live_scene_projection(&nodes)?;
     let mut authority = build_narrative_project_scope_authority_v1(project_id, &scenes)?;
-    if let Some(extension_digest) = super::scope_extension_digest(conn, project_id)? {
-        authority.source.revision_token =
-            grimodex_core::canonical_json_digest(&serde_json::json!({
-                "baseRevisionToken": authority.source.revision_token,
-                "sceneScopeExtensionDigest": extension_digest,
-            }))?;
-    }
-    Ok(authority)
+    let extension =
+        super::scene_scope::read_scope_extension(conn, project_id, collect_scene_bindings)?;
+    authority.source.revision_token = grimodex_core::canonical_json_digest(&serde_json::json!({
+        "baseRevisionToken": authority.source.revision_token,
+        "sceneScopeExtensionDigest": extension.digest,
+    }))?;
+    Ok(LiveProjectScopeRead {
+        authority,
+        scene_bindings: extension.scene_bindings,
+    })
 }
 
 pub(crate) fn load_live_project_scope_authority(
@@ -242,6 +259,26 @@ pub(crate) fn load_live_project_scope_authority(
     project_id: &str,
     source_key: &str,
 ) -> anyhow::Result<NarrativeProjectScopeAuthorityV1> {
+    Ok(load_live_project_scope_read(conn, project_id, source_key, false)?.authority)
+}
+
+/// [`load_live_project_scope_authority`] that also returns the Scene bindings
+/// its extension digest validated, so the several Scenes' bindings one read
+/// snapshot needs are read once with the authority and not Scene by Scene.
+pub(crate) fn load_live_project_scope_authority_with_scene_bindings(
+    conn: &Connection,
+    project_id: &str,
+    source_key: &str,
+) -> anyhow::Result<LiveProjectScopeRead> {
+    load_live_project_scope_read(conn, project_id, source_key, true)
+}
+
+fn load_live_project_scope_read(
+    conn: &Connection,
+    project_id: &str,
+    source_key: &str,
+    collect_scene_bindings: bool,
+) -> anyhow::Result<LiveProjectScopeRead> {
     anyhow::ensure!(
         !project_id.is_empty() && project_id.trim() == project_id,
         "NEX_SOURCE_PROJECT_INVALID: projectId must be trimmed and non-empty"
@@ -260,11 +297,12 @@ pub(crate) fn load_live_project_scope_authority(
     );
 
     conn.execute_batch(&format!("SAVEPOINT {PROJECT_SCOPE_AUTHORITY_SNAPSHOT}"))?;
-    let result = load_live_project_scope_authority_in_snapshot(conn, project_id);
+    let result =
+        load_live_project_scope_authority_in_snapshot(conn, project_id, collect_scene_bindings);
     match result {
-        Ok(authority) => {
+        Ok(read) => {
             conn.execute_batch(&format!("RELEASE {PROJECT_SCOPE_AUTHORITY_SNAPSHOT}"))?;
-            Ok(authority)
+            Ok(read)
         }
         Err(error) => {
             let _ = conn.execute_batch(&format!(

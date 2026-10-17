@@ -49,10 +49,15 @@ const NIR1_CAPACITY_RUN_ID: &str = "nir1-capacity-fixture-run";
 const NIR1_CAPACITY_UPDATED_AT: &str = "2026-09-17T00:00:00Z";
 const NIR1_CAPACITY_DRIFTED_AT: &str = "2026-09-18T00:00:00Z";
 const A3_ELIGIBLE_SHARED_Q512_CASE: &str = "Q512/R2/A3-eligible-shared";
-const A3_ELIGIBLE_N512_REGISTRY33_CASE: &str = "Q512/R1/E12/registry33";
+const A3_ELIGIBLE_N512_REGISTRY33_CASE: &str = "Q512/R1/E144/registry33";
 const NIR1_CAPACITY_SOURCE_DRIFTED_AT: &str = "2026-09-19T00:00:00Z";
 const NIR1_CAPACITY_FRESHNESS_STALE_AT: &str = "2026-09-18T00:00:00.000Z";
 const MAX_REVISION_MATERIAL_RECORDS: usize = 511;
+/// Scenes the official Q512 project has besides the two the Revision is made
+/// under. They hold no material; they are the project the Scope authority is
+/// read over (its tree and Scene bindings), so a 512-record query is not all
+/// Entity work: 62 Scenes, 82 Entities.
+const Q512_FILLER_SCENES: usize = 60;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -193,9 +198,13 @@ pub fn build_fixture_from_manifest(
             .with_context(|| format!("open fixture output {}", output_path.display()))?;
         db.migrate()?;
         let catalog = catalog_for_plans(&plans);
-        seed_catalog_and_authorities(&db, &catalog.entries, &catalog.relations)?;
+        let filler_scenes = match case_id {
+            A3_ELIGIBLE_SHARED_Q512_CASE => Q512_FILLER_SCENES,
+            _ => 0,
+        };
+        seed_catalog_and_authorities(&db, &catalog.entries, &catalog.relations, filler_scenes)?;
         let registry_reference_count = match case_id {
-            A3_ELIGIBLE_SHARED_Q512_CASE => Some(3),
+            A3_ELIGIBLE_SHARED_Q512_CASE => Some(5),
             A3_ELIGIBLE_N512_REGISTRY33_CASE => Some(32),
             _ => None,
         };
@@ -421,6 +430,7 @@ fn seed_catalog_and_authorities(
     db: &Database,
     entries: &[CatalogEntry],
     relations: &[CatalogRelation],
+    filler_scenes: usize,
 ) -> Result<()> {
     db.with_conn(|conn| {
         conn.execute(
@@ -467,6 +477,26 @@ fn seed_catalog_and_authorities(
                 conn,
                 NIR1_CAPACITY_FIXTURE_PROJECT_ID,
                 scene_id,
+                NIR1_CAPACITY_UPDATED_AT,
+            )?;
+        }
+        for ordinal in 0..filler_scenes {
+            let scene_id = format!("nir1-capacity-filler-scene-{ordinal:03}");
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content, sort_order)
+                 VALUES (?1, ?2, 'scene', ?3, '{}', ?4)",
+                params![
+                    scene_id,
+                    NIR1_CAPACITY_FIXTURE_PROJECT_ID,
+                    format!("NIR-1 capacity filler {ordinal}"),
+                    format!("b{ordinal:04}"),
+                ],
+            )?;
+            ensure_scene_scope_binding_in_tx(
+                conn,
+                NIR1_CAPACITY_FIXTURE_PROJECT_ID,
+                &scene_id,
                 NIR1_CAPACITY_UPDATED_AT,
             )?;
         }

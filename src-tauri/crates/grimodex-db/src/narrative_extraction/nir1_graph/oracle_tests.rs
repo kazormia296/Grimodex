@@ -490,8 +490,11 @@ impl OracleFixture {
                 .iter()
                 .zip(expected_hops)
                 .map(|(entity, hop)| {
+                    // One Revision carries the node, so one binding and the
+                    // Scope that Revision gives the Entity.
                     json!({
                         "entity": entity, "hop": hop, "bindings": [binding],
+                        "bindingScopes": [entity.scope],
                     })
                 })
                 .collect::<Vec<_>>();

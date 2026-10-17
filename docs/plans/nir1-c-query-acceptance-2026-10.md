@@ -1,6 +1,6 @@
 # NIR-1 C-query 受入れ台帳（CR-REC、2026-10）
 
-更新日: 2026-10-14（CR-2。G-1〜G-4 に関わる節と、B-ROUTE（#643）の merge で古くなった記述）。2026-10-13 の CR-REC の記入は、ここで触れていない節では変えていない
+更新日: 2026-10-14（CR-2。G-1〜G-4 に関わる節と、B-ROUTE（#643）の merge で古くなった記述）。2026-10-13 の CR-REC の記入は、ここで触れていない節では変えていない。2026-10-14 の CQ-AVAIL（branch `claude/nir1-cqavail`）の追記は §2.12、§4.1、§8 の最後の行
 
 | 項目 | 値 |
 |---|---|
@@ -313,11 +313,83 @@ CR-2 の調査と SPIKE（steps の内訳の計測。基点 `a3f705ae` の複製
 
 #### 現実形の project（SPIKE。[precheck]：ユーザーの判断が要る）
 
+CQ-AVAIL（§2.12）は、このうち records の数え方と版の衝突を、委任の内で直した。以下は CQ-AVAIL の前の観測の記録で、書き換えていない。Entity 12 の上限と、50 場面の主人公級が read／admission の 512 に届くことは、直していない。
+
 - fixture：50 場面（5 章）、主要人物 5 人（主人公は 80% の場面に登場）、脇役 15 人、relation 22 本。場面ごとに登場人物と人物間の relation を、prepare と同じ関数で review して承認した（50 Revision）。主人公は 40 Revision に入り、2 hop で 45 Revision、13 Entity、99 edge に届く。Codex review は Scene Scope を 1 つ選んで prepare を呼ぶので、1 回の review が 1 つの Scene Scope の 1 Revision になり、場面ごとに review すると場面ごとの Revision になる。
 - records：A3 の preflight が project 全体の行（tree_nodes、scene binding、registry）を Revision ごとに課金する。場面数を S とすると、1 Revision あたり約 4.2S＋54 records で、read／admission 512 に入る Revision は、S=10 で 4〜5 件、S=20 で 3 件、S=30 で 2 件、S=50 で 1 件になる（推定。S=10 と S=50 は実測と一致した）。50 場面の project では、主人公の query が 2 件目の Revision の A3 preflight で `disclosure-record-limit` になった。
 - 版の衝突：場面ごとに review すると、同じ人物の `EntityInput` が場面ごとの `scope.reading` で異なり、`add_node` が別の版として `NIR1_GRAPH_ENDPOINT_VERSION_CONFLICT` で拒否する（10 場面の project で実測。すべての review の Scene Scope を同じ場面にすると、衝突は消える）。
 - Entity 12：主人公級は 2 hop で 12 Entity を超える（上の fixture で 13 Entity）。
 - 影響：steps の最適化（T、J）や steps の上限を上げることでは解けない。PUB-G の後の現実の project（場面 20 以上、場面ごとの review）では、Graph は unavailable のまま R+IR に戻る。今は Graph の入口が閉じている（A-1）ので、利用者への影響は無い。records の数え方を変えるか、値を変えるか、版をどう扱うかは、確認済みの契約か設計の判断に触れるので、ユーザーの確認が要る。CP-4（G-01〜G-08）の計測には、場面数十・場面ごとの review の現実形の fixture を入れることを勧める。
+
+### 2.12. CQ-AVAIL：現実形の project の可用性（DR-CQA-1〜5）
+
+§2.11 の SPIKE が記録した、場面ごとの review が版の衝突になることと、project 全体の行を Revision ごとに課金して records が尽きることを、委任の内で直した（branch `claude/nir1-cqavail`。base は master `92f9badd`、CQ-OPT の #657 を含む）。確認済みの固定値（512 records、6,291,456 B、2,097,152 B、100,000 steps、100 ms、request・frame の上限）と契約は変えていない。判定（§2.2）、actor、受信先、保存範囲、製品の Graph 入口（A-1）も変えていない。委任判断は次の5点で、判断の記録は実装の前に書いた（DR-CQA-4 と 5 は、レビュー指摘の修正の前に書いた）。
+
+| ID | 判断 | 境界と代替案 |
+|---|---|---|
+| DR-CQA-1 | Graph の node の同一性から Scope を外し、Scope は binding（Revision）ごとに持つ。Scope 以外の field（Entity ID、type、label、source token、Evidence）が食い違う本当の版の矛盾だけを拒否する。worker の frame を `NQG3` に上げ、node が binding ごとの Scope を運ぶ | A3 は Revision ごとに評価済みで、edge は exact binding を持つ。[post-B §6.3](nir1-post-b-execution-plan.md#63-sceneとevidence) の「複数 Revision の同一実 ID を結合する際も、各 edge／endpoint の exact binding を保持し、矛盾する版を名前一致で統合しない」に合う。代表の版に畳む案は §6.3 に触れるので採らない。何もしない案は、場面ごとの review で中心人物が常に unavailable になるので採らない |
+| DR-CQA-2 | node 上限、edge 上限、版の衝突に型付きの理由（`node-limit`、`edge-limit`、`endpoint-version-conflict`）を与える。修飾された Revision が無い seed は、ordinary reader と同じ available の空 Graph（寄与 0）を worker も返す | 拒否の条件は変えない。空 Graph は部分 Graph ではなく、寄与 0 の available である。代替の「空 Graph を typed unavailable に揃える」は、可用性の記録で常に unavailable の状態が増えるので採らない。CP-0 の規則モデルは後者（`seed-not-qualified`）を取る。差と CP-4 の比較の読み方は「G の評価（CP-0）との関係」に記録した |
+| DR-CQA-3 | project 単位の読取（Scope authority の tree、Scene binding、registry、projects、最新の Epoch、query Scene、POV）を query で 1 回だけ読み、1 回だけ admit する。Revision に結び付く行は Revision ごとに admit する | 上限の値は変えない。読取を減らさずに課金だけを減らすことはしない。読取の回数（statement）と課金の乗数を対応させる（下の probe の試験）。行の単位の対応は「課金された rows の観測」と「範囲外と残る制約」に記録した。代替の「課金だけ減らす」は閾値の緩和なので採らない |
+| DR-CQA-4 | Full の resource-isolation preflight が使う `worker.q512` の reviewed inventory（`scripts/local-ci-full-workload-allocation.json`）を、新しい Q512 fixture（materials 164、registry の参照 5、材料の無い Scene 60）で導き直す。式は pages = 679 + 21×materials + 93×revisions + refs に、材料の無い Scene の項（Scene あたり 20 の table・index の面に 1 page ずつ）を足す。派生する値（fullMemoryRisk の DB の項、その合計、`docs/pr610-full-workload-risk.md` の数値）も合わせる | 見積りを増やす方向だけで（安全側）、送信先、保存範囲、閾値の緩和は無い。dataset は独立 review が前提なので、変更をこの台帳と PR 本文に残す。代替の「式を変えず 4,221 pages にする（Scene の項を足さない）」は、材料の無い Scene 60 の tree と Scene binding の行を見積りから落とすので採らない。journey の inventory（schema baseline + 旧 Q512 の mutation image）は製品 journey の書込みの size class で、C-query の fixture を開かないので、導き直さない |
+| DR-CQA-5 | DR-CQA-3 の「読取と課金は 1 対 1」を、読取の回数（statement）の単位に限定する。Scope extension の LEFT JOIN が読む principal の Codex 行（knowledge holder と audience が character の binding あたり最大 2 行）は課金に入っていない。変更前から数えていない既存の会計の穴で、本変更が増やしたものではないので、課金は厳しくせず、残る制約に記録する。課金された rows を製品側で観測する試験に置き換えた | 上限の値は変えない。課金に principal の行を足す案は、課金を厳しくするので委任の範囲に入るが、A3 の SQL（`DISCLOSURE_GLOBAL_ROWS_SQL`）、診断の観測 slot、steps の基準値に波及するので、別の変更にする |
+
+#### 変更の内容
+
+- 版の衝突（R2）：node は Entity ID ごとに 1 つ。同一性は Scope 以外のすべての field で決める（`same_node_identity`）。`Nir1GraphNode` は `bindings[i]` と同じ順・同じ長さの `binding_scopes[i]`（その binding の Revision の Scope）を持ち、`entity` は最初の binding の版である。edge の endpoint の Scope は、edge の binding の Revision のもの（変えていない）。worker の frame は `NQG3`（`NQG1`／`NQG2` は旧版として拒否）で、node は binding ごとに「binding の 9 token と Scope」を運ぶ。Graph の `scope_revision` は optional で、無いときは node と edge が 0 でなければならない。A3 で unavailable になった Revision（query Scene と同じ Scene、またはその後の Scene の review）の binding、Scope、edge は node にも edge にも現れない。同じ人物が query Scene の前後で review されている場合も、前の review の binding だけを持つ（s005 の query で m1〜m5。`a_query_in_the_middle_of_the_novel_binds_only_the_reviews_before_its_scene`。A3 の reading の gate を開く一時的な変異で、この試験が失敗することを確かめた）。
+- 内側の上限：新しい数値の上限は足していない。binding 数は既存の `MAX_GRAPH_RECORDS`（512）以下で、frame の全体は `FRAME_BYTES` のまま。binding ごとの Scope の保持量は、node の作成時に `MAX_GRAPH_RECORDS` 個分の `Arc<ScopeBinding>` を予約して課金し、binding を足すたびに Scope の複製を課金する（`admit_retained`）。frame が許す理由の組の allowlist は 686 → 926 通り（原因が 17 → 20 種）になった。node の binding は同じ Revision を 2 度含められない（node あたり 512 以下の比較で parent の `validate` が確かめ、破れた frame を `NIR1_GRAPH_FRAME_NODE_BINDING_DUPLICATE` で拒否する。node あたり 512／513 の境界は `nqg3_node_binding_cap_admits_512_and_refuses_513` が確かめる）。
+- 型付きの理由と空 Graph（X2）：`node-limit` と `edge-limit` は category が Limit、`endpoint-version-conflict` は Failed（版の矛盾は上限でも stale でもない一般の失敗）。frame が空 Graph を運べず、worker と ordinary reader の結果が揃わなかったのを、同じ available の空 Graph（Scope revision なし、node と edge が 0）に揃えた。
+- project 単位の読取（R1）：`Nir1ProjectReads::load` が、Scope authority の tree、Scene binding、registry、最新の Epoch、story の状態、query Scene と POV を query で 1 回読み、Revision ごとの評価（`evaluate_nir1_entity_relation_disclosure_shared`）は共有を参照する。admit は `preflight_project_reads` が 1 回（tree×2、registry×2、binding×2、projects×1、query Scene×1、POV×1、Epoch×1）、Revision ごとは `preflight_disclosure_revision`（Decision と material の行・bytes）である。数え方の変更は、registry の乗数を「Entity 数＋2」から実際の読取回数の 2 に置き換えただけで、ほかの乗数は旧来のまま。旧来の乗数が実際に読む行を常に覆うとは限らない（principal の Codex 行は数えていない。「範囲外と残る制約」）ので、「保守的な上限」とは言わない。Revision ごとの 2 MiB の preflight は、shared と own の合計が 2 MiB を超えない形で保った。
+- 読取と課金の対応：`project_level_reads_are_made_once_and_charged_as_made` が、probe（`nir1_capacity::project_read_probe`）で、各 shared read が 1 回であること、registry が 2 回であること、読取を Revision ごとに戻した対照では Revision の数だけ増えることを確かめる。これは読取の回数（statement）の対応で、行の単位の対応ではない。応答は、44 の形と現実形の project で、読取を Revision ごとにした場合と一致する（`shared_reads_return_the_response_of_reading_per_revision_on_every_shape`、`..._on_a_novel`）。
+- 課金された rows の観測：`a_revision_costs_its_own_rows_and_none_of_the_shared_ones` が、query が admit した rows（試験用に `QueryUsage::rows` を記録する）を、2・6・10 Revision の fixture で、保存行の数から数えた値と照合する（ordinary reader と worker の両方）。shared の行は Revision の数に依らず、Revision を足すと、その Revision 自身の行（reverse index 2、A2 5、A3 3）だけが増える。shared の課金を Revision ごとに戻すと、この試験が失敗する（一時的な変異で確認した）。保存行から数える helper の自己照合ではなく、製品の課金を見る。
+
+#### 前後の計測
+
+現実形の project（`tests/cq_avail.rs::measure_novel_project_availability`。章に分けた場面、主要人物 5 人、脇役 15 人、relation 22 本、場面ごとに承認済みの Codex review 1 件）の seed ごとの結果。records は候補 + A2 + shared + A3（Revision 分）、steps は上限を外した replay、production は worker 経路（steps 100,000、records 512）である。期限は負荷に左右されないよう 30 s にして測った。この表の fixture は本文の保存が無い project で、X1（本文の保存での失効。本 lane の外）の影響を含まない。実際の執筆では、別の Scene の本文を保存すると全 Revision が stale になる（現実形の検証の観測：A3 は source-revision-changed になり、B の再 publish の後は available・node 0 になる）ので、表の available は本文の保存が無い間の値であり、実際の可用性はこれより低い。
+
+| project | seed | 変更前 | 変更後 |
+|---|---|---|---|
+| 10 場面、場面ごとの review | m1 | unavailable（版の衝突）。records 1,071、steps 75,590 | available。records 229（revision 9、shared 79、A3 39）、steps 47,238、node 10、edge 21 |
+| 同 | m2 | unavailable。1,067 records、75,514 steps | available。225 records、47,162 steps |
+| 同 | m3 | unavailable。1,065 records、75,502 steps | available。223 records、47,150 steps |
+| 同 | m5 | unavailable。214 records、14,502 steps | available。100 records（revision 2）、10,755 steps |
+| 同 | c01 | unavailable。941 records、67,644 steps | available。199 records（revision 8）、42,806 steps、node 7、edge 14 |
+| 10 場面、すべての review を最初の場面 | m1、m2、m3、c01 | `disclosure-record-limit`。1,071、1,067、1,065、941 records | available。229、225、223、199 records |
+| 同 | m5 | available。214 records、14,502 steps | available。100 records、10,750 steps |
+| 50 場面、場面ごとの review | m5 | `disclosure-record-limit`。2,670 records、142,022 steps | available。344 records（revision 10、shared 239、A3 35）、47,533 steps |
+| 同 | m1、m2、m3 | `disclosure-record-limit`。12,520、13,039、12,497 records、688,881、716,307、688,691 steps | `revision-record-limit`。954、967、931 records（revision 45、47、45）、227,787、234,265、227,597 steps |
+| 同 | c01 | `disclosure-record-limit`。11,093 records、615,348 steps | `disclosure-record-limit`。827 records（revision 40）、206,619 steps |
+
+`tests/cq_opt.rs` の44応答（shape × lane × variant）は、run 固有の id を除くと40が一致し、差は意図した4つだった：relations-145 の worker が `other` から `edge-limit`、star-11 の worker が `other` から `node-limit`、revisions-10 の reader と worker が `record-limit` から available。steps は全般に減った（seed 5,409 → 5,169、revisions-3 15,406 → 12,274、revisions-5 25,406 → 19,376、relations-144 52,456 → 52,216、star-10 16,399 → 16,162）。
+
+50 場面の主人公級（m1、m2、m3、c01）は、まだ unavailable である。実作業が read／admission の 512 を超えるためで（827〜967 records。主人公が 40〜47 の Revision を辿る）、残る原因は数え方ではなく上限の値になる。値の見直しは proposal/7 の範囲で、本 lane は変えていない。
+
+#### Q512 の fixture
+
+数え方が変わったので、official fixture を作り直した。charged = 候補 2 + A2（2E）+ shared S + Revision（1+E）。
+
+- 以前は registry を（E+2）回課金したので、E=70 で 512 に届いた。今は実際の読取回数の 2 で課金するので、registry の小さい 2 Scene の project で 512 に届く E は 162 になる。この形は、実 worker の call が約 52 ms で（14 run の 420 回：最小 49.3、中央値 51.8、p99 84.1、最大 92.3 ms。ローカルで他 lane の build が並行し、load average は 4〜6）、16 run のうち 2 run で 100 ms の期限を超えた（`NIR1_GRAPH_QUERY_DEADLINE_NO_TIMELY_FRAME`）。変更前の fixture の hosted の call（base `92f9badd` の run `38507044912`：ubuntu 18.7 ms、macos 15.3 ms、windows 26.3 ms）より期限の余裕が小さい。期限は確認済みの 100 ms で変えられないので、512 行を Entity の work だけで埋めない形にした。
+- `Q512/R2/A3-eligible-shared`：Revision を作る 2 Scene に、材料を持たない Scene 60 を足した 62 Scene の project。E=82（materials 164）、registry 6 行（reference_count を 3 から 5 に）、shared 263（23 + 4×60）、Revision 83。合計 2 + 164 + 263 + 83 = 512。tree と Scene binding の行は Entity の行より安く、同じ 512 行の実 work が小さい。実 worker の call は約 30 ms（§4.1）。
+- Q513（無関係な逆引き edge）：候補が 3 行になり、shared までの admitted は 430（3 + 164 + 263）。Revision 分の 83 行は残り 82 行に入らず、実 worker は `disclosure-record-limit` で拒否する。
+- `Q512/R1/E144/registry33`（lifecycle lane。旧 ID は `Q512/R1/E12/registry33`）：2 Scene、registry 33 行、E=144（materials 288）、shared 77、Revision 145。合計 2 + 288 + 77 + 145 = 512。Entity の多い形を lifecycle lane に残した。実 worker の call は 44.7〜46.0 ms。
+- Full の resource-isolation preflight の reviewed inventory（DR-CQA-4）：`worker.q512` の bytes と basis は fixture の形から導いた page-density の見積りなので、sha256 を付け替えるだけでなく、新しい形で導き直した。pages = 679（official schema DB の baseline）+ 21×materials + 93×revisions + refs + 20×（材料の無い Scene）。旧は 679 + 21×140 + 93 + 3 = 3,715 pages（15,216,640 B）、新は 679 + 21×164 + 93 + 5 + 20×60 = 5,421 pages（db・journal・construction が 22,204,416 B、WAL が 22,335,488 B）。この式は旧の Q2（814 pages）と Q512（3,715 pages）を正確に再現する。Scene の項の 20 は、Scene の行が書く table・index の数で、tree_nodes（table 1、index 7、主キーの autoindex 1）、FTS5 の 2 本（書き込む shadow table が 3 と 4。fixture の project は English なので両方の trigger が動く）、narrative_scene_scope_bindings（table 1、index 2、主キーの autoindex 1）である（schema-contract.json と sqlite_master の数え直し）。実際の DB は 3.5 MB（859 pages）で、この見積りは意図的に広い density の scenario である。派生する値も合わせた：fullMemoryRisk の DB の項（Q2×7 + Q512×3 + C2-ZC）が 287,883,264 → 371,859,456 B、その合計が 13,206,208,512 → 13,290,184,704 B、`docs/pr610-full-workload-risk.md` の式と数値（その sha256 を allocation の sources に反映した）。journey の inventory（33 case。schema baseline + 3,715 pages の Q512 mutation image）は、製品 journey の書込みの size class で、C-query の fixture を開く journey が無いので、導き直していない。`scripts/ci-pause.test.mjs` の `Reviewed worker.q2 and worker.q512 inventories are the page-density scenario of the fixtures they size` が、inventory が script の manifest（materials、revisions）、`Q512_FILLER_SCENES`、reference_count から式で導かれること、risk 文書の記述と合計が一致することを確かめる。次に fixture の形を変えるときは、この試験が先に失敗する。
+- 変えた箇所：`nir1_capacity_fixtures.rs`（`Q512_FILLER_SCENES`、reference_count、ID）、`scripts/nir1-c-query-worker-ci.sh`（manifest と grep）、`scripts/local-ci.test.mjs`、`scripts/ci-pause.test.mjs`（manifest の定数、inventory と risk 文書の整合の試験、fullMemoryRisk の合計の定数）、`docs/local-ci-runner.md`、`docs/pr610-full-workload-risk.md`、`scripts/local-ci-full-workload-allocation.json`（`worker.q512` の bytes と basis、fullMemoryRisk の DB の項、sources の sha256）。
+
+#### G の評価（CP-0）との関係
+
+- 規則モデルとの差（DR-CQA-2）：CP-0 で固定した G 評価の規則モデル（`scripts/quality/nir1-graph/contract.mjs` の `evaluateGraphCaseVariant`）は、seed が適格な Revision の Entity に入らないとき、`graph.status=unavailable`、`reasonClass=seed-not-qualified` と計算する。runtime は、ordinary reader も worker も、同じ seed に available で node 0、edge 0（Graph の寄与 0）の空 Graph を返す（本 lane で worker が reader に揃った）。`graph.status` は manifest の比較 field なので、seed が適格でない variant があれば status が食い違う。現行の G-02〜G-08 の variant にそのようなものは無く（下の確認）、比較の結果は変わらない。本 lane は規則モデルも fixture も変えていない。CP-4 で seed が適格でない variant を足すときは、この組（規則モデルの unavailable・`seed-not-qualified`、runtime の available・node 0）を一致とみなす読み替えを観測の前に宣言するか、規則モデルを新しい版の fixture で改めて独立 review を取り直す。観測した後には読み替えない（CP-0 の規則）。どちらにするかは CP-4 の判断で、本 lane は決めない。
+- 可用性の記録の数え方：node 0 の available は、Graph が何も寄与していない状態である。seed に適格な Revision が無い query と、X1 の状態（本文の保存の後に B を再 publish した状態）の query は、どちらも available・node 0 を返す。可用性の記録（CP-4）では、node 0 の available を、寄与のある available と分けて数える。分けないと、Graph が何も寄与しない状態が可用と記録される。
+- G-02〜G-08 の出力形の確認：`evals/nir1-graph/` は変更していない。12 variant（G-02 が 1、G-03 が 2、G-04〜G-07 が各 1、G-08 が 5）について、規則モデルの `evaluateGraphCaseVariant` が返す `qualifiedRevisions` と各 Revision の `reviewSceneId` を数えた（一時の script。commit していない）。適格な Revision の review Scene は G ごとに 1 つだけである（G-02 は `g02-review`、G-03 は `g03-review`、G-04 は `g04-rv-match` の `g04-r-lio` 1 件、G-05 は `g05-review`、G-06 は `g06-review`、G-07 は `g07-rv-early`、G-08 は `g08-review`）。複数の適格な Revision に入る Entity は、すべて同じ review Scene（同じ Scope）の Revision に入る。したがって node の同一性から Scope を外しても、以前 available だった Graph の node、edge、`qualifiedRevisionIds` は変わらない。`reasonClass` は status だけを比べる（`evals/nir1-graph/README.md` の対象外の節）ので、G-03 の上限 variant の worker の分類が `other`（Failed）から `node-limit`（Limit）に変わっても、比較は同じである。`node --test scripts/quality/nir1-graph/contract.test.mjs` は 23 件が通った。
+
+#### 実 worker での確認
+
+`scripts/nir1-c-query-worker-ci.sh` の全 mode（既定、practical-retention、lifecycle、frame-lifecycle、trailing-data、partial-terminal-marker、caller-cancellation、startup-registration-refusal）をローカル（Linux、release build）で実行して通った。新しい case `cq_avail::native_worker_answers_a_project_reviewed_scene_by_scene` を lifecycle lane に足した（script の case は 16 件から 17 件になった。§3.2 の「14件」は H1〜H3 の時点の数）。この case は、10 場面・場面ごとの review の project をその場で作り、実 worker で seed 3 つ（m1、c01、m5）を問い、Graph が ordinary reader の Graph と一致することを確かめる。call は m1 が 32〜34 ms（node 10、edge 21）、c01 が 30〜36 ms、m5 が 7.7〜9.5 ms で、100 ms の lease の内だった（ローカル、他 lane の build が並行）。レビュー指摘の修正（frame の validate、試験、dataset）の後にも、全 mode を再実行して通った（lifecycle の m1 は call 31.5 ms、node 10、edge 21、binding 26。practical の Q512 は call 約 29 ms）。
+
+#### 範囲外と残る制約
+
+- R3（Entity 12 と edge 144 の意味上の上限。契約で、ユーザーの判断）、X1（本文の保存での失効。X1-1 lane と契約 draft で扱う）、上限の値の見直し（proposal/7）、worker のメモリ（R4。CQ-MEM）は、本 lane で触れていない。この節の可用性の改善の表は本文の保存が無い fixture の値で、X1 の影響を含まない（「前後の計測」）。
+- 50 場面の主人公級は、上のとおり 512 に届く。
+- 課金に入っていない行（既存の会計の穴。DR-CQA-5）：Scope extension の LEFT JOIN（`scene_scope.rs` の `read_scope_extension`）は、binding の knowledge holder と audience が character のとき、principal の Codex 行を binding あたり最大 2 行読む。`preflight_project_reads` の課金は、この行を数えない。tree の全件 56、binding 50、join で読む tree 50 の project で、どの binding も character の principal を持てば、shared の実際の読取は principal の 100 行を加えて約 256 行になり、課金（tree×2 の 112 と binding×2 の 100）を約 44 行上回る。変更前の A3 の課金も同じ行を数えていないので、本変更が増やした穴ではない。ただし、変更前は shared の行を Revision ごとに課金していたので、Revision が 2 件以上のとき課金が読取を上回っていた。今は shared を 1 回だけ課金するので、この形では旧来の乗数が実際の読取を覆うとは言えない。「読取と課金は 1 対 1」は読取の回数（statement）の単位の主張で、行の単位ではない。課金に principal の行を足すかは別に決める（課金を厳しくする変更だが、A3 の SQL、診断の観測 slot、steps の基準値に波及する）。
+- 512 行の実 work が大きい形でも期限に収まることは、lifecycle の `registry33`（E=144）で確かめる。hosted の 3 OS での Q512 の call は、この変更の最初の run で観測して §4.1 に足す（§8）。
 
 ## 3. CI 証跡
 
@@ -404,6 +476,25 @@ lane：`canonical_profile=c-query-practical`（`scripts/nir1-c-query-worker-ci.s
 | 試験 | `native_worker_practical_retention_q512_30x` ok（2.19 s）、`native_worker_returns_canonical_512_a3_eligible_seed_local_graph` ok（0.19 s） | ok（1.83 s）、ok（0.17 s） | ok（1.37 s）、ok（0.13 s） |
 
 読み方：100 ms の期限に対して、admission の中央値は H1 で約25 ms、H2 で約21 ms、H3 で約15 ms だった。3回の run は同じ fixture と同じ script で、runner が異なり、差の原因は調べていない。parent の VmRSS は、どの run でも run 1 の後で一定だった。H3 の parent の VmHWM は、run 28 の retired 時の snapshot が 28,900 KiB、run 29 の READY 時の snapshot が 28,984 KiB で、上がった時点はその間である。以後は run 30 まで上がらなかった。30回の間に、具体的な retention、継続的な growth、OOM、stall は観測されなかった。
+
+### 4.1. CQ-AVAIL の後の practical lane の観測値（ローカル）
+
+Q512 の fixture が変わった（§2.12）ので、新しい fixture の観測値を別に記録する。上の H1〜H3 は変更前の fixture の hosted の値で、比べられない。値はローカル（Linux x86_64、12 core）で、他 lane の build が並行していて load average は 10〜16 だった。hosted の値ではない。
+
+| 項目 | 値 |
+|---|---|
+| fixture | `Q512/R2/A3-eligible-shared`。source 3,518,464 B、materials 164、revisions 1、registry rows 6、charged rows 512。linux／x86_64 |
+| 準備後の preflight | candidate_rows 2、canonical_candidates 1、A2_rows 164、A3_shared_rows 263、A3_revision_rows 83、admitted 512、first_refusal None |
+| 30回 × 15 run の admission（ms。最小／中央値／最大） | 28.657／30.483／56.551 |
+| 同 call（ms） | 28.657／30.484／56.552（p95 41.4、p99 44.0。60 ms 超 0 回、100 ms 超 0 回。450 回） |
+| maximum を1回（call。ms。15 run） | 29.1〜39.8 |
+| parent の READY 時／lease 保持中（KiB。VmRSS と VmHWM は一致） | 30,868〜31,776／31,060〜31,932 |
+| worker の READY 時（KiB） | 9,504〜9,720 |
+| 各回の retirement | 465 回（30回 × 15 run と maximum の15回）とも lease_released、exit_eof_all_joins、claim_reloan が true で participants 0 |
+| input の sidecar（wal／shm／journal の bytes。retention と maximum の両方） | 0／32,768／0 |
+| 試験 | `native_worker_practical_retention_q512_30x` ok（3.6 s）、`native_worker_returns_canonical_512_a3_eligible_seed_local_graph` ok（0.3 s） |
+
+読み方：100 ms の期限に対して call の中央値は約 30 ms だった。変更前の fixture の hosted の admission は 15〜25 ms（H1〜H3）。値は閾値、物理メモリの上限、leak 不存在の証明ではない。snapshot は parent と READY の worker のもので、query の peak ではない。
 
 ## 5. 独立受入れ
 
@@ -576,4 +667,5 @@ B-GUARD の後（2026-10-14、branch `claude/nir1-bguard`）：選択肢 1-A を
 | CR-2 の hosted checks | CR-2 の PR の最終 head の PR checks（`Shared Rust crates` を含む）の green。CR-2 の充足の条件（§3.4） |
 | CR-2 の中間レビュー | §5.1。P2 が 1 件、P3 が 2 件で、いずれも直した。修正の後の独立受入れは行っていない |
 | 残 HOLD | [precheck] の2点：G-1 の B の上限近傍の publish（§7.1）、G-2 の実 worker の正例（§7.2）。ユーザーの確認を待つ。G-3 と、G-1／G-2／G-4 の試験を足した部分は、CR-2 の merge で解除する。G-4 の Scene 8 は CP-1 の受入れに移す（§7.3） |
-| 観測した制約 | SQL steps、records、版の衝突、Entity 12（§2.11）。受け入れるかどうかの確認を待つ |
+| 観測した制約 | SQL steps、records、版の衝突、Entity 12（§2.11）。受け入れるかどうかの確認を待つ。records の数え方と版の衝突は CQ-AVAIL（§2.12）が委任の内で直した |
+| CQ-AVAIL | 本変更の PR の hosted checks の green。hosted の 3 OS での Q512 の call（新しい fixture。変更前の base は ubuntu 18.7 ms、macos 15.3 ms、windows 26.3 ms）は、最初の run で観測して §4.1 に足す。50 場面の主人公級が 512 に届くことは、上限の値の見直し（proposal/7）に残る（§2.12）。Full workload allocation の `worker.q512` の再導出（DR-CQA-4）は dataset の変更なので、独立 review の対象にする |
