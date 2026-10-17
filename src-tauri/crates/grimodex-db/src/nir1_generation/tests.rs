@@ -3858,6 +3858,131 @@ fn dt3_dispatcher_reads_v1_and_v2_and_rejects_unknown_versions_keys_and_slots() 
 }
 
 #[test]
+fn dfa1_legacy_v1_reference_rows_are_terminalized_but_never_claimed() {
+    let workspace = bounded::BoundedWorkspace::new();
+    let snapshot = workspace.snapshot();
+    let pinned = workspace.db();
+    let db = pinned.db();
+    let human = human(db, "legacy-ref-human", "input");
+    let make = |source: &str| {
+        create_attempt(
+            db,
+            request(
+                vec![message_input(&human)],
+                vec![QualificationReference::present(
+                    0,
+                    QualificationKind::Source,
+                    source,
+                    "digest",
+                )],
+            ),
+        )
+        .expect("attempt")
+    };
+    let claimed_probe = make("legacy-ref-probe");
+    let recovered = make("legacy-ref-recovered");
+    for attempt in [&claimed_probe, &recovered] {
+        let legacy_input = LegacyInputReferenceV1 {
+            role: attempt.inputs[0].role.clone(),
+            target: attempt.inputs[0].target.clone(),
+        };
+        let legacy_qualification = LegacyQualificationReferenceV1 {
+            input_ordinal: 0,
+            kind: QualificationKind::Source,
+            identity: attempt.qualifications[0]
+                .identity()
+                .expect("present")
+                .to_string(),
+            version: attempt.qualifications[0]
+                .version()
+                .expect("present")
+                .to_string(),
+        };
+        let legacy_digest = canonical_json_digest(&json!({
+            "domain":"nir1-generation-inputs@1",
+            "inputs":[legacy_input],"qualifications":[legacy_qualification]}))
+        .expect("legacy digest");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE nir1_generation_input_refs SET reference_json=?2 WHERE attempt_id=?1",
+                params![
+                    attempt.id,
+                    canonical_json_string(&serde_json::to_value(&legacy_input)?)?
+                ],
+            )?;
+            conn.execute(
+                "UPDATE nir1_generation_qualification_refs SET reference_json=?2 WHERE attempt_id=?1",
+                params![
+                    attempt.id,
+                    canonical_json_string(&serde_json::to_value(&legacy_qualification)?)?
+                ],
+            )?;
+            conn.execute(
+                "UPDATE nir1_generation_attempts SET input_digest=?2 WHERE id=?1",
+                params![attempt.id, legacy_digest],
+            )?;
+            Ok(())
+        })
+        .expect("rewrite the rows as v1");
+        let stored = read_attempt(db, &attempt.id, budget()).expect("v1 rows stay readable");
+        assert_eq!(stored.reference_format, ReferenceFormat::LegacyV1);
+        assert!(stored.inputs.is_empty() && stored.qualifications.is_empty());
+        // The unbounded claim and the production claim both refuse; neither
+        // validates zero references and then writes claimed_at_ms.
+        assert_error_code(
+            claim_attempt(db, &attempt.id, &attempt.binding, 1_500, budget()),
+            "NIR1_GENERATION_REFERENCE_LEGACY_TERMINAL_ONLY",
+        );
+        let refused = claim_attempt_bounded(
+            &snapshot,
+            &bounded::expected(&stored),
+            &bounded::admission(),
+            &mut || Ok(()),
+        )
+        .expect_err("a v1 reference row is never claimed by the production writer");
+        assert_eq!(refused.commit(), Nir1CommitState::NotCommitted);
+        assert!(
+            format!("{:#}", refused.source)
+                .contains("NIR1_GENERATION_REFERENCE_LEGACY_TERMINAL_ONLY"),
+            "{:#}",
+            refused.source
+        );
+    }
+    db.with_conn(|conn| {
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM nir1_generation_attempts WHERE claimed_at_ms IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            0
+        );
+        Ok(())
+    })
+    .expect("no claim was written");
+    // Recovery and a body-less terminal still work for a v1 reference row.
+    let terminal = recover_attempt_bounded(
+        &snapshot,
+        &recovered.id,
+        2_000,
+        ParticipantSqlOperationBudget::new(
+            Arc::new(AtomicBool::new(false)),
+            Instant::now() + NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT,
+            NIR1_GENERATION_SQLITE_BUSY_LIMIT,
+        ),
+    )
+    .expect("v1 reference recovery");
+    assert!(terminal.message_version.is_none());
+    let cancellation = OutputObserver::new().finish(Completion::Cancelled);
+    let cancelled = finish_attempt(db, &claimed_probe.id, &cancellation, None, 2_000)
+        .expect("v1 reference cancel");
+    assert_eq!(
+        cancelled.failure_classification,
+        Some(FailureClassification::Cancelled)
+    );
+}
+
+#[test]
 fn dt3_legacy_v1_row_is_terminalized_but_never_claimed_or_read_as_current() {
     let workspace = bounded::BoundedWorkspace::new();
     let snapshot = workspace.snapshot();
@@ -4764,6 +4889,51 @@ mod df_plus_reference_format {
 
     fn reason_of(inputs: &[InputReference], refs: &[QualificationReference]) -> CompletenessReason {
         check(inputs, refs).expect_err("incomplete").reason
+    }
+
+    #[test]
+    fn completeness_requires_exactly_one_current_turn_at_ordinal_zero() {
+        // A past Human first and the current turn second: the D1 selection
+        // would start from the wrong input.
+        let reordered = vec![
+            message(InputRole::User, InputUse::AdoptedHistory, "past-human-v"),
+            message(InputRole::User, InputUse::CurrentTurn, "human-v"),
+        ];
+        let mut refs = message_refs(0, "past-human-v", NotApplicableReason::HumanAuthored, None);
+        refs.extend(current_human_refs(1));
+        assert_eq!(
+            check(&reordered, &refs),
+            Err(CompletenessViolation {
+                input_ordinal: Some(0),
+                kind: None,
+                scope_role: None,
+                reason: CompletenessReason::InputUseMismatch,
+            })
+        );
+        // Two current-turn inputs.
+        let doubled = vec![
+            message(InputRole::User, InputUse::CurrentTurn, "human-v"),
+            message(InputRole::User, InputUse::CurrentTurn, "human-v-2"),
+        ];
+        let mut refs = current_human_refs(0);
+        refs.extend(current_human_refs(1));
+        assert_eq!(
+            reason_of(&doubled, &refs),
+            CompletenessReason::InputUseMismatch
+        );
+        // A conversation attempt without a current turn.
+        let history_only = vec![message(
+            InputRole::User,
+            InputUse::AdoptedHistory,
+            "past-human-v",
+        )];
+        let refs = message_refs(0, "past-human-v", NotApplicableReason::HumanAuthored, None);
+        assert_eq!(
+            reason_of(&history_only, &refs),
+            CompletenessReason::InputUseMismatch
+        );
+        // The intended order stays complete.
+        assert_eq!(check(&table_inputs(), &table_refs()), Ok(()));
     }
 
     #[test]

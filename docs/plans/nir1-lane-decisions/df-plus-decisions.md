@@ -27,3 +27,19 @@ DFA-1 が根拠にした K4/3 の節: §2「保存先」（入力ごとの証跡
 - 数値: 新しい上限・時間・件数は足していない。D1 selection digest の `estimatorVersion` の長さは既存の `MAX_SHORT_TEXT_BYTES`（256）を使った。
 - 製品の呼出し: v2 の行を書く producer は既存の D-final（`nir1_packing.rs`）で、input-use と Scope の役割だけを型から書く最小の変更を入れた（N/A、D1、不整合 Revision の除外は DFA-2）。history の adapter は present の ref だけを写す（N/A の写像と v1 の除外は DFA-3）。node の `final_input_digest` は domain を `@2` にした（DFA-2 で試験の対を足す）。
 - DFA-2／DFA-3 への引き継ぎ: node の試験は `QualificationReference` の `identity`／`version` が `identity()`／`version()` の accessor に変わったため DFA-2 で直す。producer は Scope の identity を `scope_identity` で作る（UUID の ID は値が変わらない）。
+
+### DFA-1 のレビュー修正（2026-10-17）
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-DFP-8 | 2026-10-17 | DF+／DFA-1 | 参照行が v1（`reference_format=LegacyV1`）の attempt は claim できない。`claim_attempt`（test support）は binding の照合の直後に、`claim_attempt_bounded`（production）は terminal・既 claim の確認の直後に、どちらも期限・Scene の束縛・`validate_refs` より前で `NIR1_GENERATION_REFERENCE_LEGACY_TERMINAL_ONLY` を返す。v1 の行は inputs と qualifications が空で読まれるので、`validate_refs` は何も検証せず通ってしまうため。terminalize と回復は通す（binding の v1 の `BINDING_LEGACY_TERMINAL_ONLY` と対称）。試験 `dfa1_legacy_v1_reference_rows_are_terminalized_but_never_claimed` が両 claim の拒否・claimed_at_ms が書かれないこと・回復と body 無しの cancel が通ることを確かめる | 保存済みの行の版（開発 DB の DT-3 以後・DFA-1 以前の attempt）。製品の owner は v2 の expected だけを持つので今は到達しない経路を閉じる | `validate_refs` の中で入力が空なら拒否する案は、v2 で入力が空の正当な attempt を壊すので採らない | なし | 該当なし（既存の拒否を足すだけ。schema・入口・閾値は変えない） | claim の入口に reference_format を加えるだけ。lifecycle は変わらない | 実装済み |
+| DR-DFP-9 | 2026-10-17 | DF+／DFA-1 | 完備規則に K4/3 §5 の current-turn の規則を足した。`check_attempt_completeness` は、(1) current-turn の入力が ordinal 0 以外にあれば、(2) Message の入力を含む attempt（会話の attempt）で ordinal 0 が current-turn でなければ、`InputUseMismatch`（その ordinal）で返す。(2) で current-turn は 0 件・複数件も弾く（ordinal 0 以外の current-turn は (1) で弾かれる）。Message を含まない入力だけの集合（Raw・Revision だけ）には current-turn を要求しない（各 kind の表の検査をその単位で試験するため）。D1 selection digest が current-turn を除外して ordinal 順に並べる前提を、完備規則の側で保証する。writer は強制しない（DR-DFP-4）。history 側（HC-1、DFA-3）が lineage で current-turn を見る場合は、それを重ねて持つ。試験 `completeness_requires_exactly_one_current_turn_at_ordinal_zero` | 完備規則の純粋関数（writer の外）。呼出し側が渡す入力の並び | writer で強制する案は DR-DFP-4（完備規則は writer で強制しない）に反するので採らない | なし | 該当なし | なし | 実装済み |
+
+レビューの P3 のうち、DFA-1 では実装せず、後続に置いたもの（確認の範囲を広げない）。
+
+- 規則 3 の `expected_targets` が `Option`: DFA-1 の純粋関数の設計としては任意のまま（`None` では構造の検査だけ）。production の呼出しは `Some` を必須にする。DFA-2 の finalizer は自分の出力から導いた期待集合を渡し、DFA-3 の checker は現行の Revision・Evidence・A3 の Scope から導く。どちらも「期待集合が無い出力は拒否される」受入れ試験を置く。`None` を許す入口を test 専用に分けるかは DFA-2 で決める。
+- D1 ref の version と `d1_selection_digest` の再計算の一致: 完備規則は D1 ref の identity が `d1-selection` であることだけを見る（D1 の budget・usage は純粋関数の入力に無い）。DFA-2（finalizer）と DFA-3／HS-1 が `d1_selection_digest` を呼んで ref の version と比べ、それぞれに比較の試験を置く。
+- node の `final_input_digest` と db の `input_digest` の実値の一致: DFA-2 の node の試験で、同じ inputs・qualifications の fixture に対して両者が等しいことを assert する。db 側の試験 `input_digest_domain_is_v2_and_matches_node_final_digest` は domain 定数と JSON の形の試験であり、対の試験の場所は DFA-2。
+- history の adapter が v1 の参照行を空の入力で写す件: tuple が常に None の間は `CurrentTupleUnavailable` で止まる。DFA-3 で `reference_format == LegacyV1` を Incomplete の理由に写す（adapter 試験 `adapter_maps_v2_rows_and_marks_v1_rows_incomplete` を予定どおり置く）。HS-1 が tuple を埋める前に必ず入れる。
+- node crate の test target が単体ではコンパイルできない件（`QualificationReference` の `identity`／`version` の field 参照）: DFA-2 の commit で accessor に直し、node の lib test が通ることを確かめてから PR にする。DFA-1 の commit 単体は bisect の対象にしない（integrator に伝える）。
+- decisions のファイル名: TASK §9 は `dfplus-decisions.md` だが、実ファイルと README の行は `df-plus-decisions.md`。実ファイルを残す。PR 本文と DFA-2／3／DFB-1 の追記先は `df-plus-decisions.md`。

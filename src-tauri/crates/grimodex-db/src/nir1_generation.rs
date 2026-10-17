@@ -141,6 +141,7 @@ pub enum GenerationPurpose {
 const ATTEMPT_BINDING_VERSION: u64 = 2;
 const BINDING_VERSION_UNSUPPORTED_ERROR: &str = "NIR1_GENERATION_BINDING_VERSION_UNSUPPORTED";
 const BINDING_LEGACY_TERMINAL_ONLY_ERROR: &str = "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY";
+const REFERENCE_LEGACY_TERMINAL_ONLY_ERROR: &str = "NIR1_GENERATION_REFERENCE_LEGACY_TERMINAL_ONLY";
 
 /// `bindingVersion` of [`AttemptBinding`]. It serializes as the integer 2,
 /// and every other value fails to deserialize.
@@ -1248,6 +1249,27 @@ pub fn check_attempt_completeness(
     qualifications: &[QualificationReference],
     context: &CompletenessContext<'_>,
 ) -> std::result::Result<(), CompletenessViolation> {
+    // K4/3 section 5: the current turn is exactly one User message at
+    // ordinal 0. A second current-turn input, or one past ordinal 0, would let
+    // the D1 selection digest (which skips current-turn inputs) start from the
+    // wrong input.
+    // A conversation attempt (one that carries a Message input) must start
+    // with that current turn; a material-only input set has no current turn.
+    let conversation = inputs
+        .iter()
+        .any(|input| matches!(input.target, InputTarget::Message { .. }));
+    for (ordinal, input) in inputs.iter().enumerate() {
+        let is_current = input.input_use == InputUse::CurrentTurn;
+        let expected_current = conversation && ordinal == 0;
+        if is_current != expected_current && (is_current || conversation) {
+            return Err(violation(
+                ordinal,
+                None,
+                None,
+                CompletenessReason::InputUseMismatch,
+            ));
+        }
+    }
     let mut by_input: Vec<Vec<&QualificationReference>> = vec![Vec::new(); inputs.len()];
     for reference in qualifications {
         match by_input.get_mut(reference.input_ordinal) {
@@ -3619,6 +3641,11 @@ pub fn claim_attempt(
                 "NIR1_GENERATION_BINDING_MISMATCH"
             );
             ensure!(
+                attempt.reference_format == ReferenceFormat::V2,
+                "{}",
+                REFERENCE_LEGACY_TERMINAL_ONLY_ERROR
+            );
+            ensure!(
                 now_ms >= attempt.created_at_ms && now_ms < attempt.expires_at_ms,
                 "NIR1_GENERATION_EXPIRED"
             );
@@ -5914,6 +5941,11 @@ pub fn claim_attempt_bounded(
             if let Some(claimed_at_ms) = stored.claimed_at_ms {
                 return Ok(Nir1ClaimOutcome::AlreadyClaimed { claimed_at_ms });
             }
+            ensure!(
+                stored.reference_format == ReferenceFormat::V2,
+                "{}",
+                REFERENCE_LEGACY_TERMINAL_ONLY_ERROR
+            );
             let now_ms = wall_clock_ms()?;
             if now_ms < stored.created_at_ms || now_ms >= stored.expires_at_ms {
                 return Err(domain_failure(
