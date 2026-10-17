@@ -1,0 +1,2025 @@
+{
+ "description": "Independent decision vectors of the NIR-1 local send AI policy check (grimodex-core nir1_local_send_policy). A null raw is the function's absent input (the DB column is NOT NULL, so no stored row can produce it). Not shared with policyDecisionVector.fixture.json, whose parsers fall back to full for unreadable input; here every unreadable value denies.",
+ "vectors": [
+  {
+   "label": "matrix-full-chat=true-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-full-chat=true-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-full-chat=true-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-full-chat=true-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-full-chat=false-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-full-chat=false-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-full-chat=false-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-full-chat=false-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-assist-off-chat=true-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-assist-off-chat=true-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-assist-off-chat=true-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-assist-off-chat=true-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-assist-off-chat=false-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-assist-off-chat=false-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-assist-off-chat=false-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-assist-off-chat=false-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"assist-off\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-review-only-chat=true-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-review-only-chat=true-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-review-only-chat=true-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-review-only-chat=true-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-review-only-chat=false-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-review-only-chat=false-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-review-only-chat=false-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-review-only-chat=false-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"review-only\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-off-chat=true-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-off-chat=true-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-off-chat=true-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-off-chat=true-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-off-chat=false-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-off-chat=false-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-off-chat=false-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-off-chat=false-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"off\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-custom-chat=true-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-custom-chat=true-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-custom-chat=true-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "matrix-custom-chat=true-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "matrix-custom-chat=false-bodyWrite=true-analysis=true",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-custom-chat=false-bodyWrite=true-analysis=false",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-custom-chat=false-bodyWrite=false-analysis=true",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "matrix-custom-chat=false-bodyWrite=false-analysis=false",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-missing-111",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-both-missing-110",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-both-missing-101",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-both-missing-100",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-both-missing-011",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-missing-010",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-missing-001",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-missing-000",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-false-111",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-both-false-110",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-both-false-101",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-both-false-100",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-both-false-011",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-false-010",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-false-001",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-false-000",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":false,\"knowledgeWrite\":false}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-structureWrite-string-111",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":\"yes\",\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-structureWrite-string-110",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":\"yes\",\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-structureWrite-string-101",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":\"yes\",\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-structureWrite-string-100",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":\"yes\",\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-structureWrite-string-011",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":\"yes\",\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-structureWrite-string-010",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":\"yes\",\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-structureWrite-string-001",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":\"yes\",\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-structureWrite-string-000",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":\"yes\",\"knowledgeWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-knowledgeWrite-null-111",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-knowledgeWrite-null-110",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-knowledgeWrite-null-101",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-knowledgeWrite-null-100",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-knowledgeWrite-null-011",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-knowledgeWrite-null-010",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-knowledgeWrite-null-001",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-knowledgeWrite-null-000",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":true,\"knowledgeWrite\":null}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-number-111",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":1,\"knowledgeWrite\":0}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-both-number-110",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":1,\"knowledgeWrite\":0}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-both-number-101",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":1,\"knowledgeWrite\":0}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-both-number-100",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":1,\"knowledgeWrite\":0}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-both-number-011",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":1,\"knowledgeWrite\":0}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-number-010",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":1,\"knowledgeWrite\":0}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-number-001",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":1,\"knowledgeWrite\":0}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-number-000",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":1,\"knowledgeWrite\":0}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-nested-111",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":{\"a\":1},\"knowledgeWrite\":[true]}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-both-nested-110",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":{\"a\":1},\"knowledgeWrite\":[true]}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-both-nested-101",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":{\"a\":1},\"knowledgeWrite\":[true]}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "extra-both-nested-100",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":{\"a\":1},\"knowledgeWrite\":[true]}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "extra-both-nested-011",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":true,\"structureWrite\":{\"a\":1},\"knowledgeWrite\":[true]}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-nested-010",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":true,\"analysis\":false,\"structureWrite\":{\"a\":1},\"knowledgeWrite\":[true]}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-nested-001",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":true,\"structureWrite\":{\"a\":1},\"knowledgeWrite\":[true]}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "extra-both-nested-000",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"bodyWrite\":false,\"analysis\":false,\"structureWrite\":{\"a\":1},\"knowledgeWrite\":[true]}}",
+   "writing": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "item-disabled",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unknown-extra-keys-ignored",
+   "raw": "{\"preset\":\"full\",\"note\":[1,2],\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true,\"future\":\"x\"}}",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "surrounding-json-whitespace",
+   "raw": " \n{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}\t ",
+   "writing": {
+    "allow": true,
+    "source": "stored"
+   },
+   "review": {
+    "allow": true,
+    "source": "stored"
+   }
+  },
+  {
+   "label": "null-input-is-default",
+   "raw": null,
+   "writing": {
+    "allow": true,
+    "source": "default-unset"
+   },
+   "review": {
+    "allow": true,
+    "source": "default-unset"
+   }
+  },
+  {
+   "label": "unreadable-empty",
+   "raw": "",
+   "writing": {
+    "allow": false,
+    "code": "blank"
+   },
+   "review": {
+    "allow": false,
+    "code": "blank"
+   }
+  },
+  {
+   "label": "unreadable-spaces-only",
+   "raw": "   ",
+   "writing": {
+    "allow": false,
+    "code": "blank"
+   },
+   "review": {
+    "allow": false,
+    "code": "blank"
+   }
+  },
+  {
+   "label": "unreadable-newline-tab-only",
+   "raw": " \n\t\r ",
+   "writing": {
+    "allow": false,
+    "code": "blank"
+   },
+   "review": {
+    "allow": false,
+    "code": "blank"
+   }
+  },
+  {
+   "label": "unreadable-not-json",
+   "raw": "not-json",
+   "writing": {
+    "allow": false,
+    "code": "not-json"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-json"
+   }
+  },
+  {
+   "label": "unreadable-truncated-json",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true",
+   "writing": {
+    "allow": false,
+    "code": "not-json"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-json"
+   }
+  },
+  {
+   "label": "unreadable-trailing-garbage",
+   "raw": "{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}x",
+   "writing": {
+    "allow": false,
+    "code": "not-json"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-json"
+   }
+  },
+  {
+   "label": "unreadable-single-quoted",
+   "raw": "{'preset':'full'}",
+   "writing": {
+    "allow": false,
+    "code": "not-json"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-json"
+   }
+  },
+  {
+   "label": "unreadable-bom-prefixed",
+   "raw": "\ufeff{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "not-json"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-json"
+   }
+  },
+  {
+   "label": "unreadable-json-null-text",
+   "raw": "null",
+   "writing": {
+    "allow": false,
+    "code": "not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-object"
+   }
+  },
+  {
+   "label": "unreadable-json-true",
+   "raw": "true",
+   "writing": {
+    "allow": false,
+    "code": "not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-object"
+   }
+  },
+  {
+   "label": "unreadable-json-number",
+   "raw": "1",
+   "writing": {
+    "allow": false,
+    "code": "not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-object"
+   }
+  },
+  {
+   "label": "unreadable-json-string",
+   "raw": "\"full\"",
+   "writing": {
+    "allow": false,
+    "code": "not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-object"
+   }
+  },
+  {
+   "label": "unreadable-json-array",
+   "raw": "[]",
+   "writing": {
+    "allow": false,
+    "code": "not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-object"
+   }
+  },
+  {
+   "label": "unreadable-json-array-of-policy",
+   "raw": "[{\"preset\":\"full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}]",
+   "writing": {
+    "allow": false,
+    "code": "not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "not-object"
+   }
+  },
+  {
+   "label": "unreadable-empty-object",
+   "raw": "{}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-missing",
+   "raw": "{\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-null",
+   "raw": "{\"preset\":null,\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-number",
+   "raw": "{\"preset\":1,\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-object",
+   "raw": "{\"preset\":{\"name\":\"full\"},\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-unknown",
+   "raw": "{\"preset\":\"bogus\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-empty",
+   "raw": "{\"preset\":\"\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-uppercase",
+   "raw": "{\"preset\":\"Full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-padded",
+   "raw": "{\"preset\":\" full\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-preset-assist_off",
+   "raw": "{\"preset\":\"assist_off\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "preset-invalid"
+   },
+   "review": {
+    "allow": false,
+    "code": "preset-invalid"
+   }
+  },
+  {
+   "label": "unreadable-toggles-missing",
+   "raw": "{\"preset\":\"full\"}",
+   "writing": {
+    "allow": false,
+    "code": "toggles-not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggles-not-object"
+   }
+  },
+  {
+   "label": "unreadable-toggles-null",
+   "raw": "{\"preset\":\"full\",\"toggles\":null}",
+   "writing": {
+    "allow": false,
+    "code": "toggles-not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggles-not-object"
+   }
+  },
+  {
+   "label": "unreadable-toggles-array",
+   "raw": "{\"preset\":\"full\",\"toggles\":[true,true,true]}",
+   "writing": {
+    "allow": false,
+    "code": "toggles-not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggles-not-object"
+   }
+  },
+  {
+   "label": "unreadable-toggles-string",
+   "raw": "{\"preset\":\"full\",\"toggles\":\"all\"}",
+   "writing": {
+    "allow": false,
+    "code": "toggles-not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggles-not-object"
+   }
+  },
+  {
+   "label": "unreadable-toggles-true",
+   "raw": "{\"preset\":\"full\",\"toggles\":true}",
+   "writing": {
+    "allow": false,
+    "code": "toggles-not-object"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggles-not-object"
+   }
+  },
+  {
+   "label": "unreadable-toggles-empty-object",
+   "raw": "{\"preset\":\"full\",\"toggles\":{}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-missing",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-null",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":null,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-string-true",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":\"true\",\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-string-false",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":\"false\",\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-number-1",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":1,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-number-0",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":0,\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-empty-string",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":\"\",\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-array",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":[true],\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-chat-object",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":{\"v\":true},\"bodyWrite\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-missing",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-null",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":null,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-string-true",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":\"true\",\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-string-false",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":\"false\",\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-number-1",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":1,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-number-0",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":0,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-empty-string",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":\"\",\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-array",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":[true],\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-bodyWrite-object",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":{\"v\":true},\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-analysis-missing",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-analysis-null",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":null}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-analysis-string-true",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":\"true\"}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-analysis-string-false",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":\"false\"}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-analysis-number-1",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":1}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-analysis-number-0",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":0}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-analysis-empty-string",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":\"\"}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-analysis-array",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":[true]}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-analysis-object",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true,\"analysis\":{\"v\":true}}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-chat-false-and-bodyWrite-missing",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":false,\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-writing-ok-but-analysis-missing",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "analysis"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-missing",
+    "item": "analysis"
+   }
+  },
+  {
+   "label": "unreadable-review-ok-but-bodyWrite-string",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":true,\"bodyWrite\":\"true\",\"analysis\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "bodyWrite"
+   }
+  },
+  {
+   "label": "unreadable-chat-null-and-analysis-missing",
+   "raw": "{\"preset\":\"custom\",\"toggles\":{\"chat\":null,\"bodyWrite\":true}}",
+   "writing": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   },
+   "review": {
+    "allow": false,
+    "code": "toggle-not-boolean",
+    "item": "chat"
+   }
+  }
+ ]
+}

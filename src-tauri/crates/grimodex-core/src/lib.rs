@@ -45,6 +45,7 @@ pub mod narrative_project_scope_authority;
 pub mod narrative_scene_scope;
 pub mod narrative_scope_authority_basis;
 pub mod narrative_scope_dependency_projection;
+pub mod nir1_local_send_policy;
 pub mod pm_text;
 pub mod policy;
 pub mod snapshots;

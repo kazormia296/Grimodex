@@ -47,6 +47,9 @@ use crate::narrative_maintenance_connection::{
 use crate::state::ActiveWorkspaceSnapshot;
 use crate::Database;
 
+mod project_ai_policy;
+pub use project_ai_policy::{read_project_ai_policy_bounded, Nir1ProjectAiPolicyRead};
+
 // These are storage safety ceilings for malformed/imported rows. They bound
 // one Native materialization; they are not the owning turn's history or
 // transport capacity contract.

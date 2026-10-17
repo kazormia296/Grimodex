@@ -2450,3 +2450,7 @@ fn a1_owner_has_no_napi_entry() {
     let source = include_str!("nir1_generation_owner.rs");
     assert!(!source.contains(&format!("#[{}", "napi")));
 }
+
+// DT-4 T2: AI usage policy check of the local send route, on this fixture.
+#[path = "nir1_local_send_policy_tests.rs"]
+mod nir1_local_send_policy_tests;
