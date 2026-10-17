@@ -1542,10 +1542,8 @@ mod tests {
     /// Ordering around the restricting transition (begin, activate, begin):
     /// a lease issued before the transition is revoked by it, and no lease is
     /// issued once the profile is restricted, even before the barrier
-    /// completes and without any identity check. This is a sequential
-    /// ordering test, not a reproduced interleaving: that the check and the
-    /// lease issue are atomic follows from `begin_legacy_provider_dispatch`
-    /// holding the state mutex across both.
+    /// completes and without any identity check. This is the sequential half;
+    /// the two synchronised tests below pin the interleavings.
     #[test]
     fn legacy_permit_ordering_around_the_restricting_transition() {
         let path = temp_path("legacy-race");
@@ -1566,6 +1564,98 @@ mod tests {
         }
         assert!(before.ensure_open().is_err());
         drop(before);
+        let _ = fs::remove_file(path);
+    }
+
+    /// G-2 at a synchronisation point (admission side): the test thread holds
+    /// the state mutex while another thread's `begin_legacy_provider_dispatch`
+    /// is pending, restricts the profile through the guard, then releases.
+    /// The pending admission must observe the restriction taken under the
+    /// lock, be refused, and leave no lease. An implementation that decides
+    /// before taking the lock (or on a separate atomic) would issue a permit
+    /// here and fail this test.
+    #[test]
+    fn pending_legacy_admission_is_refused_when_the_profile_is_restricted_meanwhile() {
+        let path = temp_path("legacy-pending-admission");
+        let state = std::sync::Arc::new(ProfileEgressState::new(path.clone()).expect("state"));
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut guard = state.lock();
+        let admitter = {
+            let state = std::sync::Arc::clone(&state);
+            let started = std::sync::Arc::clone(&started);
+            std::thread::spawn(move || {
+                started.store(true, Ordering::SeqCst);
+                state.begin_legacy_provider_dispatch(None).map(|_| ())
+            })
+        };
+        while !started.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        // The admission is now blocked on (or about to reach) the mutex. It
+        // cannot have issued a lease while the test thread holds the guard.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
+        assert!(
+            !admitter.is_finished(),
+            "the admission must wait for the lock"
+        );
+        guard.restricted = true;
+        drop(guard);
+        let error = admitter
+            .join()
+            .expect("admitter")
+            .expect_err("the pending admission sees the restriction");
+        assert!(
+            format!("{error:#}").starts_with(D2A_EGRESS_DENIED_MARKER),
+            "{error:#}"
+        );
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
+        let _ = fs::remove_file(path);
+    }
+
+    /// G-2 at a synchronisation point (revocation side): a permit issued
+    /// before the transition stays valid while the transition is pending on
+    /// the held mutex, and is revoked once the transition completes. The
+    /// lease is released only by dropping the permit.
+    #[test]
+    fn legacy_permit_issued_before_the_transition_is_revoked_by_the_pending_transition() {
+        let path = temp_path("legacy-pending-transition");
+        let state = std::sync::Arc::new(ProfileEgressState::new(path.clone()).expect("state"));
+        let permit = state
+            .begin_legacy_provider_dispatch(None)
+            .expect("pre-restriction");
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 1);
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = state.lock();
+        let transition = {
+            let state = std::sync::Arc::clone(&state);
+            let started = std::sync::Arc::clone(&started);
+            std::thread::spawn(move || {
+                started.store(true, Ordering::SeqCst);
+                state
+                    .activate_first_restricted_publication(false)
+                    .expect("activate")
+            })
+        };
+        while !started.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !transition.is_finished(),
+            "the transition must wait for the lock"
+        );
+        assert!(
+            permit.ensure_open().is_ok(),
+            "the permit is valid until the transition completes"
+        );
+        drop(guard);
+        let status = transition.join().expect("transition");
+        assert!(status.restricted);
+        assert!(permit.ensure_open().is_err());
+        assert!(state.begin_legacy_provider_dispatch(None).is_err());
+        drop(permit);
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
         let _ = fs::remove_file(path);
     }
 }
