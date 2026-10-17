@@ -1,12 +1,13 @@
 # NIR-1 続行計画の作業記録（2026-10）
 
-更新日: 2026-10-13（初版: 2026-10-12）
+更新日: 2026-10-17（初版: 2026-10-12）
 
 | 項目 | 値 |
 |---|---|
 | 状態 | NIR-1 続行計画は 2026-10-12 にユーザーが承認済み。本書は G0 で作成した作業記録 |
 | 計画 | `~/.claude/plans/610-pr-c-query-nir-valiant-thunder.md`（repo 外）。承認時（21:51 JST）の本文の SHA-256 は `0bfb2a90a0b1b0e13b39b99de825674647d88621afe30855d5bed2151efb474e` で、会話記録の承認本文と一致することを G0 で照合した。23:05 JST の改訂後は `f712102e78ca4e3dc217a6e6b1fc637e6a9085050d24e7b586fb6c179ee2e335`。改訂は、Ralph から Workflow subagent への切替（§1 の U3 変更）を記録する1行の追加だけで、その行を除いた本文の SHA-256 が承認時の値と一致することで照合した。2026-10-13 00:46 JST に、B-ROUTE の行と merge 列への B-ROUTE の挿入を足した。G0 の freeze の前には、B-ROUTE の扱い（C-product の前提、§3.1）の文言を直した。その時点の SHA-256 は `408a7a48d47e0f593b1a7c1e77620b8f11b77f40a7cfee3ec37a432645d03f8c`。承認後の改訂は integrator の運用上の記録で、ユーザーが承認したのは承認時の本文（`0bfb2a90…`）である |
 | 基点 | `origin/master@a153743b3f672b7274bdd748f15ef9c216dc9961`（#629） |
+| 現在地（2026-10-17 JST） | master は `df40eec8`。CQ-AVAIL（#663。`0648b897`）、CQ-MEM（#664。`df40eec8`）、依存の audit の修正（#665。`a67acdeb`）は merge 済み。最後に green だった master の Full は `df40eec8`（run 38997488013。base `a67acdeb`。`a67acdeb` の Full〔run 38992906277〕も green だった。cargo audit の赤は #665 で解消した）。Session B1（K3/2、K4/3、K5/3、K6/2、X1/1。K6/2 の条件付きの2行は事前の確認のみで、条件の成立後に改めて確認を求める）は確認済みで、§10.3 と確認台帳に記録した。K2/4 は Session B2、PUB-G／PUB-L は Session C で確認する |
 | 位置づけ | ユーザー決定、委任判断、レーン、merge 列、worktree 台帳の記録。契約の批准、閾値の変更、製品公開の根拠にはしない |
 | 正本 | 契約と確認台帳は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md)、残工程の依存と受入れは [post-B実行計画](nir1-post-b-execution-plan.md)、委任の規則は [GDX-PRECHECK-001](../../policies/quality/iron-laws.md#GDX-PRECHECK-001) |
 
@@ -43,7 +44,7 @@ U3 変更で選ばれた選択肢の提示文は「Ralph の代わりに、こ�
 - NIR-1 の残工程を並列のレーンに分け、merge まで進める（U4）。製品入口（Graph、送信）は PUB-G／PUB-L まで閉じたままにする（A-1）。
 - 9/25-26 の承認と WIP は使わず（U1）、契約は K1〜K6 として最新 master 前提で起案し直す。
 - 2 MiB／8 ms は前提にしない（U2）。資源契約は防御用の上限に簡素化し、K1 で確認する（U6）。K1 は 2026-10-12 に確認された（§10.1）。
-- 確認セッションは A（K1）、B（K2〜K6）、C（PUB-G、PUB-L）の3回とする。確認されなかった行のレーンだけを `[precheck]` で止め、ほかのレーンは止めない。
+- 確認セッションは A（K1）、B（K2〜K6）、C（PUB-G、PUB-L）の3回とする。Session B は、K3〜K6 と X1 を示す B1（2026-10-17 に確認済み。§10.3）と、K2/4 を示す B2 に分けた。確認されなかった行のレーンだけを `[precheck]` で止め、ほかのレーンは止めない。
 - CI 保守は扱わない（U5）。保守の失敗で PR の Security job が止まった場合は、merge 列を止めて実装を続け、ユーザーに報告する。master の Full が赤になった場合は、§6 の優先対応に従う（U7）。
 
 ### 2.1. 契約（起案予定。9/25 の文面は流用しない）
@@ -51,11 +52,12 @@ U3 変更で選ばれた選択肢の提示文は「Ralph の代わりに、こ�
 | K | draftRef と contractId | 止めるもの | 状態 |
 |---|---|---|---|
 | K1 | `nir1-l6-l9-contract-proposal/6`：`graph-limited-binding`、`nir1-defensive-resource-limits` | CR-REC の HOLD 解除、Graph の根拠、HC-1、DT-5、CB-4、CP-1 の数値 | 確認済み（2026-10-12、Session A。2行とも。§10.1） |
-| K2 | `nir1-c-body-disclosure-proposal/2`：`graph-target-scene-body-disclosure`、`scope-storage-authority` の差分 | CB-1〜4、CP-3 の Graph-only 追加、G-01、PUB-G | 起案前（Session B） |
-| K3 | `nir1-d2a-activation-proposal/1`：`caller-profile-egress` の差分 | DA-1／2、CP-3a、PUB-G、DD-1 | 起案前（Session B） |
-| K4 | `nir1-d2b-history-mapping-proposal/1`：`history-reauthorization` の差分 | DF+-a、HS-1、HC-1、DI-1b／c | 起案前（Session B） |
-| K5 | `nir1-d2b-local-send-proposal/2`：`nir1-local-product-send` | DF+-b、DT-4／5、DD-1、PUB-L | 起案前（Session B） |
-| K6 | `nir1-final-request-eval-proposal/1`：`nir1-final-request-packing-eval`（条件付きで `g01-eval-revision`、`graph-eval-procedure`） | DP-H、DD-1、PUB-L、条件付きで CP-4 | 起案前（Session B） |
+| K2 | `nir1-c-body-disclosure-proposal/2`：`graph-target-scene-body-disclosure`、`scope-storage-authority` の差分 | CB-1〜4、CP-3 の Graph-only 追加、G-01、PUB-G | 未確認。K2/3 は Session B1 で示さず、K2/4 に改めて Session B2 で示す |
+| K3 | `nir1-d2a-activation-proposal/2`：`caller-profile-egress` の差分（/1 は確認を求めず superseded） | DA-1／2、CP-3a、PUB-G、DD-1 | 2026-10-17 の Session B1 で確認された（§10.3） |
+| K4 | `nir1-d2b-history-mapping-proposal/3`：`history-reauthorization` の差分（/1 と /2 は確認を求めず superseded） | DF+-a、HS-1、HC-1、DI-1b／c | 2026-10-17 の Session B1 で確認された（§10.3） |
+| K5 | `nir1-d2b-local-send-proposal/3`：`nir1-local-product-send` と、`caller-profile-egress` の差分（B-1〜B-4）の2文 | DF+-b、DT-4／5、DD-1、PUB-L | 2026-10-17 の Session B1 で2文とも確認された（§10.3） |
+| K6 | `nir1-final-request-eval-proposal/2`：`nir1-final-request-packing-eval`（条件付きで `g01-eval-revision`、`graph-eval-procedure`）（/1 は確認を求めず superseded） | DP-H、DD-1、PUB-L、条件付きで CP-4 | `nir1-final-request-packing-eval` は 2026-10-17 の Session B1 で確認された。条件付きの2行は事前の確認のみで、条件は未成立のため効かず、条件の成立後に receipt を添えて改めて確認を求める（§10.3） |
+| X1 | `nir1-scene-scope-projection-proposal/1`：`scope-storage-authority` と `typed-revision-material` の差分（本文の保存で承認済みの Revision を失効させない。SB-3） | X1-2／3／4、K4 の前提 XP、CP-4 | 2026-10-17 の Session B1 で2文とも確認された（§10.3） |
 
 確認は、確認台帳の protocol（[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の Confirmation protocol）に従い、1つの contractId につき exact draftRef を名指した1文で行う。draft は契約ごとに別ファイルにし、merge しない branch で SHA を固定する。確認された draft は byte 同一で台帳へ取り込む。
 
@@ -206,6 +208,7 @@ U5（計画外）への依存: M0（CI 保守。期限と Dependabot への対�
 | `claude-nir1-cqavail` | `claude/nir1-cqavail` | `92f9badd`（`origin/master`） | CQ-AVAIL（DR-CQA-1〜3） |
 | `claude-nir1-cqmem` | `claude/nir1-cqmem` | `92f9badd`（`origin/master`）に B-GUARD を cherry-pick | CQ-MEM（DR-CQM-1） |
 | `claude-nir1-docrec` | `claude/nir1-docrec` | `7ec6a400`（`origin/master`） | DOC-REC（ユーザー決定の転記、worktree 台帳、判断記録の保全。docs だけ） |
+| `claude-nir1-b1rec` | `claude/nir1-b1-record` | `df40eec8`（`origin/master`） | Session B1 の確認の記録（K3/2、K4/3、K5/3、K6/2、X1/1 の取り込み、確認台帳、本書。docs だけ） |
 
 `origin/master` の基点はいずれも `a153743b3f672b7274bdd748f15ef9c216dc9961`（#629）。`claude-nir1-dt2` は 2026-10-12 23:17 JST に、`claude/nir1-dt1` の DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-dt3` は 2026-10-12 23:34 JST に、同じ DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-cp1` は 2026-10-13 00:11 JST に、`claude/nir1-cres` の CR-1b commit `0e041537e8c56c43be38afea490c26857bb488a7` から作った。`claude-nir1-broute` は 2026-10-13 00:47 JST に `origin/master` の `a153743b` から作った（SPIKE S1 で、製品に B の sealed binding を publish する経路が無いことが分かったため、B-ROUTE レーンを追加した）。`claude-nir1-crrec` は 2026-10-13 22:07 JST に `origin/master` の `dabbed14711561693b0a86de0241873a9beafa04`（#649）から作り、CR-1 の merge の後に、その squash commit `750741183cf4d75ccf18b3904a5751b762284bda`（#636）へ載せ替えた。作成時刻は各 branch の reflog（`git reflog show --date=iso <branch>`）の作成記録で確かめた。以後に作る worktree は、作成時に本表へ追記する。merge 済みのレーンの worktree は、この計画で作ったものに限って片付ける。
 
@@ -224,7 +227,7 @@ U5（計画外）への依存: M0（CI 保守。期限と Dependabot への対�
 ## 9. 停止点
 
 1. Session A（D+0〜1）: K1 の2文。2026-10-12 に確認された（§10.1）。
-2. Session B（D+3〜5、準備できた行から）: K2〜K6 と各選択肢。委任判断の一覧も通知する。
+2. Session B（D+3〜5、準備できた行から）: K2〜K6 と各選択肢。委任判断の一覧も通知する。2026-10-17 の Session B1 で K3〜K6 と X1 を確認した（§10.3）。K2/4 は Session B2。
 3. 条件付き（起きたときだけ止める）:
    - S1 が期待と違ったとき。C-body に投資する前に G-01 の評価改訂を確認してもらう。
    - D の窓に届かないとき。graph-eval-procedure を確認してもらうか HOLD にする。D を広げるのは閾値の緩和にあたる。
@@ -271,6 +274,47 @@ CR-1（#636）の lane 証跡と独立受入れを、[C-query 受入れ台帳](n
 | 変えないもの | 製品の Graph 入口（A-1）、Graph の公開、local 送信、固定値と閾値、確認台帳の各行、K2〜K6 の内容 |
 | 試験の期待値 | `scripts/quality/quality-workflow.test.mjs` の、L6〜L9実行計画の残HOLD表で C-resource の行を固定する assertion は、CR-REC までは HOLD を守る番人だったため、解除済みの形に更新した。確認台帳の `graph-limited-binding` の行を固定する assertion は文言を残し、括弧書きで追記しただけで、変えていない。各文書の解除の記述が、解除の条件（CR-1 の merge と、最終 head の Quick・PR checks・lane 6本の green）、squash commit の SHA、U7 の文言を持つことは、同じ試験で固定した |
 
+### 10.3. Session B1（K3/2、K4/3、K5/3、K6/2、X1/1）
+
+| 項目 | 値 |
+|---|---|
+| 受信 | 2026-10-17（JST、Session B1）。integrator セッション（`fa34d6ef-ff00-4f4d-846d-7ccee58abf30`）での、ユーザー自身が打ったメッセージ。最初のメッセージで8文、9文目（X1/1 の `typed-revision-material`）は、最初の送信が無効だったため、同日に入力し直したメッセージで届いた |
+| 確認された版 | `claude/nir1-contracts` の commit `af643a93eeae7f937c9cd5a9dd87a6308c96fab6`（push 済み。repository activity の server 側の時刻 2026-10-17T02:13:10Z）の `docs/plans/<file>`。版の一覧は [manifest](nir1-session-b1-manifest.md) |
+| 取り込み | 5本の draft と、draft が引く設計メモ（[DSN](nir1-dsn-2026-10.md)。確認の対象ではない）と manifest を、byte 同一で取り込み、`sha256sum` が manifest の値と一致することを確かめた。「Status: draft／未確認」の行を含めて本文は編集せず、確認状態は確認台帳で表す |
+
+draft の SHA-256:
+
+| 略称 | ファイル | SHA-256 |
+|---|---|---|
+| K3/2 | [nir1-d2a-activation-proposal-2-draft.md](nir1-d2a-activation-proposal-2-draft.md) | `a16e8b259f8b58e53152e5bb2e503f3cf995f979d85bf4922ccd420f6bf5fd30` |
+| K4/3 | [nir1-d2b-history-mapping-proposal-3-draft.md](nir1-d2b-history-mapping-proposal-3-draft.md) | `f6a189371b4d793c0c440d2ee1d0c96d66c60069d35fa95d31e5c971701a99d7` |
+| K5/3 | [nir1-d2b-local-send-proposal-3-draft.md](nir1-d2b-local-send-proposal-3-draft.md) | `5a8962cd9aa5525046349b31af825c4637dc152e2bb1c5d348fc2bc8fb576723` |
+| K6/2 | [nir1-final-request-eval-proposal-2-draft.md](nir1-final-request-eval-proposal-2-draft.md) | `4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8` |
+| X1/1 | [nir1-scene-scope-projection-proposal-1-draft.md](nir1-scene-scope-projection-proposal-1-draft.md) | `a2d85d92f4f737405922c5fefbe9acf732a8d784a27c6a2f79894c6278dc6c5e` |
+| DSN | [nir1-dsn-2026-10.md](nir1-dsn-2026-10.md) | `10eb61d21d6edc5d9b0bab1c80055e364ec40c9ad4e9e4a45495d76a11f304d5` |
+
+ユーザーが打った9文（逐語。各 draft の「確認文」と1字違わない）:
+
+```text
+I confirm draftRef nir1-d2a-activation-proposal/2 for contractId caller-profile-egress.
+I confirm draftRef nir1-d2b-history-mapping-proposal/3 for contractId history-reauthorization.
+I confirm draftRef nir1-d2b-local-send-proposal/3 for contractId nir1-local-product-send.
+I confirm draftRef nir1-d2b-local-send-proposal/3 for contractId caller-profile-egress.
+I confirm draftRef nir1-final-request-eval-proposal/2 for contractId nir1-final-request-packing-eval.
+I confirm draftRef nir1-final-request-eval-proposal/2 for contractId g01-eval-revision.
+I confirm draftRef nir1-final-request-eval-proposal/2 for contractId graph-eval-procedure.
+I confirm draftRef nir1-scene-scope-projection-proposal/1 for contractId scope-storage-authority.
+I confirm draftRef nir1-scene-scope-projection-proposal/1 for contractId typed-revision-material.
+```
+
+- 1〜8文目は最初のメッセージで届いた。9文目は、最初の送信では文中の空白（`contractId` と `typed-revision-material.` のあいだ）の位置が改行になって届き、exact statement と1字違うので確認として記録しなかった（無効）。ユーザーが同日に1行で入力し直した文を、9文目の確認とした。それ以前の「全て確認しました」という包括的な返答と、途中で切れた貼り付けも、確認として扱っていない。
+- 各文は、その contractId の行だけを確認する（確認台帳の Confirmation protocol）。依存する契約は確認されない。記録先は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の確認台帳（2026-10-17補足と各行）。proposal/3、proposal/4、proposal/6 の既存の ref は消さず、置き換えていない。
+- K6/2 の条件付きの2行（`g01-eval-revision`、`graph-eval-procedure`）は、draft の「確認の扱い」が、条件が成立したときだけ判定に使った receipt を添えて確認を求める、と定めていたのに、条件の成立前にユーザーが確認文を入力した。台帳には、事前の確認（条件は未成立）。行の内容は条件が成立するまで効かず、条件が成立したときの receipt の照合（事前登録の凍結の照合3）は integrator が行う、と記録した。receipt の照合は省かない。効力の発生条件は1通りに揃えた。条件が成立して照合3が済んだら、integrator が receipt（と診断）と照合の結果を添えて利用者へ改めて確認を求め、その確認文が記録された後に限って行の内容が効く。事前の確認は、利用者が規則の内容を読んで確認文を入力した記録として残るが、効力の根拠にも、条件成立時の確認の代わりにもしない。台帳の2行は `confirmedRef` を持たず、`preConfirmationRef` で表す。
+- K6/2 の事前登録の凍結: 凍結の commit は `af643a93eeae7f937c9cd5a9dd87a6308c96fab6`、K6/2 の SHA-256 は上の表の値。`git ls-remote origin refs/heads/claude/nir1-contracts` の出力は `af643a93eeae7f937c9cd5a9dd87a6308c96fab6 refs/heads/claude/nir1-contracts`。push の時刻は、自己申告が 2026-10-17 11:13 JST（commit の author／committer 時刻 11:13:09 +0900）、repository activity の server 側の時刻が 2026-10-17T02:13:10Z。PushEvent は取り直した（2026-10-17T03:21Z ごろ）が現れていない（events API の遅れ）。条件を判定する前に取り直して書く。
+- この確認は、Graph の製品公開、local 送信の公開、activation UI の公開、新しい authority・保存先・送信先を確認しない。K2/4 は未確認で、Session B2 で示す。PUB-G は Session C-1、PUB-L は Session C-2 で別に承認を得る。
+- lane の TASK.md への写し、DSN の改訂、規約・privacy の改訂、ADR009 の doc-sync、CR-2 の境界試験の fixture の再計算などは、lane の開始時か PR の中で行う。確認台帳の lane snapshot の追記に lane ごとに書いた。この記録の PR では行わない。
+
 ## 11. 未解決事項
 
+- `[precheck]` DT-2 の再試行の上限（sweep の recover の再試行 0 回→最大2回、送信していない終端の書込みの再試行 1 回→最大3回。K1b の規則7の再確認の対象）の再確認は、Session B1 の9文のどれにも含まれず、未解決である。手段は DSN §9 のとおり（新しい draftRef を起案するか、1件1回への締め直し）。台帳の残 HOLD 表の D-transport の行（DT-1〜3）からここへ向ける。
 - `[policy]` `.agents/skills/bump-version/SKILL.md` の手順9（97行目）は、release commit の Full に、ローカルの `pnpm ci:local:full -- --base "$release_base" --head "$release_head"` を指示したままである。Full admission が標準の GitHub-hosted job 以外を拒否するとした更新後の [GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001) と食い違う。release flow は G0 の範囲外（U5 の CI 保守に近い）なので、G0 では skill を編集しない。次の release の前に、hosted の canonical Full への読み替えを別に扱う。

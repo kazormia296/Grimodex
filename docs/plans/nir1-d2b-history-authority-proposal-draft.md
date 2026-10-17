@@ -2,6 +2,8 @@
 
 > **2026-10-12 注記（G0。以下の本文は作成時のまま）:** 本書は superseded である。後継は今後起案する K4（`nir1-d2b-history-mapping-proposal/1`）とする。本文は作成時の履歴として保持し、現行の契約・承認の根拠として読まない。2026-09-25/26 の off-master 承認と WIP も採用しない（[作業記録](nir1-continuation-2026-10.md) の U1）。
 
+> **2026-10-17 注記（Session B1。以下の本文は作成時のまま）:** 後継は K4/3（`nir1-d2b-history-mapping-proposal/3`。2026-10-17 に `history-reauthorization` の差分として確認済み。[draft](nir1-d2b-history-mapping-proposal-3-draft.md)、確認は[確認台帳](nir1-l6-l9-execution-plan.md)）で、本書は superseded のままである。本書の4つの contractId は確認されておらず、確認台帳にも記録しない。2026-09-25 の history の draft と承認は使わない（[作業記録](nir1-continuation-2026-10.md) の U1）。本文は作成時の履歴として保持し、現行の契約・承認の根拠として読まない。
+
 更新日: 2026-09-23
 
 | 項目 | 値 |

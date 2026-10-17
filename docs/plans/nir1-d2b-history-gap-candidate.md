@@ -1,5 +1,7 @@
 # NIR-1 D2b history gate: mapping and contract gap
 
+> **2026-10-17 注記（Session B1。以下の本文は作成時のまま）:** 本書は superseded である。履歴の保存先、資格の完備規則、範囲、writer、失効の契約は K4/3（`nir1-d2b-history-mapping-proposal/3`。2026-10-17 に `history-reauthorization` の差分として確認済み。[draft](nir1-d2b-history-mapping-proposal-3-draft.md)、確認は[確認台帳](nir1-l6-l9-execution-plan.md)）が定める。本書の写像は契約として確認されていない。2026-09-25 の history の draft と承認は使わない（[作業記録](nir1-continuation-2026-10.md) の U1）。本文は作成時の履歴として保持し、現行の契約・承認の根拠として読まない。
+
 This note records the D2b-2-history lane mapping for the post-B candidate. It is
 an implementation boundary record; it does not activate history reuse, Graph
 qualification, sending, or any AI provider path.
