@@ -230,6 +230,29 @@ fn binding() -> AttemptBinding {
     }
 }
 
+/// The product create refuses a null history slot. A test that goes through
+/// the bounded (production) create records the closed reason of a build whose
+/// context builder has not run.
+fn production_slots(mut request: NewAttempt) -> NewAttempt {
+    if request.binding.history_turn_context.is_none() {
+        request.binding.history_turn_context = Some(HistoryContextSlot::Unavailable(
+            HistoryUnavailableReason::WorkspaceIdentityUnavailable,
+        ));
+    }
+    request
+}
+
+/// A request whose history slots are a known-version context and an
+/// identity: the history snapshot reader reads the reference rows only of
+/// such attempts (HS1-2).
+fn known_context(mut request: NewAttempt) -> NewAttempt {
+    request.binding.history_turn_context = Some(HistoryContextSlot::Context(Box::new(
+        history_context::testing::sample_context(),
+    )));
+    request.binding.durable_workspace_identity = Some(history_context::testing::sample_identity());
+    request
+}
+
 fn request(inputs: Vec<InputReference>, qualifications: Vec<QualificationReference>) -> NewAttempt {
     NewAttempt {
         binding: binding(),
@@ -1149,7 +1172,10 @@ fn history_snapshot_reader_rejects_body_before_materialization_budget() {
 #[test]
 fn history_snapshot_reader_rejects_attempt_metadata_before_materialization() {
     let db = database(Path::new(":memory:"));
-    let attempt = create_attempt(&db, request(vec![], vec![])).expect("attempt");
+    // A known-version context: the history gate (HS1-2) returns a gated
+    // attempt without reserving body bytes, so the reservation applies to
+    // the attempts the reader goes on to read.
+    let attempt = create_attempt(&db, known_context(request(vec![], vec![]))).expect("attempt");
     let mut caller_budget = GenerationHistoryReadBudget {
         max_attempts: 1,
         sql: Some(GenerationHistorySqlLedger::new(history_sql_budget(
@@ -2299,7 +2325,13 @@ mod bounded {
         id: &str,
         budget: &Nir1AdmissionSqlBudget,
     ) -> std::result::Result<StoredAttempt, Nir1GenerationStoreError> {
-        create_attempt_with_id_bounded(workspace, id, now_request(), budget, &mut no_check())
+        create_attempt_with_id_bounded(
+            workspace,
+            id,
+            production_slots(now_request()),
+            budget,
+            &mut no_check(),
+        )
     }
 
     pub(super) fn expected(attempt: &StoredAttempt) -> Nir1ExpectedAttempt {
@@ -2932,7 +2964,7 @@ mod bounded {
         let other = create_attempt_with_id_bounded(
             &snapshot,
             &test_digest("d14-other"),
-            other_request,
+            production_slots(other_request),
             &admission(),
             &mut no_check(),
         )
@@ -3165,7 +3197,7 @@ mod capture {
         create_attempt_for_capture_bounded(
             workspace,
             capture,
-            request,
+            production_slots(request),
             &admission(),
             &mut || Ok(()),
         )
@@ -3842,15 +3874,46 @@ fn dt3_dispatcher_reads_v1_and_v2_and_rejects_unknown_versions_keys_and_slots() 
             "NIR1_GENERATION_BINDING_INVALID",
         );
     }
+    // HS-1: the two slots accept their closed forms only. Any other value is
+    // a malformed binding (a parse failure), never a silently skipped slot.
     for slot in ["historyTurnContext", "durableWorkspaceIdentity"] {
-        for filled in [json!({}), json!("value"), json!(0), json!([])] {
+        for filled in [json!({}), json!("value"), json!(0), json!([]), json!(true)] {
             let mut value = current.clone();
             value[slot] = filled;
             assert_error_code(
                 parse_attempt_binding(&canonical_binding(&value)),
-                "NIR1_GENERATION_BINDING_RESERVED_SLOT_SET",
+                "NIR1_GENERATION_BINDING_INVALID",
             );
         }
+    }
+    let mut closed = current.clone();
+    closed["historyTurnContext"] = json!({
+        "contract": "nir1-history-turn-context/1",
+        "unavailable": "d-final-incomplete"
+    });
+    closed["durableWorkspaceIdentity"] =
+        binding_value(&history_context::testing::sample_identity());
+    match parse_attempt_binding(&canonical_binding(&closed)).expect("closed slots") {
+        VersionedAttemptBinding::Current(parsed) => {
+            assert_eq!(
+                parsed.history_turn_context,
+                Some(HistoryContextSlot::Unavailable(
+                    HistoryUnavailableReason::DFinalIncomplete
+                ))
+            );
+            assert!(parsed.durable_workspace_identity.is_some());
+        }
+        VersionedAttemptBinding::LegacyV1(_) => panic!("a v2 binding was read as legacy"),
+    }
+    // An unknown context contract is not a parse failure of the binding.
+    let mut later = current.clone();
+    later["historyTurnContext"] = json!({"contract": "nir1-history-turn-context/2", "x": []});
+    match parse_attempt_binding(&canonical_binding(&later)).expect("unknown contract") {
+        VersionedAttemptBinding::Current(parsed) => assert_eq!(
+            parsed.history_turn_context,
+            Some(HistoryContextSlot::UnknownContract)
+        ),
+        VersionedAttemptBinding::LegacyV1(_) => panic!("a v2 binding was read as legacy"),
     }
     let mut without_scene = current.clone();
     without_scene
@@ -4414,11 +4477,11 @@ mod dt3_bounded {
         let attempt = create_attempt_with_id_bounded(
             &snapshot,
             &test_digest("dt3-bounded-scene-attempt"),
-            NewAttempt {
+            production_slots(NewAttempt {
                 created_at_ms: now,
                 expires_at_ms: now + 60_000,
                 ..s4_scene_request(pinned.db())
-            },
+            }),
             &admission(),
             &mut no_check(),
         )
@@ -4593,7 +4656,7 @@ mod dt3_bounded {
             let error = create_attempt_with_id_bounded(
                 &snapshot,
                 &id,
-                stale,
+                production_slots(stale),
                 &admission(),
                 &mut no_check(),
             )
@@ -4627,12 +4690,12 @@ mod dt3_bounded {
         let second = create_attempt_with_id_bounded(
             &snapshot,
             &test_digest("dt3-bounded-second-attempt"),
-            NewAttempt {
+            production_slots(NewAttempt {
                 created_at_ms: now,
                 expires_at_ms: now + 60_000,
                 payload_digest: test_digest("dt3 second payload"),
                 ..s4_scene_request(db)
-            },
+            }),
             &admission(),
             &mut no_check(),
         )
@@ -6237,5 +6300,832 @@ mod project_ai_policy_read {
                 Nir1StoreFailure::Invalid,
             );
         }
+    }
+}
+
+
+/// HS-1 (K4/3 section 2): the history slots of the v2 binding and the storage
+/// writer that fixes them. Nothing here builds a context from a database; the
+/// builder is a later step.
+mod hs1_slots {
+    use super::bounded::{admission, BoundedWorkspace};
+    use super::history_context::testing::{max_context, sample_context, sample_identity};
+    use super::history_context::{eligible_until_ms, HistoryInt, HISTORY_ELIGIBILITY_WINDOW_MS};
+    use super::*;
+
+    const CONTROL: char = '\u{1}';
+
+    fn context_slot() -> Option<HistoryContextSlot> {
+        Some(HistoryContextSlot::Context(Box::new(sample_context())))
+    }
+
+    /// A request the way the product writes it: a context and an identity,
+    /// with the inputs the caller gives.
+    fn with_context(
+        inputs: Vec<InputReference>,
+        qualifications: Vec<QualificationReference>,
+    ) -> NewAttempt {
+        let mut attempt = request(inputs, qualifications);
+        attempt.binding.history_turn_context = context_slot();
+        attempt.binding.durable_workspace_identity = Some(sample_identity());
+        attempt
+    }
+
+    /// One Raw input with only a Source reference: the completeness rule
+    /// needs more, so the structure is incomplete (the writer still stores it).
+    fn incomplete_inputs() -> (Vec<InputReference>, Vec<QualificationReference>) {
+        (
+            vec![InputReference {
+                role: InputRole::Context,
+                target: InputTarget::RawSource {
+                    source_key: "scene:source-x".into(),
+                    revision_token: "source-v1".into(),
+                },
+                input_use: InputUse::SelectedMaterial,
+            }],
+            vec![QualificationReference::present(
+                0,
+                QualificationKind::Source,
+                "scene:source-x",
+                "source-v1",
+            )],
+        )
+    }
+
+    fn stored_binding_json(db: &Database, id: &str) -> String {
+        db.with_read_transaction(|conn| {
+            Ok(conn.query_row(
+                "SELECT binding_json FROM nir1_generation_attempts WHERE id=?1",
+                [id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("stored binding_json")
+    }
+
+    fn json_len(binding: &AttemptBinding) -> usize {
+        canonical_binding(&binding_value(binding)).len()
+    }
+
+    /// The seven identities that storage does not tie to a database row, in
+    /// the order `pad_to` fills them.
+    fn free_fields(binding: &mut AttemptBinding) -> [&mut String; 7] {
+        [
+            &mut binding.caller.profile_id,
+            &mut binding.caller.caller_id,
+            &mut binding.caller.caller_session_id,
+            &mut binding.route_revision,
+            &mut binding.provider,
+            &mut binding.model,
+            &mut binding.api,
+        ]
+    }
+
+    /// Grow free identities (each at most `MAX_ID_BYTES`) with JSON-escaped
+    /// control characters and plain bytes until the canonical JSON of the
+    /// binding is exactly `target` bytes.
+    fn pad_to(binding: &mut AttemptBinding, target: usize) {
+        for index in 0..7 {
+            let current = json_len(binding);
+            assert!(current <= target, "padding overshot before field {index}");
+            let remaining = target - current;
+            if remaining == 0 {
+                break;
+            }
+            let field_len = free_fields(binding)[index].len();
+            let full_add = 6 * MAX_ID_BYTES - field_len;
+            let (control, plain) = if remaining >= full_add {
+                (MAX_ID_BYTES, 0)
+            } else {
+                // 6c + p = remaining + field_len and c + p <= MAX_ID_BYTES.
+                let total = remaining + field_len;
+                let control = total.saturating_sub(MAX_ID_BYTES).div_ceil(5);
+                (control, total - 6 * control)
+            };
+            assert!(control + plain <= MAX_ID_BYTES);
+            *free_fields(binding)[index] = format!(
+                "{}{}",
+                CONTROL.to_string().repeat(control),
+                "p".repeat(plain)
+            );
+        }
+        assert_eq!(json_len(binding), target, "padding reached the target");
+    }
+
+    /// Pad the free identities so that the binding WITHOUT its slots is
+    /// exactly `size_without_slots` bytes, then keep the slots as they are.
+    fn pad_without_slots(attempt: &mut NewAttempt, size_without_slots: usize) {
+        let mut bare = attempt.binding.clone();
+        bare.history_turn_context = None;
+        bare.durable_workspace_identity = None;
+        pad_to(&mut bare, size_without_slots);
+        attempt.binding.caller = bare.caller;
+        attempt.binding.route_revision = bare.route_revision;
+        attempt.binding.provider = bare.provider;
+        attempt.binding.model = bare.model;
+        attempt.binding.api = bare.api;
+    }
+
+    #[test]
+    fn v2_binding_with_both_slots_at_max_ids_fits_64_kib() {
+        let mut binding = binding();
+        // Twelve identities at 4,096 B of bytes JSON does not escape.
+        let long = |tag: &str| format!("{tag}{}", "i".repeat(MAX_ID_BYTES - tag.len()));
+        binding.project_id = long("p");
+        binding.chat_session_id = long("c");
+        binding.scene.scene_id = long("s");
+        binding.scene.scene_incarnation_id = long("n");
+        binding.scene.source_token = long("t");
+        binding.caller.profile_id = long("f");
+        binding.caller.caller_id = long("k");
+        binding.caller.caller_session_id = long("m");
+        binding.route_revision = long("r");
+        binding.provider = long("v");
+        binding.model = long("d");
+        binding.api = long("a");
+        let without_slots = json_len(&binding);
+        binding.history_turn_context = Some(HistoryContextSlot::Context(Box::new(max_context())));
+        binding.durable_workspace_identity = Some(sample_identity());
+        let with_slots = json_len(&binding);
+        assert!(
+            with_slots <= MAX_BINDING_JSON_BYTES,
+            "{with_slots} B exceeds the ceiling"
+        );
+        // The slots cost their pinned sizes plus the two keys; the margin to
+        // the ceiling is what K4/3 models as 13,417 B.
+        assert_eq!(
+            with_slots, 51_974,
+            "binding with both slots, 12 IDs at 4,096 B"
+        );
+        assert_eq!(MAX_BINDING_JSON_BYTES - with_slots, 13_562);
+        assert_eq!(with_slots - without_slots, 1_953);
+    }
+
+    #[test]
+    fn slots_over_64_kib_downgrade_to_binding_limit_and_attempt_is_created() {
+        let db = database(Path::new(":memory:"));
+        let mut attempt = with_context(vec![], vec![]);
+        // Without the slots the binding fits with 100 B to spare; the slots
+        // do not.
+        pad_without_slots(&mut attempt, MAX_BINDING_JSON_BYTES - 100);
+        assert!(json_len(&attempt.binding) > MAX_BINDING_JSON_BYTES);
+
+        let predicted = effective_attempt_binding(&attempt).expect("downgraded binding");
+        let stored = create_attempt(&db, attempt.clone()).expect("the attempt is created");
+        assert_eq!(stored.binding, predicted);
+        assert_eq!(
+            stored.binding.history_turn_context,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::BindingLimit
+            ))
+        );
+        assert!(stored.binding.durable_workspace_identity.is_none());
+        assert!(stored_binding_json(&db, &stored.id).len() <= MAX_BINDING_JSON_BYTES);
+        let reread = read_attempt(&db, &stored.id, budget()).expect("reread");
+        assert_eq!(reread.binding, stored.binding);
+        // The send continues: the attempt is claimed and reaches a terminal.
+        let terminal = finish_success(&db, &stored, "limit-message", "answer");
+        assert!(terminal.message_version.is_some());
+    }
+
+    #[test]
+    fn binding_limit_boundary_is_exact() {
+        let db = database(Path::new(":memory:"));
+        let created = 1_000;
+        let mut exact = with_context(vec![], vec![]);
+        // The writer sets this value, so the measured length is the stored one.
+        if let Some(HistoryContextSlot::Context(context)) =
+            exact.binding.history_turn_context.as_mut()
+        {
+            context.eligible_until_ms = eligible_until_ms(created).expect("eligible");
+        }
+        pad_to(&mut exact.binding, MAX_BINDING_JSON_BYTES);
+        let stored = create_attempt(&db, exact.clone()).expect("exactly 64 KiB is kept");
+        assert_eq!(stored.binding, exact.binding);
+        assert!(stored
+            .binding
+            .history_turn_context
+            .as_ref()
+            .is_some_and(HistoryContextSlot::is_context));
+        assert_eq!(
+            stored_binding_json(&db, &stored.id).len(),
+            MAX_BINDING_JSON_BYTES
+        );
+
+        let mut over = with_context(vec![], vec![]);
+        if let Some(HistoryContextSlot::Context(context)) =
+            over.binding.history_turn_context.as_mut()
+        {
+            context.eligible_until_ms = eligible_until_ms(created).expect("eligible");
+        }
+        pad_to(&mut over.binding, MAX_BINDING_JSON_BYTES + 1);
+        over.payload_digest = test_digest("one byte over");
+        let downgraded = create_attempt(&db, over).expect("one byte over is downgraded");
+        assert_eq!(
+            downgraded.binding.history_turn_context,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::BindingLimit
+            ))
+        );
+        assert!(downgraded.binding.durable_workspace_identity.is_none());
+    }
+
+    #[test]
+    fn binding_over_64_kib_without_slots_is_still_rejected() {
+        let db = database(Path::new(":memory:"));
+        // Slots empty (null) or closed reasons: nothing to drop, so refused.
+        for slot in [
+            None,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::DFinalIncomplete,
+            )),
+        ] {
+            let mut oversized = request(vec![], vec![]);
+            // Over the ceiling even with null slots.
+            pad_to(&mut oversized.binding, MAX_BINDING_JSON_BYTES + 1);
+            oversized.binding.history_turn_context = slot;
+            assert_error_code(
+                create_attempt(&db, oversized),
+                "NIR1_GENERATION_BINDING_LIMIT",
+            );
+        }
+        // A context is dropped, but the binding is still too large without it.
+        let mut hopeless = with_context(vec![], vec![]);
+        pad_without_slots(&mut hopeless, MAX_BINDING_JSON_BYTES + 1);
+        assert_error_code(
+            create_attempt(&db, hopeless.clone()),
+            "NIR1_GENERATION_BINDING_LIMIT",
+        );
+        assert_error_code(
+            effective_attempt_binding(&hopeless),
+            "NIR1_GENERATION_BINDING_LIMIT",
+        );
+        assert!(pending_attempt_ids(&db, "generation-project", None, 8)
+            .expect("pending page")
+            .is_empty());
+    }
+
+    #[test]
+    fn binding_that_fits_only_without_any_slot_is_stored_with_null_slots() {
+        let db = database(Path::new(":memory:"));
+        let mut attempt = with_context(vec![], vec![]);
+        // 10 B below the ceiling without slots: even the closed reason
+        // (about 70 B) does not fit, but the send must not stop for it.
+        pad_without_slots(&mut attempt, MAX_BINDING_JSON_BYTES - 10);
+        let stored = create_attempt(&db, attempt).expect("the attempt is created");
+        assert!(stored.binding.history_turn_context.is_none());
+        assert!(stored.binding.durable_workspace_identity.is_none());
+        assert_eq!(
+            stored_binding_json(&db, &stored.id).len(),
+            MAX_BINDING_JSON_BYTES - 10
+        );
+    }
+
+    #[test]
+    fn incomplete_structure_overrides_caller_context_with_d_final_incomplete() {
+        let db = database(Path::new(":memory:"));
+        let (inputs, qualifications) = incomplete_inputs();
+        let incomplete = with_context(inputs, qualifications);
+        assert!(check_attempt_completeness(
+            &incomplete.inputs,
+            &incomplete.qualifications,
+            &CompletenessContext {
+                target_scene_id: GENERATION_SCENE_ID,
+                expected_targets: None,
+            },
+        )
+        .is_err());
+        let predicted = effective_attempt_binding(&incomplete).expect("effective");
+        let stored = create_attempt(&db, incomplete).expect("DR-DFP-4: the attempt is stored");
+        assert_eq!(
+            stored.binding.history_turn_context,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::DFinalIncomplete
+            ))
+        );
+        assert_eq!(stored.binding, predicted);
+        assert_eq!(
+            read_attempt(&db, &stored.id, budget())
+                .expect("reread")
+                .binding,
+            stored.binding
+        );
+        // A complete structure keeps the context the caller gave.
+        let complete = create_attempt(&db, with_context(vec![], vec![])).expect("complete");
+        assert!(complete
+            .binding
+            .history_turn_context
+            .as_ref()
+            .is_some_and(HistoryContextSlot::is_context));
+        assert_eq!(
+            complete.binding.durable_workspace_identity,
+            Some(sample_identity())
+        );
+    }
+
+    #[test]
+    fn context_without_a_durable_identity_is_workspace_identity_unavailable() {
+        let db = database(Path::new(":memory:"));
+        let mut attempt = with_context(vec![], vec![]);
+        attempt.binding.durable_workspace_identity = None;
+        let stored = create_attempt(&db, attempt).expect("stored");
+        assert_eq!(
+            stored.binding.history_turn_context,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::WorkspaceIdentityUnavailable
+            ))
+        );
+    }
+
+    #[test]
+    fn eligible_until_is_created_at_plus_30_days_from_the_stored_row() {
+        let db = database(Path::new(":memory:"));
+        let mut attempt = with_context(vec![], vec![]);
+        attempt.created_at_ms = 1_234_567;
+        attempt.expires_at_ms = 1_234_567 + 60_000;
+        // Whatever the caller wrote is ignored.
+        if let Some(HistoryContextSlot::Context(context)) =
+            attempt.binding.history_turn_context.as_mut()
+        {
+            context.eligible_until_ms = HistoryInt::MAX;
+        }
+        let stored = create_attempt(&db, attempt).expect("stored");
+        let reread = read_attempt(&db, &stored.id, budget()).expect("reread");
+        let Some(HistoryContextSlot::Context(context)) = &reread.binding.history_turn_context
+        else {
+            panic!("the context is kept");
+        };
+        assert_eq!(
+            context.eligible_until_ms.get(),
+            u64::try_from(reread.created_at_ms + HISTORY_ELIGIBILITY_WINDOW_MS).expect("ms")
+        );
+        assert_eq!(reread.created_at_ms, 1_234_567);
+
+        let mut overflow = with_context(vec![], vec![]);
+        overflow.payload_digest = test_digest("overflow");
+        overflow.created_at_ms = i64::MAX - 5;
+        overflow.expires_at_ms = i64::MAX;
+        let stored = create_attempt(&db, overflow).expect("overflow is a closed reason");
+        assert_eq!(
+            stored.binding.history_turn_context,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::EligibilityOverflow
+            ))
+        );
+        // Larger than the canonical-JSON safe range is also an overflow.
+        let mut beyond = with_context(vec![], vec![]);
+        beyond.payload_digest = test_digest("beyond the safe range");
+        beyond.created_at_ms = 9_007_199_254_740_991;
+        beyond.expires_at_ms = beyond.created_at_ms + 1;
+        let stored = create_attempt(&db, beyond).expect("beyond the safe range");
+        assert_eq!(
+            stored.binding.history_turn_context,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::EligibilityOverflow
+            ))
+        );
+    }
+
+    #[test]
+    fn production_create_never_writes_a_null_slot() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let pinned = workspace.db();
+        let db = pinned.db();
+        let now = wall_clock_ms().expect("clock");
+        let null_slot = NewAttempt {
+            created_at_ms: now,
+            expires_at_ms: now + 60_000,
+            ..request(vec![], vec![])
+        };
+        assert!(null_slot.binding.history_turn_context.is_none());
+        let error = create_attempt_with_id_bounded(
+            &snapshot,
+            &test_digest("null-slot"),
+            null_slot.clone(),
+            &admission(),
+            &mut || Ok(()),
+        )
+        .expect_err("the product create refuses a null slot");
+        assert_eq!(error.commit(), Nir1CommitState::NotCommitted);
+        assert!(
+            format!("{:#}", error.source).contains("NIR1_GENERATION_HISTORY_SLOT_REQUIRED"),
+            "{:#}",
+            error.source
+        );
+        assert_error_code(
+            effective_attempt_binding(&null_slot),
+            "NIR1_GENERATION_HISTORY_SLOT_REQUIRED",
+        );
+        assert!(pending_attempt_ids(db, "generation-project", None, 8)
+            .expect("pending page")
+            .is_empty());
+        // Only the test-support writer may store null.
+        let stored = create_attempt(db, null_slot.clone()).expect("test-support writes null");
+        assert!(stored.binding.history_turn_context.is_none());
+        // An unknown contract is read-only: neither writer stores it.
+        let mut unknown = null_slot;
+        unknown.binding.history_turn_context = Some(HistoryContextSlot::UnknownContract);
+        assert_error_code(
+            create_attempt(db, unknown.clone()),
+            "NIR1_GENERATION_HISTORY_SLOT_UNWRITABLE",
+        );
+        let error = create_attempt_with_id_bounded(
+            &snapshot,
+            &test_digest("unknown-slot"),
+            NewAttempt {
+                created_at_ms: now,
+                expires_at_ms: now + 60_000,
+                ..unknown
+            },
+            &admission(),
+            &mut || Ok(()),
+        )
+        .expect_err("an unknown contract is not writable");
+        assert!(
+            format!("{:#}", error.source).contains("NIR1_GENERATION_HISTORY_SLOT_UNWRITABLE"),
+            "{:#}",
+            error.source
+        );
+    }
+
+    #[test]
+    fn production_create_keeps_a_context_and_the_stored_form_matches_the_prediction() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let pinned = workspace.db();
+        let db = pinned.db();
+        let now = wall_clock_ms().expect("clock");
+        let attempt = NewAttempt {
+            created_at_ms: now,
+            expires_at_ms: now + 60_000,
+            ..with_context(vec![], vec![])
+        };
+        let predicted = effective_attempt_binding(&attempt).expect("effective");
+        let stored = create_attempt_with_id_bounded(
+            &snapshot,
+            &test_digest("product-context"),
+            attempt,
+            &admission(),
+            &mut || Ok(()),
+        )
+        .expect("the product create stores a context");
+        assert_eq!(stored.binding, predicted);
+        assert!(stored
+            .binding
+            .history_turn_context
+            .as_ref()
+            .is_some_and(HistoryContextSlot::is_context));
+        // The expected form that claim and terminal writers compare is the
+        // stored one, so a downgrade cannot make them refuse.
+        let expected = Nir1ExpectedAttempt::from_stored(&stored, budget());
+        let reread = read_attempt(db, &stored.id, budget()).expect("reread");
+        assert!(expected.matches(&reread));
+    }
+
+    #[test]
+    fn effective_binding_function_predicts_the_stored_binding() {
+        let db = database(Path::new(":memory:"));
+        let (incomplete_inputs, incomplete_qualifications) = incomplete_inputs();
+        let mut identity_missing = with_context(vec![], vec![]);
+        identity_missing.binding.durable_workspace_identity = None;
+        let mut overflow = with_context(vec![], vec![]);
+        overflow.created_at_ms = i64::MAX - 5;
+        overflow.expires_at_ms = i64::MAX;
+        let mut closed_reason = with_context(vec![], vec![]);
+        closed_reason.binding.history_turn_context = Some(HistoryContextSlot::Unavailable(
+            HistoryUnavailableReason::SceneScopeUnavailable,
+        ));
+        let cases = [
+            ("normal", with_context(vec![], vec![])),
+            (
+                "incomplete",
+                with_context(incomplete_inputs, incomplete_qualifications),
+            ),
+            ("identity missing", identity_missing),
+            ("eligibility overflow", overflow),
+            ("closed reason is kept", closed_reason),
+        ];
+        for (index, (name, mut attempt)) in cases.into_iter().enumerate() {
+            attempt.payload_digest = test_digest(&format!("predict-{index}"));
+            let predicted = effective_attempt_binding(&attempt).expect(name);
+            let stored = create_attempt(&db, attempt).expect(name);
+            assert_eq!(stored.binding, predicted, "{name}");
+            let reread = read_attempt(&db, &stored.id, budget()).expect(name);
+            assert_eq!(reread.binding, predicted, "{name}");
+            assert!(Nir1ExpectedAttempt::from_stored(&stored, budget()).matches(&reread));
+        }
+        // A binding over the ceiling only because of its slots is downgraded.
+        let mut over_limit = with_context(vec![], vec![]);
+        over_limit.payload_digest = test_digest("predict-limit");
+        pad_without_slots(&mut over_limit, MAX_BINDING_JSON_BYTES - 100);
+        let predicted = effective_attempt_binding(&over_limit).expect("downgrade");
+        assert_eq!(
+            predicted.history_turn_context,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::BindingLimit
+            ))
+        );
+        let stored = create_attempt(&db, over_limit).expect("downgraded create");
+        assert_eq!(stored.binding, predicted);
+        let reread = read_attempt(&db, &stored.id, budget()).expect("reread");
+        assert_eq!(reread.binding, predicted);
+    }
+
+    #[test]
+    fn context_slot_has_no_update_path_and_attempts_stay_immutable() {
+        let db = database(Path::new(":memory:"));
+        let stored = create_attempt(&db, with_context(vec![], vec![])).expect("attempt");
+        let before = stored_binding_json(&db, &stored.id);
+        finish_success(&db, &stored, "immutable-message", "answer");
+        assert_eq!(stored_binding_json(&db, &stored.id), before);
+        let recovered = create_attempt(
+            &db,
+            NewAttempt {
+                payload_digest: test_digest("recovered"),
+                ..with_context(vec![], vec![])
+            },
+        )
+        .expect("second attempt");
+        let before = stored_binding_json(&db, &recovered.id);
+        recover_attempt(&db, &recovered.id, 2_000).expect("recover");
+        assert_eq!(stored_binding_json(&db, &recovered.id), before);
+
+        // Source: the only UPDATEs of the attempt row set the claim or the
+        // terminal columns. No statement can repair a slot afterwards.
+        let source = include_str!("../nir1_generation.rs");
+        let updates: Vec<&str> = source
+            .match_indices("UPDATE nir1_generation_attempts SET")
+            .map(|(at, marker)| &source[at + marker.len()..at + marker.len() + 40])
+            .collect();
+        assert!(!updates.is_empty());
+        for update in updates {
+            assert!(
+                update.trim_start().starts_with("claimed_at_ms")
+                    || update.trim_start().starts_with("terminal_json"),
+                "an UPDATE of the attempt row touches {update:?}"
+            );
+        }
+        assert!(!source.contains("UPDATE nir1_generation_attempts SET binding_json"));
+    }
+
+    #[test]
+    fn slot_with_unknown_contract_does_not_fail_claim_and_recovery() {
+        let db = database(Path::new(":memory:"));
+        let claimed = create_attempt(&db, with_context(vec![], vec![])).expect("attempt");
+        let recovered = create_attempt(
+            &db,
+            NewAttempt {
+                payload_digest: test_digest("unknown recovered"),
+                ..with_context(vec![], vec![])
+            },
+        )
+        .expect("second attempt");
+        for id in [&claimed.id, &recovered.id] {
+            let mut value =
+                serde_json::from_str::<Value>(&stored_binding_json(&db, id)).expect("json");
+            value["historyTurnContext"] =
+                json!({"contract": "nir1-history-turn-context/2", "a": ["later", {"shape": 1}]});
+            store_binding_json(&db, id, &canonical_binding(&value));
+        }
+        let read = read_attempt(&db, &claimed.id, budget()).expect("an unknown contract is read");
+        assert_eq!(
+            read.binding.history_turn_context,
+            Some(HistoryContextSlot::UnknownContract)
+        );
+        assert!(claim_attempt(&db, &claimed.id, &read.binding, 1_500, budget()).expect("claim"));
+        recover_attempt(&db, &recovered.id, 2_000).expect("recovery reads it");
+        assert_eq!(
+            pending_attempt_ids(&db, "generation-project", None, 8).expect("pending page"),
+            vec![claimed.id.clone()]
+        );
+    }
+}
+
+/// HS1-2 (K4/3 section 2): the history snapshot reader reads an attempt's
+/// binding before any reference row and returns only the header of an attempt
+/// whose slot is not a context of the known version. Claim, recovery and
+/// owner reads are unchanged.
+mod hs1_gate {
+    use super::bounded::pinned_budget;
+    use super::history_context::testing::{sample_context, sample_identity};
+    use super::history_context::{HistoryContextGateReason, HistoryUnavailableReason};
+    use super::*;
+
+    fn stored_json(db: &Database, id: &str) -> Value {
+        let json: String = db
+            .with_read_transaction(|conn| {
+                Ok(conn.query_row(
+                    "SELECT binding_json FROM nir1_generation_attempts WHERE id=?1",
+                    [id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("stored binding_json");
+        serde_json::from_str(&json).expect("binding JSON")
+    }
+
+    /// Store one slot (JSON `null` for `None`) the way another writer would.
+    fn store_slot(db: &Database, id: &str, slot: Option<Value>) {
+        let mut value = stored_json(db, id);
+        value["historyTurnContext"] = slot.unwrap_or(Value::Null);
+        store_binding_json(db, id, &canonical_binding(&value));
+    }
+
+    fn known_slot() -> Value {
+        binding_value(&HistoryContextSlot::Context(Box::new(sample_context())))
+    }
+
+    fn unavailable(reason: &str) -> Value {
+        json!({"contract": "nir1-history-turn-context/1", "unavailable": reason})
+    }
+
+    /// An attempt with one Human message input and a known context (written
+    /// through test-support, then given the slot a case needs).
+    fn attempt_with_input(db: &Database, label: &str) -> StoredAttempt {
+        let input = human(db, &format!("gate-human-{label}"), "gate body");
+        let attempt =
+            create_attempt(db, request(vec![message_input(&input)], vec![])).expect("attempt");
+        let mut value = stored_json(db, &attempt.id);
+        value["historyTurnContext"] = known_slot();
+        value["durableWorkspaceIdentity"] = binding_value(&sample_identity());
+        store_binding_json(db, &attempt.id, &canonical_binding(&value));
+        attempt
+    }
+
+    fn corrupt_reference_rows(db: &Database, id: &str) {
+        db.with_conn(|conn| {
+            for table in [
+                "nir1_generation_input_refs",
+                "nir1_generation_qualification_refs",
+            ] {
+                conn.execute(
+                    &format!(
+                        "UPDATE {table} SET reference_json='{{\"unreadable\":true}}'
+                         WHERE attempt_id=?1"
+                    ),
+                    [id],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("corrupt the reference rows");
+    }
+
+    fn slot_cases() -> Vec<(&'static str, Option<Value>, HistoryContextGateReason)> {
+        vec![
+            ("null", None, HistoryContextGateReason::Missing),
+            (
+                "d-final-incomplete",
+                Some(unavailable("d-final-incomplete")),
+                HistoryContextGateReason::Unavailable(HistoryUnavailableReason::DFinalIncomplete),
+            ),
+            (
+                "binding-limit",
+                Some(unavailable("binding-limit")),
+                HistoryContextGateReason::Unavailable(HistoryUnavailableReason::BindingLimit),
+            ),
+            (
+                "workspace-identity-unavailable",
+                Some(unavailable("workspace-identity-unavailable")),
+                HistoryContextGateReason::Unavailable(
+                    HistoryUnavailableReason::WorkspaceIdentityUnavailable,
+                ),
+            ),
+            (
+                "unknown-version",
+                Some(json!({"contract": "nir1-history-turn-context/2", "later": [1, 2]})),
+                HistoryContextGateReason::UnknownContract,
+            ),
+        ]
+    }
+
+    #[test]
+    fn history_gate_does_not_read_reference_rows_for_gated_attempts() {
+        let db = database(Path::new(":memory:"));
+        // The discriminating control: the same unreadable rows under a
+        // known context fail the snapshot, so the gate is what saves a
+        // gated attempt.
+        let control = attempt_with_input(&db, "control");
+        corrupt_reference_rows(&db, &control.id);
+        let mut caller_budget = history_budget();
+        assert!(with_snapshot(&db, &mut caller_budget, |reader, budget| {
+            reader.read_attempt(budget, &control.id).map(|_| ())
+        })
+        .is_err());
+
+        for (label, slot, reason) in slot_cases() {
+            let attempt = attempt_with_input(&db, label);
+            store_slot(&db, &attempt.id, slot);
+            corrupt_reference_rows(&db, &attempt.id);
+            // No reference may be admitted either: a zero reference budget
+            // refuses any attempt that reads its rows.
+            let mut caller_budget = history_budget();
+            caller_budget.max_reference_count = 0;
+            caller_budget.max_reference_bytes = 0;
+            let read = with_snapshot(&db, &mut caller_budget, |reader, budget| {
+                reader.read_attempt(budget, &attempt.id)
+            })
+            .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+            assert_eq!(read.history_gate(), Some(reason), "{label}");
+            assert_eq!(read.id, attempt.id);
+            assert!(read.inputs.is_empty() && read.qualifications.is_empty());
+            assert!(read.terminal.is_none());
+            assert_eq!(read.binding.project_id, "generation-project");
+        }
+    }
+
+    #[test]
+    fn history_gate_consumes_one_attempt_node_and_no_reference_budget() {
+        let db = database(Path::new(":memory:"));
+        let known = attempt_with_input(&db, "known");
+        let gated = attempt_with_input(&db, "gated");
+        store_slot(&db, &gated.id, Some(unavailable("d-final-incomplete")));
+
+        let mut gated_budget = history_budget();
+        let before = (
+            gated_budget.max_reference_count,
+            gated_budget.max_reference_bytes,
+            gated_budget.max_resolved_body_bytes,
+            gated_budget.remaining_nodes,
+            gated_budget.remaining_edges,
+            gated_budget.remaining_qualification_refs,
+        );
+        let attempts_before = gated_budget.max_attempts;
+        with_snapshot(&db, &mut gated_budget, |reader, budget| {
+            // Reading it twice is one read: the attempt ledger is shared and
+            // the cached header is not charged again.
+            reader.read_attempt(budget, &gated.id)?;
+            reader.read_attempt(budget, &gated.id).map(|_| ())
+        })
+        .expect("gated read");
+        assert_eq!(gated_budget.max_attempts, attempts_before - 1);
+        assert_eq!(
+            (
+                gated_budget.max_reference_count,
+                gated_budget.max_reference_bytes,
+                gated_budget.max_resolved_body_bytes,
+                gated_budget.remaining_nodes,
+                gated_budget.remaining_edges,
+                gated_budget.remaining_qualification_refs,
+            ),
+            before,
+            "a gated attempt debits the attempt node only"
+        );
+
+        // The known attempt, read the same way, does debit references and
+        // body bytes (the gate is what makes the difference).
+        let mut known_budget = history_budget();
+        with_snapshot(&db, &mut known_budget, |reader, budget| {
+            reader.read_attempt(budget, &known.id).map(|_| ())
+        })
+        .expect("known read");
+        assert_eq!(known_budget.max_attempts, attempts_before - 1);
+        assert!(known_budget.max_reference_count < before.0);
+        assert!(known_budget.max_resolved_body_bytes < before.2);
+
+        // The ledger is shared, not restored per candidate: a one-attempt
+        // budget is spent by a gated read.
+        let mut one = history_budget();
+        one.max_attempts = 1;
+        let error = with_snapshot(&db, &mut one, |reader, budget| {
+            reader.read_attempt(budget, &gated.id)?;
+            reader.read_attempt(budget, &known.id).map(|_| ())
+        })
+        .expect_err("the gated read used the only attempt node");
+        assert!(error.to_string().contains("NIR1_GENERATION_HISTORY_LIMIT"));
+    }
+
+    #[test]
+    fn history_gate_keeps_claim_and_recovery_reads_unchanged() {
+        let (_state, workspace) = workspace_snapshot();
+        let db = workspace.db().db();
+        // A null slot (test-support) and a closed unavailable reason are both
+        // gated for history, and both are read in full by every other reader.
+        let claimed = attempt_with_input(db, "claimed");
+        store_slot(db, &claimed.id, None);
+        let recovered = attempt_with_input(db, "recovered");
+        store_slot(db, &recovered.id, Some(unavailable("d-final-incomplete")));
+        for attempt in [&claimed, &recovered] {
+            let read = read_attempt(db, &attempt.id, budget()).expect("full read");
+            assert_eq!(
+                read.inputs.len(),
+                1,
+                "terminal and recovery readers see the rows"
+            );
+            let exact =
+                read_attempt_exact_bounded(&workspace, &attempt.id, budget(), &pinned_budget())
+                    .expect("exact read")
+                    .expect("row");
+            assert_eq!(exact.inputs, read.inputs);
+            assert!(read.history_gate().is_some());
+        }
+        let read = read_attempt(db, &claimed.id, budget()).expect("read");
+        assert!(claim_attempt(db, &claimed.id, &read.binding, 1_500, budget()).expect("claim"));
+        recover_attempt(db, &recovered.id, 2_000).expect("recovery reads it");
+        assert_eq!(
+            pending_attempt_ids(db, "generation-project", None, 8).expect("pending page"),
+            vec![claimed.id.clone()]
+        );
     }
 }

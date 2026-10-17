@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{ensure, Context, Result};
 use grimodex_core::{canonical_json_digest, canonical_json_string};
+use grimodex_db::narrative_extraction::NativeNir1HistoryDraft;
 use grimodex_db::nir1_generation::{
     self as storage, AttemptSceneBinding, GenerationPurpose, InputReference,
     QualificationReference, ReadBudget,
@@ -63,6 +64,12 @@ pub(crate) struct FinalDispatchRequest {
     pub payload: Value,
     pub inputs: Vec<InputReference>,
     pub qualifications: Vec<QualificationReference>,
+    /// The history slot (without `eligibleUntilMs`) and the durable workspace
+    /// identity the D-final builder observed, taken from the prepared
+    /// request's handoff. A value: the storage writer sets the eligibility
+    /// time and applies the 64 KiB downgrade; the owner stores its own
+    /// `LiveBinding`'s identity and refuses a request whose identity differs.
+    pub history: NativeNir1HistoryDraft,
     pub created_at_ms: i64,
     pub expires_at_ms: i64,
     pub budget: ReadBudget,

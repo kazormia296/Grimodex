@@ -18,6 +18,9 @@ fn valid_ref(value: &str) -> bool {
     !value.is_empty() && value.trim() == value
 }
 
+use crate::nir1_generation::history_context::HistoryContextGateReason;
+#[cfg(test)]
+use crate::nir1_generation::history_context::HistoryUnavailableReason;
 use crate::nir1_generation::{
     check_input_completeness, CompletenessContext, InputReference, InputRole, InputTarget,
     QualificationReference as StoredQualificationReference,
@@ -364,6 +367,20 @@ pub struct AttemptSnapshot {
     /// How the attempt's reference rows were written. A version 1 attempt has
     /// no readable inputs and is never used as history.
     pub reference_format: ReferenceFormat,
+    /// Whether the attempt's history slot is a context of the known version.
+    /// A gated attempt's reference rows were never read, so `inputs` is empty.
+    pub context: HistoryContextState,
+}
+
+/// The state of an attempt's `historyTurnContext` slot, decided from the
+/// binding before any reference row is read (HS1-2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryContextState {
+    /// A `HistoryTurnContextV1` of the known version. HS-1 does not compare
+    /// it (the full tuple comparison is HC-1b).
+    Known,
+    /// Not usable as history; the candidate and its descendants are excluded.
+    Gated(HistoryContextGateReason),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -483,6 +500,10 @@ pub trait CurrentQualifier {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IncompleteReason {
+    /// The attempt's history slot is not a context of the known version
+    /// (null, unavailable with a closed reason, or an unknown version). Its
+    /// reference rows were not read.
+    HistoryContextUnusable(HistoryContextGateReason),
     CurrentTupleUnavailable,
     MissingAttempt(AttemptId),
     MissingParent(AttemptId),
@@ -644,34 +665,43 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
             .cloned()
             .ok_or_else(|| Failure::incomplete(IncompleteReason::MissingAttempt(id.into())))?;
         self.budget.consume_node()?;
-        let result = match attempt.tuple.as_ref() {
-            _ if attempt.reference_format == ReferenceFormat::LegacyV1 => {
-                // Version 1 rows have no input-use or typed N/A. The attempt
-                // and every descendant that adopts it are excluded; the turn
-                // goes on (K4/3 section 2).
-                Err(Failure::incomplete(IncompleteReason::LegacyReferenceFormat))
+        // The gate precedes every other check: a slot that is not a known
+        // context is excluded whatever its reference rows would say (they
+        // were not read) and whatever its tuple is.
+        let result = if let HistoryContextState::Gated(reason) = attempt.context {
+            Err(Failure::incomplete(
+                IncompleteReason::HistoryContextUnusable(reason),
+            ))
+        } else {
+            match attempt.tuple.as_ref() {
+                _ if attempt.reference_format == ReferenceFormat::LegacyV1 => {
+                    // Version 1 rows have no input-use or typed N/A. The attempt
+                    // and every descendant that adopts it are excluded; the turn
+                    // goes on (K4/3 section 2).
+                    Err(Failure::incomplete(IncompleteReason::LegacyReferenceFormat))
+                }
+                None => Err(Failure::incomplete(
+                    IncompleteReason::CurrentTupleUnavailable,
+                )),
+                Some(tuple) if !tuple.is_complete() || !self.current.is_complete() => Err(
+                    Failure::incomplete(IncompleteReason::CurrentTupleUnavailable),
+                ),
+                Some(tuple) if tuple != self.current => Err(Failure::ineligible(
+                    IneligibleReason::TupleMismatch(id.into()),
+                )),
+                Some(_) => match self.qualifier.qualify_attempt(&attempt, self.current) {
+                    QualificationStatus::Current => Ok(()),
+                    QualificationStatus::Pending => {
+                        Err(Failure::incomplete(IncompleteReason::PendingAuthority))
+                    }
+                    QualificationStatus::Unavailable => {
+                        Err(Failure::incomplete(IncompleteReason::AuthorityUnavailable))
+                    }
+                    QualificationStatus::Ineligible => {
+                        Err(Failure::ineligible(IneligibleReason::AuthorityRejected))
+                    }
+                },
             }
-            None => Err(Failure::incomplete(
-                IncompleteReason::CurrentTupleUnavailable,
-            )),
-            Some(tuple) if !tuple.is_complete() || !self.current.is_complete() => Err(
-                Failure::incomplete(IncompleteReason::CurrentTupleUnavailable),
-            ),
-            Some(tuple) if tuple != self.current => Err(Failure::ineligible(
-                IneligibleReason::TupleMismatch(id.into()),
-            )),
-            Some(_) => match self.qualifier.qualify_attempt(&attempt, self.current) {
-                QualificationStatus::Current => Ok(()),
-                QualificationStatus::Pending => {
-                    Err(Failure::incomplete(IncompleteReason::PendingAuthority))
-                }
-                QualificationStatus::Unavailable => {
-                    Err(Failure::incomplete(IncompleteReason::AuthorityUnavailable))
-                }
-                QualificationStatus::Ineligible => {
-                    Err(Failure::ineligible(IneligibleReason::AuthorityRejected))
-                }
-            },
         };
         self.header_cache.insert(id.into(), result.clone());
         result
@@ -747,6 +777,13 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
             self.snapshot.attempts.get(&parent).ok_or_else(|| {
                 Failure::incomplete(IncompleteReason::MissingParent(parent.clone()))
             })?;
+        // A gated parent has no terminal read; name the gate, not a missing
+        // receipt, so the child is excluded for the parent's closed reason.
+        if let HistoryContextState::Gated(reason) = parent_snapshot.context {
+            return Err(Failure::incomplete(
+                IncompleteReason::HistoryContextUnusable(reason),
+            ));
+        }
         if let (Some(project_id), Some(session_id)) =
             (attempt.project_id.as_deref(), attempt.session_id.as_deref())
         {
@@ -1304,6 +1341,13 @@ mod generation_storage_adapter {
         // AttemptBinding exposes coarse digests, purpose and the query Scene
         // binding, not the confirmed full history tuple. Do not reconstruct
         // Scope axes here.
+        //
+        // A gated attempt's reference rows were never read: `stored.inputs`
+        // is empty, so no input is mapped and no row, message or artifact is
+        // read for it.
+        let context = stored
+            .history_gate()
+            .map_or(HistoryContextState::Known, HistoryContextState::Gated);
         let inputs = stored
             .inputs
             .iter()
@@ -1321,6 +1365,7 @@ mod generation_storage_adapter {
             session_id: Some(stored.binding.chat_session_id.clone()),
             target_scene_id: Some(stored.binding.scene.scene_id.clone()),
             reference_format: stored.reference_format,
+            context,
         })
     }
 
@@ -1560,6 +1605,7 @@ mod generation_storage_adapter {
     mod adapter_tests {
         use super::*;
         use crate::narrative_extraction::{ValidationTerminated, ValidationTerminationReason};
+        use crate::nir1_generation::history_context::testing as history_context_testing;
         use crate::nir1_generation::{
             create_attempt, read_attempt_scene_binding_in_tx, scope_identity, AttemptBinding,
             AttemptBindingVersion, AttemptCallerBinding, GenerationHistorySnapshotSqlBudget,
@@ -1771,8 +1817,14 @@ mod generation_storage_adapter {
                         model: "test".into(),
                         api: "chat".into(),
                         endpoint_identity: digest.clone(),
-                        history_turn_context: None,
-                        durable_workspace_identity: None,
+                        // A known-version context: the history gate (HS1-2)
+                        // reads reference rows only for such attempts.
+                        history_turn_context: Some(
+                            crate::nir1_generation::history_context::HistoryContextSlot::Context(
+                                Box::new(history_context_testing::sample_context()),
+                            ),
+                        ),
+                        durable_workspace_identity: Some(history_context_testing::sample_identity()),
                     },
                     payload_digest: digest,
                     inputs,
@@ -2076,6 +2128,185 @@ mod generation_storage_adapter {
             .disposition
         }
 
+        /// Replace the `historyTurnContext` of one stored attempt, as another
+        /// writer (or an import) would have stored it.
+        fn store_history_slot(
+            snapshot: &ActiveWorkspaceSnapshot,
+            id: &str,
+            slot: Option<serde_json::Value>,
+        ) {
+            snapshot
+                .db()
+                .db()
+                .with_conn(|conn| {
+                    let stored: String = conn.query_row(
+                        "SELECT binding_json FROM nir1_generation_attempts WHERE id=?1",
+                        [id],
+                        |row| row.get(0),
+                    )?;
+                    let mut binding: serde_json::Value = serde_json::from_str(&stored)?;
+                    binding["historyTurnContext"] = slot.unwrap_or(serde_json::Value::Null);
+                    conn.execute(
+                        "UPDATE nir1_generation_attempts SET binding_json=?2 WHERE id=?1",
+                        rusqlite::params![id, grimodex_core::canonical_json_string(&binding)?],
+                    )?;
+                    Ok(())
+                })
+                .expect("store the history slot");
+        }
+
+        /// Make every reference row of one attempt unreadable: a reader that
+        /// touches them fails.
+        fn corrupt_reference_rows(snapshot: &ActiveWorkspaceSnapshot, id: &str) {
+            snapshot
+                .db()
+                .db()
+                .with_conn(|conn| {
+                    for table in [
+                        "nir1_generation_input_refs",
+                        "nir1_generation_qualification_refs",
+                    ] {
+                        conn.execute(
+                            &format!(
+                                "UPDATE {table} SET reference_json='{{\"unreadable\":true}}'
+                                 WHERE attempt_id=?1"
+                            ),
+                            [id],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .expect("corrupt the reference rows");
+        }
+
+        fn unavailable_slot(reason: &str) -> serde_json::Value {
+            json!({"contract": "nir1-history-turn-context/1", "unavailable": reason})
+        }
+
+        #[test]
+        fn history_gate_excludes_null_unknown_and_binding_limit_slots_with_closed_reasons() {
+            let (_state, snapshot) = workspace_snapshot();
+            let incomplete = storage_attempt_with(
+                &snapshot,
+                vec![raw_input()],
+                raw_rows().into_iter().take(1).collect(),
+            );
+            let cases = [
+                (
+                    "writer-d-final-incomplete",
+                    incomplete,
+                    None,
+                    HistoryContextGateReason::Unavailable(
+                        HistoryUnavailableReason::DFinalIncomplete,
+                    ),
+                ),
+                (
+                    "null",
+                    storage_attempt_with(&snapshot, vec![raw_input()], raw_rows()),
+                    Some(None),
+                    HistoryContextGateReason::Missing,
+                ),
+                (
+                    "unknown-version",
+                    storage_attempt_with(&snapshot, vec![raw_input()], raw_rows()),
+                    Some(Some(json!({
+                        "contract": "nir1-history-turn-context/2",
+                        "shape": ["a later writer"]
+                    }))),
+                    HistoryContextGateReason::UnknownContract,
+                ),
+                (
+                    "binding-limit",
+                    storage_attempt_with(&snapshot, vec![raw_input()], raw_rows()),
+                    Some(Some(unavailable_slot("binding-limit"))),
+                    HistoryContextGateReason::Unavailable(HistoryUnavailableReason::BindingLimit),
+                ),
+                (
+                    "workspace-identity-unavailable",
+                    storage_attempt_with(&snapshot, vec![raw_input()], raw_rows()),
+                    Some(Some(unavailable_slot("workspace-identity-unavailable"))),
+                    HistoryContextGateReason::Unavailable(
+                        HistoryUnavailableReason::WorkspaceIdentityUnavailable,
+                    ),
+                ),
+            ];
+            let control = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            for (_, id, slot, _) in &cases {
+                if let Some(slot) = slot {
+                    store_history_slot(&snapshot, id, slot.clone());
+                }
+                corrupt_reference_rows(&snapshot, id);
+            }
+            let mut candidates: Vec<Candidate> = cases
+                .iter()
+                .map(|(name, id, _, _)| Candidate {
+                    id: (*name).into(),
+                    root_attempt_id: id.clone(),
+                    adopted_input_ordinals: vec![0],
+                })
+                .collect();
+            candidates.push(Candidate {
+                id: "control".into(),
+                root_attempt_id: control,
+                adopted_input_ordinals: vec![0],
+            });
+            let mut caller_budget = budget();
+            caller_budget.max_candidates = candidates.len();
+            caller_budget.max_attempts = candidates.len();
+            let mut qualifier = AllowCurrent;
+            let mut cancelled = || false;
+            // The unreadable reference rows would fail the whole snapshot if
+            // the gate read them; every candidate gets its own closed reason.
+            let outcome = reauthorize_from_generation_snapshot(
+                &snapshot,
+                ParticipantSqlControl::default(),
+                &mut caller_budget,
+                &candidates,
+                &complete_tuple(),
+                &mut qualifier,
+                &mut cancelled,
+            )
+            .expect("a gated attempt never stops the turn");
+            for ((name, _, _, reason), result) in cases.iter().zip(&outcome.candidates) {
+                assert_eq!(
+                    result.disposition,
+                    CandidateDisposition::Excluded(Failure::Incomplete(
+                        IncompleteReason::HistoryContextUnusable(*reason)
+                    )),
+                    "{name}"
+                );
+            }
+            assert_eq!(
+                outcome.candidates.last().expect("control").disposition,
+                CandidateDisposition::Excluded(Failure::Incomplete(
+                    IncompleteReason::CurrentTupleUnavailable
+                )),
+                "a known context keeps the existing behaviour: HS-1 does not fill the tuple"
+            );
+        }
+
+        #[test]
+        fn history_gate_maps_a_gated_attempt_without_inputs_and_keeps_the_known_form() {
+            let (_state, snapshot) = workspace_snapshot();
+            let known = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            let gated = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            store_history_slot(&snapshot, &gated, Some(unavailable_slot("binding-limit")));
+            corrupt_reference_rows(&snapshot, &gated);
+            let known = read_snapshot_attempt(&snapshot, &known);
+            assert_eq!(known.context, HistoryContextState::Known);
+            assert_eq!(known.inputs.len(), 1);
+            let gated = read_snapshot_attempt(&snapshot, &gated);
+            assert_eq!(
+                gated.context,
+                HistoryContextState::Gated(HistoryContextGateReason::Unavailable(
+                    HistoryUnavailableReason::BindingLimit
+                ))
+            );
+            assert!(gated.inputs.is_empty());
+            assert!(gated.terminal.is_none());
+            assert_eq!(gated.target_scene_id.as_deref(), Some(STORAGE_SCENE));
+        }
+
         #[test]
         fn adapter_maps_v2_rows_and_marks_v1_rows_incomplete() {
             let (_state, snapshot) = workspace_snapshot();
@@ -2178,6 +2409,28 @@ mod generation_storage_adapter {
                     conn.execute(
                         "UPDATE nir1_generation_attempts SET input_digest=?2 WHERE id=?1",
                         rusqlite::params![v1_id, legacy_digest],
+                    )?;
+                    // The one-row fixture is structurally incomplete, so the
+                    // writer stored `d-final-incomplete`. Restore a known
+                    // context so this attempt still reaches its reference
+                    // rows and the version 1 exclusion is what is tested.
+                    let stored: String = conn.query_row(
+                        "SELECT binding_json FROM nir1_generation_attempts WHERE id=?1",
+                        [&v1_id],
+                        |row| row.get(0),
+                    )?;
+                    let mut binding: AttemptBinding = serde_json::from_str(&stored)?;
+                    binding.history_turn_context = Some(
+                        crate::nir1_generation::history_context::HistoryContextSlot::Context(
+                            Box::new(history_context_testing::sample_context()),
+                        ),
+                    );
+                    conn.execute(
+                        "UPDATE nir1_generation_attempts SET binding_json=?2 WHERE id=?1",
+                        rusqlite::params![
+                            v1_id,
+                            grimodex_core::canonical_json_string(&serde_json::to_value(&binding)?)?
+                        ],
                     )?;
                     Ok(())
                 })
@@ -2475,6 +2728,7 @@ mod tests {
             session_id: None,
             target_scene_id: Some(TARGET_SCENE.into()),
             reference_format: ReferenceFormat::V2,
+            context: HistoryContextState::Known,
         }
     }
 
@@ -3711,6 +3965,116 @@ mod tests {
             outcome.candidates[2].disposition,
             CandidateDisposition::Qualified,
             "an independent candidate survives"
+        );
+    }
+
+    fn gated(mut attempt: AttemptSnapshot, reason: HistoryContextGateReason) -> AttemptSnapshot {
+        attempt.context = HistoryContextState::Gated(reason);
+        attempt
+    }
+
+    fn gate_reason(reason: HistoryUnavailableReason) -> IncompleteReason {
+        IncompleteReason::HistoryContextUnusable(HistoryContextGateReason::Unavailable(reason))
+    }
+
+    #[test]
+    fn history_gate_d_final_incomplete_excludes_candidate_and_descendants() {
+        // The parent's reference rows look complete and its receipt is
+        // valid: nothing but the slot excludes it. A structure-only checker
+        // would otherwise qualify an output that breaks rule 3.
+        let parent = gated(
+            attempt(
+                "parent",
+                vec![raw("source-x")],
+                Some(receipt("parent", "receipt-parent", Some("m1"))),
+            ),
+            HistoryContextGateReason::Unavailable(HistoryUnavailableReason::DFinalIncomplete),
+        );
+        let graph = snapshot(vec![
+            attempt(
+                "child",
+                vec![generated("m1", "parent", "receipt-parent")],
+                None,
+            ),
+            parent,
+            attempt("independent", vec![raw("source")], None),
+        ]);
+        let candidates = ["child", "parent", "independent"].map(|id| Candidate {
+            id: id.into(),
+            root_attempt_id: id.into(),
+            adopted_input_ordinals: vec![0],
+        });
+        let mut current = AllowCurrent {
+            pending_graph: false,
+        };
+        let mut remaining = budget();
+        let mut cancelled = || false;
+        let outcome = reauthorize_history(
+            &graph,
+            &candidates,
+            &tuple(),
+            &mut remaining,
+            &mut current,
+            &mut cancelled,
+        )
+        .expect("the turn is not stopped");
+        let reason = gate_reason(HistoryUnavailableReason::DFinalIncomplete);
+        assert_eq!(
+            outcome.candidates[0].disposition,
+            excluded(reason.clone()),
+            "a descendant of a gated attempt carries the parent's closed reason"
+        );
+        assert_eq!(outcome.candidates[1].disposition, excluded(reason));
+        assert_eq!(
+            outcome.candidates[2].disposition,
+            CandidateDisposition::Qualified,
+            "an independent branch survives"
+        );
+    }
+
+    #[test]
+    fn history_gate_precedes_the_completeness_checker_and_the_tuple_check() {
+        let reason = gate_reason(HistoryUnavailableReason::DFinalIncomplete);
+        let gate =
+            HistoryContextGateReason::Unavailable(HistoryUnavailableReason::DFinalIncomplete);
+        // A complete structure and a matching tuple: the slot still excludes.
+        assert_eq!(
+            disposition_of_attempt(gated(attempt("root", vec![raw("source")], None), gate)),
+            excluded(reason.clone())
+        );
+        // An incomplete structure under a gated slot is reported as the gate,
+        // not as the completeness rule (the checker never sees the rows).
+        assert_eq!(
+            disposition_of_attempt(gated(
+                attempt(
+                    "root",
+                    vec![without_kind(raw("source"), QualificationKind::Freshness)],
+                    None,
+                ),
+                gate,
+            )),
+            excluded(reason.clone())
+        );
+        // A missing or different tuple does not change the gate's verdict.
+        let mut no_tuple = gated(attempt("root", vec![raw("source")], None), gate);
+        no_tuple.tuple = None;
+        assert_eq!(disposition_of_attempt(no_tuple), excluded(reason.clone()));
+        let mut other_tuple = gated(attempt("root", vec![raw("source")], None), gate);
+        other_tuple.tuple.as_mut().expect("tuple").material = Some("other:v1".into());
+        assert_eq!(disposition_of_attempt(other_tuple), excluded(reason));
+        // A known context keeps the existing behaviour: the completeness
+        // rule applies, and HS-1 does not fill the tuple.
+        assert_eq!(
+            disposition(without_kind(raw("source"), QualificationKind::Freshness)),
+            excluded(IncompleteReason::MissingQualification(
+                QualificationKind::Freshness
+            ))
+        );
+        let mut unfilled = attempt("root", vec![raw("source")], None);
+        unfilled.tuple = None;
+        assert_eq!(
+            disposition_of_attempt(unfilled),
+            excluded(IncompleteReason::CurrentTupleUnavailable)
         );
     }
 

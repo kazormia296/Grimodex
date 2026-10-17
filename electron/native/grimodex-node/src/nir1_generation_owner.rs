@@ -71,6 +71,9 @@ pub(crate) enum Nir1GenerationRefusal {
     Cancelled,
     SubmissionMismatch,
     SubmissionNotCurrent,
+    /// The durable workspace identity the history context was built with
+    /// differs from the one of the owner's own Ready binding.
+    HistoryIdentityMismatch,
     /// The same submission already has an in-flight owner.
     SameSubmissionInFlight {
         attempt_id: String,
@@ -709,6 +712,15 @@ impl Nir1GenerationOwner {
         {
             return Err(Nir1GenerationRefusal::SubmissionMismatch);
         }
+        // The durable identity comes from this owner's own Ready binding. The
+        // builder's observation must equal it: a workspace that changed (or
+        // lost its identity) between prepare and create is not the one the
+        // context was built for.
+        let owner_identity = core.live_binding.durable_workspace_identity();
+        if request.history.durable_workspace_identity.as_ref() != owner_identity {
+            return Err(Nir1GenerationRefusal::HistoryIdentityMismatch);
+        }
+        let history_slot = request.history.slot;
         let (canonical_payload, payload_digest) = canonical_final_payload(&request.payload)
             .map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
         let input_digest = final_input_digest(&request.inputs, &request.qualifications)
@@ -730,11 +742,13 @@ impl Nir1GenerationOwner {
             model: request.model,
             api: request.api,
             endpoint_identity: request.endpoint_identity,
-            history_turn_context: None,
-            durable_workspace_identity: None,
+            // The builder's slot (never null: a context or a closed reason),
+            // and the identity of this owner's own Ready binding.
+            history_turn_context: Some(history_slot),
+            durable_workspace_identity: owner_identity.cloned(),
         };
         let attempt = NewAttempt {
-            binding: binding.clone(),
+            binding,
             payload_digest: payload_digest.clone(),
             inputs: request.inputs,
             qualifications: request.qualifications,
@@ -742,6 +756,10 @@ impl Nir1GenerationOwner {
             expires_at_ms: request.expires_at_ms,
             budget: read_budget,
         };
+        // What storage will keep of this binding (it may downgrade the history
+        // slots); an unknown COMMIT result is re-read and compared with it.
+        let stored_binding = storage::effective_attempt_binding(&attempt)
+            .map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
         let lease = core
             .gate()
             .try_lease_for_binding(&core.live_binding)
@@ -814,7 +832,7 @@ impl Nir1GenerationOwner {
             &core.pinned_budget(),
         ) {
             Ok(Some(stored))
-                if stored.binding == binding
+                if stored.binding == stored_binding
                     && stored.payload_digest == payload_digest
                     && stored.input_digest == input_digest =>
             {

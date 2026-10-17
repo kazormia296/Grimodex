@@ -17,9 +17,10 @@ use grimodex_core::narrative_nir1::{
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
     read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
-    NativeNir1AuthorityBinding, NativeNir1ExcludedRevision, NativeNir1PreparedInputs,
-    NativeNir1RawSourceBinding,
+    NativeNir1AuthorityBinding, NativeNir1ExcludedRevision, NativeNir1HistoryDraft,
+    NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
 };
+use grimodex_db::nir1_generation::history_context::HistorySendClassification;
 use grimodex_db::nir1_generation::{
     self as generation_storage, AcceptedChatInputCapture, ChatInputCaptureOwner,
     D1SelectionParameters, GenerationPurpose, InputReference, NewChatInputSubmission,
@@ -294,6 +295,7 @@ pub(crate) struct NativePreparedRequest {
     input_references: Vec<InputReference>,
     qualifications: Vec<QualificationReference>,
     d1_selection: D1SelectionParameters,
+    history_draft: NativeNir1HistoryDraft,
     render_correspondence: Vec<PreparedRenderCorrespondence>,
     bound_source: NativeNir1RawSourceBinding,
     authority_bindings: Vec<NativeNir1AuthorityBinding>,
@@ -313,6 +315,7 @@ pub(crate) struct PrivateDTransportHandoff {
     input_references: Vec<InputReference>,
     qualifications: Vec<QualificationReference>,
     d1_selection: D1SelectionParameters,
+    history_draft: NativeNir1HistoryDraft,
     render_correspondence: Vec<PreparedRenderCorrespondence>,
     bound_source: NativeNir1RawSourceBinding,
     authority_bindings: Vec<NativeNir1AuthorityBinding>,
@@ -330,6 +333,7 @@ struct RenderedLocalPlainChatPayload {
     input_references: Vec<InputReference>,
     qualifications: Vec<QualificationReference>,
     d1_selection: D1SelectionParameters,
+    history_draft: NativeNir1HistoryDraft,
     render_correspondence: Vec<PreparedRenderCorrespondence>,
     budget_usage: PreparedBudgetUsage,
 }
@@ -375,6 +379,7 @@ impl NativePreparedRequest {
             input_references: self.input_references,
             qualifications: self.qualifications,
             d1_selection: self.d1_selection,
+            history_draft: self.history_draft,
             render_correspondence: self.render_correspondence,
             bound_source: self.bound_source,
             authority_bindings: self.authority_bindings,
@@ -424,6 +429,14 @@ impl PrivateDTransportHandoff {
     /// computed from (a history slot stores these fields).
     pub(crate) fn d1_selection(&self) -> &D1SelectionParameters {
         &self.d1_selection
+    }
+
+    /// The history slot (without `eligibleUntilMs`) and the durable workspace
+    /// identity the D-final builder observed. A value: the storage writer
+    /// derives the eligibility time and the owner re-checks the identity
+    /// against its own `LiveBinding`.
+    pub(crate) fn history_draft(&self) -> &NativeNir1HistoryDraft {
+        &self.history_draft
     }
 
     /// Accepted Revisions left out of this request, each with its closed reason.
@@ -587,6 +600,7 @@ fn prepare_local_chat_request_inner(
         "NIR1_CHAT_CAPTURE_OWNER_MISMATCH"
     );
     sql_budget.check_workspace(&workspace)?;
+    let send_classification = send_classification_of(&route)?;
 
     #[cfg(test)]
     before_initial_read()?;
@@ -595,6 +609,7 @@ fn prepare_local_chat_request_inner(
     let projection = read_and_pack_native_nir1_prepared_inputs(
         &workspace,
         packing_purpose(&generation.purpose),
+        send_classification,
         message_version_id.capture.chat_session_id(),
         &message_version_id.capture,
         query_scene_id,
@@ -668,6 +683,7 @@ fn prepare_local_chat_request_inner(
                     input_references: rendered.input_references,
                     qualifications: rendered.qualifications,
                     d1_selection: rendered.d1_selection,
+                    history_draft: rendered.history_draft,
                     render_correspondence: rendered.render_correspondence,
                     bound_source: projection.raw_source_binding().clone(),
                     authority_bindings: projection.authority_bindings().to_vec(),
@@ -1052,6 +1068,18 @@ fn resolve_supported_local_route(path: &Path) -> Result<SupportedLocalChatRoute>
     })
 }
 
+/// The send classification of the history context (K4/3 section 2), decided
+/// from the route and nowhere else: `local-only` exactly when the route's
+/// endpoint is the loopback IP literal this module accepts. It is checked
+/// again here, not assumed from the type, so a route that is no longer such an
+/// endpoint cannot be classified. `local-only` means the destination is a
+/// loopback port, not that the data stays on the machine.
+fn send_classification_of(route: &SupportedLocalChatRoute) -> Result<HistorySendClassification> {
+    parse_loopback_chat_completions_endpoint(&route.endpoint_base_url)
+        .context("NIR1_PREPARED_SEND_CLASSIFICATION_UNAVAILABLE")?;
+    Ok(HistorySendClassification::LocalOnly)
+}
+
 fn ensure_route_unchanged(
     captured: &SupportedLocalChatRoute,
     current: &SupportedLocalChatRoute,
@@ -1298,6 +1326,7 @@ fn render_local_plain_chat_payload(
     // references and check the whole output against the completeness rule.
     // An incomplete output is refused before it has a digest (K4/3 section 3).
     let final_qualifications = projection.finalize_qualifications(selector_budget_tokens)?;
+    let history_draft = projection.history_draft(&final_qualifications);
     let qualifications = final_qualifications.qualifications;
     let input_digest =
         crate::nir1_generation::final_input_digest(&input_references, &qualifications)?;
@@ -1309,6 +1338,7 @@ fn render_local_plain_chat_payload(
         input_references,
         qualifications,
         d1_selection: final_qualifications.d1_selection,
+        history_draft,
         render_correspondence,
         budget_usage: body.budget_usage,
     })
@@ -1613,11 +1643,19 @@ mod tests {
             let revision_id = create_approved_revision(&database)?;
             configure_local_route(&state)?;
             let authority = WorkspaceAuthority::from_database_for_test(database, root.clone())?;
+            // The identity the Ready adapter computes once when it publishes
+            // the binding (the workspace id and the canonical root).
             let live_binding = LiveBinding::new(
                 root.to_string_lossy(),
                 "nir1-prepared-workspace",
                 authority.identity(),
                 1,
+            )
+            .with_durable_workspace_identity(
+                grimodex_db::nir1_generation::history_context::DurableWorkspaceIdentity::from_workspace_root(
+                    "nir1-prepared-workspace",
+                    &root,
+                ),
             );
             *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
             state.ws.lifecycle_core().set_ready(live_binding)?;
@@ -2761,6 +2799,186 @@ mod tests {
     }
 
     #[test]
+    fn handoff_carries_the_history_slot_value_only() -> anyhow::Result<()> {
+        use grimodex_db::nir1_generation::history_context::{
+            HistoryAxis, HistoryContextSlot, HistorySendClassification,
+        };
+
+        let fixture = Fixture::new()?;
+        let prepared = prepare_local_chat_request(
+            Arc::clone(&fixture.state),
+            fixture.caller.clone(),
+            SCENE_ID,
+            &fixture.message_version_id,
+            std::slice::from_ref(&fixture.revision_id),
+            super::UnsupportedInputIntent::empty(),
+        )?;
+        // The slot is on the request itself and moves into the handoff.
+        let expected = prepared.history_draft.clone();
+        let handoff = prepared.into_d_transport_handoff();
+        assert_eq!(handoff.history_draft(), &expected);
+        let draft = handoff.history_draft();
+        let HistoryContextSlot::Context(context) = &draft.slot else {
+            anyhow::bail!("a complete request records a context: {:?}", draft.slot);
+        };
+        // The send classification comes from the route and from nothing else.
+        assert_eq!(
+            context.send_classification,
+            HistorySendClassification::LocalOnly
+        );
+        assert_eq!(
+            super::send_classification_of(handoff.route())?,
+            HistorySendClassification::LocalOnly
+        );
+        // The writer sets the eligibility time; the builder leaves 0.
+        assert_eq!(context.eligible_until_ms.get(), 0);
+        // The identity is the one of the Ready binding the request was prepared
+        // under; the handoff carries digests and enums only.
+        let binding = super::capture_ready_workspace(&fixture.state)?.1;
+        assert!(draft.durable_workspace_identity.is_some());
+        assert_eq!(
+            draft.durable_workspace_identity.as_ref(),
+            binding.durable_workspace_identity()
+        );
+        assert!(matches!(
+            context.axes.reading_order,
+            HistoryAxis::Present(_)
+        ));
+        let wire = serde_json::to_string(&draft.slot)?;
+        for secret in [
+            SCENE_ID,
+            SESSION_ID,
+            "nir1-prepared-workspace",
+            "Continue this scene",
+        ] {
+            assert!(
+                !wire.contains(secret),
+                "the slot carries no plaintext: {secret}"
+            );
+        }
+        // The D1 fields recompute the selection digest from the stored rows.
+        let parameters = grimodex_db::nir1_generation::D1SelectionParameters {
+            estimator_version: context.d1.estimator_version.as_wire().to_owned(),
+            selector_budget_tokens: context.d1.selector_budget_tokens.get(),
+            used_tokens: context.d1.used_tokens.get(),
+            remaining_tokens: context.d1.remaining_tokens.get(),
+        };
+        assert_eq!(
+            context.d1.selection_digest.as_str(),
+            grimodex_db::nir1_generation::d1_selection_digest(
+                &parameters,
+                handoff.input_references()
+            )?
+        );
+        // A route that is not a loopback IP literal cannot be classified.
+        let mut remote = handoff.route().clone();
+        remote.endpoint_base_url = "https://api.example.com/v1".into();
+        assert!(super::send_classification_of(&remote).is_err());
+        remote.endpoint_base_url = "http://localhost:12345/v1".into();
+        assert!(super::send_classification_of(&remote).is_err());
+        Ok(())
+    }
+
+    /// From the product prepare, through the handoff, a hand-built
+    /// `FinalDispatchRequest` (the coordinator is DI-1c's) and the owner's
+    /// create, to the re-read row: the stored slot is the builder's context
+    /// plus the writer's eligibility time, and the durable identity is the one
+    /// of the owner's own Ready binding.
+    #[test]
+    fn hs1_prepared_to_stored_context_end_to_end() -> anyhow::Result<()> {
+        use crate::nir1_generation::FinalDispatchRequest;
+        const READ_BUDGET_FOR_TEST: grimodex_db::nir1_generation::ReadBudget =
+            grimodex_db::nir1_generation::ReadBudget {
+                max_references: 256,
+                max_reference_bytes: 256 * 1024,
+            };
+        use crate::nir1_generation_owner::Nir1GenerationOwner;
+        use grimodex_db::nir1_generation::history_context::{
+            HistoryContextSlot, HISTORY_ELIGIBILITY_WINDOW_MS,
+        };
+
+        let fixture = Fixture::new()?;
+        anyhow::ensure!(
+            crate::nir1_generation::sweep_and_open_ready_entry_for_test(&fixture.state),
+            "the startup gate opens after the sweep"
+        );
+        let prepared = prepare_local_chat_request(
+            Arc::clone(&fixture.state),
+            fixture.caller.clone(),
+            SCENE_ID,
+            &fixture.message_version_id,
+            std::slice::from_ref(&fixture.revision_id),
+            super::UnsupportedInputIntent::empty(),
+        )?;
+        let handoff = prepared.into_d_transport_handoff();
+        let owner = Nir1GenerationOwner::capture(
+            Arc::clone(&fixture.state),
+            fixture.caller.clone(),
+            &fixture.message_version_id,
+        )
+        .map_err(|refusal| anyhow::anyhow!("owner refused: {refusal:?}"))?;
+        let workspace = active_workspace_snapshot(&fixture.state.ws)?;
+        let scene = workspace.db().db().with_read_transaction(|conn| {
+            generation_storage::read_attempt_scene_binding_in_tx(conn, PROJECT_ID, SCENE_ID)
+        })?;
+        let digest = grimodex_core::canonical_json_digest(&json!("hs1-end-to-end"))?;
+        let now = crate::nir1_generation::now_ms()?;
+        let request = FinalDispatchRequest {
+            project_id: PROJECT_ID.into(),
+            chat_session_id: SESSION_ID.into(),
+            scene,
+            route_revision: owner.route_revision().to_owned(),
+            purpose: handoff.purpose().clone(),
+            scope_digest: digest.clone(),
+            material_digest: digest.clone(),
+            d1_digest: digest.clone(),
+            provider: "test-recorder".into(),
+            model: "test".into(),
+            api: "internal-test".into(),
+            endpoint_identity: digest,
+            payload: serde_json::from_str(handoff.canonical_payload())?,
+            inputs: handoff.input_references().to_vec(),
+            qualifications: handoff.qualifications().to_vec(),
+            history: handoff.history_draft().clone(),
+            created_at_ms: now,
+            expires_at_ms: now + 60_000,
+            budget: READ_BUDGET_FOR_TEST,
+        };
+        let created = owner
+            .create(request)
+            .map_err(|refusal| anyhow::anyhow!("create refused: {refusal:?}"))?;
+        let attempt_id = created.attempt_id().to_owned();
+        let stored = generation_storage::read_attempt(
+            workspace.db().db(),
+            &attempt_id,
+            READ_BUDGET_FOR_TEST,
+        )?;
+        let HistoryContextSlot::Context(sent) = &handoff.history_draft().slot else {
+            anyhow::bail!("the handoff carries a context");
+        };
+        let Some(HistoryContextSlot::Context(kept)) = &stored.binding.history_turn_context else {
+            anyhow::bail!(
+                "the stored slot is a context: {:?}",
+                stored.binding.history_turn_context
+            );
+        };
+        let mut expected = (**sent).clone();
+        expected.eligible_until_ms =
+            grimodex_db::nir1_generation::history_context::HistoryInt::from_i64(
+                stored.created_at_ms + HISTORY_ELIGIBILITY_WINDOW_MS,
+            )?;
+        assert_eq!(**kept, expected);
+        let binding = super::capture_ready_workspace(&fixture.state)?.1;
+        assert!(stored.binding.durable_workspace_identity.is_some());
+        assert_eq!(
+            stored.binding.durable_workspace_identity.as_ref(),
+            binding.durable_workspace_identity()
+        );
+        drop(created);
+        Ok(())
+    }
+
+    #[test]
     fn renderer_user_insert_retires_captured_human_and_blocks_old_preparation() -> anyhow::Result<()>
     {
         let fixture = Fixture::new()?;
@@ -3468,6 +3686,7 @@ mod tests {
         let session_error = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &workspace,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             "not-the-chat-session",
             &fixture.message_version_id,
             SCENE_ID,
@@ -3740,6 +3959,7 @@ mod tests {
         let full_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -4099,6 +4319,7 @@ mod tests {
         let bounded_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -4753,6 +4974,7 @@ mod tests {
             let full_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
                 &snapshot,
                 grimodex_core::narrative_nir1::PackingPurpose::Writing,
+                grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
                 SESSION_ID,
                 &message_version_id,
                 SCENE_ID,
@@ -5001,6 +5223,7 @@ mod tests {
         let projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -5101,6 +5324,7 @@ mod tests {
         let full_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -5152,6 +5376,7 @@ mod tests {
         let minimum_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -5330,6 +5555,7 @@ mod tests {
         let full_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,

@@ -28,11 +28,17 @@ use super::nir1_entity_relation::{
     Nir1EntityRelationRevision,
 };
 #[cfg(feature = "native-current-human-capture")]
+use super::nir1_history_context::{
+    build_history_context_stage, finish_history_draft, HistoryContextStage, NativeNir1HistoryDraft,
+};
+#[cfg(feature = "native-current-human-capture")]
 use super::retrieval_admission::read_retrieval_scene_source_bounded;
 #[cfg(feature = "native-current-human-capture")]
 use super::retrieval_admission::{RetrievalSceneSourceBinding, RetrievalSceneSourceRead};
 #[cfg(feature = "native-current-human-capture")]
 use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
+#[cfg(feature = "native-current-human-capture")]
+use crate::nir1_generation::history_context::HistorySendClassification;
 #[cfg(feature = "native-current-human-capture")]
 use crate::nir1_generation::{
     check_attempt_completeness, d1_selection_digest, d1_selection_reference,
@@ -772,6 +778,9 @@ pub struct NativeNir1PreparedInputs {
     raw_source_binding: NativeNir1RawSourceBinding,
     authority_bindings: Vec<NativeNir1AuthorityBinding>,
     excluded_revisions: Vec<NativeNir1ExcludedRevision>,
+    /// The history turn context built in the same snapshot, without the D1
+    /// fields (K4/3 section 2). `history_draft` completes it.
+    history_context: HistoryContextStage,
 }
 
 #[cfg(feature = "native-current-human-capture")]
@@ -945,6 +954,29 @@ impl NativeNir1PreparedInputs {
         )
     }
 
+    /// The history slot of this request (K4/3 section 2), completed with the
+    /// D1 selection fields of `final_qualifications`. A final output that
+    /// breaks the completeness rule (`check_completeness`, which includes the
+    /// expected `(kind, target)` set of rule 3), or D1 fields that do not
+    /// recompute the selection digest from the input rows, make the slot
+    /// `d-final-incomplete`. `finalize_qualifications` already refuses an
+    /// incomplete output, so this is the second line of defense for a final
+    /// output built another way. The draft carries no `eligibleUntilMs` (the
+    /// storage writer derives it) and no authority.
+    pub fn history_draft(
+        &self,
+        final_qualifications: &NativeNir1FinalQualifications,
+    ) -> NativeNir1HistoryDraft {
+        finish_history_draft(
+            &self.history_context,
+            self.check_completeness(&final_qualifications.qualifications)
+                .is_ok(),
+            &final_qualifications.d1_selection,
+            &final_qualifications.d1_selection_digest,
+            &self.input_references,
+        )
+    }
+
     /// Add the D1 selection references once the rendered usage is known and
     /// check the complete output against the rule. `selector_budget_tokens` is
     /// the context budget the selector was given; the usage is the estimate of
@@ -994,9 +1026,11 @@ impl NativeNir1PreparedInputs {
 /// snapshot. The Native-owned callback computes remaining context capacity
 /// from the re-read Human body and the current fixed route/prompt budget.
 #[cfg(feature = "native-current-human-capture")]
+#[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 pub fn read_and_pack_native_nir1_prepared_inputs(
     workspace: &ActiveWorkspaceSnapshot,
     purpose: PackingPurpose,
+    send_classification: HistorySendClassification,
     expected_session_id: &str,
     capture: &AcceptedChatInputCapture,
     query_scene_id: &str,
@@ -1085,6 +1119,16 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
                 &mut checkpoint,
             )?;
             checkpoint()?;
+            // The history context is read in this same snapshot; the route's
+            // send classification is decided by the caller and only passed on.
+            let history_context = build_history_context_stage(
+                conn,
+                &project_id,
+                query_scene_id,
+                workspace.durable_workspace_identity(),
+                send_classification,
+            )?;
+            checkpoint()?;
             build_native_nir1_prepared_inputs(
                 capture.clone(),
                 project_id,
@@ -1092,6 +1136,7 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
                 user_message_version,
                 user_message,
                 pooled,
+                history_context,
                 &mut checkpoint,
             )
         },
@@ -1099,6 +1144,7 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
 }
 
 #[cfg(feature = "native-current-human-capture")]
+#[allow(clippy::too_many_arguments)] // The pooled read, the Human and the history stage are separate values.
 fn build_native_nir1_prepared_inputs(
     capture: AcceptedChatInputCapture,
     project_id: String,
@@ -1106,6 +1152,7 @@ fn build_native_nir1_prepared_inputs(
     user_message_version: MessageVersion,
     user_message: String,
     pooled: NativeNir1PooledPackedContext,
+    history_context: HistoryContextStage,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<NativeNir1PreparedInputs> {
     let raw_source_binding = pooled
@@ -1350,6 +1397,7 @@ fn build_native_nir1_prepared_inputs(
         raw_source_binding,
         authority_bindings: selected_bindings,
         excluded_revisions,
+        history_context,
     })
 }
 

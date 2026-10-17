@@ -55,6 +55,11 @@ pub use local_audit_writer::{
 };
 use local_audit_writer::{close_execution_in_tx, finish_attempt_bounded_with, AuditClose};
 pub use project_ai_policy::{read_project_ai_policy_bounded, Nir1ProjectAiPolicyRead};
+pub mod history_context;
+use history_context::{
+    eligible_until_ms, DurableWorkspaceIdentity, HistoryContextGateReason, HistoryContextSlot,
+    HistoryUnavailableReason, SLOT_UNWRITABLE_ERROR,
+};
 
 // These are storage safety ceilings for malformed/imported rows. They bound
 // one Native materialization; they are not the owning turn's history or
@@ -183,32 +188,6 @@ impl<'de> Deserialize<'de> for AttemptBindingVersion {
     }
 }
 
-/// A slot reserved for a later binding version. The type is uninhabited, so
-/// `None` (JSON null) is the only value this build writes or accepts; a row
-/// whose slot holds a value fails to parse.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReservedBindingSlot {}
-
-impl Serialize for ReservedBindingSlot {
-    fn serialize<S>(&self, _serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match *self {}
-    }
-}
-
-impl<'de> Deserialize<'de> for ReservedBindingSlot {
-    fn deserialize<D>(_deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Err(serde::de::Error::custom(
-            "NIR1_GENERATION_BINDING_RESERVED_SLOT_SET",
-        ))
-    }
-}
-
 /// Exact Native-owned identities of one attempt (binding format v2).
 /// Endpoint identity is a credential-free digest, never a URL. The opaque
 /// workspace identity includes the existing authority instance/recovery
@@ -240,10 +219,13 @@ pub struct AttemptBinding {
     pub model: String,
     pub api: String,
     pub endpoint_identity: String,
-    /// Reserved for the history turn context.
-    pub history_turn_context: Option<ReservedBindingSlot>,
-    /// Reserved for a durable workspace identity.
-    pub durable_workspace_identity: Option<ReservedBindingSlot>,
+    /// The turn's history context (K4/3 section 2). `None` is JSON null:
+    /// a row written before HS-1 or by test-support, not usable as history.
+    /// The product writer stores a context or a closed unavailable reason.
+    pub history_turn_context: Option<HistoryContextSlot>,
+    /// The durable workspace identity; `None` when it could not be
+    /// determined or was dropped by the `binding-limit` downgrade.
+    pub durable_workspace_identity: Option<DurableWorkspaceIdentity>,
 }
 
 /// The Main-issued caller that Native registered for the profile. It is
@@ -1251,8 +1233,9 @@ fn violation(
 /// kinds has one or more references or the typed N/A of the table, never
 /// both; no `(kind, target)` repeats; an N/A outside the table and a
 /// reference where the table puts an N/A are incomplete; an Artifact input is
-/// unsupported. Scope references need their closed roles. The writer does not
-/// enforce this rule; an incomplete attempt is stored and not used as history.
+/// unsupported. Scope references need their closed roles. The writer stores an
+/// incomplete attempt (DR-DFP-4) but replaces its history context with
+/// `d-final-incomplete`, so it is never used as history.
 pub fn check_attempt_completeness(
     inputs: &[InputReference],
     qualifications: &[QualificationReference],
@@ -1834,6 +1817,15 @@ pub struct StoredAttempt {
     pub expires_at_ms: i64,
     pub claimed_at_ms: Option<i64>,
     pub terminal: Option<StoredTerminal>,
+}
+
+impl StoredAttempt {
+    /// Why a history reader does not use this attempt, from its history slot
+    /// alone. The snapshot reader returns such an attempt without reading
+    /// any reference row (`inputs` and `qualifications` are empty).
+    pub(crate) fn history_gate(&self) -> Option<HistoryContextGateReason> {
+        history_gate_reason(&self.binding)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -2593,7 +2585,7 @@ pub fn create_attempt(db: &Database, request: NewAttempt) -> Result<StoredAttemp
                 &request.qualifications,
                 request.budget,
             )?;
-            insert_attempt_in_tx(conn, &Uuid::new_v4().to_string(), &request)
+            insert_attempt_in_tx(conn, &Uuid::new_v4().to_string(), &request, true)
         })
     })
 }
@@ -2610,31 +2602,127 @@ fn validate_new_attempt(request: &NewAttempt) -> Result<()> {
     Ok(())
 }
 
-// Production creates exist only in the Native capture build.
-#[cfg_attr(not(feature = "native-current-human-capture"), allow(dead_code))]
-/// Insert one already validated attempt and its ordered reference rows. The
-/// caller owns the immediate transaction and has validated the references.
-fn insert_attempt_in_tx(
-    conn: &Connection,
-    id: &str,
+const HISTORY_SLOT_REQUIRED_ERROR: &str = "NIR1_GENERATION_HISTORY_SLOT_REQUIRED";
+
+/// The `AttemptBinding` that the storage writer stores for `request`
+/// (K4/3 section 2), as a pure function of the request. The writer does not
+/// trust the caller's history slots; in this order it
+///
+/// 1. refuses a null `historyTurnContext` (the product create always records
+///    a context or a closed reason; only test-support writes null) and a slot
+///    of an unknown contract (read-only),
+/// 2. sets a context's `eligibleUntilMs` to the row's `created_at_ms` plus 30
+///    days (`eligibility-overflow` if that leaves the safe range),
+/// 3. turns a context into `d-final-incomplete` when the input and
+///    qualification rows violate the completeness rule (structure only; the
+///    expected-set rule needs the D-final state and is checked by the builder),
+/// 4. turns a context without a durable identity into
+///    `workspace-identity-unavailable`,
+/// 5. when the canonical JSON exceeds 64 KiB, turns the history slot into
+///    `binding-limit` and drops the durable identity; if even that exceeds
+///    64 KiB (the binding fits only with null slots) the slot becomes null;
+///    if it exceeds 64 KiB with null slots, or a slot-free binding exceeds
+///    it, the binding is refused (`NIR1_GENERATION_BINDING_LIMIT`).
+///
+/// The owner compares a re-read row with this value, so a COMMIT whose result
+/// is unknown still matches after a downgrade.
+pub fn effective_attempt_binding(request: &NewAttempt) -> Result<AttemptBinding> {
+    effective_attempt_binding_with_json(request, false).map(|(binding, _)| binding)
+}
+
+fn effective_attempt_binding_with_json(
     request: &NewAttempt,
-) -> Result<StoredAttempt> {
-    identity(id)?;
-    validate_reference_shapes(&request.inputs, &request.qualifications)?;
-    let input_digest = input_digest(&request.inputs, &request.qualifications)?;
-    let binding_json = canonical_json_string(&serde_json::to_value(&request.binding)?)?;
+    allow_null_slot: bool,
+) -> Result<(AttemptBinding, String)> {
+    let mut binding = request.binding.clone();
+    ensure!(
+        !matches!(
+            binding.history_turn_context,
+            Some(HistoryContextSlot::UnknownContract)
+        ),
+        "{}",
+        SLOT_UNWRITABLE_ERROR
+    );
+    ensure!(
+        allow_null_slot || binding.history_turn_context.is_some(),
+        "{}",
+        HISTORY_SLOT_REQUIRED_ERROR
+    );
+    if let Some(HistoryContextSlot::Context(context)) = binding.history_turn_context.as_mut() {
+        let downgrade = if let Some(until) = eligible_until_ms(request.created_at_ms) {
+            context.eligible_until_ms = until;
+            if check_attempt_completeness(
+                &request.inputs,
+                &request.qualifications,
+                &CompletenessContext {
+                    target_scene_id: &binding.scene.scene_id,
+                    expected_targets: None,
+                },
+            )
+            .is_err()
+            {
+                Some(HistoryUnavailableReason::DFinalIncomplete)
+            } else if binding.durable_workspace_identity.is_none() {
+                Some(HistoryUnavailableReason::WorkspaceIdentityUnavailable)
+            } else {
+                None
+            }
+        } else {
+            Some(HistoryUnavailableReason::EligibilityOverflow)
+        };
+        if let Some(reason) = downgrade {
+            binding.history_turn_context = Some(HistoryContextSlot::Unavailable(reason));
+        }
+    }
+    let mut binding_json = canonical_json_string(&serde_json::to_value(&binding)?)?;
+    if binding_json.len() > MAX_BINDING_JSON_BYTES
+        && (binding.history_turn_context.is_some() || binding.durable_workspace_identity.is_some())
+    {
+        binding.history_turn_context = Some(HistoryContextSlot::Unavailable(
+            HistoryUnavailableReason::BindingLimit,
+        ));
+        binding.durable_workspace_identity = None;
+        binding_json = canonical_json_string(&serde_json::to_value(&binding)?)?;
+        if binding_json.len() > MAX_BINDING_JSON_BYTES {
+            // The binding fits without any slot but not with the closed
+            // reason (a band of about 70 bytes): do not stop the send for a
+            // history record. The attempt is stored with null slots, which no
+            // history reader uses.
+            binding.history_turn_context = None;
+            binding_json = canonical_json_string(&serde_json::to_value(&binding)?)?;
+        }
+    }
     ensure!(
         binding_json.len() <= MAX_BINDING_JSON_BYTES,
         "NIR1_GENERATION_BINDING_LIMIT"
     );
+    Ok((binding, binding_json))
+}
+
+// Production creates exist only in the Native capture build.
+#[cfg_attr(not(feature = "native-current-human-capture"), allow(dead_code))]
+/// Insert one already validated attempt and its ordered reference rows. The
+/// caller owns the immediate transaction and has validated the references.
+/// The stored binding is [`effective_attempt_binding`] (a null history slot
+/// is allowed only when `allow_null_slot`, which test-support sets).
+fn insert_attempt_in_tx(
+    conn: &Connection,
+    id: &str,
+    request: &NewAttempt,
+    allow_null_slot: bool,
+) -> Result<StoredAttempt> {
+    identity(id)?;
+    validate_reference_shapes(&request.inputs, &request.qualifications)?;
+    let input_digest = input_digest(&request.inputs, &request.qualifications)?;
+    let (binding, binding_json) = effective_attempt_binding_with_json(request, allow_null_slot)?;
     conn.execute(
         "INSERT INTO nir1_generation_attempts
         (id,project_id,session_id,binding_json,payload_digest,input_digest,created_at_ms,expires_at_ms)
         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
         params![
             id,
-            request.binding.project_id,
-            request.binding.chat_session_id,
+            binding.project_id,
+            binding.chat_session_id,
             binding_json,
             request.payload_digest,
             input_digest,
@@ -2664,7 +2752,7 @@ fn insert_attempt_in_tx(
     }
     Ok(StoredAttempt {
         id: id.to_owned(),
-        binding: request.binding.clone(),
+        binding,
         payload_digest: request.payload_digest.clone(),
         input_digest,
         inputs: request.inputs.clone(),
@@ -2904,7 +2992,38 @@ fn read_attempt_in_tx_with_remaining(
     remaining: &mut ReadBudget,
 ) -> Result<StoredAttempt> {
     let mut no_reserve = |_bytes: usize| Ok(());
-    read_attempt_in_tx_with_remaining_and_reserve(conn, id, remaining, &mut no_reserve, None)
+    read_attempt_in_tx_with_remaining_and_reserve(conn, id, remaining, &mut no_reserve, None, false)
+}
+
+/// The closed reason a history reader does not use this attempt, decided from
+/// the binding's `historyTurnContext` slot alone (K4/3 section 2). `None`
+/// means the slot is a context of the known version.
+fn history_gate_reason(binding: &AttemptBinding) -> Option<HistoryContextGateReason> {
+    HistoryContextGateReason::of(binding.history_turn_context.as_ref())
+}
+
+/// The attempt row as the history gate returns it: the header and binding
+/// only. No reference row was read, so `inputs` and `qualifications` are
+/// empty, the digests are the stored columns (not recomputed) and no
+/// terminal was read.
+fn gated_history_attempt(
+    id: &str,
+    stored: AttemptMetadata,
+    binding: AttemptBinding,
+) -> StoredAttempt {
+    StoredAttempt {
+        id: id.to_owned(),
+        binding,
+        payload_digest: stored.payload_digest,
+        input_digest: stored.input_digest,
+        inputs: Vec::new(),
+        qualifications: Vec::new(),
+        reference_format: ReferenceFormat::V2,
+        created_at_ms: stored.created_at_ms,
+        expires_at_ms: stored.expires_at_ms,
+        claimed_at_ms: stored.claimed_at_ms,
+        terminal: None,
+    }
 }
 
 fn read_attempt_in_tx_with_remaining_and_reserve<F>(
@@ -2913,6 +3032,7 @@ fn read_attempt_in_tx_with_remaining_and_reserve<F>(
     remaining: &mut ReadBudget,
     reserve: &mut F,
     cancellation: Option<&GenerationHistorySnapshotCancellation>,
+    history_gate: bool,
 ) -> Result<StoredAttempt>
 where
     F: FnMut(usize) -> Result<()>,
@@ -2920,6 +3040,30 @@ where
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
+    // `history_gate` is true only for the history snapshot reader (HS1-2).
+    // The history gate reads the binding before any reference row. A slot
+    // that is not a known-version context returns the header alone: no
+    // reference row is read and neither the reference budget nor the body
+    // byte reservation is debited. A legacy (version 1) binding is not a
+    // slot state; it keeps the full read and its terminal-only refusal.
+    let prefetched = if history_gate {
+        let stored = read_attempt_metadata_in_tx(conn, id)?;
+        if let Some(cancellation) = cancellation {
+            cancellation.checkpoint()?;
+        }
+        let binding =
+            read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?;
+        match binding {
+            VersionedAttemptBinding::Current(current)
+                if history_gate_reason(&current).is_some() =>
+            {
+                return Ok(gated_history_attempt(id, stored, current));
+            }
+            binding => Some((stored, binding)),
+        }
+    } else {
+        None
+    };
     let metadata_bytes = attempt_metadata_materialization_bytes_in_tx(conn, id)?;
     let mut reference_budget = *remaining;
     let input_locations = read_ref_locations_in_tx(
@@ -2951,7 +3095,10 @@ where
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
-    let stored = read_attempt_metadata_in_tx(conn, id)?;
+    let (stored, prefetched_binding) = match prefetched {
+        Some((stored, binding)) => (stored, Some(binding)),
+        None => (read_attempt_metadata_in_tx(conn, id)?, None),
+    };
     let input_rows = materialize_refs_in_tx(
         conn,
         "nir1_generation_input_refs",
@@ -2984,8 +3131,10 @@ where
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
-    let binding =
-        read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?;
+    let binding = match prefetched_binding {
+        Some(binding) => binding,
+        None => read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?,
+    };
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
@@ -3264,12 +3413,17 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
                 &mut references,
                 &mut reserve,
                 Some(&self.cancellation),
+                true,
             );
             budget.apply_child_reference_budget(references);
             let value = value?;
             self.checkpoint()?;
-            self.terminals
-                .insert(id.to_owned(), Ok(value.terminal.clone()));
+            // A gated attempt returns before its terminal is read, so
+            // `terminal: None` is not the stored terminal and is not cached.
+            if value.history_gate().is_none() {
+                self.terminals
+                    .insert(id.to_owned(), Ok(value.terminal.clone()));
+            }
             Ok(value)
         })() {
             Ok(value) => value,
@@ -5949,7 +6103,7 @@ fn create_attempt_with_id_bounded_checked(
                 &request.qualifications,
                 request.budget,
             )?;
-            let stored = insert_attempt_in_tx(conn, id, &request)?;
+            let stored = insert_attempt_in_tx(conn, id, &request, false)?;
             pre_commit()?;
             Ok(stored)
         },

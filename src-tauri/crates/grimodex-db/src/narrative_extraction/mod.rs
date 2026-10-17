@@ -111,6 +111,8 @@ pub mod human_material_basis;
 mod human_materialization;
 mod material_membership;
 mod material_membership_root;
+#[cfg(feature = "native-current-human-capture")]
+mod nir1_history_context;
 mod nir1_packing;
 pub use material_membership::{
     read_revision_material_membership, MaterialMembershipRead, RevisionMaterialMembership,
@@ -136,6 +138,8 @@ pub mod scene_body_declaration;
 mod scope_dependency_projection;
 #[cfg(test)]
 mod scope_storage_authority_tests;
+#[cfg(feature = "native-current-human-capture")]
+pub use nir1_history_context::{HistoryContextStage, NativeNir1HistoryDraft};
 pub use nir1_packing::{
     read_and_pack_native_a2_context, NativeNir1AuthorityBinding, NativeNir1DecisionBinding,
     NativeNir1PackedContext, NativeNir1PackingRequest, NativeNir1RawContextItem,

@@ -499,6 +499,7 @@ mod contract {
         read_ai_audit_snapshot_for_scope, verify_ai_audit_chain_for_scope, AiAuditEvent,
     };
     use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
+    use crate::nir1_generation::history_context::{HistoryContextSlot, HistoryUnavailableReason};
     use crate::nir1_generation::{
         append_local_audit_start_bounded, claim_attempt_bounded, create_attempt_with_id_bounded,
         finish_attempt_bounded, finish_attempt_with_audit_bounded,
@@ -691,7 +692,12 @@ mod contract {
             model: "local-model".into(),
             api: "chat-completions".into(),
             endpoint_identity: digest_of("loopback-endpoint"),
-            history_turn_context: None,
+            // The product create refuses a null history slot (HS-1). These
+            // audit tests do not build a history context, so they record the
+            // closed reason of a build whose context builder has not run.
+            history_turn_context: Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::WorkspaceIdentityUnavailable,
+            )),
             durable_workspace_identity: None,
         }
     }
