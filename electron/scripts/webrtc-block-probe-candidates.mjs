@@ -5,6 +5,7 @@
  */
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,6 +22,16 @@ const pacUrl = (script) =>
   `data:application/x-ns-proxy-autoconfig;charset=utf-8,${encodeURIComponent(script)}`;
 const PAC_ALL_BLACKHOLE = `function FindProxyForURL(url, host) { alert("PAC|" + url + "|" + host); return "PROXY PROXYHOSTPORT"; }`;
 const POLICY = "disable_non_proxied_udp";
+const AL1_BYPASS = "<-loopback>;https://redirector.gvt1.com:443;https://*.gvt1.com:443";
+const RULES = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE redirector.gvt1.com, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost";
+const NC1_PROXY = { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: AL1_BYPASS };
+const RULES_NO_GITHUB = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE redirector.gvt1.com, EXCLUDE *.gvt1.com, EXCLUDE 127.0.0.1, EXCLUDE localhost";
+const RULES_NO_ASSET = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE redirector.gvt1.com, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE 127.0.0.1, EXCLUDE localhost";
+const RULES_GVT1_ONLY = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE 127.0.0.1, EXCLUDE localhost";
+const RULES_NONE = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost";
+const FINAL_PROXY = { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: "<-loopback>;https://*.gvt1.com:443" };
+const RULES_FINAL = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1";
+const RULES_MIN = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com";
 const CONN = { "Connection-Allowlist": "()" };
 
 export const CANDIDATES = {
@@ -74,6 +85,29 @@ export const CANDIDATES = {
   "h0-baseline": { cm: {}, args: [] },
   "r5-real-dictionary-none": { cm: { target: "default", noProbes: true, waitMs: 8000, policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "http://PROXYHOSTPORT", proxyBypassRules: "<-loopback>" } }, args: [], netLog: true, realNetwork: true },
   "r3-real-dictionary-allowed": { cm: { target: "default", noProbes: true, waitMs: 8000, policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "http://PROXYHOSTPORT", proxyBypassRules: "<-loopback>;https://redirector.gvt1.com:443" } }, args: [], netLog: true, realNetwork: true },
+  // ── DNS の経路の試験（実ネットワーク＋名前解決の記録層。PROBE_DNSLOG_LIB に .so） ──
+  "n0-dns-baseline": { cm: { dns: true }, args: [], realNetwork: true, dnsLog: true },
+  "n1-nc1-al1-dns": { cm: { dns: true, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: AL1_BYPASS } }, args: [], realNetwork: true, dnsLog: true },
+  "n2-nc1-al1+rules": { cm: { dns: true, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: AL1_BYPASS }, resolverSwitch: RULES, resolveHostTests: ["grimodex-rule-sentinel.invalid", "example.org", "redirector.gvt1.com"] }, args: [], realNetwork: true, dnsLog: true },
+  // ── updater／辞書／環境 proxy／network service 再起動（DNS の閉じ込めの影響の試験）──
+  "u1-updater-baseline": { cm: { noProbes: true, realUpdater: true }, args: [], realNetwork: true, dnsLog: true },
+  "u2-updater-nc1+rules": { cm: { noProbes: true, realUpdater: true, target: "default", policy: POLICY, proxy: NC1_PROXY, resolverSwitch: RULES }, args: [], realNetwork: true, dnsLog: true },
+  "u3-updater-nc1+rules-no-github": { cm: { noProbes: true, realUpdater: true, target: "default", policy: POLICY, proxy: NC1_PROXY, resolverSwitch: RULES_NO_GITHUB }, args: [], realNetwork: true, dnsLog: true },
+  "u4-updater-envproxy-baseline": { cm: { noProbes: true, realUpdater: true, updaterSessionProxy: { mode: "fixed_servers", proxyRules: "http://FAKEHTTPPROXY" } }, args: [], realNetwork: true, dnsLog: true, fakeHttpProxy: true },
+  "u5-updater-envproxy-nc1+rules": { cm: { noProbes: true, realUpdater: true, updaterSessionProxy: { mode: "fixed_servers", proxyRules: "http://FAKEHTTPPROXY" }, target: "default", policy: POLICY, proxy: NC1_PROXY, resolverSwitch: RULES }, args: [], realNetwork: true, dnsLog: true, fakeHttpProxy: true },
+  "u6-updater-envproxy-nc1+rules-excl": { cm: { noProbes: true, realUpdater: true, updaterSessionProxy: { mode: "fixed_servers", proxyRules: "http://FAKEHTTPPROXY" }, target: "default", policy: POLICY, proxy: NC1_PROXY, resolverSwitch: RULES + ", EXCLUDE HOSTNAME" }, args: [], realNetwork: true, dnsLog: true, fakeHttpProxy: true },
+  "v1-asset-baseline": { cm: { noProbes: true, realRedirect: "https://github.com/electron/electron/releases/download/v43.5.0/SHASUMS256.txt" }, args: [], realNetwork: true, dnsLog: true },
+  "v2-asset-nc1+rules": { cm: { noProbes: true, realRedirect: "https://github.com/electron/electron/releases/download/v43.5.0/SHASUMS256.txt", target: "default", policy: POLICY, proxy: NC1_PROXY, resolverSwitch: RULES }, args: [], realNetwork: true, dnsLog: true },
+  "v3-asset-nc1+rules-no-asset-hosts": { cm: { noProbes: true, realRedirect: "https://github.com/electron/electron/releases/download/v43.5.0/SHASUMS256.txt", target: "default", policy: POLICY, proxy: NC1_PROXY, resolverSwitch: RULES_NO_ASSET }, args: [], realNetwork: true, dnsLog: true },
+  // ── 最終構成の記録（AL-1 は *.gvt1.com:443 の 1 件、RULES は閉じた集合）──
+  "z1-final-harness": { cm: { dns: false, gvt1: true, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverRules: "MAP *.probe.test 127.0.0.1, MAP *.gvt1.com 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE [::1], EXCLUDE ::1, EXCLUDE LANADDR, EXCLUDE localhost" }, args: [] },
+  "z2-final-real": { cm: { dns: true, gvt1: true, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverSwitch: RULES_FINAL, resolveHostTests: ["grimodex-rule-sentinel.invalid", "example.org", "redirector.gvt1.com", "github.com", "release-assets.githubusercontent.com", "api.github.com"] }, args: [], realNetwork: true, dnsLog: true },
+  "z3-min-rules-real": { cm: { dns: true, gvt1: true, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverSwitch: RULES_MIN }, args: [], realNetwork: true, dnsLog: true },
+  "z4-rules+policy-only-real": { cm: { dns: true, gvt1: true, policy: POLICY, resolverSwitch: RULES_MIN }, args: [], realNetwork: true, dnsLog: true },
+  "z5-rules-only-real": { cm: { dns: true, gvt1: true, resolverSwitch: RULES_MIN }, args: [], realNetwork: true, dnsLog: true },
+  "d1-dictionary-wild-socks+rules": { cm: { noProbes: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: "<-loopback>;https://*.gvt1.com:443" }, resolverSwitch: RULES_GVT1_ONLY }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  "d2-dictionary-no-allow+rules": { cm: { noProbes: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: NC1_PROXY, resolverSwitch: RULES_NONE }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  "k1-netservice-kill+rules": { cm: { dns: true, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: AL1_BYPASS }, resolverSwitch: RULES, killNetworkService: true }, args: [], realNetwork: true, dnsLog: true },
   "f7-app-setproxy": { cm: { appSetProxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT" } }, args: [] },
 };
 
@@ -89,16 +123,19 @@ if (import.meta.url === `file://${process.argv[1]}` && argv.length > 0) {
     const cand = CANDIDATES[id];
     if (!cand) throw new Error(`unknown candidate ${id}`);
     const cmFile = path.join(outDir, `${id}.cm.json`);
-    fs.writeFileSync(cmFile, JSON.stringify(cand.cm));
+    fs.writeFileSync(cmFile, JSON.stringify(cand.cm).replaceAll("HOSTNAME", os.hostname()));
     const args = [
       path.join(here, "webrtc-block-probe.mjs"), "--label", id, "--cm-file", cmFile,
       "--out", path.join(outDir, `${id}.json`),
       ...(cand.netLog ? ["--net-log"] : []),
       ...(cand.proxyMode ? ["--proxy-mode", cand.proxyMode] : []),
       ...(cand.realNetwork ? ["--real-network"] : []),
+      ...(cand.fakeHttpProxy ? ["--fake-http-proxy"] : []),
+      ...(cand.dnsLog ? ["--dns-log", process.env.PROBE_DNSLOG_LIB ?? "/dev/shm/dnslog.so"] : []),
+      ...Object.entries(cand.env ?? {}).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
       ...cand.args.flatMap((a) => ["--electron-arg", a]),
     ];
-    const r = spawnSync(process.execPath, args, { encoding: "utf8", env: process.env, timeout: 280000 });
+    const r = spawnSync(process.execPath, args, { encoding: "utf8", env: process.env, timeout: 900000 });
     process.stdout.write(r.stdout ?? "");
     if (r.status !== 0) process.stdout.write(`FAILED ${id}: ${(r.stderr ?? "").slice(-600)}\n`);
   }

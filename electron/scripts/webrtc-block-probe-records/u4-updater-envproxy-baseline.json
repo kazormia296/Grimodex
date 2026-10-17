@@ -1,0 +1,125 @@
+{
+  "label": "u4-updater-envproxy-baseline",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "realUpdater": true,
+    "updaterSessionProxy": {
+      "mode": "fixed_servers",
+      "proxyRules": "http://FAKEHTTPPROXY"
+    }
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "updater session proxy set (simulated OS proxy)"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 6,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 0
+  },
+  "rows": [
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "winsess-<n>.probe.test",
+        "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]",
+        "defsess-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "defsess-<n>.probe.test",
+        "<hostname>[rc0]"
+      ]
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "status:502",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "<hostname>[rc0]"
+      ]
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1,
+      "dnsNames": [
+        "utilfetch-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "utilfetch-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.real-electron-updater-check",
+      "outcome": "error:net::ERR_TUNNEL_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    }
+  ],
+  "webRequestSeen": null,
+  "envProxyConnects": [
+    "CONNECT redirector.gvt1.com:443 HTTP/1.1",
+    "GET http://updater-<n>.probe.test:34969/ctl HTTP/1.1",
+    "CONNECT github.com:443 HTTP/1.1"
+  ],
+  "dictionaries": [
+    "Dictionaries/en-US-10-1.bdic"
+  ],
+  "netLog": null,
+  "dnsAll": [
+    "<hostname>[rc0]",
+    "redirector.gvt1.com[rc0]",
+    "winsess-<n>.probe.test",
+    "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]",
+    "defsess-<n>.probe.test",
+    "utilfetch-<n>.probe.test"
+  ],
+  "dnsRowCount": 4,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

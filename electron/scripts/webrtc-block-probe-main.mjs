@@ -20,6 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { app, BrowserWindow, net, protocol, session } from "electron";
+import { autoUpdater } from "electron-updater";
 
 import {
   APP_PROTOCOL_SCHEME,
@@ -36,6 +37,8 @@ const { userData, distRoot, resultPath, nonce } = cfg;
 app.setPath("userData", userData);
 app.disableHardwareAcceleration();
 registerAppProtocolScheme();
+// 製品と同じ方法（app ready 前の commandLine.appendSwitch）で resolver rules を当てる試験
+if (cm.resolverSwitch) app.commandLine.appendSwitch("host-resolver-rules", cm.resolverSwitch);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const subst = (value) =>
@@ -43,7 +46,7 @@ const subst = (value) =>
     JSON.stringify(value).replaceAll(
       "PROXYHOSTPORT",
       `127.0.0.1:${cfg.ports.proxy}`,
-    ).replaceAll("CANARYP", String(cfg.ports.p)),
+    ).replaceAll("CANARYP", String(cfg.ports.p)).replaceAll("FAKEHTTPPROXY", `${cfg.hostname}:${cfg.ports.fake}`),
   );
 
 async function main() {
@@ -59,6 +62,11 @@ async function main() {
     await app.setProxy(subst(cm.appSetProxy));
     events.push("app.setProxy applied");
   }
+  if (cm.updaterSessionProxy) {
+    // OS／環境の proxy（名前指定）が electron-updater の session に効く利用者の模擬
+    await session.fromPartition("electron-updater", { cache: false }).setProxy(subst(cm.updaterSessionProxy));
+    events.push("updater session proxy set (simulated OS proxy)");
+  }
   if (cm.proxy) {
     const target = cm.proxyTarget ?? "window";
     const targetSession = target === "default" ? session.defaultSession : ses;
@@ -67,6 +75,32 @@ async function main() {
       await targetSession.closeAllConnections();
       events.push(`setProxy applied to ${target}`);
     }
+  }
+
+  if (cm.resolveHostTests) {
+    for (const u of ["https://turn.attacker.invalid:443/", "https://redirector.gvt1.com/edgedl/chrome/dict/x", "https://example.invalid:8443/", "http://127.0.0.1:1/"]) {
+      try { events.push(`resolveProxy(${u}) => ${await ses.resolveProxy(u)}`); } catch (e) { events.push(`resolveProxy(${u}) error ${e.message}`); }
+    }
+    for (const h of cm.resolveHostTests) {
+      let out;
+      try {
+        const r = await Promise.race([ses.resolveHost(h), sleep(5000).then(() => "timeout")]);
+        out = typeof r === "string" ? r : JSON.stringify(r.endpoints?.map((e) => e.address) ?? r);
+      } catch (error) {
+        out = `error:${String(error?.message ?? error).slice(0, 80)}`;
+      }
+      events.push(`resolveHost(${h}) => ${out}`);
+    }
+  }
+
+  if (cm.killNetworkService) {
+    // network service を SIGKILL して再起動させ、proxy と resolver rules が維持されるか見る
+    const metrics = app.getAppMetrics().filter((m) => m.name === "Network Service" || (m.type === "Utility" && /network/i.test(m.serviceName ?? "")));
+    events.push(`network service pids=${metrics.map((m) => m.pid).join(",")}`);
+    for (const m of metrics) { try { process.kill(m.pid, "SIGKILL"); } catch (e) { events.push(`kill failed ${e.message}`); } }
+    await sleep(3000);
+    const after = app.getAppMetrics().filter((m) => m.name === "Network Service" || (m.type === "Utility" && /network/i.test(m.serviceName ?? "")));
+    events.push(`network service pids after=${after.map((m) => m.pid).join(",")}`);
   }
 
   // app:// の handler（本体の createAppProtocolHandler に header を足すだけ）
@@ -127,7 +161,7 @@ async function main() {
   const prefs = contents.getLastWebPreferences();
 
   await contents.executeJavaScript(
-    `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick })}`,
+    `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1 })}`,
   );
   const script = fs.readFileSync(env.PROBE_RENDERER_SCRIPT, "utf8");
   let rendererResults;
@@ -172,6 +206,42 @@ async function main() {
   await tryMain("main.net-fetch.no-session-utility", async () =>
     (await net.fetch(ctlUrl("utilfetch"), { bypassCustomProtocolHandlers: true })).status);
 
+  if (cm.realRedirect) {
+    // electron-updater と同じ session（partition electron-updater）で、公開 release の asset を取り、redirect 先の host を見る
+    const updaterSession2 = session.fromPartition("electron-updater", { cache: false });
+    const startedAt = Date.now();
+    const outcome = await new Promise((resolve) => {
+      const hosts = [];
+      const req = net.request({ url: cm.realRedirect, session: updaterSession2, redirect: "manual" });
+      const follow = (r) => {
+        r.on("redirect", (_code, _method, redirectUrl) => {
+          try { hosts.push(new URL(redirectUrl).host); } catch {}
+          r.followRedirect();
+        });
+      };
+      follow(req);
+      req.on("response", (res) => { res.on("data", () => {}); res.on("end", () => resolve(`status:${res.statusCode} hops:${hosts.join(">")}`)); res.on("error", () => resolve("res-error")); });
+      req.on("error", (e) => resolve(`error:${String(e.message).slice(0, 80)} hops:${hosts.join(">")}`));
+      setTimeout(() => resolve(`timeout hops:${hosts.join(">")}`), 25000);
+      req.end();
+    });
+    mainSide.push({ id: "main.updater-session-github-asset", outcome, startedAt, endedAt: Date.now() });
+  }
+  if (cm.realUpdater) {
+    // 本物の electron-updater で更新の確認（download はしない）。partition electron-updater の net.request が使われる
+    autoUpdater.forceDevUpdateConfig = true;
+    autoUpdater.autoDownload = false;
+    autoUpdater.setFeedURL({ provider: "github", owner: "kazormia296", repo: "GrimodexReleases" });
+    const startedAt = Date.now();
+    let outcome;
+    try {
+      const r = await Promise.race([autoUpdater.checkForUpdates(), sleep(25000).then(() => "timeout")]);
+      outcome = typeof r === "string" ? r : `ok:${r?.updateInfo?.version ?? "no-info"}`;
+    } catch (error) {
+      outcome = `error:${String(error?.message ?? error).split("\n")[0].slice(0, 160)}`;
+    }
+    mainSide.push({ id: "main.real-electron-updater-check", outcome, startedAt, endedAt: Date.now() });
+  }
   if (cm.spellcheck || cm.waitMs) await sleep(cm.waitMs ?? 4000);
   const result = {
     electron: process.versions.electron,
@@ -187,6 +257,13 @@ async function main() {
     rendererResults,
     mainSide,
     webRequestSeen: globalThis.__webRequestSeen ?? null,
+    dictionaries: (() => {
+      try {
+        const out = [];
+        for (const d of ["Dictionaries"]) for (const f of fs.readdirSync(path.join(userData, d))) out.push(`${d}/${f}`);
+        return out;
+      } catch { return []; }
+    })(),
   };
   fs.writeFileSync(resultPath, JSON.stringify(result, null, 2));
   await sleep(500);

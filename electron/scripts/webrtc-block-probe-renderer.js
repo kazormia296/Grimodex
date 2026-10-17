@@ -178,5 +178,82 @@
       }
     }),
   );
+  // ── 許可先（AL-1）の挙動: *.gvt1.com:443 は直接（proxy に向かない）、別 port は proxy ──────
+  if (globalThis.__probe.gvt1) {
+    for (const [tag, port] of [["443", 443], ["8443", 8443]]) {
+      for (const proto of ["turn-tcp", "turns"]) {
+        const h = `gvt1probe${proto.replace(/[^a-z]/g, "")}${tag}-${nonce}.gvt1.com`;
+        await settle(`gvt1.${proto}.${tag}`, () => rtcAttempt(RTCPeerConnection, proto, h, port));
+      }
+    }
+  }
+
+  // ── DNS だけが出る経路（名前解決の観測用。DNS の記録層で見る。--dns-log で有効）────────────
+  if (globalThis.__probe.dns) {
+    const hint = (id, rel, mk, extra = {}) =>
+      settle(id, async () => {
+        const l = document.createElement("link");
+        l.rel = rel;
+        l.href = mk(`${id.replace(/[^a-z0-9]/g, "")}-${nonce}.dnsprobe.test`);
+        Object.assign(l, extra);
+        document.head.append(l);
+        await wait(900);
+        return `link:${rel}`;
+      }, 3000);
+    await hint("dns.dns-prefetch", "dns-prefetch", (h) => `//${h}`);
+    await hint("dns.preconnect", "preconnect", (h) => `https://${h}`);
+    await hint("dns.preconnect-http", "preconnect", (h) => `http://${h}`);
+    await hint("dns.prefetch", "prefetch", (h) => `https://${h}/x`);
+    await hint("dns.modulepreload", "modulepreload", (h) => `https://${h}/x.js`);
+    await hint("dns.stylesheet", "stylesheet", (h) => `https://${h}/x.css`);
+    await settle("dns.img", async () => {
+      const i = new Image(); i.src = `https://img-${nonce}.dnsprobe.test/x.png`; await wait(900); return "img";
+    }, 3000);
+    await settle("dns.fetch", async () => {
+      try { await fetch(`https://fetch-${nonce}.dnsprobe.test/x`); } catch (e) { return `fetch:${e.name}`; } return "fetch:ok";
+    }, 3000);
+    await settle("dns.websocket", async () => {
+      try { new WebSocket(`wss://ws-${nonce}.dnsprobe.test/x`); } catch (e) { return `ws:${e.name}`; } await wait(900); return "ws";
+    }, 3000);
+    await settle("dns.a-ping", async () => {
+      const a = document.createElement("a");
+      a.href = "/index.html#x"; a.ping = `https://ping-${nonce}.dnsprobe.test/x`; a.target = "_blank";
+      document.body.append(a); a.click(); await wait(900); return "a-ping";
+    }, 3000);
+    await settle("dns.iframe-http", async () => {
+      await mkFrame({ src: `https://iframe-${nonce}.dnsprobe.test/x` }); await wait(600); return "iframe-http";
+    }, 4000);
+    await settle("dns.form-submit", async () => {
+      const f = document.createElement("form");
+      f.action = `https://form-${nonce}.dnsprobe.test/x`; f.method = "post"; f.target = "_blank";
+      document.body.append(f); try { f.submit(); } catch (e) { return `form:${e.name}`; } await wait(900); return "form";
+    }, 3000);
+    // 1 つの RTCPeerConnection に載せる名前の数（並列に何名まで引かれるか）
+    const many = async (id, urlsOf, n) => {
+      await settle(id, async () => {
+        const servers = urlsOf(n);
+        const pc = new RTCPeerConnection({ iceServers: servers });
+        pc.createDataChannel("probe");
+        await pc.setLocalDescription(await pc.createOffer());
+        await wait(2500);
+        pc.close();
+        return `servers:${n}`;
+      }, 6000);
+    };
+    await many("dns.many-turn-tcp30", (n) => Array.from({ length: n }, (_, i) => ({
+      urls: `turn:m${i}-${nonce}.dnsprobe.test:3478?transport=tcp`, username: "u", credential: "c" })), 30);
+    await many("dns.many-turns8", (n) => [{
+      urls: Array.from({ length: n }, (_, i) => `turns:s${i}-${nonce}.dnsprobe.test:443`), username: "u", credential: "c" }], 8);
+    const lab = "x".repeat(60);
+    await many("dns.long-name190", () => [{
+      urls: `turn:${lab}.${lab}.${lab}.${nonce}.dnsprobe.test:443?transport=tcp`, username: "u", credential: "c" }], 1);
+    // 許可先（辞書の host）への名前: 解決されるか（label を載せられるか）
+    await many("dns.gvt1-label", () => [{
+      urls: `turn:data-${nonce}.gvt1.com:443?transport=tcp`, username: "u", credential: "c" }], 1);
+    await many("dns.github-label", () => [{
+      urls: `turn:data-${nonce}.githubusercontent.com:443?transport=tcp`, username: "u", credential: "c" }], 1);
+    await many("dns.public-example", () => [{
+      urls: `turn:example.org:443?transport=tcp`, username: "u", credential: "c" }], 1);
+  }
   return results;
 })()

@@ -29,7 +29,7 @@ import esbuild from "esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
-const TIMEOUT_MS = 300_000;
+const TIMEOUT_MS = 900_000;
 
 function parseArgs(argv) {
   const args = {
@@ -52,6 +52,9 @@ function parseArgs(argv) {
     else if (a === "--keep") args.keep = true;
     else if (a === "--net-log") args.netLog = true;
     else if (a === "--real-network") args.realNetwork = true;
+    else if (a === "--fake-http-proxy") args.fakeHttpProxy = true;
+    else if (a === "--dns-log") args.dnsLib = argv[++i];
+    else if (a === "--env") { const [k, ...v] = argv[++i].split("="); (args.env ??= {})[k] = v.join("="); }
     else throw new Error(`unknown argument: ${a}`);
   }
   return args;
@@ -188,6 +191,7 @@ import ${JSON.stringify(path.join(root, "electron", "preload", "index.ts"))};
       outfile: path.join(bundle, "preload-disable.cjs"),
     }),
   ]);
+  fs.writeFileSync(path.join(bundle, "package.json"), JSON.stringify({ name: "probe", version: "0.0.1", main: "main.cjs" }));
   fs.writeFileSync(
     path.join(dist, "index.html"),
     "<!doctype html><html><head><meta charset=utf-8><title>Grimodex</title></head><body><p>probe</p></body></html>",
@@ -215,6 +219,11 @@ function runElectron({ work, bundle, cfg, args }) {
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
   ]) delete env[key];
   env.ELECTRON_OZONE_PLATFORM_HINT = "x11";
+  if (args.dnsLib) {
+    env.LD_PRELOAD = args.dnsLib;
+    env.PROBE_DNSLOG = path.join(work, "dns.log");
+  }
+  Object.assign(env, args.env ?? {});
   env.PROBE_CM = JSON.stringify(args.cm);
   env.PROBE_CFG = JSON.stringify(cfg);
   env.PROBE_RENDERER_SCRIPT = path.join(here, "webrtc-block-probe-renderer.js");
@@ -225,7 +234,7 @@ function runElectron({ work, bundle, cfg, args }) {
     ),
     ...(args.realNetwork ? [] : [
       args.cm.resolverRules
-        ? `--host-resolver-rules=${args.cm.resolverRules}`
+        ? `--host-resolver-rules=${args.cm.resolverRules.replaceAll("LANADDR", cfg.lan)}`
         : `--host-resolver-rules=MAP *.probe.test 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE [::1], EXCLUDE ::1, EXCLUDE ${cfg.lan}, EXCLUDE localhost`,
     ]),
     ...(args.netLog ? [`--log-net-log=${netLog}`, "--net-log-capture-mode=Everything"] : []),
@@ -294,6 +303,18 @@ async function main() {
     ...(lan ? [await startCanary("t-lan", lan)] : []),
   ];
   const proxy = await startProxyListener();
+  let fakeHttp = null;
+  if (args.fakeHttpProxy) {
+    // 名前指定の http proxy（OS／環境の proxy が名前の利用者を模す）。CONNECT 行を記録して 502 を返す
+    const hits = [];
+    const server = net.createServer((socket) => {
+      socket.once("data", (d) => { hits.push(d.toString("latin1").split("\r\n")[0].slice(0, 120)); socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"); });
+      socket.on("error", () => {});
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.1.1", resolve));
+    fakeHttp = { port: server.address().port, hits, close: () => new Promise((r) => server.close(() => r())) };
+    args.env = { ...(args.env ?? {}), https_proxy: `http://${os.hostname()}:${fakeHttp.port}`, http_proxy: `http://${os.hostname()}:${fakeHttp.port}` };
+  }
   const httpd = await startHttp(args.cm.pageHeader);
   let proxyPort = proxy.port;
   if (args.proxyMode === "closed") {
@@ -308,10 +329,11 @@ async function main() {
     distRoot: path.join(work, "dist"),
     resultPath: path.join(work, "result.json"),
     nonce,
+    hostname: os.hostname(),
     lan: lan ?? "192.0.2.1",
     ports: {
       p: canaries[0].port, q: canaries[1].port, r: canaries[2].port,
-      s: canaries[3].port, t: canaries[4]?.port ?? 1, proxy: proxyPort, http: httpd.port,
+      s: canaries[3].port, t: canaries[4]?.port ?? 1, proxy: proxyPort, http: httpd.port, fake: fakeHttp?.port ?? 0,
     },
   };
   fs.mkdirSync(cfg.userData, { recursive: true });
@@ -348,6 +370,20 @@ async function main() {
         httpHits: hh.length,
       });
     }
+    const dnsLogPath = path.join(work, "dns.log");
+    const dnsEvents = args.dnsLib && fs.existsSync(dnsLogPath)
+      ? fs.readFileSync(dnsLogPath, "utf8").split("\n").filter(Boolean).map((l) => {
+          const [at, pid, name, service, rc] = l.split("\t");
+          return { at: Number(at), pid, name: name.split(nonce).join("<n>"), rc: Number(rc) };
+        })
+      : null;
+    if (dnsEvents) {
+      for (const row of rows) {
+        const r = all.find((x) => x.id === row.id);
+        const names = dnsEvents.filter((e) => e.at >= r.startedAt - 50 && e.at <= r.endedAt + 50);
+        row.dnsNames = [...new Set(names.map((e) => `${e.name}${e.rc === 0 ? "[rc0]" : ""}`))];
+      }
+    }
     const unattributed = canaries.flatMap((c) => c.hits).filter((h) => !owned.has(h));
     const out = {
       label: args.label,
@@ -366,7 +402,11 @@ async function main() {
       },
       rows,
       webRequestSeen: result.webRequestSeen,
+      envProxyConnects: fakeHttp ? fakeHttp.hits : null,
+      dictionaries: result.dictionaries ?? [],
       netLog: args.netLog ? netLogAlerts(run.netLog) : null,
+      dnsAll: dnsEvents ? [...new Set(dnsEvents.map((e) => `${e.name}${e.rc === 0 ? "[rc0]" : ""}`))] : null,
+      dnsRowCount: dnsEvents ? rows.filter((r) => (r.dnsNames ?? []).some((n) => n.includes("<n>") || /example\.org|gvt1|github/.test(n))).length : null,
       timedOut: run.timedOut,
       runStdoutTail: run.output.slice(-400),
     };
@@ -376,6 +416,7 @@ async function main() {
     console.log(`== ${args.label} (electron ${result.electron}) ${result.events.join("; ")}`);
     for (const r of rows) {
       const tag = r.leaked > 0 ? "LEAK " : r.proxied > 0 ? "proxy" : r.httpHits > 0 ? "http " : "none ";
+      if (r.dnsNames?.length) console.log(`      dns: ${JSON.stringify(r.dnsNames).slice(0, 220)}`);
       console.log(
         `${tag} ${r.id.padEnd(34)} ${JSON.stringify(r.leakDetail)}${r.proxied ? ` proxied=${r.proxied} ${JSON.stringify(r.proxyHeads[0] ?? "")}` : ""}${r.httpHits ? ` httpHits=${r.httpHits}` : ""} -> ${r.outcome.slice(0, 60)}`,
       );
@@ -387,7 +428,7 @@ async function main() {
     if (result.webRequestSeen) console.log(`webRequest saw: ${JSON.stringify(result.webRequestSeen)}`);
     if (args.keep) console.log(`work dir kept: ${work}`);
   } finally {
-    await Promise.all([...canaries.map((c) => c.close()), proxy.close(), httpd.close()]);
+    await Promise.all([...canaries.map((c) => c.close()), proxy.close(), httpd.close(), ...(fakeHttp ? [fakeHttp.close()] : [])]);
     if (!args.keep) fs.rmSync(work, { recursive: true, force: true });
   }
 }
