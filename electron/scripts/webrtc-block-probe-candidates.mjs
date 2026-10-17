@@ -39,6 +39,14 @@ const RULES_FINAL_NO_LOCALHOST = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, 
 const HARNESS_PREFIX = "MAP *.probe.test 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE ::1, EXCLUDE [::1], EXCLUDE LANADDR, ";
 const RULES_MIN = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com";
 const CONN = { "Connection-Allowlist": "()" };
+// K3/3（第 6 版）の推奨 AL-0: renderer の Chromium の通信に許可先を置かない（bypass は <-loopback> だけ。rules に gvt1 を含めない）
+const RULES_AL0 = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost";
+const AL0_PROXY = { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: "<-loopback>" };
+// K3/3（第 6 版）の代替 AL-3: exact host の redirector.gvt1.com:443 だけを許可する
+const RULES_AL3 = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE redirector.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost";
+const AL3_PROXY = { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: "<-loopback>;https://redirector.gvt1.com:443" };
+// 自己確認の入力（FC-1）。IP literal の resolveHost は、規則（MAP * ~NOTFOUND）が欠けると解決されるので、規則の部分欠落の検出に使う
+const SELFCHECK_HOSTS = ["grimodex-rule-sentinel.invalid", "example.org", "redirector.gvt1.com", "github.com", "release-assets.githubusercontent.com", "api.github.com", "localhost", "127.0.0.1", "127.0.0.2", "1.1.1.1"];
 
 export const CANDIDATES = {
   baseline: { cm: {}, args: [] },
@@ -134,6 +142,25 @@ export const CANDIDATES = {
   "k1-netservice-kill+rules": { cm: { dns: true, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: AL1_BYPASS }, resolverSwitch: RULES, killNetworkService: true }, args: [], realNetwork: true, dnsLog: true },
   // K3/3 の最終構成（AL-1 1 件、RULES_FINAL）で network service を SIGKILL
   "k2-netservice-kill-final": { cm: { dns: true, gvt1: true, localhostRows: true, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverSwitch: RULES_FINAL, killNetworkService: true }, args: [], realNetwork: true, dnsLog: true },
+  // ── K3/3（第 6 版）: 推奨 AL-0 と代替 AL-3 の記録（行列は z2 と同じ 111 行。resolveHost の入力に IP literal を含む）──
+  "al0-final-real": { cm: { dns: true, gvt1: true, localhostRows: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
+  "al3-final-real": { cm: { dns: true, gvt1: true, localhostRows: true, target: "default", policy: POLICY, proxy: AL3_PROXY, resolverSwitch: RULES_AL3, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
+  // 辞書の取得（spellchecker を有効にして起こす）。AL-0 は取得できず、AL-3 は redirector までで redirect 先が止まる見込み
+  "al0-dict": { cm: { noProbes: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  "al3-dict": { cm: { noProbes: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: AL3_PROXY, resolverSwitch: RULES_AL3, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  // 更新（確認と asset の redirect）が AL-0 でも通ること
+  "al0-updater": { cm: { noProbes: true, realUpdater: true, realRedirect: "https://github.com/electron/electron/releases/download/v43.5.0/SHASUMS256.txt", target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0 }, args: [], realNetwork: true, dnsLog: true },
+  // 自己確認の負例: sentinel の MAP だけ（MAP * ~NOTFOUND と EXCLUDE が欠落）。sentinel と proxy の解決は最終構成と同じになり、IP literal と名前は解決される
+  "al0-selfcheck-sentinel-only": { cm: { noProbes: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: "MAP grimodex-rule-sentinel.invalid 127.0.0.1", resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true },
+  // network service の SIGKILL 後の持続、閉じた proxy port（listener なし）でも fail-closed か
+  "al0-netservice-kill": { cm: { dns: true, gvt1: true, localhostRows: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, killNetworkService: true }, args: [], realNetwork: true, dnsLog: true },
+  "al0-closed-proxy": { cm: { dns: true, gvt1: true, localhostRows: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0 }, args: [], proxyMode: "closed", realNetwork: true, dnsLog: true },
+  // 近い名前・特殊な literal の解決（rules の glob と literal の扱いを固定する行）
+  "al0-nearnames": { cm: { noProbes: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: ["gvt1.com", "xgvt1.com", "a.gvt1.com", "a.b.github.com", "github.com.", "github.com.evil.test", "evil.release-assets.githubusercontent.com", "api.github.com", "x.localhost", "localhost.", "foo.local", "127.1", "0x7f.0.0.1", "2130706433", "127.0.0.1.", "[::1]", "169.254.169.254"] }, args: [], realNetwork: true },
+  // OS 非依存の名前解決の観測（DoH の canary）。AL-0 の最終構成
+  "al0-doh": { cm: { dns: true, doh: true, gvt1: true, localhostRows: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0 }, args: [], realNetwork: true, doh: true },
+  // 自己確認の正例（最終構成。AL-0）
+  "al0-selfcheck-final": { cm: { noProbes: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true },
   // ── 環境変数の proxy（desktop 環境の変数を外すと Chromium は env を読む）と更新・辞書への影響 ──
   // localhost 名・127.0.0.1・LAN の literal・hostname の proxy を、baseline／初稿の最終構成／最終構成で比べる
   "w0-envproxy-localhost-baseline": { cm: { noProbes: true, realUpdater: true, spellcheck: true, waitMs: 9000, resolveHostTests: ["github.com", "localhost"] }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "localhost" },

@@ -139,7 +139,11 @@ async function main() {
 
   app.on("web-contents-created", (_e, contents) => {
     contents.setWindowOpenHandler(() => ({ action: "deny" }));
-    if (cm.policy) contents.setWebRTCIPHandlingPolicy(cm.policy);
+    if (cm.policy) {
+      contents.setWebRTCIPHandlingPolicy(cm.policy);
+      // 読み戻し（FC-1 の NC-POLICY の判定に使えるか）
+      events.push(`policy readback => ${contents.getWebRTCIPHandlingPolicy?.() ?? "n/a"}`);
+    }
     if (cm.udpRange) {
       contents.setWebRTCUDPPortRange({ min: cm.udpRange[0], max: cm.udpRange[1] });
     }
