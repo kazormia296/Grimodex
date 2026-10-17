@@ -130,6 +130,9 @@ pub(in crate::narrative_extraction) fn read(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::change_feed::{
+        payload_digest, AppendNarrativeChangeTransactionInput,
+    };
     use crate::narrative_extraction::scene_scope_projection::{
         source_key,
         tests::{explicit, fixture, patch, registry_refs, set_scope, update_registry, P},
@@ -228,6 +231,144 @@ mod tests {
                 pending(&db, &[scene]),
                 Some(Reason::PendingRelevantChange),
                 "{scene}"
+            );
+        }
+    }
+    /// Make the newest Feed transaction carry `object_key` and `change_kind` on
+    /// every event, then seal it again as the Native producer would, so the
+    /// reader's seal check passes and only the classification can fail.
+    fn corrupt_and_reseal(
+        db: &Database,
+        object_key: Option<serde_json::Value>,
+        change_kind: &str,
+    ) -> i64 {
+        db.with_conn(|conn| {
+            let sequence: i64 = conn.query_row(
+                "SELECT MAX(canonical_sequence) FROM narrative_change_events
+                  WHERE project_id = ?1",
+                [P],
+                |row| row.get(0),
+            )?;
+            let events = get_changes_since(conn, P, sequence - 1, 1)?;
+            assert!(!events.is_empty());
+            for event in &events {
+                let key = object_key.clone().unwrap_or_else(|| {
+                    // The same key without its Scene id.
+                    let mut key = event.object_key.clone();
+                    key.as_object_mut().expect("object key").remove("sceneId");
+                    key
+                });
+                conn.execute(
+                    "UPDATE narrative_change_events
+                        SET object_key_json = ?2, change_kind = ?3
+                      WHERE id = ?1",
+                    params![event.event_id, key.to_string(), change_kind],
+                )?;
+            }
+            let (id, request_id, source_domain, uid, applications, created): (
+                String,
+                String,
+                String,
+                String,
+                String,
+                String,
+            ) = conn.query_row(
+                "SELECT id, request_id, source_domain, source_change_event_uid,
+                        application_ids_json, created_at
+                   FROM narrative_change_transactions
+                  WHERE project_id = ?1 AND source_change_event_sequence = ?2",
+                params![P, sequence],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?;
+            let events = get_changes_since(conn, P, sequence - 1, 1)?;
+            let first = &events[0];
+            let seal = payload_digest(&AppendNarrativeChangeTransactionInput {
+                project_id: P.into(),
+                request_id,
+                source_domain,
+                source_change_event_uid: uid,
+                cause_kind: first.cause_kind,
+                origin: first.origin,
+                original_transaction_id: first.original_transaction_id.clone(),
+                commit_id: first.commit_id.clone(),
+                journal_id: first.journal_id.clone(),
+                undo_journal_id: first.undo_journal_id.clone(),
+                application_ids: serde_json::from_str(&applications)?,
+                occurred_at: created,
+                events: events.iter().map(super::super::pending_seals::input).collect(),
+            })?;
+            conn.execute(
+                "UPDATE narrative_change_transactions SET payload_digest = ?2 WHERE id = ?1",
+                params![id, seal],
+            )?;
+            Ok(sequence)
+        })
+        .expect("corrupt and reseal the newest Feed transaction")
+    }
+
+    /// X1-3 (test 11). An event the router cannot classify is not skipped: the
+    /// pending reader answers `PendingUnknown` for every projection Edge, also
+    /// for an Edge of a Scene the event could not have touched. Two ways to be
+    /// unclassifiable: a kind the router does not know, and a Scene-scope key
+    /// that lost its Scene id.
+    #[test]
+    fn unclassifiable_events_are_pending_unknown() {
+        // Control: a resealed transaction that names another Scene's key is
+        // read normally, so the failures below come from the classification
+        // and not from the seal.
+        {
+            let db = fixture();
+            acknowledge(&db);
+            set_scope(&db, "s2", |scope| explicit(scope, "timeline:main"));
+            corrupt_and_reseal(
+                &db,
+                Some(json!({"kind": "scene-scope", "sceneId": "s3"})),
+                "metadata",
+            );
+            assert_eq!(pending(&db, &["s1", "s2"]), None, "control");
+            assert_eq!(
+                pending(&db, &["s3"]),
+                Some(Reason::PendingRelevantChange),
+                "control"
+            );
+        }
+        for (case, key, kind) in [
+            (
+                "unknown kind",
+                Some(json!({"kind": "not-a-known-kind", "sceneId": "s2"})),
+                "metadata",
+            ),
+            ("missing sceneId", None, "metadata"),
+        ] {
+            let db = fixture();
+            acknowledge(&db);
+            // A real Scope change of s2 appends the `scene` and `scene-scope`
+            // events of one transaction.
+            set_scope(&db, "s2", |scope| explicit(scope, "timeline:main"));
+            assert_eq!(
+                pending(&db, &["s2"]),
+                Some(Reason::PendingRelevantChange),
+                "{case}: before the corruption"
+            );
+            corrupt_and_reseal(&db, key, kind);
+            assert_eq!(
+                pending(&db, &["s1", "s3"]),
+                Some(Reason::PendingUnknown),
+                "{case}: an unrelated Edge"
+            );
+            assert_eq!(
+                pending(&db, &["s2"]),
+                Some(Reason::PendingUnknown),
+                "{case}: the touched Edge"
             );
         }
     }

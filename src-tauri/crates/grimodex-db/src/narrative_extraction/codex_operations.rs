@@ -784,3 +784,97 @@ pub(crate) fn test_agent_codex_update_for_change_feed(
     )?;
     Ok(())
 }
+
+/// Test support for the Scene Scope acceptance tests: the real Codex create
+/// and the undo-journal replay (method J1), reached through this bridge so the
+/// acceptance tests do not call the Agent Writer themselves.
+#[cfg(test)]
+pub(super) mod scope_journal_support {
+    use anyhow::Result;
+    use serde_json::Value;
+
+    use crate::agent_writes::{
+        agent_codex_create_impl, agent_undo_journal_impl, AgentCodexCreatePayload,
+        AgentUndoJournalPayload, AuthorshipSpanInput,
+    };
+    use crate::Database;
+
+    /// Create a character through the tracked Codex writer; returns the undo
+    /// journal id of the creation.
+    pub(in crate::narrative_extraction) fn create_character(
+        db: &Database,
+        project_id: &str,
+        entry_id: &str,
+        name: &str,
+    ) -> Result<String> {
+        let created = agent_codex_create_impl(
+            db,
+            AgentCodexCreatePayload {
+                request_id: Some(format!("create:{entry_id}")),
+                entry_id: Some(entry_id.to_owned()),
+                project_id: project_id.to_owned(),
+                session_id: "scope-journal-session".to_owned(),
+                surface: None,
+                type_slug: "character".to_owned(),
+                name: name.to_owned(),
+                summary: Some(format!("{name} summary")),
+                content: Some(format!(r#"{{"name":"{name}"}}"#)),
+                aliases: Some(format!(r#"["{name}"]"#)),
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                source_chat_message_id: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: vec![AuthorshipSpanInput {
+                    from_pos: 0,
+                    to_pos: 3,
+                    source: "ai".to_owned(),
+                    model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_owned()),
+                    timestamp: None,
+                    chat_msg_id: None,
+                    trace_id: None,
+                }],
+            },
+        )?;
+        created["undoJournalId"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("create journal id missing"))
+    }
+
+    /// Replay one journal row in `direction` (`undo` or `redo`).
+    pub(in crate::narrative_extraction) fn replay_journal(
+        db: &Database,
+        project_id: &str,
+        journal_id: &str,
+        direction: &str,
+    ) -> Result<Value> {
+        agent_undo_journal_impl(
+            db,
+            AgentUndoJournalPayload {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                project_id: project_id.to_owned(),
+                session_id: "scope-journal-session".to_owned(),
+                journal_id: journal_id.to_owned(),
+                direction: direction.to_owned(),
+                authority_route: "history-replay".to_owned(),
+                origin: direction.to_owned(),
+                caller: "undo-redo-command".to_owned(),
+                controls: [
+                    "original-transaction",
+                    "journal-lineage",
+                    "typed-writer",
+                    "occ",
+                    "change-event",
+                    "change-feed",
+                ]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            },
+        )
+    }
+}

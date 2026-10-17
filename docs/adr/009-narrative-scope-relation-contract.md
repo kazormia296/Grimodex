@@ -83,6 +83,14 @@ consumes its axes, and the existing ScopeOverride STOP remains mandatory. The
 historical `snapshot:<runId>` basis remains immutable and is not upgraded or
 substituted with this current view.
 
+A typed Entity/Relation Revision (component contract version 2) does not bind
+this project-wide token. It binds, for each Scene its Entities anchor to
+(`scope.reading`), the Native-computed Scene Scope projection
+`project:scene-scope-projection:<sceneId>` (Source kind
+`scene-scope-projection-v1`), so an unrelated Scene's edit no longer retires it.
+The project Scope authority stays the context of a request, not a Revision's
+qualification, and version 1 Revisions are read as unavailable.
+
 ## Context
 
 ADR 005の旧`NarrativeScope`は、Timeline、Worldline、Scene、Viewpoint、

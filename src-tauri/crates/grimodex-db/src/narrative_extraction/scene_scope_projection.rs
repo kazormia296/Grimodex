@@ -41,7 +41,7 @@ pub(crate) const CONTRACT_ID: &str = "narrative-scene-scope-projection/1";
 
 /// The one reserved audience ref the projection of a non-secret Scope needs.
 /// The prepare shape of `nir1.entity-relation@1` reveals to the reader only.
-const REVEAL_READER_REF: &str = "reader";
+pub(crate) const REVEAL_READER_REF: &str = "reader";
 
 /// The A1 meaning fields of the binding. Duplicated with the generation so a
 /// writer that forgets to advance the generation is still caught.

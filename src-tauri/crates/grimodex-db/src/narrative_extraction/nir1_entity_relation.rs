@@ -544,6 +544,10 @@ impl<'a> LiveScope<'a> {
     /// the projection's own closed codes (`NEX_SOURCE_MISSING`, `_STALE`,
     /// `_PROJECT_MISMATCH`, `_KEY_INVALID`).
     fn projection_token(&self, project_id: &str, scene_id: &str) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            project_id == self.authority.project_id,
+            "NEX_SOURCE_PROJECT_MISMATCH: projection project is not the live authority's project"
+        );
         if let Some(token) = self.anchor_tokens.borrow().get(scene_id) {
             return Ok(token.clone());
         }
@@ -4021,6 +4025,7 @@ fn validate_scope_binding(
         authority.project_id == project_id,
         "NIR1_SCOPE_PROJECT_MISMATCH: live Scope authority belongs to another project"
     );
+    ensure_prepare_scope_shape(scope)?;
     validate_scope_value(&scope.reading, "reading", authority)?;
     validate_scope_value(&scope.story, "story", authority)?;
     validate_scope_value(&scope.auto, "auto", authority)?;
@@ -4064,6 +4069,67 @@ fn validate_scope_binding(
         );
     }
     Ok(())
+}
+
+/// The Scene Scope projection binds one non-secret Scope: the shape
+/// `nir1.entity-relation@1` prepare builds (reading `Exact` Scene, story `Any`,
+/// auto `NotApplicable`, reveal `reader`, no POV). A Scope outside it carries a
+/// story key, a secret reveal or a POV the projection does not bind, so a
+/// version 2 writer rejects it and a version 2 reader declares it unavailable
+/// (the validation failure reads as `source-revision-changed`).
+fn ensure_prepare_scope_shape(scope: &ScopeBinding) -> anyhow::Result<()> {
+    #[cfg(test)]
+    if tests_scope_shape::relaxed() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        matches!(scope.story, ScopeValue::Any { .. }),
+        "NIR1_SCOPE_SHAPE_UNSUPPORTED: story Scope is not 'any' (the Scene Scope projection binds no story key)"
+    );
+    anyhow::ensure!(
+        matches!(scope.auto, ScopeValue::NotApplicable { .. }),
+        "NIR1_SCOPE_SHAPE_UNSUPPORTED: auto Scope is not 'not applicable'"
+    );
+    anyhow::ensure!(
+        scope.pov.is_none(),
+        "NIR1_SCOPE_SHAPE_UNSUPPORTED: a Scope with a POV is not bound by the Scene Scope projection"
+    );
+    anyhow::ensure!(
+        scope.reveal == projection::REVEAL_READER_REF,
+        "NIR1_SCOPE_SHAPE_UNSUPPORTED: reveal audience is not the reader"
+    );
+    Ok(())
+}
+
+/// Tests that exercise A3's story, auto and POV rules need a Scope outside the
+/// prepare shape; they hold this guard so the shape check stands aside. No
+/// production path can hold it.
+#[cfg(test)]
+pub(crate) mod tests_scope_shape {
+    use std::cell::Cell;
+
+    thread_local! {
+        static RELAXED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn relaxed() -> bool {
+        RELAXED.with(Cell::get)
+    }
+
+    pub(crate) struct RelaxedScopeShape(());
+
+    impl RelaxedScopeShape {
+        pub(crate) fn hold() -> Self {
+            RELAXED.with(|flag| flag.set(true));
+            Self(())
+        }
+    }
+
+    impl Drop for RelaxedScopeShape {
+        fn drop(&mut self) {
+            RELAXED.with(|flag| flag.set(false));
+        }
+    }
 }
 
 fn validate_scope_value(
@@ -7163,6 +7229,35 @@ pub(super) mod tests {
             );
         }
 
+        // A Scope outside the prepare shape binds a story key, a secret reveal
+        // or a POV that the projection does not: the writer refuses each.
+        type Reshape = fn(&mut ScopeBinding);
+        let shapes: [(&str, Reshape); 4] = [
+            ("story", |scope| {
+                scope.story = ScopeValue::Exact {
+                    value: "story:a3-future".into(),
+                }
+            }),
+            ("auto", |scope| {
+                scope.auto = ScopeValue::Exact {
+                    value: "scene:a3-source".into(),
+                }
+            }),
+            ("pov", |scope| scope.pov = Some("nir1-alice".into())),
+            ("reveal", |scope| scope.reveal = "author".into()),
+        ];
+        for (field, reshape) in shapes {
+            let mut payload = request(&db);
+            for entity in &mut payload.bundle.entities {
+                reshape(&mut entity.scope);
+            }
+            let message = refused(payload);
+            assert!(
+                message.contains("NIR1_SCOPE_SHAPE_UNSUPPORTED"),
+                "{field}: {message}"
+            );
+        }
+
         // Another project: the projection resolver refuses the live read.
         let error = db.with_read_transaction(|conn| {
             let scope =
@@ -7171,6 +7266,8 @@ pub(super) mod tests {
                     "default-project",
                     "project:scope-authority:default-project",
                 )?);
+            // The memo of an anchor never answers for another project.
+            scope.projection_token("default-project", "nir1")?;
             Ok(scope
                 .projection_token("other-project", "nir1")
                 .expect_err("a Scene of another project has no projection here")
@@ -7187,6 +7284,37 @@ pub(super) mod tests {
             };
         }
         create_nir1_entity_relation_revision(&db, by_reading)?;
+        Ok(())
+    }
+
+    /// The reader holds the same shape: a Revision whose Scope carries a POV
+    /// (written only while the shape check stood aside) is unavailable, and
+    /// its rows are not rewritten.
+    #[test]
+    fn x13_reader_declares_a_scope_outside_the_prepare_shape_unavailable() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+        let created = {
+            let _relaxed = super::tests_scope_shape::RelaxedScopeShape::hold();
+            let mut payload = request(&db);
+            for entity in &mut payload.bundle.entities {
+                entity.scope.pov = Some("nir1-alice".into());
+            }
+            let created = create_nir1_entity_relation_revision(&db, payload)?;
+            approve_typed_revision(&db, "nir1-run", &created)?;
+            let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+            assert_eq!(a2_reason(&db, &revision_id)?, None);
+            created
+        };
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        let before = revision_rows_snapshot(&db, &revision_id)?;
+        assert_eq!(
+            a2_reason(&db, &revision_id)?.as_deref(),
+            Some("source-revision-changed")
+        );
+        assert_eq!(revision_rows_snapshot(&db, &revision_id)?, before);
         Ok(())
     }
 
@@ -8501,6 +8629,9 @@ pub(super) mod tests {
 
     #[test]
     fn a3_explicit_story_constraint_remains_story_axis_on_reading_fallback() -> anyhow::Result<()> {
+        // A3 reads a Scope the prepare never builds (story key, POV); the shape
+        // check stands aside for this test only.
+        let _relaxed = super::tests_scope_shape::RelaxedScopeShape::hold();
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
         prepare_a3_scope_fixture(&db)?;
@@ -8554,6 +8685,9 @@ pub(super) mod tests {
 
     #[test]
     fn a3_persisted_story_keys_use_canonical_utf16_order() -> anyhow::Result<()> {
+        // A3 reads a Scope the prepare never builds (story key, POV); the shape
+        // check stands aside for this test only.
+        let _relaxed = super::tests_scope_shape::RelaxedScopeShape::hold();
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
         prepare_a3_scope_fixture(&db)?;
@@ -9164,6 +9298,9 @@ pub(super) mod tests {
 
     #[test]
     fn a3_pov_requires_an_explicit_visible_query_viewpoint_match() -> anyhow::Result<()> {
+        // A3 reads a Scope the prepare never builds (story key, POV); the shape
+        // check stands aside for this test only.
+        let _relaxed = super::tests_scope_shape::RelaxedScopeShape::hold();
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
         prepare_a3_scope_fixture(&db)?;

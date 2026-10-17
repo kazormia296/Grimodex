@@ -25,6 +25,8 @@ use crate::domain_writes::{
     tree_node_create, tree_node_delete, TreeNodeCreatePayload, TreeNodeDeletePayload,
 };
 use crate::narrative_extraction::change_feed::NarrativeChangeOrigin;
+use crate::narrative_extraction::dependency_edges::find_edges_by_consumer;
+use crate::narrative_extraction::revision_eligibility::{pending, RevisionFreshnessReason};
 use crate::narrative_extraction::incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessCycleOutcome,
 };
@@ -102,6 +104,15 @@ fn source_basis(db: &Database, revision_id: &str) -> Result<Vec<(String, String,
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    })
+}
+
+/// The pending-Feed answer for the Revision's own edges, read before the
+/// Freshness cycle has processed anything (`None`: nothing pending touches it).
+fn pending_reason(db: &Database, revision_id: &str) -> Result<Option<RevisionFreshnessReason>> {
+    db.with_read_transaction(|conn| {
+        let edges = find_edges_by_consumer(conn, PROJECT, "proposal-revision", revision_id)?;
+        Ok(pending::read(conn, PROJECT, &edges)?.err())
     })
 }
 
@@ -925,10 +936,511 @@ fn x13_anchor_scene_scope_event_marks_only_anchor_pending() -> Result<()> {
         )?)
     })?;
     assert!(pending_after > pending_before, "a scene-scope event was appended");
+    // The pending reader (before any cycle) selects the patched Scene's
+    // Revision only.
+    assert_eq!(
+        pending_reason(&db, &other_revision)?,
+        Some(RevisionFreshnessReason::PendingRelevantChange),
+        "the anchor's own scene-scope event"
+    );
+    assert_eq!(
+        pending_reason(&db, &anchor_revision)?,
+        None,
+        "another Scene's Revision is not pending"
+    );
     assert!(revision_is_current(&db, &anchor_revision)?, "pending but unrelated");
     assert!(!a2_available(&db, &other_revision)?, "the anchor's own event");
     drain_freshness(&db)?;
+    assert_eq!(pending_reason(&db, &other_revision)?, None, "after the cycle");
     assert!(revision_is_current(&db, &anchor_revision)?);
     assert!(!a2_available(&db, &other_revision)?);
+    Ok(())
+}
+
+/// Test 11. After the Freshness cycle has processed an anchor's `scene-scope`
+/// event, the saved state of the projection edge of the Revision anchored there
+/// is stale (`source-revision-changed`), and the other Revisions' projection
+/// edges stay fresh.
+#[test]
+fn x13_incremental_freshness_marks_only_anchor_stale() -> Result<()> {
+    let (db, anchor_revision) = approved_fixture()?;
+    let other_revision = approve_anchored(&db, &["a3-future"], "nir1:review:x13-other")?;
+    drain_freshness(&db)?;
+    let projection_edge_state = |revision: &str| -> Result<Vec<(String, Option<String>)>> {
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT state.evidence_freshness, state.reason_code
+                   FROM narrative_dependency_edges edge
+                   JOIN narrative_dependency_edge_states state ON state.edge_id = edge.id
+                  WHERE edge.project_id = ?1 AND edge.consumer_kind = 'proposal-revision'
+                    AND edge.consumer_key = ?2
+                    AND edge.source_object_identity LIKE 'project:scene-scope-projection:%'",
+            )?;
+            let rows = statement
+                .query_map(rusqlite::params![PROJECT, revision], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+    };
+    let fresh = |states: &[(String, Option<String>)]| {
+        !states.is_empty() && states.iter().all(|(state, _)| state == "fresh")
+    };
+    assert!(fresh(&projection_edge_state(&anchor_revision)?), "before the change");
+    assert!(fresh(&projection_edge_state(&other_revision)?), "before the change");
+    patch(
+        &db,
+        "a3-future",
+        "stale-pov",
+        "povCharacterId",
+        json!("nir1-alice"),
+        true,
+        "2026-10-18T19:00:00.000Z",
+    )?;
+    drain_freshness(&db)?;
+    let touched = projection_edge_state(&other_revision)?;
+    assert!(
+        touched
+            .iter()
+            .any(|(state, reason)| state == "stale"
+                && reason.as_deref() == Some("source-revision-changed")),
+        "the touched Revision's projection edge is stale: {touched:?}"
+    );
+    assert!(
+        fresh(&projection_edge_state(&anchor_revision)?),
+        "another Scene's Revision stays fresh"
+    );
+    Ok(())
+}
+
+/// Test 7 (Feed side). A registry write appends one `scene-scope` event per
+/// binding and a `scope-registry` event: every anchor's Revision is pending at
+/// once, before any cycle has run.
+#[test]
+fn x13_registry_update_marks_every_anchor_pending() -> Result<()> {
+    let (db, anchor_revision) = approved_fixture()?;
+    let other_revision = approve_anchored(&db, &["a3-future"], "nir1:review:x13-other")?;
+    let third_revision = approve_anchored(&db, &["nir1"], "nir1:review:x13-third")?;
+    drain_freshness(&db)?;
+    for revision in [&anchor_revision, &other_revision, &third_revision] {
+        assert_eq!(pending_reason(&db, revision)?, None, "settled");
+    }
+    let mut refs = db
+        .with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, "nir1"))?
+        .registry
+        .timeline_refs;
+    refs.push("timeline:x13-pending".to_owned());
+    set_registry(&db, refs, "pending")?;
+    for revision in [&anchor_revision, &other_revision, &third_revision] {
+        assert_eq!(
+            pending_reason(&db, revision)?,
+            Some(RevisionFreshnessReason::PendingRelevantChange),
+            "a registry change reaches every projection Edge"
+        );
+    }
+    Ok(())
+}
+
+/// Test 5 (empty folder and notes). An empty folder and a note (move, archive,
+/// rename, and a note filed into the folder) change no projection and the
+/// project token, and no Revision is pending, before and after the cycle.
+#[test]
+fn x13_empty_folder_and_note_operations_keep_projection() -> Result<()> {
+    let (db, anchor_revision) = approved_fixture()?;
+    let other_revision = approve_anchored(&db, &["a3-future"], "nir1:review:x13-other")?;
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
+             VALUES ('x13-empty', ?1, 'folder', 'Empty', '{}', 'b0')",
+            [PROJECT],
+        )?;
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
+             VALUES ('x13-note', ?1, 'note', 'Note', '{}', 'b1')",
+            [PROJECT],
+        )?;
+        Ok(())
+    })?;
+    drain_freshness(&db)?;
+    let projections_before = projections(&db)?;
+    let project_before = project_token(&db)?;
+    let mut step = 0;
+    let mut operate = |node: &str, field: &str, value: Value| -> Result<()> {
+        step += 1;
+        patch(
+            &db,
+            node,
+            &format!("x13-ops-{step}"),
+            field,
+            value,
+            true,
+            &format!("2026-10-18T14:00:{step:02}.000Z"),
+        )
+    };
+    for node in ["x13-empty", "x13-note"] {
+        operate(node, "sortOrder", json!("c5"))?;
+        operate(node, "title", json!("Renamed"))?;
+        operate(node, "archivedAt", json!("2026-10-18T14:30:00.000Z"))?;
+        operate(node, "archivedAt", Value::Null)?;
+    }
+    operate("x13-note", "parentId", json!("x13-empty"))?;
+    operate("x13-note", "sortOrder", json!("c6"))?;
+    for revision in [&anchor_revision, &other_revision] {
+        assert_eq!(
+            pending_reason(&db, revision)?,
+            None,
+            "no operation on an empty folder or a note is pending"
+        );
+    }
+    assert_eq!(projections(&db)?, projections_before, "projections");
+    assert_eq!(project_token(&db)?, project_before, "project token");
+    assert_revision_current(&db, &anchor_revision, "after folder and note operations")?;
+    assert!(a2_available(&db, &other_revision)?);
+    drain_freshness(&db)?;
+    assert_revision_current(&db, &anchor_revision, "after the cycle")?;
+    assert!(a2_available(&db, &other_revision)?);
+    Ok(())
+}
+
+/// Test 8 (Trash). A Scene put in the Trash and deleted retires its Revision;
+/// the Trash restore creates a different Scene (its own id and incarnation),
+/// so the restore does not revive the Revision and does not retire another.
+#[test]
+fn x13_anchor_trash_restore_stays_invalidated() -> Result<()> {
+    use crate::trash_bin::{create, restore, TrashBinCreatePayload, TrashBinRestorePayload};
+    let (db, anchor_revision) = approved_fixture()?;
+    let other_revision = approve_anchored(&db, &["a3-future"], "nir1:review:x13-other")?;
+    let original = projection(&db, "a3-source")?;
+    let trash: TrashBinCreatePayload = serde_json::from_value(json!({
+        "id": "x13-trash-scene",
+        "projectId": PROJECT,
+        "kind": "structure-item",
+        "subKind": "scene",
+        "originSceneId": null,
+        "originCodexId": null,
+        "previewText": "A3 source",
+        "previewMeta": null,
+        "payload": json!({
+            "originalId": "a3-source",
+            "title": "A3 source",
+            "body": "{\"type\":\"doc\",\"content\":[]}",
+            "beats": "[]",
+            "povCharacterId": null,
+            "folderHintId": null,
+            "folderHintName": null,
+            "metadata": { "sortOrder": "a0", "nodeType": "scene" },
+            "charCount": 0
+        }).to_string(),
+        "charCount": 0,
+        "isInteresting": false,
+        "deletedAt": "2026-10-18T15:00:00.000Z"
+    }))?;
+    create(&db, trash)?;
+    tree_node_delete(
+        &db,
+        TreeNodeDeletePayload {
+            project_id: PROJECT.to_owned(),
+            request_id: "x13-trash-delete".to_owned(),
+            session_id: "x13-session".to_owned(),
+            event_uid: "x13-trash-delete-event".to_owned(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            node_id: "a3-source".to_owned(),
+            canonical_payload: None,
+        },
+    )?;
+    assert!(!a2_available(&db, &anchor_revision)?, "deleted anchor");
+    let restored = restore(
+        &db,
+        TrashBinRestorePayload {
+            request_id: "x13-trash-restore".to_owned(),
+            session_id: "x13-session".to_owned(),
+            project_id: PROJECT.to_owned(),
+            item_id: "x13-trash-scene".to_owned(),
+            board_id_override: None,
+            drop_x: None,
+            drop_y: None,
+        },
+    )?;
+    assert_eq!(restored.new_id, "restored-scene:x13-trash-scene");
+    assert!(
+        projection(&db, "a3-source").is_err(),
+        "the old id is not back"
+    );
+    assert_ne!(projection(&db, &restored.new_id)?, original);
+    assert!(!a2_available(&db, &anchor_revision)?, "after the restore");
+    assert!(a2_available(&db, &other_revision)?);
+    drain_freshness(&db)?;
+    assert!(!a2_available(&db, &anchor_revision)?);
+    assert!(a2_available(&db, &other_revision)?);
+    Ok(())
+}
+
+/// Test 9 (journal paths). The undo journal replays a Codex entry's creation
+/// and removal (method J1): removing the person that is a Scene's POV clears
+/// the POV and advances the Scene's Scope generation, and re-inserting the
+/// person does not bring the cleared Scope back. The Revision anchored to that
+/// Scene stays retired until a new one is approved; a Revision of another Scene
+/// is untouched. A person named as holder cannot be removed by the journal.
+#[test]
+fn x13_journal_paths_keep_anchor_revision_ineligible() -> Result<()> {
+    use super::codex_operations::scope_journal_support::{create_character, replay_journal};
+    let (db, _first) = approved_fixture()?;
+    let journal = create_character(&db, PROJECT, "x13-journal-char", "Journal")?;
+    let replay = |direction: &str| -> Result<Value> {
+        replay_journal(&db, PROJECT, &journal, direction)
+    };
+    let pov_of_anchor = |db: &Database| -> Result<Option<String>> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT pov_character_id FROM tree_nodes WHERE id = 'a3-source'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+    };
+    let character_exists = |db: &Database| -> Result<bool> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM codex_entries WHERE id = 'x13-journal-char'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )? == 1)
+        })
+    };
+
+    patch(
+        &db,
+        "a3-source",
+        "journal-pov",
+        "povCharacterId",
+        json!("x13-journal-char"),
+        true,
+        "2026-10-18T16:00:00.000Z",
+    )?;
+    drain_freshness(&db)?;
+    let anchor_revision = approve_anchored(&db, &["a3-source"], "nir1:review:x13-journal")?;
+    let other_revision = approve_anchored(&db, &["a3-future"], "nir1:review:x13-other")?;
+    assert!(a2_available(&db, &anchor_revision)?);
+    let approved = projection(&db, "a3-source")?;
+    let other_projection = projection(&db, "a3-future")?;
+
+    // Undo of the creation removes the person; the POV foreign key clears and
+    // the Scene's Scope generation advances in the same transaction.
+    replay("undo")?;
+    assert!(!character_exists(&db)?);
+    assert_eq!(pov_of_anchor(&db)?, None);
+    assert_ne!(projection(&db, "a3-source")?, approved);
+    assert!(!a2_available(&db, &anchor_revision)?, "POV cleared by undo");
+    assert!(a2_available(&db, &other_revision)?);
+    assert_eq!(projection(&db, "a3-future")?, other_projection);
+
+    // Redo re-inserts the person. The POV is not restored and the Revision is
+    // not eligible again without a new approval.
+    replay("redo")?;
+    assert!(character_exists(&db)?);
+    assert_eq!(pov_of_anchor(&db)?, None);
+    let after_redo = projection(&db, "a3-source")?;
+    assert_ne!(after_redo, approved);
+    assert!(!a2_available(&db, &anchor_revision)?, "person back, still retired");
+    drain_freshness(&db)?;
+    assert!(!a2_available(&db, &anchor_revision)?);
+
+    drain_freshness(&db)?;
+    assert!(!a2_available(&db, &anchor_revision)?);
+    assert!(a2_available(&db, &other_revision)?);
+
+    // A holder is a stronger reference: the journal may not remove it.
+    let current =
+        db.with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, "a3-source"))?;
+    update_narrative_scene_scope(
+        &db,
+        NarrativeSceneScopeUpdatePayload {
+            project_id: PROJECT.to_owned(),
+            scene_id: "a3-source".to_owned(),
+            request_id: "x13-journal-holder".to_owned(),
+            session_id: "x13-session".to_owned(),
+            event_uid: "x13-journal-holder-event".to_owned(),
+            base_version: current.binding.version,
+            updated_at: "2026-10-18T16:01:00.000Z".to_owned(),
+            scope: NarrativeSceneScopeUpdateV1 {
+                schema_version: 1,
+                compatibility_marker: current.binding.compatibility_marker,
+                query_identity: current.binding.query_identity.clone(),
+                material_constraint: current.binding.material_constraint.clone(),
+                knowledge_holder: NarrativeScopePrincipalV1::Character {
+                    reference: "x13-journal-char".to_owned(),
+                },
+                audience: current.binding.audience.clone(),
+            },
+        },
+    )?;
+    drain_freshness(&db)?;
+    let holder_revision = approve_anchored(&db, &["a3-source"], "nir1:review:x13-holder-journal")?;
+    assert!(a2_available(&db, &holder_revision)?);
+    let holder_projection = projection(&db, "a3-source")?;
+    let refused = replay("undo").expect_err("a holder cannot be removed through the journal");
+    assert!(
+        refused
+            .to_string()
+            .contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"),
+        "{refused:#}"
+    );
+    assert!(character_exists(&db)?, "nothing was removed");
+    assert_eq!(projection(&db, "a3-source")?, holder_projection);
+    assert!(a2_available(&db, &holder_revision)?);
+    Ok(())
+}
+
+/// Measurement (not an assertion of speed; run with `-- --ignored --nocapture`).
+/// A projection edge's evaluation reads the project Scope authority and the
+/// Scene bindings once (DR-X1-3-13), so a Revision with k anchors costs about
+/// 2k such reads in an incremental cycle. This prints the time of one read
+/// for projects of different Scene counts, so k and the project size can be
+/// combined. Debug build, in-memory database.
+#[test]
+#[ignore = "measurement for DR-X1-3-13"]
+fn x13_authority_read_time_by_scene_count() -> Result<()> {
+    use crate::narrative_extraction::project_scope_authority::load_live_project_scope_authority_with_scene_bindings;
+    use crate::narrative_extraction::scene_scope::ensure_scene_scope_binding_in_tx;
+    for scenes in [3usize, 64, 512] {
+        let db = crate::test_support::fresh_migrated_memory()?;
+        db.with_conn(|conn| {
+            for index in 0..scenes {
+                let id = format!("m-scene-{index:04}");
+                conn.execute(
+                    "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
+                     VALUES (?1, ?2, 'scene', 'Scene', '{}', ?3)",
+                    rusqlite::params![id, PROJECT, format!("a{index:05}")],
+                )?;
+                ensure_scene_scope_binding_in_tx(conn, PROJECT, &id, "2026-10-18T00:00:00.000Z")?;
+            }
+            Ok(())
+        })?;
+        let rounds = 20;
+        let started = std::time::Instant::now();
+        for _ in 0..rounds {
+            db.with_read_transaction(|conn| {
+                load_live_project_scope_authority_with_scene_bindings(
+                    conn,
+                    PROJECT,
+                    &format!("project:scope-authority:{PROJECT}"),
+                )?;
+                Ok(())
+            })?;
+        }
+        let per_read = started.elapsed() / rounds;
+        println!("x13-measure scenes={scenes} one_read={per_read:?}");
+    }
+    Ok(())
+}
+
+/// Measurement for DR-X1-3-15 (`-- --ignored --nocapture`). A folder move
+/// refreshes the Scope generation of every live Scene below it, so its time
+/// grows with the subtree. Debug build, in-memory database.
+#[test]
+#[ignore = "measurement for DR-X1-3-15"]
+fn x13_folder_move_time_by_subtree_size() -> Result<()> {
+    use crate::narrative_extraction::scene_scope::ensure_scene_scope_binding_in_tx;
+    for scenes in [1usize, 64, 512] {
+        let (db, _revision) = approved_fixture()?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
+                 VALUES ('m-folder', ?1, 'folder', 'Folder', '{}', 'z0')",
+                [PROJECT],
+            )?;
+            for index in 0..scenes {
+                let id = format!("m-scene-{index:04}");
+                conn.execute(
+                    "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, content, sort_order)
+                     VALUES (?1, ?2, 'm-folder', 'scene', 'Scene', '{}', ?3)",
+                    rusqlite::params![id, PROJECT, format!("a{index:05}")],
+                )?;
+                ensure_scene_scope_binding_in_tx(conn, PROJECT, &id, "2026-10-18T00:00:00.000Z")?;
+            }
+            Ok(())
+        })?;
+        let started = std::time::Instant::now();
+        patch(
+            &db,
+            "m-folder",
+            "measure-move",
+            "sortOrder",
+            json!("z5"),
+            true,
+            "2026-10-18T17:00:00.000Z",
+        )?;
+        let moved = started.elapsed();
+        let started = std::time::Instant::now();
+        drain_freshness(&db)?;
+        println!(
+            "x13-measure subtree_scenes={scenes} folder_move={moved:?} freshness_cycle={:?}",
+            started.elapsed()
+        );
+    }
+    Ok(())
+}
+
+/// Observation for F10 (not a pass/fail condition of X1). A request is
+/// prepared against a Revision's eligibility proof; a save lands between the
+/// preparation and the return, which revalidates the proof
+/// (`revalidate_nir1_entity_relation_disclosure`). Recorded outcome: any save,
+/// of the query Scene, the anchor or an unrelated Scene, makes the return fail
+/// closed, because the Revision's canonical Freshness snapshot (and so the
+/// proof's Freshness token) carries the Feed coordinates. The Scope side of the
+/// proof does not change for a body save: the project token, the query Scene's
+/// Scope token and the material Scene proofs (the anchors' projections' source)
+/// are equal. The same save therefore does not retire the Revision for a new
+/// request (`x13_new_request_qualifies_after_other_scene_save`).
+#[test]
+fn x13_return_revalidation_observation() -> Result<()> {
+    use crate::narrative_extraction::{
+        evaluate_nir1_entity_relation_disclosure, revalidate_nir1_entity_relation_disclosure,
+        Nir1EntityRelationDisclosureRead,
+    };
+    let (db, revision_id) = approved_fixture()?;
+    let evaluate = |db: &Database| {
+        db.with_read_transaction(|conn| {
+            match evaluate_nir1_entity_relation_disclosure(conn, PROJECT, &revision_id, "nir1")? {
+                Nir1EntityRelationDisclosureRead::Eligible(proof) => Ok(proof),
+                Nir1EntityRelationDisclosureRead::Unavailable { reason } => {
+                    anyhow::bail!("fixture unavailable: {reason}")
+                }
+            }
+        })
+    };
+    let proof = evaluate(&db)?;
+    let valid = |db: &Database| -> Result<bool> {
+        db.with_read_transaction(|conn| revalidate_nir1_entity_relation_disclosure(conn, &proof))
+    };
+    assert!(valid(&db)?, "before any save");
+    for (scene, tag) in [
+        ("a3-future", "f10-other"),
+        ("a3-source", "f10-anchor"),
+        ("nir1", "f10-query"),
+    ] {
+        save_body(&db, scene, tag, "2026-10-18T18:00:00.000Z")?;
+        let current = evaluate(&db)?;
+        assert_eq!(
+            current.scope_authority_revision, proof.scope_authority_revision,
+            "{scene}: project token"
+        );
+        assert_eq!(
+            current.query_scene_scope_token, proof.query_scene_scope_token,
+            "{scene}: query Scene Scope token"
+        );
+        assert_eq!(
+            current.material_scene_proofs.len(),
+            proof.material_scene_proofs.len()
+        );
+        assert_ne!(
+            current.freshness_token, proof.freshness_token,
+            "{scene}: the Freshness token moves with the Feed"
+        );
+        assert!(!valid(&db)?, "{scene}: the return fails closed");
+    }
     Ok(())
 }
