@@ -2281,18 +2281,16 @@ fn evaluate_batch_with_control(
         // for an obsolete Source observation.
         let typed_state = db.with_conn(|conn| {
             if super::nir1_entity_relation::is_typed_revision_edge(conn, &batch.project_id, edge)? {
-                Ok::<_, anyhow::Error>(Some((
+                // The observation and the token it was decided from come from
+                // one resolution (a projection edge reads the Scope authority
+                // once, not once for each).
+                Ok::<_, anyhow::Error>(Some(
                     super::nir1_entity_relation::evaluate_typed_edge_for_incremental(
                         conn,
                         &batch.project_id,
                         edge,
                     )?,
-                    super::nir1_entity_relation::typed_source_token_for_incremental(
-                        conn,
-                        &batch.project_id,
-                        &edge.source_object_identity,
-                    )?,
-                )))
+                ))
             } else {
                 Ok(None)
             }

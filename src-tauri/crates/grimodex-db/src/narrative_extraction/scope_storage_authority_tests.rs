@@ -21,7 +21,8 @@ use crate::narrative_extraction::incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessCycleOutcome,
 };
 use crate::narrative_extraction::nir1_entity_relation::tests::{
-    approve_typed_revision, prepare_a3_scope_fixture, request, seed_run_and_catalog,
+    approve_typed_revision, prepare_a3_scope_fixture, request,
+    scene_scope_projection_token_for_test, seed_run_and_catalog,
 };
 use crate::narrative_extraction::nir1_entity_relation::{
     create_nir1_entity_relation_revision, evaluate_nir1_entity_relation_disclosure,
@@ -116,6 +117,8 @@ fn approved_fixture() -> Result<(Database, String)> {
         entity.scope.reading = ScopeValue::Exact {
             value: "scene:a3-source".into(),
         };
+        entity.scope.authority_revision =
+            scene_scope_projection_token_for_test(&db, PROJECT, "a3-source")?;
     }
     let created = create_nir1_entity_relation_revision(&db, typed_request)?;
     approve_typed_revision(&db, "nir1-run", &created)?;

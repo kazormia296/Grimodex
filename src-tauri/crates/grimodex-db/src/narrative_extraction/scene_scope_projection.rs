@@ -163,7 +163,6 @@ pub(crate) fn anchor_scene_id_from_ref(reference: &str) -> Option<&str> {
 
 /// The anchor Scene of an Entity's reading. Only an `Exact` reading that
 /// names a Scene has an anchor; every other value is not a projection input.
-#[allow(dead_code)] // The typed Revision writer and reader use it from S2.
 pub(crate) fn anchor_scene_id(reading: &ScopeValue) -> Option<&str> {
     match reading {
         ScopeValue::Exact { value } => anchor_scene_id_from_ref(value),
