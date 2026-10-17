@@ -929,7 +929,9 @@ fn read_eligibility_source_counted(
             capacity.input(proposal_id_bytes)?;
             capacity.input(revision_id_bytes)?;
             // Lengths are charged above; only String materialization enters S.
-            let (proposal_id, revision_id) = if let Some(scratch_scope) = scratch_scope.as_deref_mut() {
+            let (proposal_id, revision_id) = if let Some(scratch_scope) =
+                scratch_scope.as_deref_mut()
+            {
                 let mut decoded_row: Option<rusqlite::Result<(String, String)>> = None;
                 let mut decode_row = || {
                     decoded_row = Some((|| -> rusqlite::Result<(String, String)> {
@@ -942,9 +944,7 @@ fn read_eligibility_source_counted(
                     scratch_scope(&mut decode_row),
                     "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
                 );
-                decoded_row.ok_or_else(|| {
-                    anyhow::anyhow!("NIR1_GRAPH_SCRATCH_SCOPE_SKIPPED")
-                })??
+                decoded_row.ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCRATCH_SCOPE_SKIPPED"))??
             } else {
                 (row.get::<_, String>(2)?, row.get::<_, String>(3)?)
             };
@@ -1661,14 +1661,7 @@ pub(crate) fn source_capacity_usage(conn: &Connection, project: &str) -> Result<
         None,
         &mut ForegroundValidationControl,
         |_, control| {
-            read_eligibility_source_counted(
-                conn,
-                project,
-                None,
-                Some(control),
-                None,
-                &mut usage,
-            )
+            read_eligibility_source_counted(conn, project, None, Some(control), None, &mut usage)
         },
     )?;
     Ok((usage.input_bytes, usage.roster_bytes))

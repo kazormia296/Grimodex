@@ -863,8 +863,12 @@ fn bounded_graph_admits_50_nodes_and_512_edges_and_refuses_beyond() {
         max_nodes,
         max_edges,
     };
-    bounded_graph(&bundle, "entity:0", limits(MAX_GRAPH_NODES, MAX_GRAPH_EDGES))
-        .expect("the largest requested limits are inside the envelope");
+    bounded_graph(
+        &bundle,
+        "entity:0",
+        limits(MAX_GRAPH_NODES, MAX_GRAPH_EDGES),
+    )
+    .expect("the largest requested limits are inside the envelope");
     for over in [
         limits(MAX_GRAPH_NODES + 1, MAX_GRAPH_EDGES),
         limits(MAX_GRAPH_NODES, MAX_GRAPH_EDGES + 1),

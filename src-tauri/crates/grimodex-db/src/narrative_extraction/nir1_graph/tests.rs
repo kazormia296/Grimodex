@@ -5213,7 +5213,10 @@ fn oversized_hop1_candidate_set_is_refused_at_a_partial_page_boundary() -> Resul
 fn exhausted_deadline_or_sql_budget_rolls_back_actual_connection() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut reader = fixture.registered_reader()?;
-    for (duration, steps) in [(Duration::ZERO, QUERY_SQL_STEPS), (Duration::from_secs(2), 0)] {
+    for (duration, steps) in [
+        (Duration::ZERO, QUERY_SQL_STEPS),
+        (Duration::from_secs(2), 0),
+    ] {
         let response = reader.query_with_deadline(&graph_request("nir1-alice"), duration, steps)?;
         assert_unavailable(&response, "query-budget-or-validation-failed");
         assert!(reader.connection.as_ref().unwrap().is_autocommit());
@@ -8118,7 +8121,9 @@ fn worker_query_admits_a_payload_shaped_revision_near_the_preflight_limit() -> R
     let mut reader = fixture.worker_reader()?;
     let response = worker_query_large(&mut reader, "nir1-alice")?;
     assert_eq!(response.status, "available", "{:?}", response.reason);
-    let graph = response.graph.expect("an available response carries the Graph");
+    let graph = response
+        .graph
+        .expect("an available response carries the Graph");
     assert!(graph
         .edges
         .iter()
@@ -8140,7 +8145,10 @@ fn registration_refuses_a_payload_shaped_revision_over_the_a2_registration_limit
     let error = worker
         .register_with_worker_maintenance(PROJECT, || true)
         .expect_err("a payload-shaped Revision over the limit must not register");
-    assert_eq!(registration_input_limit(&error), Some(REGISTRATION_A2_LIMIT));
+    assert_eq!(
+        registration_input_limit(&error),
+        Some(REGISTRATION_A2_LIMIT)
+    );
     Ok(())
 }
 
@@ -8238,8 +8246,10 @@ fn run_native_worker_refuses_registration_of_a_revision_over_the_limit(
 #[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
 fn native_worker_registration_does_not_load_a_revision_over_the_preflight_limit() -> Result<()> {
     let fixture = Fixture::new()?;
-    fixture
-        .add_candidate_revision(1, Fixture::registration_padding_for(REGISTRATION_A2_LIMIT + 1)?)?;
+    fixture.add_candidate_revision(
+        1,
+        Fixture::registration_padding_for(REGISTRATION_A2_LIMIT + 1)?,
+    )?;
     fixture.republish_graph_index()?;
     run_native_worker_refuses_registration_of_a_revision_over_the_limit(&fixture)
 }
@@ -8302,7 +8312,8 @@ fn native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit() -> Re
 fn native_worker_registers_multiple_payload_shaped_revisions() -> Result<()> {
     let fixture = Fixture::with_payload_shape(PAYLOAD_SHAPED_COUNTED_BYTES)?;
     for serial in 1..=2 {
-        let candidate = fixture.add_payload_shaped_candidate(serial, PAYLOAD_SHAPED_COUNTED_BYTES)?;
+        let candidate =
+            fixture.add_payload_shaped_candidate(serial, PAYLOAD_SHAPED_COUNTED_BYTES)?;
         ensure!(fixture.a2_admission(&candidate)? <= PER_REVISION_PREFLIGHT_BYTES);
     }
     fixture.republish_graph_index()?;
@@ -8315,7 +8326,20 @@ fn native_worker_registers_multiple_payload_shaped_revisions() -> Result<()> {
         let request = graph_request("nir1-alice");
         match owner.query_once(&request) {
             Ok(lease) => drop(lease),
-            Err(error) => eprintln!("query after READY: {error:#}"),
+            // A refusal is typed: a deadline or a closed-set unavailable reason,
+            // never a crash or an unclassified failure.
+            Err(error) => {
+                let failure = super::c_query_worker::classify_c_query_failure(&error);
+                ensure!(
+                    matches!(
+                        failure,
+                        super::c_query_worker::CQueryFailure::Deadline
+                            | super::c_query_worker::CQueryFailure::Unavailable(_)
+                    ),
+                    "query after READY failed untyped ({failure:?}): {error:#}"
+                );
+                eprintln!("query after READY: {error:#}");
+            }
         }
         Ok(())
     })

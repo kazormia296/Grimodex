@@ -93,10 +93,11 @@ fn registration_error_stage(
     error: &anyhow::Error,
     registration_stage: Nir1GraphRegistrationStage,
 ) -> StartupStage {
-    if error
-        .chain()
-        .any(|cause| cause.downcast_ref::<Nir1GraphRegistrationRevisionInputLimit>().is_some())
-    {
+    if error.chain().any(|cause| {
+        cause
+            .downcast_ref::<Nir1GraphRegistrationRevisionInputLimit>()
+            .is_some()
+    }) {
         return StartupStage::CanonicalRegistrationRevisionInputLimit;
     }
     if error.chain().any(|cause| {

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use grimodex_core::narrative_nir1::MAX_GRAPH_QUERY_RECORDS;
+use grimodex_core::narrative_nir1::{MAX_GRAPH_QUERY_RECORDS, MAX_GRAPH_RECORDS};
 
 use super::super::nir1_entity_relation::{
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
@@ -208,6 +208,10 @@ fn preflight_revision_inner(
     remaining_bytes: usize,
     #[cfg(feature = "nir1-material-diagnostics")] mut observation: Option<&mut A2SqlObservation>,
 ) -> anyhow::Result<Option<RevisionAdmission>> {
+    // One Revision never holds more than the Revision limit (512), whatever the
+    // query-wide 2,048 still has left: the bound stays enforced here, not only
+    // at the writer, the bundle check and B's roster.
+    let remaining_rows = remaining_rows.min(MAX_GRAPH_RECORDS);
     #[cfg(feature = "nir1-material-diagnostics")]
     let lengths_started = start_a2_sql_timer(&observation);
     let lengths_query = conn.query_row(
@@ -679,6 +683,50 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             INPUT_LIMIT
+        );
+    }
+
+    #[test]
+    fn one_revision_is_held_to_the_revision_record_limit_inside_a_larger_query_budget() {
+        let payload = |count: usize| {
+            format!(
+                r#"{{"bundle":{{"entities":[{}]}}}}"#,
+                vec!["{}"; count].join(",")
+            )
+        };
+        let at_limit = fixture(
+            &payload(MAX_GRAPH_RECORDS),
+            "{}",
+            NIR1_ENTITY_RELATION_SET_KIND,
+        );
+        // The related-authority tables are not part of this fixture, so the
+        // read after the row check fails on them; what matters is that the row
+        // check itself passed.
+        if let Err(error) = preflight_revision(
+            &at_limit,
+            "project",
+            "revision",
+            MAX_GRAPH_QUERY_RECORDS,
+            INPUT_BYTES,
+        ) {
+            assert_ne!(error.to_string(), ROW_LIMIT);
+        }
+        let over = fixture(
+            &payload(MAX_GRAPH_RECORDS + 1),
+            "{}",
+            NIR1_ENTITY_RELATION_SET_KIND,
+        );
+        assert_eq!(
+            preflight_revision(
+                &over,
+                "project",
+                "revision",
+                MAX_GRAPH_QUERY_RECORDS,
+                INPUT_BYTES
+            )
+            .unwrap_err()
+            .to_string(),
+            ROW_LIMIT
         );
     }
 
@@ -1667,9 +1715,14 @@ mod disclosure_tests {
             .unwrap();
         // The two parts a query charges, shared once and own per Revision,
         // add up to the Revision alone.
-        let shared =
-            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_QUERY_RECORDS, INPUT_BYTES)
-                .unwrap();
+        let shared = preflight_project_reads(
+            &conn,
+            "project",
+            "scene",
+            MAX_GRAPH_QUERY_RECORDS,
+            INPUT_BYTES,
+        )
+        .unwrap();
         let own = preflight_disclosure_revision(
             &conn,
             "project",
@@ -1810,9 +1863,14 @@ mod disclosure_tests {
     #[test]
     fn shared_and_revision_parts_read_disjoint_statements() {
         let conn = fixture();
-        let shared =
-            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_QUERY_RECORDS, INPUT_BYTES)
-                .unwrap();
+        let shared = preflight_project_reads(
+            &conn,
+            "project",
+            "scene",
+            MAX_GRAPH_QUERY_RECORDS,
+            INPUT_BYTES,
+        )
+        .unwrap();
         let own = preflight_disclosure_revision(
             &conn,
             "project",
@@ -1831,8 +1889,14 @@ mod disclosure_tests {
         )
         .unwrap();
         assert_eq!(
-            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_QUERY_RECORDS, INPUT_BYTES)
-                .unwrap(),
+            preflight_project_reads(
+                &conn,
+                "project",
+                "scene",
+                MAX_GRAPH_QUERY_RECORDS,
+                INPUT_BYTES
+            )
+            .unwrap(),
             shared
         );
         // The project changes: the Revision's part does not.
@@ -1859,8 +1923,14 @@ mod disclosure_tests {
         }
         assert_eq!(revision_part(&conn), before);
         assert_ne!(
-            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_QUERY_RECORDS, INPUT_BYTES)
-                .unwrap(),
+            preflight_project_reads(
+                &conn,
+                "project",
+                "scene",
+                MAX_GRAPH_QUERY_RECORDS,
+                INPUT_BYTES
+            )
+            .unwrap(),
             shared
         );
     }

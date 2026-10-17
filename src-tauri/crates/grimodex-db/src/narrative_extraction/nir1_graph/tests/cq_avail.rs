@@ -1588,7 +1588,10 @@ const BUDGET_REVISIONS: usize = 10;
 
 fn record_budget_query(decoys_over: usize) -> Result<(usize, Nir1GraphResponse)> {
     let (base, shared) = rows_charged_by_the_seed_query(&budget_fixture(BUDGET_REVISIONS, 0)?)?;
-    assert!(base + 300 < MAX_GRAPH_QUERY_RECORDS, "{base} rows to start from");
+    assert!(
+        base + 300 < MAX_GRAPH_QUERY_RECORDS,
+        "{base} rows to start from"
+    );
     let decoys = MAX_GRAPH_QUERY_RECORDS - base + decoys_over;
     let fixture = budget_fixture(BUDGET_REVISIONS, decoys)?;
     let (rows, shared_rows) = rows_charged_by_the_seed_query(&fixture)?;
@@ -1611,7 +1614,10 @@ fn query_records_at_2048_is_available() -> Result<()> {
         response.reason
     );
     let graph = response.graph.as_ref().expect("an available Graph");
-    assert_eq!((graph.nodes.len(), graph.edges.len()), (2, BUDGET_REVISIONS));
+    assert_eq!(
+        (graph.nodes.len(), graph.edges.len()),
+        (2, BUDGET_REVISIONS)
+    );
     Ok(())
 }
 
@@ -1780,7 +1786,11 @@ fn a_broken_scope_authority_leaves_every_revision_unavailable_shared_or_not() ->
         for revision in revisions {
             let own = evaluate_nir1_entity_relation_disclosure(conn, PROJECT, &revision, "nir1")?;
             let shared = evaluate_nir1_entity_relation_disclosure_for_graph(
-                conn, PROJECT, &revision, "nir1", Some(&shared),
+                conn,
+                PROJECT,
+                &revision,
+                "nir1",
+                Some(&shared),
             )?;
             match (own, shared) {
                 (
@@ -1975,7 +1985,11 @@ fn query_large_cast_with_2000_char_summaries_stays_within_peak_and_frame() -> Re
                          {} nodes, {} edges, {} bindings, frame {} of {} B",
                         graph.nodes.len(),
                         graph.edges.len(),
-                        graph.nodes.iter().map(|node| node.bindings.len()).sum::<usize>(),
+                        graph
+                            .nodes
+                            .iter()
+                            .map(|node| node.bindings.len())
+                            .sum::<usize>(),
                         frame.len(),
                         worker_frame::FRAME_BYTES,
                     );
@@ -1999,6 +2013,52 @@ fn query_large_cast_with_2000_char_summaries_stays_within_peak_and_frame() -> Re
         assert!(answered >= 1, "cast {mains}+{minors}: no seed was answered");
     }
     Ok(())
+}
+
+// The goal of the proposal/7 limits: on a project of 50 Scenes with one review
+// per Scene, every seed a writer reaches for (the main characters m1 to m5 and
+// a minor one, c01) is answered, not refused, on the default cast (5 + 15) and
+// on both large casts (8 + 40, 12 + 80). The summaries keep their original short
+// length: the 2,000-character combination is the looser test above, where the
+// peak ledger may refuse. A change that raises the cost of A2 or A3 or of the
+// retained estimate until a main character is refused again fails here.
+fn assert_fifty_scene_seeds_are_available(mains: usize, minors: usize) -> Result<()> {
+    let shape = NovelShape {
+        mains,
+        minors,
+        summary_chars: 0,
+    };
+    let novel = novel_fixture_shaped(50, 5, ReviewMode::Scene, shape)?;
+    let mut reader = novel.fixture.worker_reader()?;
+    for seed in ["m1", "m2", "m3", "m4", "m5", "c01"] {
+        let response = reader.query_for_worker_with_maintenance_deadline(
+            &request_for(seed, "nir1"),
+            LARGE_N_LEASE,
+        )?;
+        assert_eq!(
+            response.status, "available",
+            "cast {mains}+{minors}, 50 Scenes, seed {seed}: {:?}",
+            response.reason
+        );
+        let graph = response.graph.as_ref().expect("an available Graph");
+        assert!(!graph.nodes.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn query_fifty_scene_protagonists_are_available_on_the_default_cast() -> Result<()> {
+    assert_fifty_scene_seeds_are_available(5, 15)
+}
+
+#[test]
+fn query_fifty_scene_protagonists_are_available_on_the_8_plus_40_cast() -> Result<()> {
+    assert_fifty_scene_seeds_are_available(8, 40)
+}
+
+#[test]
+fn query_fifty_scene_protagonists_are_available_on_the_12_plus_80_cast() -> Result<()> {
+    assert_fifty_scene_seeds_are_available(12, 80)
 }
 
 /// A project of `revisions` approved Codex reviews of the same twelve
@@ -2072,14 +2132,19 @@ fn same_entity_product_fixture(revisions: usize, total_summary_bytes: usize) -> 
                 project_id: PROJECT.into(),
                 scene_id: scene_id.clone(),
                 proposal_key: Some(format!("codex-ui:selection:cq-lim-product-{ordinal}")),
-                entity_ids: (0..entity_count).map(|index| format!("v{index:02}")).collect(),
+                entity_ids: (0..entity_count)
+                    .map(|index| format!("v{index:02}"))
+                    .collect(),
                 relation_ids: (1..entity_count)
                     .map(|index| format!("rv-{index:02}"))
                     .collect(),
             },
         )?;
         let run_id = prepared["runId"].as_str().unwrap().to_owned();
-        let revision = prepared["result"]["revisionId"].as_str().unwrap().to_owned();
+        let revision = prepared["result"]["revisionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
         approve_typed_revision(
             &db,
             &run_id,
@@ -2121,7 +2186,11 @@ fn worker_registers_projects_of_several_product_shaped_revisions() -> Result<()>
             &request_for(seed, "nir1"),
             LARGE_N_LEASE,
         )?;
-        assert_eq!(response.status, "available", "{seed}: {:?}", response.reason);
+        assert_eq!(
+            response.status, "available",
+            "{seed}: {:?}",
+            response.reason
+        );
     }
     Ok(())
 }
@@ -2159,7 +2228,9 @@ fn native_worker_registers_multiple_product_shaped_revisions() -> Result<()> {
             match owner.query_once(&request) {
                 Ok(lease) => {
                     let frame = lease.frame()?;
-                    let graph = frame.graph().map(|graph| (graph.node_count(), graph.edge_count()));
+                    let graph = frame
+                        .graph()
+                        .map(|graph| (graph.node_count(), graph.edge_count()));
                     eprintln!("{label}: READY; seed {seed} answered {graph:?}");
                     drop(lease);
                 }
