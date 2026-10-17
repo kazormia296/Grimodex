@@ -1434,7 +1434,16 @@ fn ensure_event_history_continuity(
         // normal domain write may have occurred between two restores.
         let is_epoch_reset =
             is_epoch_reset_marker_event(&event.object_key, event.structural_impact.as_ref());
-        if !is_epoch_reset {
+        // A Scene's declaration is a stored state, not a chain of events: the
+        // event's `before` is always computed from the row as it is now, and
+        // the two columns also go back to NULL without any event (a Scene's
+        // CASCADE delete, the clear of a staged DB, a row the feed cannot
+        // address). The head of such a kind would go stale, and checking it
+        // would refuse every later declaration of the Scene for good. The
+        // declaration writer's OCC (one transaction) is the guard here.
+        let is_chain_exempt = is_epoch_reset
+            || super::scene_body_declaration::is_scene_body_declaration_event(&event.object_key);
+        if !is_chain_exempt {
             if let Some(prior_after) = prior_after {
                 let current_before = (event.before_version, event.before_digest.clone());
                 anyhow::ensure!(
@@ -1836,6 +1845,11 @@ fn ensure_feed_object_project_scope(
             );
             None
         }
+        "scene-body-declaration" => Some((
+            "SELECT project_id FROM tree_nodes
+              WHERE id = ?1 AND node_type = 'scene'",
+            identity("sceneId")?,
+        )),
         "chronicle-event" => Some((
             "SELECT project_id FROM events WHERE id = ?1",
             identity("eventId")?,
@@ -2838,7 +2852,12 @@ pub fn append_narrative_change_transaction_in_tx(
         event_ids.push(event_id);
     }
 
-    super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, &input.project_id)?;
+    // A declaration of a Scene's body is not an input of the Chronicle IR
+    // Index or the Graph Index (C17), so a transaction made only of those
+    // events leaves both alone. Every other transaction still dirties them.
+    if !super::scene_body_declaration::events_are_only_scene_body_declarations(&input.events) {
+        super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, &input.project_id)?;
+    }
     Ok(AppendNarrativeChangeTransactionResult {
         transaction_id,
         canonical_sequence,
@@ -3155,6 +3174,9 @@ pub fn narrative_object_key(entity_kind: &str, entity_id: &str) -> Value {
         }
         "scene_scope" => json!({ "kind": "scene-scope", "sceneId": entity_id }),
         "scope_registry" => json!({ "kind": "scope-registry", "projectId": entity_id }),
+        "scene_body_declaration" => {
+            json!({ "kind": "scene-body-declaration", "sceneId": entity_id })
+        }
         "event" | "temporal_event_chronicle" => {
             json!({ "kind": "chronicle-event", "eventId": entity_id })
         }
@@ -3237,6 +3259,7 @@ pub(crate) fn object_key_identity_field(kind: &str) -> anyhow::Result<&'static s
         "scene" => "sceneId",
         "scene-scope" => "sceneId",
         "scope-registry" => "projectId",
+        "scene-body-declaration" => "sceneId",
         "chronicle-event" => "eventId",
         "codex-entry" => "entryId",
         "codex-relation" => "relationId",

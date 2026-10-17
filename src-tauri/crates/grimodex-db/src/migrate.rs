@@ -4097,6 +4097,8 @@ impl Database {
                       AND source_token GLOB 'sha256:*'
                       AND substr(source_token, 8) NOT GLOB '*[^0-9a-f]*'),
                 updated_at             TEXT NOT NULL,
+                body_declaration_json  TEXT,
+                body_declaration_token TEXT,
                 PRIMARY KEY(project_id, scene_id)
             );
             CREATE INDEX IF NOT EXISTS idx_narrative_scene_scope_bindings_scene
@@ -4502,6 +4504,12 @@ impl Database {
         // unwinds both indexes together, and because the checkpoint requires
         // them, `user_version` cannot advance until a later open retries.
         Self::repair_narrative_decision_lookup_indexes(&conn)?;
+
+        // SCHEMA 43: the two nullable Scene body declaration columns. A fresh
+        // table already carries them; an existing table gains them together in
+        // one savepoint. No row is promoted or backfilled, and a half-added
+        // pair (an interrupted migration) is completed by the next open.
+        Self::repair_scene_body_declaration_columns(&conn)?;
 
         // SCHEMA 31: versioned Finding identity and append-only lifecycle.
         // This is deliberately after the C2-2 re-key so the backfill can
@@ -10126,6 +10134,44 @@ impl Database {
         )
     }
 
+    /// SCHEMA 43. Adds whichever of the two declaration columns is missing,
+    /// both inside one savepoint so a failure unwinds the pair together and
+    /// `user_version` cannot advance (the checkpoint requires both columns).
+    /// It writes no row: existing Scenes keep NULL declarations.
+    fn repair_scene_body_declaration_columns(conn: &Connection) -> anyhow::Result<()> {
+        const SAVEPOINT: &str = "narrative_scene_body_declaration_columns";
+        conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))?;
+        let repair = (|| -> anyhow::Result<()> {
+            for (column, kind) in grimodex_core::workspace_schema::SCENE_BODY_DECLARATION_COLUMNS {
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_scene_scope_bindings",
+                    column,
+                    kind,
+                )?;
+            }
+            Ok(())
+        })();
+        match repair {
+            Ok(()) => match conn.execute_batch(&format!("RELEASE {SAVEPOINT}")) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    let _ = conn
+                        .execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"));
+                    Err(error.into())
+                }
+            },
+            Err(error) => {
+                if let Err(unwind) =
+                    conn.execute_batch(&format!("ROLLBACK TO {SAVEPOINT}; RELEASE {SAVEPOINT}"))
+                {
+                    tracing::error!(%unwind, "failed to unwind Scene body declaration columns");
+                }
+                Err(error)
+            }
+        }
+    }
+
     fn repair_query_indexes(
         conn: &Connection,
         savepoint: &str,
@@ -11897,6 +11943,253 @@ mod tests {
             Ok(())
         })
         .expect("v42 reopen performs no DDL");
+    }
+
+    const V43_DECLARATION_COLUMNS: [&str; 2] = ["body_declaration_json", "body_declaration_token"];
+
+    /// The v1 columns of every binding row, rendered to one comparable string
+    /// each (the declaration columns are excluded on purpose).
+    fn v43_v1_binding_rows(conn: &Connection) -> anyhow::Result<Vec<String>> {
+        Ok(conn
+            .prepare(
+                "SELECT project_id || '|' || scene_id || '|' || scene_incarnation_id || '|'
+                     || compatibility_marker || '|' || query_identity_json || '|'
+                     || material_constraint_json || '|' || knowledge_holder_json || '|'
+                     || audience_json || '|' || version || '|' || source_token || '|'
+                     || updated_at
+                   FROM narrative_scene_scope_bindings
+                  ORDER BY project_id, scene_id",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    fn v43_declaration_column_names(conn: &Connection) -> anyhow::Result<Vec<String>> {
+        Ok(conn
+            .prepare(
+                "SELECT name FROM pragma_table_info('narrative_scene_scope_bindings')
+                  WHERE name LIKE 'body_declaration_%' ORDER BY name",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// A current database with two Scenes that have A1 binding rows, shaped
+    /// back to a v42 workspace: neither declaration column, marker 42.
+    fn v42_workspace_with_scene_bindings() -> (Database, Vec<String>) {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        let v1_rows = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('proj-v43', 'v43')",
+                    [],
+                )?;
+                for scene in ["scene-v43-a", "scene-v43-b"] {
+                    conn.execute(
+                        "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                         VALUES (?1, 'proj-v43', 'scene', ?1, ?1)",
+                        [scene],
+                    )?;
+                    crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                        conn,
+                        "proj-v43",
+                        scene,
+                        "2026-10-17T00:00:00.000Z",
+                    )?;
+                }
+                let rows = v43_v1_binding_rows(conn)?;
+                assert_eq!(rows.len(), 2);
+                conn.execute_batch(
+                    "ALTER TABLE narrative_scene_scope_bindings DROP COLUMN body_declaration_json;
+                     ALTER TABLE narrative_scene_scope_bindings DROP COLUMN body_declaration_token;
+                     PRAGMA user_version = 42;",
+                )?;
+                assert!(v43_declaration_column_names(conn)?.is_empty());
+                assert!(
+                    !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                        conn
+                    )?
+                );
+                // The previous-marker fast path must not stamp 43 without DDL.
+                assert!(
+                    !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                        conn
+                    )?
+                );
+                Ok(rows)
+            })
+            .expect("shape a v42 workspace with Scene bindings");
+        (db, v1_rows)
+    }
+
+    #[test]
+    fn v43_adds_declaration_columns_without_promotion() {
+        let (db, v1_rows) = v42_workspace_with_scene_bindings();
+        db.migrate().expect("migrate v42 to v43");
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, 43);
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            assert_eq!(v43_declaration_column_names(conn)?, V43_DECLARATION_COLUMNS);
+            let non_null: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_scene_scope_bindings
+                  WHERE body_declaration_json IS NOT NULL OR body_declaration_token IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(non_null, 0, "the migration must not promote or backfill");
+            assert_eq!(v43_v1_binding_rows(conn)?, v1_rows, "v1 columns are byte-identical");
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            // Declared shape: plain nullable TEXT, no default.
+            for column in V43_DECLARATION_COLUMNS {
+                let shape: (String, bool, Option<String>) = conn.query_row(
+                    "SELECT type, \"notnull\", dflt_value
+                       FROM pragma_table_info('narrative_scene_scope_bindings') WHERE name = ?1",
+                    [column],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(shape, ("TEXT".to_string(), false, None), "{column}");
+            }
+            Ok(())
+        })
+        .expect("inspect the promoted v43 workspace");
+    }
+
+    #[test]
+    fn v43_fresh_install_has_the_same_declaration_columns() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            assert_eq!(v43_declaration_column_names(conn)?, V43_DECLARATION_COLUMNS);
+            Ok(())
+        })
+        .expect("inspect the fresh schema");
+    }
+
+    #[test]
+    fn v43_repairs_single_declaration_column_state() {
+        // An interrupted migration can leave either column alone, under the
+        // old marker or (prerelease stamping) under the new one.
+        for (kept, dropped, marker) in [
+            ("body_declaration_json", "body_declaration_token", 42),
+            ("body_declaration_token", "body_declaration_json", 42),
+            ("body_declaration_json", "body_declaration_token", 43),
+            ("body_declaration_token", "body_declaration_json", 43),
+        ] {
+            let (db, v1_rows) = v42_workspace_with_scene_bindings();
+            db.with_conn(|conn| {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE narrative_scene_scope_bindings ADD COLUMN {kept} TEXT;
+                     PRAGMA user_version = {marker};"
+                ))?;
+                assert!(
+                    !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                        conn
+                    )?,
+                    "a lone {kept} must not satisfy the checkpoint"
+                );
+                Ok(())
+            })
+            .expect("shape a single-column workspace");
+            db.migrate().expect("the next open completes the pair");
+            db.with_conn(|conn| {
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(version, 43, "kept={kept} dropped={dropped} marker={marker}");
+                assert_eq!(v43_declaration_column_names(conn)?, V43_DECLARATION_COLUMNS);
+                assert_eq!(v43_v1_binding_rows(conn)?, v1_rows);
+                Ok(())
+            })
+            .expect("inspect the repaired workspace");
+        }
+    }
+
+    #[test]
+    fn v43_failed_step_unwinds_and_a_later_open_retries() {
+        let (db, v1_rows) = v42_workspace_with_scene_bindings();
+        let binding_alters = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let binding_alters_for_hook = Arc::clone(&binding_alters);
+        db.with_conn(|conn| {
+            conn.authorizer(Some(move |context: AuthContext<'_>| match context.action {
+                AuthAction::AlterTable {
+                    table_name: "narrative_scene_scope_bindings",
+                    ..
+                } => {
+                    // Let the first column be added, then fail the second.
+                    if binding_alters_for_hook.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Authorization::Allow
+                    } else {
+                        Authorization::Deny
+                    }
+                }
+                _ => Authorization::Allow,
+            }))?;
+            Ok(())
+        })
+        .expect("install v43 column failure hook");
+        let error = db
+            .migrate()
+            .expect_err("a failed second column must fail the migration");
+        assert!(binding_alters.load(Ordering::SeqCst) >= 2);
+        assert!(error.to_string().contains("not authorized"), "{error:#}");
+        db.with_conn(|conn| {
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, 42, "a failed v43 step must not promote the marker");
+            assert!(
+                v43_declaration_column_names(conn)?.is_empty(),
+                "both columns must unwind together"
+            );
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            Ok(())
+        })
+        .expect("inspect the unwound v43 step");
+
+        db.migrate().expect("a later open retries the v43 step");
+        let schema_cookie = db
+            .with_conn(|conn| {
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+                assert_eq!(v43_declaration_column_names(conn)?, V43_DECLARATION_COLUMNS);
+                assert_eq!(v43_v1_binding_rows(conn)?, v1_rows);
+                Ok(conn.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?)
+            })
+            .expect("inspect the promoted v43 workspace");
+        db.migrate().expect("reopen v43");
+        db.with_conn(|conn| {
+            assert_eq!(
+                conn.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?,
+                schema_cookie
+            );
+            Ok(())
+        })
+        .expect("v43 reopen performs no DDL");
+    }
+
+    #[test]
+    fn v43_converged_open_performs_no_ddl() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        let before = db
+            .with_conn(|conn| {
+                Ok(conn.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?)
+            })
+            .expect("read schema cookie");
+        db.migrate().expect("converged reopen");
+        db.with_conn(|conn| {
+            assert_eq!(
+                conn.pragma_query_value(None, "schema_version", |row| row.get::<_, i64>(0))?,
+                before
+            );
+            Ok(())
+        })
+        .expect("converged v43 open performs no DDL");
     }
 
     #[test]

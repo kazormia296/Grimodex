@@ -121,9 +121,9 @@ fn same_schema_opens_without_migration_snapshot() {
 #[test]
 fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
     assert_eq!(
-        SCHEMA_VERSION, 42,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-42 \
-         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes) \
+        SCHEMA_VERSION, 43,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-43 \
+         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes/Scene body declaration columns) \
          migrate further on top but do not touch this step's own fixtures or assertions"
     );
     let ws = temp_workspace("schema-20-through-22");
@@ -199,9 +199,9 @@ fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
 #[test]
 fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
     assert_eq!(
-        SCHEMA_VERSION, 42,
-        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-42 \
-         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes) \
+        SCHEMA_VERSION, 43,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23-43 \
+         (Gate C2/D1/C2A/NIR-1/current Human capture retirement/Decision lookup indexes/Scene body declaration columns) \
          migrate further on top but do not touch this step's own fixtures or assertions"
     );
     let ws = temp_workspace("schema-21-to-22");
@@ -647,6 +647,95 @@ fn schema_41_workspace_without_decision_indexes_shadow_migrates_to_42() {
         Ok(())
     })
     .expect("verify migrated v42 workspace");
+}
+
+#[test]
+fn schema_42_workspace_without_scene_body_declaration_columns_shadow_migrates_to_43() {
+    let ws = temp_workspace("v42-scene-body-declaration");
+    let db_path = ws.join("grimodex.db");
+    let v1_before = {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate current");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('v42-project', 'v42')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+                 VALUES ('v42-scene', 'v42-project', 'scene', 'Scene', 'a0')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_scene_scope_bindings (
+                    project_id, scene_id, scene_incarnation_id, compatibility_marker,
+                    query_identity_json, material_constraint_json, knowledge_holder_json,
+                    audience_json, version, source_token, updated_at
+                 ) VALUES ('v42-project', 'v42-scene', 'v42-incarnation', 'explicit',
+                    '{}', '{}', '{}', '{}', 3, ?1, '2026-10-01T00:00:00.000Z')",
+                [format!("sha256:{}", "b".repeat(64))],
+            )?;
+            let v1: (String, i64, String, String) = conn.query_row(
+                "SELECT scene_incarnation_id, version, source_token, updated_at
+                   FROM narrative_scene_scope_bindings WHERE scene_id = 'v42-scene'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            conn.execute_batch(
+                "ALTER TABLE narrative_scene_scope_bindings DROP COLUMN body_declaration_json;
+                 ALTER TABLE narrative_scene_scope_bindings DROP COLUMN body_declaration_token;
+                 PRAGMA user_version = 42;",
+            )?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "a v42 workspace lacks the v43 declaration columns"
+            );
+            Ok(v1)
+        })
+        .expect("shape a v42 workspace")
+    };
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("migrate");
+    match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            from_schema,
+            to_schema,
+            opened,
+            receipt_path,
+        } => {
+            assert_eq!(from_schema, 42);
+            assert_eq!(to_schema, SCHEMA_VERSION);
+            assert!(receipt_path.exists(), "receipt should be written");
+            drop(opened);
+        }
+        other => panic!("expected a staged v42 -> v43 migration, got {other:?}"),
+    }
+    assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
+
+    let db = Database::new(&db_path).expect("reopen migrated");
+    db.with_conn(|conn| {
+        assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
+        let row: (String, i64, String, String, Option<String>, Option<String>) = conn.query_row(
+            "SELECT scene_incarnation_id, version, source_token, updated_at,
+                    body_declaration_json, body_declaration_token
+               FROM narrative_scene_scope_bindings WHERE scene_id = 'v42-scene'",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?;
+        assert_eq!((row.0, row.1, row.2, row.3), v1_before, "v1 columns are preserved");
+        assert_eq!((row.4, row.5), (None, None), "no declaration is promoted");
+        Ok(())
+    })
+    .expect("verify migrated v43 workspace");
 }
 
 #[test]

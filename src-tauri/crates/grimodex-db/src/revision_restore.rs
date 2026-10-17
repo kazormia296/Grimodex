@@ -266,6 +266,17 @@ pub fn restore_scene_revision(
                 updated == 1,
                 "REVISION_CONTENT_RESTORE_VERSION_MISMATCH: scene changed during restore"
             );
+            // The restored body is a different body even when the bytes are
+            // identical, so the Scene's declaration is cleared in this
+            // transaction (CB-1) and announced with its own feed event.
+            let declaration_clear_events =
+                crate::narrative_extraction::scene_body_declaration::clear_scene_body_declarations_in_tx(
+                    conn,
+                    &payload.project_id,
+                    crate::narrative_extraction::scene_body_declaration::SceneBodyDeclarationClearScope::Scene(
+                        &payload.entity_id,
+                    ),
+                )?;
             let after = scene_snapshot(conn, &payload.project_id, &payload.entity_id)?;
             // A body-version restore advances only the body Source token
             // (`version = version + 1`); the Scope generation is unchanged (X1-2).
@@ -329,7 +340,7 @@ pub fn restore_scene_revision(
                     undo_journal_id: None,
                     application_ids: Vec::new(),
                     occurred_at: occurred_at.clone(),
-                    events: vec![NarrativeChangeEventInput {
+                    events: [NarrativeChangeEventInput {
                         object_key: narrative_object_key("scene", &payload.entity_id),
                         change_kind: "content".to_string(),
                         // A content restore replaces an existing canonical
@@ -353,8 +364,10 @@ pub fn restore_scene_revision(
                         // the versioned TextChangeImpact contract.
                         text_impact: None,
                         structural_impact: None,
-                    },
-                ],
+                    }]
+                    .into_iter()
+                    .chain(declaration_clear_events)
+                    .collect(),
                 },
             )?;
             crate::timelapse::append_timelapse_body_snapshots_in_tx(
@@ -706,5 +719,155 @@ mod tests {
             Ok(())
         })
         .expect("inspect snapshot rollback");
+    }
+
+    use crate::narrative_extraction::scene_body_declaration::test_support::{
+        set_raw_declaration_cells_for_test, set_scene_body_declaration_for_test, test_declaration,
+    };
+
+    fn declare_scene(db: &Database) {
+        db.with_conn(|conn| {
+            crate::narrative_extraction::with_immediate_transaction(conn, |conn| {
+                let declaration = test_declaration(conn, PROJECT, "scene-1")?;
+                set_scene_body_declaration_for_test(conn, &declaration)
+            })
+        })
+        .expect("declare the scene");
+    }
+
+    fn declaration_cells(db: &Database) -> (Option<String>, Option<String>) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT body_declaration_json, body_declaration_token
+                   FROM narrative_scene_scope_bindings
+                  WHERE project_id = ?1 AND scene_id = 'scene-1'",
+                [PROJECT],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read declaration cells")
+    }
+
+    fn v1_binding(db: &Database) -> (String, i64, String, String) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT scene_incarnation_id, version, source_token, updated_at
+                   FROM narrative_scene_scope_bindings
+                  WHERE project_id = ?1 AND scene_id = 'scene-1'",
+                [PROJECT],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?)
+        })
+        .expect("read v1 binding columns")
+    }
+
+    fn declaration_event_count(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events
+                  WHERE json_extract(object_key_json, '$.kind') = 'scene-body-declaration'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count declaration events")
+    }
+
+    #[test]
+    fn revision_body_restore_clears_declaration_even_for_identical_bytes() {
+        let db = fixture();
+        // The scene already holds the revision's exact bytes.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET content = ?1 WHERE id = 'scene-1'",
+                [TARGET],
+            )?;
+            Ok(())
+        })
+        .expect("align the live body with the revision");
+        declare_scene(&db);
+        assert!(declaration_cells(&db).0.is_some());
+        let v1_before = v1_binding(&db);
+        let declaration_events_before = declaration_event_count(&db);
+
+        let mut identical = payload();
+        identical.current_content = TARGET.to_string();
+        restore_scene_revision(&db, identical).expect("restore identical bytes");
+
+        assert_eq!(declaration_cells(&db), (None, None));
+        // Only the two declaration columns changed: the v1 columns are byte
+        // identical and the restore itself did not move the Scope generation.
+        assert_eq!(v1_binding(&db), v1_before);
+        // The clear is announced with the declaration's own kind, in the
+        // restore's own feed transaction (one transaction, two events).
+        assert_eq!(declaration_event_count(&db), declaration_events_before + 1);
+        db.with_conn(|conn| {
+            let kinds: Vec<String> = {
+                let mut statement = conn.prepare(
+                    "SELECT json_extract(e.object_key_json, '$.kind')
+                       FROM narrative_change_transactions t
+                       JOIN narrative_change_events e ON e.transaction_id = t.id
+                      WHERE t.request_id = 'restore-request-1'
+                      ORDER BY e.event_ordinal",
+                )?;
+                let rows = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            assert_eq!(kinds, ["scene", "scene-body-declaration"]);
+            Ok(())
+        })
+        .expect("inspect the restore transaction");
+    }
+
+    #[test]
+    fn revision_body_restore_without_a_declaration_adds_no_declaration_event() {
+        let db = fixture();
+        restore_scene_revision(&db, payload()).expect("restore");
+        assert_eq!(declaration_cells(&db), (None, None));
+        assert_eq!(declaration_event_count(&db), 0);
+    }
+
+    #[test]
+    fn revision_body_restore_clears_a_corrupted_declaration_row_without_failing() {
+        use rusqlite::types::Value as SqlValue;
+        let db = fixture();
+        db.with_conn(|conn| {
+            set_raw_declaration_cells_for_test(
+                conn,
+                PROJECT,
+                "scene-1",
+                SqlValue::Text("{not json".to_string()),
+                SqlValue::Null,
+            )
+        })
+        .expect("half-set corrupted row");
+        restore_scene_revision(&db, payload()).expect("a broken row does not stop the restore");
+        assert_eq!(declaration_cells(&db), (None, None));
+    }
+
+    #[test]
+    fn revision_body_restore_failure_leaves_the_declaration_untouched() {
+        let db = fixture();
+        declare_scene(&db);
+        let cells_before = declaration_cells(&db);
+        let events_before = declaration_event_count(&db);
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_revision_restore_snapshot
+                 BEFORE INSERT ON state_snapshots
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced revision restore snapshot failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install snapshot failure trigger");
+
+        restore_scene_revision(&db, payload()).expect_err("snapshot failure aborts");
+        assert!(cells_before.0.is_some());
+        assert_eq!(declaration_cells(&db), cells_before);
+        assert_eq!(declaration_event_count(&db), events_before);
     }
 }

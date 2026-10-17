@@ -2938,6 +2938,104 @@ mod tests {
         assert!(update_error.to_string().contains("PROTECTED_WRITER_SQL"));
     }
 
+    /// The declaration columns of a Scene's scope binding are written only by
+    /// the declaration writer (CB-2) and the clears. Generic SQL, the renderer
+    /// and MCP can neither set nor change them, whatever the statement shape.
+    #[test]
+    fn generic_sql_and_renderer_cannot_write_declaration_columns() {
+        let db = crate::test_support::current_schema_memory().expect("current schema");
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES ('p1', 'P')",
+            &[],
+            "run",
+        )
+        .expect("project");
+        db.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+             VALUES ('s1', 'p1', 'scene', 'One', 'a0')",
+            &[],
+            "run",
+        )
+        .expect("scene");
+        db.with_conn(|conn| {
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                "p1",
+                "s1",
+                "2026-10-17T00:00:00.000Z",
+            )
+        })
+        .expect("binding");
+        for (label, sql) in [
+            (
+                "update both columns",
+                "UPDATE narrative_scene_scope_bindings
+                    SET body_declaration_json = '{}', body_declaration_token = 'sha256:x'
+                  WHERE scene_id = 's1'",
+            ),
+            (
+                "update one column",
+                "UPDATE narrative_scene_scope_bindings
+                    SET body_declaration_token = 'sha256:x' WHERE scene_id = 's1'",
+            ),
+            (
+                "clear",
+                "UPDATE narrative_scene_scope_bindings
+                    SET body_declaration_json = NULL, body_declaration_token = NULL",
+            ),
+            (
+                "upsert",
+                "INSERT INTO narrative_scene_scope_bindings
+                    (project_id, scene_id, scene_incarnation_id, compatibility_marker,
+                     query_identity_json, material_constraint_json, knowledge_holder_json,
+                     audience_json, version, source_token, updated_at, body_declaration_json,
+                     body_declaration_token)
+                 SELECT project_id, scene_id, scene_incarnation_id, compatibility_marker,
+                        query_identity_json, material_constraint_json, knowledge_holder_json,
+                        audience_json, version, source_token, updated_at, '{}', 'sha256:x'
+                   FROM narrative_scene_scope_bindings WHERE 1
+                 ON CONFLICT(project_id, scene_id) DO UPDATE SET body_declaration_json = '{}'",
+            ),
+            (
+                "replace",
+                "INSERT OR REPLACE INTO narrative_scene_scope_bindings
+                    (project_id, scene_id, scene_incarnation_id, compatibility_marker,
+                     query_identity_json, material_constraint_json, knowledge_holder_json,
+                     audience_json, version, source_token, updated_at, body_declaration_json)
+                 SELECT project_id, scene_id, scene_incarnation_id, compatibility_marker,
+                        query_identity_json, material_constraint_json, knowledge_holder_json,
+                        audience_json, version, source_token, updated_at, '{}'
+                   FROM narrative_scene_scope_bindings",
+            ),
+        ] {
+            let renderer = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer must not reach the declaration columns");
+            assert!(
+                renderer.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "renderer {label} was not denied: {renderer}"
+            );
+            let mcp = db
+                .execute_untrusted(SqlOrigin::McpGeneric, sql, &[], "run")
+                .expect_err("MCP generic must not reach the declaration columns");
+            assert!(
+                mcp.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "MCP generic {label} was not denied: {mcp}"
+            );
+        }
+        let stored: (Option<String>, Option<String>) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT body_declaration_json, body_declaration_token
+                       FROM narrative_scene_scope_bindings WHERE scene_id = 's1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .expect("read back");
+        assert_eq!(stored, (None, None), "no denied write may leave a value");
+    }
+
     /// `schema_data_migrations` decides whether a data migration re-runs, so
     /// it is migration authority, not diagnostics. Left unprotected, generic
     /// SQL could raise `contract_version` to fake a migration that never ran,

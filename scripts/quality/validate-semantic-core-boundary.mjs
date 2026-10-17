@@ -50,7 +50,10 @@ const REPO_ROOT = path.resolve(
 // SCHEMA_VERSION 42 only adds two plain narrative_proposal_decisions lookup
 // indexes (by Revision, latest per Proposal). No table, column, row, writer or
 // authority changes, so the concern matrix is unchanged.
-export const EXPECTED_SCHEMA_VERSION = 42;
+// SCHEMA_VERSION 43 only adds two nullable Scene body declaration columns to
+// narrative_scene_scope_bindings (no row is promoted); the Native declaration
+// writer that fills them is a later change and the concern matrix is unchanged.
+export const EXPECTED_SCHEMA_VERSION = 43;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

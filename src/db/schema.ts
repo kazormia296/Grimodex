@@ -2494,6 +2494,10 @@ export const narrativeSceneScopeBindings = sqliteTable(
     version: integer("version").notNull().default(1),
     sourceToken: text("source_token").notNull(),
     updatedAt: text("updated_at").notNull(),
+    // SCHEMA 43 の body_declaration_json／body_declaration_token は Rust だけが
+    // 書く列なので、ここ（renderer の型付き insert／update）には載せない。
+    // 物理定義は grimodex-db の migration と schema-contract.json にあり、
+    // schema.contract.test.ts の RUST_ONLY_COLUMNS で固定している。
   },
   (table) => [
     primaryKey({ columns: [table.projectId, table.sceneId] }),
