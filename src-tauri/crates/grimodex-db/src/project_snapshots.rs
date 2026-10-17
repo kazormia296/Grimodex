@@ -2998,6 +2998,22 @@ pub fn apply_project_snapshot_restore(
         let mut feed_events =
             build_snapshot_restore_feed_events(&payload.project_id, &feed_before, &feed_after)?;
         feed_events.extend(scene_scope_refresh_events);
+        // A restore of any scope removes the project's body declarations in
+        // this transaction (CB-1). A Body scope already dropped the rows with
+        // their Scenes (the binding is recreated, so a new incarnation); this
+        // clears what remains. The clear's events join the restore's feed
+        // transaction, but a net no-op restore must stay a no-op (no project
+        // restore marker, no Epoch rotation) for a declaration alone, so the
+        // events are dropped then and only the columns are cleared.
+        let declaration_clear_events =
+            crate::narrative_extraction::scene_body_declaration::clear_scene_body_declarations_in_tx(
+                &transaction,
+                &payload.project_id,
+                crate::narrative_extraction::scene_body_declaration::SceneBodyDeclarationClearScope::Project,
+            )?;
+        if !feed_events.is_empty() {
+            feed_events.extend(declaration_clear_events);
+        }
         if feed_events.is_empty() {
             // A net no-op must not manufacture a project restore marker merely
             // to satisfy the non-empty Feed transaction contract.
@@ -4889,5 +4905,266 @@ mod tests {
             Ok(())
         })
         .expect("verify complete restore rollback");
+    }
+
+    use crate::narrative_extraction::scene_body_declaration::test_support::{
+        set_raw_declaration_cells_for_test, set_scene_body_declaration_for_test, test_declaration,
+    };
+
+    fn declare_scene(db: &Database, project_id: &str, scene_id: &str) {
+        db.with_conn(|conn| {
+            crate::narrative_extraction::with_immediate_transaction(conn, |conn| {
+                let declaration = test_declaration(conn, project_id, scene_id)?;
+                set_scene_body_declaration_for_test(conn, &declaration)
+            })
+        })
+        .expect("declare the scene");
+    }
+
+    fn declaration_cells(db: &Database, scene_id: &str) -> (Option<String>, Option<String>) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT body_declaration_json, body_declaration_token
+                   FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
+                [scene_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read declaration cells")
+    }
+
+    fn v1_columns(db: &Database, scene_id: &str) -> (String, i64, String) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT scene_incarnation_id, version, source_token
+                   FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
+                [scene_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read v1 columns")
+    }
+
+    fn declaration_event_count(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events
+                  WHERE json_extract(object_key_json, '$.kind') = 'scene-body-declaration'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count declaration events")
+    }
+
+    #[test]
+    fn project_snapshot_restore_clears_declarations_in_every_scope() {
+        for scope in [
+            RestoreScope::Body,
+            RestoreScope::Codex,
+            RestoreScope::Snippet,
+            RestoreScope::Labels,
+        ] {
+            let db = fixture();
+            create_project_snapshot(&db, empty_snapshot("s-decl")).expect("create snapshot");
+            declare_scene(&db, "p1", "t1");
+            declare_scene(&db, "p2", "t2");
+            let v1_before = v1_columns(&db, "t1");
+            let other_project_before = declaration_cells(&db, "t2");
+            assert!(declaration_cells(&db, "t1").0.is_some());
+
+            let payload = canonical_restore_payload(&db, "restore-decl", "s-decl", vec![scope]);
+            apply_project_snapshot_restore(&db, payload).expect("restore");
+
+            assert_eq!(
+                declaration_cells(&db, "t1"),
+                (None, None),
+                "the project's declaration survives a {scope:?} restore"
+            );
+            // The other project's declaration is not this project's to clear.
+            assert_eq!(declaration_cells(&db, "t2"), other_project_before);
+            assert!(other_project_before.0.is_some());
+            let v1_after = v1_columns(&db, "t1");
+            if scope == RestoreScope::Body {
+                // The Scene rows were replaced, so the binding is recreated:
+                // the declaration went with the row (a new incarnation).
+                assert_ne!(v1_after.0, v1_before.0, "a new Scene incarnation");
+            } else {
+                assert_eq!(
+                    v1_after.0, v1_before.0,
+                    "{scope:?}: the binding row is the same row"
+                );
+                assert_eq!(
+                    (v1_after.1, &v1_after.2),
+                    (v1_before.1, &v1_before.2),
+                    "{scope:?}: the clear writes no v1 column"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clear_events_are_declaration_kind_events_and_ride_the_restore_transaction() {
+        let db = fixture();
+        create_project_snapshot(&db, empty_snapshot("s-ride")).expect("create snapshot");
+        db.with_conn(|conn| {
+            conn.execute("UPDATE labels SET name = 'Renamed' WHERE id = 'l1'", [])?;
+            Ok(())
+        })
+        .expect("change the labels after the snapshot");
+        declare_scene(&db, "p1", "t1");
+        let events_before = declaration_event_count(&db);
+
+        let payload =
+            canonical_restore_payload(&db, "restore-ride", "s-ride", vec![RestoreScope::Labels]);
+        let result = apply_project_snapshot_restore(&db, payload).expect("restore labels");
+        assert!(!result.no_op);
+
+        assert_eq!(declaration_cells(&db, "t1"), (None, None));
+        assert_eq!(declaration_event_count(&db), events_before + 1);
+        db.with_conn(|conn| {
+            let events: Vec<(String, Option<String>)> = {
+                let mut statement = conn.prepare(
+                    "SELECT json_extract(e.object_key_json, '$.kind'),
+                            json_extract(e.object_key_json, '$.sceneId')
+                       FROM narrative_change_transactions t
+                       JOIN narrative_change_events e ON e.transaction_id = t.id
+                      WHERE t.request_id = 'restore-ride'
+                      ORDER BY e.event_ordinal",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            assert!(
+                events
+                    .iter()
+                    .any(|(kind, scene)| kind == "scene-body-declaration"
+                        && scene.as_deref() == Some("t1")),
+                "the clear is announced in the restore's transaction: {events:?}"
+            );
+            // The transaction also holds the restore's own kinds, so it is not
+            // a declaration-only transaction and keeps dirtying the Indexes.
+            assert!(
+                events
+                    .iter()
+                    .any(|(kind, _)| kind != "scene-body-declaration"),
+                "{events:?}"
+            );
+            let origin: String = conn.query_row(
+                "SELECT origin FROM narrative_change_transactions
+                  WHERE request_id = 'restore-ride'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(origin, "restore");
+            Ok(())
+        })
+        .expect("inspect the restore transaction");
+    }
+
+    #[test]
+    fn net_no_op_restore_clears_declaration_columns_without_manufacturing_history() {
+        let db = fixture();
+        create_project_snapshot(&db, empty_snapshot("s-noop-decl")).expect("create snapshot");
+        declare_scene(&db, "p1", "t1");
+        let history = |db: &Database| -> (i64, i64) {
+            db.with_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT COUNT(*) FROM narrative_change_events", [], |row| {
+                        row.get(0)
+                    })?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_semantic_epochs",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .expect("count history")
+        };
+        let history_before = history(&db);
+
+        let payload = canonical_restore_payload(
+            &db,
+            "restore-noop-decl",
+            "s-noop-decl",
+            vec![RestoreScope::Labels],
+        );
+        let result = apply_project_snapshot_restore(&db, payload).expect("no-op restore");
+        assert!(result.no_op);
+
+        // The author's declaration still never survives a restore ...
+        assert_eq!(declaration_cells(&db, "t1"), (None, None));
+        // ... but a declaration alone does not turn a net no-op into a
+        // project restore (no project marker, no Epoch rotation).
+        assert_eq!(history(&db), history_before);
+    }
+
+    #[test]
+    fn project_snapshot_restore_clears_corrupted_declaration_rows_without_failing() {
+        use rusqlite::types::Value as SqlValue;
+        let db = fixture();
+        create_project_snapshot(&db, empty_snapshot("s-broken")).expect("create snapshot");
+        db.with_conn(|conn| {
+            set_raw_declaration_cells_for_test(
+                conn,
+                "p1",
+                "t1",
+                SqlValue::Text("{not json".to_string()),
+                SqlValue::Null,
+            )
+        })
+        .expect("half-set corrupted row");
+        let payload =
+            canonical_restore_payload(&db, "restore-broken", "s-broken", vec![RestoreScope::Codex]);
+        apply_project_snapshot_restore(&db, payload)
+            .expect("a broken row does not stop the restore");
+        assert_eq!(declaration_cells(&db, "t1"), (None, None));
+    }
+
+    #[test]
+    fn snapshot_restore_failure_leaves_declarations_untouched() {
+        let db = fixture();
+        seed_all_body_kinds_snapshot(&db, "s-decl-failure");
+        declare_scene(&db, "p1", "t1");
+        let cells_before = declaration_cells(&db, "t1");
+        let v1_before = v1_columns(&db, "t1");
+        let events_before = declaration_event_count(&db);
+        assert!(cells_before.0.is_some());
+        let payload = canonical_restore_payload(
+            &db,
+            "restore-decl-failure",
+            "s-decl-failure",
+            vec![
+                RestoreScope::Body,
+                RestoreScope::Codex,
+                RestoreScope::Snippet,
+            ],
+        );
+        db.with_conn(|conn| {
+            conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+                AuthAction::Insert {
+                    table_name: "state_snapshots",
+                    ..
+                } => Authorization::Deny,
+                _ => Authorization::Allow,
+            }))?;
+            Ok(())
+        })
+        .expect("install state snapshot insert authorizer");
+        apply_project_snapshot_restore(&db, payload)
+            .expect_err("state snapshot insert denial must abort the restore");
+        db.with_conn(|conn| {
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            Ok(())
+        })
+        .expect("remove state snapshot insert authorizer");
+
+        // The Body scope's row replacement and the clear rolled back with it.
+        assert_eq!(declaration_cells(&db, "t1"), cells_before);
+        assert_eq!(v1_columns(&db, "t1"), v1_before);
+        assert_eq!(declaration_event_count(&db), events_before);
     }
 }

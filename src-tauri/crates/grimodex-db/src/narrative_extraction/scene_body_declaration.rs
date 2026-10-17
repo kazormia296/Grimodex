@@ -317,7 +317,6 @@ pub fn scene_body_declaration_binding_holds(
 }
 
 /// Which declarations a clear removes.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum SceneBodyDeclarationClearScope<'a> {
     Project,
@@ -339,13 +338,49 @@ fn null_declaration_columns(conn: &Connection, project_id: &str, scene_id: &str)
     Ok(changed > 0)
 }
 
+/// The clear of a staged restore image (backup restore and Safe Mode restore):
+/// every project's declaration columns go to NULL in one transaction, before
+/// the image becomes the workspace, so no restore can publish a declaration as
+/// current. Writes nothing but the two columns (through the same single
+/// `UPDATE`), no feed event (the staged image's restore Epoch is the boundary;
+/// the declaration kind is outside history continuity, DR-CB1-7), and never
+/// reads the cells, so a half-set or unknown-version row is cleared like any
+/// other. Returns the number of rows cleared.
+pub fn clear_all_scene_body_declarations_for_staged_restore(db: &crate::Database) -> Result<usize> {
+    db.with_conn(|conn| {
+        super::task_leases::with_immediate_transaction(conn, |conn| {
+            let rows = {
+                let mut statement = conn.prepare(
+                    "SELECT project_id, scene_id
+                       FROM narrative_scene_scope_bindings
+                      WHERE body_declaration_json IS NOT NULL
+                         OR body_declaration_token IS NOT NULL
+                      ORDER BY project_id, scene_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            let mut cleared = 0;
+            for (project_id, scene_id) in rows {
+                if null_declaration_columns(conn, &project_id, &scene_id)? {
+                    cleared += 1;
+                }
+            }
+            Ok(cleared)
+        })
+    })
+}
+
 /// Sets both declaration columns of every declared (or half-declared or
 /// corrupted) Scene in scope to NULL, in the caller's transaction, and returns
 /// one feed event per Scene whose Scene exists in the project (ascending Scene
 /// id). A row without such a Scene is cleared without an event: the feed
 /// cannot address it. Never fails because of the stored content, so a restore
 /// is not stopped by a broken row.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn clear_scene_body_declarations_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -475,7 +510,6 @@ pub(crate) fn canonical_scene_body_declaration_snapshot(
 /// `update` that always carries both states (the snapshot has a fixed "none"
 /// value). The structural impact has no `scopeAuthorityChanged`: the change is
 /// not a change of the project's Scope authority.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn scene_body_declaration_feed_event(
     scene_id: &str,
     before: &Value,

@@ -591,6 +591,13 @@ pub fn install_staged_workspace_db(
                 anyhow::anyhow!("NEX_C2ZC_RESTORE_CANDIDATE_MARKER_READ_FAILED: {error}")
             })?;
         ensure_restore_c2zc_authority_not_downgraded(live_c2zc_marker, staged_c2zc_marker)?;
+        // A restore never carries an author's body declaration into the
+        // workspace (CB-1): clear the two declaration columns of every
+        // project before the image can become current.
+        crate::narrative_extraction::scene_body_declaration::clear_all_scene_body_declarations_for_staged_restore(
+            &staged_database,
+        )
+        .map_err(|error| anyhow::anyhow!("RESTORE_DECLARATION_CLEAR_FAILED: {error}"))?;
         ensure_restore_epochs_for_workspace(&staged_database, &restore_identity)
             .map_err(|error| anyhow::anyhow!("RESTORE_EPOCH_MINT_FAILED: {error}"))?;
         if let Err(error) = staged_database.rebuild_fts_if_stale() {
@@ -3098,6 +3105,301 @@ mod tests {
         })
         .expect("inspect restored fail-closed scope");
 
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    use crate::narrative_extraction::scene_body_declaration::test_support::{
+        set_raw_declaration_cells_for_test, set_scene_body_declaration_for_test, test_declaration,
+    };
+
+    type V1Row = (String, String, String, i64, String, String);
+    type DeclarationRow = (String, String, Option<String>, Option<String>);
+
+    /// Two projects with two Scenes each; three Scenes carry a declaration
+    /// and one (restore-decl-b / scene-4) is left without one.
+    fn seed_declared_workspace(state: &WorkspaceState) {
+        with_db_state(state, |db| {
+            db.with_conn(|conn| {
+                crate::narrative_extraction::with_immediate_transaction(conn, |conn| {
+                    for (project, scenes) in [
+                        ("restore-decl-a", ["scene-1", "scene-2"]),
+                        ("restore-decl-b", ["scene-3", "scene-4"]),
+                    ] {
+                        conn.execute(
+                            "INSERT INTO projects (id, title) VALUES (?1, ?1)",
+                            [project],
+                        )?;
+                        for scene in scenes {
+                            conn.execute(
+                                "INSERT INTO tree_nodes
+                                    (id, project_id, node_type, title, sort_order)
+                                 VALUES (?1, ?2, 'scene', 'Scene', ?1)",
+                                [scene, project],
+                            )?;
+                            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                                conn,
+                                project,
+                                scene,
+                                "2026-10-17T00:00:00.000Z",
+                            )?;
+                        }
+                    }
+                    for (project, scene) in [
+                        ("restore-decl-a", "scene-1"),
+                        ("restore-decl-a", "scene-2"),
+                        ("restore-decl-b", "scene-3"),
+                    ] {
+                        let declaration = test_declaration(conn, project, scene)?;
+                        set_scene_body_declaration_for_test(conn, &declaration)?;
+                    }
+                    Ok(())
+                })
+            })
+        })
+        .expect("seed declared workspace");
+    }
+
+    fn v1_rows(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<V1Row>> {
+        let mut statement = conn.prepare(
+            "SELECT project_id, scene_id, scene_incarnation_id, version, source_token, updated_at
+               FROM narrative_scene_scope_bindings ORDER BY project_id, scene_id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>();
+        rows
+    }
+
+    fn declaration_rows(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<DeclarationRow>> {
+        let mut statement = conn.prepare(
+            "SELECT project_id, scene_id, body_declaration_json, body_declaration_token
+               FROM narrative_scene_scope_bindings ORDER BY project_id, scene_id",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>();
+        rows
+    }
+
+    #[test]
+    fn backup_restore_clears_declarations_and_keeps_v1_columns() {
+        let (dir, state) = fixture("declarations-normal");
+        seed_declared_workspace(&state);
+        let backup_name = "grimodex-20200101-000000.db";
+        backup_active(&state, &dir.join("backups").join(backup_name));
+        // Nothing changes between the backup and the restore: the restored
+        // bytes are the live bytes, and the declarations still do not stay.
+        let (v1_before, declared_before) = with_db_state(&state, |db| {
+            db.with_conn(|conn| Ok((v1_rows(conn)?, declaration_rows(conn)?)))
+        })
+        .expect("read live rows");
+        assert_eq!(
+            declared_before
+                .iter()
+                .filter(|row| row.2.is_some() && row.3.is_some())
+                .count(),
+            3
+        );
+
+        restore_backup_core(&state, backup_name, || {}).expect("restore backup");
+
+        with_db_state(&state, |db| {
+            db.with_read_transaction(|conn| {
+                let declared = declaration_rows(conn)?;
+                assert_eq!(declared.len(), 4);
+                assert!(
+                    declared
+                        .iter()
+                        .all(|row| row.2.is_none() && row.3.is_none()),
+                    "no declaration survives a restore: {declared:?}"
+                );
+                assert_eq!(
+                    v1_rows(conn)?,
+                    v1_before,
+                    "the v1 columns are byte identical"
+                );
+                for (project, scene, ..) in &v1_before {
+                    crate::narrative_extraction::read_narrative_scene_scope(conn, project, scene)
+                        .expect("the v1 token of every restored binding still matches");
+                }
+                Ok(())
+            })
+        })
+        .expect("inspect restored rows");
+
+        // A restore leaves the Scene free to declare again: the continuity of
+        // the declaration feed does not block it (DR-CB1-7).
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                crate::narrative_extraction::with_immediate_transaction(conn, |conn| {
+                    let declaration = test_declaration(conn, "restore-decl-a", "scene-1")?;
+                    set_scene_body_declaration_for_test(conn, &declaration)
+                })
+            })
+        })
+        .expect("declare again after the restore");
+
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn safe_mode_restore_clears_declarations() {
+        let (dir, state) = fixture("declarations-safe-mode");
+        seed_declared_workspace(&state);
+        let staged = dir.join("backups/grimodex-safe-mode-candidate.db");
+        backup_active(&state, &staged);
+        let v1_before = with_db_state(&state, |db| db.with_conn(|conn| Ok(v1_rows(conn)?)))
+            .expect("read live v1 columns");
+
+        state.inner.lock().expect("workspace state lock").take();
+        let lease = workspace_lease::acquire_exclusive_for_migration(&dir)
+            .expect("Safe Mode exclusive lease");
+        install_staged_workspace_db(
+            &state,
+            &dir,
+            &staged,
+            InstallStagedOptions::safe_mode(lease),
+        )
+        .expect("Safe Mode restore");
+
+        // Ready is published from this image: it carries no declaration.
+        let installed = Database::new(&dir.join("grimodex.db")).expect("open installed image");
+        installed
+            .with_conn(|conn| {
+                let declared = declaration_rows(conn)?;
+                assert_eq!(declared.len(), 4);
+                assert!(
+                    declared
+                        .iter()
+                        .all(|row| row.2.is_none() && row.3.is_none()),
+                    "{declared:?}"
+                );
+                assert_eq!(v1_rows(conn)?, v1_before);
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("inspect installed image");
+        drop(installed);
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn restore_clears_corrupted_declaration_rows_without_failing() {
+        use rusqlite::types::Value as SqlValue;
+        let (dir, state) = fixture("declarations-corrupted");
+        seed_declared_workspace(&state);
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                // One cell only, an unknown version with a valid-looking
+                // token, a non-UTF-8 blob, and a row without its Scene.
+                set_raw_declaration_cells_for_test(
+                    conn,
+                    "restore-decl-a",
+                    "scene-1",
+                    SqlValue::Text(
+                        "{\"contractId\":\"narrative-scene-body-declaration/9\"}".into(),
+                    ),
+                    SqlValue::Text("sha256:unknown".into()),
+                )?;
+                set_raw_declaration_cells_for_test(
+                    conn,
+                    "restore-decl-a",
+                    "scene-2",
+                    SqlValue::Null,
+                    SqlValue::Text("sha256:only-token".into()),
+                )?;
+                set_raw_declaration_cells_for_test(
+                    conn,
+                    "restore-decl-b",
+                    "scene-3",
+                    SqlValue::Blob(vec![0xff, 0xfe, 0x00]),
+                    SqlValue::Blob(vec![0xc3, 0x28]),
+                )?;
+                set_raw_declaration_cells_for_test(
+                    conn,
+                    "restore-decl-b",
+                    "scene-4",
+                    SqlValue::Text("{not json".into()),
+                    SqlValue::Null,
+                )?;
+                Ok(())
+            })
+        })
+        .expect("corrupt the declaration cells");
+        let backup_name = "grimodex-20200101-000000.db";
+        backup_active(&state, &dir.join("backups").join(backup_name));
+
+        restore_backup_core(&state, backup_name, || {})
+            .expect("a broken declaration row does not stop the restore");
+
+        with_db_state(&state, |db| {
+            db.with_read_transaction(|conn| {
+                let declared = declaration_rows(conn)?;
+                assert_eq!(declared.len(), 4);
+                assert!(
+                    declared
+                        .iter()
+                        .all(|row| row.2.is_none() && row.3.is_none()),
+                    "{declared:?}"
+                );
+                Ok(())
+            })
+        })
+        .expect("inspect restored rows");
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(feature = "test-failpoints")]
+    #[test]
+    fn restore_failure_leaves_declarations_untouched() {
+        let (dir, state) = fixture("declarations-failure");
+        seed_declared_workspace(&state);
+        let staged = dir.join("candidate-declarations.db");
+        backup_active(&state, &staged);
+        let declared_before = with_db_state(&state, |db| {
+            db.with_conn(|conn| Ok(declaration_rows(conn)?))
+        })
+        .expect("read live declarations");
+
+        // The staged image is cleared first; this failpoint aborts before the
+        // live image is replaced, so the live workspace must keep its rows.
+        install_staged_workspace_db(
+            &state,
+            &dir,
+            &staged,
+            InstallStagedOptions::normal_restore_with_failpoint(
+                || {},
+                RestoreFailpoint::AfterRestoreEpochMint,
+            ),
+        )
+        .expect_err("the failpoint aborts the restore before replacement");
+
+        let declared_after = with_db_state(&state, |db| {
+            db.with_conn(|conn| Ok(declaration_rows(conn)?))
+        })
+        .expect("read live declarations again");
+        assert_eq!(declared_after, declared_before);
+        assert_eq!(
+            declared_after
+                .iter()
+                .filter(|row| row.2.is_some() && row.3.is_some())
+                .count(),
+            3
+        );
         assert_no_internal_restore_files(&dir);
         let _ = std::fs::remove_dir_all(dir);
     }
