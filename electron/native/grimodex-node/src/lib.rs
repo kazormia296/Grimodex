@@ -30,6 +30,7 @@ mod nir1_prepared_request;
 mod nir1_startup_barrier;
 mod post_effect_runtime;
 mod profile_egress;
+mod publication_guard;
 mod related_scenes;
 mod related_scenes_build_registry;
 mod related_scenes_context;
@@ -5528,6 +5529,39 @@ fn reauthorize_profile_egress_workspace(
     state
         .profile_egress
         .reauthorize_dispatch(dispatch, identity, Some(&workspace_id))
+}
+
+/// Start-time admission of a `nir1-publication` / Scope entry from inside a
+/// blocking section (K3/2). See `publication_guard`.
+fn admit_publication_entry(
+    state: &Arc<AppState>,
+    caller_identity: Option<String>,
+) -> std::result::Result<publication_guard::PublicationGuard, AppError> {
+    publication_guard::PublicationGuard::admit(state, caller_identity).map_err(AppError::Anyhow)
+}
+
+/// Return-time recheck of `admit_publication_entry`; the caller drops its
+/// result when this fails.
+fn finish_publication_entry(
+    state: &Arc<AppState>,
+    guard: &publication_guard::PublicationGuard,
+) -> std::result::Result<(), AppError> {
+    guard.finish(state).map_err(AppError::Anyhow)
+}
+
+/// A publication-admission failure keeps its `D2A_EGRESS_DENIED` reason (it
+/// names no owner, ticket or identity).
+fn publication_err_to_napi(error: anyhow::Error) -> Error {
+    Error::from_reason(format!("{error:#}"))
+}
+
+/// Related Scenes entries answer with one fixed reason, except for a D2a
+/// denial, whose reason is a constant sentence.
+fn related_scenes_err_to_napi(error: anyhow::Error) -> Error {
+    if format!("{error:#}").contains(profile_egress::D2A_EGRESS_DENIED_MARKER) {
+        return publication_err_to_napi(error);
+    }
+    Error::from_reason("RELATED_SCENES_UNAVAILABLE")
 }
 
 const PROFILE_EGRESS_DB_RESULT_KIND_KEY: &str = "__grimodexDbResultKind";
@@ -11707,13 +11741,23 @@ impl Backend {
         .await
     }
 
+    /// `nir1-publication` (K3/2). `caller_identity` is the Main-issued wire
+    /// identity; a restricted profile admits the call only for the exact
+    /// registered caller at start and again at return (the result and the
+    /// operation it created are discarded on failure).
     #[napi]
-    pub async fn related_scenes_begin(&self, payload: serde_json::Value) -> Result<String> {
+    pub async fn related_scenes_begin(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
         let dto = serde_json::from_value(payload)
             .map_err(|_| Error::from_reason("RELATED_SCENES_INVALID_REQUEST"))?;
-        let result = related_scenes::begin(Arc::clone(&self.state), dto)
+        let guard = publication_guard::PublicationGuard::admit(&self.state, caller_identity)
+            .map_err(publication_err_to_napi)?;
+        let result = related_scenes::begin(Arc::clone(&self.state), dto, guard)
             .await
-            .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))?;
+            .map_err(related_scenes_err_to_napi)?;
         Ok(result.to_string())
     }
 
@@ -11722,11 +11766,16 @@ impl Backend {
         &self,
         owner_key: String,
         operation_ticket: String,
+        caller_identity: Option<String>,
     ) -> Result<String> {
-        related_scenes::continue_query(Arc::clone(&self.state), owner_key, operation_ticket)
-            .await
-            .map(|value| value.to_string())
-            .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
+        let guard = publication_guard::PublicationGuard::admit(&self.state, caller_identity)
+            .map_err(publication_err_to_napi)?;
+        let value =
+            related_scenes::continue_query(Arc::clone(&self.state), owner_key, operation_ticket)
+                .await
+                .map_err(related_scenes_err_to_napi)?;
+        guard.finish(&self.state).map_err(publication_err_to_napi)?;
+        Ok(value.to_string())
     }
 
     #[napi]
@@ -11763,15 +11812,18 @@ impl Backend {
         &self,
         owner_key: String,
         navigation_identity: String,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         napi::tokio::task::spawn_blocking(move || {
-            related_scenes::qualify_evidence(&state, &owner_key, &navigation_identity)
-                .map(|value| value.to_string())
+            let guard = publication_guard::PublicationGuard::admit(&state, caller_identity)?;
+            let value = related_scenes::qualify_evidence(&state, &owner_key, &navigation_identity)?;
+            guard.finish(&state)?;
+            Ok(value.to_string())
         })
         .await
         .map_err(join_err_to_napi)?
-        .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
+        .map_err(related_scenes_err_to_napi)
     }
 
     /// The product Graph route stays closed until C-query/C-product acceptance.
@@ -11847,6 +11899,7 @@ impl Backend {
     pub async fn nir1_entity_relation_revision_read(
         &self,
         payload: serde_json::Value,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -11858,6 +11911,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
@@ -11870,7 +11924,9 @@ impl Backend {
             })?;
             let response =
                 narrative_extraction::nir1_entity_relation_revision_read_for_renderer(response)?;
-            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
         })
         .await
     }
@@ -11882,6 +11938,7 @@ impl Backend {
     pub async fn nir1_entity_relation_revision_read_current(
         &self,
         payload: serde_json::Value,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -11893,6 +11950,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
@@ -11907,7 +11965,9 @@ impl Backend {
                 narrative_extraction::nir1_entity_relation_revision_current_read_for_renderer(
                     response,
                 )?;
-            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
         })
         .await
     }
@@ -11920,6 +11980,7 @@ impl Backend {
     pub async fn nir1_entity_relation_revision_restore(
         &self,
         payload: serde_json::Value,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -11933,6 +11994,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             if request.expected_workspace_path.trim().is_empty()
                 || request.expected_workspace_path.trim() != request.expected_workspace_path
@@ -11970,7 +12032,9 @@ impl Backend {
                     "response": current,
                 }))
             })?;
-            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
         })
         .await
     }
@@ -11979,7 +12043,11 @@ impl Backend {
     /// workspace selected at IPC arrival. The renderer supplies identity only;
     /// the active workspace path remains the Native authority check.
     #[napi]
-    pub async fn narrative_scene_scope_read(&self, payload: serde_json::Value) -> Result<String> {
+    pub async fn narrative_scene_scope_read(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Request {
@@ -11990,6 +12058,11 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            // Scope entries admit once at start (D-final capture shape), before
+            // the payload is looked at; they publish the Scope binding and
+            // registry names, so a restricted profile needs the registered
+            // caller and workspace.
+            admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
@@ -12008,7 +12081,11 @@ impl Backend {
     /// Atomically update one A1 scene Scope binding with Native OCC and the
     /// existing Change Feed/invalidation writer.
     #[napi]
-    pub async fn narrative_scene_scope_update(&self, payload: serde_json::Value) -> Result<String> {
+    pub async fn narrative_scene_scope_update(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Request {
@@ -12018,6 +12095,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
@@ -12036,6 +12114,7 @@ impl Backend {
     pub async fn narrative_scene_scope_registry_update(
         &self,
         payload: serde_json::Value,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -12046,6 +12125,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;

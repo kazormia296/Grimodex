@@ -470,6 +470,55 @@ rules:
       - GDX-POLICY-001
     suites:
       - nir1-entity-relation-review
+  - id: d2a-profile-egress
+    reason: The D2a restricted-profile gate (route classes, the own-data-read opening, closed external-send paths, license-control, NIR publication admission, renderer isolation and state-file protection) must keep every external-send path closed and admit each publication class only under its confirmed conditions.
+    paths:
+      - electron/main/d2a*.ts
+      - electron/main/devRendererUrl*.ts
+      - electron/main/downloadGuard*.ts
+      - electron/main/externalMount.ts
+      - electron/main/externalMount.test.ts
+      - electron/main/externalMount.integration.test.ts
+      - electron/main/licenseValidation.ts
+      - electron/main/licenseValidation.test.ts
+      - electron/main/profileDataGuard*.ts
+      - electron/main/protocol.ts
+      - electron/main/protocol.test.ts
+      - electron/main/rendererIsolation*.ts
+      - electron/main/security.ts
+      - electron/main/security.test.ts
+      - electron/main/shellCommands.ts
+      - electron/main/shellCommands.test.ts
+      - electron/main/stateFileReach.integration.test.ts
+      - electron/main/suggestedName*.ts
+      - electron/main/vivliostyle.test.ts
+      - electron/main/windows.ts
+      - electron/main/windows.test.ts
+      - electron/main/windows.panel.test.ts
+      - electron/scripts/renderer-isolation-probe*
+      - electron/native/grimodex-node/src/profile_egress.rs
+      - electron/native/grimodex-node/src/license_mode.rs
+      - electron/native/grimodex-node/src/publication_guard.rs
+      - electron/native/grimodex-node/src/related_scenes.rs
+      - electron/native/grimodex-node/src/related_scenes/**
+      - electron/native/grimodex-node/test/egress-closure.test.mjs
+      - electron/native/grimodex-node/test/own-data-read.test.mjs
+      - electron/native/grimodex-node/test/nir1-publication.test.mjs
+      - electron/native/grimodex-node/test/profile-egress.test.mjs
+      - src-tauri/crates/grimodex-db/src/execute.rs
+      - src-tauri/crates/grimodex-db/src/profile_egress_policy.rs
+      - src-tauri/crates/grimodex-license/src/lib.rs
+      - src-tauri/crates/grimodex-license/tests/restricted.rs
+      - src/features/license/store.ts
+      - src/features/license/store.test.ts
+      - vitest.electron-native.config.ts
+    requirements:
+      - GDX-PRECHECK-001
+      - GDX-AI-CONSENT-001
+      - GDX-POLICY-001
+      - GDX-TRACE-001
+    suites:
+      - nir1-entity-relation-review
   - id: nir1-capacity-diagnostics
     reason: NIR-1 B capacity and C-query memory diagnostics require isolated fresh-copy/process paths, a machine-readable manifest, and feature-gated Native fixture coverage without activating Graph capacity claims.
     paths:

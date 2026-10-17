@@ -2742,11 +2742,16 @@ describe("NIR-1 router sender binding", () => {
       ok: false,
       error: "D2A_EGRESS_DENIED: plaintext-publication",
     });
-    expect(typedRead).toHaveBeenCalledExactlyOnceWith({
-      expectedWorkspacePath: "/workspace-1",
-      projectId: "project-1",
-      revisionId: "revision-1",
-    });
+    // The Main-issued identity (never the renderer's forged one) travels as
+    // the trailing argument, not inside the deny-unknown-fields request.
+    expect(typedRead).toHaveBeenCalledExactlyOnceWith(
+      {
+        expectedWorkspacePath: "/workspace-1",
+        projectId: "project-1",
+        revisionId: "revision-1",
+      },
+      JSON.stringify(identity),
+    );
     expect(profileEgress.assertInvoke).toHaveBeenCalledWith(
       "nir1_entity_relation_revision_read",
       expect.objectContaining({ callerIdentity: identity }),
@@ -2868,7 +2873,10 @@ describe("NIR-1 router sender binding", () => {
       ok: false,
       error: "D2A_EGRESS_DENIED: plaintext-publication",
     });
-    expect(readCurrent).toHaveBeenCalledExactlyOnceWith(currentArgs);
+    expect(readCurrent).toHaveBeenCalledExactlyOnceWith(
+      currentArgs,
+      JSON.stringify(identity),
+    );
     const restoreArgs = {
       expectedWorkspacePath: "/workspace-1",
       projectId: "project-1",
@@ -2884,7 +2892,10 @@ describe("NIR-1 router sender binding", () => {
       ok: false,
       error: "D2A_EGRESS_DENIED: plaintext-publication",
     });
-    expect(restore).toHaveBeenCalledExactlyOnceWith(restoreArgs);
+    expect(restore).toHaveBeenCalledExactlyOnceWith(
+      restoreArgs,
+      JSON.stringify(identity),
+    );
     expect(profileEgress.assertInvoke).toHaveBeenNthCalledWith(
       1,
       "nir1_entity_relation_revision_prepare",

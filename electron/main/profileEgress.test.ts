@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createProfileEgressGate,
   D2A_EGRESS_DENIED_MARKER,
-  D2A_TYPED_RESULT_POLICY,
   d2aRouteLedgersForTest,
 } from "./profileEgress.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
@@ -379,9 +378,17 @@ describe("D2a profile egress gate", () => {
       revisionId: "revision-1",
       callerIdentity: issued,
     };
+    // nir1-publication (K3/2): the issued identity of a restricted profile
+    // passes at invoke; Native re-authorizes it at start and at return.
     expect(() =>
       gate.assertInvoke("nir1_entity_relation_revision_read", request),
-    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`));
+    ).not.toThrow();
+    expect(() =>
+      gate.assertInvoke("nir1_entity_relation_revision_read", {
+        ...request,
+        callerIdentity: undefined,
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} nir1-publication`));
 
     const forged = { ...issued, senderId: 12 };
     expect(() =>
@@ -392,7 +399,7 @@ describe("D2a profile egress gate", () => {
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
   });
 
-  it("keeps typed prepare available as a Native mutation while gating readers", async () => {
+  it("keeps typed prepare available as a Native mutation while the readers are nir1-publication", async () => {
     const gate = await createProfileEgressGate(backend());
     const issued = gate.issueCallerIdentity(11);
     expect(() =>
@@ -412,13 +419,12 @@ describe("D2a profile egress gate", () => {
     ]) {
       expect(() =>
         gate.assertInvoke(command, { callerIdentity: issued }),
-      ).toThrow(
-        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
-      );
+      ).not.toThrow();
       expect(() =>
         gate.assertPlaintextPublication(command, { callerIdentity: issued }),
-      ).toThrow(
-        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
+      ).not.toThrow();
+      expect(() => gate.assertInvoke(command, {})).toThrow(
+        new RegExp(`${D2A_EGRESS_DENIED_MARKER} nir1-publication`),
       );
     }
   });
@@ -1093,7 +1099,6 @@ describe("D2a profile egress gate", () => {
       for (const [command] of LICENSE_COMMANDS) {
         expect(ledgers.denied).not.toContain(command);
         expect(ledgers.internal).not.toContain(command);
-        expect(ledgers.typedResult).not.toContain(command);
       }
       expect(ledgers.internal).toContain("get_license_state");
     });
@@ -1120,7 +1125,7 @@ describe("D2a profile egress gate", () => {
 
   it("keeps the route ledgers disjoint (K3/2 Negative (20))", () => {
     const ledgers = d2aRouteLedgersForTest();
-    const names = ["denied", "internal", "licenseControl", "typedResult"] as const;
+    const names = ["denied", "internal", "licenseControl"] as const;
     for (let i = 0; i < names.length; i += 1) {
       for (let j = i + 1; j < names.length; j += 1) {
         const overlap = ledgers[names[i]].filter((command) =>
@@ -1259,26 +1264,6 @@ describe("D2a profile egress gate", () => {
         sql: "SELECT id FROM projects",
       }),
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
-  });
-
-  it("keeps every typed plaintext-result exception tied to a current NAPI command", () => {
-    for (const command of Object.keys(D2A_TYPED_RESULT_POLICY)) {
-      expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
-      expect(
-        D2A_TYPED_RESULT_POLICY[
-          command as keyof typeof D2A_TYPED_RESULT_POLICY
-        ],
-      ).toBe("plaintext-publication");
-    }
-  });
-
-  it("denies every typed plaintext result when Native startup is unavailable", async () => {
-    const gate = await createProfileEgressGate(null);
-    for (const command of Object.keys(D2A_TYPED_RESULT_POLICY)) {
-      expect(() => gate.assertInvoke(command, {}), command).toThrow(
-        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
-      );
-    }
   });
 
   it("allows capture-only locally while continuing to deny the legacy AI send", async () => {

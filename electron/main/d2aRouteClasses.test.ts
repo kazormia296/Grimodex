@@ -16,7 +16,6 @@ import {
   createProfileEgressGate,
   D2A_EGRESS_DENIED_MARKER,
   D2A_OWN_DATA_READ_OPEN,
-  D2A_TYPED_RESULT_POLICY,
   d2aCommandRouteForTest,
   d2aRouteDecision,
   d2aRouteLedgersForTest,
@@ -218,7 +217,6 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
       "denied",
       "internal",
       "licenseControl",
-      "typedResult",
       "ownDataRead",
       "nir1Publication",
       "nir1RestrictedOnly",
@@ -245,25 +243,15 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
   });
 
   it("leaves plaintext-publication with exactly the commands K3/2 keeps closed", () => {
-    // claim_task, nir1_pack_context, plus the NIR commands that move to
+    // claim_task and nir1_pack_context only: the six NIR commands moved to
     // nir1-publication with their Native re-authorization (ST4).
-    const plaintext = [
-      ...d2aRouteLedgersForTest().denied.filter(
+    const plaintext = d2aRouteLedgersForTest()
+      .denied.filter(
         (command) => route(command, {}, true) === "plaintext-publication",
-      ),
-      ...Object.keys(D2A_TYPED_RESULT_POLICY),
-    ].sort();
+      )
+      .sort();
     expect(plaintext).toEqual(
-      [
-        "narrative_extraction_claim_task",
-        "nir1_pack_context",
-        "nir1_evidence_qualify",
-        "related_scenes_begin",
-        "related_scenes_continue",
-        "nir1_entity_relation_revision_read",
-        "nir1_entity_relation_revision_read_current",
-        "nir1_entity_relation_revision_restore",
-      ].sort(),
+      ["narrative_extraction_claim_task", "nir1_pack_context"].sort(),
     );
   });
 
@@ -276,9 +264,19 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     }
   });
 
-  it("keeps nir1-publication and nir1-restricted-only empty in this change", () => {
+  it("holds the six NIR commands in nir1-publication and nothing in nir1-restricted-only", () => {
     const ledgers = d2aRouteLedgersForTest();
-    expect(ledgers.nir1Publication).toEqual([]);
+    expect([...ledgers.nir1Publication].sort()).toEqual(
+      [
+        "related_scenes_begin",
+        "related_scenes_continue",
+        "nir1_evidence_qualify",
+        "nir1_entity_relation_revision_read",
+        "nir1_entity_relation_revision_read_current",
+        "nir1_entity_relation_revision_restore",
+      ].sort(),
+    );
+    // K5's D-dispatch commands are added by DD-1; Graph is CP-3a.
     expect(ledgers.nir1RestrictedOnly).toEqual([]);
   });
 });

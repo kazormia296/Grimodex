@@ -84,21 +84,6 @@ export type D2aRoute =
   | "unclassified";
 
 /**
- * Renderer-visible typed results that are not safe to expose while D2a is
- * restricted and are not (yet) in a publication class of their own.  The
- * `satisfies` key check keeps the exception ledger typed; all other commands
- * remain covered by the route ledgers below.
- */
-export type D2aTypedResultPolicy = "plaintext-publication" | "nir1-publication";
-export const D2A_TYPED_RESULT_POLICY = {
-  nir1_entity_relation_revision_read: "plaintext-publication",
-  nir1_entity_relation_revision_read_current: "plaintext-publication",
-  nir1_entity_relation_revision_restore: "plaintext-publication",
-} as const satisfies Partial<
-  Record<keyof typeof NAPI_COMMANDS, D2aTypedResultPolicy>
->;
-
-/**
  * `own-data-read` (K3/2): typed reads of the author's own data that publish
  * nothing outside the profile.  39 commands, each checked by K3/2 to have no
  * write in its function body.  A command belongs here, in `DENIED_COMMANDS`,
@@ -158,12 +143,28 @@ const OWN_DATA_READ_COMMANDS = [
 ] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 
 /**
- * `nir1-publication` / `nir1-restricted-only` ledgers.  Both are empty in
- * this change: the NIR commands move in with their Native re-authorization
- * (ST4), and K5's D-dispatch commands are added by DD-1.  Graph is CP-3a.
+ * `nir1-publication` (K3/2): the NIR plaintext a restricted profile may still
+ * publish to the renderer, each behind a Native admission at start and at
+ * return (`publication_guard.rs`) and a Main completion check.  Related Scenes
+ * R/IR and Evidence navigation (3) and the A2 review reads (3).  Unrestricted
+ * passes them unchecked.  `related_scenes_release` and
+ * `related_scenes_release_owner` carry no plaintext and stay `internal`; the
+ * Graph listener is CP-3a.
+ *
+ * `nir1-restricted-only` is empty here: K5's D-dispatch commands are added by
+ * DD-1.  Both ledgers are `satisfies`-bound to `NAPI_COMMANDS`, and a command
+ * is in at most one ledger (`d2aRouteLedgersForTest`).
  */
-const NIR1_PUBLICATION_COMMANDS =
-  [] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
+const NIR1_PUBLICATION_COMMANDS = [
+  // Related Scenes R/IR and Evidence navigation
+  "related_scenes_begin",
+  "related_scenes_continue",
+  "nir1_evidence_qualify",
+  // A2 review reads
+  "nir1_entity_relation_revision_read",
+  "nir1_entity_relation_revision_read_current",
+  "nir1_entity_relation_revision_restore",
+] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 const NIR1_RESTRICTED_ONLY_COMMANDS =
   [] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 
@@ -211,10 +212,7 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["vivliostyle_detect", "external-url"],
   ["get_mcp_config", "old-external-ai"],
   ["narrative_extraction_claim_task", "plaintext-publication"],
-  ["nir1_evidence_qualify", "plaintext-publication"],
   ["nir1_pack_context", "plaintext-publication"],
-  ["related_scenes_begin", "plaintext-publication"],
-  ["related_scenes_continue", "plaintext-publication"],
 ]);
 
 const ALLOWED_STOP_COMMANDS = new Set([
@@ -545,12 +543,6 @@ function dbStatementRoute(
   return "unclassified";
 }
 
-function typedResultRoute(command: string): D2aRoute | undefined {
-  return D2A_TYPED_RESULT_POLICY[
-    command as keyof typeof D2A_TYPED_RESULT_POLICY
-  ];
-}
-
 const ALLOWED_BACKEND_EVENTS = new Set([
   "backend:ready",
   "workspace:opened",
@@ -583,8 +575,6 @@ function commandRoute(
   policy: NativeProfileEgressPolicy,
   ownDataReadOpen: boolean,
 ): D2aRoute {
-  const typedResult = typedResultRoute(command);
-  if (typedResult) return typedResult;
   const explicit = DENIED_COMMANDS.get(command);
   if (explicit) return explicit;
   if ((LICENSE_CONTROL_COMMANDS as readonly string[]).includes(command)) {
@@ -665,7 +655,6 @@ export function d2aRouteLedgersForTest(): {
   readonly denied: readonly string[];
   readonly internal: readonly string[];
   readonly licenseControl: readonly string[];
-  readonly typedResult: readonly string[];
   readonly ownDataRead: readonly string[];
   readonly nir1Publication: readonly string[];
   readonly nir1RestrictedOnly: readonly string[];
@@ -675,7 +664,6 @@ export function d2aRouteLedgersForTest(): {
     denied: [...DENIED_COMMANDS.keys()],
     internal: [...INTERNAL_COMMANDS],
     licenseControl: [...LICENSE_CONTROL_COMMANDS],
-    typedResult: Object.keys(D2A_TYPED_RESULT_POLICY),
     ownDataRead: [...OWN_DATA_READ_COMMANDS],
     nir1Publication: [...NIR1_PUBLICATION_COMMANDS],
     nir1RestrictedOnly: [...NIR1_RESTRICTED_ONLY_COMMANDS],
