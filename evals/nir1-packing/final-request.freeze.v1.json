@@ -1,0 +1,232 @@
+{
+  "schemaVersion": "nir1-final-request-freeze/1",
+  "contractId": "nir1-final-request-packing-eval",
+  "draftRef": "nir1-final-request-eval-proposal/2",
+  "fixtureVersion": 1,
+  "status": "pending-review",
+  "nativeOutputObservedBeforeFreeze": false,
+  "frozenAt": "2026-10-17T22:55:04Z",
+  "reviewVerdict": "pending",
+  "note": "Pending the independent expectation review. The record binds the bytes written by the fixture author (DPH-2). When the reviewer approves, the integrator rewrites this record with status frozen, reviewVerdict approve, the review record's new sha256 and a new frozenAt, and commits it before any Native run of this fixture's material.",
+  "fixture": {
+    "path": "evals/nir1-packing/final-request.v1.json",
+    "sha256": "0d277e0cc00dc42f61ad583b7bb59a6b2f9f038a2932684d9bc823ac8dc9ac49"
+  },
+  "reviewRecord": {
+    "path": "evals/nir1-packing/final-request.expectation-review.v1.json",
+    "sha256": "368e9aae16a263d7cff1143f6a3f19aef24ca20bdce1c8de8b296e4d8ff4d828"
+  },
+  "readme": {
+    "path": "evals/nir1-packing/final-request.README.md",
+    "sha256": "db37884ba3fd7b0c0a7d563e130dde08def3923b8abd372dc6ffc455da3a0858"
+  },
+  "parityVector": {
+    "path": "evals/nir1-packing/final-request-baseline-parity.v1.json",
+    "sha256": "9a6daf65e4d7cec70ca760f1ad06432585711fae50d981d46044bb39f74caf31"
+  },
+  "scorer": {
+    "files": [
+      {
+        "path": "scripts/quality/nir1-packing/final-request/scorer.mjs",
+        "sha256": "7ba6a3b0236653b9029e1bb1682ccc5cea0c0c159da699d633c41dcc3a62339b"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/contract.mjs",
+        "sha256": "0b071c105752830e7d7b773f3c419deb447f5c562adae73e8994affd21023730"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/receipt.mjs",
+        "sha256": "4f779efb53535a0181f3f0eaa4b9acd1874213639d534c59cbff038342e87042"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/payload.mjs",
+        "sha256": "52aba5f1aa8114d1c49cb0c46d07e23873992befbbd4cc780cee94baf92ae84d"
+      }
+    ]
+  },
+  "contextBudget": {
+    "formula": "contextBudgetTokens = contextWindowTokens - (fixedSystemTokens + userTokens + envelopeTokens + outputTokens + safetyMarginTokens + separatorReserveTokens); selectedTokens = estimateTokens(rawText) + sum(estimateTemplateTokens(entry.text)) with each placeholder counted as maxLength ASCII characters (36 for ids, 128 for tokens); marginTokens = contextBudgetTokens - selectedTokens. Estimator: nir1-context-estimator-v1 (ceil((utf16Length + 2 * cjkCount) / 3)) applied by hand to the template files and the fixture strings; no Native packer, renderer or D-final was run.",
+    "terms": {
+      "route": {
+        "model": "dph-fixture-local-model",
+        "contextWindowTokens": 16384,
+        "outputTokens": 1024
+      },
+      "fixedSystemTokens": 531,
+      "fixedTemplate": {
+        "version": "nir1-local-chat-system-ja-v1",
+        "ref": "src/prompts/ja/chatSystemBase.txt+src/prompts/ja/chatSystemDataBoundaryReminder.txt"
+      },
+      "envelopeTokens": 10,
+      "safetyMarginTokens": 32,
+      "separatorReserveTokens": 171,
+      "userTokensByCase": {
+        "P-01": 31,
+        "P-02": 25,
+        "P-04": 32,
+        "P-05": 31,
+        "P-06": 26,
+        "P-07": 36,
+        "P-08": 30,
+        "P-10": 27,
+        "P-11": 34
+      },
+      "source": "route values equal the existing D-final test route (16384 / 1024); they are fixture values, not product limits"
+    },
+    "perRequest": [
+      {
+        "caseId": "P-01",
+        "variantId": "p01-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14585,
+        "selectedTokens": 1982,
+        "marginTokens": 12603
+      },
+      {
+        "caseId": "P-02",
+        "variantId": "p02-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14591,
+        "selectedTokens": 1978,
+        "marginTokens": 12613
+      },
+      {
+        "caseId": "P-04",
+        "variantId": "p04-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14584,
+        "selectedTokens": 1987,
+        "marginTokens": 12597
+      },
+      {
+        "caseId": "P-05",
+        "variantId": "p05-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14585,
+        "selectedTokens": 1961,
+        "marginTokens": 12624
+      },
+      {
+        "caseId": "P-06",
+        "variantId": "p06-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14590,
+        "selectedTokens": 1960,
+        "marginTokens": 12630
+      },
+      {
+        "caseId": "P-07",
+        "variantId": "p07-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14580,
+        "selectedTokens": 2001,
+        "marginTokens": 12579
+      },
+      {
+        "caseId": "P-08",
+        "variantId": "p08-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14586,
+        "selectedTokens": 1990,
+        "marginTokens": 12596
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-scope",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-scope",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-reject-old-revision-after-scope",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-source",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-source",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1001,
+        "marginTokens": 13588
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-reject-old-revision-after-source",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-decision",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-decision",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-reject-old-revision-after-decision",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-11",
+        "variantId": "p11-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14582,
+        "selectedTokens": 2932,
+        "marginTokens": 11650
+      }
+    ]
+  },
+  "authorSeparation": {
+    "fixtureAuthor": {
+      "agent": "dph-2-fixture-author (Claude Sonnet 5.5, Workflow subagent)",
+      "role": "writes the fixture; no harness, baseline, capture or scorer code"
+    },
+    "expectationReviewer": {
+      "agent": "dph-expectation-reviewer (unassigned)",
+      "role": "independent, read-only, has not seen Native output"
+    },
+    "harnessImplementers": [
+      "dph-1-builder (contract, scorer, parity vector)",
+      "dph-1b-builder (template placeholders)",
+      "dph-3-builder (evaluation feature, capture, baseline)",
+      "dph-4-builder (harness, setup, registration)"
+    ],
+    "nativeReceiptProvidedToAuthor": false
+  }
+}
