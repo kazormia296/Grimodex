@@ -592,6 +592,7 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
   const implementations = [
     "src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs",
     "src-tauri/crates/grimodex-db/src/nir1_generation.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs",
     "electron/native/grimodex-node/src/nir1_generation.rs",
     "src-tauri/crates/grimodex-db/src/nir1_generation_history.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs",
@@ -604,6 +605,7 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
   const tests = [
     "src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs",
     "src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs",
+    "src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs",
     "electron/native/grimodex-node/src/nir1_generation.rs",
     "src-tauri/crates/grimodex-db/src/nir1_generation_history.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs",
@@ -683,6 +685,7 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_graph -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_packing -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation::tests -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation::history_context::tests -- --test-threads=1",
     "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_generation::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test release_schema_migration",

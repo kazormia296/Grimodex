@@ -508,6 +508,7 @@ requirements:
       - src/prompts/ja/chatSystemDataBoundaryReminder.txt
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
@@ -562,6 +563,7 @@ requirements:
       - scripts/quality/nir1-retrieval/standard-build.test.mjs
       - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
@@ -817,6 +819,7 @@ requirements:
       - src-tauri/crates/grimodex-core/src/narrative_nir1_receipt.rs
       - src-tauri/crates/grimodex-core/src/lib.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
@@ -984,6 +987,7 @@ requirements:
     lightTests:
       - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs

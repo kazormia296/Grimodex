@@ -836,7 +836,10 @@ mod tests {
             ("array".into(), "[]".into()),
             ("number".into(), "0".into()),
             ("empty object".into(), "{}".into()),
-            ("contract is not a string".into(), r#"{"contract":2}"#.into()),
+            (
+                "contract is not a string".into(),
+                r#"{"contract":2}"#.into(),
+            ),
             (
                 "contract is null".into(),
                 r#"{"contract":null,"unavailable":"binding-limit"}"#.into(),
@@ -940,14 +943,14 @@ mod tests {
                     json!({"present": {"setting": "auto", "axis": "story", "fallback": "new"}}),
                 ),
             ),
-            (
-                "missing axis".into(),
-                {
-                    let mut value = valid.clone();
-                    value["axes"].as_object_mut().expect("axes").remove("audience");
-                    value.to_string()
-                },
-            ),
+            ("missing axis".into(), {
+                let mut value = valid.clone();
+                value["axes"]
+                    .as_object_mut()
+                    .expect("axes")
+                    .remove("audience");
+                value.to_string()
+            }),
         ];
         cases.push((
             "context field renamed".into(),
@@ -1001,12 +1004,16 @@ mod tests {
             "the slot size must not depend on an ID's length or the input count: {sizes:?}"
         );
         // The identity slot is independent of the path and id lengths.
-        let identity_sizes: Vec<usize> = [("w", "/a"), ("w", &"/é".repeat(4096)), (&"w".repeat(4096), "/a")]
-            .iter()
-            .map(|(id, path)| {
-                canonical(&DurableWorkspaceIdentity::from_parts(id, path).expect("identity")).len()
-            })
-            .collect();
+        let identity_sizes: Vec<usize> = [
+            ("w", "/a"),
+            ("w", &"/é".repeat(4096)),
+            (&"w".repeat(4096), "/a"),
+        ]
+        .iter()
+        .map(|(id, path)| {
+            canonical(&DurableWorkspaceIdentity::from_parts(id, path).expect("identity")).len()
+        })
+        .collect();
         assert!(identity_sizes.windows(2).all(|pair| pair[0] == pair[1]));
     }
 
@@ -1033,20 +1040,28 @@ mod tests {
             reading_order: HistoryAxis::Unavailable(
                 HistoryReadingOrderUnavailable::SceneNotInAuthorityMapping,
             ),
-            story_time: HistoryAxis::Unavailable(HistoryStoryTimeUnavailable::SceneNotInAuthorityMapping),
+            story_time: HistoryAxis::Unavailable(
+                HistoryStoryTimeUnavailable::SceneNotInAuthorityMapping,
+            ),
             viewpoint: HistoryAxis::Unavailable(HistoryViewpointUnavailable::NotVisibleCharacter),
-            knowledge_holder: HistoryAxis::Unavailable(HistoryPrincipalUnavailable::BindingNotExplicit),
+            knowledge_holder: HistoryAxis::Unavailable(
+                HistoryPrincipalUnavailable::BindingNotExplicit,
+            ),
             audience: HistoryAxis::Unavailable(HistoryPrincipalUnavailable::BindingNotExplicit),
             timeline: HistoryAxis::Unavailable(HistoryScopeRefUnavailable::BindingNotExplicit),
             worldline: HistoryAxis::Unavailable(HistoryScopeRefUnavailable::BindingNotExplicit),
-            narrative_layer: HistoryAxis::Unavailable(HistoryScopeRefUnavailable::BindingNotExplicit),
+            narrative_layer: HistoryAxis::Unavailable(
+                HistoryScopeRefUnavailable::BindingNotExplicit,
+            ),
             auto: HistoryAxis::Unavailable(HistoryAutoUnavailable::SceneNotInAuthorityMapping),
         };
-        assert!(
-            canonical(&HistoryContextSlot::Context(Box::new(thin))).len() < max.len()
-        );
+        assert!(canonical(&HistoryContextSlot::Context(Box::new(thin))).len() < max.len());
         let identity = canonical(&sample_identity());
-        assert_eq!(identity.len(), MAX_DURABLE_IDENTITY_SLOT_BYTES, "{identity}");
+        assert_eq!(
+            identity.len(),
+            MAX_DURABLE_IDENTITY_SLOT_BYTES,
+            "{identity}"
+        );
         assert!(identity.len() <= 194);
         // Both stay far below a 4 KiB slot ceiling.
         assert!(max.len() < 4 * 1024);
@@ -1108,8 +1123,12 @@ mod tests {
         );
         assert_eq!(eligible_until_ms(-1), None);
         assert_eq!(eligible_until_ms(i64::MAX), None);
-        let edge = i64::try_from(HISTORY_MAX_SAFE_INTEGER).expect("edge") - HISTORY_ELIGIBILITY_WINDOW_MS;
-        assert_eq!(eligible_until_ms(edge).map(HistoryInt::get), Some(HISTORY_MAX_SAFE_INTEGER));
+        let edge =
+            i64::try_from(HISTORY_MAX_SAFE_INTEGER).expect("edge") - HISTORY_ELIGIBILITY_WINDOW_MS;
+        assert_eq!(
+            eligible_until_ms(edge).map(HistoryInt::get),
+            Some(HISTORY_MAX_SAFE_INTEGER)
+        );
         assert_eq!(eligible_until_ms(edge + 1), None);
     }
 
