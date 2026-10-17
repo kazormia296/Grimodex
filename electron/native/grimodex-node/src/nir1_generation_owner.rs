@@ -36,6 +36,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use grimodex_core::canonical_json_digest;
 use grimodex_core::narrative_nir1_receipt::TerminalObservation;
+use grimodex_db::nir1_generation::history_context::{HistoryContextSlot, HistoryUnavailableReason};
 use grimodex_db::nir1_generation::{
     self as storage, AcceptedChatInputCapture, AttemptBinding, AttemptBindingVersion,
     AttemptCallerBinding, NewAttempt, NewMessageBody, Nir1AdmissionProbe, Nir1AdmissionSqlBudget,
@@ -730,11 +731,16 @@ impl Nir1GenerationOwner {
             model: request.model,
             api: request.api,
             endpoint_identity: request.endpoint_identity,
-            history_turn_context: None,
+            // HS-1 stores the slots; the D-final builder and the durable
+            // identity reach the owner in a later step. Until then the
+            // product create records the closed reason, never a null slot.
+            history_turn_context: Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::WorkspaceIdentityUnavailable,
+            )),
             durable_workspace_identity: None,
         };
         let attempt = NewAttempt {
-            binding: binding.clone(),
+            binding,
             payload_digest: payload_digest.clone(),
             inputs: request.inputs,
             qualifications: request.qualifications,
@@ -742,6 +748,10 @@ impl Nir1GenerationOwner {
             expires_at_ms: request.expires_at_ms,
             budget: read_budget,
         };
+        // What storage will keep of this binding (it may downgrade the history
+        // slots); an unknown COMMIT result is re-read and compared with it.
+        let stored_binding = storage::effective_attempt_binding(&attempt)
+            .map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
         let lease = core
             .gate()
             .try_lease_for_binding(&core.live_binding)
@@ -814,7 +824,7 @@ impl Nir1GenerationOwner {
             &core.pinned_budget(),
         ) {
             Ok(Some(stored))
-                if stored.binding == binding
+                if stored.binding == stored_binding
                     && stored.payload_digest == payload_digest
                     && stored.input_digest == input_digest =>
             {
