@@ -57,8 +57,8 @@ use local_audit_writer::{close_execution_in_tx, finish_attempt_bounded_with, Aud
 pub use project_ai_policy::{read_project_ai_policy_bounded, Nir1ProjectAiPolicyRead};
 pub mod history_context;
 use history_context::{
-    eligible_until_ms, DurableWorkspaceIdentity, HistoryContextSlot, HistoryUnavailableReason,
-    SLOT_UNWRITABLE_ERROR,
+    eligible_until_ms, DurableWorkspaceIdentity, HistoryContextGateReason, HistoryContextSlot,
+    HistoryUnavailableReason, SLOT_UNWRITABLE_ERROR,
 };
 
 // These are storage safety ceilings for malformed/imported rows. They bound
@@ -1819,6 +1819,15 @@ pub struct StoredAttempt {
     pub terminal: Option<StoredTerminal>,
 }
 
+impl StoredAttempt {
+    /// Why a history reader does not use this attempt, from its history slot
+    /// alone. The snapshot reader returns such an attempt without reading
+    /// any reference row (`inputs` and `qualifications` are empty).
+    pub(crate) fn history_gate(&self) -> Option<HistoryContextGateReason> {
+        history_gate_reason(&self.binding)
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MessageOrigin {
@@ -2983,7 +2992,38 @@ fn read_attempt_in_tx_with_remaining(
     remaining: &mut ReadBudget,
 ) -> Result<StoredAttempt> {
     let mut no_reserve = |_bytes: usize| Ok(());
-    read_attempt_in_tx_with_remaining_and_reserve(conn, id, remaining, &mut no_reserve, None)
+    read_attempt_in_tx_with_remaining_and_reserve(conn, id, remaining, &mut no_reserve, None, false)
+}
+
+/// The closed reason a history reader does not use this attempt, decided from
+/// the binding's `historyTurnContext` slot alone (K4/3 section 2). `None`
+/// means the slot is a context of the known version.
+fn history_gate_reason(binding: &AttemptBinding) -> Option<HistoryContextGateReason> {
+    HistoryContextGateReason::of(binding.history_turn_context.as_ref())
+}
+
+/// The attempt row as the history gate returns it: the header and binding
+/// only. No reference row was read, so `inputs` and `qualifications` are
+/// empty, the digests are the stored columns (not recomputed) and no
+/// terminal was read.
+fn gated_history_attempt(
+    id: &str,
+    stored: AttemptMetadata,
+    binding: AttemptBinding,
+) -> StoredAttempt {
+    StoredAttempt {
+        id: id.to_owned(),
+        binding,
+        payload_digest: stored.payload_digest,
+        input_digest: stored.input_digest,
+        inputs: Vec::new(),
+        qualifications: Vec::new(),
+        reference_format: ReferenceFormat::V2,
+        created_at_ms: stored.created_at_ms,
+        expires_at_ms: stored.expires_at_ms,
+        claimed_at_ms: stored.claimed_at_ms,
+        terminal: None,
+    }
 }
 
 fn read_attempt_in_tx_with_remaining_and_reserve<F>(
@@ -2992,6 +3032,7 @@ fn read_attempt_in_tx_with_remaining_and_reserve<F>(
     remaining: &mut ReadBudget,
     reserve: &mut F,
     cancellation: Option<&GenerationHistorySnapshotCancellation>,
+    history_gate: bool,
 ) -> Result<StoredAttempt>
 where
     F: FnMut(usize) -> Result<()>,
@@ -2999,6 +3040,30 @@ where
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
+    // `history_gate` is true only for the history snapshot reader (HS1-2).
+    // The history gate reads the binding before any reference row. A slot
+    // that is not a known-version context returns the header alone: no
+    // reference row is read and neither the reference budget nor the body
+    // byte reservation is debited. A legacy (version 1) binding is not a
+    // slot state; it keeps the full read and its terminal-only refusal.
+    let prefetched = if history_gate {
+        let stored = read_attempt_metadata_in_tx(conn, id)?;
+        if let Some(cancellation) = cancellation {
+            cancellation.checkpoint()?;
+        }
+        let binding =
+            read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?;
+        match binding {
+            VersionedAttemptBinding::Current(current)
+                if history_gate_reason(&current).is_some() =>
+            {
+                return Ok(gated_history_attempt(id, stored, current));
+            }
+            binding => Some((stored, binding)),
+        }
+    } else {
+        None
+    };
     let metadata_bytes = attempt_metadata_materialization_bytes_in_tx(conn, id)?;
     let mut reference_budget = *remaining;
     let input_locations = read_ref_locations_in_tx(
@@ -3030,7 +3095,10 @@ where
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
-    let stored = read_attempt_metadata_in_tx(conn, id)?;
+    let (stored, prefetched_binding) = match prefetched {
+        Some((stored, binding)) => (stored, Some(binding)),
+        None => (read_attempt_metadata_in_tx(conn, id)?, None),
+    };
     let input_rows = materialize_refs_in_tx(
         conn,
         "nir1_generation_input_refs",
@@ -3063,8 +3131,10 @@ where
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
-    let binding =
-        read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?;
+    let binding = match prefetched_binding {
+        Some(binding) => binding,
+        None => read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?,
+    };
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
@@ -3343,12 +3413,17 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
                 &mut references,
                 &mut reserve,
                 Some(&self.cancellation),
+                true,
             );
             budget.apply_child_reference_budget(references);
             let value = value?;
             self.checkpoint()?;
-            self.terminals
-                .insert(id.to_owned(), Ok(value.terminal.clone()));
+            // A gated attempt returns before its terminal is read, so
+            // `terminal: None` is not the stored terminal and is not cached.
+            if value.history_gate().is_none() {
+                self.terminals
+                    .insert(id.to_owned(), Ok(value.terminal.clone()));
+            }
             Ok(value)
         })() {
             Ok(value) => value,

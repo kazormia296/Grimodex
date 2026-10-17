@@ -451,6 +451,33 @@ impl HistoryContextSlot {
     }
 }
 
+/// Why a history reader does not use an attempt, decided from the
+/// `historyTurnContext` slot alone and before any reference row is read
+/// (K4/3 section 2: legacy and context-less attempts are read for
+/// terminalization and recovery, never as history). A closed set with no
+/// plaintext.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryContextGateReason {
+    /// The slot is JSON null: written before HS-1 or by test-support.
+    Missing,
+    /// The slot's contract is a version this build does not know.
+    UnknownContract,
+    /// The writer or builder recorded a closed unavailable reason.
+    Unavailable(HistoryUnavailableReason),
+}
+
+impl HistoryContextGateReason {
+    /// `None` when the slot is a context of the known version.
+    pub fn of(slot: Option<&HistoryContextSlot>) -> Option<Self> {
+        match slot {
+            None => Some(Self::Missing),
+            Some(HistoryContextSlot::UnknownContract) => Some(Self::UnknownContract),
+            Some(HistoryContextSlot::Unavailable(reason)) => Some(Self::Unavailable(*reason)),
+            Some(HistoryContextSlot::Context(_)) => None,
+        }
+    }
+}
+
 impl Serialize for HistoryContextSlot {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
         match self {

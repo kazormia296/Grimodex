@@ -688,6 +688,7 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation::history_context::tests -- --test-threads=1",
     "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_generation::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::tests -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::generation_storage_adapter::adapter_tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test release_schema_migration",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test workspace_migration_supervisor",
   ]) {
