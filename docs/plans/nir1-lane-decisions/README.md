@@ -21,7 +21,7 @@
 | [df-plus-decisions.md](df-plus-decisions.md) | DF+（DR-DFP-1〜26） | 同上（mutation の前の記録） |
 | [dt4-decisions.md](dt4-decisions.md) | DT-4（DR-DT4-1〜9a。T1〜T4: 予約 namespace と汎用 append の閉鎖、AI 使用ポリシーの検査〔B-2〕、bounded な監査 writer と終端・sweep の同梱〔S16〕、route 登録と文書・分類） | 同上（mutation の前の記録） |
 | [hs1-decisions.md](hs1-decisions.md) | HS-1（DR-HS1-N。subtask ごとに追記。実装中） | 確認済み契約 K4/3 の「実装で決めること」の記録 |
-| [x1-3-decisions.md](x1-3-decisions.md) | X1-3（DR-X1-3-1〜18。投影 Source の定義・解決・登録・feed routing、型付き Revision の版 2、B の preflight、Scope の形の検査、doc-sync） | 確認済み契約 X1/1 の「実装で決めること」の記録 |
+| [x1-3-decisions.md](x1-3-decisions.md) | X1-3（DR-X1-3-1〜19。投影 Source の定義・解決・登録・feed routing、型付き Revision の版 2、B の preflight、Scope の形の検査、doc-sync） | 確認済み契約 X1/1 の「実装で決めること」の記録 |
 
 復元した7本は、2026-10-14 の worktree の片付けで、gitignore の対象（`.ralph/`）の置き場所ごと消えたものである。PROVENANCE.md に、ファイルごとの最終版の根拠、確からしさ、PR 本文との差を書いた。PR 本文との差は、decisions 文書が最後に書かれた後の修正か、PR の側の書き足しによるもので、復元の誤りではない。
 
