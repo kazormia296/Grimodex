@@ -1,0 +1,8 @@
+# The measurement builds changed only these constants (no other production code).
+# raised (limit-lifted) build:  MAX_GRAPH_NODES 200, MAX_GRAPH_EDGES 2000, MAX_GRAPH_RECORDS 8192,
+#   MAX_GRAPH_INPUT_BYTES 64 MiB (grimodex-core/src/narrative_nir1.rs);
+#   QUERY_SQL_STEPS 20_000_000, QUERY_DEADLINE 10_000 ms, QUERY_MAX_PAGES 4096
+#   (grimodex-db/src/narrative_extraction/nir1_graph.rs). Worker Q = 32 MiB (MEASURE_Q_BYTES=33554432).
+# candidate A: records 1024, nodes 24, edges 288, steps 300000, pages 64, deadline 10 s, input bytes 6_291_456 (unchanged), Q 32 MiB
+# candidate B: records 2048, nodes 50, edges 512, steps 600000, pages 128, deadline 10 s, input bytes 6_291_456 (unchanged), Q 32 MiB
+# Q variants of the unchanged-constant worker: MEASURE_Q_BYTES = 8/16/32 MiB (4_718_592 B = production)
