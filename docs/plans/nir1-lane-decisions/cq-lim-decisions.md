@@ -16,6 +16,7 @@ CQ-LIM-1（query の上限の分離と値の変更）の記録を最初に書い
 | DR-CQL-11 | 2026-10-18 | CQ-LIM-2（レビュー指摘の修正） | 50 場面の主人公級が available であることを通常の試験で固定した（P2）。Revision ごとの 512 records を A2 の preflight にも残した（query-wide の 2,048 に緩んでいた分を戻す。確認済みの値は変えない）。実 worker の複数 payload 形の試験が query の失敗を typed に限る。変更した file の rustfmt。詳細は下の「レビュー指摘の修正（CQ-LIM-2）」 | 値は draft で確認済み。新しい数値なし | — | 不要 | 該当なし | 変更なし（新しい終端なし） | 記録済み（実装済み） |
 | DR-CQL-5 | 2026-10-18 | CQ-LIM-3 | RB-1（P7-3）: typed Revision の writer（`nir1_entity_relation.rs` の `create_in_tx`）に、保存する `payload_json` と `reconciliation_envelope_json` をそれぞれ 6,291,456 B（`MAX_GRAPH_INPUT_BYTES`）と比べる検査を足す。検査は DB への最初の INSERT より前（payload は envelope の構築より前、envelope は構築の直後）で、超えたら保存せず typed エラーで拒否する。理由の名前は `NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT` と `NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT`（既存の `NIR1_ENTITY_RELATION_INPUT_INVALID` と同じ「大文字の code + 説明」の形。限界の値と実際の長さを説明に含める）。数値は変えない（counted の 512 records／6,291,456 B の検査は `validate_entity_relation_bundle` に残る）。保存済みのデータと reader は変えない。検査は書込みの前なので、部分的な書込みは残らず、接続は呼出しの前後で autocommit のまま。envelope は同じ counted でも payload の約 2 倍になる形（Evidence の `evidence_id` の padding）があるため、その形では counted 約 3 MiB 超で拒否される。payload だけが超える形（Entity の `label` の padding。envelope に入らない）で payload の検査を独立に確かめる | 保存範囲は狭まる（緩和ではない）。schema・IPC・N-API の入口・受信先は変えない。保存済みの Revision と B-GUARD の成分 guard の扱いは変えない | counted だけを残す（B の成分 guard が保存後に project 全体を止める。台帳 §7.1 の食い違い）、envelope を payload から計算した推定値で比べる（実際の保存 bytes と合わない）、保存後に検査して rollback する（INSERT の費用が無駄になる） | 不要（台帳 §7.1 の選択肢 1-B。ユーザーは Session B2 で proposal/7 の推奨の組を確認済み） | 該当なし | 不要（新しい終端なし。同期の拒否で、非同期・外部送信・subprocess を含まない） | 記録済み（実装済み） |
 | DR-CQL-6 | 2026-10-18 | CQ-LIM-3 | 台帳・品質試験の同期の方針: `docs/plans/nir1-l6-l9-execution-plan.md` の proposal/6 の節と `scripts/quality/quality-workflow.test.mjs` の proposal/6 の節を読む assert は履歴を確かめるので残し、proposal/7 の値（records 2,048、pages 128、steps 600,000、Entity 50、edge 512、Q 16 MiB、Native 3 MiB、writer の保存形の検査）を確かめる assert を別に足す。台帳（`nir1-c-query-acceptance-2026-10.md`）は、proposal/6 の時点の記述を履歴として残し、「proposal/7 の後（CQ-LIM）」の節を足して RB-1、RB-2、G-1、G-2 の判定を更新する。G-2 の [precheck] は、CQ-LIM-2 の実 worker の試験が通った事実（下の「CQ-LIM-3 の結果」）に基づいて解除する。G-1 の [precheck] は、writer の検査（1-B）と文言の更新（1-D）を実施したことで、B の上限近傍の publish の食い違いを契約の文言どおりに閉じる | 値は draft で確認済み。新しい数値なし | proposal/6 の節の書き換え（履歴が消える）、未実行の試験を根拠に precheck を解除する | 不要 | 該当なし | 不要 | 記録済み（実装済み） |
+| DR-CQL-7 | 2026-10-18 | CQ-LIM-4（候補まで。freeze と独立レビューは integrator） | G-03 の frontier-exceeded を発見 54 件（上限 50 + 4。旧 16＝12+4 と同じ流儀）に作り直し、base と `schema.v1.json` の `limit` を 50、`contract.mjs` の `maxDiscoveredEntities` を 50、`maxQualifiedEdgeExpansions` を 512 にした。数え方: 発見数は seed を除いた Entity の数（`hop.size - 1`。validator の既存の定義のまま）。54＝Wren の knows 52 件＋Ivy＋Hollis で、seed を含めると 55。どちらも 50 を超える。edge 展開は 54（Wren→52、Wren→Ivy、Ivy→Hollis）で 512 の内なので、unavailable の原因は Entity の上限だけ。fixture は `g03-n15`〜`g03-n52` と `g03-knows-15`〜`g03-knows-52` を足し（Entity の label は既存の A〜N の名前に続く固有の名前。本文・query の語と重ならないことを validator が検査する）、`g03-r-frontier` の Entity 53 件・Relation 52 件（計 105 records、Revision の 512 の内）と base の excludedEdges／excludedEntities（reason `no-revision`）を同じ流儀で広げた。validator の仕様は変えていない（定数と `limit` の値、コメント、メッセージの数字だけ）。判定の規則（超えたら Graph 全体 unavailable、部分 Graph なし）、他の variant の期待値、他の fixture は変えていない。`expansions > 100` の「available variant は edge 展開を上限よりずっと下に保つ」検査は、閾値 100 を変えない（上限が 144 から 512 に上がったので、検査は厳しいままで緩和ではない。メッセージの数字だけ 512 にした）。作り直した variant は unavailable を期待する variant なので、K6/2 の窓外率の pool に入らない（draft「影響」）。**Graph の runtime 出力は読まずに作り直した**（期待値は規則と draft の値から導き、観測に合わせて直していない。`graphRuntimeObservedBeforeFreeze` は false のまま）。| 値は draft（proposal/7）で確認済み。新しい数値の根拠: 54＝50+4（draft の流儀）、52＝54−2（Ivy と Hollis）。保存範囲・schema の構造・IPC・N-API の入口・受信先は変えない（`limit` の const の値だけ） | 発見数を 51 にして seed 込みの数え方で境界に寄せる（4 の余裕が無く、旧 fixture の流儀と合わない）、`expansions > 100` を 360 などに比例して緩める（確認済みの検査を緩める） | 不要（値は確認済み。作り直しは委任の内） | 該当なし | 不要（fixture と validator の値の変更だけで、新しい終端なし） | 記録済み（候補まで。freeze は独立レビューの後に integrator） |
 
 ## MAX_GRAPH_RECORDS の使用箇所の分類（DR-CQL-1）
 
@@ -245,3 +246,40 @@ writer が保存する payload と envelope を各 6,291,456 B で検査する�
 - `cargo clippy -p grimodex-core -p grimodex-db --all-targets -- -D warnings`: warning なし（`is_multiple_of` の指摘を 1 件直した）。`rustfmt --edition 2021 --check`: `nir1_entity_relation.rs` と `nir1_graph_index_maintenance_tests.rs` は差分なし。`nir1_graph/tests.rs` は master 既存の `cq_avail.rs` の 1 か所だけ（この変更と無関係）。
 - `node --test scripts/quality/quality-workflow.test.mjs scripts/quality/impact-map.test.mjs scripts/quality/eval-fixtures.test.mjs`: 23 + 45 passed（quality-workflow は新しい 2 試験を含む 23 件）。
 - 未実行（成功扱いにしない）: 実 worker の `#[ignore]` 試験（CQ-LIM-2 の結果を根拠にした）。`scripts/nir1-c-query-worker-ci.sh` と dataset／hash に束縛された file は触っていないので、`ci-pause`／`local-ci` の試験は実行していない。`Cargo.lock` は変えていない。
+
+## CQ-LIM-4 の結果（G-03 の作り直しの候補。DR-CQL-7）
+
+この commit は freeze を更新する前の候補までである。`freeze.v1.json`、`independent-expectation-review.v1.json`、`manifest.v1.json` は変えていない。
+
+### 変えた file
+
+- `evals/nir1-graph/g03-bounded-two-hop.v1.json`: Entity 14 件を 52 件に、knows の Relation を 14 件から 52 件に、`g03-r-frontier` を Entity 53 件・Relation 52 件にした。base の `frontier.limit` を 50、frontier-exceeded の frontier を `{discoveredEntities: 54, limit: 50}` にした。variant の description と G-03-N2 の文（sixteen を fifty-four に）、base の excludedEdges／excludedEntities（各 52 件。reason は `no-revision`）を同期した。
+- `evals/nir1-graph/schema.v1.json`: `frontier.limit` の const を 50 にした。
+- `evals/nir1-graph/README.md`: 表の「発見 54 件」、上限の行（50、512）、解釈を要した点 3（54＝50+4、seed 込み・除きの両方で超過、edge 展開 54 は 512 の内）。
+- `scripts/quality/nir1-graph/contract.mjs`: `maxDiscoveredEntities` 50、`maxQualifiedEdgeExpansions` 512、`computed.frontier.limit` を定数から引く（直書きの 12 を除いた）、コメントとメッセージの数字。
+- `scripts/quality/nir1-graph/contract.test.mjs`: 既存の「frontier overflow」の試験の 16 を 54 に。D1〜D3 の試験を足した（下）。
+
+### 受入れ（D1〜D5）への対応
+
+| ID | 試験 |
+|---|---|
+| D1 | `the rebuilt G-03 frontier exceeds the 50-Entity limit under either counting convention`（54 が seed 除き・込みの両方で 50 超、edge 展開が 512 の内、unavailable／`graph-limit-exceeded`、base の `limit` が 50、errors が空） |
+| D2 | `an exceeded G-03 variant that stays within the 50-Entity limit is refused`（旧 16 件の形は available になり、期待値の unavailable と食い違って拒否される）、`the G-03 frontier limit keeps the seed-in and seed-out counts in agreement`（発見 50 は曖昧域として拒否、51 は両方の数え方で超過） |
+| D3 | `the schema pins the G-03 frontier limit to 50`（12、49、51 を schema が拒否） |
+| D4 | 独立レビューの後に integrator が freeze を更新する。候補の状態では freeze の hash の不一致だけが出る（下） |
+| D5 | Graph の runtime 出力を読まずに作り直した。`graphRuntimeObservedBeforeFreeze` は false のまま |
+
+### 期待値を変えた既存試験（DR-CQL-8 への追記。CQ-LIM-4 の分）
+
+- `contract.test.mjs` の `frontier overflow refuses the whole Graph instead of truncating it`: 発見数の期待値を 16 から 54 に変えた（上限 12 から 50 への改訂に伴う。判定の規則の assert は変えていない）。
+
+### 実行した検証（CQ-LIM-4。2026-10-18、Linux、この機）
+
+- `node --test scripts/quality/nir1-graph/contract.test.mjs`: 27 件中 24 件が通り、3 件が失敗した。失敗は freeze が束縛する hash の不一致だけ（`freeze schema hash differs`、`freeze README hash differs`、`schema／README／G-03 が the bytes the approving review saw と違う`、`does not bind G-03`）。fixture／schema／README／validator の他の検査は errors なしで通っている。freeze の更新（4b）で解消する想定で、候補の commit の状態では赤である。
+- 未実行: `pnpm eval:fixtures`（freeze 更新前なので `nir1Graph.freeze.status` は frozen にならない。4b の後に実行）。
+
+### integrator への引継ぎ（4b と独立レビュー）
+
+1. 独立 reviewer（`claude-fable-5-1`、effort high、read-only、builder とは別 instance、Graph の runtime 出力を読まない、候補を編集しない）に G-02〜G-08 の期待値を再導出させる。変更が及ぶのは G-03 の fixture、`schema.v1.json`、`README.md`、`contract.mjs` で、G-02、G-04〜G-08 の fixture の bytes は変えていない。
+2. approve（P2 以上が 0）の後に、round 3 以降の記録（`final.filesAtReview` の全 bound file の sha、`requiredChanges: []`、`supersededFreezeSha256` ＝ `45d8a055f09176852e1b449111216293b7768ac505c5592e74fca4f2818c9bfc`）、receipt、`freeze.v1.json`（`frozenAt`、`manifestSha256`、`schemaSha256`、`readmeSha256`、`cases[].sha256`）、`manifest.v1.json` の `independentExpectationReview` を書く。validator（`validateFreeze`／`validateApprovingReview`）の仕様は変えていないので、レビューに見せる validator の差分は上の数字の変更だけ。
+3. 新しい `freeze.v1.json` の sha256 を PR 本文と K2/4 addendum 用に記録する（この commit では未確定）。

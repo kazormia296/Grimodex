@@ -7,6 +7,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 import {
   APPROVING_REVIEW_VERDICT,
   GRAPH_CASE_IDS,
+  GRAPH_RULES,
   MANIFEST_STATUS,
   NIR1_GRAPH_FREEZE_PATH,
   NIR1_GRAPH_MANIFEST_PATH,
@@ -291,7 +292,7 @@ test("frontier overflow refuses the whole Graph instead of truncating it", async
   );
   assert.equal(result.computed.graph.reasonClass, "graph-limit-exceeded");
   assert.deepEqual(result.computed.attachments, []);
-  assert.equal(result.computed.frontier.discoveredEntities, 16);
+  assert.equal(result.computed.frontier.discoveredEntities, 54);
   const truncated = structuredClone(value);
   const expectations = variant(truncated, "frontier-exceeded").expectations;
   expectations.graph.status = "available";
@@ -301,6 +302,94 @@ test("frontier overflow refuses the whole Graph instead of truncating it", async
     "base",
   ).expectations.pathAttachments;
   assert.ok((await errorsFor(truncated)).length > 0);
+});
+
+/** Keeps only the first `count` of the frontier Revision's Wren knows-Relations. */
+function withFrontierKnows(value, count) {
+  const copy = structuredClone(value);
+  const revision = copy.revisions.find((row) => row.id === "g03-r-frontier");
+  revision.relationIds = revision.relationIds.slice(0, count);
+  revision.entityIds = revision.entityIds.slice(0, count + 1);
+  return copy;
+}
+
+test("the rebuilt G-03 frontier exceeds the 50-Entity limit under either counting convention", async () => {
+  const value = await fixture("G-03");
+  const exceeded = variant(value, "frontier-exceeded");
+  const result = evaluateGraphCaseVariant(value, exceeded);
+  const discovered = result.computed.frontier.discoveredEntities;
+  // 50 + 4: both the seed-excluded count and the seed-included count exceed 50.
+  assert.equal(discovered, 54);
+  assert.ok(discovered > GRAPH_RULES.maxDiscoveredEntities);
+  assert.ok(discovered + 1 > GRAPH_RULES.maxDiscoveredEntities);
+  assert.equal(GRAPH_RULES.maxDiscoveredEntities, 50);
+  assert.equal(GRAPH_RULES.maxQualifiedEdgeExpansions, 512);
+  // The refusal comes from the Entity limit, not from the edge-expansion limit.
+  const revision = value.revisions.find((row) => row.id === "g03-r-frontier");
+  assert.ok(
+    revision.relationIds.length + 2 <= GRAPH_RULES.maxQualifiedEdgeExpansions,
+  );
+  assert.equal(result.computed.graph.status, "unavailable");
+  assert.equal(result.computed.graph.reasonClass, "graph-limit-exceeded");
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(exceeded.expectations.graph.frontier, {
+    discoveredEntities: 54,
+    limit: 50,
+  });
+  assert.equal(variant(value, "base").expectations.graph.frontier.limit, 50);
+  assert.deepEqual(await errorsFor(value), []);
+});
+
+test("an exceeded G-03 variant that stays within the 50-Entity limit is refused", async () => {
+  const value = await fixture("G-03");
+  // The old 16-discovered shape (fourteen knows-Relations) is far inside 50.
+  const old = withFrontierKnows(value, 14);
+  const result = evaluateGraphCaseVariant(
+    old,
+    variant(old, "frontier-exceeded"),
+  );
+  assert.equal(result.computed.frontier.discoveredEntities, 16);
+  assert.equal(result.computed.graph.status, "available");
+  assert.ok((await errorsFor(old)).length > 0);
+});
+
+test("the G-03 frontier limit keeps the seed-in and seed-out counts in agreement", async () => {
+  const value = await fixture("G-03");
+  // 48 knows + Ivy + Hollis = 50 discovered: not over 50 without the seed, over 50 with it.
+  const ambiguous = withFrontierKnows(value, 48);
+  const ambiguousResult = evaluateGraphCaseVariant(
+    ambiguous,
+    variant(ambiguous, "frontier-exceeded"),
+  );
+  assert.equal(ambiguousResult.computed.frontier.discoveredEntities, 50);
+  assert.ok(
+    ambiguousResult.errors.some((error) =>
+      error.includes("ambiguous counting zone"),
+    ),
+  );
+  // 49 knows + 2 = 51 discovered: over 50 under both conventions.
+  const clear = withFrontierKnows(value, 49);
+  const clearResult = evaluateGraphCaseVariant(
+    clear,
+    variant(clear, "frontier-exceeded"),
+  );
+  assert.equal(clearResult.computed.frontier.discoveredEntities, 51);
+  assert.equal(clearResult.computed.graph.reasonClass, "graph-limit-exceeded");
+  assert.deepEqual(clearResult.errors, []);
+});
+
+test("the schema pins the G-03 frontier limit to 50", async () => {
+  const value = await fixture("G-03");
+  assert.deepEqual(await errorsFor(value), []);
+  for (const stale of [12, 49, 51]) {
+    const copy = structuredClone(value);
+    variant(copy, "frontier-exceeded").expectations.graph.frontier.limit =
+      stale;
+    assert.ok(
+      (await errorsFor(copy)).some((error) => error.includes("schema")),
+      `limit ${stale}`,
+    );
+  }
 });
 
 test("documented qualification rules exclude stale, unapproved, out-of-scope and unrevealed material", async () => {

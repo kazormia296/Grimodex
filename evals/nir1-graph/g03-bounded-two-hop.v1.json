@@ -295,6 +295,234 @@
       "kind": "character",
       "label": "Nell",
       "summary": "Nell lives near Gull Point."
+    },
+    {
+      "id": "g03-n15",
+      "kind": "character",
+      "label": "Orla",
+      "summary": "Orla lives near Gull Point."
+    },
+    {
+      "id": "g03-n16",
+      "kind": "character",
+      "label": "Perrin",
+      "summary": "Perrin lives near Gull Point."
+    },
+    {
+      "id": "g03-n17",
+      "kind": "character",
+      "label": "Quill",
+      "summary": "Quill lives near Gull Point."
+    },
+    {
+      "id": "g03-n18",
+      "kind": "character",
+      "label": "Rowan",
+      "summary": "Rowan lives near Gull Point."
+    },
+    {
+      "id": "g03-n19",
+      "kind": "character",
+      "label": "Sable",
+      "summary": "Sable lives near Gull Point."
+    },
+    {
+      "id": "g03-n20",
+      "kind": "character",
+      "label": "Tamsin",
+      "summary": "Tamsin lives near Gull Point."
+    },
+    {
+      "id": "g03-n21",
+      "kind": "character",
+      "label": "Ulric",
+      "summary": "Ulric lives near Gull Point."
+    },
+    {
+      "id": "g03-n22",
+      "kind": "character",
+      "label": "Vesna",
+      "summary": "Vesna lives near Gull Point."
+    },
+    {
+      "id": "g03-n23",
+      "kind": "character",
+      "label": "Wyatt",
+      "summary": "Wyatt lives near Gull Point."
+    },
+    {
+      "id": "g03-n24",
+      "kind": "character",
+      "label": "Xanthe",
+      "summary": "Xanthe lives near Gull Point."
+    },
+    {
+      "id": "g03-n25",
+      "kind": "character",
+      "label": "Yara",
+      "summary": "Yara lives near Gull Point."
+    },
+    {
+      "id": "g03-n26",
+      "kind": "character",
+      "label": "Zephyr",
+      "summary": "Zephyr lives near Gull Point."
+    },
+    {
+      "id": "g03-n27",
+      "kind": "character",
+      "label": "Alder",
+      "summary": "Alder lives near Gull Point."
+    },
+    {
+      "id": "g03-n28",
+      "kind": "character",
+      "label": "Bram",
+      "summary": "Bram lives near Gull Point."
+    },
+    {
+      "id": "g03-n29",
+      "kind": "character",
+      "label": "Cormac",
+      "summary": "Cormac lives near Gull Point."
+    },
+    {
+      "id": "g03-n30",
+      "kind": "character",
+      "label": "Deryn",
+      "summary": "Deryn lives near Gull Point."
+    },
+    {
+      "id": "g03-n31",
+      "kind": "character",
+      "label": "Elowen",
+      "summary": "Elowen lives near Gull Point."
+    },
+    {
+      "id": "g03-n32",
+      "kind": "character",
+      "label": "Fenn",
+      "summary": "Fenn lives near Gull Point."
+    },
+    {
+      "id": "g03-n33",
+      "kind": "character",
+      "label": "Garrick",
+      "summary": "Garrick lives near Gull Point."
+    },
+    {
+      "id": "g03-n34",
+      "kind": "character",
+      "label": "Halla",
+      "summary": "Halla lives near Gull Point."
+    },
+    {
+      "id": "g03-n35",
+      "kind": "character",
+      "label": "Isolde",
+      "summary": "Isolde lives near Gull Point."
+    },
+    {
+      "id": "g03-n36",
+      "kind": "character",
+      "label": "Jorund",
+      "summary": "Jorund lives near Gull Point."
+    },
+    {
+      "id": "g03-n37",
+      "kind": "character",
+      "label": "Kellan",
+      "summary": "Kellan lives near Gull Point."
+    },
+    {
+      "id": "g03-n38",
+      "kind": "character",
+      "label": "Linnet",
+      "summary": "Linnet lives near Gull Point."
+    },
+    {
+      "id": "g03-n39",
+      "kind": "character",
+      "label": "Merrick",
+      "summary": "Merrick lives near Gull Point."
+    },
+    {
+      "id": "g03-n40",
+      "kind": "character",
+      "label": "Neve",
+      "summary": "Neve lives near Gull Point."
+    },
+    {
+      "id": "g03-n41",
+      "kind": "character",
+      "label": "Osric",
+      "summary": "Osric lives near Gull Point."
+    },
+    {
+      "id": "g03-n42",
+      "kind": "character",
+      "label": "Pippa",
+      "summary": "Pippa lives near Gull Point."
+    },
+    {
+      "id": "g03-n43",
+      "kind": "character",
+      "label": "Quincy",
+      "summary": "Quincy lives near Gull Point."
+    },
+    {
+      "id": "g03-n44",
+      "kind": "character",
+      "label": "Rhea",
+      "summary": "Rhea lives near Gull Point."
+    },
+    {
+      "id": "g03-n45",
+      "kind": "character",
+      "label": "Silas",
+      "summary": "Silas lives near Gull Point."
+    },
+    {
+      "id": "g03-n46",
+      "kind": "character",
+      "label": "Thessaly",
+      "summary": "Thessaly lives near Gull Point."
+    },
+    {
+      "id": "g03-n47",
+      "kind": "character",
+      "label": "Una",
+      "summary": "Una lives near Gull Point."
+    },
+    {
+      "id": "g03-n48",
+      "kind": "character",
+      "label": "Vance",
+      "summary": "Vance lives near Gull Point."
+    },
+    {
+      "id": "g03-n49",
+      "kind": "character",
+      "label": "Wynn",
+      "summary": "Wynn lives near Gull Point."
+    },
+    {
+      "id": "g03-n50",
+      "kind": "character",
+      "label": "Xavier",
+      "summary": "Xavier lives near Gull Point."
+    },
+    {
+      "id": "g03-n51",
+      "kind": "character",
+      "label": "Yorick",
+      "summary": "Yorick lives near Gull Point."
+    },
+    {
+      "id": "g03-n52",
+      "kind": "character",
+      "label": "Zora",
+      "summary": "Zora lives near Gull Point."
     }
   ],
   "relations": [
@@ -433,6 +661,310 @@
       "type": "knows",
       "direction": "directed",
       "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-15",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n15",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-16",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n16",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-17",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n17",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-18",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n18",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-19",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n19",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-20",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n20",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-21",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n21",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-22",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n22",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-23",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n23",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-24",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n24",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-25",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n25",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-26",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n26",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-27",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n27",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-28",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n28",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-29",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n29",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-30",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n30",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-31",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n31",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-32",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n32",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-33",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n33",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-34",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n34",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-35",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n35",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-36",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n36",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-37",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n37",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-38",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n38",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-39",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n39",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-40",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n40",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-41",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n41",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-42",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n42",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-43",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n43",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-44",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n44",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-45",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n45",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-46",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n46",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-47",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n47",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-48",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n48",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-49",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n49",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-50",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n50",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-51",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n51",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
+    },
+    {
+      "id": "g03-knows-52",
+      "fromEntityId": "g03-wren",
+      "toEntityId": "g03-n52",
+      "type": "knows",
+      "direction": "directed",
+      "authorDeclared": true
     }
   ],
   "manualSeed": {
@@ -509,7 +1041,45 @@
         "g03-n11",
         "g03-n12",
         "g03-n13",
-        "g03-n14"
+        "g03-n14",
+        "g03-n15",
+        "g03-n16",
+        "g03-n17",
+        "g03-n18",
+        "g03-n19",
+        "g03-n20",
+        "g03-n21",
+        "g03-n22",
+        "g03-n23",
+        "g03-n24",
+        "g03-n25",
+        "g03-n26",
+        "g03-n27",
+        "g03-n28",
+        "g03-n29",
+        "g03-n30",
+        "g03-n31",
+        "g03-n32",
+        "g03-n33",
+        "g03-n34",
+        "g03-n35",
+        "g03-n36",
+        "g03-n37",
+        "g03-n38",
+        "g03-n39",
+        "g03-n40",
+        "g03-n41",
+        "g03-n42",
+        "g03-n43",
+        "g03-n44",
+        "g03-n45",
+        "g03-n46",
+        "g03-n47",
+        "g03-n48",
+        "g03-n49",
+        "g03-n50",
+        "g03-n51",
+        "g03-n52"
       ],
       "relationIds": [
         "g03-knows-01",
@@ -525,7 +1095,45 @@
         "g03-knows-11",
         "g03-knows-12",
         "g03-knows-13",
-        "g03-knows-14"
+        "g03-knows-14",
+        "g03-knows-15",
+        "g03-knows-16",
+        "g03-knows-17",
+        "g03-knows-18",
+        "g03-knows-19",
+        "g03-knows-20",
+        "g03-knows-21",
+        "g03-knows-22",
+        "g03-knows-23",
+        "g03-knows-24",
+        "g03-knows-25",
+        "g03-knows-26",
+        "g03-knows-27",
+        "g03-knows-28",
+        "g03-knows-29",
+        "g03-knows-30",
+        "g03-knows-31",
+        "g03-knows-32",
+        "g03-knows-33",
+        "g03-knows-34",
+        "g03-knows-35",
+        "g03-knows-36",
+        "g03-knows-37",
+        "g03-knows-38",
+        "g03-knows-39",
+        "g03-knows-40",
+        "g03-knows-41",
+        "g03-knows-42",
+        "g03-knows-43",
+        "g03-knows-44",
+        "g03-knows-45",
+        "g03-knows-46",
+        "g03-knows-47",
+        "g03-knows-48",
+        "g03-knows-49",
+        "g03-knows-50",
+        "g03-knows-51",
+        "g03-knows-52"
       ],
       "decision": "approved",
       "onlyInVariants": ["frontier-exceeded"]
@@ -553,7 +1161,7 @@
   "variants": [
     {
       "id": "base",
-      "description": "Steady state with the two-hop path and the qualified third hop; the fourteen extra Relations exist only in Codex and have no Revision.",
+      "description": "Steady state with the two-hop path and the qualified third hop; the fifty-two extra Relations exist only in Codex and have no Revision.",
       "measurementPoint": "after-maintenance-current",
       "indexState": {
         "chronicle": "usable",
@@ -699,6 +1307,158 @@
             {
               "edgeId": "g03-knows-14",
               "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-15",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-16",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-17",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-18",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-19",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-20",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-21",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-22",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-23",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-24",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-25",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-26",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-27",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-28",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-29",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-30",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-31",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-32",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-33",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-34",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-35",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-36",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-37",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-38",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-39",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-40",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-41",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-42",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-43",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-44",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-45",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-46",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-47",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-48",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-49",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-50",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-51",
+              "reason": "no-revision"
+            },
+            {
+              "edgeId": "g03-knows-52",
+              "reason": "no-revision"
             }
           ],
           "excludedEntities": [
@@ -761,11 +1521,163 @@
             {
               "entityId": "g03-n14",
               "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n15",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n16",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n17",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n18",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n19",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n20",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n21",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n22",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n23",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n24",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n25",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n26",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n27",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n28",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n29",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n30",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n31",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n32",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n33",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n34",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n35",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n36",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n37",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n38",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n39",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n40",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n41",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n42",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n43",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n44",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n45",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n46",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n47",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n48",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n49",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n50",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n51",
+              "reason": "no-revision"
+            },
+            {
+              "entityId": "g03-n52",
+              "reason": "no-revision"
             }
           ],
           "frontier": {
             "discoveredEntities": 2,
-            "limit": 12
+            "limit": 50
           }
         },
         "pathAttachments": [
@@ -841,7 +1753,7 @@
     },
     {
       "id": "frontier-exceeded",
-      "description": "Same corpus plus an approved Revision for fourteen more Wren knows-Relations, so qualified discovery exceeds twelve Entities under either counting convention.",
+      "description": "Same corpus plus an approved Revision for fifty-two more Wren knows-Relations, so qualified discovery exceeds fifty Entities under either counting convention.",
       "measurementPoint": "after-maintenance-current",
       "indexState": {
         "chronicle": "usable",
@@ -913,8 +1825,8 @@
           "nodes": [],
           "edgeIds": [],
           "frontier": {
-            "discoveredEntities": 16,
-            "limit": 12
+            "discoveredEntities": 54,
+            "limit": 50
           }
         },
         "pathAttachments": [],
@@ -983,7 +1895,7 @@
     {
       "id": "G-03-N2",
       "materials": ["g03-r-frontier", "g03-c1", "g03-c2"],
-      "expectation": "With sixteen qualified discovered Entities the query refuses the whole Graph: no node, edge or path is returned, including the otherwise valid one- and two-hop paths, and the result is exactly R+IR.",
+      "expectation": "With fifty-four qualified discovered Entities the query refuses the whole Graph: no node, edge or path is returned, including the otherwise valid one- and two-hop paths, and the result is exactly R+IR.",
       "rule": "graph-limited-binding: limit超過 => Graph寄与0; post-B §6.2: partial Graphを返さない."
     },
     {
