@@ -12,6 +12,15 @@ use grimodex_db::domain_writes::{
     tree_node_create, tree_node_delete, TreeNodeCreatePayload, TreeNodeDeletePayload,
 };
 use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
+use grimodex_db::narrative_extraction::NativeNir1HistoryDraft;
+use grimodex_db::nir1_generation::history_context::{
+    HistoryAuto, HistoryAxes, HistoryAxis, HistoryContextContract, HistoryContextSlot,
+    HistoryD1Selection, HistoryDigest, HistoryDigestDomain, HistoryEffectiveAxis,
+    HistoryEstimatorVersion, HistoryInt, HistoryPhaseSetting, HistoryPrincipal,
+    HistoryReadingOrder, HistoryRestoreEpoch, HistoryScopeRef, HistorySendClassification,
+    HistoryStoryTime, HistoryTargetScope, HistoryTurnContextV1, HistoryUnavailableReason,
+    HistoryViewpoint,
+};
 use grimodex_db::nir1_generation::{
     AttemptSceneBinding, FailureClassification, GenerationPurpose, InputReference, InputRole,
     InputTarget, NewChatInputSubmission, Nir1GenerationFailpoint, ReadBudget, StoredAttempt,
@@ -279,8 +288,8 @@ const PROJECT: &str = "owner-project";
 const SCENE: &str = "owner-scene";
 const SESSIONS: [&str; 3] = ["owner-session-a", "owner-session-b", "owner-session-c"];
 const READ_BUDGET: ReadBudget = ReadBudget {
-    max_references: 8,
-    max_reference_bytes: 4096,
+    max_references: 16,
+    max_reference_bytes: 16 * 1024,
 };
 
 fn workspace_root() -> PathBuf {
@@ -553,6 +562,21 @@ impl OwnerFixture {
         owner: &Nir1GenerationOwner,
         submission: &NativeAcceptedChatSubmission,
     ) -> FinalDispatchRequest {
+        // Most owner tests do not examine the history slot: a closed reason
+        // with the identity of the owner's own Ready binding.
+        let history = NativeNir1HistoryDraft::unavailable(
+            HistoryUnavailableReason::RestoreEpochUnavailable,
+            self.binding().durable_workspace_identity().cloned(),
+        );
+        self.request_with_history(owner, submission, history)
+    }
+
+    fn request_with_history(
+        &self,
+        owner: &Nir1GenerationOwner,
+        submission: &NativeAcceptedChatSubmission,
+        history: NativeNir1HistoryDraft,
+    ) -> FinalDispatchRequest {
         let now = now_ms().expect("clock");
         let digest = canonical_json_digest(&json!("owner-fixture")).expect("digest");
         FinalDispatchRequest {
@@ -578,6 +602,7 @@ impl OwnerFixture {
                 input_use: grimodex_db::nir1_generation::InputUse::CurrentTurn,
             }],
             qualifications: vec![],
+            history,
             created_at_ms: now,
             expires_at_ms: now + 60_000,
             budget: READ_BUDGET,
@@ -2558,3 +2583,263 @@ fn a1_owner_has_no_napi_entry() {
 // DT-4 T2: AI usage policy check of the local send route, on this fixture.
 #[path = "nir1_local_send_policy_tests.rs"]
 mod nir1_local_send_policy_tests;
+
+
+fn history_digest(domain: HistoryDigestDomain, value: &str) -> HistoryDigest {
+    HistoryDigest::of(domain, value).expect("digest")
+}
+
+fn int(value: u64) -> HistoryInt {
+    HistoryInt::new(value).expect("in range")
+}
+
+/// What the D-final builder hands over for a Human-only request: every axis
+/// present. `eligibleUntilMs` is `0` (the storage writer sets it).
+fn builder_context(human_inputs: &[InputReference]) -> HistoryTurnContextV1 {
+    let parameters = grimodex_db::nir1_generation::D1SelectionParameters {
+        estimator_version: HistoryEstimatorVersion::Nir1ContextEstimatorV1
+            .as_wire()
+            .to_owned(),
+        selector_budget_tokens: 1_000,
+        used_tokens: 0,
+        remaining_tokens: 1_000,
+    };
+    let selection = grimodex_db::nir1_generation::d1_selection_digest(&parameters, human_inputs)
+        .expect("selection digest");
+    HistoryTurnContextV1 {
+        contract: HistoryContextContract,
+        send_classification: HistorySendClassification::LocalOnly,
+        eligible_until_ms: int(0),
+        restore_epoch: HistoryRestoreEpoch {
+            id_digest: history_digest(HistoryDigestDomain::RestoreEpochId, "epoch-1"),
+            number: int(2),
+        },
+        target: HistoryTargetScope {
+            binding_token_digest: history_digest(HistoryDigestDomain::ScopeBindingToken, "token"),
+            version: int(5),
+        },
+        axes: HistoryAxes {
+            reading_order: HistoryAxis::Present(HistoryReadingOrder {
+                reading_ref_digest: history_digest(HistoryDigestDomain::ReadingRef, "reading"),
+                rank: int(1),
+            }),
+            story_time: HistoryAxis::Present(HistoryStoryTime {
+                story_ref_digest: history_digest(HistoryDigestDomain::StoryRef, "story"),
+                raw_key_digest: history_digest(HistoryDigestDomain::StoryRawKey, "key"),
+            }),
+            viewpoint: HistoryAxis::Present(HistoryViewpoint {
+                pov_digest: history_digest(HistoryDigestDomain::PovCharacter, "pov"),
+            }),
+            knowledge_holder: HistoryAxis::Present(HistoryPrincipal::Reader),
+            audience: HistoryAxis::Present(HistoryPrincipal::Reader),
+            timeline: HistoryAxis::Present(HistoryScopeRef {
+                ref_digest: history_digest(HistoryDigestDomain::TimelineRef, "timeline"),
+            }),
+            worldline: HistoryAxis::Present(HistoryScopeRef {
+                ref_digest: history_digest(HistoryDigestDomain::WorldlineRef, "worldline"),
+            }),
+            narrative_layer: HistoryAxis::Present(HistoryScopeRef {
+                ref_digest: history_digest(HistoryDigestDomain::NarrativeLayerRef, "layer"),
+            }),
+            auto: HistoryAxis::Present(HistoryAuto {
+                setting: HistoryPhaseSetting::Auto,
+                axis: HistoryEffectiveAxis::Story,
+                fallback: None,
+            }),
+        },
+        d1: HistoryD1Selection {
+            selection_digest: HistoryDigest::parse(&selection).expect("selection digest"),
+            estimator_version: HistoryEstimatorVersion::Nir1ContextEstimatorV1,
+            selector_budget_tokens: int(1_000),
+            used_tokens: int(0),
+            remaining_tokens: int(1_000),
+        },
+    }
+}
+
+/// The qualification rows a Human-only request carries (K4/3 section 3): the
+/// message Source, the target Scene's Scope token and incarnation, and the five
+/// typed N/A.
+fn complete_human_rows(
+    fixture: &OwnerFixture,
+    submission: &NativeAcceptedChatSubmission,
+) -> Vec<grimodex_db::nir1_generation::QualificationReference> {
+    use grimodex_db::nir1_generation::{
+        scope_identity, NotApplicableReason as Na, QualificationKind, QualificationReference,
+        ScopeRole,
+    };
+    let version =
+        storage::read_message_version(fixture.authority.db(), submission.message_version_id())
+            .expect("message version");
+    vec![
+        QualificationReference::present(
+            0,
+            QualificationKind::Source,
+            version.id.clone(),
+            version.body_digest.clone(),
+        ),
+        QualificationReference::scope(
+            0,
+            ScopeRole::QuerySceneScope,
+            scope_identity(ScopeRole::QuerySceneScope, &[SCENE]).expect("identity"),
+            "scope-token".to_owned(),
+        ),
+        QualificationReference::scope(
+            0,
+            ScopeRole::QuerySceneIncarnation,
+            scope_identity(ScopeRole::QuerySceneIncarnation, &[SCENE]).expect("identity"),
+            "incarnation".to_owned(),
+        ),
+        QualificationReference::not_applicable(0, QualificationKind::Revision, Na::NotARevision),
+        QualificationReference::not_applicable(0, QualificationKind::Decision, Na::HumanAuthored),
+        QualificationReference::not_applicable(
+            0,
+            QualificationKind::Freshness,
+            Na::ImmutableMessageVersion,
+        ),
+        QualificationReference::not_applicable(0, QualificationKind::Index, Na::NotIndexDerived),
+        QualificationReference::not_applicable(0, QualificationKind::D1, Na::FixedUserSlot),
+    ]
+}
+
+/// A request that carries the builder's context and complete rows.
+fn context_request(
+    fixture: &OwnerFixture,
+    owner: &Nir1GenerationOwner,
+    submission: &NativeAcceptedChatSubmission,
+) -> FinalDispatchRequest {
+    let mut request = fixture.request(owner, submission);
+    request.qualifications = complete_human_rows(fixture, submission);
+    request.history = NativeNir1HistoryDraft {
+        slot: HistoryContextSlot::Context(Box::new(builder_context(&request.inputs))),
+        durable_workspace_identity: fixture.binding().durable_workspace_identity().cloned(),
+    };
+    request
+}
+
+#[test]
+fn owner_stores_the_builders_slot_with_the_writers_eligibility_and_its_own_identity() {
+    let fixture = OwnerFixture::new();
+    let owner_identity = fixture
+        .binding()
+        .durable_workspace_identity()
+        .cloned()
+        .expect("the real Ready adapter computes an identity for this workspace");
+    let submission = fixture.accept(0, "hs1-slot");
+    let owner = fixture.owner(0, &submission).expect("owner");
+    let request = context_request(&fixture, &owner, &submission);
+    let HistoryContextSlot::Context(sent) = &request.history.slot else {
+        unreachable!("the helper builds a context");
+    };
+    let sent = (**sent).clone();
+    let prepared = owner.create(request).expect("durable attempt");
+    let stored = fixture.attempt(prepared.attempt_id());
+    let Some(HistoryContextSlot::Context(stored_context)) = &stored.binding.history_turn_context
+    else {
+        panic!(
+            "the builder's context is stored: {:?}",
+            stored.binding.history_turn_context
+        );
+    };
+    // The builder's value, plus the eligibility time the writer derived from
+    // the stored row.
+    let mut expected = sent;
+    expected.eligible_until_ms = int(u64::try_from(stored.created_at_ms).expect("non-negative")
+        + u64::try_from(
+            grimodex_db::nir1_generation::history_context::HISTORY_ELIGIBILITY_WINDOW_MS,
+        )
+        .expect("window"));
+    assert_eq!(**stored_context, expected);
+    assert_eq!(
+        stored.binding.durable_workspace_identity,
+        Some(owner_identity)
+    );
+    assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
+}
+
+#[test]
+fn owner_rejects_durable_identity_that_differs_from_its_live_binding() {
+    use grimodex_db::nir1_generation::history_context::DurableWorkspaceIdentity;
+
+    let fixture = OwnerFixture::new();
+    let submission = fixture.accept(0, "hs1-identity");
+    let other =
+        DurableWorkspaceIdentity::from_parts("another-workspace", "/another/root").expect("other");
+    for (name, identity) in [("another workspace", Some(other)), ("none", None)] {
+        let owner = fixture.owner(0, &submission).expect("owner");
+        let mut request = context_request(&fixture, &owner, &submission);
+        request.history.durable_workspace_identity = identity;
+        assert_eq!(
+            owner.create(request).err(),
+            Some(Nir1GenerationRefusal::HistoryIdentityMismatch),
+            "{name}"
+        );
+        assert_eq!(fixture.attempt_count(), 0, "{name}: no attempt is created");
+        assert_eq!(
+            fixture.state.nir1_generation_registry.tracked_sessions(),
+            0,
+            "{name}: the session slot is released"
+        );
+    }
+    // The matching identity is accepted for the same submission.
+    let owner = fixture.owner(0, &submission).expect("owner");
+    let request = context_request(&fixture, &owner, &submission);
+    let prepared = owner.create(request).expect("matching identity");
+    assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
+}
+
+/// An unknown create COMMIT is reconciled by an exact reread that is compared
+/// with the form the writer stores, not with the request: a downgraded slot
+/// still matches.
+#[test]
+fn owner_unknown_commit_reread_accepts_the_downgraded_binding() {
+    let fixture = OwnerFixture::new();
+
+    // The rows break the completeness rule although the caller sent a
+    // context: the writer stores `d-final-incomplete`.
+    let submission = fixture.accept(0, "hs1-reread-incomplete");
+    let owner = fixture.owner(0, &submission).expect("owner");
+    owner
+        .hooks()
+        .test_hooks()
+        .fail_next("create", Nir1GenerationFailpoint::ErrorAfterCommit);
+    let mut request = context_request(&fixture, &owner, &submission);
+    request.qualifications.clear();
+    let prepared = owner
+        .create(request)
+        .expect("the COMMIT is durable and the reread matches the stored form");
+    assert_eq!(
+        fixture
+            .attempt(prepared.attempt_id())
+            .binding
+            .history_turn_context,
+        Some(HistoryContextSlot::Unavailable(
+            HistoryUnavailableReason::DFinalIncomplete
+        ))
+    );
+    assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
+
+    // The creation time leaves the eligibility range: `eligibility-overflow`.
+    let submission = fixture.accept(1, "hs1-reread-overflow");
+    let owner = fixture.owner(1, &submission).expect("owner");
+    owner
+        .hooks()
+        .test_hooks()
+        .fail_next("create", Nir1GenerationFailpoint::ErrorAfterCommit);
+    let mut request = context_request(&fixture, &owner, &submission);
+    request.created_at_ms = i64::MAX - 1;
+    request.expires_at_ms = i64::MAX;
+    let prepared = owner
+        .create(request)
+        .expect("the reread matches the downgraded form");
+    assert_eq!(
+        fixture
+            .attempt(prepared.attempt_id())
+            .binding
+            .history_turn_context,
+        Some(HistoryContextSlot::Unavailable(
+            HistoryUnavailableReason::EligibilityOverflow
+        ))
+    );
+    assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
+}

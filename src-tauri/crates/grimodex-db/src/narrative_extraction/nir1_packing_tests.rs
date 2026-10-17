@@ -1033,6 +1033,25 @@ struct PreparedWorkspace {
 #[cfg(feature = "native-current-human-capture")]
 impl PreparedWorkspace {
     fn new(db: Database) -> Result<Self> {
+        Self::with_identity(
+            db,
+            Some(
+                crate::nir1_generation::history_context::DurableWorkspaceIdentity::from_parts(
+                    "prepared-test-workspace",
+                    "/prepared/test/canonical/root",
+                )?,
+            ),
+        )
+    }
+
+    fn without_identity(db: Database) -> Result<Self> {
+        Self::with_identity(db, None)
+    }
+
+    fn with_identity(
+        db: Database,
+        identity: Option<crate::nir1_generation::history_context::DurableWorkspaceIdentity>,
+    ) -> Result<Self> {
         use crate::state::{ActiveWorkspace, WorkspaceAuthority};
         use crate::workspace_lifecycle::LiveBinding;
         use std::sync::Mutex;
@@ -1042,19 +1061,22 @@ impl PreparedWorkspace {
             uuid::Uuid::new_v4()
         ));
         let authority = WorkspaceAuthority::from_database_for_test(db, path.clone())?;
-        let identity = authority.identity();
+        let authority_instance = authority.identity();
         let state = crate::state::WorkspaceState {
             inner: Mutex::new(Some(ActiveWorkspace::new(authority))),
             safe_mode: crate::recovery::SafeModeState::default(),
             switching: crate::WorkspaceLifecycleCompatibilityView::new(false),
             open_lock: Mutex::new(Default::default()),
         };
-        state.lifecycle_core().set_ready(LiveBinding::new(
-            path.to_string_lossy(),
-            format!("prepared-test:{identity}"),
-            identity,
-            0,
-        ))?;
+        state.lifecycle_core().set_ready(
+            LiveBinding::new(
+                path.to_string_lossy(),
+                format!("prepared-test:{authority_instance}"),
+                authority_instance,
+                0,
+            )
+            .with_durable_workspace_identity(identity),
+        )?;
         Ok(Self { state, path })
     }
 
@@ -1158,6 +1180,7 @@ fn prepared_projection_uses_captured_human_current_raw_and_typed_approved_revisi
     let projection = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
         PackingPurpose::Writing,
+        crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
         "nir1-prepared-db-session",
         &message_version_id,
         RAW_SOURCE_SCENE,
@@ -1270,6 +1293,7 @@ fn prepared_projection_revalidates_large_captured_human_after_single_charge() ->
     let projection = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
         PackingPurpose::Writing,
+        crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
         "nir1-prepared-db-session",
         &capture,
         RAW_SOURCE_SCENE,
@@ -1326,6 +1350,7 @@ fn prepared_projection_rejects_human_over_one_copy_input_byte_limit() -> Result<
     let error = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
         PackingPurpose::Writing,
+        crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
         "nir1-prepared-db-session",
         &capture,
         RAW_SOURCE_SCENE,
@@ -1358,6 +1383,7 @@ fn prepared_projection_rejects_empty_context_budget_before_selecting_material() 
     let error = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
         PackingPurpose::Writing,
+        crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
         "nir1-prepared-db-session",
         &message_version_id,
         RAW_SOURCE_SCENE,
@@ -1413,6 +1439,7 @@ impl DfFinalFixture {
         crate::narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &self.snapshot,
             PackingPurpose::Writing,
+            crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             "nir1-prepared-db-session",
             &self.capture,
             RAW_SOURCE_SCENE,
@@ -1461,6 +1488,13 @@ impl DfFinalFixture {
                         &mut || Ok(()),
                     )?;
                     (mutate.take().expect("single use"))(&mut pooled.bindings);
+                    let history_context = build_history_context_stage(
+                        conn,
+                        &project_id,
+                        RAW_SOURCE_SCENE,
+                        self.snapshot.durable_workspace_identity(),
+                        crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+                    )?;
                     build_native_nir1_prepared_inputs(
                         self.capture.clone(),
                         project_id,
@@ -1468,6 +1502,7 @@ impl DfFinalFixture {
                         version,
                         message,
                         pooled,
+                        history_context,
                         &mut || Ok(()),
                     )
                 },
@@ -2131,6 +2166,188 @@ fn d1_selection_follows_stored_rows_and_usage() -> Result<()> {
         error.to_string(),
         "NIR1_NATIVE_PREPARED_D1_USAGE_EXCEEDS_BUDGET"
     );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn builder_records_the_context_in_the_d_final_snapshot_and_completes_it_after_the_render(
+) -> Result<()> {
+    use crate::nir1_generation::history_context::{
+        HistoryAxis, HistoryContextSlot, HistoryDigest, HistoryDigestDomain, HistoryInt,
+    };
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    let finalized = projection.finalize_qualifications(100_000)?;
+    let draft = projection.history_draft(&finalized);
+    let HistoryContextSlot::Context(context) = &draft.slot else {
+        panic!(
+            "a complete D-final output records a context: {:?}",
+            draft.slot
+        );
+    };
+    // The identity is the one the Ready binding of the workspace carries.
+    assert_eq!(
+        draft.durable_workspace_identity.as_ref(),
+        fixture.snapshot.durable_workspace_identity()
+    );
+    assert!(draft.durable_workspace_identity.is_some());
+    // The target's Scope token and version are the ones D-final's own
+    // Revision bindings read from the same snapshot.
+    let scope = projection.authority_bindings()[0].scope();
+    assert_eq!(
+        context.target.binding_token_digest,
+        HistoryDigest::of(
+            HistoryDigestDomain::ScopeBindingToken,
+            scope.query_scene_scope_token()
+        )?
+    );
+    let stored_scope = fixture.snapshot.db().with_read_transaction(|conn| {
+        crate::narrative_extraction::read_narrative_scene_scope(
+            conn,
+            RAW_SOURCE_PROJECT,
+            RAW_SOURCE_SCENE,
+        )
+    })?;
+    assert_eq!(
+        context.target.version,
+        HistoryInt::from_i64(stored_scope.binding.version)?
+    );
+    // The effective axis D-final's A3 resolved is the one the context records.
+    let HistoryAxis::Present(auto) = &context.axes.auto else {
+        panic!("auto is resolvable in this fixture");
+    };
+    assert_eq!(
+        match auto.axis {
+            crate::nir1_generation::history_context::HistoryEffectiveAxis::Reading => "reading",
+            crate::nir1_generation::history_context::HistoryEffectiveAxis::Story => "story",
+        },
+        scope.effective_axis()
+    );
+    // `eligibleUntilMs` is the writer's, not the builder's.
+    assert_eq!(context.eligible_until_ms.get(), 0);
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn builder_d1_fields_recompute_the_selection_digest() -> Result<()> {
+    use crate::nir1_generation::d1_selection_digest;
+    use crate::nir1_generation::history_context::{HistoryContextSlot, HistoryEstimatorVersion};
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    let finalized = projection.finalize_qualifications(100_000)?;
+    let draft = projection.history_draft(&finalized);
+    let HistoryContextSlot::Context(context) = draft.slot else {
+        panic!("a complete D-final output records a context");
+    };
+    // The context's D1 fields and the stored input rows alone recompute the
+    // digest that every D1 selection reference carries (DFA-1/2's hand-off).
+    let parameters = D1SelectionParameters {
+        estimator_version: context.d1.estimator_version.as_wire().to_owned(),
+        selector_budget_tokens: context.d1.selector_budget_tokens.get(),
+        used_tokens: context.d1.used_tokens.get(),
+        remaining_tokens: context.d1.remaining_tokens.get(),
+    };
+    let recomputed = d1_selection_digest(&parameters, projection.input_references())?;
+    assert_eq!(recomputed, finalized.d1_selection_digest);
+    assert_eq!(context.d1.selection_digest.as_str(), recomputed);
+    assert_eq!(
+        context.d1.estimator_version,
+        HistoryEstimatorVersion::Nir1ContextEstimatorV1
+    );
+    for row in finalized
+        .qualifications
+        .iter()
+        .filter(|row| row.kind == QualificationKind::D1 && row.identity().is_some())
+    {
+        assert_eq!(row.version(), Some(recomputed.as_str()));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn builder_detects_rule_3_violations_as_d_final_incomplete() -> Result<()> {
+    use crate::nir1_generation::history_context::{HistoryContextSlot, HistoryUnavailableReason};
+    use crate::nir1_generation::{check_attempt_completeness, CompletenessContext};
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    let mut finalized = projection.finalize_qualifications(100_000)?;
+    let (revision_ordinal, _) = revision_ordinals(&projection)[0].clone();
+    // Reduce the Revision's Source refs (its material basis and Evidence) to
+    // one: every kind keeps a reference, so the structural checker passes,
+    // but the set no longer equals the one the current state derives.
+    let mut kept = false;
+    finalized.qualifications.retain(|row| {
+        if row.input_ordinal == revision_ordinal && row.kind == QualificationKind::Source {
+            return !std::mem::replace(&mut kept, true);
+        }
+        true
+    });
+    check_attempt_completeness(
+        projection.input_references(),
+        &finalized.qualifications,
+        &CompletenessContext {
+            target_scene_id: RAW_SOURCE_SCENE,
+            expected_targets: None,
+        },
+    )
+    .map_err(|violation| anyhow::anyhow!("the structural check must pass: {violation}"))?;
+    assert!(projection
+        .check_completeness(&finalized.qualifications)
+        .is_err());
+    // The finalizer is not bypassed in production; this is the second line of
+    // defense for a final output built another way.
+    let draft = projection.history_draft(&finalized);
+    assert_eq!(
+        draft.slot,
+        HistoryContextSlot::Unavailable(HistoryUnavailableReason::DFinalIncomplete)
+    );
+    assert_eq!(
+        draft.durable_workspace_identity.as_ref(),
+        fixture.snapshot.durable_workspace_identity()
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn prepared_inputs_without_a_durable_identity_record_the_closed_reason() -> Result<()> {
+    use crate::nir1_generation::history_context::{HistoryContextSlot, HistoryUnavailableReason};
+
+    let db = current_schema_memory()?;
+    let storage = json!({
+        "type": "doc",
+        "content": [{"type":"paragraph","content":[{"type":"text","text":"Current Source body."}]}]
+    })
+    .to_string();
+    let revisions = fixture_with_query_source(&db, Some(&storage))?;
+    let workspace = PreparedWorkspace::without_identity(db)?;
+    let snapshot = workspace.snapshot()?;
+    assert!(snapshot.durable_workspace_identity().is_none());
+    let capture =
+        add_prepared_human_message(&snapshot, "Captured human request for the current scene.")?;
+    let projection = read_and_pack_native_nir1_prepared_inputs(
+        &snapshot,
+        PackingPurpose::Writing,
+        crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+        "nir1-prepared-db-session",
+        &capture,
+        RAW_SOURCE_SCENE,
+        &revisions,
+        prepared_sql_budget(),
+        |_| Ok(100_000),
+    )?;
+    let draft = projection.history_draft(&projection.finalize_qualifications(100_000)?);
+    assert_eq!(
+        draft.slot,
+        HistoryContextSlot::Unavailable(HistoryUnavailableReason::WorkspaceIdentityUnavailable)
+    );
+    assert_eq!(draft.durable_workspace_identity, None);
     Ok(())
 }
 

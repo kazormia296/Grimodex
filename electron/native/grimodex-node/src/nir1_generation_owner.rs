@@ -36,7 +36,6 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use grimodex_core::canonical_json_digest;
 use grimodex_core::narrative_nir1_receipt::TerminalObservation;
-use grimodex_db::nir1_generation::history_context::{HistoryContextSlot, HistoryUnavailableReason};
 use grimodex_db::nir1_generation::{
     self as storage, AcceptedChatInputCapture, AttemptBinding, AttemptBindingVersion,
     AttemptCallerBinding, NewAttempt, NewMessageBody, Nir1AdmissionProbe, Nir1AdmissionSqlBudget,
@@ -72,6 +71,9 @@ pub(crate) enum Nir1GenerationRefusal {
     Cancelled,
     SubmissionMismatch,
     SubmissionNotCurrent,
+    /// The durable workspace identity the history context was built with
+    /// differs from the one of the owner's own Ready binding.
+    HistoryIdentityMismatch,
     /// The same submission already has an in-flight owner.
     SameSubmissionInFlight {
         attempt_id: String,
@@ -710,6 +712,15 @@ impl Nir1GenerationOwner {
         {
             return Err(Nir1GenerationRefusal::SubmissionMismatch);
         }
+        // The durable identity comes from this owner's own Ready binding. The
+        // builder's observation must equal it: a workspace that changed (or
+        // lost its identity) between prepare and create is not the one the
+        // context was built for.
+        let owner_identity = core.live_binding.durable_workspace_identity();
+        if request.history.durable_workspace_identity.as_ref() != owner_identity {
+            return Err(Nir1GenerationRefusal::HistoryIdentityMismatch);
+        }
+        let history_slot = request.history.slot;
         let (canonical_payload, payload_digest) = canonical_final_payload(&request.payload)
             .map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
         let input_digest = final_input_digest(&request.inputs, &request.qualifications)
@@ -731,13 +742,10 @@ impl Nir1GenerationOwner {
             model: request.model,
             api: request.api,
             endpoint_identity: request.endpoint_identity,
-            // HS-1 stores the slots; the D-final builder and the durable
-            // identity reach the owner in a later step. Until then the
-            // product create records the closed reason, never a null slot.
-            history_turn_context: Some(HistoryContextSlot::Unavailable(
-                HistoryUnavailableReason::WorkspaceIdentityUnavailable,
-            )),
-            durable_workspace_identity: None,
+            // The builder's slot (never null: a context or a closed reason),
+            // and the identity of this owner's own Ready binding.
+            history_turn_context: Some(history_slot),
+            durable_workspace_identity: owner_identity.cloned(),
         };
         let attempt = NewAttempt {
             binding,

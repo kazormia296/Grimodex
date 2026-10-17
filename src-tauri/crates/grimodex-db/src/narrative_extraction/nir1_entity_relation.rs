@@ -77,6 +77,12 @@ use crate::Database;
 mod project_reads;
 pub(crate) use project_reads::Nir1ProjectReads;
 use project_reads::{load_a3_query_context, A3QueryOutcome, SceneScopes};
+#[cfg(feature = "native-current-human-capture")]
+pub(crate) use project_reads::{
+    load_history_facts, HistoryStoryFact, HistoryViewpointFact, Nir1HistoryFacts,
+};
+#[cfg(all(test, feature = "native-current-human-capture"))]
+pub(crate) use project_reads::{HistoryAutoFacts, HistoryMappingFacts};
 
 /// Reserved ProposalSet kind. Generic proposal persistence cannot use this
 /// value; the typed adapter below is the only writer for this contract.

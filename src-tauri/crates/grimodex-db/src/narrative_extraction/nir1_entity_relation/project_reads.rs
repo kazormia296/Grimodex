@@ -24,7 +24,13 @@ use grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAutho
 use grimodex_core::narrative_scene_scope::{
     NarrativeSceneScopeBindingV1, NarrativeScopeCompatibilityMarkerV1,
 };
+#[cfg(feature = "native-current-human-capture")]
+use grimodex_core::narrative_scope_authority_basis::{
+    NarrativeScopeAuthorityStoryTimeOrderV2, NarrativeScopeAuthorityUnresolvedReasonV2,
+};
 use rusqlite::Connection;
+#[cfg(feature = "native-current-human-capture")]
+use rusqlite::{params, OptionalExtension};
 
 #[cfg(test)]
 use super::super::nir1_capacity::project_read_probe::{self, Read};
@@ -274,4 +280,185 @@ impl Nir1ProjectReads {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_A3_SHARED_QUERY_UNAVAILABLE"))
     }
+}
+
+/// How the target Scene's own story key stands in the live Scope authority.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HistoryStoryFact {
+    /// The Scene's own key, unique in the project.
+    Resolved { raw_story_key: String },
+    /// The Scene has no key of its own but a key is inherited (forward-fill)
+    /// from an earlier Scene. The inherited key is not the Scene's own.
+    InheritedOnly,
+    /// The key repeats in the project (a Chronicle stamp included).
+    Ambiguous,
+    /// The Scene has no key and nothing to inherit.
+    NotProvided,
+}
+
+/// The target Scene's row in the live Scope authority's mapping.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryMappingFacts {
+    pub(crate) reading_order_ref: String,
+    pub(crate) story_time_ref: String,
+    pub(crate) reading_rank: u64,
+    pub(crate) story: HistoryStoryFact,
+}
+
+/// The target Scene's explicit POV as `read_scene_viewpoint` reports it.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum HistoryViewpointFact {
+    NotProvided,
+    Pov(String),
+    /// Another project, not a character, or hidden/suppressed (one error).
+    NotVisibleCharacter,
+}
+
+/// The resolver's answer for the target Scene (ADR-002).
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryAutoFacts {
+    pub(crate) setting: String,
+    pub(crate) axis_used: String,
+    pub(crate) fallback_reason: Option<String>,
+}
+
+/// What the history turn context (K4/3 sections 2 and 4) reads about the
+/// target Scene, in the caller's read snapshot. It is built from the readers
+/// `Nir1ProjectReads::load` uses (the epoch, the live Scope authority with its
+/// Scene bindings, the story status index, the Scene viewpoint) but not from
+/// `load` itself: `load` also reads the whole Scene body for the A3 query
+/// context, which D-final has already read under its own byte budget.
+#[cfg(feature = "native-current-human-capture")]
+pub(crate) struct Nir1HistoryFacts {
+    pub(crate) epoch: Option<CurrentEpoch>,
+    /// `None` when the Scene is not in the live authority's mapping (an
+    /// archived Scene or a Scene under an archived folder), or when the
+    /// authority could not be loaded.
+    pub(crate) mapping: Option<HistoryMappingFacts>,
+    /// `None` exactly when `mapping` is `None`.
+    pub(crate) auto: Option<HistoryAutoFacts>,
+    /// The Scene's validated Scope binding, if the live authority's own read
+    /// returned one for it.
+    pub(crate) scope: Option<NarrativeSceneScopeBindingV1>,
+    pub(crate) viewpoint: HistoryViewpointFact,
+}
+
+/// Read [`Nir1HistoryFacts`]. A stop of validation (cancel, deadline) and a
+/// SQLite or IO error propagate; only a typed absence becomes a fact.
+#[cfg(feature = "native-current-human-capture")]
+pub(crate) fn load_history_facts(
+    conn: &Connection,
+    project_id: &str,
+    query_scene_id: &str,
+) -> Result<Nir1HistoryFacts> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "NIR1_ENTITY_RELATION_A3_REQUIRES_READ_TRANSACTION"
+    );
+    anyhow::ensure!(
+        !project_id.trim().is_empty() && !query_scene_id.trim().is_empty(),
+        "NIR1_ENTITY_RELATION_A3_INVALID_READ_REQUEST"
+    );
+    check_active_work(conn)?;
+    let epoch = super::read_current_epoch(conn, project_id)?;
+    check_active_work(conn)?;
+    let loaded = load_live_project_scope_authority_with_scene_bindings(
+        conn,
+        project_id,
+        &format!("project:scope-authority:{project_id}"),
+    );
+    let (authority, scene_bindings) = match loaded {
+        Ok(read) => (Some(read.authority), read.scene_bindings),
+        Err(error) if is_validation_terminated(&error) => return Err(error),
+        Err(error)
+            if error.downcast_ref::<rusqlite::Error>().is_some()
+                || error.downcast_ref::<std::io::Error>().is_some() =>
+        {
+            return Err(error)
+        }
+        Err(_) => (None, BTreeMap::new()),
+    };
+    let scope = scene_bindings.get(query_scene_id).cloned();
+    let scene_ref = format!("scene:{query_scene_id}");
+    let mut mapping = None;
+    let mut auto = None;
+    if let Some(authority) = &authority {
+        check_active_work(conn)?;
+        let story_statuses = build_a3_story_status_index(authority);
+        if let Some(row) = authority
+            .mappings
+            .iter()
+            .find(|mapping| mapping.scene_ref == scene_ref)
+        {
+            let story = match &row.story_time_order {
+                NarrativeScopeAuthorityStoryTimeOrderV2::Resolved { raw_story_key, .. } => {
+                    HistoryStoryFact::Resolved {
+                        raw_story_key: raw_story_key.clone(),
+                    }
+                }
+                NarrativeScopeAuthorityStoryTimeOrderV2::Unresolved {
+                    reason: NarrativeScopeAuthorityUnresolvedReasonV2::Ambiguous,
+                    ..
+                } => HistoryStoryFact::Ambiguous,
+                NarrativeScopeAuthorityStoryTimeOrderV2::Unresolved { .. } => {
+                    if matches!(
+                        story_statuses.status(&row.scene_ref),
+                        A3StoryKeyStatus::Resolved(_)
+                    ) {
+                        HistoryStoryFact::InheritedOnly
+                    } else {
+                        HistoryStoryFact::NotProvided
+                    }
+                }
+            };
+            mapping = Some(HistoryMappingFacts {
+                reading_order_ref: row.reading_order_ref.clone(),
+                story_time_ref: row.story_time_ref.clone(),
+                reading_rank: row.reading_rank,
+                story,
+            });
+            check_active_work(conn)?;
+            let setting: String = conn
+                .query_row(
+                    "SELECT phase_resolution_mode FROM projects WHERE id = ?1",
+                    params![project_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow::anyhow!("NIR1_HISTORY_CONTEXT_PROJECT_MISSING"))?;
+            let axis = scene_axis::resolve(authority, &setting, query_scene_id)?;
+            let axis_used = axis
+                .axis_used
+                .ok_or_else(|| anyhow::anyhow!("NIR1_HISTORY_CONTEXT_AXIS_UNRESOLVED"))?;
+            auto = Some(HistoryAutoFacts {
+                setting,
+                axis_used,
+                fallback_reason: axis.fallback_reason,
+            });
+        }
+    }
+    check_active_work(conn)?;
+    let viewpoint = match read_scene_viewpoint(conn, project_id, query_scene_id) {
+        Ok(None) => HistoryViewpointFact::NotProvided,
+        Ok(Some(character)) => HistoryViewpointFact::Pov(character),
+        Err(error) if is_validation_terminated(&error) => return Err(error),
+        Err(error)
+            if error.downcast_ref::<rusqlite::Error>().is_some()
+                || error.downcast_ref::<std::io::Error>().is_some() =>
+        {
+            return Err(error)
+        }
+        Err(_) => HistoryViewpointFact::NotVisibleCharacter,
+    };
+    Ok(Nir1HistoryFacts {
+        epoch,
+        mapping,
+        auto,
+        scope,
+        viewpoint,
+    })
 }

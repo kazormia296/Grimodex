@@ -427,6 +427,7 @@ rules:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/reveal-cases.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs

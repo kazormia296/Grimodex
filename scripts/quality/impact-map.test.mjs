@@ -601,6 +601,7 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scenes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs",
   ];
   const tests = [
     "src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs",
@@ -611,6 +612,7 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs",
   ];
   const nativeAcceptance = "electron/native/grimodex-node/src/nir1_graph_activation_tests.rs";
   const g01Assets = ["evals/nir1-g01/fixture.v1.json", "src/features/related-scenes/nir1G01Feasibility.test.ts"];
@@ -686,6 +688,8 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib narrative_extraction::nir1_packing -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation::history_context::tests -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_history_context::tests -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_packing -- --test-threads=1",
     "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_generation::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::generation_storage_adapter::adapter_tests -- --test-threads=1",
