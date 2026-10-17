@@ -2749,10 +2749,7 @@ fn restore_deleted_codex_entry_from_snapshot(
     }
     let scope_events = if entry.get("type").and_then(Value::as_str) == Some("character") {
         crate::narrative_extraction::invalidate_character_references_with_events_in_tx(
-            conn,
-            project_id,
-            entry_id,
-            &now,
+            conn, project_id, entry_id, &now,
         )?
     } else {
         Vec::new()

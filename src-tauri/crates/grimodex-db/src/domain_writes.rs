@@ -57,16 +57,39 @@ pub(crate) fn parse_updated_at_instant(value: &str) -> Option<chrono::DateTime<c
     None
 }
 
+/// Latest instant a caller-declared `updated_at` may name. It leaves a day of
+/// headroom below year 9999 so `current + 1ns` can never leave the range that
+/// `parse_updated_at_instant` reads back (chrono renders year 10000 as
+/// `+10000-...`, which no parser here accepts).
+const DECLARED_UPDATED_AT_CEILING: &str = "9999-12-30T00:00:00Z";
+
+/// Renders an instant in the Native `updated_at` form and proves that
+/// `parse_updated_at_instant` reads exactly that instant back. Fails closed
+/// otherwise: a value that cannot be interpreted would later impose no ordering
+/// and let the body Source token return to an earlier value.
+fn render_readable_updated_at(instant: chrono::DateTime<chrono::Utc>) -> anyhow::Result<String> {
+    let rendered = instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    if parse_updated_at_instant(&rendered) != Some(instant) {
+        anyhow::bail!("updatedAt '{rendered}' is outside the range this store can order");
+    }
+    Ok(rendered)
+}
+
 /// Returns an `updated_at` that is strictly later, as an instant, than
 /// `current`, for writers that rewrite a Scene row without advancing `version`.
 /// The Scene body Source token is `v{version}@{updated_at}`; it must never
 /// return to a value the row already held in this restore epoch.
 ///
-/// - `declared = Some(value)`: `value` must be an interpretable timestamp
-///   (otherwise the write is refused). It is kept verbatim when it is strictly
-///   later than `current`; otherwise `current + 1ns` is written (never an
-///   error, so a clock that moved backwards cannot make a Scene uneditable).
+/// - `declared = Some(value)`: `value` must be an interpretable timestamp not
+///   later than `DECLARED_UPDATED_AT_CEILING` (otherwise the write is refused).
+///   It is kept verbatim when it is strictly later than `current`; otherwise
+///   `current + 1ns` is written (never an error for an ordinary clock, so a
+///   clock that moved backwards cannot make a Scene uneditable).
 /// - `declared = None`: `max(now, current + 1ns)`.
+/// - Every value this function returns reads back through
+///   `parse_updated_at_instant`. When `current + 1ns` cannot be rendered in that
+///   form the write is refused (fail closed) rather than writing an
+///   uninterpretable string.
 /// - A `current` that cannot be interpreted (a legacy or foreign format) imposes
 ///   no ordering; the declared value (or now) is written. That string can not
 ///   repeat later because every value written from here on is interpretable.
@@ -80,23 +103,29 @@ pub(crate) fn strictly_later_updated_at(
             let instant = parse_updated_at_instant(value).ok_or_else(|| {
                 anyhow::anyhow!("updatedAt '{value}' is not an interpretable timestamp")
             })?;
+            let ceiling = parse_updated_at_instant(DECLARED_UPDATED_AT_CEILING)
+                .expect("ceiling is an interpretable timestamp");
+            if instant > ceiling {
+                anyhow::bail!("updatedAt '{value}' is later than {DECLARED_UPDATED_AT_CEILING}");
+            }
             (instant, Some(value))
         }
         None => (chrono::Utc::now(), None),
     };
-    let render = |instant: chrono::DateTime<chrono::Utc>| {
-        instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
-    };
     match current_instant {
-        None => Ok(verbatim.map_or_else(|| render(candidate), str::to_string)),
-        Some(current_instant) if candidate > current_instant => {
-            Ok(verbatim.map_or_else(|| render(candidate), str::to_string))
-        }
+        None => verbatim.map_or_else(
+            || render_readable_updated_at(candidate),
+            |v| Ok(v.to_string()),
+        ),
+        Some(current_instant) if candidate > current_instant => verbatim.map_or_else(
+            || render_readable_updated_at(candidate),
+            |v| Ok(v.to_string()),
+        ),
         Some(current_instant) => {
             let next = current_instant
                 .checked_add_signed(chrono::Duration::nanoseconds(1))
                 .ok_or_else(|| anyhow::anyhow!("updatedAt overflow"))?;
-            Ok(render(next))
+            render_readable_updated_at(next)
         }
     }
 }
@@ -2024,7 +2053,8 @@ pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::R
     // This permit is process-local coordination with the shared lifecycle
     // owner.  The durable running-Run check below remains mandatory because
     // another process may still hold a writer or recovery responsibility.
-    let lifecycle_namespace = crate::narrative_extraction::project_lifecycle_namespace_for_database(db)?;
+    let lifecycle_namespace =
+        crate::narrative_extraction::project_lifecycle_namespace_for_database(db)?;
     crate::narrative_extraction::try_reserve_project_destructive_permit_in_namespace(
         &lifecycle_namespace,
         &payload.project_id,
@@ -6364,6 +6394,90 @@ mod tests {
             "2026-07-29T00:00:00.000Z"
         );
         assert!(strictly_later_updated_at(None, "not a time").is_ok());
+    }
+
+    #[test]
+    fn strictly_later_updated_at_never_writes_an_uninterpretable_value() {
+        // Every returned value reads back as the instant it stands for.
+        let near_end = "9999-12-31T23:59:59.999999999Z";
+        for (declared, current) in [
+            (Some("9999-12-30T00:00:00Z"), "9999-12-29T00:00:00Z"),
+            (Some("9999-12-30T00:00:00Z"), "9999-12-30T00:00:00Z"),
+            (None, "9999-12-30T00:00:00Z"),
+        ] {
+            let written = strictly_later_updated_at(declared, current).unwrap();
+            assert!(parse_updated_at_instant(&written).is_some(), "{written}");
+        }
+        // A declaration past the ceiling is refused.
+        for declared in [
+            near_end,
+            "9999-12-30T00:00:00.000000001Z",
+            "9999-12-31T00:00:00-05:00",
+        ] {
+            assert!(
+                strictly_later_updated_at(Some(declared), "2026-07-29T00:00:00.000Z").is_err(),
+                "{declared} must be refused"
+            );
+        }
+        // current + 1ns that would leave the readable range is refused, for a
+        // declaration and for the Native clock alike (fail closed).
+        for declared in [Some("2026-07-29T00:00:00.000Z"), None] {
+            let error = strictly_later_updated_at(declared, near_end)
+                .expect_err("overflowing current + 1ns is refused");
+            assert!(error.to_string().contains("outside the range"), "{error}");
+        }
+    }
+
+    #[test]
+    fn unversioned_scene_patch_at_the_end_of_the_range_never_returns_the_token() {
+        let db = fixture();
+        tree_node_create(&db, tree_create_payload("s1", "scene", "a0", None)).unwrap();
+        let ceiling = "9999-12-30T00:00:00Z";
+        let patch_title = |title: &str, request: &str, updated_at: &str| {
+            let mut patch = serde_json::Map::new();
+            patch.insert("title".to_string(), json!(title));
+            let mut payload = tree_patch_payload("s1", patch, None, updated_at);
+            payload.request_id = request.to_string();
+            payload.event_uid = format!("{request}-event");
+            tree_node_patch(&db, payload)
+        };
+        let row = || -> String {
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT title || '|' || version || '|' || updated_at FROM tree_nodes WHERE id = 's1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .unwrap()
+        };
+        // The latest declaration allowed is kept; repeating it moves on by 1ns.
+        patch_title("one", "r1", ceiling).unwrap();
+        let first = row();
+        patch_title("two", "r2", ceiling).unwrap();
+        let second = row();
+        assert_ne!(first, second);
+        assert!(
+            second.ends_with("|9999-12-30T00:00:00.000000001Z"),
+            "{second}"
+        );
+        // A declaration past the ceiling is refused and writes nothing.
+        let before = row();
+        assert!(patch_title("late", "r3", "9999-12-31T23:59:59.999999999Z").is_err());
+        assert_eq!(row(), before);
+        // A row already holding the last representable instant (written by a
+        // versioned writer) cannot be advanced: refuse, do not write `+10000-...`.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET updated_at = '9999-12-31T23:59:59.999999999Z' WHERE id = 's1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let before = row();
+        assert!(patch_title("again", "r4", ceiling).is_err());
+        assert_eq!(row(), before);
     }
 
     #[test]

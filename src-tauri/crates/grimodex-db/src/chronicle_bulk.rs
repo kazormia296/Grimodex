@@ -2490,6 +2490,45 @@ mod tests {
         );
     }
 
+    /// A Scene whose `updated_at` is the last representable instant cannot be
+    /// advanced by `current + 1ns`; the bulk write is refused whole instead of
+    /// writing a value that no parser reads back (which would let the body Source
+    /// token return to an earlier value).
+    #[test]
+    fn bulk_scene_rewrite_refuses_instead_of_writing_an_uninterpretable_updated_at() {
+        let db = test_db();
+        let (project_id, codex_id, _event_delete_id, _event_clear_id, scene_id) = setup(&db);
+        let end = "9999-12-31T23:59:59.999999999Z";
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![end, scene_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let before = scene_body_token(&db, &scene_id);
+        let events_before = feed_event_count(&db, "scene", &scene_id);
+        let result = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "end-forward".to_string(),
+                project_id,
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::SceneSetPov {
+                    scene_id: scene_id.clone(),
+                    base_updated_at: end.to_string(),
+                    pov_character_id: Some(codex_id),
+                }],
+            },
+        );
+        assert!(result.is_err(), "the write is refused");
+        assert_eq!(scene_body_token(&db, &scene_id), before);
+        assert_eq!(scene_updated_at(&db, &scene_id), end);
+        assert_eq!(feed_event_count(&db, "scene", &scene_id), events_before);
+    }
+
     fn scope_generation(db: &Database, scene_id: &str) -> i64 {
         db.with_conn(|conn| {
             Ok(conn.query_row(

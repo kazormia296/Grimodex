@@ -292,6 +292,78 @@ fn body_save_reaches_the_body_source_consumer_without_a_scope_refresh() -> Resul
     Ok(())
 }
 
+/// Test 11 (X1-2 part), Chronicle bulk side. The bulk writer does not call
+/// `propagate_source_change_freshness_in_tx`; its `scene` Feed event (identity
+/// `project:scene:<id>`) alone must reach a whole-Source dependent when only the
+/// Chronicle date changes (no Scope field, so no `scene-scope` event).
+#[test]
+fn chronicle_bulk_date_write_reaches_the_body_source_consumer() -> Result<()> {
+    let (db, _revision_id) = approved_fixture()?;
+    write_dependency_declaration_set(
+        &db,
+        DependencyDeclarationSetRequest {
+            project_id: PROJECT.to_owned(),
+            consumer_kind: "proposal-revision".to_owned(),
+            consumer_key: "x12-bulk-consumer".to_owned(),
+            producer_id: "proposal-revision-source-basis".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![DependencyDeclaration {
+                source_object_identity: "project:scene:a3-future".to_owned(),
+                role: DependencyRole::DirectEvidence,
+                selector: DependencySelector::WholeSource,
+            }],
+            created_at: "2026-10-17T00:00:00.000Z".to_owned(),
+        },
+    )?;
+    // Settle the range the declaration write and the fixture left pending.
+    while matches!(
+        run_incremental_freshness_cycle(&db)?,
+        IncrementalFreshnessCycleOutcome::Processed(_)
+    ) {}
+    let scope_events_before = scope_event_count(&db)?;
+    let generations_before = generations(&db)?;
+    let token_before = body_token(&db, "a3-future")?;
+    let base_updated_at: String = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT updated_at FROM tree_nodes WHERE id = 'a3-future'",
+            [],
+            |row| row.get(0),
+        )?)
+    })?;
+    let payload: crate::chronicle_bulk::AgentChronicleBulkPayload =
+        serde_json::from_value(json!({
+            "requestId": "x12-bulk-date-request",
+            "projectId": PROJECT,
+            "sessionId": "x12-bulk-session",
+            "surface": "manual",
+            "operations": [{
+                "kind": "sceneSetDate",
+                "sceneId": "a3-future",
+                "baseUpdatedAt": base_updated_at,
+                "startTime": 12,
+                "startMinute": null,
+                "startGranularity": "day",
+                "endTime": null,
+                "endMinute": null,
+                "endGranularity": "none"
+            }]
+        }))?;
+    crate::chronicle_bulk::agent_chronicle_bulk_mutate_impl(&db, payload)?;
+    assert_ne!(body_token(&db, "a3-future")?, token_before);
+    assert_eq!(scope_event_count(&db)?, scope_events_before);
+    assert_eq!(generations(&db)?, generations_before);
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db)?
+    else {
+        anyhow::bail!("a bulk write must leave a pending Feed range");
+    };
+    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 1);
+    assert_eq!(summary.v2_shadow.consumers.len(), 1);
+    assert_eq!(summary.v2_shadow.consumers[0].freshness, "stale");
+    Ok(())
+}
+
 /// Test 2. Titles and display metadata keep the Scope generation; a Scope
 /// field patch (POV, story order, placement, archive) advances it exactly once
 /// per real change; a `bumpVersion=false` patch with the renderer's strictly
@@ -654,6 +726,19 @@ fn snapshot_body_restore_keeps_typed_revision_ineligible_when_the_token_returns(
     assert!(
         !revision_is_current(&db, &revision_id)?,
         "the old approval must not match again after the restore"
+    );
+    // The project Scope token moved too, so pin the reason: the Revision is
+    // retired by the restore epoch itself, not only by the token mismatch.
+    let a2 = db.with_read_transaction(|conn| {
+        read_nir1_entity_relation_revision(conn, PROJECT, &revision_id)
+    })?;
+    assert!(
+        matches!(
+            a2,
+            Nir1EntityRelationRevisionRead::Unavailable { ref reason }
+                if reason == "revision-restore-invalidated"
+        ),
+        "the restore epoch retires the Revision: {a2:?}"
     );
     let epochs: i64 = db.with_conn(|conn| {
         Ok(conn.query_row(

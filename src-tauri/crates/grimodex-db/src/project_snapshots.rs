@@ -3415,7 +3415,13 @@ mod tests {
                        FROM narrative_scene_scope_bindings
                       WHERE project_id = 'p1' AND scene_id = 't1'",
                     [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )?)
             })
             .expect("read missing-current corruption");
@@ -3455,8 +3461,7 @@ mod tests {
         let type_db = fixture();
         seed_referenced_character(&type_db);
         let type_snapshot = character_snapshot("s-codex-type-current");
-        create_project_snapshot(&type_db, type_snapshot)
-            .expect("create type-current snapshot");
+        create_project_snapshot(&type_db, type_snapshot).expect("create type-current snapshot");
         type_db
             .with_conn(|conn| {
                 conn.execute(
@@ -3474,7 +3479,13 @@ mod tests {
                        FROM narrative_scene_scope_bindings
                       WHERE project_id = 'p1' AND scene_id = 't1'",
                     [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )?)
             })
             .expect("read type-current corruption");
