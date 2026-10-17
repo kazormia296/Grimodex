@@ -12,7 +12,12 @@ vi.mock("electron", () => ({
   app: appState,
 }));
 
-import { getDevRendererUrl, resolveDevRendererUrl } from "./devRendererUrl.js";
+import {
+  getDevRendererUrl,
+  resolveDevRendererUrl,
+  shouldRegisterAppProtocol,
+  shouldRegisterAppProtocolFor,
+} from "./devRendererUrl.js";
 
 const DEV_URL = "http://localhost:1430";
 
@@ -69,5 +74,47 @@ describe("getDevRendererUrl", () => {
     appState.isPackaged = "false";
     expect(getDevRendererUrl()).toBeUndefined();
     delete process.env.ELECTRON_RENDERER_URL;
+  });
+});
+
+describe("shouldRegisterAppProtocol", () => {
+  it("packaged は env があっても app://bundle を登録する", () => {
+    expect(
+      shouldRegisterAppProtocolFor({
+        isPackaged: true,
+        env: { ELECTRON_RENDERER_URL: DEV_URL },
+      }),
+    ).toBe(true);
+    expect(shouldRegisterAppProtocolFor({ isPackaged: true, env: {} })).toBe(
+      true,
+    );
+  });
+
+  it("非 packaged は dev server の env があるときだけ登録しない", () => {
+    expect(
+      shouldRegisterAppProtocolFor({
+        isPackaged: false,
+        env: { ELECTRON_RENDERER_URL: DEV_URL },
+      }),
+    ).toBe(false);
+    expect(shouldRegisterAppProtocolFor({ isPackaged: false, env: {} })).toBe(
+      true,
+    );
+  });
+
+  it("この process の判定は app.isPackaged と env を読む（読めない isPackaged は packaged 扱い）", () => {
+    const saved = process.env.ELECTRON_RENDERER_URL;
+    try {
+      process.env.ELECTRON_RENDERER_URL = DEV_URL;
+      appState.isPackaged = true;
+      expect(shouldRegisterAppProtocol()).toBe(true);
+      appState.isPackaged = undefined;
+      expect(shouldRegisterAppProtocol()).toBe(true);
+      appState.isPackaged = false;
+      expect(shouldRegisterAppProtocol()).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.ELECTRON_RENDERER_URL;
+      else process.env.ELECTRON_RENDERER_URL = saved;
+    }
   });
 });

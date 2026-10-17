@@ -957,6 +957,59 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    /// K3/2 Negative (10): there is no operation that releases the restriction.
+    /// Every state-changing operation of the writer, run on a restricted
+    /// profile, leaves the durable file `restricted: true` (and a reload
+    /// restricted), and the source holds a single assignment to the flag.
+    #[test]
+    fn no_operation_of_the_writer_releases_the_restriction() {
+        let path = temp_path("one-way");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        let status = state.status();
+        state.bind_workspace(Some("workspace-a".into()));
+        state.bind_recovery_workspace(None);
+        state.invalidate_callers();
+        state.begin_startup_barrier().expect("restart barrier");
+        state.confirm_in_flight_stopped().expect("confirm");
+        state
+            .activate_first_restricted_publication(false)
+            .expect("repeat activation is idempotent");
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("state file")).expect("json");
+        assert_eq!(on_disk["restricted"], serde_json::Value::Bool(true));
+        assert!(state.is_restricted());
+        let reloaded = ProfileEgressState::new(path.clone()).expect("reload");
+        assert!(reloaded.is_restricted());
+        assert_eq!(reloaded.status().profile_id, status.profile_id);
+
+        // The only assignment to the flag in the module (outside its tests)
+        // is the one-way `= true`; nothing writes `restricted: false` or
+        // removes the file.
+        let source = include_str!("profile_egress.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source");
+        let assignments: Vec<&str> = production
+            .lines()
+            .filter(|line| line.trim_start().starts_with("state.restricted ="))
+            .collect();
+        assert_eq!(assignments.len(), 1, "{assignments:?}");
+        assert!(assignments[0].contains("= true;"), "{assignments:?}");
+        // The only removal is the temporary file of an atomic replace.
+        for line in production.lines().filter(|line| line.contains("remove_")) {
+            assert!(
+                line.contains("remove_file(&temporary)"),
+                "unexpected removal in profile_egress.rs: {line}"
+            );
+        }
+        assert!(!production.contains("restricted = false"));
+        let _ = fs::remove_file(path);
+    }
+
     #[test]
     fn startup_barrier_requires_the_explicit_first_publication() {
         let path = temp_path("explicit-activation");

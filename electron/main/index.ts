@@ -27,7 +27,7 @@ import {
   sendBackendEventToWindow,
   sendMainEventToWindow,
 } from "./events.js";
-import { getDevRendererUrl } from "./devRendererUrl.js";
+import { shouldRegisterAppProtocol } from "./devRendererUrl.js";
 import { installProductDownloadGuard } from "./downloadGuardElectron.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerImeShutdown } from "./imeShutdown.js";
@@ -242,7 +242,7 @@ if (!gotSingleInstanceLock) {
     installProductDownloadGuard();
     // 本番ロード（§8 S8）: vite build 成果物 dist/ を app://bundle/ で配信。
     // main.cjs は <repo>/dist-electron/ に出るため dist は 1 つ上の隣。
-    if (getDevRendererUrl() === undefined) {
+    if (shouldRegisterAppProtocol()) {
       registerAppProtocolHandler(path.join(__dirname, "..", "dist"));
     }
     const startup = await initializeNarrativeMaintenanceStartup(

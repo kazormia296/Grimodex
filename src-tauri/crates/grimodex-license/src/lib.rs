@@ -595,9 +595,20 @@ pub async fn activate_license_restricted(
     runtime: &LicenseRuntime,
     key: String,
 ) -> anyhow::Result<LicenseStateDto> {
+    activate_license_restricted_with_client(runtime, key, &RestrictedPolarClient).await
+}
+
+/// The restricted `activate` with the client injected. The key grammar is a
+/// property of the restricted path, not of the client, so a malformed key is
+/// rejected before any client (real or a test double) is reached.
+pub async fn activate_license_restricted_with_client<C: PolarLicenseClient + ?Sized>(
+    runtime: &LicenseRuntime,
+    key: String,
+    client: &C,
+) -> anyhow::Result<LicenseStateDto> {
     ensure_licensing_enabled()?;
     validate_restricted_license_key(&key)?;
-    activate_license_with_client(runtime, key, &RestrictedPolarClient).await
+    activate_license_with_client(runtime, key, client).await
 }
 
 pub async fn revalidate_license_restricted(
