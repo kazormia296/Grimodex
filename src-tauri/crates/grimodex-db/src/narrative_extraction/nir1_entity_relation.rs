@@ -10282,6 +10282,51 @@ pub(super) mod tests {
         assert_graph_binding_usable(&db)
     }
 
+    // A cancellation recorded in the same millisecond as the approval would
+    // leave the latest Decision ambiguous, and the terminal Revision could
+    // never be decided again. The writer always moves past the latest one.
+    #[test]
+    fn typed_cancellation_is_stamped_after_an_approval_in_the_same_or_a_later_millisecond(
+    ) -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let revision_id = created["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("typed revision id missing"))?
+            .to_owned();
+        // The wall clock cannot pass this approval during the test.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_decisions
+                    SET created_at = '2999-01-01T00:00:00.000Z'
+                  WHERE revision_id = ?1",
+                [&revision_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        append_typed_decision(&db, "nir1-run", &created, "rejected")?;
+        let decisions: Vec<(String, String)> = db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT decision, created_at FROM narrative_proposal_decisions
+                  WHERE revision_id = ?1 ORDER BY rowid",
+            )?;
+            let rows = statement
+                .query_map([&revision_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok::<_, anyhow::Error>(rows)
+        })?;
+        assert_eq!(
+            decisions,
+            vec![
+                ("approved".to_owned(), "2999-01-01T00:00:00.000Z".to_owned()),
+                ("rejected".to_owned(), "2999-01-01T00:00:00.001Z".to_owned()),
+            ]
+        );
+        Ok(())
+    }
+
     #[test]
     fn graph_index_wrong_tuple_or_partial_surface_is_reserved() -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;
