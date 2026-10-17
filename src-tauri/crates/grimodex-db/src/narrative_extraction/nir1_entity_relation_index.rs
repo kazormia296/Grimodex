@@ -1124,7 +1124,10 @@ fn read_revision_input_stats(
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    let (entity_count, relation_count, evidence_count): (i64, i64, i64) = conn.query_row(
+    // The scope row of a version-2 Revision is one Scene Scope projection per
+    // distinct anchor Scene, so the scope term of the record admission is the
+    // anchor count (a version-1 Revision carried one project-token row).
+    let (entity_count, relation_count, evidence_count, anchor_count): (i64, i64, i64, i64) = conn.query_row(
         "SELECT CASE WHEN json_valid(revision.payload_json)
                          THEN COALESCE(
                               CASE WHEN json_type(
@@ -1172,6 +1175,33 @@ fn read_revision_input_stats(
                                          ELSE '[]' END
                                 ) AS entity
                          ), 0)
+                         ELSE 0 END,
+                    CASE WHEN json_valid(revision.payload_json)
+                         THEN COALESCE((
+                              SELECT COUNT(DISTINCT CASE
+                                  WHEN json_valid(entity.value)
+                                   AND json_extract(entity.value, '$.scope.reading.kind') = 'exact'
+                                  THEN CASE
+                                      WHEN substr(json_extract(entity.value, '$.scope.reading.value'), 1, 6) = 'scene:'
+                                       AND length(json_extract(entity.value, '$.scope.reading.value')) > 6
+                                      THEN substr(json_extract(entity.value, '$.scope.reading.value'), 7)
+                                      WHEN substr(json_extract(entity.value, '$.scope.reading.value'), 1, 8) = 'reading:'
+                                       AND length(json_extract(entity.value, '$.scope.reading.value')) > 8
+                                      THEN substr(json_extract(entity.value, '$.scope.reading.value'), 9)
+                                  END
+                              END)
+                                FROM json_each(
+                                    CASE WHEN json_type(
+                                               revision.payload_json,
+                                               '$.bundle.entities'
+                                         ) = 'array'
+                                         THEN jsonb_extract(
+                                               revision.payload_json,
+                                               '$.bundle.entities'
+                                         )
+                                         ELSE '[]' END
+                                ) AS entity
+                         ), 0)
                          ELSE 0 END
                FROM narrative_proposal_revisions revision
                JOIN narrative_proposals proposal
@@ -1191,7 +1221,7 @@ fn read_revision_input_stats(
             super::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND,
             super::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
         ],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
@@ -1202,12 +1232,14 @@ fn read_revision_input_stats(
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
     let evidence_count = usize::try_from(evidence_count)
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
+    let anchor_count = usize::try_from(anchor_count)
+        .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
     let material_records = entity_count
         .checked_add(relation_count)
         .and_then(|count| count.checked_add(evidence_count))
         .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
     if material_records
-        .checked_add(1)
+        .checked_add(anchor_count)
         .is_none_or(|count| count > REVISION_RECORD_ADMISSION)
     {
         return Ok(None);
@@ -2921,6 +2953,56 @@ mod tests {
             assert_eq!(stats.material_records, expected_records);
         }
 
+        Ok(())
+    }
+
+    // X1-3: the scope term of the record admission is one projection row per
+    // distinct anchor Scene (`scene:<id>` and `reading:<id>` name the same
+    // anchor), not a fixed 1. 512 stays the limit.
+    #[test]
+    fn revision_record_admission_counts_one_scope_row_per_distinct_anchor() -> Result<()> {
+        let conn = stats_connection()?;
+        let payload = |entities: usize, anchors: usize| -> String {
+            let items: Vec<String> = (0..entities)
+                .map(|index| {
+                    let anchor = index % anchors;
+                    let prefix = if index % 2 == 0 { "scene" } else { "reading" };
+                    format!(
+                        r#"{{"entityId":"e{index}","scope":{{"reading":{{"kind":"exact","value":"{prefix}:s{anchor}"}}}}}}"#
+                    )
+                })
+                .collect();
+            format!(r#"{{"bundle":{{"entities":[{}],"relations":[]}}}}"#, items.join(","))
+        };
+        // (case, entities, distinct anchors, admitted)
+        for (name, entities, anchors, admitted) in [
+            ("one anchor", 511, 1, true),
+            ("one anchor over", 512, 1, false),
+            ("256 entities with 256 anchors", 256, 256, true),
+            ("257 entities with 257 anchors", 257, 257, false),
+            ("257 entities with 255 anchors", 257, 255, true),
+            ("512 entities with 2 anchors", 512, 2, false),
+        ] {
+            let revision_id = format!("revision-{name}");
+            let proposal_id = format!("proposal-{name}");
+            conn.execute(
+                "INSERT INTO narrative_proposals VALUES (?1, 'set-1', ?2, 'accepted')",
+                params![proposal_id, revision_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                 VALUES (?1, ?2, ?3, '{}', 'human', 'digest', 'now')",
+                params![revision_id, proposal_id, payload(entities, anchors)],
+            )?;
+            let stats = read_revision_input_stats(
+                &conn,
+                "project-1",
+                &revision_id,
+                None,
+                &mut SourceCapacity::default(),
+            )?;
+            assert_eq!(stats.is_some(), admitted, "{name}");
+        }
         Ok(())
     }
 
