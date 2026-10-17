@@ -1675,6 +1675,98 @@ test("p12: the baseline arm's input and qualification refs must be the captured 
   assert.equal(forgedUser.status, "invalid");
 });
 
+test("p12: the baseline's own D1 version is not compared; its D1 row is still required", () => {
+  const run = (mutate) => {
+    const p12 = buildSyntheticP12({ template });
+    mutate(p12.request.baseline, p12.request.capture);
+    return scoreP12Pair({
+      request: p12.request,
+      expectation: p12.expectation,
+      template,
+      fixtureRoute: p12.route,
+      fixture: p12.fixture,
+    });
+  };
+  const d1Rows = (baseline, ordinal) =>
+    baseline.qualifications.filter(
+      (r) => r.inputOrdinal === ordinal && r.kind === "d1",
+    );
+  // The synthetic baseline already carries a D1 version unlike the candidate's.
+  const unchanged = run((baseline, capture) => {
+    const candidateD1 = capture.rendered.qualifications.find(
+      (r) => r.inputOrdinal === 1 && r.kind === "d1",
+    );
+    const baselineD1 = d1Rows(baseline, 1)[0];
+    assert.notEqual(baselineD1.version, candidateD1.version);
+  });
+  assert.equal(unchanged.status, "passed");
+  // A further, different version on every non-user input still passes.
+  const reversioned = run((baseline) => {
+    for (const row of baseline.qualifications)
+      if (row.kind === "d1" && row.state === "present")
+        row.version = `${row.version}:again`;
+  });
+  assert.equal(reversioned.status, "passed");
+  const expectInvalid = (result) => {
+    assert.equal(result.status, "invalid");
+    assert.ok(
+      result.invalid.some(
+        (f) =>
+          f.code === "capture-ref-mismatch" &&
+          f.message.startsWith("baseline:") &&
+          f.message.includes("d1"),
+      ),
+      JSON.stringify(result.invalid),
+    );
+  };
+  // No D1 row for a Revision input.
+  expectInvalid(
+    run((baseline) => {
+      baseline.qualifications = baseline.qualifications.filter(
+        (r) => !(r.inputOrdinal === 2 && r.kind === "d1"),
+      );
+    }),
+  );
+  // Two D1 rows for one input.
+  expectInvalid(
+    run((baseline) => {
+      baseline.qualifications.push({
+        ...d1Rows(baseline, 2)[0],
+        version: "d1:second",
+      });
+    }),
+  );
+  // A typed N/A in place of the D1 reference of a non-user input.
+  expectInvalid(
+    run((baseline) => {
+      baseline.qualifications = baseline.qualifications.map((r) =>
+        r.inputOrdinal === 2 && r.kind === "d1"
+          ? {
+              inputOrdinal: 2,
+              state: "not-applicable",
+              kind: "d1",
+              reason: "fixed-user-slot",
+            }
+          : r,
+      );
+    }),
+  );
+  // Another D1 identity than the renderer's.
+  expectInvalid(
+    run((baseline) => {
+      d1Rows(baseline, 3)[0].identity = "d1:forged-identity";
+    }),
+  );
+  // The other six kinds stay compared with the captured refs.
+  const forgedSource = run((baseline) => {
+    const row = baseline.qualifications.find(
+      (r) => r.inputOrdinal === 3 && r.kind === "source",
+    );
+    row.version = "forged";
+  });
+  assert.equal(forgedSource.status, "invalid");
+});
+
 test("setup: each run has its own workspace, named by the fixture's isolation", () => {
   const w = world();
   const a = setupOf(w.setupReceipt, "P-01", positiveId("P-01"));

@@ -492,10 +492,47 @@ export function checkCargoFeatures(sources) {
           `script \`${name}\` enables the evaluation feature outside a test script`,
         );
       }
+      if (ALL_FEATURES_BUILD.test(String(command)) && !/test/.test(name)) {
+        fail(
+          file,
+          `script \`${name}\` builds with \`--all-features\`, which enables the evaluation feature`,
+        );
+      }
     }
+  }
+  // CI workflows: a release or publish workflow never names the feature, and
+  // no workflow builds (as opposed to checks or tests) with it or with
+  // \`--all-features\`. Backslash continuations are joined before matching.
+  for (const [file, text] of Object.entries(sources)) {
+    if (!file.startsWith(".github/workflows/") || !/\.ya?ml$/.test(file))
+      continue;
+    const releaseLike = /release|publish|deploy|aur/.test(path.basename(file));
+    const logical = text.replace(/\\\r?\n\s*/g, " ").split(/\r?\n/);
+    logical.forEach((line, index) => {
+      if (/^\s*#/.test(line)) return;
+      const names = line.includes(EVAL_FEATURE);
+      if (releaseLike && names) {
+        fail(
+          `${file}:${index + 1}`,
+          "a release or publish workflow names the evaluation feature",
+        );
+      } else if (
+        (names || /--all-features/.test(line)) &&
+        BUILD_COMMAND.test(line)
+      ) {
+        fail(
+          `${file}:${index + 1}`,
+          "a workflow builds with the evaluation feature or `--all-features`",
+        );
+      }
+    });
   }
   return violations;
 }
+
+const BUILD_COMMAND = /\b(?:cargo|napi)\s+build\b|--release\b/;
+const ALL_FEATURES_BUILD =
+  /(?:\b(?:cargo|napi)\s+build\b|--release\b)[^&|;]*--all-features|--all-features[^&|;]*(?:\b(?:cargo|napi)\s+build\b|--release\b)/;
 
 // ------------------------------------------------------------ reachability
 
@@ -681,6 +718,13 @@ export function loadRepositorySources(root) {
     );
   }
   files.push(PATHS.verifyRelease, "package.json");
+  try {
+    for (const name of readdirSync(path.join(root, ".github/workflows"))) {
+      if (/\.ya?ml$/.test(name)) files.push(`.github/workflows/${name}`);
+    }
+  } catch {
+    // No workflow directory: nothing to scan.
+  }
   const sources = {};
   for (const file of new Set(files)) {
     try {

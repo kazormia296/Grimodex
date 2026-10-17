@@ -94,8 +94,10 @@ function runtimeIdOf(logicalId) {
   return `rt:${logicalId}`;
 }
 
-function qualificationsFor(kind) {
-  // kind: "user" | "raw" | "revision". Every input gets all 7 kinds.
+function qualificationsFor(kind, d1Version = "d1:v1") {
+  // kind: "user" | "raw" | "revision". Every input gets all 7 kinds. The D1
+  // version is the arm's own selection digest, so an arm that keeps other
+  // items has another one.
   const present = (k, extra = {}) => ({
     state: "present",
     kind: k,
@@ -112,7 +114,7 @@ function qualificationsFor(kind) {
       present("freshness"),
       na("index", "not-index-derived"),
       present("scope", { scopeRole: "query-scene-scope" }),
-      present("d1"),
+      present("d1", { version: d1Version }),
     ];
   }
   return [
@@ -122,7 +124,9 @@ function qualificationsFor(kind) {
     na("freshness", kind === "user" ? "fixed-user-slot" : "exact-source-token"),
     na("index", "not-index-derived"),
     present("scope", { scopeRole: "query-scene-scope" }),
-    kind === "raw" ? present("d1") : na("d1", "fixed-user-slot"),
+    kind === "raw"
+      ? present("d1", { version: d1Version })
+      : na("d1", "fixed-user-slot"),
   ];
 }
 
@@ -151,6 +155,7 @@ export function renderSynthetic({
   rawText,
   revisions,
   requestToken,
+  d1Version,
 }) {
   const groups = normalizeGroups(revisions);
   const items = [
@@ -233,9 +238,11 @@ export function renderSynthetic({
   ];
   const qualifications = [
     ...withOrdinal(qualificationsFor("user"), 0),
-    ...withOrdinal(qualificationsFor("raw"), 1),
+    ...withOrdinal(qualificationsFor("raw", d1Version), 1),
     ...inputReferences.flatMap((_, ordinal) =>
-      ordinal < 2 ? [] : withOrdinal(qualificationsFor("revision"), ordinal),
+      ordinal < 2
+        ? []
+        : withOrdinal(qualificationsFor("revision", d1Version), ordinal),
     ),
   ];
   const system = `${template.base}\n\n<current_scene>\n${escapeReservedPromptTags(rawText)}\n</current_scene>\n\n<codex_entries>\n${entryRows
@@ -714,6 +721,7 @@ export function buildSyntheticP12({ template }) {
       },
     ],
     requestToken: "token-diag",
+    d1Version: "d1:baseline-selection",
   });
   const capture = captureOf({
     rendered: candidate,

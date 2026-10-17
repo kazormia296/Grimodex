@@ -394,6 +394,45 @@ test("cargo-features: a missing definition, another Cargo.toml or a release scri
   assert.match(violations[0].message, /napi:build:release/);
 });
 
+test("cargo-features: workflows and --all-features builds are scanned", () => {
+  const workflow = (name, body) =>
+    cargoSources({ [`.github/workflows/${name}`]: body });
+  const ok = workflow(
+    "ci.yml",
+    `jobs:\n  t:\n    steps:\n      - run: |\n          cargo test -p grimodex-node \\\n            --features ${EVAL_FEATURE} --lib\n`,
+  );
+  assert.deepEqual(checkCargoFeatures(ok), []);
+  const releaseNames = workflow(
+    "release.yml",
+    `jobs:\n  t:\n    steps:\n      - run: cargo check --features ${EVAL_FEATURE}\n`,
+  );
+  assert.match(
+    checkCargoFeatures(releaseNames)[0].message,
+    /release or publish workflow/,
+  );
+  const ciBuild = workflow(
+    "ci.yml",
+    `jobs:\n  t:\n    steps:\n      - run: |\n          napi build --platform \\\n            --features licensing,${EVAL_FEATURE}\n`,
+  );
+  assert.match(checkCargoFeatures(ciBuild)[0].message, /builds with/);
+  const allFeatures = workflow(
+    "ci.yml",
+    "jobs:\n  t:\n    steps:\n      - run: cargo build --release --all-features\n",
+  );
+  assert.match(checkCargoFeatures(allFeatures)[0].message, /builds with/);
+  const scriptAll = cargoSources({
+    "package.json": JSON.stringify({
+      scripts: { "napi:build": "napi build --release --all-features" },
+    }),
+  });
+  assert.match(checkCargoFeatures(scriptAll)[0].message, /--all-features/);
+  const commented = workflow(
+    "release.yml",
+    `# cargo build --features ${EVAL_FEATURE}\njobs: {}\n`,
+  );
+  assert.deepEqual(checkCargoFeatures(commented), []);
+});
+
 test("cargo-features: multi-line arrays and comments parse", () => {
   const sections = parseCargoSections(
     '[features]\n# comment\nx = [\n  "a", # trailing\n  "b",\n]\ny = []\n[dependencies]\nz = { path = "p" }\n',

@@ -28,7 +28,7 @@
     "files": [
       {
         "path": "scripts/quality/nir1-packing/final-request/scorer.mjs",
-        "sha256": "7ba6a3b0236653b9029e1bb1682ccc5cea0c0c159da699d633c41dcc3a62339b"
+        "sha256": "3c7db6adc57dbe8a481e1c0c8d5bb332e478f6b49e56cec772440be01c7b097a"
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/contract.mjs",

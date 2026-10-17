@@ -234,19 +234,45 @@ export function completenessViolations(view) {
  * qualification refs must equal the captured ones: an owner's (c-1) refs for
  * Revision and Graph inputs, the (c-2) refs for the user and Raw inputs.
  * Compared apart from the input ordinal.
+ *
+ * The D1 row of a non-user input is the exception. Its version is a digest of
+ * the arm's whole selection and token usage, which the renderer derives for
+ * each arm, so the baseline's D1 version differs from the candidate's whenever
+ * the baseline keeps other items (and P-12 needs exactly that). The six other
+ * kinds stay a byte comparison. For D1 the baseline must carry exactly one
+ * present row per non-user input, with the identity the captured Raw input's
+ * D1 row has (the renderer's, not the harness's); the baseline's own D1
+ * completeness is checked by completenessViolations. The user input's D1 is a
+ * fixed typed N/A and is compared as before.
  */
 export function baselineRefViolations(baselineView, capture) {
   const invalid = [];
   const rendered = capture.rendered;
-  const keys = (rows, ordinal) =>
+  const withoutOrdinal = (row) => {
+    const { inputOrdinal: _ordinal, ...rest } = row;
+    return rest;
+  };
+  const keys = (rows, ordinal, { skipD1 }) =>
     rows
       .filter((row) => row.inputOrdinal === ordinal)
-      .map(({ inputOrdinal: _ordinal, ...row }) => qualificationKey(row))
+      .map(withoutOrdinal)
+      .filter((row) => !(skipD1 && row.kind === "d1"))
+      .map(qualificationKey)
       .sort();
   const bad = (message) =>
     invalid.push(fail("capture-ref-mismatch", `baseline: ${message}`));
+  const rawOrdinal = rendered.inputReferences.findIndex(
+    (input) => input.target.kind === "raw-source",
+  );
+  const capturedD1Identity = rendered.qualifications.find(
+    (row) =>
+      row.inputOrdinal === rawOrdinal &&
+      row.kind === "d1" &&
+      row.state === "present",
+  )?.identity;
   for (const [ordinal, reference] of baselineView.inputReferences.entries()) {
     const kind = reference.target.kind;
+    const skipD1 = kind !== "message";
     let expectedInput;
     let expectedKeys;
     if (kind === "accepted-revision" || kind === "graph-evidence") {
@@ -256,7 +282,10 @@ export function baselineRefViolations(baselineView, capture) {
       );
       expectedInput = candidate?.input;
       expectedKeys = candidate
-        ? candidate.qualifications.map(qualificationKey).sort()
+        ? candidate.qualifications
+            .filter((row) => !(skipD1 && row.kind === "d1"))
+            .map(qualificationKey)
+            .sort()
         : undefined;
     } else {
       const captured = rendered.inputReferences.findIndex(
@@ -264,7 +293,9 @@ export function baselineRefViolations(baselineView, capture) {
       );
       expectedInput = rendered.inputReferences[captured];
       expectedKeys =
-        captured >= 0 ? keys(rendered.qualifications, captured) : undefined;
+        captured >= 0
+          ? keys(rendered.qualifications, captured, { skipD1 })
+          : undefined;
     }
     if (!expectedInput) {
       bad(`input ${ordinal} (${kind}) has no captured reference`);
@@ -273,10 +304,30 @@ export function baselineRefViolations(baselineView, capture) {
     if (!sameJson(reference, expectedInput)) {
       bad(`input ${ordinal} (${kind}) differs from the captured reference`);
     }
-    if (!sameJson(keys(baselineView.qualifications, ordinal), expectedKeys)) {
+    if (
+      !sameJson(
+        keys(baselineView.qualifications, ordinal, { skipD1 }),
+        expectedKeys,
+      )
+    ) {
       bad(
         `input ${ordinal} (${kind}) qualification refs differ from the captured ones`,
       );
+    }
+    if (skipD1) {
+      const d1Rows = baselineView.qualifications.filter(
+        (row) => row.inputOrdinal === ordinal && row.kind === "d1",
+      );
+      const d1Ok =
+        d1Rows.length === 1 &&
+        d1Rows[0].state === "present" &&
+        (capturedD1Identity === undefined ||
+          d1Rows[0].identity === capturedD1Identity);
+      if (!d1Ok) {
+        bad(
+          `input ${ordinal} (${kind}) needs exactly one present d1 ref with the captured d1 identity`,
+        );
+      }
     }
   }
   return invalid;
