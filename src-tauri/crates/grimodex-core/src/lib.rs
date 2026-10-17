@@ -42,6 +42,7 @@ pub mod narrative_ir;
 pub mod narrative_nir1;
 pub mod narrative_nir1_receipt;
 pub mod narrative_project_scope_authority;
+pub mod narrative_scene_body_declaration;
 pub mod narrative_scene_scope;
 pub mod narrative_scope_authority_basis;
 pub mod narrative_scope_dependency_projection;

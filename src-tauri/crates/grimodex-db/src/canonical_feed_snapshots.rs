@@ -432,6 +432,18 @@ pub(crate) fn canonical_snapshot_for_object_key(
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("scene-scope object key has no sceneId"))?,
         ),
+        Some("scene-body-declaration") => {
+            crate::narrative_extraction::scene_body_declaration::canonical_scene_body_declaration_snapshot(
+                conn,
+                project_id,
+                object_key
+                    .get("sceneId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("scene-body-declaration object key has no sceneId")
+                    })?,
+            )
+        }
         Some("scope-registry") => {
             let object_project_id = object_key
                 .get("projectId")

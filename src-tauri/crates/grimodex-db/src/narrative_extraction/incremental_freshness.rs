@@ -3602,6 +3602,13 @@ fn source_identity_for_event(
     Ok(match kind {
         "scene" => Some(format!("project:scene:{}", required("sceneId")?)),
         "scene-scope" | "scope-registry" => None,
+        // A declaration of a Scene's body has no Source: no Dependency,
+        // Revision or Index reads it. It is a known kind, not an unsupported
+        // one, so the event is accepted and attributed to nothing.
+        "scene-body-declaration" => {
+            required("sceneId")?;
+            None
+        }
         "temporal-projection" => Some(format!("projection:{}", required("projectionId")?)),
         "codex-entry"
         | "codex-relation"
@@ -3752,6 +3759,11 @@ fn folder_event_has_live_scene_subtree_impact(event: &NarrativeChangeEventRecord
 }
 
 pub(crate) fn event_changes_project_scope_authority(event: &NarrativeChangeEventRecord) -> bool {
+    // A Scene body declaration is not a change of the project's Scope
+    // authority: the declaration columns are outside `scope_extension_digest`.
+    if event.object_key.get("kind").and_then(Value::as_str) == Some("scene-body-declaration") {
+        return false;
+    }
     if matches!(
         event.object_key.get("kind").and_then(Value::as_str),
         Some("scene-scope") | Some("scope-registry")

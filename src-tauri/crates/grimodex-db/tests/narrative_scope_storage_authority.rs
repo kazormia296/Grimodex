@@ -11,7 +11,8 @@
 //!
 //! What the manifest pins, per the proposal's "Mandatory defenses":
 //! 1. every function that writes a binding row (and that every UPDATE of an
-//!    existing binding advances `version`);
+//!    existing binding advances `version`, except the one declaration-only clear
+//!    that writes just the two Scene body declaration columns and nothing else);
 //! 2. every function that writes a Scope column of `tree_nodes` (`parent_id`,
 //!    `sort_order`, `story_time_order`, `archived_at`, `pov_character_id`) and that
 //!    each of them reaches a Scope refresh helper;
@@ -60,6 +61,11 @@ enum Class {
     BindingCreate,
     /// UPDATE of a binding row; the statement must write `version`.
     BindingAdvance,
+    /// UPDATE of a binding row that writes only the two Scene body declaration
+    /// columns (to NULL). It deliberately does not advance the Scope generation:
+    /// `version`, `source_token`, `updated_at` and the A1 columns keep their
+    /// bytes, so a declaration never moves the v1 token (CB-1, K2/4).
+    BindingDeclarationOnly,
     /// Explicit DELETE of a Scene's binding row next to the Scene row delete.
     BindingDelete,
     /// UPDATE of `tree_nodes` that writes Scope columns (or builds its SET list
@@ -363,6 +369,13 @@ const MANIFEST: &[ManifestRow] = &[
         "INSERT tree_nodes",
         2,
         SceneCreate,
+    ),
+    (
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration.rs",
+        "null_declaration_columns",
+        "UPDATE narrative_scene_scope_bindings",
+        1,
+        BindingDeclarationOnly,
     ),
     (
         "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_scope.rs",
@@ -811,6 +824,18 @@ fn writes_scope_column(set_text: &str) -> bool {
     SCOPE_COLUMNS.iter().any(|column| found.contains(*column))
 }
 
+/// The column names on the left of each `column = value` of a SET list (the
+/// scanned text starts with the `SET` keyword).
+fn assignment_columns(set_text: &str) -> BTreeSet<String> {
+    let list = set_text.trim();
+    let list = list.strip_prefix("set").unwrap_or(list);
+    list.split(',')
+        .filter_map(|assignment| assignment.split('=').next())
+        .map(|column| column.trim().to_owned())
+        .filter(|column| !column.is_empty())
+        .collect()
+}
+
 fn is_dynamic(set_text: &str) -> bool {
     set_text.contains('{')
 }
@@ -920,6 +945,20 @@ fn scope_writer_coverage_manifest_is_complete() {
                 hit.file,
                 hit.function
             ),
+            BindingDeclarationOnly => {
+                let written = assignment_columns(&hit.set_text);
+                assert_eq!(
+                    written,
+                    BTreeSet::from([
+                        "body_declaration_json".to_owned(),
+                        "body_declaration_token".to_owned()
+                    ]),
+                    "{} :: {}: a declaration UPDATE writes exactly the two declaration columns \
+                     (never `version`, `source_token`, `updated_at` or an A1 column)",
+                    hit.file,
+                    hit.function
+                );
+            }
             BindingDelete => assert_body_contains(hit, &["DELETE FROM tree_nodes"]),
             TreeDelete => {}
             TreeScopeWriter => assert_body_contains(hit, &["refresh_scene_scope_source_token"]),
