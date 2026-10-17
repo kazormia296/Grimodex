@@ -1290,7 +1290,11 @@ pub fn check_attempt_completeness(
     Ok(())
 }
 
-fn check_input_completeness(
+/// The completeness rule of K4/3 section 3 for one input and its references
+/// (`references` are the rows of that input only). [`check_attempt_completeness`]
+/// runs it for every input; the history checker, which sees one adopted input
+/// at a time, calls it directly so that both share one rule.
+pub fn check_input_completeness(
     ordinal: usize,
     input: &InputReference,
     references: &[&QualificationReference],
