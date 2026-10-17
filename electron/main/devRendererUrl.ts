@@ -26,6 +26,17 @@ export function resolveDevRendererUrl(
 }
 
 /**
+ * `app://bundle` の protocol handler を登録するか。dev server の URL を使わない
+ * （＝ packaged、または env がない）ときだけ true。packaged build は env があっても
+ * true で、production の origin だけを trusted にする。
+ */
+export function shouldRegisterAppProtocolFor(
+  input: DevRendererUrlInput,
+): boolean {
+  return resolveDevRendererUrl(input) === undefined;
+}
+
+/**
  * packaged か。`app.isPackaged` が真偽値として読めないときは packaged として
  * 扱う（env を無視する側に倒す）。
  */
@@ -41,6 +52,14 @@ function isPackagedApp(): boolean {
 /** この process の dev server の URL。packaged build では常に undefined。 */
 export function getDevRendererUrl(): string | undefined {
   return resolveDevRendererUrl({
+    isPackaged: isPackagedApp(),
+    env: process.env,
+  });
+}
+
+/** この process が `app://bundle` の protocol handler を登録するか。 */
+export function shouldRegisterAppProtocol(): boolean {
+  return shouldRegisterAppProtocolFor({
     isPackaged: isPackagedApp(),
     env: process.env,
   });

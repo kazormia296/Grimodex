@@ -205,7 +205,12 @@ describe("(e) packaged で ELECTRON_RENDERER_URL を見ない", () => {
       const text = stripComments(
         readFileSync(path.join(MAIN_DIR, file), "utf8"),
       );
-      expect(text, file).toMatch(/getDevRendererUrl\(\)/);
+      // index.ts は app protocol の登録の判定だけを使う（同じ helper の内側）。
+      const helper =
+        file === "index.ts"
+          ? /shouldRegisterAppProtocol\(\)/
+          : /getDevRendererUrl\(\)/;
+      expect(text, file).toMatch(helper);
       expect(text, file).not.toMatch(/process\.env\.ELECTRON_RENDERER_URL/);
     }
   });
