@@ -27,6 +27,8 @@ import {
   sendBackendEventToWindow,
   sendMainEventToWindow,
 } from "./events.js";
+import { getDevRendererUrl } from "./devRendererUrl.js";
+import { installProductDownloadGuard } from "./downloadGuardElectron.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerImeShutdown } from "./imeShutdown.js";
 import { registerIpcRouter } from "./ipc.js";
@@ -51,6 +53,7 @@ import {
   registerAppProtocolHandler,
   registerAppProtocolScheme,
 } from "./protocol.js";
+import { getDefaultProfileDataGuard } from "./profileDataGuardDefault.js";
 import { showSavePathDialog } from "./shellCommands.js";
 import { configureAppUserData } from "./userData.js";
 import {
@@ -58,7 +61,7 @@ import {
   resolveElectronUpdaterAvailability,
 } from "./updater.js";
 import { createVivliostyleManager } from "./vivliostyle.js";
-import { createMainWindow, getWindow } from "./windows.js";
+import { createMainWindow, getWindow, setWindowTitleLock } from "./windows.js";
 import { createProfileEgressGate } from "./profileEgress.js";
 import {
   applySessionPermissionPolicy,
@@ -232,9 +235,11 @@ if (!gotSingleInstanceLock) {
     const { resolveAppVersion } = await import("./shellCommands.js");
     process.env.GRIMODEX_APP_VERSION ??= resolveAppVersion();
     applySessionPermissionPolicy();
+    // SF-1: Chromium の download の保存先を、書く前に検査する。
+    installProductDownloadGuard();
     // 本番ロード（§8 S8）: vite build 成果物 dist/ を app://bundle/ で配信。
     // main.cjs は <repo>/dist-electron/ に出るため dist は 1 つ上の隣。
-    if (!process.env.ELECTRON_RENDERER_URL) {
+    if (getDevRendererUrl() === undefined) {
       registerAppProtocolHandler(path.join(__dirname, "..", "dist"));
     }
     const startup = await initializeNarrativeMaintenanceStartup(
@@ -248,6 +253,11 @@ if (!gotSingleInstanceLock) {
       narrativeMaintenanceCiHeldFreshnessWriter,
     } = startup;
     setExternalEgressGate(() => profileEgress.assertExternalUrl());
+    // restricted（unavailable を含む）の間は、renderer の document.title を窓の
+    // title に反映しない。
+    setWindowTitleLock(
+      () => profileEgress.restricted || profileEgress.unavailable,
+    );
     const backend = wrapBackendForProductJourneyAi(
       initializedBackend,
       shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
@@ -301,7 +311,13 @@ if (!gotSingleInstanceLock) {
     // マネージャを 1 個生成し、その shell コマンドハンドラを invoke ルーターへ
     // 注入する。watcher イベントは backend event として全窓へ配信（external-mount://
     // の全窓 broadcast 契約）。
-    const externalMount = createExternalMountManager(broadcastBackendEvent);
+    const externalMount = createExternalMountManager(broadcastBackendEvent, {
+      // SF-1: profile data directory に重なる root と対象を拒否する。
+      profileDataGuard: getDefaultProfileDataGuard(),
+      // E-3: restricted（unavailable を含む）の間は read／write／mtime を .md に限る。
+      isProfileRestricted: () =>
+        profileEgress.restricted || profileEgress.unavailable,
+    });
     // CLI AI（バッチ3c）: active child / abort / process-tree kill を invoke を跨いで
     // 共有する単一 manager。イベントは固定 cli:stream-* を全窓へ配信する。
     const cliAi = createCliAiManager(broadcastBackendEvent, {

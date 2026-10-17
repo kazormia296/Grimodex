@@ -28,6 +28,8 @@ import {
 import os from "node:os";
 import path from "node:path";
 
+import { EventEmitter } from "node:events";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CommandArgs } from "../shared/ipcContract.js";
@@ -55,6 +57,10 @@ vi.mock("electron", () => ({
 const { ExternalMountManager } = await import("./externalMount.js");
 const { buildShellCommandHandlers } = await import("./shellCommands.js");
 const { createProfileEgressGate } = await import("./profileEgress.js");
+const { handleWillDownload } = await import("./downloadGuard.js");
+const { showSavePathDialog } = await import("./shellCommands.js");
+const { getDefaultProfileDataGuard } =
+  await import("./profileDataGuardDefault.js");
 
 import type { ExternalMountManagerOptions } from "./externalMount.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
@@ -149,8 +155,9 @@ function dispatch(
 function newManager(
   gate: Awaited<ReturnType<typeof gateFor>>,
 ): InstanceType<typeof ExternalMountManager> {
-  // DA-1 の変更の前は、この option を manager が読まない。
+  // 製品の配線（index.ts）と同じ。DA-1 の変更の前は manager が読まない option。
   const options = {
+    profileDataGuard: getDefaultProfileDataGuard(),
     watcherFactory: () => ({
       on: () => undefined,
       close: () => Promise.resolve(),
@@ -236,6 +243,40 @@ describe.each(MODES)("状態ファイルへの到達の遮断（%s）", (mode) =
     expect(overwritten).toBe(false);
     expect(snapshot(stateFile)).toEqual(before);
     expect(readFileSync(stateFile, "utf8")).toBe(GENUINE_STATE);
+    await manager.disposeAll();
+  });
+
+  it("逆向き: 偽造した restricted:true を状態ファイルへ書けない（Main の確認を経ない activation）", async () => {
+    // 状態ファイルが無い（または unrestricted の）profile に restricted:true を書く攻撃。
+    const stateFile = path.join(userDataDir, "profile-egress.json");
+    writeFileSync(stateFile, FORGED_STATE);
+    const forgedRestricted = JSON.stringify({
+      schemaVersion: 2,
+      profileId: "forged-profile",
+      callerEpoch: 1,
+      restricted: true,
+      handlesInvalidated: true,
+      inFlightStopped: true,
+    });
+    const gate = await gateFor(mode);
+    const manager = newManager(gate);
+    const handlers = manager.buildHandlers() as unknown as Record<
+      string,
+      (args: CommandArgs) => Promise<unknown>
+    >;
+    const before = snapshot(stateFile);
+    await dispatch(gate, handlers, "external_mount_register", {
+      rootId: "attack",
+      path: userDataDir,
+      label: "attack",
+    }).catch(() => undefined);
+    await dispatch(gate, handlers, "external_mount_write_file", {
+      rootId: "attack",
+      relPath: "profile-egress.json",
+      content: forgedRestricted,
+    }).catch(() => undefined);
+    expect(snapshot(stateFile)).toEqual(before);
+    expect(readFileSync(stateFile, "utf8")).toBe(FORGED_STATE);
     await manager.disposeAll();
   });
 
@@ -405,5 +446,50 @@ describe.each(MODES)("状態ファイルへの到達の遮断（%s）", (mode) =
       expect(options.defaultPath).not.toBe("..");
       expect(options.defaultPath.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ── Chromium の `<a download>`（現状の 24）──────────────────────────────────
+
+describe.each(MODES)("状態ファイルへの到達の遮断: download（%s）", () => {
+  it("renderer が download の名前を profile-egress.json にし、利用者の dialog が profile data directory を選んでも上書きされない", async () => {
+    const stateFile = path.join(userDataDir, "profile-egress.json");
+    const before = snapshot(stateFile);
+    const guard = getDefaultProfileDataGuard();
+    // 製品の配線（downloadGuardElectron.ts）と同じ: 保存先は Main の保存 dialog。
+    showSaveDialogMock.mockResolvedValue({
+      canceled: false,
+      filePath: stateFile,
+    });
+    const notices: string[] = [];
+    const item = Object.assign(new EventEmitter(), {
+      savePath: null as string | null,
+      cancelled: false,
+      getFilename: () => "profile-egress.json",
+      setSavePath(p: string) {
+        this.savePath = p;
+      },
+      cancel() {
+        this.cancelled = true;
+      },
+    });
+    const webContents = Object.assign(new EventEmitter(), {
+      isDestroyed: () => false,
+    });
+    handleWillDownload(item, webContents, {
+      guard,
+      tmpdir: () => dialogCwd,
+      pickSavePath: (_wc, options) => showSavePathDialog(null, options, guard),
+      notify: (notice) => notices.push(notice),
+    });
+    // Chromium の保存先は profile data directory の外の temp。
+    expect(item.savePath).not.toBeNull();
+    expect(item.savePath!.startsWith(userDataDir)).toBe(false);
+    writeFileSync(item.savePath!, FORGED_STATE);
+    item.emit("done", {}, "completed");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(snapshot(stateFile)).toEqual(before);
+    expect(readFileSync(stateFile, "utf8")).toBe(GENUINE_STATE);
+    expect(notices).toEqual(["rejected-destination"]);
   });
 });
