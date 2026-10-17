@@ -28,6 +28,13 @@ fn key_grammar_accepts_polar_shaped_keys() {
         // Polar issues upper-case hex; lower-case hex is the same value.
         "polar-1c285b2c-8f78-4c6e-9b2d-5a1aa7e0d5e1",
         "A-1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
+        // Polar docs: `MYAPP_<UUID4>`, `POLAR_*****`; the activate sample is a
+        // bare UUID (https://polar.sh/docs/features/benefits/license-keys).
+        "MYAPP_1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
+        "POLAR_1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
+        "GRIMODEX_1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
+        "1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
+        "1c285b2c-8f78-4c6e-9b2d-5a1aa7e0d5e1",
         "GRIM_PRO-1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
         "GRIM-PRO-1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
         // 32 character prefix (the longest) -> the longest possible key.
@@ -51,17 +58,14 @@ fn key_grammar_rejects_everything_else() {
         ("empty", ""),
         ("whitespace only", "   "),
         ("old test shape", "GRIMO-TEST-KEY-1234"),
-        ("uuid only", "1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1"),
         ("empty prefix", "-1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1"),
         ("no separator", "GRIM1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1"),
+        ("bad separator", "GRIM.1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1"),
         (
-            "leading hyphen prefix",
-            "-A-1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
+            "space separator",
+            "GRIM 1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
         ),
-        (
-            "trailing hyphen prefix",
-            "A--1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1",
-        ),
+        ("separator only", "_1C285B2C-8F78-4C6E-9B2D-5A1AA7E0D5E1"),
         ("overlong prefix", overlong_prefix.as_str()),
         ("overlong tail", overlong_tail.as_str()),
         ("free-form payload", free_form.as_str()),

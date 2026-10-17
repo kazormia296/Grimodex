@@ -473,9 +473,11 @@ const RESTRICTED_LICENSE_KEY_PREFIX_MAX_LEN: usize = 32;
 const LICENSE_KEY_UUID_LEN: usize = 36;
 
 /// Exact grammar of a Polar license key accepted while restricted:
-/// `<prefix>-<UUID>` where the prefix is 1..=32 of `[A-Za-z0-9_-]` that neither
-/// starts nor ends with `-`, and the UUID is the 8-4-4-4-12 hexadecimal form
-/// (Polar issues `PREFIX-` plus an upper-case UUID4). Anything else
+/// `[<prefix><separator>]<UUID>` where the UUID is the 8-4-4-4-12 hexadecimal
+/// form, the optional prefix is 1..=32 of `[A-Za-z0-9_-]` and the separator is
+/// `_` or `-`. Polar documents a key as a UUID4 with an optional brandable
+/// prefix (`MYAPP_<UUID4>`, `POLAR_*****`; the activate sample is a bare
+/// UUID): https://polar.sh/docs/features/benefits/license-keys . Anything else
 /// (whitespace, control characters, other bytes, overlong values) is rejected
 /// before any request is built, so a hijacked renderer cannot use the key
 /// field as a free-form channel.
@@ -486,22 +488,24 @@ pub fn validate_restricted_license_key(key: &str) -> anyhow::Result<()> {
         return Err(reject());
     }
     let bytes = key.as_bytes();
-    if bytes.len() < LICENSE_KEY_UUID_LEN + 2 {
+    if bytes.len() < LICENSE_KEY_UUID_LEN {
         return Err(reject());
     }
     let split = bytes.len() - LICENSE_KEY_UUID_LEN;
     let (head, uuid) = bytes.split_at(split);
-    let (separator, prefix) = head.split_last().ok_or_else(reject)?;
-    if *separator != b'-'
-        || prefix.is_empty()
-        || prefix.len() > RESTRICTED_LICENSE_KEY_PREFIX_MAX_LEN
-        || prefix.first() == Some(&b'-')
-        || prefix.last() == Some(&b'-')
-        || !prefix
-            .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
-    {
-        return Err(reject());
+    // A bare UUID has no head. Otherwise the head is `<prefix><separator>`
+    // with a non-empty prefix.
+    if !head.is_empty() {
+        let (separator, prefix) = head.split_last().ok_or_else(reject)?;
+        if !matches!(*separator, b'_' | b'-')
+            || prefix.is_empty()
+            || prefix.len() > RESTRICTED_LICENSE_KEY_PREFIX_MAX_LEN
+            || !prefix
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
+        {
+            return Err(reject());
+        }
     }
     for (index, byte) in uuid.iter().enumerate() {
         let valid = if matches!(index, 8 | 13 | 18 | 23) {
