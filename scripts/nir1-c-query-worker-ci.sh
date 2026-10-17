@@ -259,6 +259,19 @@ if [[ "${1:-}" == lifecycle ]]; then
     native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over; do
     run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
   done
+  # The worker's registration on Q 16 MiB and Native 3 MiB (CQ-LIM-2): R2-5's
+  # payload shape just under the limit and several of them reach READY; product
+  # shapes with several Revisions reach READY; an approved Revision over the
+  # limit, in either shape, ends the registration before READY with the typed
+  # refusal, not a NOMEM. Each test builds its own project.
+  for name in \
+    native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit \
+    native_worker_registers_multiple_payload_shaped_revisions \
+    cq_avail::native_worker_registers_multiple_product_shaped_revisions \
+    native_worker_registration_does_not_load_a_revision_over_the_preflight_limit \
+    native_worker_registration_refuses_a_payload_shaped_revision_before_it_runs_out_of_memory; do
+    run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
+  done
 
   cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker

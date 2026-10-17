@@ -43,8 +43,46 @@ impl ReviewMode {
     }
 }
 
+/// The cast and summary length of a novel-shaped project. `DEFAULT` is the
+/// CQ-AVAIL original (five main and fifteen minor characters, short summaries);
+/// the larger casts and 2,000-character summaries are proposal/7's unmeasured
+/// combination (CQ-LIM-2 B5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NovelShape {
+    mains: usize,
+    minors: usize,
+    /// Characters of each Entity's summary; 0 keeps the original short ones.
+    summary_chars: usize,
+}
+
+impl NovelShape {
+    const DEFAULT: Self = Self {
+        mains: 5,
+        minors: 15,
+        summary_chars: 0,
+    };
+
+    /// An Entity's summary: `base` as it was, grown to `summary_chars`.
+    fn summary(self, base: &str) -> String {
+        if self.summary_chars <= base.chars().count() {
+            return base.to_owned();
+        }
+        let filler = "彼女は静かに窓の外を見つめ、過去の約束と未来への不安を胸に抱きながら、物語の行方を思い描いていた。";
+        let mut text = base.to_owned();
+        while text.chars().count() < self.summary_chars {
+            text.push_str(filler);
+        }
+        text.chars().take(self.summary_chars).collect()
+    }
+}
+
 /// Characters appearing in Scene `index` (deterministic, protagonist-centric).
 fn scene_cast(index: usize) -> Vec<String> {
+    scene_cast_for(index, NovelShape::DEFAULT)
+}
+
+fn scene_cast_for(index: usize, shape: NovelShape) -> Vec<String> {
+    let NovelShape { mains, minors, .. } = shape;
     let mut cast = Vec::new();
     if index % 5 != 4 {
         cast.push("m1".to_owned());
@@ -61,12 +99,23 @@ fn scene_cast(index: usize) -> Vec<String> {
     if matches!(index % 10, 4 | 9) {
         cast.push("m5".to_owned());
     }
-    cast.push(format!("c{:02}", index % 15 + 1));
+    for extra in 6..=mains {
+        if (index + extra).is_multiple_of(4) {
+            cast.push(format!("m{extra}"));
+        }
+    }
+    cast.push(format!("c{:02}", index % minors + 1));
+    if (mains, minors) != (5, 15) {
+        cast.push(format!("c{:02}", (index * 7 + 3) % minors + 1));
+        cast.dedup();
+    }
     cast
 }
 
-/// Seven main-main Relations and one main for each of fifteen minor characters.
-fn novel_relations() -> Vec<(String, String, String)> {
+/// Seven main-main Relations, one for each main past the fifth, and one main for
+/// each minor character.
+fn novel_relations_for(shape: NovelShape) -> Vec<(String, String, String)> {
+    let NovelShape { mains, minors, .. } = shape;
     let mut relations = Vec::new();
     for (from, to) in [
         ("m1", "m2"),
@@ -79,8 +128,13 @@ fn novel_relations() -> Vec<(String, String, String)> {
     ] {
         relations.push((format!("r-{from}-{to}"), from.to_owned(), to.to_owned()));
     }
-    for minor in 1..=15usize {
-        let main = format!("m{}", (minor - 1) / 3 + 1);
+    for extra in 6..=mains {
+        let from = format!("m{extra}");
+        let to = format!("m{}", extra - 1);
+        relations.push((format!("r-{from}-{to}"), from, to));
+    }
+    for minor in 1..=minors {
+        let main = format!("m{}", (minor - 1) * mains / minors + 1);
         let minor = format!("c{minor:02}");
         relations.push((format!("r-{main}-{minor}"), main, minor));
     }
@@ -168,6 +222,15 @@ impl Novel {
 /// Returns the fixture, the number of reviews each character appears in and
 /// every review.
 fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Novel> {
+    novel_fixture_shaped(scenes, chapters, mode, NovelShape::DEFAULT)
+}
+
+fn novel_fixture_shaped(
+    scenes: usize,
+    chapters: usize,
+    mode: ReviewMode,
+    shape: NovelShape,
+) -> Result<Novel> {
     use crate::narrative_extraction::nir1_entity_relation::prepare_nir1_entity_relation_revision;
     use crate::narrative_extraction::Nir1EntityRelationRevisionPrepareRequest;
     let directory = TestDirectory(
@@ -209,25 +272,25 @@ fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Nov
                 scene_ids.push(scene_id);
             }
         }
-        for main in 1..=5 {
+        for main in 1..=shape.mains {
             conn.execute(
                 "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
                  VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
                 params![
                     format!("m{main}"),
                     format!("主要人物{main}"),
-                    format!("主要人物{main}の要約。物語の中心にいる。")
+                    shape.summary(&format!("主要人物{main}の要約。物語の中心にいる。"))
                 ],
             )?;
         }
-        for minor in 1..=15 {
+        for minor in 1..=shape.minors {
             conn.execute(
                 "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
                  VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
                 params![
                     format!("c{minor:02}"),
                     format!("脇役{minor:02}"),
-                    format!("脇役{minor:02}の要約。")
+                    shape.summary(&format!("脇役{minor:02}の要約。"))
                 ],
             )?;
         }
@@ -246,7 +309,7 @@ fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Nov
                      '2026-09-12T00:00:00Z')",
             [],
         )?;
-        for (edge, from, to) in novel_relations() {
+        for (edge, from, to) in novel_relations_for(shape) {
             conn.execute(
                 "INSERT INTO codex_relations
                     (id, project_id, from_codex_id, to_codex_id, relation_type,
@@ -262,14 +325,14 @@ fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Nov
         explicit_scope(&db, scene_id, ordinal)?;
     }
     drain_freshness(&db)?;
-    let relations = novel_relations();
+    let relations = novel_relations_for(shape);
     let mut appearances = BTreeMap::new();
     let mut made = Vec::new();
     let mut first_revision = String::new();
     // (review Scene, entity ids, relation ids)
     let mut reviews: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
     for (index, scene_id) in scene_ids.iter().enumerate() {
-        let cast = scene_cast(index);
+        let cast = scene_cast_for(index, shape);
         let relation_ids = relations
             .iter()
             .filter(|(_, from, to)| cast.contains(from) && cast.contains(to))
@@ -1871,5 +1934,239 @@ fn query_retained_reservation_at_2048_stays_within_the_peak_ledger() -> Result<(
         "{error:#}"
     );
     assert!(nodes.is_empty());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CQ-LIM-2 (proposal/7): the peak and the frame of the largest casts, and the
+// worker's registration of projects with many Revisions.
+// ---------------------------------------------------------------------------
+
+// B5: a large cast (8 main and 40 minor, or 12 main and 80 minor characters)
+// with 2,000-character summaries over 50 Scenes, the combination proposal/7 did
+// not measure. The peak ledger (6,291,456 B, unchanged) may stop a query before
+// the counts do; the frame limit (3 MiB) may stop one after. Either is the typed
+// refusal of the whole Graph, never a partial one or a crash; a query that is
+// answered returns a frame inside the limit. What each seed got is printed for
+// the record (DR-CQL-10); time is not a verdict (the lease is long).
+#[test]
+fn query_large_cast_with_2000_char_summaries_stays_within_peak_and_frame() -> Result<()> {
+    use super::super::worker_frame;
+    for (mains, minors) in [(8, 40), (12, 80)] {
+        let shape = NovelShape {
+            mains,
+            minors,
+            summary_chars: 2000,
+        };
+        let novel = novel_fixture_shaped(50, 5, ReviewMode::Scene, shape)?;
+        let mut reader = novel.fixture.worker_reader()?;
+        let mut answered = 0usize;
+        for seed in ["m1", "m2", "c01", "m5"] {
+            let response = reader.query_for_worker_with_maintenance_deadline(
+                &request_for(seed, "nir1"),
+                LARGE_N_LEASE,
+            )?;
+            match response.status {
+                "available" => {
+                    let frame = worker_frame::encode(&response)?;
+                    let graph = response.graph.as_ref().unwrap();
+                    eprintln!(
+                        "cast {mains}+{minors}, 2000 chars, 50 Scenes, seed {seed}: available, \
+                         {} nodes, {} edges, {} bindings, frame {} of {} B",
+                        graph.nodes.len(),
+                        graph.edges.len(),
+                        graph.nodes.iter().map(|node| node.bindings.len()).sum::<usize>(),
+                        frame.len(),
+                        worker_frame::FRAME_BYTES,
+                    );
+                    assert!(frame.len() <= worker_frame::FRAME_BYTES);
+                    answered += 1;
+                }
+                _ => {
+                    assert_refused_without_graph(&response);
+                    let reason = response.reason.as_deref().unwrap_or_default();
+                    eprintln!(
+                        "cast {mains}+{minors}, 2000 chars, 50 Scenes, seed {seed}: refused ({reason})"
+                    );
+                    assert!(
+                        !reason.contains("deadline"),
+                        "the refusal is a deadline artifact: {reason}"
+                    );
+                }
+            }
+        }
+        // A seed with a Graph of its own node only is always answered.
+        assert!(answered >= 1, "cast {mains}+{minors}: no seed was answered");
+    }
+    Ok(())
+}
+
+/// A project of `revisions` approved Codex reviews of the same twelve
+/// Entities, one per Scene (R2-4's shape: the product's `prepare` path, Japanese
+/// summaries of about `total_summary_bytes` across the Entities).
+fn same_entity_product_fixture(revisions: usize, total_summary_bytes: usize) -> Result<Fixture> {
+    use crate::narrative_extraction::nir1_entity_relation::prepare_nir1_entity_relation_revision;
+    use crate::narrative_extraction::Nir1EntityRelationRevisionPrepareRequest;
+    let entity_count = 12usize;
+    let per_entity_chars = (total_summary_bytes / entity_count / 3).max(1);
+    let directory = TestDirectory(
+        std::env::temp_dir().join(format!("nir1-cq-lim-product-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir_all(&directory.0)?;
+    let db = crate::Database::new(&directory.0.join("grimodex.db"))?;
+    db.migrate()?;
+    seed_run_and_catalog(&db)?;
+    prepare_a3_scope_fixture(&db)?;
+    let scene_ids: Vec<String> = (0..revisions).map(|n| format!("s{n:03}")).collect();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
+             VALUES ('ch00', 'default-project', 'folder', 'ch00', '{}', 'a0c00')",
+            [],
+        )?;
+        for scene_id in &scene_ids {
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, parent_id, node_type, title, content, sort_order)
+                 VALUES (?1, 'default-project', 'ch00', 'scene', ?1, '{}', ?1)",
+                [scene_id],
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                PROJECT,
+                scene_id,
+                "2026-09-17T00:00:00.000Z",
+            )?;
+        }
+        let body: String = "物語".repeat(per_entity_chars / 2 + 1);
+        for index in 0..entity_count {
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
+                 VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
+                params![
+                    format!("v{index:02}"),
+                    format!("人物{index:02}"),
+                    format!("{index:02}{body}")
+                ],
+            )?;
+        }
+        for index in 1..entity_count {
+            conn.execute(
+                "INSERT INTO codex_relations
+                    (id, project_id, from_codex_id, to_codex_id, relation_type,
+                     directionality, version, updated_at)
+                 VALUES (?1, 'default-project', 'v00', ?2, 'knows', 'symmetric', 1,
+                         '2026-09-12T00:00:00Z')",
+                params![format!("rv-{index:02}"), format!("v{index:02}")],
+            )?;
+        }
+        Ok(())
+    })?;
+    let mut first_revision = String::new();
+    for (ordinal, scene_id) in scene_ids.iter().enumerate() {
+        explicit_scope(&db, scene_id, ordinal)?;
+        drain_freshness(&db)?;
+        let prepared = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: PROJECT.into(),
+                scene_id: scene_id.clone(),
+                proposal_key: Some(format!("codex-ui:selection:cq-lim-product-{ordinal}")),
+                entity_ids: (0..entity_count).map(|index| format!("v{index:02}")).collect(),
+                relation_ids: (1..entity_count)
+                    .map(|index| format!("rv-{index:02}"))
+                    .collect(),
+            },
+        )?;
+        let run_id = prepared["runId"].as_str().unwrap().to_owned();
+        let revision = prepared["result"]["revisionId"].as_str().unwrap().to_owned();
+        approve_typed_revision(
+            &db,
+            &run_id,
+            &serde_json::json!({
+                "proposalId": prepared["result"]["proposalId"],
+                "revisionId": revision,
+            }),
+        )?;
+        if first_revision.is_empty() {
+            first_revision = revision;
+        }
+    }
+    drain_freshness(&db)?;
+    let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
+    publish_graph_index(&authority)?;
+    Ok(Fixture {
+        authority,
+        lifecycle: WorkspaceLifecycleCore::new(),
+        revision: first_revision,
+        _directory: directory,
+    })
+}
+
+// B3 (in-process): projects with several product-shaped Revisions register on
+// the worker's configuration, whether the twelve Entities are the same in every
+// Revision or differ from Scene to Scene (the novel project's cast). Every
+// Revision is inside the registration's limit, so the registration admits them
+// all and a query that reaches them is answered or refused by its own limits.
+#[test]
+fn worker_registers_projects_of_several_product_shaped_revisions() -> Result<()> {
+    let same = same_entity_product_fixture(4, 300_000)?;
+    let mut reader = same.worker_reader()?;
+    let response = worker_query_large(&mut reader, "v00")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    let varying = novel_fixture(30, 5, ReviewMode::Scene)?;
+    let mut reader = varying.fixture.worker_reader()?;
+    for seed in ["m1", "c01", "m5"] {
+        let response = reader.query_for_worker_with_maintenance_deadline(
+            &request_for(seed, "nir1"),
+            LARGE_N_LEASE,
+        )?;
+        assert_eq!(response.status, "available", "{seed}: {:?}", response.reason);
+    }
+    Ok(())
+}
+
+// B3 (real worker): the same projects reach READY on the real worker's Q 16 MiB,
+// the product-shaped Revisions of 948,772 B (four of them), of the limit's
+// 2,094,880 B (two of them), and the 30 Scenes whose casts differ. The query
+// that follows is the 100 ms production lease and a large project's protagonist
+// can miss it, so the verdict here is the registration (READY) and a seed whose
+// Graph is its own pair; what the protagonist query got is printed.
+#[test]
+#[ignore = "requires a built normal worker binary (NIR1_C_QUERY_WORKER_BIN); builds its own projects"]
+fn native_worker_registers_multiple_product_shaped_revisions() -> Result<()> {
+    let projects: Vec<(&str, Fixture, &str)> = vec![
+        (
+            "4 same-Entity reviews of 948,772 B",
+            same_entity_product_fixture(4, 300_000)?,
+            "v00",
+        ),
+        (
+            "2 same-Entity reviews of 2,094,880 B",
+            same_entity_product_fixture(2, 682_000)?,
+            "v00",
+        ),
+        (
+            "30 Scenes with differing casts",
+            novel_fixture(30, 5, ReviewMode::Scene)?.fixture,
+            "x1",
+        ),
+    ];
+    for (label, fixture, seed) in &projects {
+        with_real_worker(fixture, |owner| {
+            owner.prepare(PROJECT)?;
+            let request = request_for(seed, "nir1");
+            match owner.query_once(&request) {
+                Ok(lease) => {
+                    let frame = lease.frame()?;
+                    let graph = frame.graph().map(|graph| (graph.node_count(), graph.edge_count()));
+                    eprintln!("{label}: READY; seed {seed} answered {graph:?}");
+                    drop(lease);
+                }
+                Err(error) => eprintln!("{label}: READY; seed {seed} refused: {error:#}"),
+            }
+            Ok(())
+        })?;
+    }
     Ok(())
 }

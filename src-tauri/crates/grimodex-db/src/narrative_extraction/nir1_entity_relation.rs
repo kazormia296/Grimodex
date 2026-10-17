@@ -12613,6 +12613,7 @@ pub(super) mod tests {
                 "default-project",
                 &mut control,
                 &mut scope,
+                None,
             )
         })?;
         db.with_conn(|conn| {

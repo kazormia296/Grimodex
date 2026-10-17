@@ -1082,6 +1082,24 @@ test("the lifecycle lane runs the real-worker per-Revision preflight boundary on
   }
   // The runner gives each case its own input copy and the normal-build worker path.
   assert.match(normalBuildRegion, /run_lifecycle_case "\$name" "\$q2_fixture_file" "\$q2_fixture_checksum"/u);
+  // CQ-LIM-2: the registration cases on the worker's Q 16 MiB and Native 3 MiB. A
+  // filter that matched nothing would pass with zero tests, so each name is run
+  // exactly once, after the registry33 case and before the seam build, and is an
+  // ignored test of the file that defines it.
+  const registrationCases = [
+    ["native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit", "tests.rs"],
+    ["native_worker_registers_multiple_payload_shaped_revisions", "tests.rs"],
+    ["cq_avail::native_worker_registers_multiple_product_shaped_revisions", "tests/cq_avail.rs"],
+    ["native_worker_registration_does_not_load_a_revision_over_the_preflight_limit", "tests.rs"],
+    ["native_worker_registration_refuses_a_payload_shaped_revision_before_it_runs_out_of_memory", "tests.rs"],
+  ];
+  for (const [name, file] of registrationCases) {
+    assert.equal(lifecycle.split(name).length - 1, 1, `${name} is run exactly once`);
+    assert.ok(normalBuildRegion.includes(name), `${name} runs after the registry33 case and before the seam build`);
+    const definingFile = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph", file), "utf8");
+    const bare = name.replace(/^cq_avail::/u, "");
+    assert.match(definingFile, new RegExp(`#\\[test\\]\\s*#\\[ignore = "[^"]*"\\]\\s*fn ${bare}\\(\\s*\\)`, "u"));
+  }
 });
 
 test("grouped setup observations preserve contracts/defaults and exclude other profiles", async () => {

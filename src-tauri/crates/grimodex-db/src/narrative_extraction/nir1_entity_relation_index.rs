@@ -474,6 +474,32 @@ struct RevisionInputStats {
     material_records: usize,
 }
 
+/// The worker's registration refuses a project whose approved Revision has more
+/// A2 admission bytes than the per-Revision preflight allows (CQ-LIM-2). It is
+/// raised from the length query, before any JSON function runs or any of the
+/// Revision is parsed, so the registration never loads that Revision into Q.
+/// Registration cannot be proven complete without it: the stored source digest
+/// covers the roster of every qualified Revision, and that roster comes from
+/// the parsed bundle. The worker therefore ends before READY with a typed
+/// refusal instead of reaching an allocation failure.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RegistrationRevisionInputLimit {
+    pub limit: usize,
+}
+
+impl std::fmt::Display for RegistrationRevisionInputLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "NIR1_GRAPH_REGISTRATION_REVISION_INPUT_LIMIT: A2 admission bytes exceed {}",
+            self.limit
+        )
+    }
+}
+
+impl std::error::Error for RegistrationRevisionInputLimit {}
+
 pub(crate) fn graph_source_from_roster(
     project: &str,
     roster: Vec<GraphObjectRosterEntry>,
@@ -646,11 +672,14 @@ pub(crate) fn read_eligibility_source_with_control(
     })
 }
 
+/// `registration_a2_limit` is `Some` only for the worker's registration. B's
+/// build, publish, Verify and Rebuild pass `None` and behave as before.
 pub(crate) fn read_eligibility_source_with_control_and_scratch(
     conn: &Connection,
     project: &str,
     control: &mut dyn GraphWorkControl,
     scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+    registration_a2_limit: Option<usize>,
 ) -> Result<GraphEligibilitySource> {
     with_capacity_scope(conn, None, control, |_, control| {
         read_eligibility_source_counted(
@@ -659,7 +688,10 @@ pub(crate) fn read_eligibility_source_with_control_and_scratch(
             None,
             Some(control),
             Some(scratch_scope),
-            &mut SourceCapacity::default(),
+            &mut SourceCapacity {
+                registration_a2_limit,
+                ..SourceCapacity::default()
+            },
         )
     })
 }
@@ -1089,9 +1121,10 @@ fn read_revision_input_stats(
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
     let envelope_bytes = usize::try_from(envelope_bytes)
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
+    let metadata_bytes = usize::try_from(metadata_bytes)?;
     capacity.input(payload_bytes)?;
     capacity.input(envelope_bytes)?;
-    capacity.input(usize::try_from(metadata_bytes)?)?;
+    capacity.input(metadata_bytes)?;
     // B admits each stored Revision component up to 6 MiB
     // (MAX_GRAPH_INPUT_BYTES); the whole-set scan is separately charged above
     // against the 16 MiB INPUT_BYTES budget. The 2 MiB figure is only the
@@ -1120,6 +1153,25 @@ fn read_revision_input_stats(
             ));
         }
         return Ok(None);
+    }
+    if let Some(limit) = capacity.registration_a2_limit {
+        // The worker's registration counts the A2 admission bytes (the scalar
+        // lengths of the C-query preflight's first query, no JSON) before any JSON
+        // function runs or any of the Revision is parsed, after B's component
+        // guard above has handled a component over 6 MiB as it always has.
+        // Checked arithmetic: an overflow is over the limit. An approved Revision
+        // over the limit cannot be loaded into Q, and the registration cannot be
+        // proven without it, so it refuses (CQ-LIM-2). A Revision that is not
+        // approved is never part of a roster: skip it, as the guard above does.
+        let a2_bytes = payload_bytes
+            .checked_add(envelope_bytes)
+            .and_then(|bytes| bytes.checked_add(metadata_bytes));
+        if a2_bytes.is_none_or(|bytes| bytes > limit) {
+            if revision_is_approved(conn, revision_id)? {
+                return Err(anyhow::Error::new(RegistrationRevisionInputLimit { limit }));
+            }
+            return Ok(None);
+        }
     }
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
@@ -1629,6 +1681,9 @@ struct SourceCapacity {
     materials: usize,
     input_bytes: usize,
     roster_bytes: usize,
+    /// The worker registration's per-Revision A2 admission limit. `None` for
+    /// every other reader, including all of B.
+    registration_a2_limit: Option<usize>,
 }
 
 /// The typed capacity failure of the whole-project build. `field` names the
@@ -2108,23 +2163,40 @@ pub(crate) fn is_complete_registered_with_control(
         operation();
         true
     };
-    is_complete_registered_with_scratch(conn, project, key, control, &mut current_heap)
+    is_complete_registered_with_scratch(conn, project, key, control, &mut current_heap, None)
 }
 
 /// Worker variant whose callback scopes temporary source-page and comparison allocations.
+/// `registration_a2_limit` is `Some` only for the Graph reader's registration
+/// (CQ-LIM-2); every other caller passes `None`.
 pub(crate) fn is_complete_registered_with_scratch(
     conn: &Connection,
     project: &str,
     key: &str,
     control: &mut dyn GraphWorkControl,
     scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+    registration_a2_limit: Option<usize>,
 ) -> Result<bool> {
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered_with_scratch(&tx, project, key, control, scratch_scope);
+        return is_complete_registered_with_scratch(
+            &tx,
+            project,
+            key,
+            control,
+            scratch_scope,
+            registration_a2_limit,
+        );
     }
     with_capacity_scope(conn, None, control, |_, control| {
-        is_complete_registered_with_control_unmetered(conn, project, key, control, scratch_scope)
+        is_complete_registered_with_control_unmetered(
+            conn,
+            project,
+            key,
+            control,
+            scratch_scope,
+            registration_a2_limit,
+        )
     })
 }
 
@@ -2134,13 +2206,21 @@ fn is_complete_registered_with_control_unmetered(
     key: &str,
     control: &mut dyn GraphWorkControl,
     scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+    registration_a2_limit: Option<usize>,
 ) -> Result<bool> {
     if key != INDEX_KEY {
         return Ok(false);
     }
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered_with_scratch(&tx, project, key, control, scratch_scope);
+        return is_complete_registered_with_scratch(
+            &tx,
+            project,
+            key,
+            control,
+            scratch_scope,
+            registration_a2_limit,
+        );
     }
     control.check(GraphWorkStage::CompleteRegistration)?;
     let BindingRead::Registered(binding) = read_with_control(conn, project, control)? else {
@@ -2157,6 +2237,7 @@ fn is_complete_registered_with_control_unmetered(
         project,
         control,
         scratch_scope,
+        registration_a2_limit,
     )?;
     if binding.source_digest != source.digest {
         return Ok(false);

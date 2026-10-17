@@ -15,7 +15,7 @@ use std::{
 };
 use talc::{lock_api::RawMutex, source::Manual, TalcLock};
 
-pub const QUERY_BYTES: usize = 4_718_592;
+pub const QUERY_BYTES: usize = 16 * 1024 * 1024;
 pub const SCRATCH_BYTES: usize = 64 * 1024 * 1024;
 const SCRATCH_OPEN: u8 = 0;
 const SCRATCH_ACTIVE: u8 = 1;
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn q_s_origins_no_fallback_failed_realloc_and_zero_live_seal() {
-        assert_eq!(QUERY_BYTES, 4_718_592);
+        assert_eq!(QUERY_BYTES, 16_777_216);
         let small = Layout::from_size_align(16, 8).unwrap();
         let q = unsafe { TEST_ALLOCATOR.alloc(small) };
         assert!(!q.is_null());

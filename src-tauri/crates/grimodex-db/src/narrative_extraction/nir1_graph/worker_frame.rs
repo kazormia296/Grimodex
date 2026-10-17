@@ -2357,6 +2357,66 @@ mod tests {
         Ok(())
     }
 
+// The frame is at most FRAME_BYTES (proposal/7: the Native area is 3 MiB, so
+// the frame limit follows it; it was 1.5 MiB). A frame of exactly that size
+// encodes and validates, and one byte more is refused on both sides with
+// the frame-limit reason, the reason the parent maps to an unavailable Graph.
+// The project identifier is free text here, so it carries the padding.
+#[test]
+fn frame_of_exactly_frame_bytes_is_admitted_and_one_more_byte_is_refused() -> Result<()> {
+    let padded = |project_bytes: usize| {
+        let mut response = sample_response();
+        response.project_id = "p".repeat(project_bytes);
+        response
+    };
+    let base = encode(&padded(0))?.len();
+    let at_limit = encode(&padded(FRAME_BYTES - base))?;
+    assert_eq!(at_limit.len(), FRAME_BYTES);
+    let view = validate(&at_limit)?;
+    assert_eq!(view.project().len(), FRAME_BYTES - base);
+    assert_eq!(
+        error_text(encode(&padded(FRAME_BYTES - base + 1))),
+        "NIR1_GRAPH_FRAME_LIMIT"
+    );
+    let mut over = at_limit.clone();
+    over.push(0);
+    assert_eq!(error_text(validate(&over)), "NIR1_GRAPH_FRAME_LIMIT");
+    Ok(())
+}
+
+// The largest Graph the query limits allow (50 Entities, 512 edges, and 2,000
+// distinct Revisions bound across the nodes, about the 2,048 records a query
+// may read) with every string short: it fits the frame limit with room, so the
+// frame limit is reached by the content (long quotes, many Scenes), not by the
+// counts. The size is printed for the record (CQ-LIM-2, DR-CQL-10).
+#[test]
+fn frame_of_the_largest_counts_fits_the_frame_limit() -> Result<()> {
+    use super::super::worker_projection::Nir1GraphProjection;
+    let mut response = graph_of(MAX_GRAPH_NODES, MAX_GRAPH_EDGES);
+    let graph = response.graph.as_mut().unwrap();
+    for (index, node) in graph.nodes.iter_mut().enumerate() {
+        let revisions: Vec<String> = std::iter::once("r1".to_owned())
+            .chain((0..40).map(|local| format!("x{index:02}-{local:02}")))
+            .collect();
+        let refs: Vec<&str> = revisions.iter().map(String::as_str).collect();
+        *node = self::node(&node.entity.entity_id.clone(), node.hop, &refs);
+    }
+    let bytes = encode(&response)?;
+    let view = validate(&bytes)?;
+    assert_eq!(view.graph().unwrap().node_count(), MAX_GRAPH_NODES);
+    let projected = Nir1GraphProjection::from_frame(&view, std::time::Duration::ZERO)?;
+    assert_eq!(
+        projected.into_response().graph.unwrap().nodes.len(),
+        MAX_GRAPH_NODES
+    );
+    eprintln!(
+        "NQG3 frame of 50 nodes, 512 edges, 2,050 bindings: {} of {FRAME_BYTES} B",
+        bytes.len()
+    );
+    assert!(bytes.len() < FRAME_BYTES);
+    Ok(())
+}
+
     // A Revision gives a node one Scope. A frame that binds the same Revision
     // twice, each time with a Scope of its own, has no single Scope for it and
     // is refused wherever the repeat is; the same Revision in different nodes

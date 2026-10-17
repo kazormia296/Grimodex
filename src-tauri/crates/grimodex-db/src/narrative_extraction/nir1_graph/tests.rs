@@ -131,6 +131,23 @@ impl Fixture {
     }
 
     fn build(direction: &str, extra_relation: bool, scenes: &[String]) -> Result<Self> {
+        Self::build_shaped(direction, extra_relation, scenes, None)
+    }
+
+    /// The seed Revision as R2-5's payload shape: the typed writer's long string
+    /// (an Evidence identifier no Relation references) makes the writer count
+    /// `counted_bytes`, and the Revision's A2 admission is about three times that,
+    /// split across the payload, the envelope and the approval.
+    fn with_payload_shape(counted_bytes: usize) -> Result<Self> {
+        Self::build_shaped("directed", false, &[], Some(counted_bytes))
+    }
+
+    fn build_shaped(
+        direction: &str,
+        extra_relation: bool,
+        scenes: &[String],
+        payload_counted_bytes: Option<usize>,
+    ) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-c-graph-{}", uuid::Uuid::new_v4())),
         );
@@ -178,6 +195,16 @@ impl Fixture {
             relation.source_token = "v1@2026-09-12T00:00:00Z:relation:nir1-edge-b".into();
             typed.bundle.relations.push(relation);
         }
+        if let Some(counted_bytes) = payload_counted_bytes {
+            let base = writer_input_bytes(&bounded_writer_bundle(&typed.bundle, 507, 0));
+            typed.bundle = bounded_writer_bundle(
+                &typed.bundle,
+                507,
+                counted_bytes
+                    .checked_sub(base)
+                    .ok_or_else(|| anyhow::anyhow!("target is below the base count"))?,
+            );
+        }
         crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(&db, &mut typed)?;
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
@@ -223,25 +250,7 @@ impl Fixture {
     /// prepared as the worker binary prepares it. The connection is then
     /// query-only, so fixture writes must precede this call.
     fn worker_reader(&self) -> Result<Nir1GraphReader> {
-        self.authority.db().with_conn(|conn| {
-            conn.busy_timeout(Duration::ZERO)?;
-            conn.execute_batch(
-                "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-                 CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
-                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
-                 );",
-            )?;
-            conn.execute(
-                "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
-                [uuid::Uuid::new_v4().to_string()],
-            )?;
-            conn.execute_batch("PRAGMA query_only=ON")?;
-            Ok(())
-        })?;
-        let mut reader = Nir1GraphReader::open_for_worker(
-            Arc::clone(&self.authority),
-            self.lifecycle.begin_workspace_participant()?,
-        )?;
+        let mut reader = self.open_worker_reader()?;
         ensure!(
             reader.register_with_worker_maintenance(PROJECT, || true)?,
             "worker registration was refused"
@@ -7241,8 +7250,20 @@ fn b_publishes_a_revision_within_its_component_guard_that_the_c_query_refuses() 
             .contains("NIR1_GRAPH_REVISION_INPUT_LIMIT"),
         "{refusal}"
     );
-    let mut worker = fixture.worker_reader()?;
-    assert_refused_within_budget(&worker_query(&mut worker, "nir1-alice")?);
+    // CQ-LIM-2: the worker's registration counts the Revision's A2 admission bytes
+    // before it parses it, finds them over the per-Revision limit, and ends with
+    // the typed refusal before READY. No query is answered for the project, so
+    // none reaches the Revision: the C-query refuses it earlier than the preflight
+    // (cq-lim-decisions.md, DR-CQL-4).
+    let mut worker = fixture.open_worker_reader()?;
+    let error = worker
+        .register_with_worker_maintenance(PROJECT, || true)
+        .expect_err("a Revision over the per-Revision limit must not register");
+    assert_eq!(
+        registration_input_limit(&error),
+        Some(PER_REVISION_PREFLIGHT_BYTES),
+        "{error:#}"
+    );
     Ok(())
 }
 
@@ -7853,4 +7874,449 @@ fn query_pages_at_129_refuses_the_whole_graph() -> Result<()> {
         Some("query-worker-work-candidate-record-limit-pre-cleanup-work-failed-candidate-record-limit")
     );
     Ok(())
+}
+// ---------------------------------------------------------------------------
+// CQ-LIM-2: the worker's registration counts each Revision's A2 admission bytes
+// (the scalar lengths of payload, envelope and metadata, no JSON function)
+// before it parses or loads that Revision into Q. An approved Revision over the
+// per-Revision preflight (2,097,152 B) ends the registration with a typed
+// refusal before READY. It is the fail-safe of proposal/7 "P7 案 4": a Revision
+// that is not loaded cannot contribute to the roster whose digest the stored
+// index is checked against, so the registration cannot be proven without it
+// (cq-lim-decisions.md, DR-CQL-4).
+// ---------------------------------------------------------------------------
+
+/// The registration's limit on a Revision's A2 admission bytes.
+const REGISTRATION_A2_LIMIT: usize = PER_REVISION_PREFLIGHT_BYTES;
+
+/// The writer's counted bytes of R2-5's payload-shaped Revision whose A2
+/// admission is 2,034,294 B (just under the preflight), and one whose A2 is over
+/// the limit and whose registration peak (about 5.8 times its A2) is past what
+/// the worker's Q holds.
+const PAYLOAD_SHAPED_COUNTED_BYTES: usize = 600_000;
+const PAYLOAD_SHAPED_OVER_COUNTED_BYTES: usize = 1_000_000;
+
+impl Fixture {
+    /// The A2 admission bytes the worker's registration counts for `revision`:
+    /// the three scalar lengths of the C-query preflight's first query. They are
+    /// a subset of the preflight's admission (which adds the related rows), so a
+    /// Revision over this count is over the preflight as well.
+    fn registration_a2_bytes(&self, revision: &str) -> Result<usize> {
+        use crate::narrative_extraction::nir1_entity_relation::{
+            NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
+        };
+        self.authority.with_conn(|conn| {
+            let (payload, envelope, metadata): (i64, i64, i64) = conn.query_row(
+                super::input::LENGTH_SQL,
+                params![
+                    revision,
+                    PROJECT,
+                    NIR1_ENTITY_RELATION_SET_KIND,
+                    NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            Ok(usize::try_from(payload + envelope + metadata)?)
+        })
+    }
+
+    /// Decision padding that makes a candidate's registration count exactly
+    /// `target` (one padding byte is one counted byte).
+    fn registration_padding_for(target: usize) -> Result<usize> {
+        let calibration = Self::new()?;
+        let probe = calibration.add_candidate_revision(1, 0)?;
+        let base = calibration.registration_a2_bytes(&probe)?;
+        let grown = calibration.add_candidate_revision(2, 1000)?;
+        ensure!(
+            calibration.registration_a2_bytes(&grown)? - base == 1000,
+            "one decision byte must add exactly one counted byte"
+        );
+        target
+            .checked_sub(base)
+            .ok_or_else(|| anyhow::anyhow!("target is below the base count"))
+    }
+
+    /// A worker reader prepared as the worker binary prepares it, before it
+    /// registers.
+    fn open_worker_reader(&self) -> Result<Nir1GraphReader> {
+        self.authority.db().with_conn(|conn| {
+            conn.busy_timeout(Duration::ZERO)?;
+            conn.execute_batch(
+                "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
+                 CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
+                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
+                 );",
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
+                [uuid::Uuid::new_v4().to_string()],
+            )?;
+            conn.execute_batch("PRAGMA query_only=ON")?;
+            Ok(())
+        })?;
+        Nir1GraphReader::open_for_worker(
+            Arc::clone(&self.authority),
+            self.lifecycle.begin_workspace_participant()?,
+        )
+    }
+
+    /// One more approved typed Revision for the seed Entities whose payload is
+    /// padded through the typed writer (an evidence identifier no Relation
+    /// references), so that the writer counts `counted_bytes`. The padding is
+    /// split by the writer's copies across the payload, the envelope and the
+    /// approval, which makes the Revision's A2 admission about three times as
+    /// large (R2-5's payload shape).
+    fn add_payload_shaped_candidate(&self, serial: usize, counted_bytes: usize) -> Result<String> {
+        let db = self.authority.db();
+        let template = request(db).bundle;
+        let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
+        let mut payload = request(db);
+        payload.proposal_key = format!("nir1:review:payload-{serial:04}");
+        payload.bundle = bounded_writer_bundle(
+            &template,
+            507,
+            counted_bytes
+                .checked_sub(base)
+                .ok_or_else(|| anyhow::anyhow!("target is below the base count"))?,
+        );
+        seed_scope_edits(&mut payload.bundle);
+        let created = create_nir1_entity_relation_revision(db, payload)?;
+        approve_typed_revision(db, "nir1-run", &created)?;
+        Ok(created["revisionId"].as_str().unwrap().to_owned())
+    }
+}
+
+/// The registration refusal an error carries, if it is that one.
+fn registration_input_limit(error: &anyhow::Error) -> Option<usize> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<Nir1GraphRegistrationRevisionInputLimit>())
+        .map(|refusal| refusal.limit)
+}
+
+// B7 (in-process): an approved Revision of exactly the limit registers, and the
+// preflight still refuses the whole query that reaches it (its admission adds
+// the related rows to the counted bytes). One byte more ends the registration
+// before READY with the typed refusal, for the ordinary reader and the worker's.
+#[test]
+fn registration_admits_an_approved_revision_at_exactly_the_a2_registration_limit() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let candidate = fixture
+        .add_candidate_revision(1, Fixture::registration_padding_for(REGISTRATION_A2_LIMIT)?)?;
+    assert_eq!(
+        fixture.registration_a2_bytes(&candidate)?,
+        REGISTRATION_A2_LIMIT
+    );
+    fixture.republish_graph_index()?;
+    let mut reader = fixture.worker_reader()?;
+    // The Revision registered; the query that reaches it is refused as a whole by
+    // the unchanged per-Revision preflight.
+    assert_refused_within_budget(&worker_query(&mut reader, "nir1-alice")?);
+    Ok(())
+}
+
+#[test]
+fn registration_refuses_an_approved_revision_one_byte_over_the_a2_registration_limit() -> Result<()>
+{
+    let fixture = Fixture::new()?;
+    let mut baseline = fixture.registered_reader()?;
+    assert_eq!(query(&mut baseline, "nir1-alice")?.status, "available");
+
+    let candidate = fixture.add_candidate_revision(
+        1,
+        Fixture::registration_padding_for(REGISTRATION_A2_LIMIT + 1)?,
+    )?;
+    assert_eq!(
+        fixture.registration_a2_bytes(&candidate)?,
+        REGISTRATION_A2_LIMIT + 1
+    );
+    // B is unchanged: it builds and publishes with the Revision (it admits a
+    // component up to 6 MiB), and its complete-registration check passes.
+    fixture.republish_graph_index()?;
+    assert!(fixture.authority.with_read_transaction(|conn| {
+        crate::narrative_extraction::nir1_entity_relation_index::is_complete_registered(
+            conn,
+            PROJECT,
+            crate::narrative_extraction::nir1_entity_relation_index::INDEX_KEY,
+        )
+    })?);
+
+    // The worker's registration ends with the typed refusal.
+    let mut worker = fixture.open_worker_reader()?;
+    let error = worker
+        .register_with_worker_maintenance(PROJECT, || true)
+        .expect_err("a Revision over the limit must not register");
+    assert_eq!(
+        registration_input_limit(&error),
+        Some(REGISTRATION_A2_LIMIT),
+        "{error:#}"
+    );
+    // So does the ordinary reader's, which shares the registration.
+    let mut ordinary = fixture.reader()?;
+    let error = ordinary
+        .register_with_control(PROJECT, &mut RegistrationOwner)
+        .expect_err("a Revision over the limit must not register");
+    assert_eq!(
+        registration_input_limit(&error),
+        Some(REGISTRATION_A2_LIMIT)
+    );
+    // A reader that did not register answers no query.
+    assert_refused_without_graph(&worker_query(&mut worker, "nir1-alice")?);
+    Ok(())
+}
+
+// A Revision that is not approved is never part of a roster, whatever its size:
+// the registration skips it before any of it is parsed, as B's component guard
+// does, so it neither refuses nor loads it. A query that reaches it is still
+// refused as a whole by the preflight, which charges every candidate it reads
+// (ineligible ones included) before it knows the Revision is not approved.
+#[test]
+fn registration_skips_a_revision_that_is_not_approved_whatever_its_size() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let db = fixture.authority.db();
+    let mut payload = request(db);
+    payload.proposal_key = "nir1:review:rejected-0001".into();
+    seed_scope_edits(&mut payload.bundle);
+    let created = create_nir1_entity_relation_revision(db, payload)?;
+    let revision = created["revisionId"].as_str().unwrap().to_owned();
+    narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: "nir1-run".into(),
+            project_id: PROJECT.into(),
+            proposal_id: created["proposalId"].as_str().unwrap().into(),
+            revision_id: revision.clone(),
+            decision: "rejected".into(),
+            decision_json: Some(serde_json::json!({
+                "pad": "p".repeat(REGISTRATION_A2_LIMIT + 4096)
+            })),
+            created_by: Some("renderer-reviewer".into()),
+        },
+    )?;
+    assert!(fixture.registration_a2_bytes(&revision)? > REGISTRATION_A2_LIMIT);
+    fixture.republish_graph_index()?;
+    // Registration admits the project: the oversized rejection is not loaded.
+    let mut reader = fixture.worker_reader()?;
+    assert_refused_within_budget(&worker_query(&mut reader, "nir1-alice")?);
+    Ok(())
+}
+
+// B2 (in-process): a payload-shaped Revision (R2-5: the writer's long string, A2
+// about three times the padding) just under the preflight registers and is an
+// ordinary Graph contribution. The registration and the preflight both admit it.
+// The real worker binary runs the same construction in the lifecycle lane
+// (`native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit`).
+#[test]
+fn worker_query_admits_a_payload_shaped_revision_near_the_preflight_limit() -> Result<()> {
+    let fixture = Fixture::with_payload_shape(PAYLOAD_SHAPED_COUNTED_BYTES)?;
+    let admitted = fixture.a2_admission(&fixture.revision)?;
+    assert!(
+        (2_000_000..=PER_REVISION_PREFLIGHT_BYTES).contains(&admitted),
+        "R2-5's 2,034,294 B shape: {admitted}"
+    );
+    assert!(fixture.registration_a2_bytes(&fixture.revision)? <= admitted);
+    let mut reader = fixture.worker_reader()?;
+    let response = worker_query_large(&mut reader, "nir1-alice")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    let graph = response.graph.expect("an available response carries the Graph");
+    assert!(graph
+        .edges
+        .iter()
+        .any(|edge| edge.binding.revision_id == fixture.revision));
+    Ok(())
+}
+
+// B7 (in-process), the payload shape over the limit: the same construction with
+// the writer counting more is refused by the registration, which counts its A2
+// admission before the JSON functions that reach a registration's peak of about
+// 5.8 times that (R2-5).
+#[test]
+fn registration_refuses_a_payload_shaped_revision_over_the_a2_registration_limit() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let candidate = fixture.add_payload_shaped_candidate(1, PAYLOAD_SHAPED_OVER_COUNTED_BYTES)?;
+    assert!(fixture.registration_a2_bytes(&candidate)? > REGISTRATION_A2_LIMIT);
+    fixture.republish_graph_index()?;
+    let mut worker = fixture.open_worker_reader()?;
+    let error = worker
+        .register_with_worker_maintenance(PROJECT, || true)
+        .expect_err("a payload-shaped Revision over the limit must not register");
+    assert_eq!(registration_input_limit(&error), Some(REGISTRATION_A2_LIMIT));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CQ-LIM-2: the real worker binary (Q 16 MiB, Native area 3 MiB) over a project.
+// ---------------------------------------------------------------------------
+
+/// Run `body` over a Native owner for the real worker binary on `fixture`'s
+/// database, then prove the owner's cleanup: child exit, stdout EOF and reader
+/// join before the claim is released, and no participant left behind.
+fn with_real_worker(
+    fixture: &Fixture,
+    body: impl FnOnce(&mut super::c_query_worker::CQueryWorkerOwner) -> Result<()>,
+) -> Result<()> {
+    let worker_path = PathBuf::from(
+        std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
+            .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
+    );
+    let authority = Arc::clone(&fixture.authority);
+    let native_state = WorkspaceState {
+        inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
+        safe_mode: crate::recovery::SafeModeState::default(),
+        switching: WorkspaceLifecycleCompatibilityView::new(false),
+        open_lock: Mutex::new(Default::default()),
+    };
+    native_state.switching.core().set_ready(
+        LiveBinding::new(
+            authority.path().to_string_lossy(),
+            format!("test-workspace:{}", authority.identity()),
+            authority.identity(),
+            0,
+        )
+        .with_main_database_file_identity(authority.main_database_file_identity()?),
+    )?;
+    let mut owner = super::c_query_worker::CQueryWorkerOwner::new(
+        active_workspace_snapshot(&native_state)?,
+        worker_path,
+    );
+    body(&mut owner)?;
+    ensure!(
+        owner.cleanup_proved_for_test(),
+        "the owner returned before child exit, stdout EOF and reader join"
+    );
+    let claim = authority
+        .claim_c_query_child()
+        .ok_or_else(|| anyhow::anyhow!("retirement did not release the child claim"))?;
+    claim.release();
+    drop(owner);
+    ensure!(
+        native_state
+            .switching
+            .core()
+            .workspace_participant_count()?
+            == 0,
+        "the owner retained its workspace participant after retirement"
+    );
+    Ok(())
+}
+
+/// The worker must not reach READY, and must say why with the registration
+/// refusal's closed marker: it ended with exit 1 (the marker is written by the
+/// startup path that returns `ExitCode::FAILURE`; a signal writes nothing), and
+/// the registration did not run out of memory (no NOMEM marker).
+fn run_native_worker_refuses_registration_of_a_revision_over_the_limit(
+    fixture: &Fixture,
+) -> Result<()> {
+    with_real_worker(fixture, |owner| {
+        let error = owner
+            .prepare(PROJECT)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("a Revision over the limit reached READY"))?;
+        let text = format!("{error:#}");
+        ensure!(
+            text.contains("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY")
+                && text.contains("NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT"),
+            "the worker's refusal changed: {text}"
+        );
+        ensure!(
+            !text.to_ascii_lowercase().contains("nomem"),
+            "the registration ran out of memory: {text}"
+        );
+        ensure!(
+            super::c_query_worker::classify_c_query_failure(&error)
+                == super::c_query_worker::CQueryFailure::StartupRegistrationRefused,
+            "the refusal is not the closed registration refusal: {text}"
+        );
+        Ok(())
+    })
+}
+
+// B7 (real worker): an approved Revision one byte over the A2 registration limit
+// (counted in the approval's bytes, so the same counted bytes as the in-process
+// test) ends the worker's registration before READY with the typed refusal.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_registration_does_not_load_a_revision_over_the_preflight_limit() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture
+        .add_candidate_revision(1, Fixture::registration_padding_for(REGISTRATION_A2_LIMIT + 1)?)?;
+    fixture.republish_graph_index()?;
+    run_native_worker_refuses_registration_of_a_revision_over_the_limit(&fixture)
+}
+
+// B7 (real worker), the payload shape: R2-5's shape past the limit needs a
+// registration peak of about 5.8 times its A2 (more than the 16 MiB Q holds
+// from A2 of about 2.8 MB), which used to end the worker with a NOMEM. The
+// registration now counts the A2 admission first and refuses with the typed
+// refusal, not a NOMEM.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_registration_refuses_a_payload_shaped_revision_before_it_runs_out_of_memory(
+) -> Result<()> {
+    let fixture = Fixture::new()?;
+    let candidate = fixture.add_payload_shaped_candidate(1, PAYLOAD_SHAPED_OVER_COUNTED_BYTES)?;
+    eprintln!(
+        "payload-shaped Revision over the limit: counted {PAYLOAD_SHAPED_OVER_COUNTED_BYTES} B, registration count {} B",
+        fixture.registration_a2_bytes(&candidate)?
+    );
+    ensure!(fixture.registration_a2_bytes(&candidate)? > REGISTRATION_A2_LIMIT);
+    fixture.republish_graph_index()?;
+    run_native_worker_refuses_registration_of_a_revision_over_the_limit(&fixture)
+}
+
+// B2 (real worker): R2-5's payload shape just under the limit (A2 about
+// 2.03 MB, a registration peak of about 11.9 MB) reaches READY on Q 16 MiB, which
+// Q 8 MiB could not hold, and answers its query.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit() -> Result<()> {
+    let fixture = Fixture::with_payload_shape(PAYLOAD_SHAPED_COUNTED_BYTES)?;
+    eprintln!(
+        "payload-shaped seed Revision: counted {PAYLOAD_SHAPED_COUNTED_BYTES} B, A2 admission {} B",
+        fixture.a2_admission(&fixture.revision)?
+    );
+    with_real_worker(&fixture, |owner| {
+        owner.prepare(PROJECT)?;
+        let request = graph_request("nir1-alice");
+        let lease = owner.query_once(&request)?;
+        {
+            let frame = lease.frame()?;
+            let graph = *frame
+                .graph()
+                .ok_or_else(|| anyhow::anyhow!("the worker frame was unavailable"))?;
+            assert_eq!(graph.seed(), "nir1-alice");
+            assert_eq!((graph.node_count(), graph.edge_count()), (2, 1));
+        }
+        drop(lease);
+        Ok(())
+    })
+}
+
+// B4 (real worker): a project with several payload-shaped Revisions, each just
+// under the limit, reaches READY on Q 16 MiB. The registration reads one
+// Revision at a time and keeps only its roster in S, so the peak stays that of
+// one Revision. They are not reached by a query here (the candidates carry
+// other content than the seed), so the test is the registration's.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_registers_multiple_payload_shaped_revisions() -> Result<()> {
+    let fixture = Fixture::with_payload_shape(PAYLOAD_SHAPED_COUNTED_BYTES)?;
+    for serial in 1..=2 {
+        let candidate = fixture.add_payload_shaped_candidate(serial, PAYLOAD_SHAPED_COUNTED_BYTES)?;
+        ensure!(fixture.a2_admission(&candidate)? <= PER_REVISION_PREFLIGHT_BYTES);
+    }
+    fixture.republish_graph_index()?;
+    with_real_worker(&fixture, |owner| {
+        owner.prepare(PROJECT)?;
+        // The query that reaches the Revisions is a Graph of several Revisions
+        // of one Entity set; whether it is answered is the query's concern
+        // (their A2 sum is over the input ledger), not the registration's. The
+        // worker must have answered with a frame or a typed refusal, and exit.
+        let request = graph_request("nir1-alice");
+        match owner.query_once(&request) {
+            Ok(lease) => drop(lease),
+            Err(error) => eprintln!("query after READY: {error:#}"),
+        }
+        Ok(())
+    })
 }

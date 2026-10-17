@@ -16,6 +16,9 @@ const INPUT_LIMIT: &str = "NIR1_GRAPH_REVISION_INPUT_LIMIT";
 const ROW_LIMIT: &str = "NIR1_GRAPH_REVISION_RECORD_LIMIT";
 const DISCLOSURE_ROW_LIMIT: &str = "NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT";
 const INPUT_BYTES: usize = 2 * 1024 * 1024;
+/// The per-Revision preflight limit on A2 admission bytes, which the worker's
+/// registration also applies before it parses or loads a Revision (CQ-LIM-2).
+pub(super) const REVISION_A2_BYTES: usize = INPUT_BYTES;
 
 #[cfg(feature = "nir1-material-diagnostics")]
 const A2_RELATED_QUERY_COUNT: usize = 10;
@@ -326,7 +329,7 @@ fn admit_rows(
     Ok(())
 }
 
-const LENGTH_SQL: &str = "SELECT COALESCE(octet_length(revision.payload_json), 0),
+pub(super) const LENGTH_SQL: &str = "SELECT COALESCE(octet_length(revision.payload_json), 0),
                     COALESCE(octet_length(revision.reconciliation_envelope_json), 0),
                     COALESCE(octet_length(proposal_set.id), 0) +
                     COALESCE(octet_length(proposal_set.run_id), 0) +

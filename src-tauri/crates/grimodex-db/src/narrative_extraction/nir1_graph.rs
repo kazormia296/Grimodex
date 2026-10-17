@@ -200,6 +200,12 @@ pub struct Nir1GraphRequest {
     pub seed_entity_id: String,
 }
 
+/// The typed refusal a worker's registration raises, before READY, for an
+/// approved Revision whose A2 admission bytes exceed the per-Revision preflight
+/// (CQ-LIM-2). The worker reports it with its own startup marker.
+#[doc(hidden)]
+pub use super::nir1_entity_relation_index::RegistrationRevisionInputLimit as Nir1GraphRegistrationRevisionInputLimit;
+
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Nir1GraphRegistrationStage {
@@ -627,6 +633,7 @@ impl Nir1GraphReader {
                     INDEX_KEY,
                     &mut registration_owner,
                     scratch_scope,
+                    Some(input::REVISION_A2_BYTES),
                 )?
             {
                 return Ok(None);

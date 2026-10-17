@@ -7,8 +7,8 @@ use c_query_fixed_allocator::WorkerAllocator;
 #[cfg(feature = "nir1-c-query-test-seam")]
 use grimodex_db::narrative_extraction::nir1_graph::c_query_worker::FRAME_BYTES;
 use grimodex_db::narrative_extraction::nir1_graph::{
-    c_query_worker::REQUEST_BYTES, worker_frame, Nir1GraphReader, Nir1GraphRegistrationStage,
-    Nir1GraphRequest,
+    c_query_worker::REQUEST_BYTES, worker_frame, Nir1GraphReader,
+    Nir1GraphRegistrationRevisionInputLimit, Nir1GraphRegistrationStage, Nir1GraphRequest,
 };
 use grimodex_db::{
     state::WorkspaceAuthority, workspace_lease::try_acquire_shared,
@@ -33,6 +33,9 @@ enum StartupStage {
     CanonicalRegistrationSqliteNoMem(Nir1GraphRegistrationStage),
     CanonicalRegistrationSqliteError,
     CanonicalRegistrationRefused,
+    /// An approved Revision's A2 admission bytes exceed the per-Revision
+    /// preflight; registration ends before READY (CQ-LIM-2).
+    CanonicalRegistrationRevisionInputLimit,
     ScratchSeal,
     Ready,
 }
@@ -77,6 +80,9 @@ impl StartupStage {
             Self::CanonicalRegistrationRefused => {
                 Some(b"NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED\n")
             }
+            Self::CanonicalRegistrationRevisionInputLimit => {
+                Some(b"NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT\n")
+            }
             Self::ScratchSeal => Some(b"NIR1_C_QUERY_STARTUP_SCRATCH_NOT_EMPTY\n"),
             Self::Ready => None,
         }
@@ -87,6 +93,12 @@ fn registration_error_stage(
     error: &anyhow::Error,
     registration_stage: Nir1GraphRegistrationStage,
 ) -> StartupStage {
+    if error
+        .chain()
+        .any(|cause| cause.downcast_ref::<Nir1GraphRegistrationRevisionInputLimit>().is_some())
+    {
+        return StartupStage::CanonicalRegistrationRevisionInputLimit;
+    }
     if error.chain().any(|cause| {
         cause
             .downcast_ref::<rusqlite::Error>()
