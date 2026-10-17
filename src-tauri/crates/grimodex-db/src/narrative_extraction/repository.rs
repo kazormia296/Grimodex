@@ -5607,7 +5607,7 @@ fn append_decision_on_conn(
     )?;
     let decision_json = serde_json::to_string(&decision_value)?;
     let decision_id = Uuid::new_v4().to_string();
-    let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let created_at = next_decision_created_at(conn, &payload.proposal_id)?;
     let created_by = payload
         .created_by
         .clone()
@@ -5961,6 +5961,32 @@ fn revise_and_decide_with_actor(
             }))
         })
     })
+}
+
+/// Decision readers take the latest `created_at` as the authority and refuse a
+/// same-millisecond tie (or count it as approved). A typed Revision is
+/// terminal after its one cancellation, so a tie written here could never be
+/// cleared by a later Decision. Generate an instant strictly later than every
+/// Decision of the Proposal, even when the wall clock stays on the same
+/// millisecond. A stored value that is not a canonical timestamp imposes no
+/// ordering; readers keep failing closed for such imported ambiguity.
+fn next_decision_created_at(conn: &Connection, proposal_id: &str) -> anyhow::Result<String> {
+    use chrono::SubsecRound as _;
+    let latest: Option<String> = conn.query_row(
+        "SELECT MAX(created_at) FROM narrative_proposal_decisions WHERE proposal_id = ?1",
+        params![proposal_id],
+        |row| row.get(0),
+    )?;
+    let now = Utc::now().trunc_subsecs(3);
+    let created_at = match latest
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc).trunc_subsecs(3))
+    {
+        Some(latest) if now <= latest => latest + chrono::Duration::milliseconds(1),
+        _ => now,
+    };
+    Ok(created_at.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
 fn map_decision_to_status(decision: &str) -> anyhow::Result<&'static str> {
