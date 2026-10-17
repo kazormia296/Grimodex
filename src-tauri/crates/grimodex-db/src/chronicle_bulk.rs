@@ -912,7 +912,16 @@ fn update_scene_to_state(
     project_id: &str,
     expected_updated_at: &str,
     target: &BulkSceneState,
-) -> anyhow::Result<NarrativeChangeEventInput> {
+) -> anyhow::Result<Option<NarrativeChangeEventInput>> {
+    let pov_before: Option<String> = conn
+        .query_row(
+            "SELECT pov_character_id FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            rusqlite::params![target.scene_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
     let updated = conn.execute(
         "UPDATE tree_nodes
             SET pov_character_id = ?1,
@@ -948,12 +957,19 @@ fn update_scene_to_state(
             expected_updated_at
         );
     }
+    // Only a POV change moves the Scene's Scope generation. A Chronicle-range-only
+    // change advances the body Source token (`updated_at`, kept strictly later by
+    // `fresh_updated_at`) and is delivered by the caller's `scene` feed event (X1-2).
+    if pov_before == target.pov_character_id {
+        return Ok(None);
+    }
     crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
         conn,
         project_id,
         &target.scene_id,
         &target.updated_at,
     )
+    .map(Some)
 }
 
 fn event_state_version(state: &BulkEventState) -> anyhow::Result<Option<i64>> {
@@ -1271,7 +1287,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     let mut scene_scope_refresh_events = Vec::new();
     for (target_state, current_state) in target.scenes.iter_mut().zip(&current.scenes) {
         target_state.updated_at = fresh_updated_at(&current_state.updated_at)?;
-        scene_scope_refresh_events.push(update_scene_to_state(
+        scene_scope_refresh_events.extend(update_scene_to_state(
             conn,
             project_id,
             &current_state.updated_at,
@@ -1766,7 +1782,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                     | ChronicleBulkOperation::SceneSetDate { .. } => {
                         let before_state = &before.scenes[scene_index];
                         let state = &after.scenes[scene_index];
-                        scene_scope_refresh_events.push(update_scene_to_state(
+                        scene_scope_refresh_events.extend(update_scene_to_state(
                             conn,
                             &payload.project_id,
                             &before_state.updated_at,
@@ -2472,6 +2488,136 @@ mod tests {
             scene_updated_at(&db, &scene_id),
             "2099-01-01T00:00:00.500000001Z"
         );
+    }
+
+    fn scope_generation(db: &Database, scene_id: &str) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT version FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
+                rusqlite::params![scene_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("Scene Scope generation")
+    }
+
+    fn feed_event_count(db: &Database, kind: &str, scene_id: &str) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events
+                  WHERE json_extract(object_key_json, '$.kind') = ?1
+                    AND json_extract(object_key_json, '$.sceneId') = ?2",
+                rusqlite::params![kind, scene_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("Feed event count")
+    }
+
+    /// X1-2. A bulk Scene write advances the Scope generation only when the POV
+    /// really changes, in the forward write and in its undo. A Chronicle-date-only
+    /// write (and its undo), or a POV write to the value the Scene already has,
+    /// moves the body Source token and appends the `scene` Feed event alone; the
+    /// bulk writer does not propagate Source freshness, so that `scene` event is
+    /// what carries the body Source change to its dependents.
+    #[test]
+    fn bulk_scene_scope_generation_advances_only_when_the_pov_changes() {
+        // (scenario, operation builder, expected generation after forward,
+        //  expected generation after undo)
+        enum Step {
+            Date,
+            Pov,
+            PovThenSamePov,
+        }
+        for (step, forward_generation, undo_generation) in [
+            (Step::Date, 1, 1),
+            (Step::Pov, 2, 3),
+            (Step::PovThenSamePov, 2, 2),
+        ] {
+            let db = test_db();
+            let (project_id, codex_id, _event_delete_id, _event_clear_id, scene_id) = setup(&db);
+            let bulk = |request_id: &str, operation: ChronicleBulkOperation| -> Value {
+                agent_chronicle_bulk_mutate_impl(
+                    &db,
+                    AgentChronicleBulkPayload {
+                        request_id: request_id.to_string(),
+                        project_id: project_id.clone(),
+                        session_id: "session".to_string(),
+                        surface: Some("manual".to_string()),
+                        operations: vec![operation],
+                    },
+                )
+                .expect(request_id)
+            };
+            let set_pov = |db: &Database| ChronicleBulkOperation::SceneSetPov {
+                scene_id: scene_id.clone(),
+                base_updated_at: scene_updated_at(db, &scene_id),
+                pov_character_id: Some(codex_id.clone()),
+            };
+            assert_eq!(scope_generation(&db, &scene_id), 1);
+            let scene_events_before = feed_event_count(&db, "scene", &scene_id);
+            let token_before = scene_body_token(&db, &scene_id);
+
+            let mut last = match step {
+                Step::Date => bulk(
+                    "scope-date",
+                    ChronicleBulkOperation::SceneSetDate {
+                        scene_id: scene_id.clone(),
+                        base_updated_at: scene_updated_at(&db, &scene_id),
+                        start_time: 12,
+                        start_minute: None,
+                        start_granularity: "day".to_string(),
+                        end_time: None,
+                        end_minute: None,
+                        end_granularity: "none".to_string(),
+                    },
+                ),
+                Step::Pov | Step::PovThenSamePov => bulk("scope-pov", set_pov(&db)),
+            };
+            let mut forward_steps = 1;
+            if matches!(step, Step::PovThenSamePov) {
+                last = bulk("scope-pov-same", set_pov(&db));
+                forward_steps = 2;
+            }
+            assert_ne!(scene_body_token(&db, &scene_id), token_before);
+            assert_eq!(scope_generation(&db, &scene_id), forward_generation);
+            assert_eq!(
+                feed_event_count(&db, "scene-scope", &scene_id),
+                forward_generation - 1,
+                "scene-scope events after the forward write(s)"
+            );
+            assert_eq!(
+                feed_event_count(&db, "scene", &scene_id),
+                scene_events_before + forward_steps,
+                "one `scene` event per forward write"
+            );
+
+            crate::agent_writes::agent_undo_journal_impl(
+                &db,
+                crate::agent_writes::AgentUndoJournalPayload {
+                    request_id: "scope-undo".to_string(),
+                    project_id: project_id.clone(),
+                    session_id: "session".to_string(),
+                    journal_id: last["undoJournalId"].as_str().unwrap().to_string(),
+                    direction: "undo".to_string(),
+                    authority_route: "history-replay".to_string(),
+                    origin: "undo".to_string(),
+                    caller: "undo-redo-command".to_string(),
+                    controls: history_replay_controls(),
+                },
+            )
+            .expect("undo the last bulk write");
+            assert_eq!(scope_generation(&db, &scene_id), undo_generation);
+            assert_eq!(
+                feed_event_count(&db, "scene-scope", &scene_id),
+                undo_generation - 1
+            );
+            assert_eq!(
+                feed_event_count(&db, "scene", &scene_id),
+                scene_events_before + forward_steps + 1,
+                "the undo appends one `scene` event"
+            );
+        }
     }
 
     #[test]

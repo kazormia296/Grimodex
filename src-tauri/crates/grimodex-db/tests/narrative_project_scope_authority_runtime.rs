@@ -651,13 +651,13 @@ fn empty_folder_structural_changes_do_not_false_stale_the_project_aggregate_edge
     assert_eq!(edge_state(&db), None);
 }
 
-/// X1-1 boundary. A Scene patch still refreshes that Scene's own Scope binding
-/// for any field, so these patches still move the project token through the
-/// binding generation (no longer through the tree's version/updatedAt). Narrowing
-/// that refresh to the Scope-relevant fields is X1-2 and waits for confirmation;
-/// the negative cases below show what X1-1 already stopped doing.
+/// ADR009 / NIR-0 C2B negative. A Scene's title, body and display metadata are
+/// not part of the project Scope authority: patching them leaves the Scene's
+/// Scope generation and the project token unchanged and leaves no pending
+/// Edge. (Before X1-2 every Scene patch refreshed the Scene's binding and so
+/// moved the project token.)
 #[test]
-fn body_and_display_metadata_invalidate_the_project_aggregate_edge_generation() {
+fn body_and_display_metadata_do_not_move_the_project_aggregate_edge_generation() {
     for (case, field, value) in [
         ("title", "title", json!("Renamed only")),
         (
@@ -670,22 +670,24 @@ fn body_and_display_metadata_invalidate_the_project_aggregate_edge_generation() 
             "storyTimeLabel",
             json!("Display label only"),
         ),
+        ("synopsis", "synopsis", json!("Synopsis only")),
+        ("status", "status", json!("revision")),
     ] {
         let db = fixture_db();
+        let generation_before = scene_scope_version(&db, "scene-a");
         tree_node_patch(&db, patch_payload(case, "scene-a", field, value))
             .expect("patch a non-authority field through the real tree writer");
 
-        let summary = run_cycle(&db);
-        assert_eq!(summary.affected_edge_count, 1, "{field}");
-        assert_eq!(summary.affected_consumer_count, 1, "{field}");
         assert_eq!(
-            edge_state(&db),
-            Some((
-                "stale".to_owned(),
-                Some("source-revision-changed".to_owned()),
-                "rebuild-required".to_owned(),
-            )),
-            "{field} still refreshes the Scene's Scope binding generation"
+            scene_scope_version(&db, "scene-a"),
+            generation_before,
+            "{field} must not advance the Scene's Scope generation"
+        );
+        assert_feed_leaves_the_project_scope_untouched(&db, field);
+        assert_live_token_is(
+            &db,
+            baseline_token(),
+            &format!("{field} leaves the project token at its baseline"),
         );
     }
 }
@@ -1798,5 +1800,132 @@ fn ai_tree_plan_retitling_a_populated_folder_advances_no_generation() {
         &db,
         baseline_token(),
         "an AI retitle of a populated Folder must not move the project token",
+    );
+}
+
+/// X1-2. An AI tree plan advances a Scene's Scope generation only when a Scope
+/// field (placement) really changes. A title-only update of a Scene moves its
+/// body Source token and appends the `scene` Feed event, but no `scene-scope`
+/// event; the body Source still reaches its dependents through that `scene`
+/// event's identity, since the plan writers do not propagate Source freshness.
+#[test]
+fn ai_tree_plan_scene_update_advances_generation_only_when_a_scope_field_changes() {
+    let db = fixture_db();
+    write_dependency_declaration_set(
+        &db,
+        DependencyDeclarationSetRequest {
+            project_id: PROJECT_ID.to_owned(),
+            consumer_kind: "proposal-revision".to_owned(),
+            consumer_key: "x12-ai-plan-body-consumer".to_owned(),
+            producer_id: "proposal-revision-source-basis".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![DependencyDeclaration {
+                source_object_identity: "project:scene:scene-a".to_owned(),
+                role: DependencyRole::DirectEvidence,
+                selector: DependencySelector::WholeSource,
+            }],
+            created_at: CREATED_AT.to_owned(),
+        },
+    )
+    .expect("seal a whole-Source declaration for the Scene body Source");
+
+    // Title-only update of scene-a, placement update of scene-b.
+    let forward_plan = ai_plan(
+        "x12-ai-forward",
+        "2026-08-24T01:00:00.000Z",
+        Vec::new(),
+        vec![
+            AiTreePlanUpdateInput {
+                id: "scene-a".to_owned(),
+                base_version: 0,
+                placement: None,
+                title: Some("Retitled only".to_owned()),
+            },
+            AiTreePlanUpdateInput {
+                id: "scene-b".to_owned(),
+                base_version: 0,
+                placement: Some(AiTreePlanPlacementInput {
+                    parent_id: Some("folder-b".to_owned()),
+                    sort_order: "z0".to_owned(),
+                }),
+                title: None,
+            },
+        ],
+    );
+    let forward = apply_ai_tree_plan(&db, forward_plan).expect("apply the plan");
+    assert_eq!(scene_scope_version(&db, "scene-a"), 1, "title-only");
+    assert_eq!(scene_scope_version(&db, "scene-b"), 2, "placement");
+    assert_eq!(scene_scope_events_in(&db, "x12-ai-forward", "scene-a"), 0);
+    assert_eq!(scene_scope_events_in(&db, "x12-ai-forward", "scene-b"), 1);
+    let scene_events = |request_id: &str, scene_id: &str| -> i64 {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_change_events event
+                   JOIN narrative_change_transactions tx ON tx.id = event.transaction_id
+                  WHERE tx.request_id = ?1
+                    AND json_extract(event.object_key_json, '$.kind') = 'scene'
+                    AND json_extract(event.object_key_json, '$.sceneId') = ?2",
+                params![request_id, scene_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("count `scene` Feed events")
+    };
+    assert_eq!(scene_events("x12-ai-forward", "scene-a"), 1);
+    let applied = run_cycle(&db);
+    assert_eq!(
+        applied.v2_shadow.evaluated_declaration_count, 1,
+        "the retitle reaches the Scene body Source consumer through the `scene` event"
+    );
+    // (A title-only change leaves the Scene's canonical Feed digest unchanged,
+    // so the consumer is selected and re-evaluated as relocated, not stale.)
+
+    undo_ai_tree_plan(
+        &db,
+        UndoAiTreePlanPayload {
+            request_id: "x12-ai-undo".to_owned(),
+            project_id: PROJECT_ID.to_owned(),
+            session_id: "scope-authority-session".to_owned(),
+            updated_at: "2026-08-24T01:01:00.000Z".to_owned(),
+            original_transaction_id: forward["maintenanceTransactionId"]
+                .as_str()
+                .expect("forward transaction")
+                .to_owned(),
+            undo_journal_id: forward["undoJournalId"]
+                .as_str()
+                .expect("forward undo journal")
+                .to_owned(),
+            authority_route: "history-replay".to_owned(),
+            caller: "history-controller".to_owned(),
+            controls: AI_HISTORY_CONTROLS
+                .iter()
+                .map(|c| (*c).to_owned())
+                .collect(),
+            provenance: None,
+            writes_authority_protected_field: false,
+            expected_versions: forward["versions"]
+                .as_array()
+                .expect("forward versions")
+                .iter()
+                .map(|row| AiTreeNodeVersionInput {
+                    id: row["id"].as_str().expect("version id").to_owned(),
+                    version: row["version"].as_i64().expect("version"),
+                })
+                .collect(),
+        },
+    )
+    .expect("undo the plan");
+    assert_eq!(scene_scope_version(&db, "scene-a"), 1, "title-only restore");
+    assert_eq!(scene_scope_version(&db, "scene-b"), 3, "placement restore");
+    assert_eq!(scene_scope_events_in(&db, "x12-ai-undo", "scene-a"), 0);
+    assert_eq!(scene_scope_events_in(&db, "x12-ai-undo", "scene-b"), 1);
+    assert_eq!(scene_events("x12-ai-undo", "scene-a"), 1);
+    assert_eq!(
+        run_cycle(&db).v2_shadow.evaluated_declaration_count,
+        1,
+        "the undo reaches the Scene body Source consumer through the `scene` event"
     );
 }

@@ -820,7 +820,6 @@ fn apply_codex_rename_updates_in_tx(
         .collect::<anyhow::Result<Vec<_>>>()?;
     keyed_indices.sort_by(|left, right| left.0.cmp(&right.0));
     let mut aggregate_versions: HashMap<String, (i64, i64)> = HashMap::new();
-    let mut changed_scene_ids = BTreeSet::new();
     for (_, index) in keyed_indices {
         let update = &updates[index];
         let (object_key, change_kind, changed_paths) =
@@ -989,13 +988,6 @@ fn apply_codex_rename_updates_in_tx(
                 update.ref_id, project_id, expected_version
             );
         }
-        if matches!(
-            update.kind.as_str(),
-            "scene-body" | "node-title" | "node-synopsis"
-        ) {
-            changed_scene_ids.insert(update.ref_id.clone());
-        }
-
         match update.kind.as_str() {
             "scene-body" => {
                 crate::narrative_extraction::record_human_field_write(
@@ -1107,17 +1099,10 @@ fn apply_codex_rename_updates_in_tx(
             text_impact: None,
         });
     }
-    // A rename of any scene-owned field changes the scene's retrieval source.
-    // Refresh each binding once after all fields for that scene have been
-    // applied, and carry the paired authority event in this same transaction
-    // so forward, undo, and redo cannot leave a stale scope token behind.
-    for scene_id in changed_scene_ids {
-        feed_events.push(
-            crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                conn, project_id, &scene_id, updated_at,
-            )?,
-        );
-    }
+    // A rename of a scene-owned field (body, title, synopsis) changes only the
+    // scene's body Source token (`version` is advanced above) and is carried by
+    // the `scene` feed events pushed in the loop. It does not touch the Scope
+    // generation, so no Scope binding refresh is made here (X1-2).
     Ok(CodexRenameApplyOutcome {
         versions,
         feed_events,
@@ -2806,6 +2791,23 @@ fn tree_node_scope_placement_changed(before: &Value, after: &Value) -> bool {
         .any(|field| before.get(field) != after.get(field))
 }
 
+/// True when a Scene's value for any field that decides its Scope differs
+/// between two snapshots: where it sits in the Reading order (`parentId`,
+/// `sortOrder`, `storyTimeOrder`), whether it is archived (`archivedAt`) and its
+/// POV (`povCharacterId`). Title, synopsis, status, labels, location, Chronicle
+/// range and body are deliberately not Scope fields.
+fn scene_scope_fields_changed(before: &Value, after: &Value) -> bool {
+    [
+        "parentId",
+        "sortOrder",
+        "storyTimeOrder",
+        "archivedAt",
+        "povCharacterId",
+    ]
+    .into_iter()
+    .any(|field| before.get(field) != after.get(field))
+}
+
 fn live_scene_subtree_count_from_snapshots(root_id: &str, snapshots: &[Value]) -> i64 {
     fn visit(
         node_id: &str,
@@ -3930,15 +3932,21 @@ pub fn tree_node_patch_with_authority(
         }
         let mut scene_scope_refresh_event = None;
         if row.get("nodeType").and_then(Value::as_str) == Some("scene") {
-            if let Some(updated_at) = row.get("updatedAt").and_then(Value::as_str) {
-                scene_scope_refresh_event = Some(
-                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                        tx,
-                        &payload.project_id,
-                        &payload.node_id,
-                        updated_at,
-                    )?,
-                );
+            // The Scope generation advances only when a Scope field really
+            // changed (same-transaction before/after comparison). Title, body,
+            // label, location and Chronicle edits advance the body Source token
+            // alone (X1-2).
+            if scene_scope_fields_changed(&before, &row) {
+                if let Some(updated_at) = row.get("updatedAt").and_then(Value::as_str) {
+                    scene_scope_refresh_event = Some(
+                        crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                            tx,
+                            &payload.project_id,
+                            &payload.node_id,
+                            updated_at,
+                        )?,
+                    );
+                }
             }
             let field_paths: Vec<&str> = payload
                 .patch
@@ -5639,21 +5647,6 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 "AI_TREE_PLAN_VERSION_MISMATCH: node '{}' changed before apply",
                 update.id
             );
-            if before
-                .get(&update.id)
-                .and_then(|snapshot| snapshot.get("nodeType"))
-                .and_then(Value::as_str)
-                == Some("scene")
-            {
-                scene_scope_refresh_events.push(
-                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                        &tx,
-                        &payload.project_id,
-                        &update.id,
-                        &payload.updated_at,
-                    )?,
-                );
-            }
         }
 
         // Authority is recorded only after the corresponding entity mutation
@@ -5679,10 +5672,32 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 select_tree_node(&tx, &payload.project_id, id)?,
             );
         }
+        // A Scene this plan updates advances its Scope generation only when a
+        // Scope field really changed (a title-only update does not).
+        let mut refreshed_scene_ids = BTreeSet::<String>::new();
+        for update in &payload.updates {
+            let (Some(before_snapshot), Some(after_snapshot)) =
+                (before.get(&update.id), after.get(&update.id))
+            else {
+                continue;
+            };
+            if before_snapshot.get("nodeType").and_then(Value::as_str) == Some("scene")
+                && scene_scope_fields_changed(before_snapshot, after_snapshot)
+            {
+                scene_scope_refresh_events.push(
+                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                        &tx,
+                        &payload.project_id,
+                        &update.id,
+                        &payload.updated_at,
+                    )?,
+                );
+                refreshed_scene_ids.insert(update.id.clone());
+            }
+        }
         // Advance the Scope generation of every Scene that was or is live below
-        // a folder this plan really re-placed. Scenes the plan updates itself
-        // were refreshed above and Scenes it creates hold a brand-new binding,
-        // so neither is refreshed again.
+        // a folder this plan really re-placed. Scenes already refreshed above
+        // and Scenes it creates (a brand-new binding) are not refreshed again.
         let mut folder_scene_ids = BTreeSet::<String>::new();
         for update in &payload.updates {
             let (Some(before_snapshot), Some(after_snapshot)) =
@@ -5708,10 +5723,8 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 &update.id,
             )?);
         }
-        for (id, snapshot) in &before {
-            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
-                folder_scene_ids.remove(id);
-            }
+        for id in &refreshed_scene_ids {
+            folder_scene_ids.remove(id);
         }
         for create in &payload.creates {
             folder_scene_ids.remove(&create.id);
@@ -5992,6 +6005,7 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
 
         let mut after = BTreeMap::<String, Value>::new();
         let mut scene_scope_refresh_events = Vec::new();
+        let mut refreshed_scene_ids = BTreeSet::<String>::new();
         for snapshot in &journal.updated_before {
             let id = snapshot
                 .get("id")
@@ -6029,7 +6043,14 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                 ],
             )?;
             anyhow::ensure!(changed == 1, "AI_TREE_PLAN_VERSION_MISMATCH during undo");
-            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
+            let restored_row = select_tree_node(&tx, &payload.project_id, id)?;
+            // A restored Scene advances its Scope generation only when a Scope
+            // field really changed back (a title-only restore does not; X1-2).
+            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene")
+                && before
+                    .get(id)
+                    .is_some_and(|current| scene_scope_fields_changed(current, &restored_row))
+            {
                 scene_scope_refresh_events.push(
                     crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
                         &tx,
@@ -6038,11 +6059,9 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                         &payload.updated_at,
                     )?,
                 );
+                refreshed_scene_ids.insert(id.to_string());
             }
-            after.insert(
-                id.to_string(),
-                select_tree_node(&tx, &payload.project_id, id)?,
-            );
+            after.insert(id.to_string(), restored_row);
         }
         for id in journal.created_ids.iter().rev() {
             let deleted = tx.execute(
@@ -6056,8 +6075,8 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
             );
         }
         // Advance the Scope generation of every Scene that was or is live below
-        // a folder this undo really re-placed. Scenes restored directly were
-        // refreshed above and nodes the plan created no longer exist.
+        // a folder this undo really re-placed. Scenes already refreshed above
+        // and nodes the plan created (they no longer exist) are not refreshed again.
         let mut folder_scene_ids = BTreeSet::<String>::new();
         for id in &restored_ids {
             let (Some(before_snapshot), Some(after_snapshot)) = (before.get(*id), after.get(*id))
@@ -6072,10 +6091,8 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
             folder_scene_ids.extend(before_live_scene_ids.get(*id).cloned().unwrap_or_default());
             folder_scene_ids.extend(live_scene_subtree_ids(&tx, &payload.project_id, id)?);
         }
-        for (id, snapshot) in &before {
-            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
-                folder_scene_ids.remove(id);
-            }
+        for id in &refreshed_scene_ids {
+            folder_scene_ids.remove(id);
         }
         for id in &journal.created_ids {
             folder_scene_ids.remove(id);
@@ -8343,16 +8360,8 @@ mod tests {
                         1,
                         2,
                     ),
-                    (
-                        json!({"kind": "scene-scope", "sceneId": "moved"}),
-                        json!([
-                            "/binding/sourceToken",
-                            "/binding/updatedAt",
-                            "/binding/version"
-                        ]),
-                        1,
-                        2,
-                    ),
+                    // X1-2: a Codex rename propagating into a Scene advances
+                    // only the body Source token; no `scene-scope` event.
                 ]
             );
 
@@ -8702,10 +8711,13 @@ mod tests {
                 [],
                 |row| row.get(0),
             )?;
-            assert_eq!(scope_version, 4, "forward/undo/redo refreshes scope OCC");
             assert_eq!(
-                scope_event_count, 3,
-                "forward/undo/redo append scope Feed events"
+                scope_version, 1,
+                "forward/undo/redo leave the Scope generation untouched (X1-2)"
+            );
+            assert_eq!(
+                scope_event_count, 0,
+                "forward/undo/redo append no scope Feed events (X1-2)"
             );
             Ok(())
         })
@@ -9597,7 +9609,9 @@ mod tests {
                     ))
                 },
             )?;
-            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 4, 2));
+            // Each content patch appends one `scene` event; none refreshes the Scope
+            // binding (X1-2), so there is no `scene-scope` event.
+            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 2, 2));
             Ok(())
         })
         .expect("verify duplicate UID rollback");

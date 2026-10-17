@@ -710,15 +710,13 @@ fn mutate_commit(
                                     params![entity_id],
                                     |row| row.get(0),
                                 )?;
-                                let (replay_version, scope_refresh_event) =
-                                    restore_scene_chronicle_patch(
-                                        conn,
-                                        entity_id,
-                                        &snapshot,
-                                        live_version,
-                                        &now,
-                                    )?;
-                                scene_scope_refresh_events.push(scope_refresh_event);
+                                let replay_version = restore_scene_chronicle_patch(
+                                    conn,
+                                    entity_id,
+                                    &snapshot,
+                                    live_version,
+                                    &now,
+                                )?;
                                 (replay_version, snapshot.clone())
                             }
                             "temporal_event_chronicle" => {
@@ -750,7 +748,7 @@ fn mutate_commit(
                                         live_version,
                                         &now,
                                     )?;
-                                scene_scope_refresh_events.push(scope_refresh_event);
+                                scene_scope_refresh_events.extend(scope_refresh_event);
                                 (replay_version, snapshot.clone())
                             }
                             "temporal_projection" => {
@@ -1501,14 +1499,7 @@ fn undo_one_entity(
                 anyhow::anyhow!("scene chronicle patch journal missing beforeSnapshot")
             })?;
             let expected_after_version = entity.get("version").and_then(Value::as_i64).unwrap_or(0);
-            let (_, scope_refresh_event) = restore_scene_chronicle_patch(
-                conn,
-                entity_id,
-                &before,
-                expected_after_version,
-                now,
-            )?;
-            scene_scope_refresh_events.push(scope_refresh_event);
+            restore_scene_chronicle_patch(conn, entity_id, &before, expected_after_version, now)?;
         }
         "temporal_event_chronicle" => {
             let before = entity.get("beforeSnapshot").cloned().ok_or_else(|| {
@@ -1529,7 +1520,7 @@ fn undo_one_entity(
                 expected_after_version,
                 now,
             )?;
-            scene_scope_refresh_events.push(scope_refresh_event);
+            scene_scope_refresh_events.extend(scope_refresh_event);
         }
         "temporal_projection" => {
             let op_kind = entity

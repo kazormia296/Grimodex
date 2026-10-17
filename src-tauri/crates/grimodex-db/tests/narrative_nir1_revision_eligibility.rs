@@ -17,6 +17,7 @@ use grimodex_db::narrative_extraction::change_feed::{
 use grimodex_db::narrative_extraction::{
     read_revision_canonical_freshness, RevisionFreshnessRead, RevisionFreshnessReason,
 };
+use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::Database;
 use rusqlite::{params, Connection, OpenFlags};
 use serde_json::{json, Value};
@@ -815,8 +816,116 @@ fn bounded_unrelated_native_pending_feed_preserves_freshness_with_ack_behind_hea
     .expect("relevance-scoped pending gate");
 }
 
+fn native_save_body(db: &Database, fixture: &Fixture, scene: &str, text: &str) {
+    let request = Uuid::new_v4().to_string();
+    save_scene_body_bundle(
+        db,
+        SaveSceneBodyBundlePayload {
+            scene_id: scene.to_owned(),
+            project_id: fixture.project().to_owned(),
+            request_id: format!("nir1-body-{request}"),
+            session_id: "nir1-canonical-freshness".to_owned(),
+            event_uid: request,
+            origin: NarrativeChangeOrigin::Human,
+            timelapse_steps: None,
+            timelapse_doc_step_coverage: None,
+            include_sidecars: false,
+            base_version: None,
+            updated_at: "2026-10-17T00:00:00.000Z".to_owned(),
+            content_json: format!(
+                r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{text}"}}]}}]}}"#
+            ),
+            char_count: text.chars().count() as i64,
+            placed_beat_preview: None,
+            unplaced_beats_doc: "[]".to_owned(),
+            unplaced_beat_preview: None,
+            authorship_spans: vec![],
+            foreshadow_setups: vec![],
+            foreshadow_payoffs: vec![],
+            foreshadow_base_versions: Default::default(),
+            annotation_anchors: vec![],
+            beat_mentions: vec![],
+            beat_pov_overrides: vec![],
+            doc_content_size: 0,
+        },
+    )
+    .expect("production Native body save and Feed append");
+}
+
+fn assert_pending_but_fresh(db: &Database, fixture: &Fixture, case: &str) {
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        let (ack, head) = pending_coordinates(&tx, fixture);
+        assert!(
+            ack < head,
+            "{case}: the write must leave a pending Feed range"
+        );
+        let actual = read_revision_canonical_freshness(&tx, fixture.project(), fixture.child())?;
+        assert!(
+            matches!(actual, RevisionFreshnessRead::Fresh(_)),
+            "{case}: an unrelated Scene's event must not block the Revision: {actual:?}"
+        );
+        Ok(())
+    })
+    .expect(case);
+}
+
+/// X1-2 (test 11). A body save or a display patch of a Scene the Revision does
+/// not read appends a `scene` event only (the Scope binding is not refreshed),
+/// so it leaves the typed Revision fresh. A Scope-affecting change of the same
+/// Scene appends a `scene-scope` event and does make the pending Feed block.
+#[test]
+fn body_and_display_events_do_not_block_the_revision_but_a_scope_event_does() {
+    let fixture = Fixture::new();
+    let db = Database::new(&fixture.path).expect("Native private fixture");
+    let scope_events = |db: &Database| -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events
+                  WHERE project_id = ?1
+                    AND json_extract(object_key_json, '$.kind') = 'scene-scope'",
+                [fixture.project()],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count scene-scope events")
+    };
+    let baseline_scope_events = scope_events(&db);
+
+    native_save_body(&db, &fixture, fixture.scene("s2"), "A saved body");
+    assert_eq!(scope_events(&db), baseline_scope_events);
+    assert_pending_but_fresh(&db, &fixture, "body save of an unrelated Scene");
+
+    native_patch(
+        &db,
+        &fixture,
+        fixture.scene("s2"),
+        json!({"title": "A display-only title"}),
+        false,
+    );
+    assert_eq!(scope_events(&db), baseline_scope_events);
+    assert_pending_but_fresh(&db, &fixture, "display patch of an unrelated Scene");
+
+    native_patch(
+        &db,
+        &fixture,
+        fixture.scene("s2"),
+        json!({"storyTimeOrder": "nir1-scope-effective-key"}),
+        false,
+    );
+    assert_eq!(scope_events(&db), baseline_scope_events + 1);
+    db.with_conn(|conn| {
+        assert_unavailable(conn, &fixture, "a Scope-affecting event is pending");
+        Ok(())
+    })
+    .expect("scope event blocks until the cycle re-evaluates it");
+}
+
 #[test]
 fn global_or_unknown_pending_feed_cannot_reuse_the_same_saved_fresh_rows() {
+    // The seed patch changes a Scope field so the pending transaction holds the
+    // two events (`scene` and `scene-scope`) whose markers are rewritten below;
+    // a display-only patch appends the `scene` event alone (X1-2).
     for case in [
         "component-schema",
         "project-reset",
@@ -829,7 +938,7 @@ fn global_or_unknown_pending_feed_cannot_reuse_the_same_saved_fresh_rows() {
             &db,
             &fixture,
             fixture.scene("s2"),
-            json!({"title": "Pending marker seed"}),
+            json!({"storyTimeOrder": "nir1-pending-marker-seed"}),
             false,
         );
         drop(db);
@@ -905,7 +1014,7 @@ fn missing_or_ahead_of_head_cursor_and_incomplete_feed_storage_are_unavailable()
     ] {
         let fixture = Fixture::new();
         let db = Database::new(&fixture.path).expect("Native private fixture");
-        native_patch(&db, &fixture, fixture.scene("s2"), json!({"title": "Unrelated Feed storage seed"}), false);
+        native_patch(&db, &fixture, fixture.scene("s2"), json!({"storyTimeOrder": "nir1-feed-storage-seed"}), false);
         drop(db);
         let conn = fixture.corruption_connection();
         let (ack, pending_sequence) = pending_coordinates(&conn, &fixture);

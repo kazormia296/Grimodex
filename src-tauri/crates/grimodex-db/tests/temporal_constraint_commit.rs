@@ -534,13 +534,314 @@ fn scene_chronicle_journal_root_does_not_select_project_scope_authority() {
     else {
         panic!("the Chronicle commit must leave a pending Feed range");
     };
-    assert_eq!(summary.v2_shadow.active_head_count, 1);
-    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 1);
-    assert_eq!(summary.v2_shadow.consumers.len(), 1);
-    let consumer = &summary.v2_shadow.consumers[0];
-    assert_eq!(consumer.consumer_key, "scope-calendar-consumer");
-    assert_eq!(consumer.freshness, "stale");
-    assert_eq!(consumer.required_actions, vec!["resolve-only"]);
+    // X1-2: a Chronicle-range patch is not a Scope field. It no longer
+    // refreshes the Scene's Scope binding, so neither the journal root (above)
+    // nor a `scene-scope` event selects the project Scope authority.
+    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 0);
+    assert!(summary.v2_shadow.consumers.is_empty());
+    assert_eq!(scene_scope_binding_version(&db, "scene-scope-calendar"), 1);
+    assert_eq!(
+        scope_event_count_in_transaction(&db, transaction_id),
+        0,
+        "a Chronicle-only commit appends no scene-scope event"
+    );
+}
+
+fn scene_scope_binding_version(db: &Database, scene_id: &str) -> i64 {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT version FROM narrative_scene_scope_bindings
+              WHERE project_id = 'project-1' AND scene_id = ?1",
+            [scene_id],
+            |row| row.get(0),
+        )?)
+    })
+    .expect("Scene Scope binding version")
+}
+
+fn scope_event_count_in_transaction(db: &Database, transaction_id: &str) -> i64 {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_events
+              WHERE transaction_id = ?1
+                AND json_extract(object_key_json, '$.kind') = 'scene-scope'",
+            [transaction_id],
+            |row| row.get(0),
+        )?)
+    })
+    .expect("scene-scope event count")
+}
+
+fn latest_transaction_id(db: &Database) -> String {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT id FROM narrative_change_transactions
+              WHERE project_id = 'project-1'
+              ORDER BY source_change_event_sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )?)
+    })
+    .expect("latest Feed transaction")
+}
+
+fn undo_commit(db: &Database, commit_id: &str, request_id: &str) -> Value {
+    narrative_extraction::narrative_extraction_undo_commit(
+        db,
+        UndoCommitPayload {
+            project_id: "project-1".to_string(),
+            session_id: "sess-temporal".to_string(),
+            surface: None,
+            commit_id: Some(commit_id.to_string()),
+            request_id: Some(request_id.to_string()),
+        },
+    )
+    .expect("undo")
+}
+
+fn seed_scene_body_consumer(db: &Database, scene_id: &str) {
+    write_dependency_declaration_set(
+        db,
+        DependencyDeclarationSetRequest {
+            project_id: "project-1".to_owned(),
+            consumer_kind: "proposal-revision".to_owned(),
+            consumer_key: format!("body-consumer-{scene_id}"),
+            producer_id: "proposal-revision-source-basis".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![DependencyDeclaration {
+                source_object_identity: format!("project:scene:{scene_id}"),
+                role: DependencyRole::DirectEvidence,
+                selector: DependencySelector::WholeSource,
+            }],
+            created_at: "2026-08-24T00:00:00.000Z".to_owned(),
+        },
+    )
+    .expect("seal a whole-Source declaration for the Scene body Source");
+}
+
+fn processed_cycle(
+    db: &Database,
+) -> grimodex_db::narrative_extraction::IncrementalFreshnessBatchSummary {
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(db).expect("process the Feed range")
+    else {
+        panic!("the commit must leave a pending Feed range");
+    };
+    summary
+}
+
+fn chronicle_patch_item(scene_id: &str, base_version: i64) -> (&'static str, Value) {
+    (
+        "temporal.scene.metadata.patch",
+        json!({
+            "sceneId": scene_id,
+            "baseVersion": base_version,
+            "startTime": 5,
+            "startMinute": 480,
+            "startGranularity": "time",
+            "endTime": 5,
+            "endMinute": 540,
+            "endGranularity": "time",
+            "precision": "exact",
+        }),
+    )
+}
+
+fn materialize_item(
+    scene_id: &str,
+    base_version: i64,
+    order: &str,
+    label: &str,
+) -> (&'static str, Value) {
+    (
+        "temporal.story-order.materialize",
+        json!({
+            "sceneId": scene_id,
+            "baseVersion": base_version,
+            "storyTimeOrder": order,
+            "storyTimeLabel": label,
+        }),
+    )
+}
+
+fn apply_items(db: &Database, tag: &str, items: &[(&str, Value)]) -> Value {
+    let run_id = format!("run-{tag}");
+    let set_id = format!("set-{tag}");
+    let pairs = seed_approved_proposals(db, &run_id, &set_id, items);
+    prepare_and_apply(
+        db,
+        build_prepare(
+            &format!("req-{tag}"),
+            &format!("digest-{tag}"),
+            &set_id,
+            &run_id,
+            zip_ops(&pairs, items),
+        ),
+    )
+}
+
+/// X1-2. The Chronicle-range patch commit and its undo no longer refresh the
+/// Scene's Scope binding, yet the Scene body Source still reaches its
+/// dependents through the `scene` Feed event identity alone (neither writer
+/// calls `propagate_source_change_freshness_in_tx`).
+#[test]
+fn chronicle_commit_and_undo_reach_the_scene_body_source_without_a_scope_refresh() {
+    let db = migrated_db();
+    seed_scene(&db, "scene-chronicle-reach", "Chronicle reach");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-reach', 'project-1', 0, 'initial', '2026-08-24T00:00:00.000Z')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed canonical Epoch authority for the Feed cycle");
+    seed_scene_body_consumer(&db, "scene-chronicle-reach");
+    let before_token: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT 'v' || version || '@' || updated_at FROM tree_nodes
+                  WHERE id = 'scene-chronicle-reach'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("body Source token");
+
+    let applied = apply_items(
+        &db,
+        "chronicle-reach",
+        &[chronicle_patch_item("scene-chronicle-reach", 0)],
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    let after_token: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT 'v' || version || '@' || updated_at FROM tree_nodes
+                  WHERE id = 'scene-chronicle-reach'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("body Source token after the patch");
+    assert_ne!(
+        before_token, after_token,
+        "the patch advances the body token"
+    );
+    assert_eq!(
+        scope_event_count_in_transaction(&db, &latest_transaction_id(&db)),
+        0
+    );
+    let forward = processed_cycle(&db);
+    assert_eq!(forward.v2_shadow.evaluated_declaration_count, 1);
+    assert_eq!(forward.v2_shadow.consumers[0].freshness, "stale");
+
+    undo_commit(&db, &commit_id, "chronicle-reach-undo");
+    assert_eq!(
+        scope_event_count_in_transaction(&db, &latest_transaction_id(&db)),
+        0
+    );
+    let undone = processed_cycle(&db);
+    assert_eq!(
+        undone.v2_shadow.evaluated_declaration_count, 1,
+        "the undo's `scene` event alone selects the body-Source declaration"
+    );
+    assert_eq!(scene_scope_binding_version(&db, "scene-chronicle-reach"), 1);
+}
+
+/// X1-2. A story-order materialize and its undo advance the Scene's Scope
+/// generation only when `storyTimeOrder` itself changes; a label-only change
+/// moves the body Source token alone, and every step still reaches the body
+/// Source consumer through the `scene` Feed event.
+#[test]
+fn story_order_materialize_and_undo_refresh_the_scope_only_when_the_order_changes() {
+    let db = migrated_db();
+    seed_scene(&db, "scene-order", "Order");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-order', 'project-1', 0, 'initial', '2026-08-24T00:00:00.000Z')",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed canonical Epoch authority for the Feed cycle");
+    seed_scene_body_consumer(&db, "scene-order");
+    assert_eq!(scene_scope_binding_version(&db, "scene-order"), 1);
+
+    // NULL -> a0 changes the order.
+    apply_items(
+        &db,
+        "order-1",
+        &[materialize_item("scene-order", 0, "a0", "label one")],
+    );
+    assert_eq!(
+        scope_event_count_in_transaction(&db, &latest_transaction_id(&db)),
+        1
+    );
+    assert_eq!(scene_scope_binding_version(&db, "scene-order"), 2);
+    assert_eq!(
+        processed_cycle(&db).v2_shadow.evaluated_declaration_count,
+        1
+    );
+
+    // a0 -> a0 with a new label leaves the order, hence the generation.
+    let second = apply_items(
+        &db,
+        "order-2",
+        &[materialize_item("scene-order", 1, "a0", "label two")],
+    );
+    let second_commit = second["commitId"].as_str().unwrap().to_string();
+    assert_eq!(
+        scope_event_count_in_transaction(&db, &latest_transaction_id(&db)),
+        0,
+        "a label-only materialize appends no scene-scope event"
+    );
+    assert_eq!(scene_scope_binding_version(&db, "scene-order"), 2);
+    assert_eq!(
+        processed_cycle(&db).v2_shadow.evaluated_declaration_count,
+        1,
+        "the label-only materialize still reaches the body Source consumer"
+    );
+
+    // Undoing the label-only step restores the same order: no refresh.
+    undo_commit(&db, &second_commit, "order-2-undo");
+    assert_eq!(
+        scope_event_count_in_transaction(&db, &latest_transaction_id(&db)),
+        0
+    );
+    assert_eq!(scene_scope_binding_version(&db, "scene-order"), 2);
+    assert_eq!(
+        processed_cycle(&db).v2_shadow.evaluated_declaration_count,
+        1
+    );
+
+    // A separate Scene: materialize NULL -> a0, then undo back to NULL.
+    seed_scene(&db, "scene-order-undo", "Order undo");
+    seed_scene_body_consumer(&db, "scene-order-undo");
+    let third = apply_items(
+        &db,
+        "order-3",
+        &[materialize_item("scene-order-undo", 0, "b0", "label")],
+    );
+    let third_commit = third["commitId"].as_str().unwrap().to_string();
+    assert_eq!(scene_scope_binding_version(&db, "scene-order-undo"), 2);
+    processed_cycle(&db);
+    // Undoing restores the NULL order: the generation advances again.
+    undo_commit(&db, &third_commit, "order-3-undo");
+    assert_eq!(
+        scope_event_count_in_transaction(&db, &latest_transaction_id(&db)),
+        1
+    );
+    assert_eq!(scene_scope_binding_version(&db, "scene-order-undo"), 3);
+    assert_eq!(
+        processed_cycle(&db).v2_shadow.evaluated_declaration_count,
+        1
+    );
 }
 
 #[test]
