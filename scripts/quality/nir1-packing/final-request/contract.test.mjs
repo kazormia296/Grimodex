@@ -1146,6 +1146,30 @@ test("freeze record: scorer.files may not list a path twice", () => {
   );
 });
 
+test("freeze record: one path bound by two fields may not hide a wrong sha256", () => {
+  const { freeze, bytes, review } = freezeWorld();
+  assert.deepEqual(validateFreezeRecord(freeze, { bytes, review }), []);
+  // freeze.fixture carries a wrong sha256 while scorer.files re-binds the same
+  // path with the right one: the Map used to keep only the later row.
+  const rightFixture = freeze.fixture.sha256;
+  freeze.fixture.sha256 = "0".repeat(64);
+  freeze.scorer.files.push({ path: freeze.fixture.path, sha256: rightFixture });
+  const errors = validateFreezeRecord(freeze, { bytes, review });
+  assert.ok(
+    errors.some((e) => e.includes("is bound more than once")),
+    JSON.stringify(errors),
+  );
+});
+
+test("review record: a fixture whose cases hold a non-object yields errors, not a TypeError", () => {
+  const review = { verdict: "approve", requiredChanges: [], cases: [] };
+  let errors;
+  assert.doesNotThrow(() => {
+    errors = validateReviewRecord(review, { fixture: { cases: [null, 7] } });
+  });
+  assert.ok(errors.some((e) => e.includes("cover every fixture case")));
+});
+
 test("freeze record: the reviewer named in the record is the review record's reviewer", () => {
   const { freeze, bytes, review } = freezeWorld();
   freeze.authorSeparation.expectationReviewer.agent = "someone-else";
@@ -1479,7 +1503,7 @@ test("template: an unknown kind, a stray brace pair and a foreign Revision are f
 
 test("template: the estimator counts each placeholder at its maximum ASCII length", () => {
   const uuid = "0".repeat(36);
-  const token = "t".repeat(80);
+  const token = "t".repeat(128);
   const literal = `{"approval":"human-approved","decisionId":"${uuid}","proposalId":"${uuid}","revisionId":"${uuid}","token":"${token}"}`;
   assert.equal(
     estimateTemplateTokens(QUALIFICATION_TEMPLATE),
@@ -1494,9 +1518,15 @@ test("template: the estimator counts each placeholder at its maximum ASCII lengt
     estimateTemplateTokens("鐘{{revisionId:x}}"),
     estimateTokens(`鐘${uuid}`),
   );
-  // A resolved value is never longer than the estimate (36 / 80).
+  // A resolved value is never longer than the estimate (36 / 128). 128 covers
+  // the longest product token (a Relation source token, 84 characters at
+  // version 1), so it is derived from the product, not from a fixture.
   assert.equal(PLACEHOLDER_KINDS.revisionId.maxLength, 36);
-  assert.equal(PLACEHOLDER_KINDS.revisionToken.maxLength, 80);
+  assert.equal(PLACEHOLDER_KINDS.revisionToken.maxLength, 128);
+  assert.equal(PLACEHOLDER_KINDS.sourceToken.maxLength, 128);
+  const relationToken = `v1@2026-10-18T07:05:22.123456789+00:00:relation:${uuid}`;
+  assert.equal(relationToken.length, 84);
+  assert.ok(relationToken.length <= PLACEHOLDER_KINDS.sourceToken.maxLength);
 });
 
 test("template: the budget check and the freeze table use the template estimate", () => {

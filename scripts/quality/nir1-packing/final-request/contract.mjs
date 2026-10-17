@@ -183,6 +183,21 @@ export function variantRequests(variant) {
 // --------------------------------------------------- expected text templates
 
 /**
+ * Upper bound of a Source / Revision token (`revisionToken`, `sourceToken`),
+ * taken from the token forms the product builds (grimodex-db):
+ *   Scene                  `v<version>@<updated_at>`                      (source_revision.rs, domain_writes.rs)
+ *   Codex Entity           `codex:<entity-uuid>@<updated_at>`             (nir1_entity_relation.rs)
+ *   Codex Relation         `v<version>@<updated_at>:relation:<id>`        (nir1_entity_relation.rs)
+ *   sealed import capture  `v<version>@sha256:<64 hex>`                   (source_revision.rs)
+ * `updated_at` is `chrono::Utc::now().to_rfc3339()`
+ * (`2026-10-18T07:05:22.123456789+00:00`, 35 characters). The longest form is
+ * the Relation token: 1 + digits(version) + 1 + 35 + 10 (`:relation:`) + 36
+ * (UUID) = 83 + digits(version), that is 84 for version 1. 128 leaves room for
+ * a 45-digit version and a non-UUID id; it is not tuned to a fixture.
+ */
+export const RUNTIME_VALUE_MAX_LENGTH = 128;
+
+/**
  * An expected codex entry (and a forbidden text) is a template. The text a
  * product entry holds carries values that cannot be written as literals before
  * Native runs: the Revision, proposal and decision ids (generated when the
@@ -194,10 +209,10 @@ export function variantRequests(variant) {
  * the payload, the capture or the D-final result.
  *
  * `maxLength` is the length the estimator counts for the placeholder: a UUID is
- * exactly 36 characters; a token is bounded by `sha256:` plus 64 hex (71) and
- * rounded up to 80. The value is ASCII, so the estimate is an upper bound of
- * the real entry's tokens and the freeze record's `selectedTokens` uses the same
- * formula. The scorer refuses a resolved value longer than `maxLength`.
+ * exactly 36 characters; a token is bounded by the longest form the product
+ * writes (RUNTIME_VALUE_MAX_LENGTH, 128; derivation above). The value is ASCII,
+ * so the estimate is an upper bound of the real entry's tokens and the freeze
+ * record's `selectedTokens` uses the same formula. The scorer refuses a resolved value longer than `maxLength`.
  */
 export const PLACEHOLDER_KINDS = Object.freeze({
   revisionId: Object.freeze({ source: "idMap.runtimeId", maxLength: 36 }),
@@ -207,7 +222,10 @@ export const PLACEHOLDER_KINDS = Object.freeze({
   ...Object.fromEntries(
     RUNTIME_VALUE_KINDS.map((kind) => [
       kind,
-      Object.freeze({ source: "runtimeValues", maxLength: 80 }),
+      Object.freeze({
+        source: "runtimeValues",
+        maxLength: RUNTIME_VALUE_MAX_LENGTH,
+      }),
     ]),
   ),
 });
@@ -1158,7 +1176,7 @@ export function validateReviewRecord(review, { fixtureSha256, fixture } = {}) {
       errors.push("an approving review must leave no required change");
     }
     const expectedIds = fixture
-      ? fixture.cases.map((testCase) => testCase.caseId)
+      ? fixture.cases.map((testCase) => testCase?.caseId)
       : DPH_CASE_IDS;
     if (cases.map((row) => row?.caseId).join(",") !== expectedIds.join(",")) {
       errors.push("an approving review must cover every fixture case in order");
@@ -1304,6 +1322,12 @@ export function validateFreezeRecord(
     if (!checkBoundFile(entry, label, errors)) return;
     if (expectedPath && entry.path !== expectedPath) {
       errors.push(`${label}.path must be ${expectedPath}`);
+    }
+    // One path is bound once over all fields: a second row for the same path
+    // would overwrite the first sha256 in the map and leave it unchecked.
+    if (bound.has(entry.path)) {
+      errors.push(`${label}.path ${entry.path} is bound more than once`);
+      return;
     }
     bound.set(entry.path, entry.sha256);
   };

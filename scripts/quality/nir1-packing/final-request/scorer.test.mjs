@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { DPH_CASE_IDS } from "./contract.mjs";
+import { DPH_CASE_IDS, RUNTIME_VALUE_MAX_LENGTH } from "./contract.mjs";
 import {
   canonicalJson,
   escapeReservedPromptTags,
@@ -2535,9 +2535,43 @@ test("template-source-order: a value fixed after the capture, before the writes,
   }
 });
 
+test("template-token-bound: the longest product token forms resolve and score (the bound is not a fixture size)", () => {
+  // `v<version>@<rfc3339 nanos +00:00>:relation:<uuid>` is the longest form the
+  // product writes: 84 characters at version 1, 85 from version 10.
+  const stamp = "2026-10-18T07:05:22.123456789+00:00";
+  assert.equal(stamp.length, 35);
+  const relation = `v1@${stamp}:relation:${UUID_OTHER}`;
+  assert.equal(relation.length, 84);
+  for (const [name, token] of [
+    ["relation", relation],
+    ["relation, version 10", `v10@${stamp}:relation:${UUID_OTHER}`],
+    ["entity", `codex:${UUID_OTHER}@${stamp}`],
+    ["sealed import capture", `v1@sha256:${"a".repeat(64)}`],
+    ["the bound itself", "t".repeat(RUNTIME_VALUE_MAX_LENGTH)],
+  ]) {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.setup.runtimeValues.at(-1).value = token;
+    t.apply({ ...t.values, token });
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(
+      entry.status,
+      "passed",
+      `${name}: ${JSON.stringify(codes(entry))}`,
+    );
+  }
+  // One past the bound is still refused.
+  const w = world();
+  const t = templatize(w, "P-01");
+  const over = "t".repeat(RUNTIME_VALUE_MAX_LENGTH + 1);
+  t.setup.runtimeValues.at(-1).value = over;
+  t.apply({ ...t.values, token: over });
+  assert.equal(result(score(w), "P-01", positiveId("P-01")).status, "invalid");
+});
+
 test("template-source-order: a resolved value is bounded ASCII", () => {
   for (const [name, value, field] of [
-    ["too long token", "t".repeat(81), "token"],
+    ["too long token", "t".repeat(129), "token"],
     ["escape character", 'a"b', "token"],
     ["too long id", "i".repeat(37), "proposalId"],
     ["newline", "a\nb", "decisionId"],

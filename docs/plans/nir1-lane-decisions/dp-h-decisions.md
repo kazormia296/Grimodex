@@ -117,3 +117,25 @@ DPH-1b の修正で足した試験（`scripts/quality/nir1-packing/final-request
 - `receipt.test.mjs`：`EVENT_KIND_WRITERS` が全 event kind を覆い、writer が全部 `PRODUCT_WRITERS` にあること。
 
 実行した検証：`node --test scripts/quality/nir1-packing/final-request/*.test.mjs scripts/quality/nir1-packing/*.test.mjs scripts/quality/eval-fixtures.test.mjs`、`node scripts/quality/eval-fixtures.mjs`（`nir1FinalRequest` は `not-placed`、errors なし）。Rust と製品の経路は変えていない。
+
+### DPH-1b のレビュー指摘の修正2（token の上限を製品の形から導く。freeze の前）
+
+独立レビュー（spec）の P2 を DPH-2 の freeze より前に直した。DR-DPH-21 の `revisionToken`／`sourceToken` の上限 80 は `sha256:` + 64 hex（71）と Scene の `v<version>@<時刻>`（約 30）だけを根拠にしており、Codex の Relation／Entity の token を見ていなかった。記録済みの行は直さず、変更点だけをここに足す。変更は `scripts/quality/nir1-packing/final-request/` の `contract.mjs` とその試験だけで、Rust、fixture、freeze、製品の経路には触れていない。
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-DPH-27 | 2026-10-18 | DP-H／DPH-1b 修正2 | `revisionToken`／`sourceToken` の `maxLength` を 80 から 128 に改め、定数 `RUNTIME_VALUE_MAX_LENGTH` にした。導出：製品が作る token の形は、Scene `v<version>@<updated_at>`（source_revision.rs、domain_writes.rs）、Codex Entity `codex:<entity-uuid>@<updated_at>`（nir1_entity_relation.rs。36+7+1+35 = 79）、Codex Relation `v<version>@<updated_at>:relation:<id>`（nir1_entity_relation.rs）、封印済み import capture `v<version>@sha256:<64 hex>`（75 前後）。`updated_at` は `chrono::Utc::now().to_rfc3339()`（`2026-10-18T07:05:22.123456789+00:00`、35 文字）。最長は Relation で、1 + 桁数(version) + 1 + 35 + 10（`:relation:`）+ 36（UUID）= 83 + 桁数(version)、version 1 で 84、version 10 以上で 85 以上。128 は version 45 桁、UUID でない id まで収める丸めで、DPH-2 の fixture の大きさには合わせていない。`estimateTemplateTokens` と freeze の `perRequest.selectedTokens` は同じ `PLACEHOLDER_KINDS[kind].maxLength` を使うので、同時に 128 になる（fixture はまだ placeholder を使っていないので、既存の freeze 値への影響はない）。scorer が解決した値を `malformed` にする条件（上限超過、形式外の文字）は 128 で同じ式のまま。これは評価の見積り式の値で、製品の上限でも確認済みの閾値でもない（緩和ではなく、80 が実在の token より小さい誤りの訂正）。 | contract の純粋関数のみ。resolve の入力は setup receipt のままで、payload／capture／出力は入力にならない。 | 84 ちょうど、または fixture に必要な長さだけに上げる：version の桁と将来の id 形式で再び足りなくなり、scorer が freeze に束縛された後は再 freeze と全 case の再レビューになるので不採用。上限を無くす：見積りが上限にならず予算検査が崩れるので不採用。 | 不要 | 該当なし | 不要 | 記録済み |
+| DR-DPH-28 | 2026-10-18 | DP-H／DPH-1b 修正2 | freeze 記録の束縛（`validateFreezeRecord` の `bind`）を、同じ path を欄をまたいで二度束縛したら error にした（`freeze.fixture` などと `scorer.files` が同じ path を持つ場合）。以前は Map が後の行の sha256 で先の行を黙って上書きし、先の欄の sha256 の食い違いが検出されなかった。fail-closed のための検査の追加で、緩和ではない。あわせて `validateReviewRecord` の `fixture.cases.map` を `testCase?.caseId` にして、object でない要素があっても TypeError でなく error 一覧を返す。 | contract の純粋関数のみ。 | 欄ごとに別の Map を持つ：同じ path を二つの欄で別の用途に束縛する正当な理由が無いので、全体で一意にするほうが単純で厳しい。 | 不要 | 該当なし | 不要 | 記録済み |
+
+この修正で扱わなかった指摘と理由・引き継ぎ：
+
+- `runtimeId` の placeholder と setup event の結び付け（P3）。見送る。上の『直さなかった指摘』の `runtimeId` の項と同じ理由（scorer は Revision 以外の対象を作った event の種類を事前に知らず、tree／scope／codex の event の形は DPH-4 の harness の記録の形で決まる）。scorer は freeze 後に変えにくいので、DPH-4 は harness の試験で『id map を capture event より前に確定する』を固定し、独立 reviewer がその順序を確かめる。
+- scorer が fixture の bytes を自分で hash しないこと（P3）。見送る。scorer の API は『呼出し側が渡す `expectedInputs` と receipt の一致』を見る設計で、bytes の読込は harness の責務（DR の既存の分担）。DPH-4 の入口は fixture と freeze の bytes を読み、sha256 を自分で計算して `expectedInputs` を作り、`verifyFrozenSnapshot` を通してから採点する。scorer の API に `fixtureBytes` を足す案は、DPH-4 の harness の試験で足りない場合に freeze の前に限って採る。
+- final-request の `*.test.mjs` が quality-manifest、impact-map の試験一覧、`test:quality` に未登録（P3）。DPH-4 の『登録』の範囲。登録するまで、freeze の記録に載せる試験の根拠は手元実行（`node --test scripts/quality/nir1-packing/final-request/*.test.mjs`）だけで、CI の gate には入っていない。DPH-4 で必ず登録する。
+
+この修正で足した試験：
+
+- `scorer.test.mjs`：`template-token-bound`（Relation 形 84 文字、version 10 の 85 文字、Entity 形、封印済み capture 形、上限ちょうどの 128 文字の token が setup receipt から解決して `passed` になること、129 文字は `invalid` のままであること）、`bounded ASCII` の上限超過を 129 に更新。
+- `contract.test.mjs`：`estimateTemplateTokens` と `maxLength` が 128 であること（Relation 形が上限内であること）、欄をまたぐ同じ path の束縛が error になること、`fixture.cases` に object でない要素があっても error 一覧を返すこと。
+
+実行した検証：`node --test scripts/quality/nir1-packing/final-request/*.test.mjs`（172 件 pass。修正前の contract.mjs に戻すと新しい試験 4 件が失敗することを確認）、`node --test scripts/quality/eval-fixtures.test.mjs`（10 件 pass）。Rust と製品の経路は変えていない。
