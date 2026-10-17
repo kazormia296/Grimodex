@@ -1,0 +1,16 @@
+# cargo audit exceptions. Each exception is scoped, expires, and is asserted by
+# scripts/release-workflows.test.mjs ("scopes the Rust audit exception").
+#
+# zip 4.6.1 is linked only by tauri-plugin-updater (frozen legacy Tauri shell,
+# Windows-only `.zip` updater payloads that are minisign-verified before
+# extraction). Every released tauri-plugin-updater 2.x still depends on zip 4;
+# the fix needs zip >= 9, so a dependency update cannot clear these yet.
+# Revisit by: remove the exception once zip >= 9 is locked, or decide whether
+# to drop the updater `zip` feature from the legacy shell.
+# expires-at: 2026-11-18T00:00:00+09:00
+[advisories]
+ignore = [
+  "RUSTSEC-2026-0367", # zip: SUID/SGID bits preserved during extraction
+  "RUSTSEC-2026-0368", # zip: ZipArchive::extract symlink targets escape the destination
+  "RUSTSEC-2026-0369", # zip: Unix permissions applied through unconfined symlinks
+]

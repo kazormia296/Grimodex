@@ -101336,7 +101336,7 @@ DEALINGS IN THE SOFTWARE.
 ```
 </details>
 
-### rustls (0.23.45)
+### rustls (0.23.46)
 
 - License: Apache-2.0 OR ISC OR MIT
 - Repository: https://github.com/rustls/rustls
