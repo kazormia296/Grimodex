@@ -267,13 +267,8 @@ pub fn restore_scene_revision(
                 "REVISION_CONTENT_RESTORE_VERSION_MISMATCH: scene changed during restore"
             );
             let after = scene_snapshot(conn, &payload.project_id, &payload.entity_id)?;
-            let scene_scope_refresh_event =
-                crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                    conn,
-                    &payload.project_id,
-                    &payload.entity_id,
-                    &after.updated_at,
-                )?;
+            // A body-version restore advances only the body Source token
+            // (`version = version + 1`); the Scope generation is unchanged (X1-2).
 
             crate::narrative_extraction::record_human_field_write(
                 conn,
@@ -359,7 +354,6 @@ pub fn restore_scene_revision(
                         text_impact: None,
                         structural_impact: None,
                     },
-                    scene_scope_refresh_event,
                 ],
                 },
             )?;
@@ -508,6 +502,22 @@ mod tests {
                     0
                 )
             );
+            // X1-2: a body-version restore advances the body Source token only;
+            // the Scope binding is untouched and no `scene-scope` event exists.
+            let binding_version: i64 = conn.query_row(
+                "SELECT version FROM narrative_scene_scope_bindings
+                  WHERE project_id = ?1 AND scene_id = 'scene-1'",
+                [PROJECT],
+                |row| row.get(0),
+            )?;
+            assert_eq!(binding_version, 1);
+            let scope_events: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events
+                  WHERE json_extract(object_key_json, '$.kind') = 'scene-scope'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(scope_events, 0);
             let baseline: (i64, String) = conn.query_row(
                 "SELECT anchor_sequence, payload FROM state_snapshots
                   WHERE project_id = ?1 AND domain = 'editor'
@@ -536,7 +546,7 @@ mod tests {
             for (table, expected) in [
                 ("change_events", 1_i64),
                 ("narrative_change_transactions", 1),
-                ("narrative_change_events", 2),
+                ("narrative_change_events", 1),
                 ("idempotency_requests", 1),
                 ("content_versions", 2),
                 ("state_snapshots", 1),

@@ -1339,7 +1339,7 @@ fn push_aux_scope(
     push_canonical_rows(conn, inserts, table, take_aux_rows(aux_rows, scope), mode)
 }
 
-fn build_canonical_restore_plan(
+pub(crate) fn build_canonical_restore_plan(
     conn: &Connection,
     project_id: &str,
     snapshot_id: &str,
@@ -3415,7 +3415,13 @@ mod tests {
                        FROM narrative_scene_scope_bindings
                       WHERE project_id = 'p1' AND scene_id = 't1'",
                     [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )?)
             })
             .expect("read missing-current corruption");
@@ -3455,8 +3461,7 @@ mod tests {
         let type_db = fixture();
         seed_referenced_character(&type_db);
         let type_snapshot = character_snapshot("s-codex-type-current");
-        create_project_snapshot(&type_db, type_snapshot)
-            .expect("create type-current snapshot");
+        create_project_snapshot(&type_db, type_snapshot).expect("create type-current snapshot");
         type_db
             .with_conn(|conn| {
                 conn.execute(
@@ -3474,7 +3479,13 @@ mod tests {
                        FROM narrative_scene_scope_bindings
                       WHERE project_id = 'p1' AND scene_id = 't1'",
                     [],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?)),
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
                 )?)
             })
             .expect("read type-current corruption");
@@ -3645,6 +3656,123 @@ mod tests {
             .filter_map(|row| row["id"].as_str())
             .collect::<Vec<_>>();
         assert_eq!(ids, vec!["l1"]);
+    }
+
+    fn raw_binding(db: &Database, scene_id: &str) -> (String, String, i64, String, String) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT scene_incarnation_id, compatibility_marker, version,
+                        source_token, knowledge_holder_json
+                   FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
+                [scene_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )?)
+        })
+        .expect("read raw binding")
+    }
+
+    fn tree_body_token(db: &Database, scene_id: &str) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT 'v' || version || '@' || updated_at FROM tree_nodes WHERE id = ?1",
+                [scene_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read body Source token")
+    }
+
+    /// X1-2 test 10 (binding side). A body restore replaces the Scene rows, so
+    /// the restored Scene's binding is created again by Native: a new
+    /// incarnation, the default (unapproved) A1, generation 1 and then 2 for the
+    /// restore's own refresh. Nothing of the binding before the restore
+    /// survives, so an earlier A1 approval or generation cannot match again.
+    /// The restored row can carry the very body Source token
+    /// (`v{version}@{updated_at}`) it had when it was captured; that is outside
+    /// the monotonic guarantee, which holds inside one restore epoch.
+    #[test]
+    fn snapshot_body_restore_rebuilds_bindings() {
+        let db = fixture();
+        seed_referenced_character(&db);
+        // The captured row is the live row as of the snapshot (version 0, the
+        // snapshot's timestamp), so a restore puts that exact token back.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET updated_at = '2026-07-30T00:00:00.000Z' WHERE id = 't1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("align the live row with the snapshot row");
+        let token_at_capture = tree_body_token(&db, "t1");
+        let before = raw_binding(&db, "t1");
+        assert_eq!(before.1, "explicit");
+        assert!(before.4.contains("c1"));
+        create_project_snapshot(&db, empty_snapshot("s-bindings")).expect("create snapshot");
+
+        // The live Scene moves on: a body-version bump and a title edit.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET title = 'Edited', version = version + 1,
+                        updated_at = '2026-08-01T00:00:00.000Z'
+                  WHERE id = 't1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("edit the live Scene");
+        assert_ne!(tree_body_token(&db, "t1"), token_at_capture);
+
+        let restore = canonical_restore_payload(
+            &db,
+            "restore-bindings",
+            "s-bindings",
+            vec![RestoreScope::Body],
+        );
+        apply_project_snapshot_restore(&db, restore).expect("restore body");
+
+        let after = raw_binding(&db, "t1");
+        assert_ne!(after.0, before.0, "a new Scene incarnation");
+        assert_eq!(after.1, "unknown", "the default A1 marker");
+        assert!(
+            !after.4.contains("c1"),
+            "no character holder survives: {}",
+            after.4
+        );
+        assert_eq!(after.2, 2, "generation 1 plus the restore's own refresh");
+        assert_ne!(after.3, before.3, "a new v1 source token");
+        // The restored row's body Source token is the one it had at capture.
+        assert_eq!(tree_body_token(&db, "t1"), token_at_capture);
+        db.with_conn(|conn| {
+            let epochs: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE reason = 'restore'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(epochs, 1, "the restore rotates the semantic epoch");
+            let scope_events: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events event
+                   JOIN narrative_change_transactions tx ON tx.id = event.transaction_id
+                  WHERE tx.request_id = 'restore-bindings'
+                    AND json_extract(event.object_key_json, '$.kind') = 'scene-scope'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                scope_events, 1,
+                "one scene-scope event for the restored Scene"
+            );
+            Ok(())
+        })
+        .expect("verify the restore epoch and Feed");
     }
 
     #[test]

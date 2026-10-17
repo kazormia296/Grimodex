@@ -98,7 +98,7 @@ pub(crate) use scene_scope::{canonical_scene_scope_snapshot, canonical_scope_reg
 pub(crate) use scene_scope::{
     ensure_character_reference_mutation_allowed_in_tx,
     ensure_character_snapshot_restore_allowed_in_tx,
-    invalidate_character_references_with_events_in_tx,
+    invalidate_character_references_with_events_in_tx, scene_ids_with_pov_character_in_tx,
 };
 pub use scene_scope::{
     read_narrative_scene_scope, update_narrative_scene_scope,
@@ -133,6 +133,8 @@ mod repair;
 mod retrieval_admission;
 mod scene_scope;
 mod scope_dependency_projection;
+#[cfg(test)]
+mod scope_storage_authority_tests;
 pub use nir1_packing::{
     read_and_pack_native_a2_context, NativeNir1AuthorityBinding, NativeNir1DecisionBinding,
     NativeNir1PackedContext, NativeNir1PackingRequest, NativeNir1RawContextItem,
@@ -1011,33 +1013,32 @@ pub fn temporal_scene_patch(
                     undo_journal_id: Some(undo_journal_id.clone()),
                     application_ids: Vec::new(),
                     occurred_at: now,
-                    events: vec![
-                        NarrativeChangeEventInput {
-                            object_key: serde_json::json!({
-                                "kind": "scene",
-                                "sceneId": payload.target_id,
-                            }),
-                            change_kind: if changed_paths
-                                .iter()
-                                .any(|path| path == "/storyTimeOrder" || path == "/storyTimeLabel")
-                            {
-                                "order".to_string()
-                            } else {
-                                "calendar".to_string()
-                            },
-                            mutation_kind: "update".to_string(),
-                            before_version: Some(payload.base_version),
-                            before_digest: Some(narrative_snapshot_digest(&before_feed)?),
-                            after_version: Some(version),
-                            after_digest: Some(narrative_snapshot_digest(&after_feed)?),
-                            structural_impact: Some(serde_json::json!({
-                                "changedPaths": changed_paths.clone(),
-                            })),
-                            changed_paths,
-                            text_impact: None,
+                    events: std::iter::once(NarrativeChangeEventInput {
+                        object_key: serde_json::json!({
+                            "kind": "scene",
+                            "sceneId": payload.target_id,
+                        }),
+                        change_kind: if changed_paths
+                            .iter()
+                            .any(|path| path == "/storyTimeOrder" || path == "/storyTimeLabel")
+                        {
+                            "order".to_string()
+                        } else {
+                            "calendar".to_string()
                         },
-                        scene_scope_refresh_event,
-                    ],
+                        mutation_kind: "update".to_string(),
+                        before_version: Some(payload.base_version),
+                        before_digest: Some(narrative_snapshot_digest(&before_feed)?),
+                        after_version: Some(version),
+                        after_digest: Some(narrative_snapshot_digest(&after_feed)?),
+                        structural_impact: Some(serde_json::json!({
+                            "changedPaths": changed_paths.clone(),
+                        })),
+                        changed_paths,
+                        text_impact: None,
+                    })
+                    .chain(scene_scope_refresh_event)
+                    .collect(),
                 },
             )?;
             value["maintenanceTransactionId"] = Value::String(append.narrative.transaction_id);

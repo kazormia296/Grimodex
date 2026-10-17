@@ -195,15 +195,16 @@ pub(crate) fn apply_scene_metadata_patch_in_tx(
         "NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '{}' patch conflict",
         payload.target_id
     );
-    let scope_refresh_event =
-        super::refresh_scene_scope_source_token_in_tx(conn, project_id, &payload.target_id, now)?;
+    // Chronicle start/end are not Scope fields: the Scope generation is not
+    // advanced. The body Source token advances through `version` above and is
+    // delivered by the caller's `scene` feed event (X1-2).
     let after_snapshot = collect_scene_chronicle_snapshot(conn, &payload.target_id)?;
     Ok(TemporalPatchTxResult {
         entity_id: payload.target_id.clone(),
         version: next_version,
         after_snapshot,
         before_snapshot,
-        scope_refresh_event: Some(scope_refresh_event),
+        scope_refresh_event: None,
     })
 }
 
@@ -213,7 +214,7 @@ pub(crate) fn restore_scene_chronicle_patch(
     before_snapshot: &Value,
     expected_after_version: i64,
     now: &str,
-) -> anyhow::Result<(i64, NarrativeChangeEventInput)> {
+) -> anyhow::Result<i64> {
     let live_version: i64 = conn.query_row(
         "SELECT version FROM tree_nodes WHERE id = ?1",
         params![scene_id],
@@ -264,9 +265,8 @@ pub(crate) fn restore_scene_chronicle_patch(
         updated == 1,
         "NEX_COMMIT_SCENE_EDITED: scene '{scene_id}' restore conflict"
     );
-    let scope_refresh_event =
-        super::refresh_scene_scope_source_token_for_scene_in_tx(conn, scene_id, now)?;
-    Ok((next_version, scope_refresh_event))
+    // Chronicle start/end are not Scope fields: no Scope generation refresh (X1-2).
+    Ok(next_version)
 }
 
 pub(crate) fn collect_event_chronicle_snapshot(
@@ -498,7 +498,7 @@ pub(crate) fn apply_scene_temporal_patch_in_tx(
     project_id: &str,
     payload: &TemporalScenePatchPayload,
     now: &str,
-) -> anyhow::Result<(Value, NarrativeChangeEventInput)> {
+) -> anyhow::Result<(Value, Option<NarrativeChangeEventInput>)> {
     let live_version: Option<i64> = conn
         .query_row(
             "SELECT version FROM tree_nodes
@@ -532,6 +532,7 @@ pub(crate) fn apply_scene_temporal_patch_in_tx(
         end_granularity: payload.end_granularity.clone(),
         precision: payload.precision.clone(),
     })?;
+    let story_time_order_before = read_story_time_order(conn, &payload.target_id)?;
     let next_version = live_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("scene version overflow"))?;
@@ -571,8 +572,19 @@ pub(crate) fn apply_scene_temporal_patch_in_tx(
         "NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '{}' patch conflict",
         payload.target_id
     );
-    let scope_refresh_event =
-        super::refresh_scene_scope_source_token_in_tx(conn, project_id, &payload.target_id, now)?;
+    // Only a real storyTimeOrder change moves the Scene in the Scope's reading
+    // order. storyTimeLabel and the Chronicle range advance the body Source
+    // token (`version`) but not the Scope generation (X1-2).
+    let scope_refresh_event = if story_time_order_before == payload.story_time_order {
+        None
+    } else {
+        Some(super::refresh_scene_scope_source_token_in_tx(
+            conn,
+            project_id,
+            &payload.target_id,
+            now,
+        )?)
+    };
     Ok((
         serde_json::json!({
             "sceneId": payload.target_id,
@@ -675,15 +687,29 @@ pub(crate) fn apply_story_order_materialize_in_tx(
         "NEX_TEMPORAL_SCENE_VERSION_MISMATCH: scene '{}' story-order conflict",
         payload.scene_id
     );
-    let scope_refresh_event =
-        super::refresh_scene_scope_source_token_in_tx(conn, project_id, &payload.scene_id, now)?;
+    // Advance the Scope generation only when storyTimeOrder really changed; a
+    // label-only materialize moves only the body Source token (X1-2).
+    let scope_refresh_event = if before_snapshot
+        .get("storyTimeOrder")
+        .and_then(Value::as_str)
+        == Some(payload.story_time_order.as_str())
+    {
+        None
+    } else {
+        Some(super::refresh_scene_scope_source_token_in_tx(
+            conn,
+            project_id,
+            &payload.scene_id,
+            now,
+        )?)
+    };
     let after_snapshot = collect_scene_story_order_snapshot(conn, &payload.scene_id)?;
     Ok(TemporalPatchTxResult {
         entity_id: payload.scene_id.clone(),
         version: next_version,
         after_snapshot,
         before_snapshot,
-        scope_refresh_event: Some(scope_refresh_event),
+        scope_refresh_event,
     })
 }
 
@@ -693,7 +719,7 @@ pub(crate) fn restore_scene_story_order_patch(
     before_snapshot: &Value,
     expected_after_version: i64,
     now: &str,
-) -> anyhow::Result<(i64, NarrativeChangeEventInput)> {
+) -> anyhow::Result<(i64, Option<NarrativeChangeEventInput>)> {
     let live_version: i64 = conn.query_row(
         "SELECT version FROM tree_nodes WHERE id = ?1",
         params![scene_id],
@@ -702,6 +728,11 @@ pub(crate) fn restore_scene_story_order_patch(
     if live_version != expected_after_version {
         anyhow::bail!("NEX_COMMIT_SCENE_EDITED: scene '{scene_id}' was modified after commit");
     }
+    let story_time_order_before = read_story_time_order(conn, scene_id)?;
+    let story_time_order_restored = before_snapshot
+        .get("storyTimeOrder")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let next_version = live_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("scene version overflow during undo"))?;
@@ -729,9 +760,24 @@ pub(crate) fn restore_scene_story_order_patch(
         updated == 1,
         "NEX_COMMIT_SCENE_EDITED: scene '{scene_id}' restore conflict"
     );
-    let scope_refresh_event =
-        super::refresh_scene_scope_source_token_for_scene_in_tx(conn, scene_id, now)?;
+    // The Scope generation moves only when storyTimeOrder really changed back.
+    let scope_refresh_event = if story_time_order_before == story_time_order_restored {
+        None
+    } else {
+        Some(super::refresh_scene_scope_source_token_for_scene_in_tx(
+            conn, scene_id, now,
+        )?)
+    };
     Ok((next_version, scope_refresh_event))
+}
+
+fn read_story_time_order(conn: &Connection, scene_id: &str) -> anyhow::Result<Option<String>> {
+    conn.query_row(
+        "SELECT story_time_order FROM tree_nodes WHERE id = ?1",
+        params![scene_id],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
 }
 
 /// OCC for `project_calendar.version`, checked once at commit start whenever

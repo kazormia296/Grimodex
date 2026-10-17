@@ -40,6 +40,96 @@ fn event_timestamp(value: &str) -> i64 {
         .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
 }
 
+/// Interprets a stored or declared `updated_at` as an instant. Accepts RFC 3339
+/// with any fractional precision (renderer `.000Z`, Native nanoseconds) and the
+/// legacy SQLite `YYYY-MM-DD HH:MM:SS[.fff]` form (UTC). String order is never
+/// used for comparison: `...05:00:00.000Z` sorts after `...05:00:00.000000001Z`
+/// lexically but is earlier in time.
+pub(crate) fn parse_updated_at_instant(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(parsed.with_timezone(&chrono::Utc));
+    }
+    for format in ["%Y-%m-%d %H:%M:%S%.f", "%Y-%m-%dT%H:%M:%S%.f"] {
+        if let Ok(parsed) = chrono::NaiveDateTime::parse_from_str(value, format) {
+            return Some(parsed.and_utc());
+        }
+    }
+    None
+}
+
+/// Latest instant a caller-declared `updated_at` may name. It leaves a day of
+/// headroom below year 9999 so `current + 1ns` can never leave the range that
+/// `parse_updated_at_instant` reads back (chrono renders year 10000 as
+/// `+10000-...`, which no parser here accepts).
+const DECLARED_UPDATED_AT_CEILING: &str = "9999-12-30T00:00:00Z";
+
+/// Renders an instant in the Native `updated_at` form and proves that
+/// `parse_updated_at_instant` reads exactly that instant back. Fails closed
+/// otherwise: a value that cannot be interpreted would later impose no ordering
+/// and let the body Source token return to an earlier value.
+fn render_readable_updated_at(instant: chrono::DateTime<chrono::Utc>) -> anyhow::Result<String> {
+    let rendered = instant.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+    if parse_updated_at_instant(&rendered) != Some(instant) {
+        anyhow::bail!("updatedAt '{rendered}' is outside the range this store can order");
+    }
+    Ok(rendered)
+}
+
+/// Returns an `updated_at` that is strictly later, as an instant, than
+/// `current`, for writers that rewrite a Scene row without advancing `version`.
+/// The Scene body Source token is `v{version}@{updated_at}`; it must never
+/// return to a value the row already held in this restore epoch.
+///
+/// - `declared = Some(value)`: `value` must be an interpretable timestamp not
+///   later than `DECLARED_UPDATED_AT_CEILING` (otherwise the write is refused).
+///   It is kept verbatim when it is strictly later than `current`; otherwise
+///   `current + 1ns` is written (never an error for an ordinary clock, so a
+///   clock that moved backwards cannot make a Scene uneditable).
+/// - `declared = None`: `max(now, current + 1ns)`.
+/// - Every value this function returns reads back through
+///   `parse_updated_at_instant`. When `current + 1ns` cannot be rendered in that
+///   form the write is refused (fail closed) rather than writing an
+///   uninterpretable string.
+/// - A `current` that cannot be interpreted (a legacy or foreign format) imposes
+///   no ordering; the declared value (or now) is written. That string can not
+///   repeat later because every value written from here on is interpretable.
+pub(crate) fn strictly_later_updated_at(
+    declared: Option<&str>,
+    current: &str,
+) -> anyhow::Result<String> {
+    let current_instant = parse_updated_at_instant(current);
+    let (candidate, verbatim) = match declared {
+        Some(value) => {
+            let instant = parse_updated_at_instant(value).ok_or_else(|| {
+                anyhow::anyhow!("updatedAt '{value}' is not an interpretable timestamp")
+            })?;
+            let ceiling = parse_updated_at_instant(DECLARED_UPDATED_AT_CEILING)
+                .expect("ceiling is an interpretable timestamp");
+            if instant > ceiling {
+                anyhow::bail!("updatedAt '{value}' is later than {DECLARED_UPDATED_AT_CEILING}");
+            }
+            (instant, Some(value))
+        }
+        None => (chrono::Utc::now(), None),
+    };
+    match current_instant {
+        None => verbatim.map_or_else(
+            || render_readable_updated_at(candidate),
+            |v| Ok(v.to_string()),
+        ),
+        Some(current_instant) if candidate > current_instant => verbatim.map_or_else(
+            || render_readable_updated_at(candidate),
+            |v| Ok(v.to_string()),
+        ),
+        Some(current_instant) => {
+            let next = current_instant
+                .checked_add_signed(chrono::Duration::nanoseconds(1))
+                .ok_or_else(|| anyhow::anyhow!("updatedAt overflow"))?;
+            render_readable_updated_at(next)
+        }
+    }
+}
+
 fn require_non_empty(value: &str, field: &str) -> anyhow::Result<()> {
     if value.is_empty() {
         anyhow::bail!("domain write {field} must not be empty");
@@ -759,7 +849,6 @@ fn apply_codex_rename_updates_in_tx(
         .collect::<anyhow::Result<Vec<_>>>()?;
     keyed_indices.sort_by(|left, right| left.0.cmp(&right.0));
     let mut aggregate_versions: HashMap<String, (i64, i64)> = HashMap::new();
-    let mut changed_scene_ids = BTreeSet::new();
     for (_, index) in keyed_indices {
         let update = &updates[index];
         let (object_key, change_kind, changed_paths) =
@@ -928,13 +1017,6 @@ fn apply_codex_rename_updates_in_tx(
                 update.ref_id, project_id, expected_version
             );
         }
-        if matches!(
-            update.kind.as_str(),
-            "scene-body" | "node-title" | "node-synopsis"
-        ) {
-            changed_scene_ids.insert(update.ref_id.clone());
-        }
-
         match update.kind.as_str() {
             "scene-body" => {
                 crate::narrative_extraction::record_human_field_write(
@@ -1046,17 +1128,10 @@ fn apply_codex_rename_updates_in_tx(
             text_impact: None,
         });
     }
-    // A rename of any scene-owned field changes the scene's retrieval source.
-    // Refresh each binding once after all fields for that scene have been
-    // applied, and carry the paired authority event in this same transaction
-    // so forward, undo, and redo cannot leave a stale scope token behind.
-    for scene_id in changed_scene_ids {
-        feed_events.push(
-            crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                conn, project_id, &scene_id, updated_at,
-            )?,
-        );
-    }
+    // A rename of a scene-owned field (body, title, synopsis) changes only the
+    // scene's body Source token (`version` is advanced above) and is carried by
+    // the `scene` feed events pushed in the loop. It does not touch the Scope
+    // generation, so no Scope binding refresh is made here (X1-2).
     Ok(CodexRenameApplyOutcome {
         versions,
         feed_events,
@@ -1978,7 +2053,8 @@ pub fn project_delete(db: &Database, payload: ProjectDeletePayload) -> anyhow::R
     // This permit is process-local coordination with the shared lifecycle
     // owner.  The durable running-Run check below remains mandatory because
     // another process may still hold a writer or recovery responsibility.
-    let lifecycle_namespace = crate::narrative_extraction::project_lifecycle_namespace_for_database(db)?;
+    let lifecycle_namespace =
+        crate::narrative_extraction::project_lifecycle_namespace_for_database(db)?;
     crate::narrative_extraction::try_reserve_project_destructive_permit_in_namespace(
         &lifecycle_namespace,
         &payload.project_id,
@@ -2743,6 +2819,23 @@ fn tree_node_scope_placement_changed(before: &Value, after: &Value) -> bool {
     ["parentId", "sortOrder", "archivedAt"]
         .into_iter()
         .any(|field| before.get(field) != after.get(field))
+}
+
+/// True when a Scene's value for any field that decides its Scope differs
+/// between two snapshots: where it sits in the Reading order (`parentId`,
+/// `sortOrder`, `storyTimeOrder`), whether it is archived (`archivedAt`) and its
+/// POV (`povCharacterId`). Title, synopsis, status, labels, location, Chronicle
+/// range and body are deliberately not Scope fields.
+fn scene_scope_fields_changed(before: &Value, after: &Value) -> bool {
+    [
+        "parentId",
+        "sortOrder",
+        "storyTimeOrder",
+        "archivedAt",
+        "povCharacterId",
+    ]
+    .into_iter()
+    .any(|field| before.get(field) != after.get(field))
 }
 
 fn live_scene_subtree_count_from_snapshots(root_id: &str, snapshots: &[Value]) -> i64 {
@@ -3660,7 +3753,8 @@ pub fn tree_node_patch_with_authority(
             "revision content restore requires a versioned content-only change event"
         );
     }
-    assignments.push(format!("updated_at = ?{}", params.len() + 1));
+    let updated_at_param_index = params.len();
+    assignments.push(format!("updated_at = ?{}", updated_at_param_index + 1));
     params.push(Value::String(payload.updated_at.clone()));
     if payload.bump_version {
         assignments.push("version = version + 1".to_string());
@@ -3700,11 +3794,6 @@ pub fn tree_node_patch_with_authority(
         payload_hash: &request_hash,
         conflict_marker: "TREE_NODE_PATCH_REQUEST_CONFLICT",
     };
-    let timestamp = payload
-        .change_event
-        .as_ref()
-        .map(|event| event.timestamp)
-        .unwrap_or_else(|| event_timestamp(&payload.updated_at));
     let source_domain = if is_restore {
         "content.restore"
     } else if payload.change_event.is_some() {
@@ -3733,6 +3822,28 @@ pub fn tree_node_patch_with_authority(
             "patch",
         )?;
         let before = select_tree_node(tx, &payload.project_id, &payload.node_id)?;
+        // T guarantee: a Scene rewrite that does not advance `version` must leave
+        // `updated_at` strictly later (as an instant) than the row's current
+        // value, so the body Source token `v{version}@{updated_at}` never
+        // returns to an earlier value. Versioned writes (V) are untouched.
+        let effective_updated_at = if !payload.bump_version
+            && before.get("nodeType").and_then(Value::as_str) == Some("scene")
+        {
+            let current = before
+                .get("updatedAt")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            strictly_later_updated_at(Some(&payload.updated_at), current)?
+        } else {
+            payload.updated_at.clone()
+        };
+        let mut params = params.clone();
+        params[updated_at_param_index] = Value::String(effective_updated_at.clone());
+        let timestamp = payload
+            .change_event
+            .as_ref()
+            .map(|event| event.timestamp)
+            .unwrap_or_else(|| event_timestamp(&effective_updated_at));
         let before_live_scene_subtree_count = if before
             .get("nodeType")
             .and_then(Value::as_str)
@@ -3851,15 +3962,21 @@ pub fn tree_node_patch_with_authority(
         }
         let mut scene_scope_refresh_event = None;
         if row.get("nodeType").and_then(Value::as_str) == Some("scene") {
-            if let Some(updated_at) = row.get("updatedAt").and_then(Value::as_str) {
-                scene_scope_refresh_event = Some(
-                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                        tx,
-                        &payload.project_id,
-                        &payload.node_id,
-                        updated_at,
-                    )?,
-                );
+            // The Scope generation advances only when a Scope field really
+            // changed (same-transaction before/after comparison). Title, body,
+            // label, location and Chronicle edits advance the body Source token
+            // alone (X1-2).
+            if scene_scope_fields_changed(&before, &row) {
+                if let Some(updated_at) = row.get("updatedAt").and_then(Value::as_str) {
+                    scene_scope_refresh_event = Some(
+                        crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                            tx,
+                            &payload.project_id,
+                            &payload.node_id,
+                            updated_at,
+                        )?,
+                    );
+                }
             }
             let field_paths: Vec<&str> = payload
                 .patch
@@ -3950,7 +4067,7 @@ pub fn tree_node_patch_with_authority(
                     tx,
                     &payload.project_id,
                     &affected_scene_ids,
-                    &payload.updated_at,
+                    &effective_updated_at,
                 )?;
         }
         let canonical_payload = payload
@@ -4030,7 +4147,7 @@ pub fn tree_node_patch_with_authority(
                 entity_id: &payload.node_id,
                 canonical_payload,
                 scene_id: is_scene.then(|| payload.node_id.clone()),
-                occurred_at: &payload.updated_at,
+                occurred_at: &effective_updated_at,
                 timestamp,
                 cause_kind: tree_cause_kind(payload.origin),
                 events: feed_events,
@@ -5560,21 +5677,6 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 "AI_TREE_PLAN_VERSION_MISMATCH: node '{}' changed before apply",
                 update.id
             );
-            if before
-                .get(&update.id)
-                .and_then(|snapshot| snapshot.get("nodeType"))
-                .and_then(Value::as_str)
-                == Some("scene")
-            {
-                scene_scope_refresh_events.push(
-                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
-                        &tx,
-                        &payload.project_id,
-                        &update.id,
-                        &payload.updated_at,
-                    )?,
-                );
-            }
         }
 
         // Authority is recorded only after the corresponding entity mutation
@@ -5600,10 +5702,32 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 select_tree_node(&tx, &payload.project_id, id)?,
             );
         }
+        // A Scene this plan updates advances its Scope generation only when a
+        // Scope field really changed (a title-only update does not).
+        let mut refreshed_scene_ids = BTreeSet::<String>::new();
+        for update in &payload.updates {
+            let (Some(before_snapshot), Some(after_snapshot)) =
+                (before.get(&update.id), after.get(&update.id))
+            else {
+                continue;
+            };
+            if before_snapshot.get("nodeType").and_then(Value::as_str) == Some("scene")
+                && scene_scope_fields_changed(before_snapshot, after_snapshot)
+            {
+                scene_scope_refresh_events.push(
+                    crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
+                        &tx,
+                        &payload.project_id,
+                        &update.id,
+                        &payload.updated_at,
+                    )?,
+                );
+                refreshed_scene_ids.insert(update.id.clone());
+            }
+        }
         // Advance the Scope generation of every Scene that was or is live below
-        // a folder this plan really re-placed. Scenes the plan updates itself
-        // were refreshed above and Scenes it creates hold a brand-new binding,
-        // so neither is refreshed again.
+        // a folder this plan really re-placed. Scenes already refreshed above
+        // and Scenes it creates (a brand-new binding) are not refreshed again.
         let mut folder_scene_ids = BTreeSet::<String>::new();
         for update in &payload.updates {
             let (Some(before_snapshot), Some(after_snapshot)) =
@@ -5629,10 +5753,8 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 &update.id,
             )?);
         }
-        for (id, snapshot) in &before {
-            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
-                folder_scene_ids.remove(id);
-            }
+        for id in &refreshed_scene_ids {
+            folder_scene_ids.remove(id);
         }
         for create in &payload.creates {
             folder_scene_ids.remove(&create.id);
@@ -5913,6 +6035,7 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
 
         let mut after = BTreeMap::<String, Value>::new();
         let mut scene_scope_refresh_events = Vec::new();
+        let mut refreshed_scene_ids = BTreeSet::<String>::new();
         for snapshot in &journal.updated_before {
             let id = snapshot
                 .get("id")
@@ -5950,7 +6073,14 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                 ],
             )?;
             anyhow::ensure!(changed == 1, "AI_TREE_PLAN_VERSION_MISMATCH during undo");
-            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
+            let restored_row = select_tree_node(&tx, &payload.project_id, id)?;
+            // A restored Scene advances its Scope generation only when a Scope
+            // field really changed back (a title-only restore does not; X1-2).
+            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene")
+                && before
+                    .get(id)
+                    .is_some_and(|current| scene_scope_fields_changed(current, &restored_row))
+            {
                 scene_scope_refresh_events.push(
                     crate::narrative_extraction::refresh_scene_scope_source_token_in_tx(
                         &tx,
@@ -5959,11 +6089,9 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                         &payload.updated_at,
                     )?,
                 );
+                refreshed_scene_ids.insert(id.to_string());
             }
-            after.insert(
-                id.to_string(),
-                select_tree_node(&tx, &payload.project_id, id)?,
-            );
+            after.insert(id.to_string(), restored_row);
         }
         for id in journal.created_ids.iter().rev() {
             let deleted = tx.execute(
@@ -5977,8 +6105,8 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
             );
         }
         // Advance the Scope generation of every Scene that was or is live below
-        // a folder this undo really re-placed. Scenes restored directly were
-        // refreshed above and nodes the plan created no longer exist.
+        // a folder this undo really re-placed. Scenes already refreshed above
+        // and nodes the plan created (they no longer exist) are not refreshed again.
         let mut folder_scene_ids = BTreeSet::<String>::new();
         for id in &restored_ids {
             let (Some(before_snapshot), Some(after_snapshot)) = (before.get(*id), after.get(*id))
@@ -5993,10 +6121,8 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
             folder_scene_ids.extend(before_live_scene_ids.get(*id).cloned().unwrap_or_default());
             folder_scene_ids.extend(live_scene_subtree_ids(&tx, &payload.project_id, id)?);
         }
-        for (id, snapshot) in &before {
-            if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
-                folder_scene_ids.remove(id);
-            }
+        for id in &refreshed_scene_ids {
+            folder_scene_ids.remove(id);
         }
         for id in &journal.created_ids {
             folder_scene_ids.remove(id);
@@ -6177,6 +6303,246 @@ mod tests {
             op_type: None,
             canonical_payload: None,
         }
+    }
+
+    #[test]
+    fn strictly_later_updated_at_compares_instants_not_strings() {
+        // Lexically "...00.000Z" sorts after "...00.000000001Z" but is earlier in time.
+        assert_eq!(
+            strictly_later_updated_at(
+                Some("2026-10-14T05:00:00.000000001Z"),
+                "2026-10-14T05:00:00.000Z"
+            )
+            .unwrap(),
+            "2026-10-14T05:00:00.000000001Z"
+        );
+        assert_eq!(
+            strictly_later_updated_at(
+                Some("2026-10-14T05:00:00.000Z"),
+                "2026-10-14T05:00:00.000000001Z"
+            )
+            .unwrap(),
+            "2026-10-14T05:00:00.000000002Z"
+        );
+        // Same instant, different precision and offset.
+        assert_eq!(
+            strictly_later_updated_at(
+                Some("2026-10-14T14:00:00+09:00"),
+                "2026-10-14T05:00:00.000Z"
+            )
+            .unwrap(),
+            "2026-10-14T05:00:00.000000001Z"
+        );
+    }
+
+    #[test]
+    fn strictly_later_updated_at_never_repeats_or_goes_back() {
+        // Equal, earlier, and later declarations.
+        let current = "2026-10-14T05:00:00.123456789Z";
+        assert_eq!(
+            strictly_later_updated_at(Some(current), current).unwrap(),
+            "2026-10-14T05:00:00.123456790Z"
+        );
+        assert_eq!(
+            strictly_later_updated_at(Some("2020-01-01T00:00:00.000Z"), current).unwrap(),
+            "2026-10-14T05:00:00.123456790Z"
+        );
+        // A later declaration is kept verbatim (the renderer adopts the row).
+        assert_eq!(
+            strictly_later_updated_at(Some("2026-10-14T05:00:00.124Z"), current).unwrap(),
+            "2026-10-14T05:00:00.124Z"
+        );
+        // A -> B -> A: the second A cannot reproduce the first A's token.
+        let a = "2026-10-14T05:00:01.000Z";
+        let b = strictly_later_updated_at(Some(a), "2026-10-14T05:00:00.000Z").unwrap();
+        assert_eq!(b, a);
+        let b2 = strictly_later_updated_at(Some("2026-10-14T05:00:02.000Z"), &b).unwrap();
+        let a_again = strictly_later_updated_at(Some(a), &b2).unwrap();
+        assert_ne!(a_again, a);
+        assert!(parse_updated_at_instant(&a_again) > parse_updated_at_instant(&b2));
+        // Native-chosen: max(now, current + 1ns).
+        let far = "2099-01-01T00:00:00.000Z";
+        assert_eq!(
+            strictly_later_updated_at(None, far).unwrap(),
+            "2099-01-01T00:00:00.000000001Z"
+        );
+        let now_based = strictly_later_updated_at(None, "2000-01-01T00:00:00.000Z").unwrap();
+        assert!(parse_updated_at_instant(&now_based).unwrap().timestamp() > 1_700_000_000);
+    }
+
+    #[test]
+    fn strictly_later_updated_at_reads_legacy_sqlite_format_and_refuses_garbage() {
+        assert_eq!(
+            strictly_later_updated_at(Some("2026-07-29T00:00:00.000Z"), "2026-07-29 00:00:00")
+                .unwrap(),
+            "2026-07-29T00:00:00.000000001Z"
+        );
+        assert_eq!(
+            strictly_later_updated_at(Some("2026-07-29T00:00:00.000Z"), "2026-07-29 00:00:00.250")
+                .unwrap(),
+            "2026-07-29T00:00:00.250000001Z"
+        );
+        for declared in ["", "yesterday", "2026-13-01T00:00:00Z", "1700000000"] {
+            assert!(
+                strictly_later_updated_at(Some(declared), "2026-07-29T00:00:00.000Z").is_err(),
+                "{declared:?} must be refused"
+            );
+        }
+        // An uninterpretable stored value imposes no ordering.
+        assert_eq!(
+            strictly_later_updated_at(Some("2026-07-29T00:00:00.000Z"), "not a time").unwrap(),
+            "2026-07-29T00:00:00.000Z"
+        );
+        assert!(strictly_later_updated_at(None, "not a time").is_ok());
+    }
+
+    #[test]
+    fn strictly_later_updated_at_never_writes_an_uninterpretable_value() {
+        // Every returned value reads back as the instant it stands for.
+        let near_end = "9999-12-31T23:59:59.999999999Z";
+        for (declared, current) in [
+            (Some("9999-12-30T00:00:00Z"), "9999-12-29T00:00:00Z"),
+            (Some("9999-12-30T00:00:00Z"), "9999-12-30T00:00:00Z"),
+            (None, "9999-12-30T00:00:00Z"),
+        ] {
+            let written = strictly_later_updated_at(declared, current).unwrap();
+            assert!(parse_updated_at_instant(&written).is_some(), "{written}");
+        }
+        // A declaration past the ceiling is refused.
+        for declared in [
+            near_end,
+            "9999-12-30T00:00:00.000000001Z",
+            "9999-12-31T00:00:00-05:00",
+        ] {
+            assert!(
+                strictly_later_updated_at(Some(declared), "2026-07-29T00:00:00.000Z").is_err(),
+                "{declared} must be refused"
+            );
+        }
+        // current + 1ns that would leave the readable range is refused, for a
+        // declaration and for the Native clock alike (fail closed).
+        for declared in [Some("2026-07-29T00:00:00.000Z"), None] {
+            let error = strictly_later_updated_at(declared, near_end)
+                .expect_err("overflowing current + 1ns is refused");
+            assert!(error.to_string().contains("outside the range"), "{error}");
+        }
+    }
+
+    #[test]
+    fn unversioned_scene_patch_at_the_end_of_the_range_never_returns_the_token() {
+        let db = fixture();
+        tree_node_create(&db, tree_create_payload("s1", "scene", "a0", None)).unwrap();
+        let ceiling = "9999-12-30T00:00:00Z";
+        let patch_title = |title: &str, request: &str, updated_at: &str| {
+            let mut patch = serde_json::Map::new();
+            patch.insert("title".to_string(), json!(title));
+            let mut payload = tree_patch_payload("s1", patch, None, updated_at);
+            payload.request_id = request.to_string();
+            payload.event_uid = format!("{request}-event");
+            tree_node_patch(&db, payload)
+        };
+        let row = || -> String {
+            db.with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT title || '|' || version || '|' || updated_at FROM tree_nodes WHERE id = 's1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .unwrap()
+        };
+        // The latest declaration allowed is kept; repeating it moves on by 1ns.
+        patch_title("one", "r1", ceiling).unwrap();
+        let first = row();
+        patch_title("two", "r2", ceiling).unwrap();
+        let second = row();
+        assert_ne!(first, second);
+        assert!(
+            second.ends_with("|9999-12-30T00:00:00.000000001Z"),
+            "{second}"
+        );
+        // A declaration past the ceiling is refused and writes nothing.
+        let before = row();
+        assert!(patch_title("late", "r3", "9999-12-31T23:59:59.999999999Z").is_err());
+        assert_eq!(row(), before);
+        // A row already holding the last representable instant (written by a
+        // versioned writer) cannot be advanced: refuse, do not write `+10000-...`.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET updated_at = '9999-12-31T23:59:59.999999999Z' WHERE id = 's1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let before = row();
+        assert!(patch_title("again", "r4", ceiling).is_err());
+        assert_eq!(row(), before);
+    }
+
+    #[test]
+    fn unversioned_scene_patch_refuses_an_uninterpretable_updated_at_without_writing() {
+        let db = fixture();
+        tree_node_create(&db, tree_create_payload("s1", "scene", "a0", None)).unwrap();
+        let before = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT title || '|' || version || '|' || updated_at FROM tree_nodes WHERE id = 's1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .unwrap();
+        let mut patch = serde_json::Map::new();
+        patch.insert("title".to_string(), json!("renamed"));
+        let error = tree_node_patch(&db, tree_patch_payload("s1", patch, None, "tomorrow"))
+            .expect_err("uninterpretable updatedAt is refused");
+        assert!(error.to_string().contains("not an interpretable timestamp"));
+        let after = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT title || '|' || version || '|' || updated_at FROM tree_nodes WHERE id = 's1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn unversioned_scene_patch_returns_the_row_it_wrote_so_the_renderer_adopts_it() {
+        let db = fixture();
+        tree_node_create(&db, tree_create_payload("s1", "scene", "a0", None)).unwrap();
+        let mut first = serde_json::Map::new();
+        first.insert("title".to_string(), json!("one"));
+        let mut payload = tree_patch_payload("s1", first, None, "2099-01-01T00:00:00.000Z");
+        payload.request_id = "r-one".to_string();
+        payload.event_uid = "e-one".to_string();
+        let response = tree_node_patch(&db, payload).unwrap();
+        // A strictly later declaration is kept verbatim (the normal renderer clock).
+        assert_eq!(response["updatedAt"], "2099-01-01T00:00:00.000Z");
+        assert_eq!(response["version"], 0);
+
+        let mut second = serde_json::Map::new();
+        second.insert("title".to_string(), json!("two"));
+        let mut payload = tree_patch_payload("s1", second, None, "2099-01-01T00:00:00.000Z");
+        payload.request_id = "r-two".to_string();
+        payload.event_uid = "e-two".to_string();
+        let response = tree_node_patch(&db, payload).unwrap();
+        // A repeated declaration is not refused: Native writes current + 1ns and
+        // returns that row, so the renderer clock moves on from the returned value.
+        assert_eq!(response["updatedAt"], "2099-01-01T00:00:00.000000001Z");
+        let stored: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT updated_at FROM tree_nodes WHERE id = 's1'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(stored, "2099-01-01T00:00:00.000000001Z");
     }
 
     fn tree_delete_payload(node_id: &str) -> TreeNodeDeletePayload {
@@ -8108,16 +8474,8 @@ mod tests {
                         1,
                         2,
                     ),
-                    (
-                        json!({"kind": "scene-scope", "sceneId": "moved"}),
-                        json!([
-                            "/binding/sourceToken",
-                            "/binding/updatedAt",
-                            "/binding/version"
-                        ]),
-                        1,
-                        2,
-                    ),
+                    // X1-2: a Codex rename propagating into a Scene advances
+                    // only the body Source token; no `scene-scope` event.
                 ]
             );
 
@@ -8467,10 +8825,13 @@ mod tests {
                 [],
                 |row| row.get(0),
             )?;
-            assert_eq!(scope_version, 4, "forward/undo/redo refreshes scope OCC");
             assert_eq!(
-                scope_event_count, 3,
-                "forward/undo/redo append scope Feed events"
+                scope_version, 1,
+                "forward/undo/redo leave the Scope generation untouched (X1-2)"
+            );
+            assert_eq!(
+                scope_event_count, 0,
+                "forward/undo/redo append no scope Feed events (X1-2)"
             );
             Ok(())
         })
@@ -9362,7 +9723,9 @@ mod tests {
                     ))
                 },
             )?;
-            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 4, 2));
+            // Each content patch appends one `scene` event; none refreshes the Scope
+            // binding (X1-2), so there is no `scene-scope` event.
+            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 2, 2));
             Ok(())
         })
         .expect("verify duplicate UID rollback");
