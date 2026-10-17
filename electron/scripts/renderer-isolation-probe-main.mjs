@@ -25,7 +25,12 @@ import {
   registerSecurityHandlers,
   setExternalEgressGate,
 } from "../main/security.ts";
-import { createMainWindow, setWindowTitleLock } from "../main/windows.ts";
+import {
+  createMainWindow,
+  getWindow,
+  openPanelWindow,
+  setWindowTitleLock,
+} from "../main/windows.ts";
 
 const env = process.env;
 const userData = env.PROBE_USER_DATA;
@@ -174,6 +179,16 @@ async function main() {
   const titleAfterUnlocked = win.getTitle();
   titleLocked = true;
 
+  // grim:panel-open の title option（renderer が渡せる値）。固定中は生成時の窓の title に
+  // 載らないこと。パネル窓は検査のあとで閉じる。
+  const newWindowsBeforePanel = observed.newWindow;
+  openPanelWindow("panel-probe", { title: `PANEL-${nonce}` });
+  const panelWin = getWindow("panel-probe");
+  const titlePanelOpenWhileLocked = panelWin ? panelWin.getTitle() : null;
+  if (panelWin) panelWin.destroy();
+  // 検査用に開いた窓は window.open の観測（新しい窓の数）に数えない。
+  observed.newWindow = newWindowsBeforePanel;
+
   // Chromium の download（programmatic click。利用者の操作なし）。
   const downloadResults = [];
   for (const [id, filename, destination] of [
@@ -228,6 +243,7 @@ async function main() {
       product: productTitle,
       afterRendererSetItWhileLocked: titleAfterLocked,
       afterRendererSetItWhileUnlocked: titleAfterUnlocked,
+      panelOpenOptionWhileLocked: titlePanelOpenWhileLocked,
     },
     observed,
     downloadResults,

@@ -183,6 +183,37 @@ describe("窓の title の固定（restricted または unavailable）", () => {
     setWindowTitleLock(() => locked);
   });
 
+  it("パネル窓の生成時の title は renderer の title option を使わない（固定中は製品名）", () => {
+    locked = true;
+    openPanelWindow("panel-leak1", { title: "secret chapter text" });
+    const w = FakeBrowserWindow.instances.at(-1) as FakeBrowserWindow;
+    expect(w.options.title).toBe("Grimodex");
+    expect(w.title).toBe("Grimodex");
+    // activation の段 2 の reset でも renderer の値は戻らない
+    w.title = "changed";
+    resetWindowTitles();
+    expect(w.title).toBe("Grimodex");
+    expect(w.title).not.toContain("secret");
+  });
+
+  it("パネル窓の title は unrestricted でも requested.title ではなく label から Main が決める", () => {
+    locked = false;
+    openPanelWindow("panel-leak2", { title: "secret chapter text" });
+    const w = FakeBrowserWindow.instances.at(-1) as FakeBrowserWindow;
+    expect(w.options.title).toBe("Leak2");
+    resetWindowTitles();
+    expect(w.title).toBe("Leak2");
+    expect(w.title).not.toContain("secret");
+  });
+
+  it("title 以外の option（サイズ）は従来どおり requested を使う", () => {
+    locked = true;
+    openPanelWindow("panel-leak3", { width: 600, height: 700, title: "x" });
+    const w = FakeBrowserWindow.instances.at(-1) as FakeBrowserWindow;
+    expect(w.options.width).toBe(600);
+    expect(w.options.height).toBe(700);
+  });
+
   it("getWindow は生成した窓を返す", () => {
     expect(getWindow("main")).toBe(main);
   });

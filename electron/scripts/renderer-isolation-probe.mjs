@@ -366,15 +366,13 @@ function analyzeNetLog(netLogPath, nonce, port) {
   void port;
   return {
     attempts: Object.fromEntries(
-      [...attempts]
-        .sort()
-        .map(([kind, v]) => [
-          kind,
-          {
-            eventTypes: [...v.events].sort(),
-            sourceTypes: [...v.sources].sort(),
-          },
-        ]),
+      [...attempts].sort().map(([kind, v]) => [
+        kind,
+        {
+          eventTypes: [...v.events].sort(),
+          sourceTypes: [...v.sources].sort(),
+        },
+      ]),
     ),
     otherHosts: Object.fromEntries(
       [...otherHosts].sort().map(([host, types]) => [host, [...types].sort()]),
@@ -502,6 +500,10 @@ async function main() {
           result.title.afterRendererSetItWhileLocked === result.title.product,
         unlockedControlChanged:
           result.title.afterRendererSetItWhileUnlocked !== result.title.product,
+        // grim:panel-open の title option を renderer が渡しても、固定中の窓は製品名
+        panelOpenOptionStaysProduct:
+          result.title.panelOpenOptionWhileLocked === "Grimodex" &&
+          !String(result.title.panelOpenOptionWhileLocked).includes("PANEL-"),
       },
       navigation: {
         willNavigateHosts: result.observed.willNavigate.length,

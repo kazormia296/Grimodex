@@ -13,6 +13,8 @@
  *   だけである。CSP は ICE server の URL を制限せず、Main の設定で塞げなかった
  *   （docs/plans/nir1-lane-decisions/da1-decisions.md の DR-DA1-7 の追記）。
  *   `own-data-read` の開放を有効にする commit の前に解消し、この許可を空にする。
+ *   OPEN_FINDINGS を空にすると下の試験は `violationsViaWebRtc` が 0 件であることを要求する
+ *   向きに切り替わる（反転の編集忘れで有効化 commit が通らなくならないようにする）。
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -35,7 +37,11 @@ interface ProbeRecord {
     ipv6ReachabilityProbe: string[];
     other: string[];
   };
-  title: { lockedStaysProduct: boolean; unlockedControlChanged: boolean };
+  title: {
+    lockedStaysProduct: boolean;
+    unlockedControlChanged: boolean;
+    panelOpenOptionStaysProduct: boolean;
+  };
   navigation: { newWindows: number; windowCount: number };
   downloads: {
     observed: Array<{
@@ -69,9 +75,9 @@ const pkg = readJson<{ devDependencies: Record<string, string> }>(
 );
 
 /** 未解決の finding。解消したら空にする。 */
-const OPEN_FINDINGS = [
+const OPEN_FINDINGS: readonly string[] = [
   "WebRTC の ICE server（turn:?transport=tcp、turns:）への TCP 接続と名前解決が、CSP と permission で止まらない",
-] as const;
+];
 
 function outcome(r: ProbeRecord, id: string): string | undefined {
   return r.renderer.find((entry) => entry.id === id)?.outcome;
@@ -104,11 +110,14 @@ describe("Y-1 の記録: 外向きの試み", () => {
     expect(record.canary.secretsSeen).toBe(false);
   });
 
-  it("未解決の finding は WebRTC の経路だけ（OPEN_FINDINGS）", () => {
-    expect(OPEN_FINDINGS).toHaveLength(1);
-    expect(record.violationsViaWebRtc.length).toBeGreaterThan(0);
-    for (const id of record.violationsViaWebRtc) {
-      expect(id).toMatch(/^webrtc\.(turn-tcp|turns-tls)$|\.rtc$/);
+  it("未解決の finding は WebRTC の経路だけ（OPEN_FINDINGS が空なら 0 件を要求する）", () => {
+    if (OPEN_FINDINGS.length === 0) {
+      expect(record.violationsViaWebRtc).toEqual([]);
+    } else {
+      expect(record.violationsViaWebRtc.length).toBeGreaterThan(0);
+      for (const id of record.violationsViaWebRtc) {
+        expect(id).toMatch(/^webrtc\.(turn-tcp|turns-tls)$|\.rtc$/);
+      }
     }
     // UDP の STUN／TURN は canary に届いていない。
     expect(record.canary.udpPackets).toBe(0);
@@ -200,6 +209,10 @@ describe("Y-1 の記録: 窓の title、navigation、書出し", () => {
   it("restricted の間 document.title を変えても窓の title は製品名のまま（固定を外すと変わる対照つき）", () => {
     expect(record.title.lockedStaysProduct).toBe(true);
     expect(record.title.unlockedControlChanged).toBe(true);
+  });
+
+  it("grim:panel-open の title option を renderer が渡しても、固定中の窓の title は製品名", () => {
+    expect(record.title.panelOpenOptionStaysProduct).toBe(true);
   });
 
   it("window.open は窓を増やさない", () => {
