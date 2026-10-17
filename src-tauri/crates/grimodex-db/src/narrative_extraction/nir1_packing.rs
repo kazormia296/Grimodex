@@ -16,7 +16,9 @@ use grimodex_core::{canonical_json_digest, canonical_json_string};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+#[cfg(feature = "native-current-human-capture")]
+use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
 use super::human_material_basis::MaterialEvidenceEntry;

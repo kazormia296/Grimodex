@@ -1822,6 +1822,37 @@ fn df_final_scope_refs_carry_closed_role() -> Result<()> {
 
 #[cfg(feature = "native-current-human-capture")]
 #[test]
+fn material_basis_conflict_between_source_basis_and_evidence_set_is_excluded() -> Result<()> {
+    // The conflict is built across the two lists: an evidence_set entry holds a
+    // source_basis key with a different token (K4/3 section 3 rule 2).
+    let fixture = DfFinalFixture::new()?;
+    let target = fixture.revisions[1].clone();
+    let projection = fixture.project_with_bindings(|bindings| {
+        let binding = bindings
+            .iter_mut()
+            .find(|binding| binding.revision_id() == target)
+            .expect("fixture Revision binding");
+        let basis = binding.revision.material_basis.source_basis[0].clone();
+        let evidence = binding
+            .revision
+            .material_basis
+            .evidence_set
+            .first_mut()
+            .expect("an evidence entry");
+        evidence.source_key = basis.source_key.clone();
+        evidence.revision_token = format!("{}-other", basis.revision_token);
+    })?;
+    assert_eq!(projection.excluded_revisions().len(), 1);
+    assert_eq!(projection.excluded_revisions()[0].revision_id(), target);
+    assert_eq!(
+        projection.excluded_revisions()[0].reason(),
+        NativeNir1RevisionExclusionReason::MaterialBasisSourceTokenConflict
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
 fn revision_with_inconsistent_material_basis_is_excluded_only_that_revision() -> Result<()> {
     let fixture = DfFinalFixture::new()?;
     let baseline = fixture.project()?;
@@ -2015,23 +2046,24 @@ fn df_final_incomplete_output_is_detected() -> Result<()> {
     }
     assert_eq!(detect(&forged).reason, Reason::NotApplicableReasonMismatch);
 
-    // A reference and an N/A for the same kind.
+    // A reference added next to the Revision's Index N/A.
     let mut both = complete.clone();
-    both.push(QualificationReference::not_applicable(
-        revision_ordinal,
-        QualificationKind::Index,
-        Na::NotIndexDerived,
-    ));
     both.push(QualificationReference::present(
         revision_ordinal,
         QualificationKind::Index,
         "index",
         "1",
     ));
-    assert!(matches!(
-        detect(&both).reason,
-        Reason::ReferenceAndNotApplicable | Reason::DuplicateNotApplicable
+    assert_eq!(detect(&both).reason, Reason::ReferenceAndNotApplicable);
+
+    // A second N/A for the same kind.
+    let mut twice = complete.clone();
+    twice.push(QualificationReference::not_applicable(
+        revision_ordinal,
+        QualificationKind::Index,
+        Na::NotIndexDerived,
     ));
+    assert_eq!(detect(&twice).reason, Reason::DuplicateNotApplicable);
 
     // The finalizer refuses to hand out such an output.
     let mut broken = fixture.project()?;
