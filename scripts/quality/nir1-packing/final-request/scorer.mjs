@@ -527,6 +527,12 @@ export function alignEntries({ cut, codex, view, capture }) {
  * qualification) of one owner, each equal to the candidate item's text, with
  * a complete qualification ref set. `improvementGroups` are
  * `{ ownerId, kind }` with runtime owner ids.
+ *
+ * The product emits one atomic group per entity or relation record, so a
+ * Revision (owner) may hold several. Each (ownerId, atomicGroup) is judged on
+ * its own, the way `alignEntries` keys its groups; an improvement group counts
+ * once when at least one of its owner's atomic groups qualifies. `groups`
+ * names every atomic group that was judged.
  */
 export function deriveSlots({
   improvementGroups,
@@ -539,15 +545,8 @@ export function deriveSlots({
   const items = capture.candidateSet.items;
   const results = [];
   let qualifiedEvidence = 0;
-  for (const group of improvementGroups) {
+  const judge = (group, atomicGroup, groupItems) => {
     const reasons = [];
-    const groupItems = items
-      .map((item, index) => ({ item, index }))
-      .filter(
-        ({ item }) => item.ownerId === group.ownerId && item.kind !== "raw",
-      );
-    if (groupItems.length === 0)
-      reasons.push("group is not in the candidate set");
     if (groupItems.some(({ item }) => item.kind !== group.kind)) {
       reasons.push(`group is not of kind ${group.kind}`);
     }
@@ -594,11 +593,30 @@ export function deriveSlots({
         }
       }
     }
-    if (reasons.length === 0) qualifiedEvidence += 1;
+    return { atomicGroup, counted: reasons.length === 0, reasons };
+  };
+  for (const group of improvementGroups) {
+    const byAtomicGroup = new Map();
+    items.forEach((item, index) => {
+      if (item.ownerId !== group.ownerId || item.kind === "raw") return;
+      if (!byAtomicGroup.has(item.atomicGroup))
+        byAtomicGroup.set(item.atomicGroup, []);
+      byAtomicGroup.get(item.atomicGroup).push({ item, index });
+    });
+    const atomicGroups = [...byAtomicGroup].map(([atomicGroup, groupItems]) =>
+      judge(group, atomicGroup, groupItems),
+    );
+    const counted = atomicGroups.some((entry) => entry.counted);
+    if (counted) qualifiedEvidence += 1;
     results.push({
       ownerId: group.ownerId,
-      counted: reasons.length === 0,
-      reasons,
+      counted,
+      reasons: counted
+        ? []
+        : atomicGroups.length === 0
+          ? ["group is not in the candidate set"]
+          : atomicGroups.flatMap((entry) => entry.reasons),
+      atomicGroups,
     });
   }
   return { qualifiedEvidence, groups: results };
@@ -668,8 +686,14 @@ export function scanForbidden({
 }) {
   const failures = [];
   const haystacks = [payload, system, user];
-  const has = (needle) =>
-    needle.length > 0 && haystacks.some((text) => text.includes(needle));
+  // The renderer escapes the reserved prompt tags in every text it renders
+  // (`<chronicle_snapshot>` becomes a different byte sequence), so a needle
+  // that holds such a tag is also looked for in its escaped form.
+  const has = (needle) => {
+    if (needle.length === 0) return false;
+    const forms = [needle, escapeReservedPromptTags(needle)];
+    return haystacks.some((text) => forms.some((form) => text.includes(form)));
+  };
   for (const canary of canaries) {
     if (has(canary.text))
       failures.push(
@@ -723,7 +747,10 @@ export function scanForbidden({
  * request. Returns `invalid` reasons (a request whose setup fails these is not
  * scored).
  */
-export function checkSetupCase(setupCase, { stages, requiredByStage }) {
+export function checkSetupCase(
+  setupCase,
+  { stages, requiredByStage, ineligible = null },
+) {
   const invalid = [];
   const bad = (code, message) =>
     invalid.push(fail(`setup-invalid:${code}`, message));
@@ -910,6 +937,65 @@ export function checkSetupCase(setupCase, { stages, requiredByStage }) {
     }
     for (const id of preparedHere) preparedBefore.add(id);
   }
+  // A reject variant whose negative is its own Revision (not one an earlier
+  // stage already used) was created, approved and then invalidated by product
+  // writes, in this order, each once. A negative that is an old Revision of
+  // an earlier stage (P-10) went stale by the binding change instead.
+  if (ineligible) {
+    const usedElsewhere = [...requiredByStage.values()].some((ids) =>
+      ids.includes(ineligible.logicalId),
+    );
+    if (!usedElsewhere) {
+      const runtimeId = runtimeOf.get(ineligible.logicalId);
+      const found = {};
+      for (const kind of [
+        "prepare-negative",
+        "approve-negative",
+        "invalidate-negative",
+      ]) {
+        const rows = events.filter(
+          (event) =>
+            event.kind === kind && event.logicalId === ineligible.logicalId,
+        );
+        if (rows.length === 0) {
+          bad(
+            "negative-event-missing",
+            `the negative ${ineligible.logicalId} has no ${kind} event`,
+          );
+          continue;
+        }
+        if (rows.length > 1) {
+          bad(
+            "negative-event-duplicate",
+            `the negative ${ineligible.logicalId} has ${rows.length} ${kind} events`,
+          );
+        }
+        for (const row of rows) {
+          if (runtimeId === undefined || row.runtimeId !== runtimeId) {
+            bad(
+              "negative-runtime-id-mismatch",
+              `${kind} names runtime id ${row.runtimeId}, the id map has ${runtimeId} for ${ineligible.logicalId}`,
+            );
+          }
+        }
+        found[kind] = rows[0];
+      }
+      if (
+        found["prepare-negative"] &&
+        found["approve-negative"] &&
+        found["invalidate-negative"] &&
+        !(
+          found["prepare-negative"].seq < found["approve-negative"].seq &&
+          found["approve-negative"].seq < found["invalidate-negative"].seq
+        )
+      ) {
+        bad(
+          "negative-order",
+          `the negative ${ineligible.logicalId} must be prepared, approved, then invalidated`,
+        );
+      }
+    }
+  }
   // D2a: restricted after the setup writes and before capture; the chat
   // sessions are created before it.
   if (!restricted) {
@@ -970,6 +1056,34 @@ export function checkSetupCase(setupCase, { stages, requiredByStage }) {
   ) {
     bad("history-slot", "the history slot must be zero inputs, not applicable");
   }
+  // A (stage, point) is verified by exactly one row: a second row could carry
+  // a different, eligible-looking set while the real one is hidden.
+  const rowCounts = new Map();
+  for (const row of setupCase.verifications) {
+    const key = `${row.stage}/${row.point}`;
+    rowCounts.set(key, (rowCounts.get(key) ?? 0) + 1);
+  }
+  for (const [key, count] of rowCounts) {
+    if (count > 1)
+      bad(
+        "verification-duplicate",
+        `stage/point ${key} has ${count} verification rows (exactly one is allowed)`,
+      );
+  }
+  const logicalCounts = new Map();
+  for (const row of setupCase.idMap)
+    logicalCounts.set(
+      row.logicalId,
+      (logicalCounts.get(row.logicalId) ?? 0) + 1,
+    );
+  for (const [logicalId, count] of logicalCounts) {
+    if (count > 1)
+      bad("idmap-duplicate", `the id map names ${logicalId} ${count} times`);
+  }
+  const eligibleFresh = (revision) =>
+    revision.a2 === "eligible" &&
+    revision.a3 === "eligible" &&
+    revision.freshness === "fresh";
   for (const stage of stages) {
     const forStage = setupCase.verifications.filter(
       (row) => row.stage === stage,
@@ -995,33 +1109,79 @@ export function checkSetupCase(setupCase, { stages, requiredByStage }) {
         `stage ${stage}: the profile was not restricted with in-flight stopped at the request`,
       );
     }
-    for (const point of [end, pre]) {
-      for (const revision of point.revisions) {
-        const required = (requiredByStage.get(stage) ?? []).includes(
-          revision.logicalId,
-        );
-        if (
-          required &&
-          (revision.a2 !== "eligible" ||
-            revision.a3 !== "eligible" ||
-            revision.freshness !== "fresh")
-        ) {
+    // Both points verify every Revision the request is expected to use, by
+    // the runtime id the setup actually prepared (the id map), once each.
+    for (const row of [end, pre]) {
+      const seenRuntime = new Set();
+      for (const revision of row.revisions) {
+        if (seenRuntime.has(revision.runtimeId))
           bad(
-            "revision-not-eligible",
-            `stage ${stage}: ${revision.logicalId} is not A2/A3 eligible and fresh at ${point.point}`,
+            "verification-duplicate-revision",
+            `stage ${stage} ${row.point}: runtime id ${revision.runtimeId} is verified more than once`,
           );
+        seenRuntime.add(revision.runtimeId);
+      }
+      for (const logicalId of requiredByStage.get(stage) ?? []) {
+        const entries = row.revisions.filter(
+          (revision) => revision.logicalId === logicalId,
+        );
+        if (entries.length === 0) {
+          bad(
+            "revision-unverified",
+            `stage ${stage}: ${logicalId} was not verified eligible at ${row.point}`,
+          );
+          continue;
+        }
+        if (entries.length > 1) {
+          bad(
+            "verification-duplicate-revision",
+            `stage ${stage} ${row.point}: ${logicalId} is verified ${entries.length} times`,
+          );
+        }
+        const runtimeId = runtimeOf.get(logicalId);
+        for (const revision of entries) {
+          if (runtimeId !== undefined && revision.runtimeId !== runtimeId) {
+            bad(
+              "verification-runtime-id-mismatch",
+              `stage ${stage} ${row.point}: ${logicalId} was verified as ${revision.runtimeId}, the setup prepared ${runtimeId}`,
+            );
+          }
+          if (!eligibleFresh(revision)) {
+            bad(
+              "revision-not-eligible",
+              `stage ${stage}: ${logicalId} is not A2/A3 eligible and fresh at ${row.point}`,
+            );
+          }
         }
       }
     }
-    const verified = new Set(
-      pre.revisions.map((revision) => revision.logicalId),
-    );
-    for (const logicalId of requiredByStage.get(stage) ?? []) {
-      if (!verified.has(logicalId))
+    // A reject variant's negative is recorded as not eligible just before the
+    // request that carries it.
+    if (ineligible && stage === ineligible.stage) {
+      const entries = pre.revisions.filter(
+        (revision) => revision.logicalId === ineligible.logicalId,
+      );
+      const runtimeId = runtimeOf.get(ineligible.logicalId);
+      if (entries.length === 0) {
         bad(
-          "revision-unverified",
-          `stage ${stage}: ${logicalId} was not verified eligible`,
+          "negative-unverified",
+          `stage ${stage}: the negative ${ineligible.logicalId} was not verified as ineligible at request-pre`,
         );
+      }
+      for (const revision of entries) {
+        if (runtimeId !== undefined && revision.runtimeId !== runtimeId) {
+          bad(
+            "verification-runtime-id-mismatch",
+            `stage ${stage} request-pre: the negative ${ineligible.logicalId} was verified as ${revision.runtimeId}, the setup prepared ${runtimeId}`,
+          );
+        }
+        if (eligibleFresh(revision)) {
+          bad(
+            "negative-eligible",
+            `stage ${stage}: the negative ${ineligible.logicalId} is still A2/A3 eligible and fresh at request-pre`,
+          );
+        }
+      }
     }
   }
   return invalid;
@@ -1207,6 +1367,14 @@ export function scorePositiveRequest({
       fail(
         "baseline-not-allowed",
         "P-01 to P-11 are scored on the candidate arm only",
+      ),
+    );
+  }
+  if (request.attemptRowsAdded !== 0) {
+    failures.push(
+      fail(
+        "positive-attempt-present",
+        `a no-send evaluation request created ${request.attemptRowsAdded} attempt row(s); D-final must not enter the attempt path`,
       ),
     );
   }
@@ -1531,6 +1699,14 @@ export function scoreP12Pair({ request, expectation, template, fixtureRoute }) {
       fail(
         "baseline-persisted",
         "the baseline arm must not add any persisted row",
+      ),
+    );
+  }
+  if (request.attemptRowsAdded !== 0) {
+    failures.push(
+      fail(
+        "positive-attempt-present",
+        `a no-send evaluation request created ${request.attemptRowsAdded} attempt row(s); D-final must not enter the attempt path`,
       ),
     );
   }
@@ -2012,17 +2188,31 @@ export function scoreFinalRequestReceipt({
         `${testCase.caseId}/${variant.variantId}`,
       );
       const stages = requests.map((request) => request.stage);
+      // The negative is only excluded from the reject request itself: an old
+      // Revision that an earlier stage used is still verified eligible there.
       const requiredByStage = new Map(
-        requests.map((request) => [
+        requests.map((request, index) => [
           request.stage,
-          request.revisionIds.filter(
-            (id) => id !== variant.ineligibleLogicalId,
-          ),
+          variant.kind === "reject" && index === requests.length - 1
+            ? request.revisionIds.filter(
+                (id) => id !== variant.ineligibleLogicalId,
+              )
+            : request.revisionIds,
         ]),
       );
       const setupInvalid = setupCase
         ? [
-            ...checkSetupCase(setupCase, { stages, requiredByStage }),
+            ...checkSetupCase(setupCase, {
+              stages,
+              requiredByStage,
+              ineligible:
+                variant.kind === "reject"
+                  ? {
+                      logicalId: variant.ineligibleLogicalId,
+                      stage: stages.at(-1),
+                    }
+                  : null,
+            }),
             ...workspaceNamespaceInvalid(
               setupCase,
               testCase.isolation,

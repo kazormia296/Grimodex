@@ -818,16 +818,42 @@ export function validateReceipt(receipt) {
 
 // ---------------------------------------------------------------- setup receipt
 
-/** Product writers the setup may use (draft: 製品の通常の writer). */
+/**
+ * Product writers the setup may use (draft: 製品の通常の writer). The list is
+ * taken from the product's own route table (`INTERNAL_COMMANDS` in
+ * `electron/main/profileEgress.ts`, the typed commands that stay available
+ * under a restricted profile), so every command a setup needs to create
+ * Scenes, write the tree, the Scope, the Chronicle, the project and the Codex
+ * is named, not only the ones a first setup happened to use. A name that is not
+ * in that table is a direct write (receipt.test.mjs ties the two together).
+ * The last four entries are not routed commands: `write_ai_settings` is the
+ * Rust settings writer behind `save_ai_settings`, `db_execute:createSession`
+ * is the renderer's createSession statement run through `db_execute`, and
+ * `activate_first_restricted_publication` is the Native activation function.
+ */
 export const PRODUCT_WRITERS = Object.freeze([
-  "save_scene_body_bundle",
-  "narrative_scene_scope_update",
-  "temporal_scene_patch",
+  // Scene creation and body, tree and project
+  "tree_node_create",
   "tree_node_patch",
+  "tree_node_delete",
+  "save_scene_body_bundle",
+  "project_patch",
+  // Scene Scope, the two axes, Chronicle dates and lanes
+  "narrative_scene_scope_update",
+  "narrative_scene_scope_registry_update",
+  "temporal_scene_patch",
+  "chronicle_bulk_mutate",
+  // Codex Entities and Relations
   "codex_create",
   "codex_mutate",
+  "codex_update",
+  "codex_delete",
+  // Typed Revision and its Decision
   "nir1_entity_relation_revision_prepare",
   "narrative_extraction_append_human_decision",
+  // Route settings
+  "save_ai_settings",
+  // Not routed commands (see above)
   "write_ai_settings",
   "db_execute:createSession",
   "activate_first_restricted_publication",

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -713,4 +714,53 @@ test("product writers are the draft's list and nothing like a raw SQL writer", (
   assert.ok(PRODUCT_WRITERS.includes("db_execute:createSession"));
   assert.ok(PRODUCT_WRITERS.includes("activate_first_restricted_publication"));
   assert.ok(!PRODUCT_WRITERS.some((name) => /sql|insert|dml|seed/i.test(name)));
+});
+
+// Not routed commands: the Rust settings writer, the renderer's createSession
+// statement and the Native activation function.
+const UNROUTED_WRITERS = new Set([
+  "write_ai_settings",
+  "db_execute:createSession",
+  "activate_first_restricted_publication",
+]);
+
+function internalCommands() {
+  const source = readFileSync(
+    path.join(repoRoot, "electron/main/profileEgress.ts"),
+    "utf8",
+  );
+  const start = source.indexOf("const INTERNAL_COMMANDS = new Set([");
+  assert.ok(start >= 0, "INTERNAL_COMMANDS must exist in profileEgress.ts");
+  const end = source.indexOf("]);", start);
+  return new Set(
+    [...source.slice(start, end).matchAll(/^\s*"([a-z0-9_]+)",/gm)].map(
+      (match) => match[1],
+    ),
+  );
+}
+
+test("product writers: every routed writer is in the product's internal command table", () => {
+  const routed = internalCommands();
+  assert.ok(routed.size > 100);
+  for (const name of PRODUCT_WRITERS) {
+    if (UNROUTED_WRITERS.has(name)) continue;
+    assert.ok(routed.has(name), `${name} is not an internal command`);
+  }
+  // The writers a setup needs to create Scenes and write the tree, the
+  // Scope, the Chronicle, the project and the Codex are all named.
+  for (const name of [
+    "tree_node_create",
+    "tree_node_patch",
+    "save_scene_body_bundle",
+    "narrative_scene_scope_update",
+    "narrative_scene_scope_registry_update",
+    "temporal_scene_patch",
+    "chronicle_bulk_mutate",
+    "project_patch",
+    "codex_create",
+    "codex_mutate",
+    "save_ai_settings",
+  ]) {
+    assert.ok(PRODUCT_WRITERS.includes(name), `${name} must be allowed`);
+  }
 });

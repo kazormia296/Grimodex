@@ -241,7 +241,8 @@ export function reservedTotalTokens({ system, user, outputTokens }) {
 /**
  * Reads the canonical payload JSON of a plain local chat request. The
  * renderer emits exactly the keys `model`, `messages` and `max_tokens`
- * (DF+ adds `stream`); anything else is a different request shape.
+ * (DF+ adds `"stream": true`, and only that value); anything else is a
+ * different request shape.
  */
 export function parsePlainChatPayload(canonicalPayload) {
   let value;
@@ -264,6 +265,11 @@ export function parsePlainChatPayload(canonicalPayload) {
   );
   if (extra.length > 0) {
     throw new PayloadShapeError("payload-key-unknown", extra.join(","));
+  }
+  // The only flag K5/3 adds (DF+ DR-DFP-21) is `"stream": true`. A key with
+  // any other value is a different request shape, not the confirmed one.
+  if (keys.includes("stream") && value.stream !== true) {
+    throw new PayloadShapeError("payload-stream-value", String(value.stream));
   }
   const messages = value.messages;
   if (

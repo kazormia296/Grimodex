@@ -1121,10 +1121,17 @@ export function validateFreezeRecord(
   };
   bind(freeze.fixture, "freeze.fixture", FIXTURE_PATH);
   bind(freeze.reviewRecord, "freeze.reviewRecord", REVIEW_PATH);
-  if (freeze.readme !== undefined)
-    bind(freeze.readme, "freeze.readme", README_PATH);
-  if (freeze.parityVector !== undefined)
-    bind(freeze.parityVector, "freeze.parityVector", PARITY_VECTOR_PATH);
+  // A frozen record binds the README and the baseline parity vector as well:
+  // a vector rewritten after the observation would otherwise go unnoticed.
+  for (const [key, expectedPath] of [
+    ["readme", README_PATH],
+    ["parityVector", PARITY_VECTOR_PATH],
+  ]) {
+    if (freeze[key] !== undefined)
+      bind(freeze[key], `freeze.${key}`, expectedPath);
+    else if (freeze.status === FREEZE_STATUS.frozen)
+      errors.push(`a frozen record must bind freeze.${key} (${expectedPath})`);
+  }
   const scorerFiles = Array.isArray(freeze.scorer?.files)
     ? freeze.scorer.files
     : [];

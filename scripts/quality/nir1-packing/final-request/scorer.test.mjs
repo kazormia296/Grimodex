@@ -790,6 +790,68 @@ test("slot-derivation: five parts that sit on different inputs, or on another ow
   );
 });
 
+test("slot-derivation: a Revision with several atomic groups is judged per (owner, atomic group)", () => {
+  const p12 = buildSyntheticP12({ template });
+  const capture = structuredClone(p12.request.capture);
+  const view = {
+    payload: p12.request.candidate.payload,
+    renderCorrespondence: capture.rendered.renderCorrespondence,
+    inputReferences: capture.rendered.inputReferences,
+    qualifications: capture.rendered.qualifications,
+  };
+  const read = readPayload(view, capture, template);
+  const alignment = alignEntries({ ...read, view, capture });
+  const graphItems = capture.candidateSet.items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.ownerId === "rt:graph-g");
+  assert.equal(graphItems.length, 5);
+  // The product emits one atomic group per record: the same Revision now
+  // holds a second record's five items, rendered as five more entries of the
+  // same input.
+  const codex = structuredClone(read.codex);
+  const matched = [...alignment.matched];
+  const graphPositions = graphItems.map(({ index }) =>
+    alignment.matched.indexOf(index),
+  );
+  for (const [offset, { item }] of graphItems.entries()) {
+    capture.candidateSet.items.push({
+      ...item,
+      itemId: `${item.itemId}.second`,
+      atomicGroup: `${item.atomicGroup}.second`,
+    });
+    matched.push(capture.candidateSet.items.length - 1);
+    codex.push(structuredClone(read.codex[graphPositions[offset]]));
+  }
+  const derive = (matchedRows) =>
+    deriveSlots({
+      improvementGroups: [{ ownerId: "rt:graph-g", kind: "graph-evidence" }],
+      ...read,
+      codex,
+      view,
+      capture,
+      matched: matchedRows,
+    });
+  const both = derive(matched);
+  assert.equal(both.qualifiedEvidence, 1);
+  assert.equal(both.groups[0].atomicGroups.length, 2);
+  assert.ok(both.groups[0].atomicGroups.every((entry) => entry.counted));
+  // Only the second record is rendered: still the owner's evidence, and the
+  // first record's missing parts are named per atomic group.
+  const secondOnly = matched.map((value, position) =>
+    graphPositions.includes(position) ? -1 : value,
+  );
+  const partial = derive(secondOnly);
+  assert.equal(partial.qualifiedEvidence, 1);
+  assert.equal(
+    partial.groups[0].atomicGroups.filter((entry) => !entry.counted).length,
+    1,
+  );
+  // Neither record is rendered: not counted, with the reasons of both.
+  const none = derive(matched.map(() => -1));
+  assert.equal(none.qualifiedEvidence, 0);
+  assert.ok(none.groups[0].reasons.length >= 2);
+});
+
 test("slot-derivation: closed markers of another group are not counted for this group", () => {
   const p12 = buildSyntheticP12({ template });
   // The baseline renders only the evidence and qualification of the Graph group.
@@ -1777,4 +1839,351 @@ test("a P-12 request with a history input fails", () => {
     fixtureRoute: p12.route,
   });
   assert.ok(scored.failures.some((f) => f.code === "history-input-present"));
+});
+
+// -------------------------------------------- setup verification binding
+
+function setupFor(w, caseId, variantId) {
+  return setupOf(w.setupReceipt, caseId, variantId);
+}
+
+function invalidCodes(scored, caseId, variantId, stage = 1) {
+  const entry = result(scored, caseId, variantId, stage);
+  return { entry, codes: codes(entry) };
+}
+
+test("setup-verification: a setup using tree_node_create (Scene creation) is a valid setup", () => {
+  const w = world();
+  const setup = setupFor(w, "P-01", positiveId("P-01"));
+  const tree = setup.events.find((e) => e.kind === "tree");
+  tree.writer = "tree_node_create";
+  setup.writersUsed = [...new Set(setup.events.map((e) => e.writer))];
+  const scored = score(w);
+  assert.equal(scored.status, "passed", JSON.stringify(scored.failures));
+  for (const writer of [
+    "chronicle_bulk_mutate",
+    "project_patch",
+    "narrative_scene_scope_registry_update",
+    "save_scene_body_bundle",
+  ]) {
+    const w2 = world();
+    const s2 = setupFor(w2, "P-01", positiveId("P-01"));
+    s2.events.find((e) => e.kind === "tree").writer = writer;
+    s2.writersUsed = [...new Set(s2.events.map((e) => e.writer))];
+    assert.equal(score(w2).status, "passed", writer);
+  }
+});
+
+test("setup-verification: a non-product writer is still setup-invalid", () => {
+  const w = world();
+  const setup = setupFor(w, "P-01", positiveId("P-01"));
+  setup.events.find((e) => e.kind === "tree").writer = "direct_sql_insert";
+  setup.writersUsed = [...new Set(setup.events.map((e) => e.writer))];
+  const { entry, codes: found } = invalidCodes(
+    score(w),
+    "P-01",
+    positiveId("P-01"),
+  );
+  assert.equal(entry.status, "invalid");
+  assert.ok(found.includes("setup-invalid:non-product-writer"));
+});
+
+test("setup-verification: an empty setup-end list does not verify the Revisions", () => {
+  const w = world();
+  const setup = setupFor(w, "P-01", positiveId("P-01"));
+  for (const row of setup.verifications) {
+    if (row.point === "setup-end") row.revisions = [];
+  }
+  const scored = score(w);
+  const { entry, codes: found } = invalidCodes(
+    scored,
+    "P-01",
+    positiveId("P-01"),
+  );
+  assert.equal(entry.status, "invalid");
+  assert.ok(found.includes("setup-invalid:revision-unverified"));
+  assert.equal(scored.status, "invalid");
+});
+
+test("setup-verification: every setup-end list of the synthetic world is checked, not only the first", () => {
+  const w = world();
+  for (const setup of w.setupReceipt.cases) {
+    for (const row of setup.verifications) {
+      if (row.point === "setup-end") row.revisions = [];
+    }
+  }
+  const scored = score(w);
+  assert.equal(scored.summary.positive.passed, 0);
+  assert.equal(scored.status, "invalid");
+});
+
+test("setup-verification: a verification of another runtime id than the prepared one is invalid", () => {
+  const w = world();
+  for (const setup of w.setupReceipt.cases) {
+    for (const row of setup.verifications) {
+      if (row.point !== "request-pre") continue;
+      for (const revision of row.revisions) revision.runtimeId = "rt:bogus";
+    }
+  }
+  const scored = score(w);
+  const { entry, codes: found } = invalidCodes(
+    scored,
+    "P-01",
+    positiveId("P-01"),
+  );
+  assert.equal(entry.status, "invalid");
+  assert.ok(found.includes("setup-invalid:verification-runtime-id-mismatch"));
+  assert.equal(scored.summary.positive.passed, 0);
+});
+
+test("setup-verification: a duplicate verification row cannot hide an ineligible Revision", () => {
+  const w = world();
+  const setup = setupFor(w, "P-01", positiveId("P-01"));
+  const pre = setup.verifications.find((row) => row.point === "request-pre");
+  setup.verifications.push({
+    ...structuredClone(pre),
+    scopeAuthorityRevision: "scope-rev-other",
+    revisions: pre.revisions.map((revision) => ({
+      ...revision,
+      a3: "ineligible",
+    })),
+  });
+  const { entry, codes: found } = invalidCodes(
+    score(w),
+    "P-01",
+    positiveId("P-01"),
+  );
+  assert.equal(entry.status, "invalid");
+  assert.ok(found.includes("setup-invalid:verification-duplicate"));
+});
+
+test("setup-verification: a Revision verified twice in one row is invalid", () => {
+  const w = world();
+  const setup = setupFor(w, "P-01", positiveId("P-01"));
+  const pre = setup.verifications.find((row) => row.point === "request-pre");
+  pre.revisions.push({
+    ...pre.revisions[0],
+    runtimeId: "rt:other",
+    a3: "ineligible",
+  });
+  const { codes: found } = invalidCodes(score(w), "P-01", positiveId("P-01"));
+  assert.ok(found.includes("setup-invalid:verification-duplicate-revision"));
+  const w2 = world();
+  const s2 = setupFor(w2, "P-01", positiveId("P-01"));
+  const pre2 = s2.verifications.find((row) => row.point === "request-pre");
+  pre2.revisions.push({ ...pre2.revisions[0] });
+  const { codes: found2 } = invalidCodes(score(w2), "P-01", positiveId("P-01"));
+  assert.ok(found2.includes("setup-invalid:verification-duplicate-revision"));
+});
+
+test("setup-verification: the id map names a logical id once", () => {
+  const w = world();
+  const setup = setupFor(w, "P-01", positiveId("P-01"));
+  setup.idMap.push({
+    logicalId: setup.idMap[0].logicalId,
+    runtimeId: "rt:dup",
+  });
+  const { codes: found } = invalidCodes(score(w), "P-01", positiveId("P-01"));
+  assert.ok(found.includes("setup-invalid:idmap-duplicate"));
+});
+
+test("setup-verification: a stale setup-end entry (not eligible) is invalid at that point", () => {
+  const w = world();
+  const setup = setupFor(w, "P-01", positiveId("P-01"));
+  const end = setup.verifications.find((row) => row.point === "setup-end");
+  end.revisions[0].a2 = "ineligible";
+  const { codes: found } = invalidCodes(score(w), "P-01", positiveId("P-01"));
+  assert.ok(found.includes("setup-invalid:revision-not-eligible"));
+});
+
+test("reject setup: the negative must be prepared, approved and invalidated, in this order, once each", () => {
+  const cases = [
+    [
+      "negative-event-missing",
+      (s) => {
+        s.events = s.events.filter(
+          (e) =>
+            e.kind !== "approve-negative" && e.kind !== "invalidate-negative",
+        );
+      },
+    ],
+    [
+      "negative-event-missing",
+      (s) => {
+        s.events = s.events.filter((e) => e.kind !== "prepare-negative");
+      },
+    ],
+    [
+      "negative-event-duplicate",
+      (s) => {
+        const approve = s.events.find((e) => e.kind === "approve-negative");
+        s.events.splice(s.events.indexOf(approve) + 1, 0, { ...approve });
+      },
+    ],
+    [
+      "negative-runtime-id-mismatch",
+      (s) => {
+        s.events.find((e) => e.kind === "invalidate-negative").runtimeId =
+          "rt:wrong";
+      },
+    ],
+    [
+      "negative-order",
+      (s) => {
+        const approve = s.events.find((e) => e.kind === "approve-negative");
+        const invalidate = s.events.find(
+          (e) => e.kind === "invalidate-negative",
+        );
+        [approve.kind, invalidate.kind] = [invalidate.kind, approve.kind];
+      },
+    ],
+  ];
+  for (const [code, mutate] of cases) {
+    const w = world();
+    const setup = setupFor(w, "P-02", rejectId("P-02"));
+    mutate(setup);
+    setup.events.forEach((e, i) => {
+      e.seq = i + 1;
+    });
+    const scored = score(w);
+    const { entry, codes: found } = invalidCodes(
+      scored,
+      "P-02",
+      rejectId("P-02"),
+    );
+    assert.equal(entry.status, "invalid", code);
+    assert.ok(
+      found.includes(`setup-invalid:${code}`),
+      `${code}: ${JSON.stringify(found)}`,
+    );
+  }
+});
+
+test("reject setup: the negative is recorded as not eligible at request-pre", () => {
+  const w = world();
+  const setup = setupFor(w, "P-02", rejectId("P-02"));
+  const pre = setup.verifications.find((row) => row.point === "request-pre");
+  const negative = pre.revisions.find((r) => r.logicalId === "rev-P-02-bad");
+  assert.ok(negative, "the synthetic world records the negative");
+  // Not verified at all.
+  pre.revisions = pre.revisions.filter((r) => r !== negative);
+  let found = invalidCodes(score(w), "P-02", rejectId("P-02")).codes;
+  assert.ok(found.includes("setup-invalid:negative-unverified"));
+  // Verified as still eligible.
+  const w2 = world();
+  const pre2 = setupFor(w2, "P-02", rejectId("P-02")).verifications.find(
+    (row) => row.point === "request-pre",
+  );
+  Object.assign(
+    pre2.revisions.find((r) => r.logicalId === "rev-P-02-bad"),
+    {
+      a2: "eligible",
+      a3: "eligible",
+      freshness: "fresh",
+    },
+  );
+  found = invalidCodes(score(w2), "P-02", rejectId("P-02")).codes;
+  assert.ok(found.includes("setup-invalid:negative-eligible"));
+  // Verified under another runtime id.
+  const w3 = world();
+  const pre3 = setupFor(w3, "P-02", rejectId("P-02")).verifications.find(
+    (row) => row.point === "request-pre",
+  );
+  pre3.revisions.find((r) => r.logicalId === "rev-P-02-bad").runtimeId = "rt:x";
+  found = invalidCodes(score(w3), "P-02", rejectId("P-02")).codes;
+  assert.ok(found.includes("setup-invalid:verification-runtime-id-mismatch"));
+});
+
+test("reject setup: a negative that is an old Revision of an earlier stage needs no negative events but must be recorded ineligible", () => {
+  const w = world();
+  // Turn the P-10 reject variant into one whose negative is the old stage-1 Revision.
+  const variant = w.fixture.cases
+    .find((c) => c.caseId === "P-10")
+    .variants.find((v) => v.variantId === rejectId("P-10"));
+  const old = "rev-P-10-a";
+  const bad = variant.ineligibleLogicalId;
+  const last = variant.requests.at(-1);
+  last.revisionIds = last.revisionIds.map((id) => (id === bad ? old : id));
+  // The base positive variant's last request must not contain it: swap to keep the contract.
+  variant.ineligibleLogicalId = old;
+  const setup = setupFor(w, "P-10", rejectId("P-10"));
+  setup.events = setup.events.filter((e) => !e.kind.endsWith("-negative"));
+  setup.events.forEach((e, i) => {
+    e.seq = i + 1;
+  });
+  const pre = setup.verifications.find(
+    (row) => row.point === "request-pre" && row.stage === 2,
+  );
+  pre.revisions.push({
+    logicalId: old,
+    runtimeId: "rt:rev-P-10-a",
+    a2: "ineligible",
+    a3: "ineligible",
+    freshness: "stale",
+  });
+  const scored = score(w);
+  const entry = result(scored, "P-10", rejectId("P-10"), 2);
+  assert.deepEqual(entry.invalid, [], JSON.stringify(codes(entry)));
+  // Without the record of it being ineligible, the same setup is invalid.
+  pre.revisions.pop();
+  assert.ok(
+    codes(result(score(w), "P-10", rejectId("P-10"), 2)).includes(
+      "setup-invalid:negative-unverified",
+    ),
+  );
+});
+
+// ------------------------------------------------- attempt rows, canary
+
+test("positive-attempt-present: an attempt row in a no-send evaluation fails", () => {
+  const w = world();
+  requestOf(w.receipt, "P-01", positiveId("P-01")).attemptRowsAdded = 3;
+  const scored = score(w);
+  const entry = result(scored, "P-01", positiveId("P-01"));
+  assert.equal(entry.status, "failed");
+  assert.ok(codes(entry).includes("positive-attempt-present"));
+  assert.equal(scored.status, "failed");
+});
+
+test("positive-attempt-present: the P-12 pair's candidate also may not add an attempt", () => {
+  const p12 = buildSyntheticP12({ template });
+  assert.equal(
+    scoreP12Pair({
+      request: p12.request,
+      expectation: p12.expectation,
+      template,
+      fixtureRoute: p12.route,
+    }).status,
+    "passed",
+  );
+  const request = structuredClone(p12.request);
+  request.attemptRowsAdded = 1;
+  const scored = scoreP12Pair({
+    request,
+    expectation: p12.expectation,
+    template,
+    fixtureRoute: p12.route,
+  });
+  assert.equal(scored.status, "failed");
+  assert.ok(scored.failures.some((f) => f.code === "positive-attempt-present"));
+});
+
+test("forbidden-and-canary-scan: a canary that holds a reserved prompt tag is found in its escaped form", () => {
+  const tagged = "<chronicle_snapshot>SECRET-NOTE</chronicle_snapshot>";
+  const escaped = escapeReservedPromptTags(tagged);
+  assert.notEqual(escaped, tagged);
+  const failures = scanForbidden({
+    payload: JSON.stringify({ messages: [{ content: `x ${escaped} y` }] }),
+    system: `x ${escaped} y`,
+    user: "u",
+    canaries: [{ id: "c1", kind: "decision-note", text: tagged }],
+    forbiddenTexts: [tagged],
+    forbiddenIds: [],
+    otherMarkers: [tagged],
+    otherIds: [],
+  });
+  const found = failures.map((f) => f.code);
+  assert.ok(found.includes("canary-in-payload"), JSON.stringify(found));
+  assert.ok(found.includes("forbidden-text"));
+  assert.ok(found.includes("other-case-material"));
 });

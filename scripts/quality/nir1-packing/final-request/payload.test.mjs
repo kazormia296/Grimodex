@@ -144,6 +144,18 @@ test("payload parsing accepts the renderer shape and rejects other shapes", () =
     [JSON.stringify({ model: "m" }), "payload-key-missing"],
     [JSON.stringify({ ...JSON.parse(good), tools: [] }), "payload-key-unknown"],
     [
+      JSON.stringify({ ...JSON.parse(good), stream: false }),
+      "payload-stream-value",
+    ],
+    [
+      JSON.stringify({ ...JSON.parse(good), stream: "true" }),
+      "payload-stream-value",
+    ],
+    [
+      JSON.stringify({ ...JSON.parse(good), stream: null }),
+      "payload-stream-value",
+    ],
+    [
       JSON.stringify({ ...JSON.parse(good), messages: [] }),
       "payload-messages-shape",
     ],

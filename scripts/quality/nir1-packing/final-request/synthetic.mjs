@@ -425,7 +425,10 @@ export function buildSyntheticWorld({ template, caseIds = DPH_CASE_IDS }) {
           { logicalId: bad, runtimeId: runtimeIdOf(bad) },
         );
         push("tree", 1, "tree_node_patch");
-        push("invalidate-negative", 1, "tree_node_patch");
+        push("invalidate-negative", 1, "tree_node_patch", {
+          logicalId: bad,
+          runtimeId: runtimeIdOf(bad),
+        });
       }
       for (const logicalId of stage1) {
         push("prepare", 1, "nir1_entity_relation_revision_prepare", {
@@ -470,6 +473,21 @@ export function buildSyntheticWorld({ template, caseIds = DPH_CASE_IDS }) {
           freshness: "fresh",
         }));
         const scope = `scope-rev-${request.stage}`;
+        // A reject variant's negative is recorded as no longer eligible just
+        // before the request that carries it.
+        const preRevisions =
+          variant.kind === "reject" && request.revisionIds.includes(bad)
+            ? [
+                ...revisions,
+                {
+                  logicalId: bad,
+                  runtimeId: runtimeIdOf(bad),
+                  a2: "ineligible",
+                  a3: "ineligible",
+                  freshness: "stale",
+                },
+              ]
+            : revisions;
         return [
           {
             point: "setup-end",
@@ -481,7 +499,7 @@ export function buildSyntheticWorld({ template, caseIds = DPH_CASE_IDS }) {
           {
             point: "request-pre",
             stage: request.stage,
-            revisions,
+            revisions: preRevisions,
             scopeAuthorityRevision: scope,
             d2a: { restricted: true, inFlightStopped: true },
           },

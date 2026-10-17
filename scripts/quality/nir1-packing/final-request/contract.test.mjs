@@ -10,6 +10,8 @@ import {
   FIXTURE_PATH,
   FREEZE_PATH,
   FREEZE_SCHEMA_VERSION,
+  PARITY_VECTOR_PATH,
+  README_PATH,
   REVIEW_PATH,
   REVIEW_SCHEMA_VERSION,
   SCORER_FILES,
@@ -553,9 +555,13 @@ function perRequestOf(fixtureValue) {
 function freezeWorld() {
   const review = reviewRecord(fixtureBytes);
   const reviewBytes = Buffer.from(JSON.stringify(review));
+  const readmeBytes = Buffer.from("fixture README");
+  const parityBytes = Buffer.from('{"parity":"vector"}');
   const bytes = new Map([
     [FIXTURE_PATH, fixtureBytes],
     [REVIEW_PATH, reviewBytes],
+    [README_PATH, readmeBytes],
+    [PARITY_VECTOR_PATH, parityBytes],
     ...scorerBytes,
   ]);
   const freeze = {
@@ -569,6 +575,8 @@ function freezeWorld() {
     reviewVerdict: APPROVING_VERDICT,
     fixture: { path: FIXTURE_PATH, sha256: sha256(fixtureBytes) },
     reviewRecord: { path: REVIEW_PATH, sha256: sha256(reviewBytes) },
+    readme: { path: README_PATH, sha256: sha256(readmeBytes) },
+    parityVector: { path: PARITY_VECTOR_PATH, sha256: sha256(parityBytes) },
     scorer: {
       files: SCORER_FILES.map((file) => ({
         path: file,
@@ -611,6 +619,38 @@ test("freeze-record-binds-fixture-scorer-review-sha256: a changed bound file bre
   assert.ok(
     validateFreezeRecord(freeze, { bytes, review }).some((e) =>
       e.includes("is missing"),
+    ),
+  );
+});
+
+test("freeze-record-binds-fixture-scorer-review-sha256: a frozen record must bind the README and the parity vector", () => {
+  for (const key of ["readme", "parityVector"]) {
+    const { freeze, bytes, review } = freezeWorld();
+    delete freeze[key];
+    assert.ok(
+      validateFreezeRecord(freeze, { bytes, review }).some((e) =>
+        e.includes(`a frozen record must bind freeze.${key}`),
+      ),
+      key,
+    );
+  }
+  // A changed parity vector or README breaks the freeze.
+  for (const file of [README_PATH, PARITY_VECTOR_PATH]) {
+    const { freeze, bytes, review } = freezeWorld();
+    bytes.set(file, Buffer.from("changed after the freeze"));
+    assert.ok(
+      validateFreezeRecord(freeze, { bytes, review }).some((e) =>
+        e.includes(`sha256 for ${file} differs`),
+      ),
+      file,
+    );
+  }
+  // A wrong path is refused too.
+  const { freeze, bytes, review } = freezeWorld();
+  freeze.parityVector.path = "evals/nir1-packing/other.json";
+  assert.ok(
+    validateFreezeRecord(freeze, { bytes, review }).some((e) =>
+      e.includes("freeze.parityVector.path must be"),
     ),
   );
 });
@@ -1281,7 +1321,11 @@ test("the repository report validates a placed fixture: pending-review, then fro
     const review = reviewRecord(bytes);
     const reviewBytes = Buffer.from(JSON.stringify(review));
     await writeFile(path.join(dir, REVIEW_PATH), reviewBytes);
-    const { freeze } = freezeWorld();
+    const { freeze, bytes: worldBytes } = freezeWorld();
+    for (const file of [README_PATH, PARITY_VECTOR_PATH]) {
+      await mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+      await writeFile(path.join(dir, file), worldBytes.get(file));
+    }
     freeze.fixture.sha256 = sha256(bytes);
     freeze.reviewRecord.sha256 = sha256(reviewBytes);
     freeze.scorer.files = await Promise.all(
