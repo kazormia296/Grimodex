@@ -18,6 +18,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ExternalMountManager } from "./externalMount.js";
+import { createProfileDataGuard } from "./profileDataGuard.js";
 
 interface Captured {
   channel: string;
@@ -38,6 +39,12 @@ afterEach(async () => {
     });
   }
 });
+
+/** root と重ならない profile data directory を指す guard（SF-1 の通常の構成）。 */
+function guardOptions() {
+  const profileDir = tempDir();
+  return { profileDataGuard: createProfileDataGuard(() => profileDir) };
+}
 
 function tempDir(): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), "gmx-emint-"));
@@ -68,7 +75,7 @@ describe("ExternalMountManager 実 chokidar 統合", () => {
     const manager = new ExternalMountManager(
       (channel, payload) =>
         events.push({ channel, payload: payload as Captured["payload"] }),
-      { debounceMs: 40 },
+      { debounceMs: 40, ...guardOptions() },
     );
     managers.push(manager);
 
@@ -143,7 +150,10 @@ describe("ExternalMountManager 実 chokidar 統合", () => {
   });
 
   it("readFile / writeFile が実ファイルへラウンドトリップ（CRLF→LF）", async () => {
-    const manager = new ExternalMountManager(() => {}, { debounceMs: 40 });
+    const manager = new ExternalMountManager(() => {}, {
+      debounceMs: 40,
+      ...guardOptions(),
+    });
     managers.push(manager);
     const dir = tempDir();
     writeFileSync(path.join(dir, "a.md"), "seed");
