@@ -1438,6 +1438,44 @@ pub(crate) fn typed_source_token_for_incremental(
     resolve_typed_source_token(conn, project_id, source_object_identity, None)
 }
 
+/// The project Scope read one transaction shares across the typed Sources it
+/// resolves. It is loaded by the first projection Source and kept for the
+/// rest, so K anchors cost one authority read, not K. Only a caller that
+/// resolves inside one write or read transaction may hold it: the read is
+/// that transaction's snapshot and must not outlive it.
+#[derive(Default)]
+pub(crate) struct SharedTypedScope(Option<LiveScope<'static>>);
+
+impl SharedTypedScope {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// [`typed_source_token_for_incremental`] for a caller that resolves several
+/// Sources in one transaction. The results are the same; a projection Source
+/// resolves from `shared`, so a malformed key costs no read and a Scene that
+/// is missing or no longer live is `None`, as without it.
+pub(crate) fn typed_source_token_with_shared_scope(
+    conn: &Connection,
+    project_id: &str,
+    source_object_identity: &str,
+    shared: &mut SharedTypedScope,
+) -> anyhow::Result<Option<String>> {
+    if !source_object_identity.starts_with(projection::SOURCE_PREFIX) {
+        return resolve_typed_source_token(conn, project_id, source_object_identity, None);
+    }
+    projection::scene_id_from_source_key(source_object_identity)?;
+    if shared.0.is_none() {
+        match projection::load_scope_read(conn, project_id) {
+            Ok(read) => shared.0 = Some(LiveScope::from_read(read)),
+            // A project that is not found has no projection, as `resolve`.
+            Err(error) => return projection::token_or_absent(Err(error)),
+        }
+    }
+    resolve_typed_source_token(conn, project_id, source_object_identity, shared.0.as_ref())
+}
+
 /// The project's latest Semantic Epoch. A Graph query reads it once for all
 /// its Revisions ([`Nir1ProjectReads`]); every other caller reads it here.
 fn read_current_epoch(conn: &Connection, project_id: &str) -> anyhow::Result<Option<CurrentEpoch>> {

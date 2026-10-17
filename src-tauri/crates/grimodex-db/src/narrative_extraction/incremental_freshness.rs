@@ -3105,11 +3105,15 @@ fn publish_batch_in_tx_with_control(
             guard.edge.source_object_identity
         );
     }
+    // The guards re-read inside the publish transaction; the anchors share
+    // one Scope read.
+    let mut shared_scope = super::nir1_entity_relation::SharedTypedScope::new();
     for guard in &plan.typed_source_state_guards {
-        let current = super::nir1_entity_relation::typed_source_token_for_incremental(
+        let current = super::nir1_entity_relation::typed_source_token_with_shared_scope(
             conn,
             &batch.project_id,
             &guard.source_object_identity,
+            &mut shared_scope,
         )?;
         anyhow::ensure!(
             current == guard.revision_token,

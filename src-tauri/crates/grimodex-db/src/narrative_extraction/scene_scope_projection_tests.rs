@@ -1294,6 +1294,90 @@ fn x13_journal_paths_keep_anchor_revision_ineligible() -> Result<()> {
     Ok(())
 }
 
+/// DR-X1-3-14. Graph's own consumer edges are its roster's Sources
+/// (`codex:`, `codex-relation:`, Evidence keys) and the Graph Source itself;
+/// a Revision's Scene Scope projection is not among them. So the edges the
+/// publish transaction re-checks do not grow with the anchors, and neither do
+/// its Scope reads. Both projects below hold three approved Revisions (every
+/// per-Revision read is the same); the first anchors all of them to one Scene,
+/// the second to three Scenes.
+#[test]
+fn x13_graph_publish_reads_the_scope_once_for_any_number_of_anchors() -> Result<()> {
+    use crate::narrative_extraction::nir1_capacity::project_read_probe::{self, Read};
+    use crate::narrative_extraction::nir1_entity_relation_index::{
+        prepare_graph_index_build, publish_nir1_entity_relation_index_in_tx,
+    };
+
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let publish_with = |anchors: [&str; 2]| -> Result<(i64, i64, std::collections::BTreeMap<Read, usize>)> {
+        let directory =
+            std::env::temp_dir().join(format!("nir1-x13-publish-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory)?;
+        let _cleanup = Cleanup(directory.clone());
+        let db = Database::new(&directory.join("grimodex.db"))?;
+        db.migrate()?;
+        // The fixture's own Revision anchors `a3-source`.
+        let (db, _seed) = approved_fixture_in(db)?;
+        approve_anchored(&db, &[anchors[0]], "nir1:review:x13-publish-1")?;
+        approve_anchored(&db, &[anchors[1]], "nir1:review:x13-publish-2")?;
+        let authority = crate::state::WorkspaceAuthority::from_database_for_test(db, directory.clone())?;
+        let anchor_edges: i64 = authority.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(DISTINCT source_object_identity)
+                   FROM narrative_dependency_edges
+                  WHERE consumer_kind = 'proposal-revision'
+                    AND source_object_identity LIKE 'project:scene-scope-projection:%'",
+                [],
+                |row| row.get(0),
+            )?)
+        })?;
+        let runtime = authority.nir_chronicle_index_runtime();
+        let snapshot = authority
+            .with_read_transaction(|conn| prepare_graph_index_build(conn, runtime, PROJECT))?;
+        let (published, reads) = project_read_probe::recording(|| {
+            authority.with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                publish_nir1_entity_relation_index_in_tx(&tx, runtime, snapshot)?;
+                tx.commit()?;
+                Ok(())
+            })
+        });
+        published?;
+        let graph_projection: i64 = authority.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges
+                  WHERE consumer_kind = 'semantic-index'
+                    AND source_object_identity LIKE 'project:scene-scope-projection:%'",
+                [],
+                |row| row.get(0),
+            )?)
+        })?;
+        Ok((anchor_edges, graph_projection, reads))
+    };
+
+    let (one_edge, one_graph, one) = publish_with(["a3-source", "a3-source"])?;
+    let (three_edges, three_graph, three) = publish_with(["a3-future", "nir1"])?;
+    let graph_projection_edges = (one_graph, three_graph);
+    assert_eq!((one_edge, three_edges), (1, 3), "Revisions' projection edges");
+    assert_eq!(graph_projection_edges, (0, 0), "Graph edges never name a projection");
+    assert_eq!(
+        one.get(&Read::AuthorityTree),
+        three.get(&Read::AuthorityTree),
+        "{one:?} {three:?}"
+    );
+    assert_eq!(
+        one.get(&Read::ScopeExtension),
+        three.get(&Read::ScopeExtension),
+        "{one:?} {three:?}"
+    );
+    Ok(())
+}
+
 /// Measurement (not an assertion of speed; run with `-- --ignored --nocapture`).
 /// A projection edge's evaluation reads the project Scope authority and the
 /// Scene bindings once (DR-X1-3-13), so a Revision with k anchors costs about

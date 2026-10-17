@@ -8,7 +8,8 @@
 //!
 //! The token moves when the anchor's Scope moves: its Scope generation (the
 //! binding `version`, advanced only by the writers listed in
-//! `scope_writer_coverage_manifest`), its A1 meaning fields, its incarnation,
+//! the `scope_writer_coverage_manifest_is_complete` test in
+//! `tests/narrative_scope_storage_authority.rs`), its A1 meaning fields, its incarnation,
 //! the registry refs the binding names, or its place in the live tree (a
 //! Scene that is no longer live has no projection). It does not move for
 //! another Scene's edits, for bodies, titles or display labels, for folder or
@@ -1234,5 +1235,77 @@ pub(in crate::narrative_extraction) mod tests {
         assert_ne!(changed[1], fresh[1]);
         assert_eq!(changed[2], fresh[2]);
         assert_eq!(reads.get(&Read::AuthorityTree), Some(&1), "{reads:?}");
+    }
+
+    /// The publish transaction of an incremental batch re-reads one typed
+    /// token per anchor (`typed_source_state_guards`); those re-reads share one
+    /// Scope read and resolve to what an unshared read does.
+    #[test]
+    fn typed_source_guards_share_one_scope_read_and_keep_their_results() {
+        use crate::narrative_extraction::nir1_entity_relation::{
+            typed_source_token_for_incremental, typed_source_token_with_shared_scope,
+            SharedTypedScope,
+        };
+        let db = fixture();
+        let identities = ["s1", "s2", "s3", "never-bound"].map(|scene| source_key(scene).unwrap());
+        let unshared = db
+            .with_read_transaction(|conn| {
+                identities
+                    .iter()
+                    .map(|identity| typed_source_token_for_incremental(conn, P, identity))
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .expect("unshared");
+        assert_eq!(unshared[0].as_deref(), Some(token(&db, "s1").as_str()));
+        assert_eq!(unshared[3], None, "a Scene with no binding has no token");
+
+        let (shared, reads) = project_read_probe::recording(|| {
+            db.with_read_transaction(|conn| {
+                let mut scope = SharedTypedScope::new();
+                identities
+                    .iter()
+                    .map(|identity| {
+                        typed_source_token_with_shared_scope(conn, P, identity, &mut scope)
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()
+            })
+            .expect("shared")
+        });
+        assert_eq!(shared, unshared);
+        assert_eq!(reads.get(&Read::AuthorityTree), Some(&1), "{reads:?}");
+        assert_eq!(reads.get(&Read::ScopeExtension), Some(&1), "{reads:?}");
+
+        // A project that is not found has no projection (as unshared), a
+        // malformed key is an error that costs no read, and a non-projection
+        // identity does not load the Scope.
+        let (results, reads) = project_read_probe::recording(|| {
+            db.with_read_transaction(|conn| {
+                let mut scope = SharedTypedScope::new();
+                let malformed = typed_source_token_with_shared_scope(
+                    conn,
+                    P,
+                    "project:scene-scope-projection:",
+                    &mut scope,
+                );
+                let codex = typed_source_token_with_shared_scope(conn, P, "codex:none", &mut scope);
+                let no_project = typed_source_token_with_shared_scope(
+                    conn,
+                    "no-project",
+                    &identities[0],
+                    &mut scope,
+                );
+                Ok((malformed, codex, no_project))
+            })
+            .expect("edge cases")
+        });
+        let (malformed, codex, no_project) = results;
+        assert_eq!(code(malformed.map(|_| ())), "NEX_SOURCE_KEY_INVALID");
+        assert_eq!(codex.expect("codex"), None);
+        assert_eq!(no_project.expect("no project"), None);
+        assert_eq!(
+            reads.get(&Read::AuthorityTree),
+            Some(&1),
+            "only the missing project read: {reads:?}"
+        );
     }
 }
