@@ -127,6 +127,9 @@ const AI_TRANSPORT_COMMANDS: Record<string, string[]> = {
   chat_reindex_all: ["semantic_index_* (Rust ONNX)"],
   fts_search: ["fts_search (Rust SQLite)"],
   semantic_reranker_shadow_score: ["semantic_reranker_score (Rust ONNX)"],
+  // Electron の local 生成 route（DT-4 が登録。command の実体は DT-5／DD-1 が足し、
+  // src/ に invoke が現れるまでは走査の対象にならない）。
+  nir1_local_generation_start: ["nir1_local_generation_start"],
 };
 
 /**

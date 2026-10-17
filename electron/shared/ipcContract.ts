@@ -23,6 +23,7 @@
 // envelope
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { nir1LocalAuditReservedField } from "./nir1LocalAuditNamespace.js";
 import {
   parseWorkspaceRestoreOutcome,
 } from "./workspaceRestoreOutcome.js";
@@ -2822,6 +2823,14 @@ function requireAiAuditEvents(args: CommandArgs): CommandArgs[] {
     ) {
       throw new Error(
         `invalid args \`parentExecutionId\` for command \`${command}\`: expected a non-empty string or null`,
+      );
+    }
+    // S17: the NIR-1 local generation namespace is written only by the Native
+    // audit owner. One reserved event rejects the whole batch (db rejects too).
+    const reservedField = nir1LocalAuditReservedField(event);
+    if (reservedField !== null) {
+      throw new Error(
+        `invalid args \`events[${index}].${reservedField}\` for command \`${command}\`: reserved for the NIR-1 local generation audit owner`,
       );
     }
     const eventType = event.eventType as string;

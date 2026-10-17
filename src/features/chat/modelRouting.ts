@@ -203,6 +203,8 @@ export const PATH_TO_ROLE: Readonly<Record<string, ModelRole>> = {
  *   - cli_chat_stream: 外部 CLI バイナリがモデルを決める
  *   - relation_injection: eval 専用経路（ユーザー導線でない）
  *   - agent_call_limit: トランスポートでなく予算ノブ（registry の同一 agent 経路）
+ *   - nir1_local_generation_*: Electron の local 生成 route。model は AI 設定の
+ *     active な OpenAI 互換 endpoint のもので、role 割り当てを使わない
  */
 export const MODEL_ROUTING_EXCLUDED: readonly string[] = [
   "semantic_search",
@@ -213,6 +215,10 @@ export const MODEL_ROUTING_EXCLUDED: readonly string[] = [
   "ai_connection_test",
   "relation_injection",
   "agent_call_limit",
+  // Electron の local 生成 route（NIR-1）。model は AI 設定の active な OpenAI 互換
+  // endpoint の model を使い、role 割り当てを使わない。
+  "nir1_local_generation_writing",
+  "nir1_local_generation_review",
 ];
 
 /**

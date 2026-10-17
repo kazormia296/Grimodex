@@ -47,6 +47,15 @@ use crate::narrative_maintenance_connection::{
 use crate::state::ActiveWorkspaceSnapshot;
 use crate::Database;
 
+mod local_audit_writer;
+mod project_ai_policy;
+pub use local_audit_writer::{
+    append_local_audit_start_bounded, finish_attempt_with_audit_bounded, Nir1LocalAuditObserved,
+    Nir1LocalAuditStart, Nir1LocalAuditStarted,
+};
+use local_audit_writer::{close_execution_in_tx, finish_attempt_bounded_with, AuditClose};
+pub use project_ai_policy::{read_project_ai_policy_bounded, Nir1ProjectAiPolicyRead};
+
 // These are storage safety ceilings for malformed/imported rows. They bound
 // one Native materialization; they are not the owning turn's history or
 // transport capacity contract.
@@ -4857,6 +4866,7 @@ fn finish_in_tx(
     body: Option<&NewMessageBody>,
     now_ms: i64,
     recovery: bool,
+    audit: AuditClose<'_>,
 ) -> Result<StoredTerminal> {
     validate_observation(observation)?;
     ensure!(
@@ -5013,6 +5023,17 @@ fn finish_in_tx(
         )? == 1,
         "NIR1_GENERATION_TERMINAL_CONFLICT"
     );
+    // Only a terminal this call has just written closes the started execution
+    // (an identical earlier write returned above), in the same transaction.
+    close_execution_in_tx(
+        conn,
+        &stored.project_id,
+        id,
+        observation,
+        &terminal,
+        audit,
+        recovery,
+    )?;
     Ok(terminal)
 }
 
@@ -5041,7 +5062,15 @@ pub fn finish_attempt(
 ) -> Result<StoredTerminal> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            finish_in_tx(conn, id, observation, body.as_ref(), now_ms, false)
+            finish_in_tx(
+                conn,
+                id,
+                observation,
+                body.as_ref(),
+                now_ms,
+                false,
+                AuditClose::Conservative,
+            )
         })
     })
 }
@@ -5061,7 +5090,15 @@ fn recover_attempt_in_tx(conn: &Connection, id: &str, now_ms: i64) -> Result<Sto
         return Ok(terminal);
     }
     let failed = OutputObserver::new().finish(Completion::DispatchFailure);
-    finish_in_tx(conn, id, &failed, None, now_ms, true)
+    finish_in_tx(
+        conn,
+        id,
+        &failed,
+        None,
+        now_ms,
+        true,
+        AuditClose::Conservative,
+    )
 }
 
 /// Recover one existing attempt under the same participant-owned connection
@@ -6057,13 +6094,23 @@ pub fn finish_pretransport_attempt_bounded(
             let now_ms = wall_clock_ms()?
                 .max(stored.created_at_ms)
                 .max(stored.claimed_at_ms.unwrap_or(stored.created_at_ms));
-            finish_in_tx(conn, &expected.id, &observation, None, now_ms, false)
+            finish_in_tx(
+                conn,
+                &expected.id,
+                &observation,
+                None,
+                now_ms,
+                false,
+                AuditClose::ZeroSend,
+            )
         },
     )
     .map_err(|(error, commit)| store_error(error, commit, false))
 }
 
-/// Write the post-transport terminal of the exact claimed attempt.
+/// Write the post-transport terminal of the exact claimed attempt. Without
+/// audit data; [`finish_attempt_with_audit_bounded`] is the same writer that
+/// records what the transport observed.
 pub fn finish_attempt_bounded(
     workspace: &ActiveWorkspaceSnapshot,
     expected: &Nir1ExpectedAttempt,
@@ -6072,26 +6119,15 @@ pub fn finish_attempt_bounded(
     now_ms: i64,
     budget: &Nir1PinnedSqlBudget,
 ) -> Result<StoredTerminal, Nir1GenerationStoreError> {
-    ensure_no_nested_sql_owner()?;
-    validate_expected_attempt(expected)?;
-    bounded_write(
+    finish_attempt_bounded_with(
         workspace,
-        ParticipantSqlFence::Pinned,
-        budget.sql_budget(),
-        budget.failpoint(),
-        |conn| {
-            read_expected_attempt_in_tx(conn, expected)?;
-            finish_in_tx(
-                conn,
-                &expected.id,
-                observation,
-                body.as_ref(),
-                now_ms,
-                false,
-            )
-        },
+        expected,
+        observation,
+        body,
+        now_ms,
+        AuditClose::Conservative,
+        budget,
     )
-    .map_err(|(error, commit)| store_error(error, commit, false))
 }
 
 /// Conservatively terminalize the exact claimed attempt whose transport owner

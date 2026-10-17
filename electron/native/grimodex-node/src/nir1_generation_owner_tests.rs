@@ -2444,9 +2444,117 @@ fn dt3_owner_does_not_claim_a_binding_that_is_not_its_own() {
     assert_eq!(stored.terminal, Some(terminal));
 }
 
+/// DT-4 (S16): the audited `request.prepared` request is the exact canonical
+/// body the owner would send, and its digest is the attempt's payload digest
+/// (`final_payload_digest`). A closed attempt's execution is closed by the same
+/// terminal that closes the attempt.
+#[test]
+fn dt4_audit_start_records_the_exact_canonical_body_and_the_owner_terminal_closes_it() {
+    use grimodex_core::canonical_json_string;
+    use grimodex_core::nir1_local_send_policy::{
+        decide, Nir1LocalSendPolicyDecision, Nir1LocalSendPurpose,
+    };
+    use grimodex_db::ai_audit::read_ai_audit_snapshot_for_scope;
+    use grimodex_db::nir1_generation::{
+        append_local_audit_start_bounded, Nir1ExpectedAttempt, Nir1LocalAuditStart,
+    };
+
+    let fixture = OwnerFixture::new();
+    let transport = start_loopback_owner(&fixture, "dt4-audit");
+    let id = transport.attempt_id().to_owned();
+    let sent_bytes = transport.canonical_payload().to_owned();
+    let stored = fixture.attempt(&id);
+    let request: Value = serde_json::from_str(&sent_bytes).expect("canonical payload is JSON");
+    assert_eq!(
+        crate::nir1_generation::final_payload_digest(&request).expect("digest"),
+        stored.payload_digest
+    );
+    let Nir1LocalSendPolicyDecision::Allowed(policy_basis) =
+        decide(None, Nir1LocalSendPurpose::Writing)
+    else {
+        panic!("an unset policy allows");
+    };
+    let workspace = active_workspace_snapshot(&fixture.state.ws).expect("workspace");
+    let started = append_local_audit_start_bounded(
+        &workspace,
+        &Nir1ExpectedAttempt::from_stored(&stored, READ_BUDGET),
+        &Nir1LocalAuditStart {
+            request,
+            payload_digest: stored.payload_digest.clone(),
+            socket: "127.0.0.1:11434".into(),
+            policy_basis,
+            timestamp_ms: now_ms().expect("clock"),
+        },
+        &fixture.admission_budget(),
+        &mut || Ok(()),
+    )
+    .expect("start");
+    assert_eq!(started.inserted_count, 3);
+    let events = fixture
+        .authority
+        .db()
+        .with_conn(|conn| {
+            Ok(
+                read_ai_audit_snapshot_for_scope(conn, Some(PROJECT), None, None, Some(100))?
+                    .events,
+            )
+        })
+        .expect("events");
+    let prepared = events
+        .iter()
+        .find(|event| event.event_type == "request.prepared")
+        .expect("request.prepared");
+    // Stored keys are sorted by the audit; the canonical rule reproduces the
+    // sent bytes exactly.
+    assert_eq!(
+        canonical_json_string(&prepared.payload["request"]["body"]).expect("canonical"),
+        sent_bytes
+    );
+    assert_eq!(prepared.payload["credentialsExcluded"], true);
+    // The owner's own terminal (no audit data) closes the execution with the
+    // attempt.
+    let terminal = transport
+        .finish(
+            &completed("answer"),
+            Some(NewMessageBody {
+                message_id: "dt4-audit-output".into(),
+                content: "answer".into(),
+                thinking: String::new(),
+            }),
+        )
+        .expect("terminal");
+    assert_eq!(fixture.attempt(&id).terminal, Some(terminal));
+    let types: Vec<String> = fixture
+        .authority
+        .db()
+        .with_conn(|conn| {
+            Ok(
+                read_ai_audit_snapshot_for_scope(conn, Some(PROJECT), None, None, Some(100))?
+                    .events,
+            )
+        })
+        .expect("events")
+        .into_iter()
+        .map(|event| event.event_type)
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "execution.started",
+            "request.prepared",
+            "request.dispatched",
+            "execution.failed"
+        ]
+    );
+}
+
 /// A-1: no N-API attribute reaches the owner module.
 #[test]
 fn a1_owner_has_no_napi_entry() {
     let source = include_str!("nir1_generation_owner.rs");
     assert!(!source.contains(&format!("#[{}", "napi")));
 }
+
+// DT-4 T2: AI usage policy check of the local send route, on this fixture.
+#[path = "nir1_local_send_policy_tests.rs"]
+mod nir1_local_send_policy_tests;

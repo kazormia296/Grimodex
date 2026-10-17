@@ -1098,7 +1098,7 @@ fn validate_ai_audit_lifecycle_transition(
     Ok(())
 }
 
-fn append_ai_audit_events_in_transaction(
+pub(crate) fn append_ai_audit_events_in_transaction(
     conn: &Connection,
     project_id: Option<&str>,
     events: &[AppendAiAuditEvent],
@@ -1204,6 +1204,10 @@ pub fn append_ai_audit_events_for_scope(
     project_id: Option<&str>,
     events: &[AppendAiAuditEvent],
 ) -> anyhow::Result<AiAuditAppendResult> {
+    // The NIR-1 local generation namespace is written only by the dedicated
+    // Native append; the generic path (renderer, N-API, post-effect, semantic)
+    // rejects the whole batch before any transaction opens.
+    crate::nir1_local_audit::reject_reserved_events(events)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = append_ai_audit_events_in_transaction(conn, project_id, events);

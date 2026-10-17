@@ -125,6 +125,11 @@ rules:
       - electron/main/codexAppServer/**
       - src-tauri/crates/grimodex-db/src/ai_audit.rs
       - src-tauri/crates/grimodex-db/tests/ai_audit.rs
+      - src-tauri/crates/grimodex-db/src/nir1_local_audit.rs
+      - src-tauri/crates/grimodex-db/src/nir1_local_audit/**
+      - src-tauri/crates/grimodex-db/src/nir1_generation/local_audit_writer.rs
+      - electron/shared/nir1LocalAuditNamespace.ts
+      - electron/shared/nir1LocalAuditNamespace.test.ts
       - src-tauri/crates/grimodex-post-effect/**
       - src-tauri/crates/grimodex-semantic/**
     requirements:
@@ -438,12 +443,15 @@ rules:
       - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
       - scripts/nir1-c-query-worker-ci.sh
       - docs/plans/nir1-*.md
+      - docs/plans/nir1-lane-decisions/**
       - src/**/nir1*
       - electron/main/nir1*.ts
       - electron/shared/nir1*.ts
       - electron/native/grimodex-node/src/nir1_*.rs
       - electron/native/grimodex-node/src/nir1_*/**
       - src-tauri/crates/grimodex-core/src/narrative_nir1*.rs
+      - src-tauri/crates/grimodex-core/src/nir1_*.rs
+      - src-tauri/crates/grimodex-core/src/nir1_*/**
       - src-tauri/crates/grimodex-core/tests/narrative_nir1*.rs
       - src-tauri/crates/grimodex-db/src/nir1_*.rs
       - src-tauri/crates/grimodex-db/src/nir1_*/**

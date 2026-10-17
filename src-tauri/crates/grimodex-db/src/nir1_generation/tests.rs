@@ -2238,7 +2238,7 @@ mod bounded {
             Arc::clone(self.snapshot().db())
         }
 
-        fn db_path(&self) -> PathBuf {
+        pub(super) fn db_path(&self) -> PathBuf {
             self.path.join("workspace.db")
         }
     }
@@ -3316,6 +3316,17 @@ mod capture {
             attempt.id,
             attempt_id_for_capture(&first).expect("deterministic id")
         );
+        // The stored real attempt ID is accepted by the DT-4 ID derivation and
+        // inverts exactly.
+        let execution = crate::nir1_local_audit::execution_id_for_attempt(&attempt.id)
+            .expect("real attempt ID derives an execution ID");
+        assert_eq!(
+            crate::nir1_local_audit::attempt_id_from_execution_id(&execution),
+            Some(attempt.id.as_str())
+        );
+        crate::nir1_local_audit::operation_id_for_attempt(&attempt.id).expect("operation ID");
+        crate::nir1_local_audit::event_id_for_attempt(&attempt.id, "execution.started")
+            .expect("event ID");
         let error = create_for(&snapshot, &first, capture_request(&first)).expect_err("resend");
         assert_eq!(error.failure(), Nir1StoreFailure::AlreadyExists);
         assert_eq!(error.commit(), Nir1CommitState::NotCommitted);
@@ -5941,5 +5952,290 @@ mod df_plus_reference_format {
             input_digest(&stored.inputs, &stored.qualifications)?
         );
         Ok(())
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// DT-4 T2: bounded read of `projects.ai_policy` (K5/3 B-2). The reader reports
+// what the cell holds and decides nothing.
+// ---------------------------------------------------------------------------
+
+mod project_ai_policy_read {
+    use super::bounded::{admission, open_probe, BoundedWorkspace};
+    use super::*;
+
+    const PROJECT: &str = "generation-project";
+
+    fn production_admission() -> Nir1AdmissionSqlBudget {
+        Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), open_probe())
+    }
+
+    fn set_policy(db: &Database, value: rusqlite::types::Value) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE projects SET ai_policy=?2 WHERE id=?1",
+                params![PROJECT, value],
+            )?;
+            Ok(())
+        })
+        .expect("set the policy cell");
+    }
+
+    fn set_text(db: &Database, text: &str) {
+        set_policy(db, rusqlite::types::Value::Text(text.to_owned()));
+    }
+
+    fn read(
+        workspace: &ActiveWorkspaceSnapshot,
+        budget: &Nir1AdmissionSqlBudget,
+    ) -> std::result::Result<Nir1ProjectAiPolicyRead, Nir1GenerationStoreError> {
+        read_project_ai_policy_bounded(workspace, PROJECT, budget)
+    }
+
+    fn assert_refused(error: &Nir1GenerationStoreError, failure: Nir1StoreFailure) {
+        assert_eq!(error.failure(), failure, "{error}: {:#}", error.source);
+        assert_eq!(error.commit(), Nir1CommitState::NotCommitted, "{error}");
+    }
+
+    /// The migration default of a new project is a readable text, returned as
+    /// stored (the preset is `custom`, with chat, bodyWrite and analysis true).
+    #[test]
+    fn it_returns_the_stored_text_exactly() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let Nir1ProjectAiPolicyRead::Text(default) =
+            read(&snapshot, &admission()).expect("default policy")
+        else {
+            panic!("the column default is text");
+        };
+        assert!(default.contains("\"preset\":\"custom\""), "{default}");
+        let exact = " {\"preset\":\"off\",\"toggles\":{\"chat\":false}} \n\u{3042}";
+        set_text(workspace.db().db(), exact);
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::Text(exact.to_owned())
+        );
+    }
+
+    /// There is no cache: each read sees the value committed just before it,
+    /// whatever it was a moment ago, and an empty text is a text.
+    #[test]
+    fn every_read_goes_to_the_database_and_sees_the_latest_commit() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        for value in [
+            "a",
+            "",
+            "{\"preset\":\"full\"}",
+            "b",
+            "{\"preset\":\"off\"}",
+        ] {
+            set_text(db.db(), value);
+            assert_eq!(
+                read(&snapshot, &admission()).expect("read"),
+                Nir1ProjectAiPolicyRead::Text(value.to_owned())
+            );
+        }
+        // A change through another connection is seen as well.
+        let other = Database::new(&workspace.db_path()).expect("second connection");
+        set_text(&other, "from-another-connection");
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::Text("from-another-connection".into())
+        );
+    }
+
+    #[test]
+    fn a_missing_project_row_is_reported_as_missing() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        assert_eq!(
+            read_project_ai_policy_bounded(&snapshot, "no-such-project", &admission())
+                .expect("read"),
+            Nir1ProjectAiPolicyRead::ProjectMissing
+        );
+        // The project's row being deleted after an earlier successful read is
+        // seen by the next read.
+        assert!(matches!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::Text(_)
+        ));
+        workspace
+            .db()
+            .db()
+            .with_conn(|conn| {
+                conn.execute_batch("PRAGMA foreign_keys=OFF; DELETE FROM projects;")?;
+                Ok(())
+            })
+            .expect("delete projects");
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::ProjectMissing
+        );
+    }
+
+    #[test]
+    fn a_cell_that_is_not_valid_text_is_not_returned_as_a_policy() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        // The column's TEXT affinity turns a number into its text, which the
+        // policy decision then rejects as not an object; a blob keeps its
+        // storage class and is never read as a policy.
+        set_policy(db.db(), rusqlite::types::Value::Integer(1));
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::Text("1".into())
+        );
+        set_policy(
+            db.db(),
+            rusqlite::types::Value::Blob(b"{\"preset\":\"full\"}".to_vec()),
+        );
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::NotText
+        );
+        // Text storage class holding bytes that are not UTF-8.
+        db.db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE projects SET ai_policy=CAST(X'ff7b7d' AS TEXT) WHERE id=?1",
+                    [PROJECT],
+                )?;
+                Ok(())
+            })
+            .expect("invalid utf-8 text");
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::NotText
+        );
+    }
+
+    /// The length is tested before the value is loaded, at the shared limit.
+    #[test]
+    fn an_oversize_text_is_reported_without_being_loaded() {
+        use grimodex_core::nir1_local_send_policy::NIR1_LOCAL_SEND_POLICY_MAX_BYTES as LIMIT;
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        let at_limit = "x".repeat(LIMIT);
+        set_text(db.db(), &at_limit);
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::Text(at_limit)
+        );
+        set_text(db.db(), &"x".repeat(LIMIT + 1));
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::TooLarge
+        );
+        // The limit is in bytes, not characters.
+        set_text(db.db(), &"\u{3042}".repeat(LIMIT / 3 + 1));
+        assert_eq!(
+            read(&snapshot, &admission()).expect("read"),
+            Nir1ProjectAiPolicyRead::TooLarge
+        );
+    }
+
+    /// A held connection mutex ends the read at the mutex limit, typed, with
+    /// nothing read, and a retry after the release works.
+    #[test]
+    fn a_held_connection_mutex_refuses_at_the_mutex_limit() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        {
+            let _held = db.lock().expect("hold the connection mutex");
+            let started = Instant::now();
+            let error = read(&snapshot, &production_admission()).expect_err("held mutex");
+            let elapsed = started.elapsed();
+            assert_refused(&error, Nir1StoreFailure::ConnectionBusy);
+            assert!(
+                elapsed >= NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT,
+                "{elapsed:?}"
+            );
+            assert!(elapsed < NIR1_GENERATION_OPERATION_LIMIT, "{elapsed:?}");
+        }
+        assert!(db.connection_reusable());
+        assert!(matches!(
+            read(&snapshot, &admission()).expect("retry"),
+            Nir1ProjectAiPolicyRead::Text(_)
+        ));
+    }
+
+    /// The read is a snapshot read: another connection's open write
+    /// transaction does not delay it, and it writes nothing.
+    #[test]
+    fn a_writer_on_another_connection_does_not_block_the_read_and_nothing_is_written() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let db = workspace.db();
+        let other = Database::new(&workspace.db_path()).expect("second connection");
+        other
+            .with_conn(|conn| {
+                conn.execute_batch("BEGIN IMMEDIATE")?;
+                Ok(())
+            })
+            .expect("other writer");
+        let changes_before = db
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))?)
+            })
+            .expect("changes");
+        let started = Instant::now();
+        assert!(matches!(
+            read(&snapshot, &production_admission()).expect("read beside a writer"),
+            Nir1ProjectAiPolicyRead::Text(_)
+        ));
+        assert!(started.elapsed() < NIR1_GENERATION_OPERATION_LIMIT);
+        other
+            .with_conn(|conn| {
+                conn.execute_batch("ROLLBACK")?;
+                Ok(())
+            })
+            .expect("release");
+        let changes_after = db
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row("SELECT total_changes()", [], |r| r.get::<_, i64>(0))?)
+            })
+            .expect("changes");
+        assert_eq!(changes_before, changes_after, "the read wrote nothing");
+    }
+
+    #[test]
+    fn the_owners_cancel_and_a_false_probe_refuse_the_read() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let cancel = Arc::new(AtomicBool::new(true));
+        let cancelled = Nir1AdmissionSqlBudget::new(Arc::clone(&cancel), open_probe());
+        assert_refused(
+            &read(&snapshot, &cancelled).expect_err("cancelled before the read"),
+            Nir1StoreFailure::Cancelled,
+        );
+        let closed =
+            Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), Arc::new(|| false));
+        assert_refused(
+            &read(&snapshot, &closed).expect_err("admission closed"),
+            Nir1StoreFailure::Fenced,
+        );
+        assert!(workspace.db().connection_reusable());
+        assert!(read(&snapshot, &admission()).is_ok());
+    }
+
+    #[test]
+    fn an_invalid_project_id_is_refused_before_any_read() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        for id in ["", " generation-project", &"p".repeat(MAX_ID_BYTES + 1)] {
+            assert_refused(
+                &read_project_ai_policy_bounded(&snapshot, id, &admission())
+                    .expect_err("invalid id"),
+                Nir1StoreFailure::Invalid,
+            );
+        }
     }
 }
