@@ -1535,12 +1535,15 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
-    /// Activation racing a legacy begin (the sync point is the state mutex):
+    /// Ordering around the restricting transition (begin, activate, begin):
     /// a lease issued before the transition is revoked by it, and no lease is
     /// issued once the profile is restricted, even before the barrier
-    /// completes and without any identity check.
+    /// completes and without any identity check. This is a sequential
+    /// ordering test, not a reproduced interleaving: that the check and the
+    /// lease issue are atomic follows from `begin_legacy_provider_dispatch`
+    /// holding the state mutex across both.
     #[test]
-    fn no_legacy_permit_is_issued_after_the_restricting_transition() {
+    fn legacy_permit_ordering_around_the_restricting_transition() {
         let path = temp_path("legacy-race");
         let state = std::sync::Arc::new(ProfileEgressState::new(path.clone()).expect("state"));
         let before = state
