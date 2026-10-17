@@ -1018,6 +1018,27 @@ pub(crate) fn ensure_character_reference_mutation_allowed_in_tx(
     Ok(())
 }
 
+/// Scenes of `project_id` whose `pov_character_id` names `entry_id`, whether
+/// or not they are live. Deleting the Codex entry clears the column through
+/// `ON DELETE SET NULL`, which changes the Scene's POV (a Scope field) without
+/// touching the binding, so the caller lists the Scenes before the delete and
+/// advances their Scope generation in the same transaction afterwards.
+pub(crate) fn scene_ids_with_pov_character_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    entry_id: &str,
+) -> Result<BTreeSet<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id FROM tree_nodes
+          WHERE project_id = ?1 AND node_type = 'scene' AND pov_character_id = ?2
+          ORDER BY id",
+    )?;
+    let scene_ids = statement
+        .query_map(params![project_id, entry_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+    Ok(scene_ids)
+}
+
 /// A Codex-only snapshot restore replaces the complete Codex projection. A
 /// binding that currently points at a character must not silently survive a
 /// snapshot that deletes that character or changes its type. The caller

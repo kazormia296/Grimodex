@@ -193,7 +193,7 @@ pub(crate) fn undo_created_codex_entry(
     project_id: &str,
     entry_id: &str,
     expected_version: i64,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<super::change_feed::NarrativeChangeEventInput>> {
     ensure_no_external_codex_dependencies(conn, project_id, entry_id)?;
     let current = collect_codex_entry_snapshot(conn, entry_id)?;
     let live_version = current

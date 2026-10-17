@@ -98,7 +98,7 @@ pub(crate) use scene_scope::{canonical_scene_scope_snapshot, canonical_scope_reg
 pub(crate) use scene_scope::{
     ensure_character_reference_mutation_allowed_in_tx,
     ensure_character_snapshot_restore_allowed_in_tx,
-    invalidate_character_references_with_events_in_tx,
+    invalidate_character_references_with_events_in_tx, scene_ids_with_pov_character_in_tx,
 };
 pub use scene_scope::{
     read_narrative_scene_scope, update_narrative_scene_scope,

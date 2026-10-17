@@ -3098,7 +3098,7 @@ pub(crate) fn delete_codex_entry_cascade(
     project_id: &str,
     entry_id: &str,
     expected_version: Option<i64>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
     let entry_type: Option<String> = conn
         .query_row(
             "SELECT type FROM codex_entries WHERE id = ?1 AND project_id = ?2",
@@ -3108,12 +3108,18 @@ pub(crate) fn delete_codex_entry_cascade(
         .optional()?;
     if entry_type.as_deref() == Some("character") {
         crate::narrative_extraction::ensure_character_reference_mutation_allowed_in_tx(
-            conn,
-            project_id,
-            entry_id,
-            "delete",
+            conn, project_id, entry_id, "delete",
         )?;
     }
+    // The delete clears `tree_nodes.pov_character_id` through ON DELETE SET
+    // NULL. POV is a Scope field, so list the Scenes before the delete and
+    // advance their Scope generation in this transaction afterwards. A delete
+    // that only removes a POV is never refused.
+    let pov_scene_ids = if entry_type.is_some() {
+        crate::narrative_extraction::scene_ids_with_pov_character_in_tx(conn, project_id, entry_id)?
+    } else {
+        std::collections::BTreeSet::new()
+    };
     let deleted = match expected_version {
         Some(version) => conn.execute(
             "DELETE FROM codex_entries WHERE id = ?1 AND project_id = ?2 AND version = ?3",
@@ -3136,7 +3142,15 @@ pub(crate) fn delete_codex_entry_cascade(
             "codex entry '{entry_id}' not found in project '{project_id}' during restore"
         );
     }
-    Ok(())
+    if pov_scene_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    crate::narrative_extraction::refresh_scene_scope_source_tokens_in_tx(
+        conn,
+        project_id,
+        &pov_scene_ids,
+        &chrono::Utc::now().to_rfc3339(),
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3872,7 +3886,7 @@ fn agent_codex_delete_internal(
                 codex_delete_journal_snapshot(before_snapshot.clone(), cascade_snapshot.clone())
                     .to_string();
 
-            delete_codex_entry_cascade(
+            let pov_scope_events = delete_codex_entry_cascade(
                 conn,
                 &payload.project_id,
                 &payload.entry_id,
@@ -3930,6 +3944,7 @@ fn agent_codex_delete_internal(
                 vec!["/".to_string()],
             )?];
             narrative_events.extend(codex_delete_cascade_feed_events(conn, &cascade_snapshot)?);
+            narrative_events.extend(pov_scope_events);
             append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
@@ -5199,7 +5214,12 @@ fn replay_codex_delete_cascade_in_tx(
             );
             let cascade_before =
                 collect_codex_delete_cascade_snapshot(conn, project_id, &row.entity_id)?;
-            delete_codex_entry_cascade(conn, project_id, &row.entity_id, Some(row.result_version))?;
+            let pov_scope_events = delete_codex_entry_cascade(
+                conn,
+                project_id,
+                &row.entity_id,
+                Some(row.result_version),
+            )?;
             let mut events = vec![deleted_cascade_event(
                 json!({ "kind": "codex-entry", "entryId": row.entity_id }),
                 &root_before,
@@ -5207,6 +5227,7 @@ fn replay_codex_delete_cascade_in_tx(
                 vec!["/".to_string()],
             )?];
             events.extend(codex_delete_cascade_feed_events(conn, &cascade_before)?);
+            events.extend(pov_scope_events);
             events
         }
         other => anyhow::bail!("invalid undo direction: {other}"),
@@ -5285,6 +5306,167 @@ fn undo_journal_body_snapshot_target(
     Ok(Some(target))
 }
 
+/// The state a Codex undo-journal replay (grimodex-core `revert`/`apply`) leaves
+/// the entry in, derived from the journal row without running the replay.
+enum CodexJournalTarget {
+    Removed,
+    /// The entry exists afterwards; `None` when the snapshot carries no type
+    /// (the core restorer then keeps the current type).
+    Present(Option<String>),
+}
+
+fn codex_journal_target(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    direction: &str,
+) -> anyhow::Result<CodexJournalTarget> {
+    let snapshot_type = |raw: Option<&str>| -> anyhow::Result<Option<String>> {
+        let raw = raw.ok_or_else(|| anyhow::anyhow!("codex journal is missing its snapshot"))?;
+        let snapshot: Value = serde_json::from_str(raw)?;
+        Ok(snapshot
+            .get("type")
+            .or_else(|| snapshot.get("entry").and_then(|entry| entry.get("type")))
+            .and_then(Value::as_str)
+            .map(str::to_string))
+    };
+    Ok(match (row.op_kind.as_str(), direction) {
+        ("create", "undo") | ("delete", "redo") => CodexJournalTarget::Removed,
+        ("create", "redo") => {
+            CodexJournalTarget::Present(snapshot_type(row.after_json.as_deref())?)
+        }
+        ("update", "undo") | ("delete", "undo") => {
+            CodexJournalTarget::Present(snapshot_type(row.before_json.as_deref())?)
+        }
+        ("update", "redo") => {
+            CodexJournalTarget::Present(snapshot_type(row.after_json.as_deref())?)
+        }
+        _ => CodexJournalTarget::Present(None),
+    })
+}
+
+fn codex_entry_type_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+) -> anyhow::Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT type FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![entry_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// Replay one undo-journal row through grimodex-core and keep the Scene Scope
+/// authority consistent (X1-2, method J1). grimodex-core does not know the
+/// Scope tables, so the checks sit around the core call in the same
+/// transaction:
+/// - a Codex entry that is a character may not be removed or changed to
+///   another type while a Scene binding names it as holder or audience
+///   (`NEX_SCENE_SCOPE_CHARACTER_REFERENCED`), checked before the replay from
+///   the journal and again from the real before/after state;
+/// - an entry that becomes a character (re-insert, or a type written back)
+///   invalidates every binding that names it (A1) and appends the events;
+/// - removing an entry that is some Scene's POV is never refused, but those
+///   Scenes' Scope generation advances (the FK clears the POV).
+///
+/// Returns the `scene-scope` feed events for the caller to append.
+fn replay_undo_journal_via_core_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    journal_id: &str,
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    direction: &str,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    let guarded = row.entity_kind == "codex_entry";
+    let before = if guarded {
+        let before_type = codex_entry_type_in_tx(conn, project_id, &row.entity_id)?;
+        if before_type.as_deref() == Some("character") {
+            match codex_journal_target(row, direction)? {
+                CodexJournalTarget::Removed => {
+                    crate::narrative_extraction::ensure_character_reference_mutation_allowed_in_tx(
+                        conn,
+                        project_id,
+                        &row.entity_id,
+                        "delete",
+                    )?
+                }
+                CodexJournalTarget::Present(Some(next)) if next != "character" => {
+                    crate::narrative_extraction::ensure_character_reference_mutation_allowed_in_tx(
+                        conn,
+                        project_id,
+                        &row.entity_id,
+                        "change the type of",
+                    )?
+                }
+                CodexJournalTarget::Present(_) => {}
+            }
+        }
+        let pov_scene_ids = if before_type.is_some() {
+            crate::narrative_extraction::scene_ids_with_pov_character_in_tx(
+                conn,
+                project_id,
+                &row.entity_id,
+            )?
+        } else {
+            std::collections::BTreeSet::new()
+        };
+        Some((before_type, pov_scene_ids))
+    } else {
+        None
+    };
+    match direction {
+        "undo" => {
+            grimodex_core::undo_journal::revert_undo_journal_in_tx(conn, project_id, journal_id)?
+        }
+        "redo" => {
+            grimodex_core::undo_journal::apply_undo_journal_in_tx(conn, project_id, journal_id)?
+        }
+        other => anyhow::bail!("invalid undo direction: {other}"),
+    }
+    let Some((before_type, pov_scene_ids)) = before else {
+        return Ok(Vec::new());
+    };
+    let after_type = codex_entry_type_in_tx(conn, project_id, &row.entity_id)?;
+    let was_character = before_type.as_deref() == Some("character");
+    let is_character = after_type.as_deref() == Some("character");
+    if was_character && !is_character {
+        crate::narrative_extraction::ensure_character_reference_mutation_allowed_in_tx(
+            conn,
+            project_id,
+            &row.entity_id,
+            if after_type.is_none() {
+                "delete"
+            } else {
+                "change the type of"
+            },
+        )?;
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut events = Vec::new();
+    if is_character && !was_character {
+        events.extend(
+            crate::narrative_extraction::invalidate_character_references_with_events_in_tx(
+                conn,
+                project_id,
+                &row.entity_id,
+                &now,
+            )?,
+        );
+    }
+    if after_type.is_none() && !pov_scene_ids.is_empty() {
+        events.extend(
+            crate::narrative_extraction::refresh_scene_scope_source_tokens_in_tx(
+                conn,
+                project_id,
+                &pov_scene_ids,
+                &now,
+            )?,
+        );
+    }
+    Ok(events)
+}
+
 pub fn agent_undo_journal_impl(
     db: &Database,
     payload: AgentUndoJournalPayload,
@@ -5354,6 +5536,7 @@ pub fn agent_undo_journal_impl(
                 _ => None,
             };
             let mut replay_narrative_events = None;
+            let mut journal_scope_events: Vec<NarrativeChangeEventInput> = Vec::new();
             // Chronicle events carry a composite snapshot (eventData +
             // participants + sceneLinks + relations) that the single-table
             // grimodex-core restorers don't understand, so they're handled by
@@ -5366,19 +5549,13 @@ pub fn agent_undo_journal_impl(
                     &payload.direction,
                 )?;
                 if replay_narrative_events.is_none() {
-                    match payload.direction.as_str() {
-                        "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
-                            conn,
-                            &payload.project_id,
-                            &payload.journal_id,
-                        )?,
-                        "redo" => grimodex_core::undo_journal::apply_undo_journal_in_tx(
-                            conn,
-                            &payload.project_id,
-                            &payload.journal_id,
-                        )?,
-                        other => anyhow::bail!("invalid undo direction: {other}"),
-                    }
+                    journal_scope_events = replay_undo_journal_via_core_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &payload.journal_id,
+                        &row,
+                        &payload.direction,
+                    )?;
                 }
             } else if row.entity_kind == "foreshadow" && row.op_kind == "delete" {
                 replay_foreshadow_delete_in_tx(
@@ -5409,19 +5586,13 @@ pub fn agent_undo_journal_impl(
                     &payload.direction,
                 )?);
             } else {
-                match payload.direction.as_str() {
-                    "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
-                        conn,
-                        &payload.project_id,
-                        &payload.journal_id,
-                    )?,
-                    "redo" => grimodex_core::undo_journal::apply_undo_journal_in_tx(
-                        conn,
-                        &payload.project_id,
-                        &payload.journal_id,
-                    )?,
-                    other => anyhow::bail!("invalid undo direction: {other}"),
-                }
+                journal_scope_events = replay_undo_journal_via_core_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload.journal_id,
+                    &row,
+                    &payload.direction,
+                )?;
             }
             let (domain, entity_type, op_type, entity_id) =
                 undo_journal_change_event(&row, &payload.direction)?;
@@ -5516,6 +5687,7 @@ pub fn agent_undo_journal_impl(
             } else {
                 vec![event_from_undo_journal_row(&feed_row, cause_kind)?]
             };
+            narrative_events.extend(journal_scope_events);
             normalize_foreshadow_feed_events_in_tx(
                 conn,
                 &payload.project_id,
@@ -16814,5 +16986,545 @@ mod tests {
             event_snapshot_related_ids(&snapshot),
             vec!["cause".to_string(), "effect".to_string()]
         );
+    }
+
+    // ---- X1-2 S3: POV NULL-ing and method J1 on the undo-journal paths ----
+
+    fn j1_bind_scene(db: &Database, project_id: &str) -> String {
+        let scene_id = insert_scene(db, project_id);
+        db.with_conn(|conn| {
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                project_id,
+                &scene_id,
+                "2026-10-17T00:00:00.000Z",
+            )
+        })
+        .expect("bind scene");
+        scene_id
+    }
+
+    fn j1_scope(
+        db: &Database,
+        project_id: &str,
+        scene_id: &str,
+    ) -> crate::narrative_extraction::NarrativeSceneScopeReadV1 {
+        db.with_read_transaction(|conn| {
+            crate::narrative_extraction::read_narrative_scene_scope(conn, project_id, scene_id)
+        })
+        .expect("read scene scope")
+    }
+
+    fn j1_scope_event_count(db: &Database, project_id: &str, scene_id: &str) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events event
+                   JOIN narrative_change_transactions tx ON tx.id = event.transaction_id
+                  WHERE tx.project_id = ?1
+                    AND json_extract(event.object_key_json, '$.kind') = 'scene-scope'
+                    AND json_extract(event.object_key_json, '$.sceneId') = ?2",
+                rusqlite::params![project_id, scene_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count scene-scope events")
+    }
+
+    fn j1_set_pov(db: &Database, scene_id: &str, entry_id: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET pov_character_id = ?1 WHERE id = ?2",
+                rusqlite::params![entry_id, scene_id],
+            )?;
+            Ok(())
+        })
+        .expect("set POV");
+    }
+
+    fn j1_pov(db: &Database, scene_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT pov_character_id FROM tree_nodes WHERE id = ?1",
+                rusqlite::params![scene_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read POV")
+    }
+
+    /// Name the character as the Scene's knowledge holder through the real
+    /// Scope writer (the Codex entry must exist and be a character).
+    fn j1_set_holder(db: &Database, project_id: &str, scene_id: &str, entry_id: &str) {
+        let current = j1_scope(db, project_id, scene_id);
+        crate::narrative_extraction::update_narrative_scene_scope(
+            db,
+            crate::narrative_extraction::NarrativeSceneScopeUpdatePayload {
+                project_id: project_id.to_string(),
+                scene_id: scene_id.to_string(),
+                request_id: format!("j1-holder-{}", uuid::Uuid::new_v4()),
+                session_id: "j1-session".to_string(),
+                event_uid: uuid::Uuid::new_v4().to_string(),
+                base_version: current.binding.version,
+                updated_at: chrono::Utc::now().to_rfc3339(),
+                scope: crate::narrative_extraction::NarrativeSceneScopeUpdateV1 {
+                    schema_version: 1,
+                    compatibility_marker:
+                        grimodex_core::narrative_scene_scope::NarrativeScopeCompatibilityMarkerV1::Explicit,
+                    query_identity: current.binding.query_identity.clone(),
+                    material_constraint: current.binding.material_constraint.clone(),
+                    knowledge_holder:
+                        grimodex_core::narrative_scene_scope::NarrativeScopePrincipalV1::Character {
+                            reference: entry_id.to_string(),
+                        },
+                    audience: current.binding.audience.clone(),
+                },
+            },
+        )
+        .expect("name the character as holder");
+    }
+
+    /// Raw binding row; the typed read fails closed on a stale character
+    /// reference, which is exactly the state these tests set up.
+    fn j1_raw_binding(db: &Database, scene_id: &str) -> (i64, String, String) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT version, source_token, knowledge_holder_json
+                   FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
+                rusqlite::params![scene_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read raw binding")
+    }
+
+    fn j1_entry_type(db: &Database, entry_id: &str) -> Option<String> {
+        db.with_conn(|conn| {
+            Ok(conn
+                .query_row(
+                    "SELECT type FROM codex_entries WHERE id = ?1",
+                    rusqlite::params![entry_id],
+                    |row| row.get(0),
+                )
+                .optional()?)
+        })
+        .expect("read entry type")
+    }
+
+    fn j1_force_type(db: &Database, entry_id: &str, type_slug: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET type = ?1 WHERE id = ?2",
+                rusqlite::params![type_slug, entry_id],
+            )?;
+            Ok(())
+        })
+        .expect("force entry type (test setup)");
+    }
+
+    fn j1_native_delete(
+        db: &Database,
+        project_id: &str,
+        entry_id: &str,
+        base_version: i64,
+    ) -> anyhow::Result<Value> {
+        agent_codex_delete_impl(
+            db,
+            AgentCodexDeletePayload {
+                project_id: project_id.to_string(),
+                session_id: "sess".to_string(),
+                surface: None,
+                entry_id: entry_id.to_string(),
+                base_version,
+            },
+        )
+    }
+
+    fn j1_native_type_update(
+        db: &Database,
+        project_id: &str,
+        entry_id: &str,
+        base_version: i64,
+        type_slug: &str,
+    ) -> anyhow::Result<Value> {
+        let mut payload =
+            tracked_codex_update_payload(project_id, entry_id, base_version, "retyped", 4);
+        payload.type_slug = Some(type_slug.to_string());
+        agent_codex_update_impl(db, payload)
+    }
+
+    struct J1Snapshot {
+        version: i64,
+        source_token: String,
+        events: i64,
+        entry_type: Option<String>,
+        entry_rows: i64,
+    }
+
+    fn j1_snapshot(db: &Database, project_id: &str, scene_id: &str, entry_id: &str) -> J1Snapshot {
+        let scope = j1_scope(db, project_id, scene_id);
+        J1Snapshot {
+            version: scope.binding.version,
+            source_token: scope.binding.source_token,
+            events: j1_scope_event_count(db, project_id, scene_id),
+            entry_type: j1_entry_type(db, entry_id),
+            entry_rows: table_count(db, "narrative_change_events"),
+        }
+    }
+
+    fn assert_j1_unchanged(before: &J1Snapshot, after: &J1Snapshot, context: &str) {
+        assert_eq!(before.version, after.version, "{context}: binding version");
+        assert_eq!(before.source_token, after.source_token, "{context}: token");
+        assert_eq!(before.events, after.events, "{context}: scope events");
+        assert_eq!(before.entry_type, after.entry_type, "{context}: entry type");
+        assert_eq!(before.entry_rows, after.entry_rows, "{context}: feed rows");
+    }
+
+    fn assert_referenced(error: anyhow::Error, context: &str) {
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"),
+            "{context}: {error}"
+        );
+    }
+
+    #[test]
+    fn pov_only_character_delete_advances_scope_generation() {
+        // Native writer, Codex entry delete.
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let created = tracked_codex_create(&db, &project_id, "pov-native", "Pov", 3);
+            assert_eq!(created["version"], 1);
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_pov(&db, &scene_id, "pov-native");
+            let other_scene = j1_bind_scene(&db, &project_id);
+            let before = j1_scope(&db, &project_id, &scene_id).binding;
+            let other_before = j1_scope(&db, &project_id, &other_scene).binding;
+            j1_native_delete(&db, &project_id, "pov-native", 1).expect("POV-only delete passes");
+            assert_eq!(j1_pov(&db, &scene_id), None);
+            let after = j1_scope(&db, &project_id, &scene_id).binding;
+            assert_eq!(after.version, before.version + 1);
+            assert_ne!(after.source_token, before.source_token);
+            assert_eq!(j1_scope_event_count(&db, &project_id, &scene_id), 1);
+            let other_after = j1_scope(&db, &project_id, &other_scene).binding;
+            assert_eq!(other_after.version, other_before.version);
+            assert_eq!(j1_scope_event_count(&db, &project_id, &other_scene), 0);
+        }
+        // C1-form delete journal redo (delete_codex_entry_cascade from the journal).
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            tracked_codex_create(&db, &project_id, "pov-redo", "Pov", 3);
+            let deleted = j1_native_delete(&db, &project_id, "pov-redo", 1).expect("delete");
+            let journal = deleted["undoJournalId"].as_str().unwrap().to_string();
+            agent_undo_journal_impl(&db, undo_payload(&project_id, &journal, "undo"))
+                .expect("undo delete");
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_pov(&db, &scene_id, "pov-redo");
+            let before = j1_scope(&db, &project_id, &scene_id).binding;
+            agent_undo_journal_impl(&db, undo_payload(&project_id, &journal, "redo"))
+                .expect("redo delete");
+            assert_eq!(j1_pov(&db, &scene_id), None);
+            let after = j1_scope(&db, &project_id, &scene_id).binding;
+            assert_eq!(after.version, before.version + 1);
+            assert_eq!(j1_scope_event_count(&db, &project_id, &scene_id), 1);
+        }
+        // Create journal undo (grimodex-core revert on the db-side guard).
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let created = tracked_codex_create(&db, &project_id, "pov-create", "Pov", 3);
+            let journal = created["undoJournalId"].as_str().unwrap().to_string();
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_pov(&db, &scene_id, "pov-create");
+            let before = j1_scope(&db, &project_id, &scene_id).binding;
+            agent_undo_journal_impl(&db, undo_payload(&project_id, &journal, "undo"))
+                .expect("undo create");
+            assert_eq!(j1_entry_type(&db, "pov-create"), None);
+            assert_eq!(j1_pov(&db, &scene_id), None);
+            let after = j1_scope(&db, &project_id, &scene_id).binding;
+            assert_eq!(after.version, before.version + 1);
+            assert_eq!(j1_scope_event_count(&db, &project_id, &scene_id), 1);
+        }
+        // Pre-C1 (root-only) delete journal: undo re-inserts; redo rolls back atomically.
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            tracked_codex_create(&db, &project_id, "pov-legacy", "Pov", 3);
+            let deleted = j1_native_delete(&db, &project_id, "pov-legacy", 1).expect("delete");
+            let journal = deleted["undoJournalId"].as_str().unwrap().to_string();
+            db.with_conn(|conn| {
+                let raw: String = conn.query_row(
+                    "SELECT before_json FROM undo_journal WHERE id = ?1",
+                    rusqlite::params![journal],
+                    |row| row.get(0),
+                )?;
+                let snapshot: Value = serde_json::from_str(&raw)?;
+                conn.execute(
+                    "UPDATE undo_journal SET before_json = ?1 WHERE id = ?2",
+                    rusqlite::params![snapshot["entry"].to_string(), journal],
+                )?;
+                Ok(())
+            })
+            .expect("rewrite as a pre-C1 journal");
+            agent_undo_journal_impl(&db, undo_payload(&project_id, &journal, "undo"))
+                .expect("legacy undo delete");
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_pov(&db, &scene_id, "pov-legacy");
+            let before = j1_snapshot(&db, &project_id, &scene_id, "pov-legacy");
+            // A pre-C1 delete redo has never been able to build its Feed event
+            // (no before/after canonical snapshot), so it fails closed. The
+            // whole transaction, including the POV generation, rolls back.
+            let error = agent_undo_journal_impl(&db, undo_payload(&project_id, &journal, "redo"))
+                .expect_err("pre-C1 delete redo fails closed");
+            assert!(
+                error.to_string().contains("no before or after state"),
+                "{error}"
+            );
+            assert_j1_unchanged(
+                &before,
+                &j1_snapshot(&db, &project_id, &scene_id, "pov-legacy"),
+                "failed pre-C1 delete redo",
+            );
+            assert_eq!(j1_pov(&db, &scene_id).as_deref(), Some("pov-legacy"));
+        }
+        // The shared cascade helper hands back the events itself.
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            tracked_codex_create(&db, &project_id, "pov-direct", "Pov", 3);
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_pov(&db, &scene_id, "pov-direct");
+            let events = db
+                .with_conn(|conn| {
+                    delete_codex_entry_cascade(conn, &project_id, "pov-direct", Some(1))
+                })
+                .expect("direct cascade delete");
+            assert_eq!(events.len(), 1);
+            assert_eq!(
+                events[0].object_key,
+                json!({ "kind": "scene-scope", "sceneId": scene_id })
+            );
+        }
+    }
+
+    #[test]
+    fn character_reference_journal_paths_reject_and_invalidate() {
+        // (1) Referenced character: every Native and journal route that would
+        // delete it or change its type is refused with no partial state.
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let created = tracked_codex_create(&db, &project_id, "j1-char", "Holder", 3);
+            let create_journal = created["undoJournalId"].as_str().unwrap().to_string();
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_holder(&db, &project_id, &scene_id, "j1-char");
+            j1_set_pov(&db, &scene_id, "j1-char");
+            let before = j1_snapshot(&db, &project_id, &scene_id, "j1-char");
+            assert_referenced(
+                j1_native_delete(&db, &project_id, "j1-char", 1).unwrap_err(),
+                "native delete",
+            );
+            assert_referenced(
+                j1_native_type_update(&db, &project_id, "j1-char", 1, "location").unwrap_err(),
+                "native type change",
+            );
+            assert_referenced(
+                agent_undo_journal_impl(&db, undo_payload(&project_id, &create_journal, "undo"))
+                    .unwrap_err(),
+                "journal create undo",
+            );
+            assert_j1_unchanged(
+                &before,
+                &j1_snapshot(&db, &project_id, &scene_id, "j1-char"),
+                "referenced character",
+            );
+            // A refused route leaves the POV, too.
+            assert_eq!(j1_pov(&db, &scene_id).as_deref(), Some("j1-char"));
+        }
+        // (2) A journal update whose undo / redo moves a referenced character to
+        // another type is refused; moving a non-character back to character
+        // invalidates every binding that names it (A1).
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            tracked_codex_create(&db, &project_id, "j1-typed", "Typed", 3);
+            // character -> location is journaled as an update (before=character).
+            let updated = j1_native_type_update(&db, &project_id, "j1-typed", 1, "location")
+                .expect("retype before any reference");
+            let update_journal = updated["undoJournalId"].as_str().unwrap().to_string();
+            assert_eq!(j1_entry_type(&db, "j1-typed").as_deref(), Some("location"));
+            let scene_id = j1_bind_scene(&db, &project_id);
+            // Simulate a reference that predates the guard (stale binding): the
+            // entry is a character only while the holder is written.
+            j1_force_type(&db, "j1-typed", "character");
+            j1_set_holder(&db, &project_id, &scene_id, "j1-typed");
+            j1_force_type(&db, "j1-typed", "location");
+            let stale = j1_raw_binding(&db, &scene_id);
+            assert!(stale.2.contains("j1-typed"), "{}", stale.2);
+            // Undo writes `character` back: A1 is invalidated, generation advances.
+            agent_undo_journal_impl(&db, undo_payload(&project_id, &update_journal, "undo"))
+                .expect("undo type change back to character");
+            assert_eq!(j1_entry_type(&db, "j1-typed").as_deref(), Some("character"));
+            let invalidated = j1_scope(&db, &project_id, &scene_id).binding;
+            assert_eq!(
+                invalidated.knowledge_holder,
+                grimodex_core::narrative_scene_scope::NarrativeScopePrincipalV1::Reader {}
+            );
+            assert_eq!(
+                invalidated.compatibility_marker,
+                grimodex_core::narrative_scene_scope::NarrativeScopeCompatibilityMarkerV1::Unknown
+            );
+            assert!(invalidated.version > stale.0);
+            assert_ne!(invalidated.source_token, stale.1);
+            assert_eq!(j1_scope_event_count(&db, &project_id, &scene_id), 2);
+            // The old reference does not come back by itself: the next holder
+            // needs a fresh approval, and the redo (character -> location) is
+            // allowed again only while nothing references the character.
+            j1_set_holder(&db, &project_id, &scene_id, "j1-typed");
+            let before_redo = j1_snapshot(&db, &project_id, &scene_id, "j1-typed");
+            assert_referenced(
+                agent_undo_journal_impl(&db, undo_payload(&project_id, &update_journal, "redo"))
+                    .unwrap_err(),
+                "journal update redo away from character",
+            );
+            assert_j1_unchanged(
+                &before_redo,
+                &j1_snapshot(&db, &project_id, &scene_id, "j1-typed"),
+                "refused redo",
+            );
+        }
+        // (3) A journal update undo moves a referenced character away.
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let mut create_payload =
+                tracked_codex_create_payload(&project_id, "j1-loc", "Place", 3);
+            create_payload.type_slug = "location".to_string();
+            agent_codex_create_impl(&db, create_payload).expect("create a location");
+            let updated = j1_native_type_update(&db, &project_id, "j1-loc", 1, "character")
+                .expect("location -> character");
+            let update_journal = updated["undoJournalId"].as_str().unwrap().to_string();
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_holder(&db, &project_id, &scene_id, "j1-loc");
+            let before = j1_snapshot(&db, &project_id, &scene_id, "j1-loc");
+            assert_referenced(
+                agent_undo_journal_impl(&db, undo_payload(&project_id, &update_journal, "undo"))
+                    .unwrap_err(),
+                "journal update undo away from character",
+            );
+            assert_j1_unchanged(
+                &before,
+                &j1_snapshot(&db, &project_id, &scene_id, "j1-loc"),
+                "refused undo",
+            );
+        }
+        // (4) Re-inserting a character (create redo) invalidates a stale reference.
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            let created = tracked_codex_create(&db, &project_id, "j1-reinsert", "Again", 3);
+            let create_journal = created["undoJournalId"].as_str().unwrap().to_string();
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_holder(&db, &project_id, &scene_id, "j1-reinsert");
+            let saved = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT compatibility_marker, knowledge_holder_json, version,
+                                source_token, updated_at
+                           FROM narrative_scene_scope_bindings WHERE scene_id = ?1",
+                        rusqlite::params![scene_id],
+                        |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, i64>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                            ))
+                        },
+                    )?)
+                })
+                .expect("save the referenced binding");
+            // Reproduce a reference that outlived its character (a state older
+            // builds could leave): clear the holder, undo the create, then put
+            // the saved binding row back.
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_scene_scope_bindings
+                        SET knowledge_holder_json = '{\"kind\":\"reader\"}'
+                      WHERE scene_id = ?1",
+                    rusqlite::params![scene_id],
+                )?;
+                Ok(())
+            })
+            .expect("detach the holder (test setup)");
+            agent_undo_journal_impl(&db, undo_payload(&project_id, &create_journal, "undo"))
+                .expect("undo create once nothing references the character");
+            assert_eq!(j1_entry_type(&db, "j1-reinsert"), None);
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_scene_scope_bindings
+                        SET compatibility_marker = ?1, knowledge_holder_json = ?2,
+                            version = ?3, source_token = ?4, updated_at = ?5
+                      WHERE scene_id = ?6",
+                    rusqlite::params![saved.0, saved.1, saved.2, saved.3, saved.4, scene_id],
+                )?;
+                Ok(())
+            })
+            .expect("restore the stale reference (test setup)");
+            agent_undo_journal_impl(&db, undo_payload(&project_id, &create_journal, "redo"))
+                .expect("redo create re-inserts the character");
+            assert_eq!(
+                j1_entry_type(&db, "j1-reinsert").as_deref(),
+                Some("character")
+            );
+            let after = j1_scope(&db, &project_id, &scene_id).binding;
+            assert_eq!(
+                after.knowledge_holder,
+                grimodex_core::narrative_scene_scope::NarrativeScopePrincipalV1::Reader {}
+            );
+            assert!(after.version > saved.2);
+            assert_ne!(after.source_token, saved.3);
+        }
+        // (5) Pre-C1 delete journal: undo re-inserts (invalidates), redo is refused
+        // while referenced.
+        {
+            let db = test_db();
+            let project_id = insert_project(&db);
+            tracked_codex_create(&db, &project_id, "j1-legacy", "Legacy", 3);
+            let deleted = j1_native_delete(&db, &project_id, "j1-legacy", 1).expect("delete");
+            let journal = deleted["undoJournalId"].as_str().unwrap().to_string();
+            db.with_conn(|conn| {
+                let raw: String = conn.query_row(
+                    "SELECT before_json FROM undo_journal WHERE id = ?1",
+                    rusqlite::params![journal],
+                    |row| row.get(0),
+                )?;
+                let snapshot: Value = serde_json::from_str(&raw)?;
+                conn.execute(
+                    "UPDATE undo_journal SET before_json = ?1 WHERE id = ?2",
+                    rusqlite::params![snapshot["entry"].to_string(), journal],
+                )?;
+                Ok(())
+            })
+            .expect("rewrite as a pre-C1 journal");
+            agent_undo_journal_impl(&db, undo_payload(&project_id, &journal, "undo"))
+                .expect("legacy undo delete");
+            let scene_id = j1_bind_scene(&db, &project_id);
+            j1_set_holder(&db, &project_id, &scene_id, "j1-legacy");
+            let before = j1_snapshot(&db, &project_id, &scene_id, "j1-legacy");
+            assert_referenced(
+                agent_undo_journal_impl(&db, undo_payload(&project_id, &journal, "redo"))
+                    .unwrap_err(),
+                "legacy delete redo",
+            );
+            assert_j1_unchanged(
+                &before,
+                &j1_snapshot(&db, &project_id, &scene_id, "j1-legacy"),
+                "refused legacy redo",
+            );
+        }
     }
 }

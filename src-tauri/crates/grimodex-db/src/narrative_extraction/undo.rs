@@ -1419,7 +1419,12 @@ fn undo_one_entity(
                     .get("version")
                     .and_then(Value::as_i64)
                     .ok_or_else(|| anyhow::anyhow!("journal create missing version"))?;
-                undo_created_codex_entry(conn, project_id, entity_id, expected_version)?;
+                scene_scope_refresh_events.extend(undo_created_codex_entry(
+                    conn,
+                    project_id,
+                    entity_id,
+                    expected_version,
+                )?);
             }
         }
         "codex_detail_value" => {

@@ -519,3 +519,261 @@ fn codex_rename_propagation_keeps_scope_generation() -> Result<()> {
     );
     Ok(())
 }
+
+fn revision_is_current(db: &Database, revision_id: &str) -> Result<bool> {
+    let a2 = db.with_read_transaction(|conn| {
+        read_nir1_entity_relation_revision(conn, PROJECT, revision_id)
+    })?;
+    if !matches!(a2, Nir1EntityRelationRevisionRead::Available(_)) {
+        return Ok(false);
+    }
+    let a3 = db.with_read_transaction(|conn| {
+        evaluate_nir1_entity_relation_disclosure(conn, PROJECT, revision_id, "nir1")
+    })?;
+    Ok(matches!(a3, Nir1EntityRelationDisclosureRead::Eligible(_)))
+}
+
+/// Test 10 (typed Revision side). A project snapshot body restore rebuilds the
+/// Scene bindings and rotates the semantic epoch. The restored Scene row can
+/// carry the same body Source token (`v{version}@{updated_at}`) it had when the
+/// Revision was approved (the token guarantee is per restore epoch), yet the
+/// Revision stays unavailable or ineligible: the old approval does not match
+/// again.
+#[test]
+fn snapshot_body_restore_keeps_typed_revision_ineligible_when_the_token_returns() -> Result<()> {
+    use crate::project_snapshots::{
+        apply_project_snapshot_restore, build_canonical_restore_plan, create_project_snapshot,
+        ApplyProjectSnapshotRestorePayload, CreateProjectSnapshotPayload, RestoreScope,
+    };
+    let (db, revision_id) = approved_fixture()?;
+    assert_revision_current(&db, &revision_id, "before the snapshot")?;
+    let token_at_approval = body_token(&db, "a3-source")?;
+    let project_before = project_token(&db)?;
+    let generations_before = generations(&db)?;
+
+    let tree_rows: Vec<crate::project_snapshots::RawRow> = db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT json_object(
+                'snapshot_id', 'x12-snapshot', 'node_id', id, 'parent_id', parent_id,
+                'node_type', node_type, 'title', title, 'synopsis', synopsis,
+                'intent', intent, 'sort_order', sort_order,
+                'story_time_order', story_time_order,
+                'story_time_label', story_time_label,
+                'pov_character_id', pov_character_id, 'location_id', location_id,
+                'chronicle_start_time', chronicle_start_time,
+                'chronicle_start_minute', chronicle_start_minute,
+                'chronicle_start_granularity', chronicle_start_granularity,
+                'chronicle_end_time', chronicle_end_time,
+                'chronicle_end_minute', chronicle_end_minute,
+                'chronicle_end_granularity', chronicle_end_granularity,
+                'chronicle_precision', chronicle_precision, 'status', status,
+                'body_version_id', NULL,
+                'unplaced_beats_doc', COALESCE(unplaced_beats_doc, '[]'),
+                'char_count', COALESCE(char_count, 0),
+                'created_at', created_at, 'updated_at', updated_at)
+               FROM tree_nodes WHERE project_id = ?1 ORDER BY id",
+        )?;
+        let rows = statement
+            .query_map([PROJECT], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|raw| {
+                serde_json::from_str::<Value>(&raw)?
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("snapshot row is not an object"))
+            })
+            .collect()
+    })?;
+    create_project_snapshot(
+        &db,
+        CreateProjectSnapshotPayload {
+            project_id: PROJECT.to_owned(),
+            snapshot_id: "x12-snapshot".to_owned(),
+            name: "x12".to_owned(),
+            description: None,
+            created_at: "2026-10-17T00:30:00.000Z".to_owned(),
+            tree_rows,
+            codex_rows: Vec::new(),
+            snippet_rows: Vec::new(),
+            version_ids: Vec::new(),
+        },
+    )?;
+
+    save_body(
+        &db,
+        "a3-source",
+        "after-snapshot",
+        "2026-10-17T01:00:00.000Z",
+    )?;
+    assert_ne!(body_token(&db, "a3-source")?, token_at_approval);
+    // The fixture wrote Scope edits through the real writer, which left
+    // `scene-scope` Feed history; the restore's rebuilt binding starts at
+    // generation 1 and is not chained to it (see decisions DR-X1-2-10). Drop the
+    // history so this test isolates the epoch and approval behaviour.
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "DELETE FROM narrative_change_events
+              WHERE json_extract(object_key_json, '$.kind') = 'scene-scope'",
+        )?;
+        Ok(())
+    })?;
+
+    let scopes = vec![RestoreScope::Body];
+    let selected = scopes
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let inserts = db
+        .with_conn(|conn| build_canonical_restore_plan(conn, PROJECT, "x12-snapshot", &selected))?;
+    apply_project_snapshot_restore(
+        &db,
+        ApplyProjectSnapshotRestorePayload {
+            request_id: "x12-restore-request".to_owned(),
+            session_id: "x12-restore-session".to_owned(),
+            project_id: PROJECT.to_owned(),
+            snapshot_id: "x12-snapshot".to_owned(),
+            scopes,
+            inserts,
+        },
+    )?;
+
+    assert_eq!(
+        body_token(&db, "a3-source")?,
+        token_at_approval,
+        "the restored row carries the token it had at approval"
+    );
+    for (before, after) in generations_before.iter().zip(generations(&db)?) {
+        assert_eq!(
+            after.version, 2,
+            "binding rebuilt at generation 1, refreshed to 2"
+        );
+        assert_ne!(after.source_token, before.source_token);
+    }
+    assert_ne!(project_token(&db)?, project_before);
+    assert!(
+        !revision_is_current(&db, &revision_id)?,
+        "the old approval must not match again after the restore"
+    );
+    let epochs: i64 = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE reason = 'restore'",
+            [],
+            |row| row.get(0),
+        )?)
+    })?;
+    assert!(epochs >= 1, "the restore rotates the semantic epoch");
+    Ok(())
+}
+
+/// Test 9 (storage side). Restoring a character that a Scene names as holder
+/// invalidates A1: the Scene's generation and v1 source token advance, the
+/// holder becomes the Reader again, and the project Scope token (which every
+/// project-token-bound typed Revision carries) moves.
+#[test]
+fn restored_holder_character_invalidates_a1_and_moves_the_generation() -> Result<()> {
+    use crate::narrative_extraction::{
+        invalidate_character_references_with_events_in_tx, update_narrative_scene_scope,
+        NarrativeSceneScopeUpdatePayload, NarrativeSceneScopeUpdateV1,
+    };
+    use grimodex_core::narrative_scene_scope::NarrativeScopePrincipalV1;
+    let (db, revision_id) = approved_fixture()?;
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, content)
+             VALUES ('x12-holder', ?1, 'character', 'Holder', '{}')",
+            [PROJECT],
+        )?;
+        Ok(())
+    })?;
+    let current =
+        db.with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, "a3-source"))?;
+    update_narrative_scene_scope(
+        &db,
+        NarrativeSceneScopeUpdatePayload {
+            project_id: PROJECT.to_owned(),
+            scene_id: "a3-source".to_owned(),
+            request_id: "x12-holder-request".to_owned(),
+            session_id: "x12-holder-session".to_owned(),
+            event_uid: "x12-holder-event".to_owned(),
+            base_version: current.binding.version,
+            updated_at: "2026-10-17T05:00:00.000Z".to_owned(),
+            scope: NarrativeSceneScopeUpdateV1 {
+                schema_version: 1,
+                compatibility_marker: current.binding.compatibility_marker,
+                query_identity: current.binding.query_identity.clone(),
+                material_constraint: current.binding.material_constraint.clone(),
+                knowledge_holder: NarrativeScopePrincipalV1::Character {
+                    reference: "x12-holder".to_owned(),
+                },
+                audience: current.binding.audience.clone(),
+            },
+        },
+    )?;
+    let named = generation(&db, "a3-source")?;
+    let project_named = project_token(&db)?;
+    assert!(
+        !revision_is_current(&db, &revision_id)?,
+        "approval predates the holder edit"
+    );
+
+    let events = db.with_conn(|conn| {
+        invalidate_character_references_with_events_in_tx(
+            conn,
+            PROJECT,
+            "x12-holder",
+            "2026-10-17T05:01:00.000Z",
+        )
+    })?;
+    assert_eq!(events.len(), 1);
+    let invalidated = generation(&db, "a3-source")?;
+    assert_eq!(invalidated.version, named.version + 1);
+    assert_ne!(invalidated.source_token, named.source_token);
+    assert_ne!(project_token(&db)?, project_named);
+    let holder = db.with_read_transaction(|conn| {
+        Ok(read_narrative_scene_scope(conn, PROJECT, "a3-source")?
+            .binding
+            .knowledge_holder)
+    })?;
+    assert_eq!(holder, NarrativeScopePrincipalV1::Reader {});
+    assert!(!revision_is_current(&db, &revision_id)?);
+    Ok(())
+}
+
+/// The narrative-commit undo of a created Codex entry (`undo_created_codex_entry`)
+/// also deletes through the shared cascade: a Scene whose POV was that entry
+/// loses it and its Scope generation advances in the same transaction.
+#[test]
+fn undo_created_codex_entry_advances_the_generation_of_pov_scenes() -> Result<()> {
+    let (db, _revision_id) = approved_fixture()?;
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name, content, version)
+             VALUES ('x12-undo-created', ?1, 'character', 'Created', '{}', 1)",
+            [PROJECT],
+        )?;
+        conn.execute(
+            "UPDATE tree_nodes SET pov_character_id = 'x12-undo-created' WHERE id = 'a3-source'",
+            [],
+        )?;
+        Ok(())
+    })?;
+    let before = generation(&db, "a3-source")?;
+    let other_before = generation(&db, "a3-future")?;
+    let events = db.with_conn(|conn| {
+        super::codex_snapshots::undo_created_codex_entry(conn, PROJECT, "x12-undo-created", 1)
+    })?;
+    assert_eq!(events.len(), 1);
+    let after = generation(&db, "a3-source")?;
+    assert_eq!(after.version, before.version + 1);
+    assert_eq!(generation(&db, "a3-future")?, other_before);
+    let pov: Option<String> = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT pov_character_id FROM tree_nodes WHERE id = 'a3-source'",
+            [],
+            |row| row.get(0),
+        )?)
+    })?;
+    assert_eq!(pov, None);
+    Ok(())
+}
