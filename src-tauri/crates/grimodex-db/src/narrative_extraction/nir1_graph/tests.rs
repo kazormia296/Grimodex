@@ -7013,6 +7013,48 @@ impl Fixture {
         Ok(revision)
     }
 
+    /// One more approved typed Revision whose stored envelope has grown by
+    /// trailing whitespace so that A2 admits exactly `target` bytes. The envelope's
+    /// canonical digest ignores whitespace, so the envelope still verifies; A2
+    /// counts every stored byte once; no SQL statement parses the envelope. What
+    /// grows is the document A2 reads and parses in Rust.
+    fn add_envelope_padded_candidate(&self, serial: usize, target: usize) -> Result<String> {
+        let candidate = self.add_candidate_revision(serial, 0)?;
+        self.authority.with_conn(|conn| {
+            // The envelope is immutable to the product's writers; this test grows it.
+            conn.execute_batch(
+                "DROP TRIGGER IF EXISTS narrative_revision_envelope_immutable_update",
+            )?;
+            Ok(())
+        })?;
+        let pad = |bytes: usize| -> Result<()> {
+            self.authority.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_proposal_revisions
+                        SET reconciliation_envelope_json = reconciliation_envelope_json || ?1
+                      WHERE id = ?2",
+                    params![" ".repeat(bytes), candidate],
+                )?;
+                Ok(())
+            })
+        };
+        pad(1_000)?;
+        let admitted = self.a2_admission(&candidate)?;
+        // A2 refuses the admission of anything over the preflight, so a target
+        // past it is built in two steps: pad to the limit and check that exactly
+        // (one padding byte adds one admitted byte), then add the extra bytes.
+        let reached = target.min(PER_REVISION_PREFLIGHT_BYTES);
+        pad(reached
+            .checked_sub(admitted)
+            .ok_or_else(|| anyhow::anyhow!("target is below the base admission"))?)?;
+        ensure!(
+            self.a2_admission(&candidate)? == reached,
+            "one padding byte must add exactly one admitted byte"
+        );
+        pad(target - reached)?;
+        Ok(candidate)
+    }
+
     /// Decision padding that makes a candidate admit exactly `target` A2 bytes.
     /// Two probes on a throwaway fixture measure the base and the slope, so the
     /// fixture under test keeps one candidate beside the seed Revision: every
@@ -7192,9 +7234,9 @@ fn an_approved_revision_over_the_component_limit_is_a_limit_refusal_for_the_work
 // costs about 33,400 SQL steps, so two use about 67,000 of the production
 // budget of 100,000 and four would use about 134,000.
 //
-// This does not show that the real worker binary can process such a candidate.
-// Its fixed query arena is 4,718,592 B, and the release worker leaves during its
-// startup registration on a project that holds this exact candidate.
+// This is the in-process allocator. The real worker binary and its fixed query
+// arena (4,718,592 B) run the same construction in the lifecycle lane:
+// `native_worker_uses_a_candidate_at_exactly_the_per_revision_preflight_limit`.
 #[test]
 fn worker_query_admits_a_candidate_at_exactly_the_per_revision_preflight_limit() -> Result<()> {
     let padding = Fixture::candidate_padding_for(PER_REVISION_PREFLIGHT_BYTES)?;
@@ -7250,6 +7292,190 @@ fn query_refuses_the_whole_graph_when_a_candidate_is_one_byte_over() -> Result<(
     let mut worker = fixture.worker_reader()?;
     assert_refused_within_budget(&worker_query(&mut worker, "nir1-alice")?);
     Ok(())
+}
+
+// G-2 (RB-2) on the real worker binary and its fixed allocator, through Native's
+// owner and the 100 ms lease. The fixture is built in this process (the seed
+// Revision plus one candidate), so the lifecycle runner's input copy is only its
+// shared argument. A candidate of exactly the per-Revision preflight limit is an
+// ordinary Graph contribution; one byte over refuses the whole query.
+//
+// The candidate pads its approval's `decision_json`, which A2 counts once and the
+// Graph response does not carry. CQ-MEM made this fit the worker's arena: the
+// Graph reads that Decision for who approved it, not for its body, and binds it
+// by a streamed token (see `a3_decision_token_*` and `graph_index_read_*`).
+#[derive(Clone, Copy)]
+enum PaddedDocument {
+    /// The approval's `decision_json`, which the Graph reads for who approved and
+    /// binds by a streamed token.
+    Decision,
+    /// The stored reconciliation envelope, which A2 parses in Rust.
+    Envelope,
+}
+
+fn run_native_worker_candidate_at_preflight_boundary(
+    padded: PaddedDocument,
+    extra_bytes: usize,
+) -> Result<()> {
+    let worker_path = PathBuf::from(
+        std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
+            .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
+    );
+    let target = PER_REVISION_PREFLIGHT_BYTES + extra_bytes;
+    let fixture = Fixture::new()?;
+    let candidate = match padded {
+        PaddedDocument::Decision => {
+            fixture.add_candidate_revision(1, Fixture::candidate_padding_for(target)?)?
+        }
+        PaddedDocument::Envelope => fixture.add_envelope_padded_candidate(1, target)?,
+    };
+    if extra_bytes == 0 {
+        ensure!(
+            fixture.a2_admission(&candidate)? == target,
+            "the candidate must admit exactly the preflight limit"
+        );
+    } else {
+        let refusal = fixture
+            .a2_admission(&candidate)
+            .expect_err("a candidate over the preflight limit must be refused");
+        ensure!(
+            refusal
+                .to_string()
+                .contains("NIR1_GRAPH_REVISION_INPUT_LIMIT"),
+            "{refusal}"
+        );
+    }
+    fixture.republish_graph_index()?;
+
+    let authority = Arc::clone(&fixture.authority);
+    let native_state = WorkspaceState {
+        inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
+        safe_mode: crate::recovery::SafeModeState::default(),
+        switching: WorkspaceLifecycleCompatibilityView::new(false),
+        open_lock: Mutex::new(Default::default()),
+    };
+    native_state.switching.core().set_ready(
+        LiveBinding::new(
+            authority.path().to_string_lossy(),
+            format!("test-workspace:{}", authority.identity()),
+            authority.identity(),
+            0,
+        )
+        .with_main_database_file_identity(authority.main_database_file_identity()?),
+    )?;
+    let mut owner = super::c_query_worker::CQueryWorkerOwner::new(
+        active_workspace_snapshot(&native_state)?,
+        worker_path,
+    );
+    owner.prepare(PROJECT)?;
+    let request = graph_request("nir1-alice");
+    if extra_bytes == 0 {
+        let started = Instant::now();
+        let lease = owner.query_once(&request)?;
+        let returned_elapsed = started.elapsed();
+        let admission_elapsed = lease.elapsed();
+        ensure!(
+            returned_elapsed <= QUERY_DEADLINE && admission_elapsed <= QUERY_DEADLINE,
+            "the real worker missed the 100 ms lease: call={returned_elapsed:?}, admission={admission_elapsed:?}"
+        );
+        eprintln!(
+            "Native real worker, candidate of exactly {target} B: call={returned_elapsed:?}, admission-to-lease={admission_elapsed:?} (diagnostic only)"
+        );
+        {
+            let frame = lease.frame()?;
+            assert_eq!(frame.project(), PROJECT);
+            assert_eq!(frame.query_scene(), "nir1");
+            let graph = *frame
+                .graph()
+                .ok_or_else(|| anyhow::anyhow!("the worker frame was unavailable"))?;
+            assert_eq!(graph.seed(), "nir1-alice");
+            // The seed Revision and the candidate each contribute the Relation and
+            // bind both Entities; the seed-only Graph has one edge.
+            assert_eq!((graph.node_count(), graph.edge_count()), (2, 2));
+            let node = graph
+                .nodes()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("the worker frame omitted its nodes"))??;
+            assert_eq!((node.entity.id, node.hop), ("nir1-alice", 0));
+            assert_eq!(node.binding_count(), 2);
+        }
+        drop(lease);
+    } else {
+        let error = match owner.query_once(&request) {
+            Ok(lease) => {
+                drop(lease);
+                anyhow::bail!("a candidate over the preflight limit returned a Graph")
+            }
+            Err(error) => error,
+        };
+        // The recorded refusal of the whole query. The preflight rejects the
+        // candidate after READY, so the reason is the unclassified one. Memory
+        // exhaustion is a different reason (`sqlite-nomem`; a Rust-side failure
+        // aborts the worker and never reaches a frame), and so are steps and the
+        // deadline: a refusal that only said "unavailable" would pass for any of them.
+        const REFUSAL: &str = "query-worker-work-other-pre-cleanup-work-failed-other";
+        let error_text = format!("{error:#}");
+        ensure!(
+            error_text.contains("NIR1_GRAPH_WORKER_UNAVAILABLE")
+                && error_text.contains(REFUSAL)
+                && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED")
+                && !error_text.contains("nomem")
+                && !error_text.contains("oom")
+                && !error_text.contains("steps")
+                && !error_text.contains("deadline"),
+            "the real worker's refusal changed: {error_text}"
+        );
+    }
+    ensure!(
+        owner.cleanup_proved_for_test(),
+        "reloan preceded child exit + stdout EOF + reader join"
+    );
+    let claim = authority
+        .claim_c_query_child()
+        .ok_or_else(|| anyhow::anyhow!("retirement did not release the child claim"))?;
+    claim.release();
+    drop(owner);
+    ensure!(
+        native_state
+            .switching
+            .core()
+            .workspace_participant_count()?
+            == 0,
+        "the owner retained its workspace participant after retirement"
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_uses_a_candidate_at_exactly_the_per_revision_preflight_limit() -> Result<()> {
+    run_native_worker_candidate_at_preflight_boundary(PaddedDocument::Decision, 0)
+}
+
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_refuses_the_whole_graph_when_a_candidate_is_one_byte_over() -> Result<()> {
+    run_native_worker_candidate_at_preflight_boundary(PaddedDocument::Decision, 1)
+}
+
+// The same limit with the bytes in the stored envelope: A2 parses it from the
+// bytes SQLite holds, without a `String` copy, so the worker's arena holds one
+// copy of it, not two.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_uses_a_candidate_whose_envelope_fills_the_per_revision_preflight_limit(
+) -> Result<()> {
+    run_native_worker_candidate_at_preflight_boundary(PaddedDocument::Envelope, 0)
+}
+
+// One byte more in the stored envelope refuses the whole query, as it does for
+// the approval's bytes: the worker reaches READY on the registration, and the
+// query is refused as a whole with no partial Graph.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over() -> Result<()>
+{
+    run_native_worker_candidate_at_preflight_boundary(PaddedDocument::Envelope, 1)
 }
 
 // G-3 (RB-4): a busy database ends a query at once as an unavailable response

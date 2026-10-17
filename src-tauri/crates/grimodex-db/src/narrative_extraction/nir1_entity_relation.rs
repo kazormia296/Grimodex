@@ -19,7 +19,7 @@ use grimodex_core::narrative_scope_authority_basis::{
 use grimodex_core::{
     canonical_json_digest, canonical_json_string,
     narrative_dependency::{canonicalize_dependency_selector, DependencyRole, DependencySelector},
-    narrative_nir1,
+    narrative_nir1, CanonicalJsonStream,
 };
 use narrative_nir1::{
     validate_entity_relation_bundle, validate_entity_relation_revision_envelope_v2, EntityInput,
@@ -28,6 +28,7 @@ use narrative_nir1::{
     ENTITY_RELATION_INDEX_KEY, ENTITY_RELATION_MATERIAL_CONTRACT_ID, ENTITY_RELATION_PRODUCER,
     ENTITY_RELATION_SOURCE_KIND,
 };
+use rusqlite::types::{FromSqlError, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -93,6 +94,8 @@ type TypedCanonicalFreshnessRow = (
     Option<String>,
     String,
 );
+/// Identity and approval columns of one typed Revision. The payload and the
+/// envelope are deliberately not here: they are the large parts, read later.
 type TypedRevisionCoreRow = (
     String,
     String,
@@ -100,8 +103,6 @@ type TypedRevisionCoreRow = (
     String,
     String,
     String,
-    String,
-    Option<String>,
     Option<String>,
     String,
 );
@@ -168,16 +169,35 @@ pub struct Nir1EntityRelationFreshness {
     pub feed_head_sequence: i64,
 }
 
+/// How much of the current Decision row a typed read keeps.
+///
+/// The Graph never uses the free-form columns, and `decision_json` can be as
+/// large as a whole Revision may be (2 MiB in the C-query). A reader that only
+/// needs to know who approved asks for [`DecisionRead::Approval`], which selects
+/// the identifying columns and leaves the rest in SQLite; D1 packing asks for
+/// [`DecisionRead::Complete`] because it binds and counts every column.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DecisionRead {
+    Complete,
+    Approval,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Nir1EntityRelationDecision {
     id: String,
     revision_id: String,
     decision: String,
-    decision_json: String,
     created_at: String,
-    created_by: String,
     actor_kind: String,
     actor_id: String,
+    /// The free-form columns; present only for a [`DecisionRead::Complete`] read.
+    detail: Option<Nir1EntityRelationDecisionDetail>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Nir1EntityRelationDecisionDetail {
+    decision_json: String,
+    created_by: String,
     authority_scope: Option<String>,
     override_field_paths_json: String,
 }
@@ -195,16 +215,8 @@ impl Nir1EntityRelationDecision {
         &self.decision
     }
 
-    pub(crate) fn decision_json(&self) -> &str {
-        &self.decision_json
-    }
-
     pub(crate) fn created_at(&self) -> &str {
         &self.created_at
-    }
-
-    pub(crate) fn created_by(&self) -> &str {
-        &self.created_by
     }
 
     pub(crate) fn actor_kind(&self) -> &str {
@@ -213,6 +225,21 @@ impl Nir1EntityRelationDecision {
 
     pub(crate) fn actor_id(&self) -> &str {
         &self.actor_id
+    }
+
+    /// `None` when the read asked only for [`DecisionRead::Approval`].
+    pub(crate) fn detail(&self) -> Option<&Nir1EntityRelationDecisionDetail> {
+        self.detail.as_ref()
+    }
+}
+
+impl Nir1EntityRelationDecisionDetail {
+    pub(crate) fn decision_json(&self) -> &str {
+        &self.decision_json
+    }
+
+    pub(crate) fn created_by(&self) -> &str {
+        &self.created_by
     }
 
     pub(crate) fn authority_scope(&self) -> Option<&str> {
@@ -1583,16 +1610,21 @@ pub fn prepare_nir1_entity_relation_revision(
                 .get("revisionId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_PREPARE_REVISION_MISSING"))?;
-            let result =
-                match read_typed_revision_core(conn, &request.project_id, revision_id, true)? {
-                    Nir1EntityRelationRevisionCurrentRead::Draft(revision) => *revision,
-                    Nir1EntityRelationRevisionCurrentRead::Available(_) => {
-                        anyhow::bail!("NIR1_ENTITY_RELATION_PREPARE_UNEXPECTED_APPROVAL")
-                    }
-                    Nir1EntityRelationRevisionCurrentRead::Unavailable { reason } => {
-                        anyhow::bail!("NIR1_ENTITY_RELATION_PREPARE_READER_REJECTED: {reason}")
-                    }
-                };
+            let result = match read_typed_revision_core(
+                conn,
+                &request.project_id,
+                revision_id,
+                true,
+                DecisionRead::Complete,
+            )? {
+                Nir1EntityRelationRevisionCurrentRead::Draft(revision) => *revision,
+                Nir1EntityRelationRevisionCurrentRead::Available(_) => {
+                    anyhow::bail!("NIR1_ENTITY_RELATION_PREPARE_UNEXPECTED_APPROVAL")
+                }
+                Nir1EntityRelationRevisionCurrentRead::Unavailable { reason } => {
+                    anyhow::bail!("NIR1_ENTITY_RELATION_PREPARE_READER_REJECTED: {reason}")
+                }
+            };
             Ok(json!({
                 "runId": run_id,
                 "status": "draft",
@@ -1610,7 +1642,7 @@ pub fn read_nir1_entity_relation_revision(
     project_id: &str,
     revision_id: &str,
 ) -> anyhow::Result<Nir1EntityRelationRevisionRead> {
-    match read_typed_revision_core(conn, project_id, revision_id, false)? {
+    match read_typed_revision_core(conn, project_id, revision_id, false, DecisionRead::Complete)? {
         Nir1EntityRelationRevisionCurrentRead::Available(revision) => {
             Ok(Nir1EntityRelationRevisionRead::Available(revision))
         }
@@ -1668,7 +1700,7 @@ pub fn read_nir1_entity_relation_revision_current(
             reason: "revision-not-found".into(),
         });
     };
-    read_typed_revision_core(conn, project_id, &revision_id, true)
+    read_typed_revision_core(conn, project_id, &revision_id, true, DecisionRead::Complete)
 }
 
 /// Read one exact Revision selected by a target-aware restore lookup. The
@@ -1681,7 +1713,7 @@ pub fn read_nir1_entity_relation_revision_current_for_revision(
     project_id: &str,
     revision_id: &str,
 ) -> anyhow::Result<Nir1EntityRelationRevisionCurrentRead> {
-    read_typed_revision_core(conn, project_id, revision_id, true)
+    read_typed_revision_core(conn, project_id, revision_id, true, DecisionRead::Complete)
 }
 
 /// Crate-private projection for the Native Graph Index producer. The exact
@@ -1692,7 +1724,11 @@ pub(crate) fn read_nir1_entity_relation_revision_current_for_graph_index(
     project_id: &str,
     revision_id: &str,
 ) -> anyhow::Result<Option<(Nir1EntityRelationRevision, String)>> {
-    let response = read_typed_revision_core(conn, project_id, revision_id, true)?;
+    // Registration reads every approved Revision of the project, so the
+    // Decision is read for who approved it only; its free-form body stays in
+    // SQLite.
+    let response =
+        read_typed_revision_core(conn, project_id, revision_id, true, DecisionRead::Approval)?;
     let Nir1EntityRelationRevisionCurrentRead::Available(revision) = response else {
         return Ok(None);
     };
@@ -1911,6 +1947,7 @@ fn read_typed_revision_core(
     project_id: &str,
     revision_id: &str,
     allow_draft: bool,
+    decision_read: DecisionRead,
 ) -> anyhow::Result<Nir1EntityRelationRevisionCurrentRead> {
     Ok(read_typed_revision_core_with_scope_authority(
         conn,
@@ -1918,9 +1955,72 @@ fn read_typed_revision_core(
         revision_id,
         allow_draft,
         None,
+        decision_read,
         |revision, _authority| Ok(revision),
     )?
     .into_current_read())
+}
+
+/// A TEXT column as the bytes SQLite holds for it, with the errors that
+/// `Row::get::<String>` reports for a column of another type or invalid UTF-8.
+fn borrowed_text<'row>(row: &'row rusqlite::Row<'_>, index: usize) -> rusqlite::Result<&'row str> {
+    let value = row.get_ref(index)?;
+    value.as_str().map_err(|error| match error {
+        FromSqlError::InvalidType => rusqlite::Error::InvalidColumnType(
+            index,
+            row.as_ref()
+                .column_name(index)
+                .unwrap_or_default()
+                .to_owned(),
+            value.data_type(),
+        ),
+        FromSqlError::OutOfRange(value) => rusqlite::Error::IntegralValueOutOfRange(index, value),
+        FromSqlError::Utf8Error(error) => rusqlite::Error::Utf8Error(index, error),
+        FromSqlError::Other(error) => {
+            rusqlite::Error::FromSqlConversionFailure(index, value.data_type(), error)
+        }
+        error => {
+            rusqlite::Error::FromSqlConversionFailure(index, value.data_type(), Box::new(error))
+        }
+    })
+}
+
+/// One stored JSON document of a Revision.
+enum StoredDocument<T> {
+    /// The Revision row is gone. It cannot happen inside the caller's snapshot.
+    Missing,
+    /// The column is NULL.
+    Absent,
+    Parsed(anyhow::Result<T>),
+}
+
+const STORED_PAYLOAD_SQL: &str =
+    "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?1";
+const STORED_ENVELOPE_SQL: &str =
+    "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions WHERE id = ?1";
+
+/// Parse one stored document straight from the bytes SQLite holds for its
+/// column. The text is never copied into a Rust `String`: SQLite's own buffer
+/// and the parsed value exist together, and the buffer is released when this
+/// returns. The two large documents of a Revision are read this way, each only
+/// when the caller needs it.
+fn read_stored_revision_document<T: serde::de::DeserializeOwned>(
+    conn: &Connection,
+    revision_id: &str,
+    sql: &str,
+) -> rusqlite::Result<StoredDocument<T>> {
+    let document = conn
+        .query_row(sql, params![revision_id], |row| {
+            if matches!(row.get_ref(0)?, ValueRef::Null) {
+                return Ok(StoredDocument::Absent);
+            }
+            let text = borrowed_text(row, 0)?;
+            Ok(StoredDocument::Parsed(parse_json_with_active_work(
+                conn, text,
+            )))
+        })
+        .optional()?;
+    Ok(document.unwrap_or(StoredDocument::Missing))
 }
 
 /// The typed current reader. `shared` is the project-level reads a Graph query
@@ -1932,6 +2032,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
     revision_id: &str,
     allow_draft: bool,
     shared: Option<&Nir1ProjectReads>,
+    decision_read: DecisionRead,
     on_available: impl FnOnce(
         Box<Nir1EntityRelationRevision>,
         &NarrativeProjectScopeAuthorityV1,
@@ -1943,13 +2044,16 @@ fn read_typed_revision_core_with_scope_authority<T>(
     if project_id.trim().is_empty() || revision_id.trim().is_empty() {
         anyhow::bail!("NIR1_ENTITY_RELATION_INVALID_READ_REQUEST");
     }
+    // Identity and approval come first, from small columns. The payload and the
+    // envelope are the large parts of a Revision: they are not read until the
+    // Revision is known to be the current typed Revision of this project in a
+    // state this reader accepts, so a rejected, stale or foreign Revision never
+    // costs its body.
     let row: Option<TypedRevisionCoreRow> = conn
         .query_row(
             "SELECT proposal_set.id, proposal_set.run_id, proposal.id,
                     proposal.current_revision_id, proposal.status,
-                    revision.origin_kind, revision.payload_json,
-                    revision.reconciliation_envelope_json,
-                    revision.reconciliation_envelope_digest,
+                    revision.origin_kind, revision.reconciliation_envelope_digest,
                     revision.created_at
                FROM narrative_proposal_revisions revision
                JOIN narrative_proposals proposal
@@ -1979,8 +2083,6 @@ fn read_typed_revision_core_with_scope_authority<T>(
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
-                    row.get(8)?,
-                    row.get(9)?,
                 ))
             },
         )
@@ -1992,8 +2094,6 @@ fn read_typed_revision_core_with_scope_authority<T>(
         current_revision_id,
         status,
         origin,
-        payload_json,
-        envelope_json,
         envelope_digest,
         revision_created_at,
     )) = row
@@ -2035,28 +2135,54 @@ fn read_typed_revision_core_with_scope_authority<T>(
         if latest_count != 1 {
             return Ok(unavailable("revision-decision-ambiguous"));
         }
-        conn.query_row(
-            "SELECT id, revision_id, decision, decision_json, created_at, created_by,
-                    actor_kind, actor_id, authority_scope, override_field_paths_json
-               FROM narrative_proposal_decisions
-              WHERE proposal_id = ?1 AND revision_id = ?2 AND created_at = ?3",
-            params![proposal_id, revision_id, created_at],
-            |row| {
-                Ok(Nir1EntityRelationDecision {
-                    id: row.get(0)?,
-                    revision_id: row.get(1)?,
-                    decision: row.get(2)?,
-                    decision_json: row.get(3)?,
-                    created_at: row.get(4)?,
-                    created_by: row.get(5)?,
-                    actor_kind: row.get(6)?,
-                    actor_id: row.get(7)?,
-                    authority_scope: row.get(8)?,
-                    override_field_paths_json: row.get(9)?,
-                })
-            },
-        )
-        .optional()?
+        match decision_read {
+            DecisionRead::Complete => conn
+                .query_row(
+                    "SELECT id, revision_id, decision, decision_json, created_at, created_by,
+                            actor_kind, actor_id, authority_scope, override_field_paths_json
+                       FROM narrative_proposal_decisions
+                      WHERE proposal_id = ?1 AND revision_id = ?2 AND created_at = ?3",
+                    params![proposal_id, revision_id, created_at],
+                    |row| {
+                        Ok(Nir1EntityRelationDecision {
+                            id: row.get(0)?,
+                            revision_id: row.get(1)?,
+                            decision: row.get(2)?,
+                            created_at: row.get(4)?,
+                            actor_kind: row.get(6)?,
+                            actor_id: row.get(7)?,
+                            detail: Some(Nir1EntityRelationDecisionDetail {
+                                decision_json: row.get(3)?,
+                                created_by: row.get(5)?,
+                                authority_scope: row.get(8)?,
+                                override_field_paths_json: row.get(9)?,
+                            }),
+                        })
+                    },
+                )
+                .optional()?,
+            // The free-form columns stay in SQLite: `decision_json` alone can be
+            // most of a Revision's 2 MiB, and nothing on this path reads it.
+            DecisionRead::Approval => conn
+                .query_row(
+                    "SELECT id, revision_id, decision, created_at, actor_kind, actor_id
+                       FROM narrative_proposal_decisions
+                      WHERE proposal_id = ?1 AND revision_id = ?2 AND created_at = ?3",
+                    params![proposal_id, revision_id, created_at],
+                    |row| {
+                        Ok(Nir1EntityRelationDecision {
+                            id: row.get(0)?,
+                            revision_id: row.get(1)?,
+                            decision: row.get(2)?,
+                            created_at: row.get(3)?,
+                            actor_kind: row.get(4)?,
+                            actor_id: row.get(5)?,
+                            detail: None,
+                        })
+                    },
+                )
+                .optional()?,
+        }
     } else {
         None
     };
@@ -2077,12 +2203,16 @@ fn read_typed_revision_core_with_scope_authority<T>(
         return Ok(unavailable("revision-restore-invalidated"));
     }
     let payload: StoredNir1EntityRelationPayload =
-        match parse_json_with_active_work(conn, &payload_json) {
-            Ok(payload) => payload,
-            Err(error) if is_validation_terminated(&error) => return Err(error),
-            Err(_) => return Ok(unavailable("revision-payload-invalid")),
+        match read_stored_revision_document(conn, revision_id, STORED_PAYLOAD_SQL)? {
+            StoredDocument::Parsed(Ok(payload)) => payload,
+            StoredDocument::Parsed(Err(error)) if is_validation_terminated(&error) => {
+                return Err(error)
+            }
+            StoredDocument::Parsed(Err(_)) | StoredDocument::Absent => {
+                return Ok(unavailable("revision-payload-invalid"))
+            }
+            StoredDocument::Missing => return Ok(unavailable("revision-not-found")),
         };
-    drop(payload_json);
     if payload.schema_version != 1
         || payload.kind != NIR1_ENTITY_RELATION_PROPOSAL_KIND
         || payload.producer != ENTITY_RELATION_PRODUCER
@@ -2093,16 +2223,27 @@ fn read_typed_revision_core_with_scope_authority<T>(
     {
         return Ok(unavailable("revision-payload-binding-invalid"));
     }
-    let envelope_json = match envelope_json {
-        Some(envelope_json) => envelope_json,
-        None => return Ok(unavailable("canonical-freshness-unavailable")),
-    };
-    let mut envelope: Value = match parse_json_with_active_work(conn, &envelope_json) {
-        Ok(envelope) => envelope,
-        Err(error) if is_validation_terminated(&error) => return Err(error),
-        Err(_) => return Ok(unavailable("revision-envelope-invalid")),
-    };
-    drop(envelope_json);
+    // The payload's digests are taken now and its value tree is released before
+    // the envelope is read, so the two large trees are never alive together. The
+    // envelope is compared with them below, in the same order as before.
+    let payload_value = serde_json::to_value(&payload)?;
+    let bundle_value = payload_value
+        .get("bundle")
+        .ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_PAYLOAD_BUNDLE_MISSING"))?;
+    let bundle_digest = canonical_json_digest(bundle_value)?;
+    let payload_digest = canonical_json_digest(&payload_value)?;
+    check_active_work(conn)?;
+    drop(payload_value);
+    let mut envelope: Value =
+        match read_stored_revision_document(conn, revision_id, STORED_ENVELOPE_SQL)? {
+            StoredDocument::Parsed(Ok(envelope)) => envelope,
+            StoredDocument::Absent => return Ok(unavailable("canonical-freshness-unavailable")),
+            StoredDocument::Parsed(Err(error)) if is_validation_terminated(&error) => {
+                return Err(error)
+            }
+            StoredDocument::Parsed(Err(_)) => return Ok(unavailable("revision-envelope-invalid")),
+            StoredDocument::Missing => return Ok(unavailable("revision-not-found")),
+        };
     if validate_entity_relation_revision_envelope_v2(&envelope).is_err()
         || envelope
             .as_object()
@@ -2116,14 +2257,6 @@ fn read_typed_revision_core_with_scope_authority<T>(
     if envelope_digest.as_deref() != Some(expected_envelope_digest.as_str()) {
         return Ok(unavailable("revision-envelope-invalid"));
     }
-    let payload_value = serde_json::to_value(&payload)?;
-    let bundle_value = payload_value
-        .get("bundle")
-        .ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_PAYLOAD_BUNDLE_MISSING"))?;
-    let bundle_digest = canonical_json_digest(bundle_value)?;
-    let payload_digest = canonical_json_digest(&payload_value)?;
-    check_active_work(conn)?;
-    drop(payload_value);
     if envelope.pointer("/assertion/payload/bundleDigest")
         != Some(&Value::String(bundle_digest.clone()))
         || envelope.pointer("/assertion/payload/revisionId")
@@ -2227,26 +2360,45 @@ pub fn evaluate_nir1_entity_relation_disclosure(
     revision_id: &str,
     query_scene_id: &str,
 ) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
-    evaluate_disclosure(conn, project_id, revision_id, query_scene_id, None)
+    evaluate_disclosure(
+        conn,
+        project_id,
+        revision_id,
+        query_scene_id,
+        None,
+        DecisionRead::Complete,
+    )
 }
 
-/// [`evaluate_nir1_entity_relation_disclosure`] for a caller that evaluates
-/// several Revisions against one query Scene in one read snapshot: the
-/// project-level reads in `shared` were made once, so this reads only what
-/// belongs to the Revision. The result is the one the unshared evaluation
-/// gives.
-pub(crate) fn evaluate_nir1_entity_relation_disclosure_shared(
+/// The Graph's A3: the same qualification as
+/// [`evaluate_nir1_entity_relation_disclosure`], with the Revision's Decision
+/// read for who approved it only. The Graph binds the Decision by its id and by
+/// the token over every Decision row, never by the free-form columns. A caller
+/// that evaluates several Revisions against one query Scene in one read
+/// snapshot passes the project-level reads in `shared`, made once, so this
+/// reads only what belongs to the Revision; the result is the one the unshared
+/// evaluation gives.
+pub(crate) fn evaluate_nir1_entity_relation_disclosure_for_graph(
     conn: &Connection,
     project_id: &str,
     revision_id: &str,
     query_scene_id: &str,
-    shared: &Nir1ProjectReads,
+    shared: Option<&Nir1ProjectReads>,
 ) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
-    anyhow::ensure!(
-        shared.is_for(project_id, query_scene_id),
-        "NIR1_ENTITY_RELATION_A3_SHARED_READS_MISMATCH"
-    );
-    evaluate_disclosure(conn, project_id, revision_id, query_scene_id, Some(shared))
+    if let Some(shared) = shared {
+        anyhow::ensure!(
+            shared.is_for(project_id, query_scene_id),
+            "NIR1_ENTITY_RELATION_A3_SHARED_READS_MISMATCH"
+        );
+    }
+    evaluate_disclosure(
+        conn,
+        project_id,
+        revision_id,
+        query_scene_id,
+        shared,
+        DecisionRead::Approval,
+    )
 }
 
 fn evaluate_disclosure(
@@ -2255,6 +2407,7 @@ fn evaluate_disclosure(
     revision_id: &str,
     query_scene_id: &str,
     shared: Option<&Nir1ProjectReads>,
+    decision_read: DecisionRead,
 ) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
     anyhow::ensure!(
         !conn.is_autocommit(),
@@ -2276,6 +2429,7 @@ fn evaluate_disclosure(
         revision_id,
         false,
         shared,
+        decision_read,
         |revision, authority| {
             evaluate_nir1_entity_relation_disclosure_with_authority(
                 conn,
@@ -2540,11 +2694,18 @@ pub fn revalidate_nir1_entity_relation_disclosure(
         !conn.is_autocommit(),
         "NIR1_ENTITY_RELATION_A3_REQUIRES_READ_TRANSACTION"
     );
-    let current = evaluate_nir1_entity_relation_disclosure(
+    // The two readings compare equal only if the Decision is read alike.
+    let decision_read = match expected.revision.decision.as_ref() {
+        Some(decision) if decision.detail().is_none() => DecisionRead::Approval,
+        _ => DecisionRead::Complete,
+    };
+    let current = evaluate_disclosure(
         conn,
         &expected.revision.project_id,
         &expected.revision.revision_id,
         &expected.query_scene_id,
+        None,
+        decision_read,
     )?;
     let Nir1EntityRelationDisclosureRead::Eligible(current) = current else {
         return Ok(false);
@@ -2580,11 +2741,30 @@ fn disclosure_identity_matches(
             })
 }
 
+/// The digest of every Decision row of one Revision, in `created_at, id` order.
+///
+/// The canonical form is `{"decisions":[{...}],"proposalId":..,"revisionId":..}`
+/// with each Decision object's keys sorted. It is streamed from the values
+/// SQLite holds for the current row straight into the hasher, so a large
+/// `decision_json` is neither copied into a `String` nor into a JSON value tree,
+/// and no escaped copy of it is made.
 fn read_a3_decision_token(
     conn: &Connection,
     proposal_id: &str,
     revision_id: &str,
 ) -> anyhow::Result<String> {
+    // Result column positions of the SELECT below, in canonical key order.
+    const DECISION_KEYS: [(&str, usize); 9] = [
+        ("actorId", 6),
+        ("actorKind", 5),
+        ("authorityScope", 7),
+        ("createdAt", 3),
+        ("createdBy", 4),
+        ("decision", 1),
+        ("decisionJson", 2),
+        ("id", 0),
+        ("overrideFieldPathsJson", 8),
+    ];
     let mut statement = conn.prepare(
         "SELECT id, decision, decision_json, created_at, created_by,
                 actor_kind, actor_id, authority_scope, override_field_paths_json
@@ -2592,26 +2772,26 @@ fn read_a3_decision_token(
           WHERE proposal_id = ?1 AND revision_id = ?2
           ORDER BY created_at, id",
     )?;
-    let decisions = statement
-        .query_map(params![proposal_id, revision_id], |row| {
-            Ok(json!({
-                "id": row.get::<_, String>(0)?,
-                "decision": row.get::<_, String>(1)?,
-                "decisionJson": row.get::<_, String>(2)?,
-                "createdAt": row.get::<_, String>(3)?,
-                "createdBy": row.get::<_, String>(4)?,
-                "actorKind": row.get::<_, String>(5)?,
-                "actorId": row.get::<_, String>(6)?,
-                "authorityScope": row.get::<_, String>(7)?,
-                "overrideFieldPathsJson": row.get::<_, String>(8)?,
-            }))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(canonical_json_digest(&json!({
-        "proposalId": proposal_id,
-        "revisionId": revision_id,
-        "decisions": decisions,
-    }))?)
+    let mut stream = CanonicalJsonStream::digest();
+    stream.begin_object()?;
+    stream.key("decisions")?;
+    stream.begin_array()?;
+    let mut rows = statement.query(params![proposal_id, revision_id])?;
+    while let Some(row) = rows.next()? {
+        stream.begin_object()?;
+        for (key, column) in DECISION_KEYS {
+            stream.key(key)?;
+            stream.string(borrowed_text(row, column)?)?;
+        }
+        stream.end_object()?;
+    }
+    stream.end_array()?;
+    stream.key("proposalId")?;
+    stream.string(proposal_id)?;
+    stream.key("revisionId")?;
+    stream.string(revision_id)?;
+    stream.end_object()?;
+    Ok(stream.finish_digest()?)
 }
 
 fn query_identity_is_resolved(
@@ -10813,5 +10993,507 @@ pub(super) mod tests {
             let _ = std::fs::remove_file(std::path::PathBuf::from(candidate));
         }
         result
+    }
+
+    // ---- CQ-MEM: what the Graph reads of a Revision, and how --------------------
+
+    /// The A3 Decision token as it was computed before it was streamed: every
+    /// column of every Decision row as an owned `String` inside a `json!` tree,
+    /// canonicalized, then hashed.
+    fn legacy_a3_decision_token(
+        conn: &rusqlite::Connection,
+        proposal_id: &str,
+        revision_id: &str,
+    ) -> anyhow::Result<String> {
+        let mut statement = conn.prepare(
+            "SELECT id, decision, decision_json, created_at, created_by,
+                    actor_kind, actor_id, authority_scope, override_field_paths_json
+               FROM narrative_proposal_decisions
+              WHERE proposal_id = ?1 AND revision_id = ?2
+              ORDER BY created_at, id",
+        )?;
+        let decisions = statement
+            .query_map(params![proposal_id, revision_id], |row| {
+                Ok(json!({
+                    "id": row.get::<_, String>(0)?,
+                    "decision": row.get::<_, String>(1)?,
+                    "decisionJson": row.get::<_, String>(2)?,
+                    "createdAt": row.get::<_, String>(3)?,
+                    "createdBy": row.get::<_, String>(4)?,
+                    "actorKind": row.get::<_, String>(5)?,
+                    "actorId": row.get::<_, String>(6)?,
+                    "authorityScope": row.get::<_, String>(7)?,
+                    "overrideFieldPathsJson": row.get::<_, String>(8)?,
+                }))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(grimodex_core::canonical_json_digest(&json!({
+            "proposalId": proposal_id,
+            "revisionId": revision_id,
+            "decisions": decisions,
+        }))?)
+    }
+
+    fn insert_decision_row(
+        conn: &rusqlite::Connection,
+        proposal_id: &str,
+        revision_id: &str,
+        id: &str,
+        created_at: &str,
+        decision_json: &str,
+    ) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO narrative_proposal_decisions
+                (id, proposal_id, revision_id, decision, decision_json, created_at,
+                 created_by, actor_kind, actor_id, authority_scope, override_field_paths_json)
+             VALUES (?1, ?2, ?3, 'approved', ?4, ?5, 'テスト', 'human', 'a\"b',
+                     'scope\\x', '[\"a\"]')",
+            params![id, proposal_id, revision_id, decision_json, created_at],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn a3_decision_token_is_the_legacy_canonical_digest_of_every_decision_row() -> anyhow::Result<()>
+    {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let proposal_id = created["proposalId"].as_str().unwrap().to_owned();
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        let tokens = |db: &Database| {
+            db.with_read_transaction(|conn| {
+                Ok((
+                    super::read_a3_decision_token(conn, &proposal_id, &revision_id)?,
+                    legacy_a3_decision_token(conn, &proposal_id, &revision_id)?,
+                ))
+            })
+        };
+
+        let (streamed, legacy) = tokens(&db)?;
+        assert_eq!(streamed, legacy, "the real approval row");
+
+        // Text that JSON escapes, and one body of about 3 MB. The two rows share a
+        // timestamp, so the id decides their order.
+        let awkward = "line1\nline2\t\"q\" \\ \u{1}\u{1f}\u{7f} 日本語 \u{1F600}";
+        let large = "{\"k\":\"v\\\\\"}\n".repeat(250_000);
+        db.with_conn(|conn| {
+            insert_decision_row(
+                conn,
+                &proposal_id,
+                &revision_id,
+                "z-awkward",
+                "2026-09-16T00:00:00.000Z",
+                awkward,
+            )?;
+            insert_decision_row(
+                conn,
+                &proposal_id,
+                &revision_id,
+                "a-large",
+                "2026-09-16T00:00:00.000Z",
+                &large,
+            )?;
+            Ok(())
+        })?;
+        let (streamed, legacy) = tokens(&db)?;
+        assert_eq!(streamed, legacy);
+
+        // Every column is part of the token, whatever its size.
+        let mut previous = streamed;
+        for (column, value) in [
+            ("decision", "rejected"),
+            ("decision_json", "{}"),
+            ("created_by", "someone else"),
+            ("actor_kind", "automated"),
+            ("actor_id", "x"),
+            ("authority_scope", "other-scope"),
+            ("override_field_paths_json", "[]"),
+        ] {
+            db.with_conn(|conn| {
+                conn.execute(
+                    &format!(
+                        "UPDATE narrative_proposal_decisions SET {column} = ?1
+                          WHERE id = 'z-awkward'"
+                    ),
+                    [value],
+                )?;
+                Ok(())
+            })?;
+            let (streamed, legacy) = tokens(&db)?;
+            assert_eq!(streamed, legacy, "{column}");
+            assert_ne!(streamed, previous, "{column} is part of the token");
+            previous = streamed;
+        }
+
+        // A Revision with no Decision row has the digest of an empty list.
+        let (empty, legacy_empty) = db.with_read_transaction(|conn| {
+            Ok((
+                super::read_a3_decision_token(conn, &proposal_id, "no-such-revision")?,
+                legacy_a3_decision_token(conn, &proposal_id, "no-such-revision")?,
+            ))
+        })?;
+        assert_eq!(empty, legacy_empty);
+        Ok(())
+    }
+
+    // The digest below was produced by an independent implementation (Python's
+    // json.dumps with sorted keys, no ASCII escaping and compact separators), so
+    // the token's canonical form is pinned by more than its own predecessor.
+    #[test]
+    fn a3_decision_token_has_the_pinned_canonical_form() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        db.with_conn(|conn| {
+            for (id, decision, decision_json, created_at, created_by, scope, paths) in [
+                (
+                    "d-1",
+                    "approved",
+                    "{\"note\":\"line1\\nline2 \\\"q\\\" 日本語\"}",
+                    "2026-09-15T00:00:00.000Z",
+                    "renderer-reviewer",
+                    "project/default-project/proposal/p-1/revision/r-1",
+                    "[]",
+                ),
+                (
+                    "d-2",
+                    "rejected",
+                    "{}",
+                    "2026-09-15T00:00:01.000Z",
+                    "テスト\ttab",
+                    "s",
+                    "[\"/entities/0/label\"]",
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO narrative_proposal_decisions
+                        (id, proposal_id, revision_id, decision, decision_json, created_at,
+                         created_by, actor_kind, actor_id, authority_scope,
+                         override_field_paths_json)
+                     VALUES (?1, 'p-1', 'r-1', ?2, ?3, ?4, ?5, 'human',
+                             'electron:human-review', ?6, ?7)",
+                    params![
+                        id,
+                        decision,
+                        decision_json,
+                        created_at,
+                        created_by,
+                        scope,
+                        paths
+                    ],
+                )?;
+            }
+            Ok(())
+        })?;
+        let token =
+            db.with_read_transaction(|conn| super::read_a3_decision_token(conn, "p-1", "r-1"))?;
+        assert_eq!(
+            token,
+            "sha256:446601ad118cfb3e37630c049d105b0fee16ca15f2512c684e952a5404e00b98"
+        );
+        Ok(())
+    }
+
+    /// Bytes that are not text: a reader that loads the column as a `String` fails
+    /// on them, one that does not read the column does not.
+    const NOT_TEXT: &str = "X'FF00FE'";
+
+    #[test]
+    fn a2_leaves_the_payload_and_envelope_unread_until_the_revision_is_accepted(
+    ) -> anyhow::Result<()> {
+        let set_up = || -> anyhow::Result<(Database, serde_json::Value)> {
+            let db = fresh_migrated_memory()?;
+            seed_run_and_catalog(&db)?;
+            let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+            db.with_conn(|conn| {
+                conn.execute_batch(
+                    "DROP TRIGGER IF EXISTS narrative_revision_envelope_immutable_update",
+                )?;
+                conn.execute_batch(&format!(
+                    "UPDATE narrative_proposal_revisions
+                        SET payload_json = {NOT_TEXT}, reconciliation_envelope_json = {NOT_TEXT}"
+                ))?;
+                Ok(())
+            })?;
+            Ok((db, created))
+        };
+        let read = |db: &Database, revision_id: &str, allow_draft: bool| {
+            db.with_read_transaction(|conn| {
+                if allow_draft {
+                    read_nir1_entity_relation_revision_current_for_revision(
+                        conn,
+                        "default-project",
+                        revision_id,
+                    )
+                    .map(|read| match read {
+                        Nir1EntityRelationRevisionCurrentRead::Unavailable { reason } => reason,
+                        other => format!("{other:?}"),
+                    })
+                } else {
+                    read_nir1_entity_relation_revision(conn, "default-project", revision_id).map(
+                        |read| match read {
+                            Nir1EntityRelationRevisionRead::Unavailable { reason } => reason,
+                            Nir1EntityRelationRevisionRead::Available(_) => "available".into(),
+                        },
+                    )
+                }
+            })
+        };
+
+        // A draft is not accepted by the plain reader, so its body is never read;
+        // the reader that accepts a draft does read it.
+        let (db, created) = set_up()?;
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        assert_eq!(
+            read(&db, &revision_id, false)?,
+            "revision-not-human-approved"
+        );
+        assert!(read(&db, &revision_id, true).is_err());
+
+        // A rejected Revision is not accepted by either.
+        append_typed_decision(&db, "nir1-run", &created, "rejected")?;
+        assert_eq!(
+            read(&db, &revision_id, false)?,
+            "revision-not-human-approved"
+        );
+        assert_eq!(
+            read(&db, &revision_id, true)?,
+            "revision-not-human-approved"
+        );
+
+        // A Revision that is not the proposal's current one is not accepted.
+        let (db, created) = set_up()?;
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposals SET current_revision_id = 'another-revision'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        assert_eq!(read(&db, &revision_id, false)?, "revision-not-current");
+
+        // Control: an approved, current Revision is read, and its payload is then
+        // the first thing that fails.
+        let (db, created) = set_up()?;
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        assert!(read(&db, &revision_id, false).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn graph_index_read_leaves_the_decision_body_in_sqlite() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        db.with_conn(|conn| {
+            conn.execute_batch(&format!(
+                "UPDATE narrative_proposal_decisions SET decision_json = {NOT_TEXT}"
+            ))?;
+            Ok(())
+        })?;
+
+        let (revision, decision_id) = db
+            .with_read_transaction(|conn| {
+                super::read_nir1_entity_relation_revision_current_for_graph_index(
+                    conn,
+                    "default-project",
+                    &revision_id,
+                )
+            })?
+            .expect("the approved Revision is read without its decision body");
+        let decision = revision.decision.as_ref().expect("the approving Decision");
+        assert_eq!(decision.id(), decision_id);
+        assert_eq!(decision.decision(), "approved");
+        assert!(decision.detail().is_none());
+
+        // The readers that return the whole Decision need the body, and refuse it.
+        assert!(db
+            .with_read_transaction(|conn| {
+                read_nir1_entity_relation_revision(conn, "default-project", &revision_id)
+            })
+            .is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn graph_disclosure_reads_the_decision_for_approval_and_binds_it_by_token() -> anyhow::Result<()>
+    {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+        let mut typed_request = request(&db);
+        for entity in &mut typed_request.bundle.entities {
+            entity.scope.reading = ScopeValue::Exact {
+                value: "scene:a3-source".into(),
+            };
+        }
+        let created = create_nir1_entity_relation_revision(&db, typed_request)?;
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        // An approval with a large body: the token covers it, the Revision does not hold it.
+        let body = format!("{{\"note\":\"{}\"}}", "x".repeat(200_000));
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_decisions SET decision_json = ?1",
+                [&body],
+            )?;
+            Ok(())
+        })?;
+
+        let (complete, graph) = db.with_read_transaction(|conn| {
+            Ok((
+                evaluate_nir1_entity_relation_disclosure(
+                    conn,
+                    "default-project",
+                    &revision_id,
+                    "nir1",
+                )?,
+                super::evaluate_nir1_entity_relation_disclosure_for_graph(
+                    conn,
+                    "default-project",
+                    &revision_id,
+                    "nir1",
+                    None,
+                )?,
+            ))
+        })?;
+        let (
+            Nir1EntityRelationDisclosureRead::Eligible(complete),
+            Nir1EntityRelationDisclosureRead::Eligible(graph),
+        ) = (complete, graph)
+        else {
+            anyhow::bail!("the positive A3 fixture was unavailable");
+        };
+        let complete_decision = complete.revision.decision.as_ref().unwrap();
+        let graph_decision = graph.revision.decision.as_ref().unwrap();
+        assert_eq!(
+            complete_decision
+                .detail()
+                .map(|detail| detail.decision_json()),
+            Some(body.as_str())
+        );
+        assert!(graph_decision.detail().is_none());
+        assert_eq!(graph_decision.id(), complete_decision.id());
+        assert_eq!(graph_decision.created_at(), complete_decision.created_at());
+        // What the Graph binds is the same either way.
+        assert_eq!(graph.decision_token, complete.decision_token);
+        assert_eq!(graph.freshness_token, complete.freshness_token);
+        assert_eq!(graph.reveal_state_token, complete.reveal_state_token);
+        assert_eq!(
+            graph.revision.bundle_digest,
+            complete.revision.bundle_digest
+        );
+        // Each reading revalidates against itself.
+        assert!(db.with_read_transaction(|conn| {
+            revalidate_nir1_entity_relation_disclosure(conn, &graph)
+        })?);
+        assert!(db.with_read_transaction(|conn| {
+            revalidate_nir1_entity_relation_disclosure(conn, &complete)
+        })?);
+        Ok(())
+    }
+
+    #[test]
+    fn registration_reads_each_revision_in_the_scratch_scope_and_checks_outside_it(
+    ) -> anyhow::Result<()> {
+        use crate::narrative_extraction::nir1_entity_relation_index::{
+            GraphWorkControl, GraphWorkStage,
+        };
+        use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        struct OutsideScope(Arc<AtomicBool>);
+        impl GraphWorkControl for OutsideScope {
+            fn check(&mut self, _stage: GraphWorkStage) -> anyhow::Result<()> {
+                assert!(
+                    !self.0.load(Ordering::SeqCst),
+                    "owner checks must run in Q, outside the scratch scope"
+                );
+                Ok(())
+            }
+
+            fn allows_full_eligibility(&self) -> bool {
+                true
+            }
+        }
+
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+
+        // Record, for every statement the registration prepares that mentions one
+        // of the two large documents, whether it was prepared inside the scope.
+        let active = Arc::new(AtomicBool::new(false));
+        let scopes = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
+        db.with_conn(|conn| {
+            let active = Arc::clone(&active);
+            let reads = Arc::clone(&reads);
+            conn.authorizer(Some(move |context: AuthContext<'_>| {
+                if let AuthAction::Read {
+                    table_name: "narrative_proposal_revisions",
+                    column_name,
+                } = context.action
+                {
+                    if matches!(column_name, "payload_json" | "reconciliation_envelope_json") {
+                        reads
+                            .lock()
+                            .unwrap()
+                            .push((column_name.to_owned(), active.load(Ordering::SeqCst)));
+                    }
+                }
+                Authorization::Allow
+            }))?;
+            Ok(())
+        })?;
+        let source = db.with_read_transaction(|conn| {
+            let mut control = OutsideScope(Arc::clone(&active));
+            let mut scope = |operation: &mut dyn FnMut()| {
+                assert!(
+                    !active.swap(true, Ordering::SeqCst),
+                    "scratch scopes must not nest"
+                );
+                scopes.fetch_add(1, Ordering::SeqCst);
+                operation();
+                active.store(false, Ordering::SeqCst);
+                true
+            };
+            nir1_entity_relation_index::read_eligibility_source_with_control_and_scratch(
+                conn,
+                "default-project",
+                &mut control,
+                &mut scope,
+            )
+        })?;
+        db.with_conn(|conn| {
+            conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+            Ok(())
+        })?;
+
+        assert_eq!(source.roster.len(), 5);
+        assert!(!active.load(Ordering::SeqCst));
+        // The page, its rows, the stats, the source basis and live lengths, and the
+        // A2 read of the one Revision.
+        assert!(scopes.load(Ordering::SeqCst) >= 5);
+        let reads = reads.lock().unwrap();
+        for column in ["payload_json", "reconciliation_envelope_json"] {
+            assert!(
+                reads.iter().any(|(read, _)| read == column),
+                "the registration never touched {column}"
+            );
+        }
+        assert!(
+            reads.iter().all(|(_, in_scope)| *in_scope),
+            "a statement over a large document was prepared outside the scratch scope: {reads:?}"
+        );
+        Ok(())
     }
 }

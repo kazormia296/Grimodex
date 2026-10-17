@@ -237,6 +237,18 @@ if [[ "${1:-}" == lifecycle ]]; then
   done
   run_lifecycle_case native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph \
     "$registry33_fixture_file" "$registry33_fixture_checksum"
+  # The per-Revision preflight boundary on the real worker and its fixed query
+  # arena (CR-2 2-C): a candidate of exactly 2,097,152 B is an ordinary Graph
+  # contribution, whether the bytes are in the approval or in the stored
+  # envelope, and one byte more, in either, refuses the whole query. Each test
+  # builds its own fixture; the runner's input copy is only the shared argument.
+  for name in \
+    native_worker_uses_a_candidate_at_exactly_the_per_revision_preflight_limit \
+    native_worker_uses_a_candidate_whose_envelope_fills_the_per_revision_preflight_limit \
+    native_worker_refuses_the_whole_graph_when_a_candidate_is_one_byte_over \
+    native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over; do
+    run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
+  done
 
   cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker

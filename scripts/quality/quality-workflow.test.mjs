@@ -4297,7 +4297,11 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   // final-head PR checks. Two items stay open as separate [precheck] HOLD rows,
   // because the confirmed contract and the implementation disagree (G-1: the B
   // publish near the writer limit; G-2: the positive case on the real worker
-  // with its fixed allocator). Scene 8 moves to the CP-1 acceptance.
+  // with its fixed allocator). Scene 8 moves to the CP-1 acceptance. CQ-MEM
+  // (2026-10-14) narrowed G-2: the decision and envelope shapes pass N / N+1 on
+  // the real worker and run in the lifecycle lane; only the product shape (a
+  // Japanese summary held in the payload, the envelope and the live Source)
+  // stays an open [precheck].
   assert.match(
     executionPlan,
     /^\| Revision上限の整合 \|[^\n]*\| 解消（K1 確認）。2026-10-12に `nir1-l6-l9-contract-proposal\/6#graph-limited-binding` で `512 records`／`6,291,456 B` を確認し、確認台帳に記録した \|$/m,
@@ -4320,9 +4324,20 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   );
   assert.match(
     executionPlan,
-    /^\| C-resourceの実workerでの上限近傍の候補（台帳§7\.2のG-2） \|[^\n]*\| HOLD（\[precheck\]）。確認済みの2つの固定値が両立しない。[^\n]*SIGABRT[^\n]*ユーザーの確認が要る[^\n]*\|$/m,
-    "the real-worker positive case stays an open [precheck] HOLD",
+    /^\| C-resourceの実workerでの上限近傍の候補（台帳§7\.2のG-2） \|[^\n]*\| HOLD（\[precheck\]）。製品形で確認済みの固定値が両立しない。[^\n]*SIGABRT[^\n]*CQ-MEM[^\n]*lifecycle laneに4 caseを配線した[^\n]*製品形[^\n]*2,097,152 Bに届かない[^\n]*registrationはper-Revision preflightを使わず[^\n]*下書きや却下の製品形[^\n]*preflightの値を下げる案\(a\)は[^\n]*起動時の終了を防がない[^\n]*ユーザーの確認が要る[^\n]*\|$/m,
+    "the real-worker positive case stays an open [precheck] HOLD for the product shape after CQ-MEM, and says the preflight value alone does not stop the startup exit",
   );
+  const cqMemNote = executionPlan.match(/^2026-10-14 CQ-MEM追記: [^\n]*$/m);
+  assert.ok(cqMemNote, "the execution plan must carry the CQ-MEM note");
+  for (const [pattern, why] of [
+    [/Q（4,718,592 B）、S（64 MiB）、per-Revision preflight（2,097,152 B）、whole-set（16 MiB）の値は変えていない。/, "no fixed value changes"],
+    [/decisionの形とenvelopeの形は、実workerで2,097,152 Bの正例と2,097,153 Bの全体拒否が通り、lifecycle laneに4 caseを配線した/, "the decision and envelope shapes pass on the real worker"],
+    [/製品形[^\n]*2,097,152 Bに届かず、下の残HOLD表のG-2の行に\[precheck\]として残る。/, "the product shape stays an open [precheck]"],
+    [/このNOMEMはregistrationで起き、per-Revision preflightの外にあって承認状態に関わらない/, "the product-shape NOMEM is in registration, outside the preflight and independent of approval"],
+    [/製品のGraph入口（A-1）/, "the product Graph entrance stays closed"],
+  ]) {
+    assert.match(cqMemNote[0], pattern, `the CQ-MEM note: ${why}`);
+  }
   assert.match(
     executionPlan,
     /^\| Scene 8の上限（台帳§7\.3のG-4） \|[^\n]*\| 移管。C-resourceのHOLDからは外し、CP-1の受入れ（C-product）で確かめる。[^\n]*\|$/m,
@@ -4438,6 +4453,67 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
       "the acceptance ledger must keep the record of each open or moved item",
     );
   }
+  // CQ-MEM (2026-10-14): section 7.2 keeps the CR-2 facts as the "before" and
+  // records the measured "after" for each shape. The decision and envelope
+  // shapes pass on the real worker; the product shape does not, and stays open.
+  const g2 = ledger.match(
+    /^### 7\.2\. \[precheck\] G-2：実 worker での正例$[\s\S]*?(?=^### 7\.3\.)/m,
+  );
+  assert.ok(g2, "the acceptance ledger must keep the G-2 section");
+  for (const [pattern, why] of [
+    [/^#### CQ-MEM の前（CR-2 の測定）$/m, "the CR-2 measurement stays as the before"],
+    [/^#### CQ-MEM の後（2026-10-14、branch `claude\/nir1-cqmem`）$/m, "the CQ-MEM measurement is the after"],
+    [/READY の前に SIGABRT（2,085,141 B の確保失敗）/, "the baseline abort at N stays recorded"],
+    [/成功（1,224,291／3,241,811）/, "the decision shape at N is recorded with its high-water"],
+    [/成功（3,166,524／3,254,671）/, "the envelope shape at N is recorded with its high-water"],
+    [/registration が SQLite の NOMEM[^\n]*で終了/, "the product shape's failure is recorded"],
+    [/2,097,152 B の正例に届かないので、\[precheck\] である。/, "the product shape stays an open [precheck]"],
+    [/Q、S、preflight、whole-set の値は変えていない。/, "CQ-MEM must say it changed no fixed value"],
+    // Review of CQ-MEM: registration is outside the per-Revision preflight and
+    // does not gate its SQLite JSON on approval, so lowering the preflight (a)
+    // alone cannot stop the worker from exiting at startup.
+    [/registration は per-Revision preflight（`nir1_graph\/input\.rs` の 2,097,152 B）を使わない（コードの読みと、表 5 の実測）。/, "registration is outside the per-Revision preflight"],
+    [/承認で gate しているのは `verify_complete_source_index`（D15）だけで、registration のこの 2 つの SQL は gate していない。/, "registration's own JSON is not gated on approval"],
+    [/^\*\*表 5：下書きと却下の製品形/m, "the draft and rejected product shapes are measured"],
+    [/`pd-380000`（下書き）[^\n]*NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX/, "a draft product shape ends registration with a NOMEM"],
+    [/`pr-380000`（却下）[^\n]*NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX/, "a rejected product shape ends registration with a NOMEM"],
+    [/- \(a\) per-Revision preflight を[^\n]*これだけでは起動時の終了を防がない。[^\n]*registration 側の扱い[^\n]*\(b\)／\(c\) と組み合わせる必要がある。/, "option (a) alone does not stop the startup exit"],
+  ]) {
+    assert.match(g2[0], pattern, `G-2 section: ${why}`);
+  }
+  // The envelope shape's N+1 is a lifecycle case of its own, in RB-2 and in the
+  // G-2 row, and carries the recorded refusal reason.
+  assert.match(
+    ledger,
+    /`native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over`：envelope の末尾の空白 padding で 2,097,153 B。[^\n]*query-worker-work-other-pre-cleanup-work-failed-other/,
+    "RB-2 must record the envelope shape's N+1 on the real worker",
+  );
+  assert.match(
+    ledger,
+    /^\| G-2 \|[^\n]*`native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over`[^\n]*lifecycle lane に 4 case を配線した/m,
+    "the G-2 row must name the envelope shape's N+1 case",
+  );
+  // D13 and D14 describe what registration reads and where its roster lives.
+  assert.match(
+    ledger,
+    /^\| D13 \|[^\n]*却下・保留と非 current の Revision の本文は、どの読取でも読まない。下書き[^\n]*`allow_draft` の読取だけが読む。Graph の registration の A2[^\n]*下書きの payload と envelope を読んで parse し[^\n]*\|$/m,
+    "D13 must say that the registration's A2 reads a draft's body",
+  );
+  assert.match(
+    ledger,
+    /^\| D14 \|[^\n]*roster の buffer と行の文字列は例外で、最初の push で S に確保され、source を破棄するまで S に残る[^\n]*roster は scope の外で伸ばさない[^\n]*\|$/m,
+    "D14 must say that the roster stays in S until the source is dropped",
+  );
+  assert.match(
+    ledger,
+    /^### 6\.2\. CQ-MEM の判断（D12〜D18）$/m,
+    "the acceptance ledger must record the CQ-MEM decisions",
+  );
+  assert.match(
+    ledger,
+    /^### 3\.5\. CQ-MEM のローカルの検証$/m,
+    "the acceptance ledger must record the CQ-MEM local verification",
+  );
   // Review corrections to the CR-2 record (2026-10-14). The Scene 8 row names
   // the old CR-2 base, which predates the Scene join. Section 7.1 separates the
   // product shape of a Revision from the shape only the create IPC can build,

@@ -69,7 +69,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/Cargo.toml",
-      "sha256": "d549a3fb1b6ef38bc517412a65105af71fb63a245a870baddc2e3ace34c7546d"
+      "sha256": "2bc6291eb3e5b5ef0766fb7d34ea2715e8e9ae7e301622e222bf0e5331545a6c"
     },
     {
       "path": "src-tauri/crates/grimodex-lint/Cargo.toml",
@@ -89,7 +89,7 @@
     },
     {
       "path": "scripts/nir1-c-query-worker-ci.sh",
-      "sha256": "e68897272291cd84794bc4c7de20ef247c73a180347aac86a27a7ac9b9a5a062"
+      "sha256": "e5a1b50bd3a9321db844211b5a7f40ec49b1a123e4b4c3fd41251473efb728a9"
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
