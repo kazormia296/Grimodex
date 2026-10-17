@@ -695,6 +695,56 @@ describe("release workflow boundary", () => {
     assert.match(wrapper, /GHSA-ch52-4w7c-c8xp/);
   });
 
+  it("scopes the Rust audit exception to the zip crate pulled in by the legacy updater", async () => {
+    const config = await readFile(
+      path.join(repoRoot, ".cargo/audit.toml"),
+      "utf8",
+    );
+    const ignored = [...config.matchAll(/^\s*"(RUSTSEC-\d{4}-\d{4})"/gm)].map(
+      (match) => match[1],
+    );
+    const expiresAt = config.match(/^# expires-at: (\S+)$/m)?.[1];
+    const packagesOf = async (lockfile) =>
+      (await readFile(path.join(repoRoot, lockfile), "utf8"))
+        .split("[[package]]")
+        .slice(1)
+        .map((block) => ({
+          name: block.match(/^name = "([^"]+)"/m)?.[1],
+          version: block.match(/^version = "([^"]+)"/m)?.[1],
+          dependencies: [...block.matchAll(/^ "([^" ]+)(?: [^"]*)?",$/gm)].map(
+            (match) => match[1],
+          ),
+        }));
+    const shared = await packagesOf("src-tauri/Cargo.lock");
+    const native = await packagesOf("electron/native/grimodex-node/Cargo.lock");
+
+    assert.deepEqual(ignored, [
+      "RUSTSEC-2026-0367",
+      "RUSTSEC-2026-0368",
+      "RUSTSEC-2026-0369",
+    ]);
+    assert.ok(expiresAt, "the exception must carry an expires-at line");
+    assert.ok(
+      Date.now() < Date.parse(expiresAt),
+      `the zip audit exception expired at ${expiresAt}`,
+    );
+    // The exception is only needed while zip 4.x is locked; drop it once zip >= 9 lands.
+    assert.deepEqual(
+      shared.filter((pkg) => pkg.name === "zip").map((pkg) => pkg.version),
+      ["4.6.1"],
+    );
+    assert.deepEqual(
+      shared
+        .filter((pkg) => pkg.dependencies.includes("zip"))
+        .map((pkg) => pkg.name),
+      ["tauri-plugin-updater"],
+    );
+    assert.equal(
+      native.some((pkg) => pkg.name === "zip"),
+      false,
+    );
+  });
+
   it("gives every root TypeScript build explicit Node heap headroom", async () => {
     const ci = await readWorkflow("ci.yml");
     const release = await readWorkflow("release.yml");
