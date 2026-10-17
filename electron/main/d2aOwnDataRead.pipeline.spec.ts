@@ -89,6 +89,8 @@ interface Rig {
   >;
   open: boolean;
   nativeDbExecute: NapiBackendLike["dbExecute"];
+  /** Straight into Native, for reading back what a route wrote. */
+  nativeForeshadowAnchors: (sceneId: string) => Promise<string>;
 }
 
 /** A fresh module graph + router on `appData`, as a Main process would start. */
@@ -152,6 +154,8 @@ async function startMain(
     route: (cmd, args, senderId = 7) =>
       handler(sender(senderId), cmd, args ?? {}),
     nativeDbExecute: backend.dbExecute.bind(backend),
+    nativeForeshadowAnchors: (sceneId) =>
+      backend.foreshadowLoadAnchorsForScene(sceneId) as Promise<string>,
   };
 }
 
@@ -472,12 +476,40 @@ function dataDigest(workspacePath: string): string | null {
   try {
     return execFileSync(
       process.execPath,
-      ["--no-warnings", "-e", DIGEST_SCRIPT, path.join(workspacePath, "grimodex.db")],
+      [
+        "--no-warnings",
+        "-e",
+        DIGEST_SCRIPT,
+        path.join(workspacePath, "grimodex.db"),
+      ],
       { encoding: "utf8", timeout: 30_000 },
     );
   } catch {
     return null;
   }
+}
+
+/** Rows of the workspace database, read in a separate process (see above). */
+function queryRows(workspacePath: string, sql: string): unknown[] {
+  const script = `
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(process.argv[1], { readOnly: true });
+process.stdout.write(JSON.stringify(db.prepare(process.argv[2]).all(), (_k, v) => (typeof v === "bigint" ? String(v) : v)));
+db.close();
+`;
+  return JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        "--no-warnings",
+        "-e",
+        script,
+        path.join(workspacePath, "grimodex.db"),
+        sql,
+      ],
+      { encoding: "utf8", timeout: 30_000 },
+    ),
+  ) as unknown[];
 }
 
 function leavesNoCredential(envelope: Envelope): void {
@@ -554,16 +586,20 @@ describe("own-data-read through the real router, gate and Native", () => {
       ["UPDATE chat_sessions SET node_id = NULL", false],
       ["DELETE FROM chat_sessions", false],
       ["UPDATE chat_messages SET is_starred = 1", false],
-      ["UPDATE chat_messages SET content = content || '!' WHERE id = 'own-m1'", true],
-      ["UPDATE chat_sessions SET node_id = node_id WHERE id = 'own-session'", true],
+      [
+        "UPDATE chat_messages SET content = content || '!' WHERE id = 'own-m1'",
+        true,
+      ],
+      [
+        "UPDATE chat_sessions SET node_id = node_id WHERE id = 'own-session'",
+        true,
+      ],
     ] as const) {
-      const message = await rig
-        .nativeDbExecute(sql, [], "run", identity)
-        .then(
-          () => "",
-          (error: unknown) =>
-            error instanceof Error ? error.message : String(error),
-        );
+      const message = await rig.nativeDbExecute(sql, [], "run", identity).then(
+        () => "",
+        (error: unknown) =>
+          error instanceof Error ? error.message : String(error),
+      );
       expect(message, sql).toContain(MARKER);
       if (rig.open || !readsColumns) {
         expect(message, sql).toContain("protected DML target");
@@ -685,5 +721,153 @@ describe("own-data-read through the real router, gate and Native", () => {
         true,
       ),
     ).rejects.toThrow(/not read-only/);
+  });
+
+  it("saves a manuscript body bundle with foreshadow anchors the same way restricted and unrestricted (Positive (2))", async () => {
+    const BODY = "灯台の灯が消えた夜、伏線の種と回収の一文を書く。";
+    const saveOn = async (restrict: boolean) => {
+      const rig = await startMain(newAppData());
+      const ws = await seedWorkspace(rig);
+      const scene = queryRows(
+        ws.path,
+        "SELECT id FROM tree_nodes WHERE node_type = 'scene' ORDER BY id LIMIT 1",
+      )[0] as { id: string };
+      // Every foreshadow the scene already touches needs its base version.
+      const foreshadows = queryRows(
+        ws.path,
+        "SELECT id, version FROM foreshadows ORDER BY id",
+      ) as Array<{ id: string; version: string }>;
+      const [setupOf, payoffOf] = foreshadows;
+      expect(
+        setupOf && payoffOf,
+        "the sample has two foreshadows",
+      ).toBeTruthy();
+      if (restrict) {
+        await rig.gate.activateFirstRestrictedPublication!();
+        expect(rig.gate.restricted).toBe(true);
+      }
+      const sceneVersion = (
+        queryRows(
+          ws.path,
+          `SELECT version FROM tree_nodes WHERE id = '${scene.id}'`,
+        )[0] as { version: string }
+      ).version;
+      const payload = {
+        sceneId: scene.id,
+        projectId: ws.projectId,
+        requestId: `req-${restrict ? "r" : "u"}`,
+        sessionId: "renderer-scene-body",
+        eventUid: `evt-${restrict ? "r" : "u"}`,
+        origin: "human",
+        includeSidecars: true,
+        baseVersion: Number(sceneVersion),
+        updatedAt: "2026-10-18T00:00:00.000Z",
+        contentJson: JSON.stringify({
+          type: "doc",
+          content: [
+            { type: "paragraph", content: [{ type: "text", text: BODY }] },
+          ],
+        }),
+        charCount: BODY.length,
+        docContentSize: BODY.length + 2,
+        placedBeatPreview: null,
+        unplacedBeatsDoc: "[]",
+        unplacedBeatPreview: null,
+        authorshipSpans: [
+          {
+            fromPos: 0,
+            toPos: 5,
+            source: "human",
+            model: null,
+            timestamp: null,
+            chatMsgId: null,
+            traceId: null,
+          },
+        ],
+        foreshadowBaseVersions: Object.fromEntries(
+          foreshadows.map((row) => [row.id, Number(row.version)]),
+        ),
+        foreshadowSetups: [
+          {
+            id: "da1-setup-anchor",
+            foreshadowId: setupOf.id,
+            baseVersion: Number(setupOf.version),
+            fromPos: 1,
+            toPos: 6,
+          },
+        ],
+        foreshadowPayoffs: [
+          {
+            foreshadowId: payoffOf.id,
+            baseVersion: Number(payoffOf.version),
+            fromPos: 8,
+            toPos: 14,
+          },
+        ],
+        annotationAnchors: [],
+        beatMentions: [],
+        beatPovOverrides: [],
+      };
+      const result = ok<{ contentVersion: number }>(
+        await rig.route("save_scene_body_bundle", { payload }),
+      );
+      expect(result.contentVersion).toBeGreaterThan(Number(sceneVersion));
+      expect(
+        rig.gate.restricted,
+        "the save does not lift the restriction",
+      ).toBe(restrict);
+      const anchors = JSON.parse(
+        await rig.nativeForeshadowAnchors(scene.id),
+      ) as {
+        setups: Array<Record<string, unknown>>;
+        payoffs: Array<Record<string, unknown>>;
+      };
+      const stored = {
+        body: queryRows(
+          ws.path,
+          `SELECT content FROM tree_nodes WHERE id = '${scene.id}'`,
+        ),
+        setup: queryRows(
+          ws.path,
+          "SELECT foreshadow_id, scene_id, from_pos, to_pos FROM foreshadow_setups WHERE id = 'da1-setup-anchor'",
+        ),
+        payoff: queryRows(
+          ws.path,
+          `SELECT payoff_scene_id, payoff_from_pos, payoff_to_pos FROM foreshadows WHERE id = '${payoffOf.id}'`,
+        ),
+      };
+      return {
+        stored,
+        anchors,
+        sceneId: scene.id,
+        setupId: setupOf.id,
+        payoffId: payoffOf.id,
+      };
+    };
+
+    const unrestricted = await saveOn(false);
+    const restricted = await saveOn(true);
+
+    // The body and both anchors are persisted under the restriction ...
+    expect(JSON.stringify(restricted.stored.body)).toContain(BODY);
+    expect(restricted.stored.setup).toEqual([
+      {
+        foreshadow_id: restricted.setupId,
+        scene_id: restricted.sceneId,
+        from_pos: 1,
+        to_pos: 6,
+      },
+    ]);
+    expect(restricted.stored.payoff).toEqual([
+      {
+        payoff_scene_id: restricted.sceneId,
+        payoff_from_pos: 8,
+        payoff_to_pos: 14,
+      },
+    ]);
+    expect(JSON.stringify(restricted.anchors)).toContain("da1-setup-anchor");
+    // ... and are the same rows an unrestricted profile persists.
+    expect(restricted.stored).toEqual(unrestricted.stored);
+    expect(restricted.anchors).toEqual(unrestricted.anchors);
   });
 });
