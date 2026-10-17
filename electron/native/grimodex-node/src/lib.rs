@@ -5489,9 +5489,12 @@ fn begin_profile_egress_dispatch(
     state: &Arc<AppState>,
     identity: Option<&profile_egress::CallerIdentity>,
 ) -> Result<profile_egress::ProfileDispatchPermit> {
+    // Only the eight legacy provider-egress entries use this helper; generic
+    // DB dispatch and the D-final local send call `begin_dispatch` directly.
+    // A restricted profile denies these entries before any permit exists.
     state
         .profile_egress
-        .begin_dispatch(identity)
+        .begin_legacy_provider_dispatch(identity)
         .map_err(|error| Error::from_reason(format!("{error:#}")))
 }
 
@@ -6664,9 +6667,16 @@ impl Backend {
     #[napi]
     pub async fn activate_license(&self, key: String) -> Result<String> {
         let runtime = Arc::clone(&self.state.license);
-        let dto = grimodex_license::activate_license(&runtime, key)
-            .await
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        // The client is chosen by the profile mode at call time (K3/2 N-1):
+        // restricted checks the key's exact grammar before any request and
+        // uses the proxy-less, redirect-less fixed-origin client; the
+        // unrestricted path is unchanged.
+        let dto = if self.state.profile_egress.is_restricted() {
+            grimodex_license::activate_license_restricted(&runtime, key).await
+        } else {
+            grimodex_license::activate_license(&runtime, key).await
+        }
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
     }
 
@@ -6674,9 +6684,12 @@ impl Backend {
     #[napi]
     pub async fn revalidate_license(&self) -> Result<String> {
         let runtime = Arc::clone(&self.state.license);
-        let dto = grimodex_license::revalidate_license(&runtime)
-            .await
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        let dto = if self.state.profile_egress.is_restricted() {
+            grimodex_license::revalidate_license_restricted(&runtime).await
+        } else {
+            grimodex_license::revalidate_license(&runtime).await
+        }
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
     }
 
@@ -6684,9 +6697,12 @@ impl Backend {
     #[napi]
     pub async fn deactivate_license(&self) -> Result<String> {
         let runtime = Arc::clone(&self.state.license);
-        let dto = grimodex_license::deactivate_license(&runtime)
-            .await
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        let dto = if self.state.profile_egress.is_restricted() {
+            grimodex_license::deactivate_license_restricted(&runtime).await
+        } else {
+            grimodex_license::deactivate_license(&runtime).await
+        }
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
     }
 
@@ -6695,8 +6711,12 @@ impl Backend {
     #[napi]
     pub async fn run_license_validate_cycle(&self) -> Result<Option<String>> {
         let runtime = Arc::clone(&self.state.license);
-        grimodex_license::run_validate_cycle(&runtime)
-            .await
+        let cycle = if self.state.profile_egress.is_restricted() {
+            grimodex_license::run_validate_cycle_restricted(&runtime).await
+        } else {
+            grimodex_license::run_validate_cycle(&runtime).await
+        };
+        cycle
             .map(|dto| {
                 serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
             })

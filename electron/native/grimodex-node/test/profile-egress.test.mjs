@@ -94,7 +94,9 @@ test("D2a startup stays dormant until explicit activation, then survives restart
         "{}",
         "",
       ),
-      /D2A_EGRESS_DENIED:.*missing/,
+      // G-2: a restricted profile refuses the legacy entry before looking at
+      // the caller (it used to fail on the missing identity).
+      /D2A_EGRESS_DENIED:.*provider egress is closed while the profile is restricted/,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -153,7 +155,9 @@ test("D2a accepts one registered identity, persists settings, then rejects it af
         "{}",
         "",
       ),
-      /D2A_EGRESS_DENIED:.*stale/,
+      // G-2: refused outright, whatever the identity state (it used to fail on
+      // the stale identity after the workspace rebind).
+      /D2A_EGRESS_DENIED:.*provider egress is closed while the profile is restricted/,
     );
   } finally {
     if (owner.backend) {

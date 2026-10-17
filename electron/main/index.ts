@@ -33,7 +33,10 @@ import { createExternalMountManager } from "./externalMount.js";
 import { registerImeShutdown } from "./imeShutdown.js";
 import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
-import { createLicenseValidationScheduler } from "./licenseValidation.js";
+import {
+  createLicenseValidationScheduler,
+  shouldStartLicenseValidation,
+} from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
 import {
@@ -504,7 +507,7 @@ if (!gotSingleInstanceLock) {
       backend,
       broadcastBackendEvent,
       {
-        startEnabled: !profileEgress.restricted && !profileEgress.unavailable,
+        startEnabled: shouldStartLicenseValidation(profileEgress),
       },
     );
     // D2a activation is main-owned: close and drain all main-owned external

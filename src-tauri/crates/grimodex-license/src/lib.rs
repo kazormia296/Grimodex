@@ -457,6 +457,209 @@ fn polar_http_client() -> anyhow::Result<&'static reqwest::Client> {
         .ok_or_else(|| anyhow::anyhow!("HTTP クライアントの初期化に失敗しました"))
 }
 
+// ---------------------------------------------------------------------------
+// Restricted (D2a `license-control`) client
+// ---------------------------------------------------------------------------
+//
+// While the profile is restricted the license traffic must carry nothing but
+// the fixed fields to the fixed origin: no proxy (env or OS), no redirect, a
+// fixed https URL and an exact key grammar (K3/2 L-1, N-1). The unrestricted
+// client above is deliberately left untouched.
+
+/// Longest key the restricted `activate` accepts: a 32 character prefix, one
+/// separator and a 36 character UUID.
+pub const RESTRICTED_LICENSE_KEY_MAX_LEN: usize = 69;
+const RESTRICTED_LICENSE_KEY_PREFIX_MAX_LEN: usize = 32;
+const LICENSE_KEY_UUID_LEN: usize = 36;
+
+/// Exact grammar of a Polar license key accepted while restricted:
+/// `<prefix>-<UUID>` where the prefix is 1..=32 of `[A-Za-z0-9_-]` that neither
+/// starts nor ends with `-`, and the UUID is the 8-4-4-4-12 hexadecimal form
+/// (Polar issues `PREFIX-` plus an upper-case UUID4). Anything else
+/// (whitespace, control characters, other bytes, overlong values) is rejected
+/// before any request is built, so a hijacked renderer cannot use the key
+/// field as a free-form channel.
+pub fn validate_restricted_license_key(key: &str) -> anyhow::Result<()> {
+    let reject =
+        || anyhow::anyhow!("ライセンスキーの形式が正しくありません。入力内容を確認してください");
+    if !key.is_ascii() || key.len() > RESTRICTED_LICENSE_KEY_MAX_LEN {
+        return Err(reject());
+    }
+    let bytes = key.as_bytes();
+    if bytes.len() < LICENSE_KEY_UUID_LEN + 2 {
+        return Err(reject());
+    }
+    let split = bytes.len() - LICENSE_KEY_UUID_LEN;
+    let (head, uuid) = bytes.split_at(split);
+    let (separator, prefix) = head.split_last().ok_or_else(reject)?;
+    if *separator != b'-'
+        || prefix.is_empty()
+        || prefix.len() > RESTRICTED_LICENSE_KEY_PREFIX_MAX_LEN
+        || prefix.first() == Some(&b'-')
+        || prefix.last() == Some(&b'-')
+        || !prefix
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
+    {
+        return Err(reject());
+    }
+    for (index, byte) in uuid.iter().enumerate() {
+        let valid = if matches!(index, 8 | 13 | 18 | 23) {
+            *byte == b'-'
+        } else {
+            byte.is_ascii_hexdigit()
+        };
+        if !valid {
+            return Err(reject());
+        }
+    }
+    Ok(())
+}
+
+/// Build the restricted license HTTP client. `https_only` is `true` for the
+/// production client; the tests' loopback server uses `false`, nothing else
+/// differs.
+fn build_restricted_client(https_only: bool) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(15))
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .https_only(https_only)
+        .build()
+}
+
+#[doc(hidden)]
+pub fn restricted_client_for_tests() -> reqwest::Result<reqwest::Client> {
+    build_restricted_client(false)
+}
+
+fn polar_restricted_http_client() -> anyhow::Result<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| build_restricted_client(true).ok())
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("HTTP クライアントの初期化に失敗しました"))
+}
+
+/// Restricted-profile Polar client: fixed `https://api.polar.sh` origin, the
+/// exact key grammar on `activate`, no proxy and no redirect.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RestrictedPolarClient;
+
+#[async_trait]
+impl PolarLicenseClient for RestrictedPolarClient {
+    async fn activate(&self, key: &str) -> anyhow::Result<PolarActivation> {
+        validate_restricted_license_key(key)?;
+        polar_activate_via(
+            polar_restricted_http_client()?,
+            POLAR_BASE_URL,
+            POLAR_ORGANIZATION_ID,
+            key,
+        )
+        .await
+    }
+
+    async fn validate(
+        &self,
+        key: &str,
+        activation_id: &str,
+    ) -> anyhow::Result<PolarValidateOutcome> {
+        polar_validate_via(
+            polar_restricted_http_client()?,
+            POLAR_BASE_URL,
+            POLAR_ORGANIZATION_ID,
+            POLAR_EXPECTED_BENEFIT_ID,
+            key,
+            activation_id,
+        )
+        .await
+    }
+
+    async fn deactivate(&self, key: &str, activation_id: &str) -> anyhow::Result<()> {
+        polar_deactivate_via(
+            polar_restricted_http_client()?,
+            POLAR_BASE_URL,
+            POLAR_ORGANIZATION_ID,
+            key,
+            activation_id,
+        )
+        .await
+    }
+}
+
+/// `activate_license` for a restricted profile. The key is checked before the
+/// in-flight guard and before any client is touched, so a malformed key sends
+/// nothing.
+pub async fn activate_license_restricted(
+    runtime: &LicenseRuntime,
+    key: String,
+) -> anyhow::Result<LicenseStateDto> {
+    ensure_licensing_enabled()?;
+    validate_restricted_license_key(&key)?;
+    activate_license_with_client(runtime, key, &RestrictedPolarClient).await
+}
+
+pub async fn revalidate_license_restricted(
+    runtime: &LicenseRuntime,
+) -> anyhow::Result<LicenseStateDto> {
+    revalidate_license_with_client(runtime, &RestrictedPolarClient).await
+}
+
+pub async fn deactivate_license_restricted(
+    runtime: &LicenseRuntime,
+) -> anyhow::Result<LicenseStateDto> {
+    deactivate_license_with_client(runtime, &RestrictedPolarClient).await
+}
+
+pub async fn run_validate_cycle_restricted(runtime: &LicenseRuntime) -> Option<LicenseStateDto> {
+    run_validate_cycle_with_client(runtime, &RestrictedPolarClient).await
+}
+
+/// Restricted counterparts of `polar_*_at` for the tests: the same request
+/// code with the restricted client builder, pointed at a loopback server.
+#[doc(hidden)]
+pub async fn restricted_polar_activate_at(
+    client: &reqwest::Client,
+    base_url: &str,
+    organization_id: &str,
+    key: &str,
+) -> anyhow::Result<PolarActivation> {
+    validate_restricted_license_key(key)?;
+    polar_activate_via(client, base_url, organization_id, key).await
+}
+
+#[doc(hidden)]
+pub async fn restricted_polar_validate_at(
+    client: &reqwest::Client,
+    base_url: &str,
+    organization_id: &str,
+    expected_benefit_id: &str,
+    key: &str,
+    activation_id: &str,
+) -> anyhow::Result<PolarValidateOutcome> {
+    polar_validate_via(
+        client,
+        base_url,
+        organization_id,
+        expected_benefit_id,
+        key,
+        activation_id,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn restricted_polar_deactivate_at(
+    client: &reqwest::Client,
+    base_url: &str,
+    organization_id: &str,
+    key: &str,
+    activation_id: &str,
+) -> anyhow::Result<()> {
+    polar_deactivate_via(client, base_url, organization_id, key, activation_id).await
+}
+
 pub async fn polar_activate(key: &str) -> anyhow::Result<PolarActivation> {
     polar_activate_at(POLAR_BASE_URL, POLAR_ORGANIZATION_ID, key).await
 }
@@ -505,8 +708,17 @@ pub async fn polar_activate_at(
     organization_id: &str,
     key: &str,
 ) -> anyhow::Result<PolarActivation> {
+    polar_activate_via(polar_http_client()?, base_url, organization_id, key).await
+}
+
+async fn polar_activate_via(
+    client: &reqwest::Client,
+    base_url: &str,
+    organization_id: &str,
+    key: &str,
+) -> anyhow::Result<PolarActivation> {
     let url = format!("{base_url}/v1/customer-portal/license-keys/activate");
-    let response = polar_http_client()?
+    let response = client
         .post(url)
         .json(&serde_json::json!({
             "key": key,
@@ -543,8 +755,27 @@ pub async fn polar_validate_at(
     key: &str,
     activation_id: &str,
 ) -> anyhow::Result<PolarValidateOutcome> {
+    polar_validate_via(
+        polar_http_client()?,
+        base_url,
+        organization_id,
+        expected_benefit_id,
+        key,
+        activation_id,
+    )
+    .await
+}
+
+async fn polar_validate_via(
+    client: &reqwest::Client,
+    base_url: &str,
+    organization_id: &str,
+    expected_benefit_id: &str,
+    key: &str,
+    activation_id: &str,
+) -> anyhow::Result<PolarValidateOutcome> {
     let url = format!("{base_url}/v1/customer-portal/license-keys/validate");
-    let response = polar_http_client()?
+    let response = client
         .post(url)
         .json(&serde_json::json!({
             "key": key,
@@ -581,8 +812,25 @@ pub async fn polar_deactivate_at(
     key: &str,
     activation_id: &str,
 ) -> anyhow::Result<()> {
+    polar_deactivate_via(
+        polar_http_client()?,
+        base_url,
+        organization_id,
+        key,
+        activation_id,
+    )
+    .await
+}
+
+async fn polar_deactivate_via(
+    client: &reqwest::Client,
+    base_url: &str,
+    organization_id: &str,
+    key: &str,
+    activation_id: &str,
+) -> anyhow::Result<()> {
     let url = format!("{base_url}/v1/customer-portal/license-keys/deactivate");
-    let response = polar_http_client()?
+    let response = client
         .post(url)
         .json(&serde_json::json!({
             "key": key,
