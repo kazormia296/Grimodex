@@ -1,6 +1,6 @@
 # CB-1 の委任判断の記録（mutation の前に記録。継続計画 §3.2 の形式）
 
-出所の確認済み draft は K2/4（`docs/plans/nir1-c-body-disclosure-proposal-4-draft.md`。`scope-storage-authority`）。S1〜S4 の記録を含む。DR-CB1-7、-9、-10 は実装と同時か実装の後に追記した記録（事後記録）で、PR 本文でそう明示する。
+出所の確認済み draft は K2/4（`docs/plans/nir1-c-body-disclosure-proposal-4-draft.md`。`scope-storage-authority`）。S1〜S4 の記録を含む。DR-CB1-7、-9、-10、-11 は実装と同時か実装の後に追記した記録（事後記録）で、DR-CB1-1 と -8 は S1／S2 の実装の後にレビュー指摘（P2）と dead_code の整理のために改めた。PR 本文でそう明示する。
 
 | ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
 |---|---|---|---|---|---|---|---|---|---|
