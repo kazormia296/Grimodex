@@ -2444,7 +2444,6 @@ fn dt3_owner_does_not_claim_a_binding_that_is_not_its_own() {
     assert_eq!(stored.terminal, Some(terminal));
 }
 
-/// A-1: no N-API attribute reaches the owner module.
 /// DT-4 (S16): the audited `request.prepared` request is the exact canonical
 /// body the owner would send, and its digest is the attempt's payload digest
 /// (`final_payload_digest`). A closed attempt's execution is closed by the same
@@ -2549,6 +2548,7 @@ fn dt4_audit_start_records_the_exact_canonical_body_and_the_owner_terminal_close
     );
 }
 
+/// A-1: no N-API attribute reaches the owner module.
 #[test]
 fn a1_owner_has_no_napi_entry() {
     let source = include_str!("nir1_generation_owner.rs");

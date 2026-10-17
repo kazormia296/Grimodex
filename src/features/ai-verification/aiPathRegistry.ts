@@ -1502,7 +1502,7 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "contract",
     testRef: NIR1_LOCAL_AUDIT_TEST,
     testName: "nir1_local_writing_audit_contract",
-    note: "Electron の local 生成 route（K5/3、DT-4 の登録）。capability decision：restricted、main が発行した登録済みの caller だけ、接続先は IP literal の loopback route、key は持たない、AI 使用ポリシー（Writing は chat と bodyWrite、Review は chat と analysis）が許可したときだけ送る。製品入口（PUB-L）は閉じており、PUB-L の後でないと製品から到達できない（transport と生成の開始 command は DT-5／DD-1 が足す）。監査は Native の専用 append が start の 3 件と終端を attempt の終端と同じ transaction で書き、汎用の ai_audit_append_batch と Main の IPC 検証は予約 namespace を拒否する。Electron の local route は AI_RUNTIME_ROUTES と同意 registry の対象外。",
+    note: "Electron の local 生成 route（K5/3、DT-4 の登録）。capability decision：restricted、main が発行した登録済みの caller だけ、接続先は IP literal の loopback route、key は持たない、AI 使用ポリシー（Writing は chat と bodyWrite、Review は chat と analysis）が許可したときだけ送る。製品入口（PUB-L）は閉じており、PUB-L の後でないと製品から到達できない（transport と生成の開始 command は DT-5／DD-1 が足す）。監査は Native の専用 append が start の 3 件と終端を attempt の終端と同じ transaction で書き、汎用の ai_audit_append_batch と Main の IPC 検証は予約 namespace を拒否する。Electron の local route は AI_RUNTIME_ROUTES と同意 registry の対象外。明示の宣言（iron-laws の JSON body receipt）：request.prepared の payload.request.body だけは、D-final の canonical JSON 規則で直列化すると送信した body の bytes と一致する（ほかの event・項目には当てはまらない）。",
   },
   {
     id: "nir1_local_generation_review",
@@ -1518,7 +1518,7 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "contract",
     testRef: NIR1_LOCAL_AUDIT_TEST,
     testName: "nir1_local_review_audit_contract",
-    note: "Electron の local 生成 route（K5/3、DT-4 の登録）。capability decision：restricted、main が発行した登録済みの caller だけ、接続先は IP literal の loopback route、key は持たない、AI 使用ポリシー（Writing は chat と bodyWrite、Review は chat と analysis）が許可したときだけ送る。製品入口（PUB-L）は閉じており、PUB-L の後でないと製品から到達できない（transport と生成の開始 command は DT-5／DD-1 が足す）。監査は Native の専用 append が start の 3 件と終端を attempt の終端と同じ transaction で書き、汎用の ai_audit_append_batch と Main の IPC 検証は予約 namespace を拒否する。Electron の local route は AI_RUNTIME_ROUTES と同意 registry の対象外。",
+    note: "Electron の local 生成 route（K5/3、DT-4 の登録）。capability decision：restricted、main が発行した登録済みの caller だけ、接続先は IP literal の loopback route、key は持たない、AI 使用ポリシー（Writing は chat と bodyWrite、Review は chat と analysis）が許可したときだけ送る。製品入口（PUB-L）は閉じており、PUB-L の後でないと製品から到達できない（transport と生成の開始 command は DT-5／DD-1 が足す）。監査は Native の専用 append が start の 3 件と終端を attempt の終端と同じ transaction で書き、汎用の ai_audit_append_batch と Main の IPC 検証は予約 namespace を拒否する。Electron の local route は AI_RUNTIME_ROUTES と同意 registry の対象外。明示の宣言（iron-laws の JSON body receipt）：request.prepared の payload.request.body だけは、D-final の canonical JSON 規則で直列化すると送信した body の bytes と一致する（ほかの event・項目には当てはまらない）。",
   },
 
   // ── ⑥ 埋め込み / 全文検索（LLM 生成ではない）──────────────────────────────
