@@ -14,8 +14,13 @@ import {
   README_PATH,
   REVIEW_PATH,
   REVIEW_SCHEMA_VERSION,
+  PLACEHOLDER_KINDS,
   SCORER_FILES,
   deriveFreezeCommit,
+  estimateTemplateTokens,
+  resolveTemplate,
+  templateErrors,
+  templatePlaceholders,
   isAncestorCommit,
   sha256,
   validateFinalRequestFixture,
@@ -1366,4 +1371,205 @@ test("the real repository's final-request fixture state has no errors", async ()
   const report = await validateNir1FinalRequestFixtures({ repoRoot });
   assert.deepEqual(report.errors, []);
   assert.ok(["not-placed", "pending-review", "frozen"].includes(report.status));
+});
+
+// ------------------------------------------- expected text templates (DPH-1b)
+
+const QUALIFICATION_TEMPLATE =
+  '{"approval":"human-approved","decisionId":"{{decisionId:rev-P-01-a}}","proposalId":"{{proposalId:rev-P-01-a}}","revisionId":"{{revisionId:rev-P-01-a}}","token":"{{revisionToken:scene-P-01}}"}';
+
+function qualificationEntry(value) {
+  return firstPositive(value).expected.codexEntries.find(
+    (entry) => entry.logicalId === "rev-P-01-a.qualification",
+  );
+}
+
+test("template: placeholders are a closed list of kinds and are listed in order", () => {
+  assert.deepEqual(Object.keys(PLACEHOLDER_KINDS).sort(), [
+    "decisionId",
+    "proposalId",
+    "revisionId",
+    "revisionToken",
+    "runtimeId",
+    "sourceToken",
+  ]);
+  assert.deepEqual(
+    templatePlaceholders(QUALIFICATION_TEMPLATE).map(
+      (row) => `${row.kind}:${row.logicalId}`,
+    ),
+    [
+      "decisionId:rev-P-01-a",
+      "proposalId:rev-P-01-a",
+      "revisionId:rev-P-01-a",
+      "revisionToken:scene-P-01",
+    ],
+  );
+  assert.deepEqual(templateErrors(QUALIFICATION_TEMPLATE, "t"), []);
+});
+
+test("template: an unknown kind, a stray brace pair and a foreign Revision are fixture errors", () => {
+  assert.ok(
+    templateErrors('{"a":"{{secret:x}}"}', "t").some((e) =>
+      e.includes("unknown kind"),
+    ),
+  );
+  assert.ok(
+    templateErrors('{"a":"{{revisionId:}}"}', "t").some((e) =>
+      e.includes('"{{"'),
+    ),
+  );
+  assert.ok(
+    templateErrors('{"a":"{{ revisionId:x }}"}', "t").some((e) =>
+      e.includes('"{{"'),
+    ),
+  );
+  // Valid JSON never holds "{{", but a nested object ends with "}}".
+  assert.deepEqual(templateErrors('{"a":{"b":1}}', "t"), []);
+  assert.ok(
+    errorsOf((f) => {
+      qualificationEntry(f).text = QUALIFICATION_TEMPLATE.replace(
+        "{{revisionId:rev-P-01-a}}",
+        "{{revisionId:rev-P-02-a}}",
+      );
+    }).some((e) => e.includes("names a Revision the variant does not use")),
+  );
+  assert.ok(
+    errorsOf((f) => {
+      qualificationEntry(f).text = '{"a":"{{secret:x}}"}';
+    }).some((e) => e.includes("unknown kind")),
+  );
+  assert.ok(
+    errorsOf((f) => {
+      firstPositive(f).expected.forbidden.texts.push('{"b":"{{nope:x}}"}');
+    }).some((e) => e.includes("forbidden.texts[")),
+  );
+  assert.deepEqual(
+    errorsOf((f) => {
+      qualificationEntry(f).text = QUALIFICATION_TEMPLATE;
+    }),
+    [],
+  );
+});
+
+test("template: the estimator counts each placeholder at its maximum ASCII length", () => {
+  const uuid = "0".repeat(36);
+  const token = "t".repeat(80);
+  const literal = `{"approval":"human-approved","decisionId":"${uuid}","proposalId":"${uuid}","revisionId":"${uuid}","token":"${token}"}`;
+  assert.equal(
+    estimateTemplateTokens(QUALIFICATION_TEMPLATE),
+    estimateTokens(literal),
+  );
+  // Text without a placeholder is estimated as before; CJK keeps its weight.
+  assert.equal(
+    estimateTemplateTokens("鐘が鳴った"),
+    estimateTokens("鐘が鳴った"),
+  );
+  assert.equal(
+    estimateTemplateTokens("鐘{{revisionId:x}}"),
+    estimateTokens(`鐘${uuid}`),
+  );
+  // A resolved value is never longer than the estimate (36 / 80).
+  assert.equal(PLACEHOLDER_KINDS.revisionId.maxLength, 36);
+  assert.equal(PLACEHOLDER_KINDS.revisionToken.maxLength, 80);
+});
+
+test("template: the budget check and the freeze table use the template estimate", () => {
+  const value = fixture();
+  const request = firstPositive(value);
+  const entry = qualificationEntry(value);
+  const literalTokens = estimateTokens(entry.text);
+  entry.text = QUALIFICATION_TEMPLATE;
+  const templateTokens = estimateTemplateTokens(QUALIFICATION_TEMPLATE);
+  assert.ok(templateTokens > literalTokens);
+  // A budget that holds the literal selection but not the template's maximum.
+  const selected = () =>
+    estimateTokens(request.expected.rawText) +
+    request.expected.codexEntries.reduce(
+      (sum, row) => sum + estimateTemplateTokens(row.text),
+      0,
+    );
+  request.expected.contextBudgetTokens = selected() - 1;
+  assert.ok(
+    validateFinalRequestFixture(value).some((e) =>
+      e.includes("exceeds contextBudgetTokens"),
+    ),
+  );
+  // The freeze record's selectedTokens is the same template formula.
+  const world = freezeWorld();
+  const row = world.freeze.contextBudget.perRequest[0];
+  const fresh = fixture();
+  qualificationEntry(fresh).text = QUALIFICATION_TEMPLATE;
+  const check = (selectedTokens) => {
+    const copy = structuredClone(world.freeze);
+    copy.contextBudget.perRequest[0] = {
+      ...row,
+      selectedTokens,
+      marginTokens: row.contextBudgetTokens - selectedTokens,
+    };
+    return validateFreezeRecord(copy, {
+      bytes: world.bytes,
+      review: world.review,
+      fixture: fresh,
+    }).filter((e) => e.includes("selectedTokens"));
+  };
+  assert.ok(check(row.selectedTokens).length > 0);
+  assert.deepEqual(
+    check(row.selectedTokens - literalTokens + templateTokens),
+    [],
+  );
+});
+
+test("template: a quote must be literal text, not part of a placeholder", () => {
+  assert.ok(
+    errorsOf((f) => {
+      const request = firstPositive(f);
+      qualificationEntry(f).text = QUALIFICATION_TEMPLATE;
+      request.expected.exactQuotes.push({
+        logicalId: "rev-P-01-a.qualification",
+        quote: "{{proposalId:rev-P-01-a}}",
+      });
+    }).some((e) => e.includes("literal substring")),
+  );
+  assert.ok(
+    errorsOf((f) => {
+      const request = firstPositive(f);
+      qualificationEntry(f).text = QUALIFICATION_TEMPLATE;
+      request.expected.exactQuotes.push({
+        logicalId: "rev-P-01-a.qualification",
+        quote: '}}","revisionId":"{{',
+      });
+    }).some((e) => e.includes("literal substring")),
+  );
+  assert.deepEqual(
+    errorsOf((f) => {
+      const request = firstPositive(f);
+      qualificationEntry(f).text = QUALIFICATION_TEMPLATE;
+      request.expected.exactQuotes.push({
+        logicalId: "rev-P-01-a.qualification",
+        quote: '"approval":"human-approved"',
+      });
+    }),
+    [],
+  );
+});
+
+test("template: resolveTemplate leaves an unresolved placeholder as written and reports it", () => {
+  const values = new Map([["revisionId:rev-P-01-a", "rt:rev-P-01-a"]]);
+  const result = resolveTemplate(QUALIFICATION_TEMPLATE, (kind, logicalId) =>
+    values.get(`${kind}:${logicalId}`),
+  );
+  assert.deepEqual(result.unresolved, [
+    "{{decisionId:rev-P-01-a}}",
+    "{{proposalId:rev-P-01-a}}",
+    "{{revisionToken:scene-P-01}}",
+  ]);
+  assert.ok(result.text.includes('"revisionId":"rt:rev-P-01-a"'));
+  assert.ok(result.text.includes("{{decisionId:rev-P-01-a}}"));
+  assert.deepEqual(
+    resolveTemplate("plain", () => "x"),
+    {
+      text: "plain",
+      unresolved: [],
+    },
+  );
 });

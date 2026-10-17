@@ -764,3 +764,67 @@ test("product writers: every routed writer is in the product's internal command 
     assert.ok(PRODUCT_WRITERS.includes(name), `${name} must be allowed`);
   }
 });
+
+test("setup receipt: proposalId / decisionId on the id map and runtimeValues are optional, closed fields", () => {
+  const row = (value) => value.cases[0].idMap[0];
+  const runtimeValue = {
+    kind: "revisionToken",
+    logicalId: "scene-1",
+    stage: 1,
+    value: "v3@2026-10-17T00:00:00.000Z",
+    source: "product-reader-function",
+    resolvedAtSeq: 5,
+  };
+  assert.deepEqual(
+    errorsAfter(
+      (value) => {
+        row(value).proposalId = "p-1";
+        row(value).decisionId = "d-1";
+        value.cases[0].runtimeValues = [runtimeValue];
+      },
+      validateSetupReceipt,
+      setup,
+    ),
+    [],
+  );
+  const bad = (mutate) => errorsAfter(mutate, validateSetupReceipt, setup);
+  assert.ok(
+    bad((value) => {
+      row(value).proposalId = "";
+    }).some((e) => e.includes("idMap[0].proposalId")),
+  );
+  assert.ok(
+    bad((value) => {
+      row(value).tokenX = "x";
+    }).some((e) => e.includes("idMap[0].tokenX is not a known field")),
+  );
+  assert.ok(
+    bad((value) => {
+      value.cases[0].runtimeValues = [{ ...runtimeValue, kind: "decisionId" }];
+    }).some((e) => e.includes("runtimeValues[0].kind")),
+  );
+  // A value read from a request's output is not a source.
+  for (const source of ["payload", "capture", "dfinal-result"]) {
+    assert.ok(
+      bad((value) => {
+        value.cases[0].runtimeValues = [{ ...runtimeValue, source }];
+      }).some((e) => e.includes("runtimeValues[0].source")),
+      source,
+    );
+  }
+  assert.ok(
+    bad((value) => {
+      value.cases[0].runtimeValues = [{ ...runtimeValue, resolvedAtSeq: 0 }];
+    }).some((e) => e.includes("resolvedAtSeq")),
+  );
+  assert.ok(
+    bad((value) => {
+      value.cases[0].runtimeValues = [{ ...runtimeValue, extra: 1 }];
+    }).some((e) => e.includes("runtimeValues[0].extra is not a known field")),
+  );
+  assert.ok(
+    bad((value) => {
+      value.cases[0].runtimeValues = {};
+    }).some((e) => e.includes("runtimeValues must be an array")),
+  );
+});

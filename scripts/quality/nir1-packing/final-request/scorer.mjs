@@ -23,8 +23,12 @@
 import { createHash } from "node:crypto";
 import {
   DPH_CASE_IDS,
+  PLACEHOLDER_KINDS,
+  PLACEHOLDER_VALUE_PATTERN,
   REJECT_CODE,
+  resolveTemplate,
   scorerDigest,
+  templatePlaceholders,
   validateFinalRequestFixture,
   variantRequests,
 } from "./contract.mjs";
@@ -739,6 +743,181 @@ export function scanForbidden({
   return failures;
 }
 
+// ------------------------------------------------- expected-text resolution
+
+/**
+ * Resolves the placeholders of an expected text (`{{<kind>:<logicalId>}}`, see
+ * contract.mjs) from the SETUP RECEIPT only: the id map (Revision, proposal and
+ * decision ids) and `runtimeValues` (Source ids and revision tokens read from
+ * the database state the setup left behind). The payload, the capture and the
+ * D-final result are never an input here: an expectation is fixed before the
+ * request exists, and a value that the setup receipt does not carry makes the
+ * run invalid instead of being read back from the output.
+ *
+ * Each of `stages` is tried alone and the text must resolve entirely within
+ * that stage (a P-10 request resolves with its own stage; a forbidden text of
+ * an earlier stage with that stage). Returns `{ texts, unresolved, malformed }`:
+ * `texts` holds one resolved text per stage that resolved (de-duplicated),
+ * `unresolved` the placeholders no stage could resolve, `malformed` the
+ * resolved values that are not a bounded ASCII string.
+ */
+export function resolveExpectedTemplate(text, setupCase, stages) {
+  if (templatePlaceholders(text).length === 0)
+    return { texts: [text], unresolved: [], malformed: [] };
+  const texts = [];
+  let unresolved = [];
+  const malformed = [];
+  for (const stage of stages) {
+    const rowMalformed = [];
+    const lookup = (kind, logicalId) => {
+      const meta = PLACEHOLDER_KINDS[kind];
+      let value;
+      if (meta.source === "runtimeValues") {
+        value = (setupCase.runtimeValues ?? []).find(
+          (row) =>
+            row.kind === kind &&
+            row.logicalId === logicalId &&
+            row.stage === stage,
+        )?.value;
+      } else {
+        const row = setupCase.idMap.find(
+          (entry) => entry.logicalId === logicalId,
+        );
+        value =
+          kind === "proposalId"
+            ? row?.proposalId
+            : kind === "decisionId"
+              ? row?.decisionId
+              : row?.runtimeId;
+      }
+      if (
+        typeof value === "string" &&
+        (value.length > meta.maxLength ||
+          !PLACEHOLDER_VALUE_PATTERN.test(value))
+      ) {
+        rowMalformed.push(`${kind}:${logicalId}`);
+        return undefined;
+      }
+      return value;
+    };
+    const result = resolveTemplate(text, lookup);
+    if (result.unresolved.length === 0) {
+      if (!texts.includes(result.text)) texts.push(result.text);
+    } else {
+      unresolved = result.unresolved;
+      malformed.push(...rowMalformed);
+    }
+  }
+  return {
+    texts,
+    unresolved: texts.length === 0 ? unresolved : [],
+    malformed: texts.length === 0 ? malformed : [],
+  };
+}
+
+/**
+ * Checks that every value the setup receipt offers for a placeholder was fixed
+ * by a setup event before the request was built: a proposal id by the
+ * Revision's prepare event, a decision id by its approve event, and a
+ * `runtimeValues` row by a setup event of its stage that follows the stage's
+ * last tree / Scope / Codex write and precedes the stage's capture event.
+ * Returns `invalid` reasons.
+ */
+export function checkPlaceholderSources(setupCase) {
+  const invalid = [];
+  const bad = (code, message) =>
+    invalid.push(fail(`setup-invalid:${code}`, message));
+  const events = setupCase.events;
+  const captureOf = (stage) =>
+    events.find((event) => event.kind === "capture" && event.stage === stage);
+  const requireBeforeCapture = (code, what, event) => {
+    const capture = captureOf(event.stage);
+    if (!capture) {
+      bad(
+        "placeholder-no-capture",
+        `${what}: stage ${event.stage} has no capture event to order it against`,
+      );
+    } else if (event.seq >= capture.seq) {
+      bad(
+        code,
+        `${what} was fixed at seq ${event.seq}, not before the stage's capture (seq ${capture.seq})`,
+      );
+    }
+  };
+  for (const row of setupCase.idMap) {
+    for (const [field, kinds] of [
+      ["proposalId", ["prepare", "prepare-negative"]],
+      ["decisionId", ["approve", "approve-negative"]],
+    ]) {
+      if (row[field] === undefined) continue;
+      const event = events.find(
+        (candidate) =>
+          kinds.includes(candidate.kind) &&
+          candidate.runtimeId === row.runtimeId,
+      );
+      if (!event) {
+        bad(
+          "placeholder-source-missing",
+          `${row.logicalId}.${field} has no ${kinds[0]} event of ${row.runtimeId} that fixed it`,
+        );
+        continue;
+      }
+      requireBeforeCapture(
+        "placeholder-after-capture",
+        `${row.logicalId}.${field}`,
+        event,
+      );
+    }
+  }
+  const seen = new Set();
+  for (const row of setupCase.runtimeValues ?? []) {
+    const what = `${row.kind}:${row.logicalId} (stage ${row.stage})`;
+    const key = `${row.kind}/${row.logicalId}/${row.stage}`;
+    if (seen.has(key)) {
+      bad("placeholder-duplicate", `${what} is given more than once`);
+    }
+    seen.add(key);
+    if (
+      row.value.length > PLACEHOLDER_KINDS[row.kind].maxLength ||
+      !PLACEHOLDER_VALUE_PATTERN.test(row.value)
+    ) {
+      bad(
+        "placeholder-value-malformed",
+        `${what} is not a bounded ASCII value`,
+      );
+    }
+    const event = events.find(
+      (candidate) => candidate.seq === row.resolvedAtSeq,
+    );
+    if (!event || event.stage !== row.stage || event.kind === "capture") {
+      bad(
+        "placeholder-source-missing",
+        `${what} names resolvedAtSeq ${row.resolvedAtSeq}, which is not a setup event of that stage before the capture`,
+      );
+      continue;
+    }
+    const lastWrite = Math.max(
+      0,
+      ...events
+        .filter(
+          (candidate) =>
+            candidate.stage === row.stage &&
+            (SETUP_BASE_WRITE_KINDS.includes(candidate.kind) ||
+              candidate.kind === "invalidate-negative"),
+        )
+        .map((candidate) => candidate.seq),
+    );
+    if (event.seq < lastWrite) {
+      bad(
+        "placeholder-before-writes",
+        `${what} was read at seq ${event.seq}, before the stage's last write (seq ${lastWrite}) changed the state it derives from`,
+      );
+    }
+    requireBeforeCapture("placeholder-after-capture", what, event);
+  }
+  return invalid;
+}
+
 // --------------------------------------------------------------- setup rules
 
 /**
@@ -1184,6 +1363,7 @@ export function checkSetupCase(
       }
     }
   }
+  invalid.push(...checkPlaceholderSources(setupCase));
   return invalid;
 }
 
@@ -1349,6 +1529,39 @@ export function scorePositiveRequest({
   if (qualifying.length > 0)
     return { failures: qualifying, invalid, scored: false };
 
+  // The expected texts are templates: resolve them from the setup receipt
+  // before anything is compared (never from the payload or the capture).
+  const stage = request.stage;
+  const entryTexts = expected.codexEntries.map((entry) =>
+    resolveExpectedTemplate(entry.text, setupCase, [stage]),
+  );
+  const earlierStages =
+    stage > 1
+      ? Array.from({ length: stage - 1 }, (_, index) => index + 1)
+      : [1];
+  const forbiddenTexts = expected.forbidden.texts.map((text) =>
+    resolveExpectedTemplate(text, setupCase, earlierStages),
+  );
+  const unresolvedPlaceholders = [...entryTexts, ...forbiddenTexts].flatMap(
+    (row) => row.unresolved,
+  );
+  const malformedPlaceholders = [...entryTexts, ...forbiddenTexts].flatMap(
+    (row) => row.malformed,
+  );
+  if (unresolvedPlaceholders.length > 0 || malformedPlaceholders.length > 0) {
+    return {
+      failures,
+      invalid: [
+        fail(
+          "setup-invalid:placeholder-unresolved",
+          `the setup receipt does not fix ${[
+            ...new Set([...unresolvedPlaceholders, ...malformedPlaceholders]),
+          ].join(", ")}; an expectation is never resolved from the payload`,
+        ),
+      ],
+      scored: false,
+    };
+  }
   const capture = request.capture;
   const view = armView(request, "candidate");
   if (
@@ -1511,12 +1724,12 @@ export function scorePositiveRequest({
   }
 
   // Retention, prose order and exact quotes of the IR entries.
-  const expectedEntries = expected.codexEntries.map((entry) => entry.text);
+  const expectedEntries = entryTexts.map((row) => row.texts[0]);
   if (!sameJson(cut.entries, expectedEntries)) {
     const missing = multisetDifference(expectedEntries, cut.entries);
     const extra = multisetDifference(cut.entries, expectedEntries);
     for (const text of missing) {
-      const entry = expected.codexEntries.find((row) => row.text === text);
+      const entry = expected.codexEntries[expectedEntries.indexOf(text)];
       failures.push(
         fail(
           "required-entry-missing",
@@ -1573,7 +1786,17 @@ export function scorePositiveRequest({
   failures.push(...windowFailure(parsed, fixture.route, "candidate"));
 
   const forbiddenIds = expected.forbidden.logicalIds
-    .flatMap((logicalId) => [logicalId, idMap.get(logicalId)])
+    .flatMap((logicalId) => {
+      const row = setupCase.idMap.find(
+        (entry) => entry.logicalId === logicalId,
+      );
+      return [
+        logicalId,
+        idMap.get(logicalId),
+        row?.proposalId,
+        row?.decisionId,
+      ];
+    })
     .filter((id) => typeof id === "string" && id.length > 0);
   failures.push(
     ...scanForbidden({
@@ -1581,7 +1804,7 @@ export function scorePositiveRequest({
       system: parsed.system,
       user: parsed.user,
       canaries: fixture.canaries,
-      forbiddenTexts: expected.forbidden.texts,
+      forbiddenTexts: forbiddenTexts.flatMap((row) => row.texts),
       forbiddenIds,
       otherMarkers,
       otherIds,

@@ -33,7 +33,8 @@
 //       variants [{ variantId, kind: positive | reject, requests [...] }] }
 //   A positive request: { stage, revisionIds [logical ids], expected {
 //       contextBudgetTokens, rawText (pre-escape),
-//       codexEntries [{ logicalId, groupLogicalId, part, text (post-escape, no "\n") }]
+//       codexEntries [{ logicalId, groupLogicalId, part, text (post-escape, no "\n";
+//         a template: runtime values are written as `{{<kind>:<logicalId>}}`) }]
 //         in payload order, whole groups of the five parts,
 //       selectedGroupLogicalIds, exactQuotes [{ logicalId, quote }],
 //       forbidden { logicalIds, texts }, embeddedCanaryIds } }
@@ -81,6 +82,7 @@ import {
   BINDING_KINDS,
   CONTRACT_ID,
   DRAFT_REF,
+  RUNTIME_VALUE_KINDS,
 } from "./receipt.mjs";
 
 export const FIXTURE_PATH = "evals/nir1-packing/final-request.v1.json";
@@ -175,6 +177,133 @@ async function exists(file) {
 /** The requests of a variant, in stage order. Every variant lists them. */
 export function variantRequests(variant) {
   return Array.isArray(variant?.requests) ? variant.requests : [];
+}
+
+// --------------------------------------------------- expected text templates
+
+/**
+ * An expected codex entry (and a forbidden text) is a template. The text a
+ * product entry holds carries values that cannot be written as literals before
+ * Native runs: the Revision, proposal and decision ids (generated when the
+ * Revision is prepared and approved), the Source ids and the Source revision
+ * tokens (derived from the live Scene state). Such a value is written
+ * `{{<kind>:<logicalId>}}`; the closed kinds are below. The scorer resolves a
+ * placeholder from the setup receipt only (the id map and `runtimeValues`,
+ * fixed by product writers / readers before the request is built), never from
+ * the payload, the capture or the D-final result.
+ *
+ * `maxLength` is the length the estimator counts for the placeholder: a UUID is
+ * exactly 36 characters; a token is bounded by `sha256:` plus 64 hex (71) and
+ * rounded up to 80. The value is ASCII, so the estimate is an upper bound of
+ * the real entry's tokens and the freeze record's `selectedTokens` uses the same
+ * formula. The scorer refuses a resolved value longer than `maxLength`.
+ */
+export const PLACEHOLDER_KINDS = Object.freeze({
+  revisionId: Object.freeze({ source: "idMap.runtimeId", maxLength: 36 }),
+  proposalId: Object.freeze({ source: "idMap.proposalId", maxLength: 36 }),
+  decisionId: Object.freeze({ source: "idMap.decisionId", maxLength: 36 }),
+  runtimeId: Object.freeze({ source: "idMap.runtimeId", maxLength: 36 }),
+  ...Object.fromEntries(
+    RUNTIME_VALUE_KINDS.map((kind) => [
+      kind,
+      Object.freeze({ source: "runtimeValues", maxLength: 80 }),
+    ]),
+  ),
+});
+/** Kinds whose logical id names a Revision of the variant. */
+export const REVISION_PLACEHOLDER_KINDS = Object.freeze([
+  "revisionId",
+  "proposalId",
+  "decisionId",
+]);
+/** A value a placeholder resolves to: ASCII with no JSON escape. */
+export const PLACEHOLDER_VALUE_PATTERN = /^[A-Za-z0-9_.:@+\-\/=]+$/;
+
+const PLACEHOLDER_SOURCE = "\\{\\{([A-Za-z]+):([A-Za-z0-9._-]+)\\}\\}";
+const SKELETON_MARK = "\u0000";
+
+/** Every placeholder of a template, in order: `{ kind, logicalId, token }`. */
+export function templatePlaceholders(text) {
+  return [...String(text).matchAll(new RegExp(PLACEHOLDER_SOURCE, "g"))].map(
+    (match) => ({ kind: match[1], logicalId: match[2], token: match[0] }),
+  );
+}
+
+/** The template with every placeholder replaced by one mark (for substring checks). */
+export function templateSkeleton(text) {
+  return String(text).replace(
+    new RegExp(PLACEHOLDER_SOURCE, "g"),
+    SKELETON_MARK,
+  );
+}
+
+/**
+ * Problems of a template: an unknown kind, a stray `{{` (valid JSON never
+ * holds one, so a literal `{{` cannot be written), and, when `revisionIds` is
+ * given, a Revision-kind placeholder naming a Revision the variant does not
+ * use.
+ */
+export function templateErrors(text, label, { revisionIds = null } = {}) {
+  const errors = [];
+  if (typeof text !== "string") return errors;
+  for (const placeholder of templatePlaceholders(text)) {
+    if (!Object.hasOwn(PLACEHOLDER_KINDS, placeholder.kind)) {
+      errors.push(
+        `${label} has the placeholder ${placeholder.token} of an unknown kind (${Object.keys(PLACEHOLDER_KINDS).join(", ")})`,
+      );
+    } else if (
+      revisionIds &&
+      REVISION_PLACEHOLDER_KINDS.includes(placeholder.kind) &&
+      !revisionIds.has(placeholder.logicalId)
+    ) {
+      errors.push(
+        `${label} has ${placeholder.token}, which names a Revision the variant does not use`,
+      );
+    }
+  }
+  if (templateSkeleton(text).includes("{{")) {
+    errors.push(
+      `${label} has a "{{" that is not a well-formed placeholder ({{<kind>:<logicalId>}})`,
+    );
+  }
+  return errors;
+}
+
+/**
+ * Estimator tokens of a template: each placeholder counts as `maxLength` ASCII
+ * characters (the product entry holds the real value; see PLACEHOLDER_KINDS).
+ * The same formula serves the entry budget check and the freeze record's
+ * `perRequest` table.
+ */
+export function estimateTemplateTokens(text) {
+  return estimateTokens(
+    String(text).replace(new RegExp(PLACEHOLDER_SOURCE, "g"), (_whole, kind) =>
+      "x".repeat(PLACEHOLDER_KINDS[kind]?.maxLength ?? 0),
+    ),
+  );
+}
+
+/**
+ * Replaces every placeholder with `lookup(kind, logicalId)`. `unresolved`
+ * lists the placeholders with no value (an unknown kind included); the text
+ * keeps them as written.
+ */
+export function resolveTemplate(text, lookup) {
+  const unresolved = [];
+  const resolved = String(text).replace(
+    new RegExp(PLACEHOLDER_SOURCE, "g"),
+    (whole, kind, logicalId) => {
+      const value = Object.hasOwn(PLACEHOLDER_KINDS, kind)
+        ? lookup(kind, logicalId)
+        : undefined;
+      if (typeof value !== "string" || value.length === 0) {
+        unresolved.push(whole);
+        return whole;
+      }
+      return value;
+    },
+  );
+  return { text: resolved, unresolved };
 }
 
 // ------------------------------------------------------------------ fixture
@@ -284,7 +413,12 @@ function validateExpectedPositive(expected, label, errors, ctx) {
     if (entry.text.includes("\n")) {
       errors.push(`${entryLabel}.text must not contain the entry separator`);
     }
-    selectedTokens += estimateTokens(entry.text);
+    errors.push(
+      ...templateErrors(entry.text, `${entryLabel}.text`, {
+        revisionIds: ctx.revisionIds,
+      }),
+    );
+    selectedTokens += estimateTemplateTokens(entry.text);
     if (!byGroup.has(entry.groupLogicalId)) {
       byGroup.set(entry.groupLogicalId, []);
       groupOrder.push(entry.groupLogicalId);
@@ -335,9 +469,13 @@ function validateExpectedPositive(expected, label, errors, ctx) {
       const entry = entries.find((row) => row?.logicalId === quote?.logicalId);
       if (!isRecord(quote) || !entry) {
         errors.push(`${quoteLabel}.logicalId must name a codex entry`);
-      } else if (!nonEmpty(quote.quote) || !entry.text.includes(quote.quote)) {
+      } else if (
+        !nonEmpty(quote.quote) ||
+        quote.quote.includes(SKELETON_MARK) ||
+        !templateSkeleton(entry.text).includes(quote.quote)
+      ) {
         errors.push(
-          `${quoteLabel}.quote must be a substring of its entry text`,
+          `${quoteLabel}.quote must be a literal substring of its entry text (not part of a placeholder)`,
         );
       }
     }
@@ -355,6 +493,13 @@ function validateExpectedPositive(expected, label, errors, ctx) {
     }
     if (forbidden.texts.some((text) => !nonEmpty(text))) {
       errors.push(`${label}.forbidden.texts must be non-empty strings`);
+    }
+    for (const [index, text] of forbidden.texts.entries()) {
+      errors.push(
+        ...templateErrors(text, `${label}.forbidden.texts[${index}]`, {
+          revisionIds: ctx.revisionIds,
+        }),
+      );
     }
     const selected = new Set(
       entries.flatMap((entry) => [entry?.logicalId, entry?.groupLogicalId]),
@@ -465,6 +610,11 @@ function validateCase(testCase, index, ctx, errors) {
       errors.push(`${variantLabel}.requests must be a non-empty array`);
       continue;
     }
+    const variantRevisionIds = new Set(
+      requests.flatMap((request) =>
+        Array.isArray(request?.revisionIds) ? request.revisionIds : [],
+      ),
+    );
     if (variant.kind === "reject") {
       if (!nonEmpty(variant.baseVariantId))
         errors.push(`${variantLabel}.baseVariantId is required`);
@@ -505,6 +655,7 @@ function validateCase(testCase, index, ctx, errors) {
           {
             ...ctx,
             userMessage: testCase.userMessage,
+            revisionIds: variantRevisionIds,
           },
         );
         if (
@@ -993,7 +1144,8 @@ function expectedSelectedTokens(expected) {
     ? estimateTokens(expected.rawText)
     : 0;
   for (const entry of expected?.codexEntries ?? []) {
-    if (typeof entry?.text === "string") total += estimateTokens(entry.text);
+    if (typeof entry?.text === "string")
+      total += estimateTemplateTokens(entry.text);
   }
   return total;
 }

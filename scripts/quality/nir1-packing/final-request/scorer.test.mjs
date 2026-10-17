@@ -15,6 +15,7 @@ import {
   checkSameInput,
   deriveSlots,
   readPayload,
+  resolveExpectedTemplate,
   scanForbidden,
   scoreFinalRequestReceipt,
   scoreP12Pair,
@@ -2186,4 +2187,403 @@ test("forbidden-and-canary-scan: a canary that holds a reserved prompt tag is fo
   assert.ok(found.includes("canary-in-payload"), JSON.stringify(found));
   assert.ok(found.includes("forbidden-text"));
   assert.ok(found.includes("other-case-material"));
+});
+
+// --------------------------------- expected text templates (DPH-1b)
+//
+// The product's qualification text holds ids that exist only after the setup
+// ran (revision / proposal / decision ids, Source revision tokens). The frozen
+// expectation is a template; the scorer resolves it from the setup receipt only.
+
+const UUID_PROPOSAL = "11111111-1111-4111-8111-111111111111";
+const UUID_DECISION = "22222222-2222-4222-8222-222222222222";
+const UUID_OTHER = "33333333-3333-4333-8333-333333333333";
+const TOKEN_1 = "v3@2026-10-17T00:00:00.000Z";
+const TOKEN_2 = "v4@2026-10-17T00:00:01.000Z";
+
+const qualificationTemplate = (revision, scene) =>
+  `{"approval":"human-approved","decisionId":"{{decisionId:${revision}}}","proposalId":"{{proposalId:${revision}}}","revisionId":"{{revisionId:${revision}}}","sourceToken":"{{revisionToken:${scene}}}"}`;
+
+const qualificationText = (revision, values) =>
+  `{"approval":"human-approved","decisionId":"${values.decisionId}","proposalId":"${values.proposalId}","revisionId":"rt:${revision}","sourceToken":"${values.token}"}`;
+
+/**
+ * Turns the qualification part of `rev-<caseId>-a` into a template, gives the
+ * setup receipt the matching ids / token, and puts the resolved text in the
+ * payload and the capture. Returns the pieces the tests mutate.
+ */
+function templatize(w, caseId, { stage = 1 } = {}) {
+  const revision = stage === 1 ? `rev-${caseId}-a` : `rev-${caseId}-c`;
+  const scene = `scene-${caseId}`;
+  const variantId = positiveId(caseId);
+  const variant = w.fixture.cases
+    .find((row) => row.caseId === caseId)
+    .variants.find((row) => row.variantId === variantId);
+  const spec = variant.requests[stage - 1];
+  spec.expected.codexEntries.find(
+    (entry) => entry.logicalId === `${revision}.qualification`,
+  ).text = qualificationTemplate(revision, scene);
+  const setup = setupOf(w.setupReceipt, caseId, variantId);
+  const row = setup.idMap.find((entry) => entry.logicalId === revision);
+  const approve = setup.events.find(
+    (event) => event.kind === "approve" && event.runtimeId === row.runtimeId,
+  );
+  setup.runtimeValues = [
+    ...(setup.runtimeValues ?? []),
+    {
+      kind: "revisionToken",
+      logicalId: scene,
+      stage,
+      value: TOKEN_1,
+      source: "product-reader-function",
+      resolvedAtSeq: approve.seq,
+    },
+  ];
+  const request = requestOf(w.receipt, caseId, variantId, stage);
+  const values = {
+    proposalId: stage === 1 ? UUID_PROPOSAL : UUID_OTHER,
+    decisionId: stage === 1 ? UUID_DECISION : UUID_OTHER,
+    token: stage === 1 ? TOKEN_1 : TOKEN_2,
+  };
+  row.proposalId = values.proposalId;
+  row.decisionId = values.decisionId;
+  setup.runtimeValues.at(-1).value = values.token;
+  const apply = (nextValues) => {
+    const text = qualificationText(revision, nextValues);
+    rewriteEntries(request, (rows) =>
+      rows.map((entry, index) => (index === 4 ? { ...entry, text } : entry)),
+    );
+    const item = request.capture.candidateSet.items.find(
+      (candidate) => candidate.itemId === `item:${revision}.qualification`,
+    );
+    item.text = text;
+    item.tokens = estimateTokens(text);
+  };
+  apply(values);
+  return { setup, request, row, revision, scene, values, apply, spec };
+}
+
+test("template-resolved-from-setup-receipt: a templated qualification scores as the literal entry would", () => {
+  const w = world();
+  templatize(w, "P-01");
+  const scored = score(w);
+  const entry = result(scored, "P-01", positiveId("P-01"));
+  assert.equal(entry.status, "passed", JSON.stringify(codes(entry)));
+  assert.equal(scored.status, "passed", JSON.stringify(scored.failures));
+});
+
+/** P-10 with both stages templated; stage 2 forbids the old qualification template. */
+function templatizeP10(w) {
+  const first = templatize(w, "P-10", { stage: 1 });
+  const second = templatize(w, "P-10", { stage: 2 });
+  second.spec.expected.forbidden.texts.push(
+    qualificationTemplate(first.revision, first.scene),
+  );
+  return { first, second };
+}
+
+test("template-resolved-from-setup-receipt: P-10 resolves each stage with its own setup values", () => {
+  const w = world();
+  templatizeP10(w);
+  const scored = score(w);
+  for (const stage of [1, 2]) {
+    const entry = result(scored, "P-10", positiveId("P-10"), stage);
+    assert.equal(
+      entry.status,
+      "passed",
+      JSON.stringify([stage, codes(entry), scored.failures]),
+    );
+  }
+  // (The reject variant shares the stage-1 expectation but not this setup, so
+  // only the positive variant is asserted here.)
+});
+
+test("template-wrong-value-fails: a wrong id or token in the payload entry is a failure", () => {
+  for (const [name, values] of [
+    ["proposalId", { proposalId: UUID_OTHER }],
+    ["decisionId", { decisionId: UUID_OTHER }],
+    ["token", { token: TOKEN_2 }],
+  ]) {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.apply({ ...t.values, ...values });
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "failed", name);
+    const found = codes(entry);
+    assert.ok(found.includes("required-entry-missing"), `${name}: ${found}`);
+    assert.ok(found.includes("unexpected-entry"), `${name}: ${found}`);
+  }
+  // A literal that still says the placeholder is not a resolved value either.
+  const w = world();
+  const t = templatize(w, "P-01");
+  t.apply({ ...t.values, proposalId: "{{proposalId:rev-P-01-a}}" });
+  assert.equal(result(score(w), "P-01", positiveId("P-01")).status, "failed");
+});
+
+test("template-wrong-value-fails: the right values in the wrong place (another Revision's ids) fail", () => {
+  const w = world();
+  const t = templatize(w, "P-01");
+  const other = t.setup.idMap.find((entry) => entry.logicalId === "rev-P-01-b");
+  other.proposalId = UUID_OTHER;
+  other.decisionId = UUID_OTHER;
+  // The entry carries rev-b's ids while the expectation names rev-a.
+  t.apply({ ...t.values, proposalId: UUID_OTHER, decisionId: UUID_OTHER });
+  assert.equal(result(score(w), "P-01", positiveId("P-01")).status, "failed");
+});
+
+test("template-observed-output-cannot-resolve: a value only the payload holds leaves the run invalid", () => {
+  // The payload holds a well-formed proposal id, but the setup receipt does
+  // not fix one: the scorer does not read it back from the output.
+  for (const [name, mutate] of [
+    [
+      "proposalId missing",
+      (t) => {
+        delete t.row.proposalId;
+      },
+    ],
+    [
+      "decisionId missing",
+      (t) => {
+        delete t.row.decisionId;
+      },
+    ],
+    [
+      "token missing",
+      (t) => {
+        t.setup.runtimeValues = [];
+      },
+    ],
+    [
+      "token row of another stage",
+      (t) => {
+        t.setup.runtimeValues[0].stage = 2;
+      },
+    ],
+    [
+      "token row of another source",
+      (t) => {
+        t.setup.runtimeValues[0].logicalId = "scene-other";
+      },
+    ],
+  ]) {
+    const w = world();
+    const t = templatize(w, "P-01");
+    mutate(t);
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid", name);
+    // A row of another stage is also setup-invalid (its event is not in that
+    // stage); the other cases reach the scorer and name the placeholder.
+    assert.ok(
+      codes(entry).some(
+        (code) =>
+          code === "setup-invalid:placeholder-unresolved" ||
+          (name.includes("another stage") &&
+            code === "setup-invalid:placeholder-source-missing"),
+      ),
+      name,
+    );
+    assert.deepEqual(entry.failures, [], name);
+  }
+});
+
+test("template-observed-output-cannot-resolve: a value sourced from a request's output is rejected by the schema", () => {
+  for (const source of [
+    "payload",
+    "capture",
+    "dfinal-result",
+    "candidate-payload",
+    "native-output",
+  ]) {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.setup.runtimeValues[0].source = source;
+    const scored = score(w);
+    assert.equal(scored.status, "rejected", source);
+    assert.ok(
+      scored.failures.some((f) =>
+        f.message.includes("runtimeValues[0].source"),
+      ),
+      source,
+    );
+  }
+  // The resolver takes the setup case and the stages, never a payload.
+  assert.equal(resolveExpectedTemplate.length, 3);
+  const w = world();
+  const t = templatize(w, "P-01");
+  const payload = requestOf(w.receipt, "P-01", positiveId("P-01")).candidate
+    .payload;
+  t.row.proposalId = undefined;
+  delete t.row.proposalId;
+  const resolved = resolveExpectedTemplate(
+    qualificationTemplate("rev-P-01-a", "scene-P-01"),
+    t.setup,
+    [1],
+  );
+  assert.deepEqual(resolved.texts, []);
+  assert.deepEqual(resolved.unresolved, ["{{proposalId:rev-P-01-a}}"]);
+  assert.ok(payload.includes(UUID_PROPOSAL));
+});
+
+test("template-source-order: a value fixed after the capture, before the writes, or by no event is setup-invalid", () => {
+  // After the capture: the value's event follows the capture event.
+  {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.setup.events.push({
+      seq: 99,
+      stage: 1,
+      kind: "approve",
+      writer: "narrative_extraction_append_human_decision",
+      runtimeId: "rt:late",
+    });
+    t.setup.runtimeValues[0].resolvedAtSeq = 99;
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(codes(entry).includes("setup-invalid:placeholder-after-capture"));
+  }
+  // Before the stage's last tree / Scope / Codex write.
+  {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.setup.runtimeValues[0].resolvedAtSeq = 1;
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(codes(entry).includes("setup-invalid:placeholder-before-writes"));
+  }
+  // By no event at all.
+  {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.setup.runtimeValues[0].resolvedAtSeq = 500;
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(
+      codes(entry).includes("setup-invalid:placeholder-source-missing"),
+    );
+  }
+  // The capture event itself is not a setup event.
+  {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.setup.runtimeValues[0].resolvedAtSeq = t.setup.events.find(
+      (e) => e.kind === "capture",
+    ).seq;
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(
+      codes(entry).includes("setup-invalid:placeholder-source-missing"),
+    );
+  }
+  // A proposal id with no prepare event of that Revision.
+  {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.setup.events = t.setup.events.filter(
+      (e) => !(e.kind === "prepare" && e.runtimeId === t.row.runtimeId),
+    );
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(
+      codes(entry).includes("setup-invalid:placeholder-source-missing"),
+    );
+  }
+  // A decision id whose approve event follows the capture.
+  {
+    const w = world();
+    const t = templatize(w, "P-01");
+    const approve = t.setup.events.find(
+      (e) => e.kind === "approve" && e.runtimeId === t.row.runtimeId,
+    );
+    approve.seq = 99;
+    t.setup.events.sort((a, b) => a.seq - b.seq);
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(codes(entry).includes("setup-invalid:placeholder-after-capture"));
+  }
+  // Two rows for the same (kind, source, stage).
+  {
+    const w = world();
+    const t = templatize(w, "P-01");
+    t.setup.runtimeValues.push({ ...t.setup.runtimeValues[0] });
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.ok(codes(entry).includes("setup-invalid:placeholder-duplicate"));
+  }
+});
+
+test("template-source-order: a resolved value is bounded ASCII", () => {
+  for (const [name, value, field] of [
+    ["too long token", "t".repeat(81), "token"],
+    ["escape character", 'a"b', "token"],
+    ["too long id", "i".repeat(37), "proposalId"],
+    ["space", "a b", "decisionId"],
+  ]) {
+    const w = world();
+    const t = templatize(w, "P-01");
+    if (field === "token") t.setup.runtimeValues[0].value = value;
+    else t.row[field] = value;
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid", name);
+  }
+});
+
+test("template-forbidden: a forbidden template resolves with the earlier stage's values", () => {
+  const w = world();
+  const { first, second } = templatizeP10(w);
+  // The stage-2 payload repeats the OLD qualification (stage-1 ids and token).
+  const oldText = qualificationText(first.revision, first.values);
+  repayload(second.request, (payload) => {
+    payload.messages[0].content = injectIntoRaw(
+      payload.messages[0].content,
+      oldText,
+    );
+  });
+  const leaked = result(score(w), "P-10", positiveId("P-10"), 2);
+  assert.ok(
+    codes(leaked).includes("forbidden-text"),
+    JSON.stringify(codes(leaked)),
+  );
+  // The same text with another token is not the old stage's entry.
+  const w2 = world();
+  const t2 = templatizeP10(w2);
+  repayload(t2.second.request, (payload) => {
+    payload.messages[0].content = injectIntoRaw(
+      payload.messages[0].content,
+      qualificationText(t2.first.revision, {
+        ...t2.first.values,
+        token: TOKEN_2,
+      }),
+    );
+  });
+  const other = result(score(w2), "P-10", positiveId("P-10"), 2);
+  assert.ok(
+    !codes(other).includes("forbidden-text"),
+    JSON.stringify(codes(other)),
+  );
+});
+
+test("template-forbidden: a forbidden proposal / decision id of an old Revision is found", () => {
+  const w = world();
+  const { first, second } = templatizeP10(w);
+  repayload(second.request, (payload) => {
+    payload.messages[0].content = injectIntoRaw(
+      payload.messages[0].content,
+      first.values.proposalId,
+    );
+  });
+  const leaked = result(score(w), "P-10", positiveId("P-10"), 2);
+  assert.ok(
+    codes(leaked).includes("forbidden-id"),
+    JSON.stringify(codes(leaked)),
+  );
+});
+
+test("template-forbidden: a forbidden template no earlier stage can resolve is setup-invalid", () => {
+  const w = world();
+  const { second } = templatizeP10(w);
+  second.spec.expected.forbidden.texts.push(
+    '{"x":"{{sourceToken:never-set}}"}',
+  );
+  const entry = result(score(w), "P-10", positiveId("P-10"), 2);
+  assert.equal(entry.status, "invalid");
+  assert.ok(codes(entry).includes("setup-invalid:placeholder-unresolved"));
 });

@@ -894,6 +894,24 @@ export const SETUP_EVENT_KINDS = Object.freeze([
 
 const SETUP_VERIFICATION_POINTS = Object.freeze(["setup-end", "request-pre"]);
 
+/**
+ * Runtime values that an expected entry text may name through a placeholder
+ * (`{{<kind>:<logicalId>}}`, see contract.mjs) beyond the Revision / proposal /
+ * decision ids carried by the id map. They are read from the database state
+ * the setup left behind, by a product writer's result or a product reader
+ * function, and are fixed before the request is built (`resolvedAtSeq`).
+ * A value read from a request's output (payload, capture, D-final result) is
+ * not a source, so the schema rejects it.
+ */
+export const RUNTIME_VALUE_KINDS = Object.freeze([
+  "revisionToken",
+  "sourceToken",
+]);
+export const RUNTIME_VALUE_SOURCES = Object.freeze([
+  "product-writer-result",
+  "product-reader-function",
+]);
+
 function validateSetupEvent(event, label, errors) {
   if (
     !closedKeys(
@@ -1002,7 +1020,7 @@ function validateSetupCase(entry, label, errors) {
         "history",
         "valid",
       ],
-      ["invalidReason", "extensions"],
+      ["invalidReason", "runtimeValues", "extensions"],
       errors,
     )
   ) {
@@ -1044,13 +1062,56 @@ function validateSetupCase(entry, label, errors) {
           row,
           `${label}.idMap[${index}]`,
           ["logicalId", "runtimeId"],
-          [],
+          ["proposalId", "decisionId"],
           errors,
         )
       ) {
         for (const key of ["logicalId", "runtimeId"]) {
           if (!str(row[key]))
             errors.push(`${label}.idMap[${index}].${key} is required`);
+        }
+        for (const key of ["proposalId", "decisionId"]) {
+          if (row[key] !== undefined && !str(row[key]))
+            errors.push(
+              `${label}.idMap[${index}].${key} must be a non-empty string`,
+            );
+        }
+      }
+    }
+  }
+  if (entry.runtimeValues !== undefined) {
+    if (!Array.isArray(entry.runtimeValues)) {
+      errors.push(`${label}.runtimeValues must be an array`);
+    } else {
+      for (const [index, row] of entry.runtimeValues.entries()) {
+        const rowLabel = `${label}.runtimeValues[${index}]`;
+        if (
+          !closedKeys(
+            row,
+            rowLabel,
+            ["kind", "logicalId", "stage", "value", "source", "resolvedAtSeq"],
+            [],
+            errors,
+          )
+        ) {
+          continue;
+        }
+        if (!RUNTIME_VALUE_KINDS.includes(row.kind)) {
+          errors.push(
+            `${rowLabel}.kind must be one of ${RUNTIME_VALUE_KINDS.join(", ")}`,
+          );
+        }
+        for (const key of ["logicalId", "value"]) {
+          if (!str(row[key])) errors.push(`${rowLabel}.${key} is required`);
+        }
+        if (!RUNTIME_VALUE_SOURCES.includes(row.source)) {
+          errors.push(
+            `${rowLabel}.source must be one of ${RUNTIME_VALUE_SOURCES.join(", ")} (a value read from a request's output cannot resolve an expectation)`,
+          );
+        }
+        for (const key of ["stage", "resolvedAtSeq"]) {
+          if (!Number.isInteger(row[key]) || row[key] < 1)
+            errors.push(`${rowLabel}.${key} must be a positive integer`);
         }
       }
     }
