@@ -14,7 +14,38 @@ import {
 import os from "node:os";
 import path from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * Windows の realpath／lstat は、file の下の存在しない名前に ENOTDIR ではなく
+ * ENOENT を返す（hosted の Windows CI で実測）。その挙動を Linux で再現する切替。
+ */
+const fsMode = vi.hoisted(() => ({ windowsNotFound: false }));
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  function asWindows<A extends unknown[], R>(
+    fn: (...args: A) => Promise<R>,
+  ): (...args: A) => Promise<R> {
+    return async (...args: A) => {
+      try {
+        return await fn(...args);
+      } catch (error) {
+        if (
+          fsMode.windowsNotFound &&
+          (error as NodeJS.ErrnoException).code === "ENOTDIR"
+        ) {
+          (error as NodeJS.ErrnoException).code = "ENOENT";
+        }
+        throw error;
+      }
+    };
+  }
+  return {
+    ...actual,
+    realpath: asWindows(actual.realpath),
+    lstat: asWindows(actual.lstat),
+  };
+});
 
 import {
   PROFILE_DATA_GUARD_ERROR_CODE,
@@ -38,6 +69,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  fsMode.windowsNotFound = false;
   rmSync(base, { recursive: true, force: true });
 });
 
@@ -203,6 +235,24 @@ describe("assertOutside", () => {
         guard().assertOutside(path.join(documents, "note.md", "child")),
       ),
     ).toBe("unresolvable");
+  });
+
+  it("file の下の名前が ENOENT になる platform（Windows）でも拒否する", async () => {
+    fsMode.windowsNotFound = true;
+    expect(
+      await reason(
+        guard().assertOutside(path.join(documents, "note.md", "child")),
+      ),
+    ).toBe("unresolvable");
+    expect(
+      await reason(
+        guard().assertOutside(path.join(documents, "note.md", "a", "b")),
+      ),
+    ).toBe("unresolvable");
+    // 存在しない名前を directory の下に付けるのは通常どおり通す。
+    await expect(
+      guard().assertOutside(path.join(documents, "new", "file.md")),
+    ).resolves.toBeUndefined();
   });
 
   it("拒否の理由に path を含めない", async () => {

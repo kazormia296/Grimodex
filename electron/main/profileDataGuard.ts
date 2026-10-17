@@ -109,7 +109,7 @@ function errorCode(error: unknown): string | undefined {
 /**
  * symlink と junction を解決した実体の path を返す。存在しない末尾の名前は
  * 最も近い既存の祖先の実体に付ける。解決できないとき（絶対 path でない、`..` を
- * 含む、ENOENT 以外の error、dangling symlink）は拒否する。
+ * 含む、ENOENT 以外の error、dangling symlink、file の下の名前）は拒否する。
  */
 async function resolveCanonical(target: string): Promise<ResolvedPath> {
   if (
@@ -124,12 +124,9 @@ async function resolveCanonical(target: string): Promise<ResolvedPath> {
   let probe = target;
   const rest: string[] = [];
   for (;;) {
+    let real: string | undefined;
     try {
-      const real = await realpath(probe);
-      return {
-        canonical: rest.length > 0 ? path.join(real, ...rest.reverse()) : real,
-        base: real,
-      };
+      real = await realpath(probe);
     } catch (error) {
       if (errorCode(error) !== "ENOENT") throw unresolvable();
       // 存在しない名前が dangling symlink なら、書込みは symlink の先に作られる。
@@ -144,7 +141,24 @@ async function resolveCanonical(target: string): Promise<ResolvedPath> {
       if (parent === probe) throw unresolvable();
       rest.push(path.basename(probe));
       probe = parent;
+      continue;
     }
+    // 存在しない名前を付ける祖先は directory でなければならない。POSIX は
+    // file の下の名前を realpath の ENOTDIR で拒否するが、Windows は ENOENT を
+    // 返して file まで遡るので、ここで同じく拒否する（fail closed）。
+    if (rest.length > 0 && !(await isDirectory(real))) throw unresolvable();
+    return {
+      canonical: rest.length > 0 ? path.join(real, ...rest.reverse()) : real,
+      base: real,
+    };
+  }
+}
+
+async function isDirectory(target: string): Promise<boolean> {
+  try {
+    return (await stat(target)).isDirectory();
+  } catch {
+    return false;
   }
 }
 
