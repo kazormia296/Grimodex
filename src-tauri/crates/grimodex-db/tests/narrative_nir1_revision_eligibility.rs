@@ -321,15 +321,22 @@ fn current_projection_token(conn: &Connection, fixture: &Fixture) -> String {
 }
 
 fn native_patch(db: &Database, fixture: &Fixture, scene: &str, patch: Value, keep_token: bool) {
-    let updated_at = if keep_token {
-        db.with_conn(|conn| {
+    // Native now guarantees that a `bumpVersion=false` patch moves `updated_at`
+    // strictly forward, so a production patch can no longer keep the body Source
+    // token. `keep_token` therefore writes through the production patch and then
+    // restores the previous `updated_at` with a direct UPDATE (test-only), which
+    // keeps the observation: the token is equal, the Feed identity still decides.
+    let previous_updated_at: String = db
+        .with_conn(|conn| {
             Ok(conn.query_row(
                 "SELECT updated_at FROM tree_nodes WHERE id = ?1",
                 [scene],
                 |row| row.get(0),
             )?)
         })
-        .expect("retain existing source coordinates")
+        .expect("retain existing source coordinates");
+    let updated_at = if keep_token {
+        previous_updated_at.clone()
     } else {
         "2026-09-08T08:00:00.000Z".to_owned()
     };
@@ -357,6 +364,16 @@ fn native_patch(db: &Database, fixture: &Fixture, scene: &str, patch: Value, kee
         },
     )
     .expect("production Native mutation and Feed append");
+    if keep_token {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET updated_at = ?1 WHERE id = ?2",
+                params![previous_updated_at, scene],
+            )?;
+            Ok(())
+        })
+        .expect("test-only restore of the body Source token");
+    }
 }
 
 fn pending_coordinates(conn: &Connection, fixture: &Fixture) -> (i64, i64) {

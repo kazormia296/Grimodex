@@ -422,15 +422,21 @@ fn native_patch_node(
     patch: Value,
     retain_body_token: bool,
 ) {
-    let updated_at = if retain_body_token {
-        db.with_conn(|conn| {
+    // Native guarantees a `bumpVersion=false` patch moves `updated_at` strictly
+    // forward, so a production patch cannot keep the body Source token. To keep
+    // the observation (equal token, Feed identity decides), write through the
+    // production patch and then restore `updated_at` directly (test-only).
+    let previous_updated_at: String = db
+        .with_conn(|conn| {
             Ok(conn.query_row(
                 "SELECT updated_at FROM tree_nodes WHERE id = ?1",
                 [scene],
                 |row| row.get(0),
             )?)
         })
-        .expect("retain unaffected body source coordinates")
+        .expect("retain unaffected body source coordinates");
+    let updated_at = if retain_body_token {
+        previous_updated_at.clone()
     } else {
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     };
@@ -458,6 +464,16 @@ fn native_patch_node(
         },
     )
     .expect("production Native source/order mutation");
+    if retain_body_token {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![previous_updated_at, scene],
+            )?;
+            Ok(())
+        })
+        .expect("test-only restore of the body Source token");
+    }
 }
 
 fn native_set_mode(db: &Database, fixture: &Fixture, mode: &str) {

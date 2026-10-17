@@ -281,14 +281,13 @@ fn validate_absolute_date(
     Ok(())
 }
 
-fn fresh_updated_at(previous: &str) -> String {
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-    if now == previous {
-        (chrono::Utc::now() + chrono::Duration::nanoseconds(1))
-            .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
-    } else {
-        now
-    }
+/// `max(now, previous + 1ns)`. Chronicle bulk Scene rewrites keep `version`, so
+/// the Scene body Source token `v{version}@{updated_at}` stays distinct from
+/// every earlier value only if `updated_at` moves strictly forward as an
+/// instant, even when a renderer wrote a future `updatedAt` through
+/// `tree_node_patch` (T guarantee; see `strictly_later_updated_at`).
+fn fresh_updated_at(previous: &str) -> anyhow::Result<String> {
+    crate::domain_writes::strictly_later_updated_at(None, previous)
 }
 
 fn event_snapshot_related_ids(snapshot: &Value) -> Vec<String> {
@@ -1271,7 +1270,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
 
     let mut scene_scope_refresh_events = Vec::new();
     for (target_state, current_state) in target.scenes.iter_mut().zip(&current.scenes) {
-        target_state.updated_at = fresh_updated_at(&current_state.updated_at);
+        target_state.updated_at = fresh_updated_at(&current_state.updated_at)?;
         scene_scope_refresh_events.push(update_scene_to_state(
             conn,
             project_id,
@@ -1551,7 +1550,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                                 *end_time = None;
                                 *end_minute = None;
                                 *end_granularity = "none".to_string();
-                                *updated_at = fresh_updated_at(&record.updated_at);
+                                *updated_at = fresh_updated_at(&record.updated_at)?;
                                 *version = next_version;
                             }
                             (
@@ -1569,7 +1568,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                             ) => {
                                 *next_primary = primary_codex_id.clone();
                                 *next_group = lane_group.clone();
-                                *updated_at = fresh_updated_at(&record.updated_at);
+                                *updated_at = fresh_updated_at(&record.updated_at)?;
                                 *version = next_version;
                             }
                             (
@@ -1599,7 +1598,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                                 *end_time = *next_end;
                                 *end_minute = *next_end_minute;
                                 *end_granularity = next_end_granularity.clone();
-                                *updated_at = fresh_updated_at(&record.updated_at);
+                                *updated_at = fresh_updated_at(&record.updated_at)?;
                                 *version = next_version;
                             }
                             _ => anyhow::bail!(
@@ -1655,7 +1654,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
                         };
                         let current = scene_state(record, kind);
                         let mut next = current.clone();
-                        next.updated_at = fresh_updated_at(&record.updated_at);
+                        next.updated_at = fresh_updated_at(&record.updated_at)?;
                         match operation {
                             ChronicleBulkOperation::SceneClearDate { .. } => {
                                 next.chronicle_start_time = None;
@@ -2299,6 +2298,180 @@ mod tests {
             Ok(())
         })
         .expect("verify full rollback after feed failure");
+    }
+
+    fn scene_body_token(db: &Database, scene_id: &str) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT 'v' || version || '@' || updated_at FROM tree_nodes WHERE id = ?1",
+                rusqlite::params![scene_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("scene body Source token")
+    }
+
+    fn scene_updated_at(db: &Database, scene_id: &str) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT updated_at FROM tree_nodes WHERE id = ?1",
+                rusqlite::params![scene_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("scene updated_at")
+    }
+
+    fn unversioned_title_patch(
+        db: &Database,
+        project_id: &str,
+        scene_id: &str,
+        label: &str,
+        updated_at: &str,
+    ) -> anyhow::Result<Value> {
+        let mut patch = serde_json::Map::new();
+        patch.insert("title".to_string(), json!(label));
+        crate::domain_writes::tree_node_patch(
+            db,
+            crate::domain_writes::TreeNodePatchPayload {
+                project_id: project_id.to_string(),
+                request_id: format!("t-patch-{label}"),
+                session_id: "session".to_string(),
+                event_uid: format!("t-patch-event-{label}"),
+                node_id: scene_id.to_string(),
+                patch,
+                base_version: None,
+                bump_version: false,
+                updated_at: updated_at.to_string(),
+                change_event: None,
+                timelapse_doc_step_coverage: None,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                source_domain: None,
+                op_type: None,
+                canonical_payload: None,
+            },
+        )
+    }
+
+    fn instant(value: &str) -> chrono::DateTime<chrono::Utc> {
+        crate::domain_writes::parse_updated_at_instant(value).expect("interpretable timestamp")
+    }
+
+    #[test]
+    fn patch_chronicle_bulk_patch_interleave_never_returns_token() {
+        let db = test_db();
+        let (project_id, codex_id, _event_delete_id, _event_clear_id, scene_id) = setup(&db);
+        let future = "2099-01-01T00:00:00.000Z";
+        let mut seen = vec![scene_body_token(&db, &scene_id)];
+        let mut record = |db: &Database, step: &str| {
+            let token = scene_body_token(db, &scene_id);
+            assert!(
+                !seen.contains(&token),
+                "{step}: body Source token {token} returned to an earlier value {seen:?}"
+            );
+            let updated_at = scene_updated_at(db, &scene_id);
+            let last = seen.last().expect("previous token");
+            let previous_at = last.split_once('@').expect("token shape").1;
+            assert!(
+                instant(&updated_at) > instant(previous_at),
+                "{step}: updated_at {updated_at} is not strictly after {previous_at}"
+            );
+            seen.push(token);
+        };
+
+        // W1: a renderer-style patch writes a future updatedAt verbatim.
+        unversioned_title_patch(&db, &project_id, &scene_id, "a", future).unwrap();
+        assert_eq!(scene_updated_at(&db, &scene_id), future);
+        record(&db, "first patch");
+
+        // W2: forward must not move updated_at back to the (earlier) wall clock.
+        let forward = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "t-forward".to_string(),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::SceneSetPov {
+                    scene_id: scene_id.clone(),
+                    base_updated_at: future.to_string(),
+                    pov_character_id: Some(codex_id),
+                }],
+            },
+        )
+        .unwrap();
+        record(&db, "bulk forward");
+        assert!(instant(&scene_updated_at(&db, &scene_id)) > instant(future));
+
+        let journal_id = forward["undoJournalId"].as_str().unwrap().to_string();
+        for (round, direction) in ["undo", "redo", "undo"].into_iter().enumerate() {
+            crate::agent_writes::agent_undo_journal_impl(
+                &db,
+                crate::agent_writes::AgentUndoJournalPayload {
+                    request_id: format!("t-{direction}-{round}"),
+                    project_id: project_id.clone(),
+                    session_id: "session".to_string(),
+                    journal_id: journal_id.clone(),
+                    direction: direction.to_string(),
+                    authority_route: "history-replay".to_string(),
+                    origin: direction.to_string(),
+                    caller: "undo-redo-command".to_string(),
+                    controls: history_replay_controls(),
+                },
+            )
+            .unwrap();
+            record(&db, direction);
+        }
+
+        // W1 again with the SAME updatedAt as the first patch: Native writes
+        // current + 1ns instead of the earlier value.
+        unversioned_title_patch(&db, &project_id, &scene_id, "b", future).unwrap();
+        record(&db, "patch with an already used updatedAt");
+        // ... and the same declaration again, and a stale one, never repeat.
+        unversioned_title_patch(&db, &project_id, &scene_id, "c", future).unwrap();
+        record(&db, "repeated declaration");
+        unversioned_title_patch(&db, &project_id, &scene_id, "d", "2026-07-29T00:00:00.000Z")
+            .unwrap();
+        record(&db, "stale declaration");
+    }
+
+    #[test]
+    fn bulk_scene_rewrite_keeps_updated_at_strictly_after_a_future_value() {
+        let db = test_db();
+        let (project_id, codex_id, _event_delete_id, _event_clear_id, scene_id) = setup(&db);
+        // An updatedAt far ahead of the wall clock, with fewer fractional digits
+        // than the Native nanosecond form.
+        unversioned_title_patch(
+            &db,
+            &project_id,
+            &scene_id,
+            "future",
+            "2099-01-01T00:00:00.5Z",
+        )
+        .unwrap();
+        let before = scene_body_token(&db, &scene_id);
+        agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "future-forward".to_string(),
+                project_id,
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::SceneSetPov {
+                    scene_id: scene_id.clone(),
+                    base_updated_at: "2099-01-01T00:00:00.5Z".to_string(),
+                    pov_character_id: Some(codex_id),
+                }],
+            },
+        )
+        .unwrap();
+        assert_ne!(scene_body_token(&db, &scene_id), before);
+        assert_eq!(
+            scene_updated_at(&db, &scene_id),
+            "2099-01-01T00:00:00.500000001Z"
+        );
     }
 
     #[test]
