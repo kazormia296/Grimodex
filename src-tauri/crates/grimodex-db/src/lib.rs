@@ -859,6 +859,7 @@ pub mod narrative_extraction;
 pub mod narrative_runtime_policy;
 pub mod nir1_generation;
 mod nir1_generation_history;
+pub mod nir1_local_audit;
 pub mod plot_threads;
 pub mod post_effect;
 pub mod profile_egress_policy;

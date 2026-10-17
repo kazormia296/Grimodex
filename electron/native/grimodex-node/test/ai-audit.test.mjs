@@ -172,3 +172,61 @@ test("AI audit N-API exports pin workspace/scope/high-water and round-trip JSON"
     /AI_AUDIT_WORKSPACE_CHANGED/,
   );
 });
+
+test("AI audit N-API generic append rejects the reserved NIR-1 local generation namespace without writing", async () => {
+  // Runs after the first test, which leaves the workspace open.
+  const expectedWorkspacePath = realpathSync(join(root, "workspace"));
+  const highWater = async () =>
+    JSON.parse(
+      await backend.aiAuditReadSnapshot(
+        expectedWorkspacePath,
+        projectId,
+        0,
+        undefined,
+        1,
+      ),
+    ).highWaterSequence;
+  const before = await highWater();
+
+  const reservedExecution = "nir1-local-generation:execution:attempt-1";
+  const overrides = [
+    ["pathId", { pathId: "nir1_local_generation_writing" }],
+    ["pathId", { pathId: "nir1_local_generation_review" }],
+    [
+      "eventId",
+      { eventId: "nir1-local-generation:event:attempt-1:execution.started" },
+    ],
+    ["executionId", { executionId: reservedExecution }],
+    [
+      "operationId",
+      { operationId: "nir1-local-generation:operation:attempt-1" },
+    ],
+    ["parentExecutionId", { parentExecutionId: reservedExecution }],
+    ["executionId", { executionId: "  NIR1-LOCAL-GENERATION:execution:x" }],
+  ];
+  for (const [field, override] of overrides) {
+    // A valid first event does not make the batch partially writable.
+    const batch = [
+      event("reserved-probe-ok", "execution.started", 10),
+      { ...event("reserved-probe-bad", "execution.started", 11), ...override },
+    ];
+    await assert.rejects(
+      backend.aiAuditAppendBatch(expectedWorkspacePath, projectId, batch),
+      /AI_AUDIT_RESERVED_NAMESPACE.*events\[1\]/,
+      field,
+    );
+    assert.equal(await highWater(), before, `${field}: nothing is written`);
+  }
+
+  // The unreserved lifecycle keeps working after the rejections.
+  const ok = JSON.parse(
+    await backend.aiAuditAppendBatch(expectedWorkspacePath, projectId, [
+      {
+        ...event("after-reject-1", "execution.started", 20),
+        executionId: "execution-after",
+      },
+    ]),
+  );
+  assert.equal(ok.insertedCount, 1);
+  assert.equal(await highWater(), before + 1);
+});

@@ -5208,6 +5208,69 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("ai_audit_append_batch: NIR-1 local生成の予約path IDとID namespaceをbatchごと拒否する", async () => {
+    const { backend, calls } = fakeBackend();
+    const base = {
+      eventId: "event-1",
+      executionId: "execution-1",
+      operationId: "operation-1",
+      parentExecutionId: null,
+      pathId: "chat.direct",
+      eventType: "execution.started",
+      timestamp: 1_700_000_000_000,
+      payload: { captureState: "complete", credentialsExcluded: true },
+    };
+    const reserved = "nir1-local-generation:execution:attempt-1";
+    const bad: Array<[string, Record<string, unknown>]> = [
+      ["pathId", { pathId: "nir1_local_generation_writing" }],
+      ["pathId", { pathId: "nir1_local_generation_review" }],
+      ["pathId", { pathId: " NIR1_LOCAL_GENERATION_REVIEW\t" }],
+      ["eventId", { eventId: reserved }],
+      ["executionId", { executionId: reserved }],
+      ["operationId", { operationId: "nir1-local-generation:operation:a" }],
+      ["parentExecutionId", { parentExecutionId: reserved }],
+      ["executionId", { executionId: "  NIR1-Local-Generation:x" }],
+    ];
+    for (const [field, override] of bad) {
+      // 先頭の正当な event があっても、途中の1件で batch 全体を拒否する。
+      const result = await dispatchInvoke(
+        "ai_audit_append_batch",
+        {
+          projectId: "p1",
+          expectedWorkspacePath: "/workspaces/novel",
+          events: [base, { ...base, eventId: "event-2", ...override }],
+        },
+        { backend, shell: noShell },
+      );
+      expect(result.ok, field).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain(`events[1].${field}`);
+      }
+    }
+    expect(calls).toHaveLength(0);
+
+    // 予約に近いだけの ID と、既存の正例は変わらない。
+    const ok = await dispatchInvoke(
+      "ai_audit_append_batch",
+      {
+        projectId: "p1",
+        expectedWorkspacePath: "/workspaces/novel",
+        events: [
+          base,
+          {
+            ...base,
+            eventId: "nir1-local-gen:event-2",
+            executionId: "xnir1-local-generation:1",
+            pathId: "nir1_local_generation_writing2",
+          },
+        ],
+      },
+      { backend, shell: noShell },
+    );
+    expect(ok.ok).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
   it("ai_audit_append_batch: AI-visible tool schemaとuser contentのcredential同名キーはexactに保持する", async () => {
     const aiAuditAppendBatch = vi
       .fn()
