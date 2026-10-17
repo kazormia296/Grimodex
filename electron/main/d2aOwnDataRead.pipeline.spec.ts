@@ -1,0 +1,689 @@
+// NIR-1 DA-1 ST3 (K3/2 Positive (1) の表示、Negative (2)(3)(18)〜(22)):
+// own-data-read を、実 router + 実 gate + 実 Native を通して固定する。
+//
+// 開放（D2A_OWN_DATA_READ_OPEN と grimodex-db の PROFILE_EGRESS_READ_OPEN_ENABLED）
+// は、WebRTC の finding（da1-decisions.md の Y-1）の対処が確認されるまで入れない。
+// そのため期待値は開放の状態から選ぶ。
+//   - 閉じたまま（現在）: restricted の own-data-read は plaintext-publication と
+//     同じく invoke の時点で拒否され、Native も read-open の読取を拒否する。
+//   - 開いたとき（pending。開放 commit が定数を true にすると自動で切り替わる）:
+//     restricted で unrestricted と同じ内容が返り、保存データは変わらず、
+//     credential は返らず、DML / closed の表 / 台帳にない書込みは拒否される。
+// 開いた状態の分岐は、定数を一時的に true にして napi:build し直した手元の
+// 実行で通ることを確かめてある（記録は da1-decisions.md）。
+//
+// 実 Native の addon が要るので `vitest.electron-native.config.ts` だけが拾う。
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
+
+import { afterAll, describe, expect, it, vi } from "vitest";
+
+import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
+import {
+  NATIVE_CLOSED_TABLES,
+  NATIVE_READ_OPEN_COLUMNS,
+  NATIVE_READ_OPEN_TABLES,
+} from "./d2aSqlPolicyFixture.js";
+
+const mocks = vi.hoisted(() => ({
+  handlers: new Map<string, (...args: unknown[]) => unknown>(),
+}));
+
+vi.mock("electron", () => ({
+  app: {
+    getVersion: () => "0.0.0-test",
+    getPath: () => os.tmpdir(),
+    getGPUFeatureStatus: () => ({}),
+  },
+  dialog: { showOpenDialog: vi.fn(), showSaveDialog: vi.fn() },
+  shell: { openExternal: vi.fn(), openPath: vi.fn() },
+  BrowserWindow: {
+    fromWebContents: vi.fn(() => null),
+    getAllWindows: () => [],
+  },
+  ipcMain: {
+    handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
+      mocks.handlers.set(channel, handler);
+    },
+    on: vi.fn(),
+  },
+}));
+vi.mock("./windows.js", () => ({
+  focusPanelWindow: () => false,
+  hasPanelWindow: () => false,
+  openPanelWindow: () => undefined,
+}));
+
+const ROOT = path.resolve(__dirname, "..", "..");
+const ADDON = path.join(
+  ROOT,
+  "electron",
+  "native",
+  "grimodex-node",
+  "grimodex-node.node",
+);
+const require = createRequire(import.meta.url);
+const { Backend } = require(ADDON) as {
+  Backend: new (appData: string) => NapiBackendLike & Record<string, any>;
+};
+
+const MARKER = "D2A_EGRESS_DENIED:";
+/** A credential that exists in the profile; no read may return it. */
+const CREDENTIAL_SENTINEL = "sk-d2a-own-data-read-CREDENTIAL-SENTINEL";
+const roots: string[] = [];
+afterAll(() => {
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+
+interface Rig {
+  route: (
+    cmd: string,
+    args?: Record<string, unknown>,
+    senderId?: number,
+  ) => Promise<Envelope>;
+  gate: Awaited<
+    ReturnType<(typeof import("./profileEgress.js"))["createProfileEgressGate"]>
+  >;
+  open: boolean;
+  nativeDbExecute: NapiBackendLike["dbExecute"];
+}
+
+/** A fresh module graph + router on `appData`, as a Main process would start. */
+async function startMain(
+  appData: string,
+  options: {
+    /** Delay the Native activation until released (an activation in flight). */
+    holdActivation?: Promise<void>;
+    /** Hide the profile-egress startup surface: an unavailable gate. */
+    unavailable?: boolean;
+  } = {},
+): Promise<Rig> {
+  vi.resetModules();
+  mocks.handlers.clear();
+  const backend = new Backend(appData);
+  const proxied = new Proxy(backend, {
+    get(target, property) {
+      if (options.unavailable && property === "initializeProfileEgress") {
+        return undefined;
+      }
+      if (options.holdActivation && property === "activateProfileEgress") {
+        return async () => {
+          await options.holdActivation;
+          return target.activateProfileEgress!();
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const { createProfileEgressGate, D2A_OWN_DATA_READ_OPEN } =
+    await import("./profileEgress.js");
+  const { registerEventBus } = await import("./events.js");
+  const { registerIpcRouter } = await import("./ipc.js");
+  const { IPC } = await import("../shared/ipcContract.js");
+
+  const gate = await createProfileEgressGate(proxied as NapiBackendLike);
+  registerEventBus(proxied as NapiBackendLike, undefined, gate);
+  registerIpcRouter(
+    proxied as NapiBackendLike,
+    {} as never,
+    {
+      resolveApiKeyForRequest: () => CREDENTIAL_SENTINEL,
+      getApiKeyForRequest: () => CREDENTIAL_SENTINEL,
+    } as never,
+    undefined,
+    { active: false },
+    gate,
+  );
+  const handler = mocks.handlers.get(IPC.invoke) as (
+    event: unknown,
+    cmd: unknown,
+    args: unknown,
+  ) => Promise<Envelope>;
+  const sender = (id: number) => ({
+    sender: { id, isDestroyed: () => false, once: () => undefined },
+  });
+  return {
+    gate,
+    open: D2A_OWN_DATA_READ_OPEN,
+    route: (cmd, args, senderId = 7) =>
+      handler(sender(senderId), cmd, args ?? {}),
+    nativeDbExecute: backend.dbExecute.bind(backend),
+  };
+}
+
+function newAppData(): string {
+  const root = mkdtempSync(path.join(os.tmpdir(), "grimodex-own-data-read-"));
+  roots.push(root);
+  const appData = path.join(root, "app-data");
+  mkdirSync(appData, { recursive: true });
+  // A credential in the profile's AI settings, to prove no read returns it.
+  writeFileSync(
+    path.join(appData, "ai-settings.json"),
+    JSON.stringify({
+      provider: "openai-compatible",
+      model: "mock-model",
+      openaiCompatibleEndpoints: [
+        {
+          id: "test",
+          baseUrl: "http://127.0.0.1:9",
+          apiKey: CREDENTIAL_SENTINEL,
+          headers: { Authorization: `Bearer ${CREDENTIAL_SENTINEL}` },
+        },
+      ],
+      activeOpenaiCompatibleEndpointId: "test",
+    }),
+  );
+  return appData;
+}
+
+function ok<T>(envelope: Envelope): T {
+  if (!envelope.ok) throw new Error(`expected ok, got: ${envelope.error}`);
+  return envelope.value as T;
+}
+
+function failureOf(envelope: Envelope): string {
+  expect(envelope.ok).toBe(false);
+  return envelope.ok ? "" : envelope.error;
+}
+
+interface Workspace {
+  path: string;
+  projectId: string;
+}
+
+/** Sample workspace + a chat session with messages, written while unrestricted. */
+async function seedWorkspace(rig: Rig): Promise<Workspace> {
+  const seeded = ok<{ path: string; projectId: string }>(
+    await rig.route("seed_sample_workspace", {
+      language: "ja",
+      aiPolicy: '{"preset":"full"}',
+    }),
+  );
+  ok(await rig.route("open_workspace", { path: seeded.path }));
+  const run = (sql: string, params: unknown[]) =>
+    rig.route("db_execute", { sql, params, method: "run" });
+  ok(
+    await run("INSERT INTO chat_sessions(id, project_id) VALUES (?, ?)", [
+      "own-session",
+      seeded.projectId,
+    ]),
+  );
+  for (const [id, role, content] of [
+    ["own-m1", "user", "第一章の続きを書きたい"],
+    ["own-m2", "assistant", "了解しました。灯台の場面から始めましょう"],
+  ]) {
+    ok(
+      await run(
+        "INSERT INTO chat_messages(id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+        [id, "own-session", role, content, "2026-10-18T00:00:00.000Z"],
+      ),
+    );
+  }
+  return { path: seeded.path, projectId: seeded.projectId };
+}
+
+interface ReadCall {
+  name: string;
+  cmd: string;
+  args: Record<string, unknown>;
+}
+
+/** Representative own-data-read calls (typed commands and generic SQL). */
+function readCalls(ws: Workspace): ReadCall[] {
+  const sql = (name: string, query: string, params: unknown[] = []) => ({
+    name,
+    cmd: "db_execute",
+    args: { sql: query, params, method: "all" },
+  });
+  return [
+    sql(
+      "chat history",
+      "SELECT id, role, content FROM chat_messages WHERE session_id = ? ORDER BY id",
+      ["own-session"],
+    ),
+    sql(
+      "chat sessions",
+      "SELECT id, project_id FROM chat_sessions ORDER BY id",
+    ),
+    sql(
+      "chat join",
+      "SELECT s.id, count(m.id) AS n FROM chat_sessions s JOIN chat_messages m ON m.session_id = s.id GROUP BY s.id",
+    ),
+    sql(
+      "WITH over chat",
+      "WITH m AS (SELECT content FROM chat_messages) SELECT count(*) AS n FROM m",
+    ),
+    sql(
+      "change feed payload",
+      "SELECT sequence, payload FROM change_events ORDER BY sequence LIMIT 5",
+    ),
+    {
+      name: "batch of reads",
+      cmd: "db_execute_batch",
+      args: {
+        statements: [
+          {
+            sql: "SELECT count(*) AS n FROM chat_sessions",
+            params: [],
+            method: "all",
+          },
+          {
+            sql: "SELECT count(*) AS n FROM chat_messages",
+            params: [],
+            method: "all",
+          },
+        ],
+      },
+    },
+    {
+      name: "lint dictionary",
+      cmd: "lint_term_dictionary_list",
+      args: { projectId: ws.projectId },
+    },
+    {
+      name: "lint ignore",
+      cmd: "lint_ignore_list",
+      args: { projectId: ws.projectId },
+    },
+    { name: "trash", cmd: "trash_bin_list", args: { projectId: ws.projectId } },
+    {
+      name: "foreshadows",
+      cmd: "foreshadow_list_with_labels",
+      args: { projectId: ws.projectId },
+    },
+    {
+      name: "plot threads",
+      cmd: "plot_thread_list",
+      args: { projectId: ws.projectId },
+    },
+    {
+      name: "post-effect runs",
+      cmd: "list_post_effect_runs",
+      args: { projectId: ws.projectId },
+    },
+    {
+      name: "annotations",
+      cmd: "list_annotations_for_project",
+      args: { projectId: ws.projectId },
+    },
+    {
+      name: "scene lens",
+      cmd: "list_scene_lens_for_project",
+      args: { projectId: ws.projectId },
+    },
+    {
+      name: "full-text search",
+      cmd: "fts_search",
+      args: { projectId: ws.projectId, query: "灯台", scope: "all", limit: 5 },
+    },
+    {
+      name: "codex highlight",
+      cmd: "codex_match_text",
+      args: { text: "灯台の場面", excludeEntryIds: [] },
+    },
+    {
+      name: "audit verify",
+      cmd: "ai_audit_verify",
+      args: { expectedWorkspacePath: ws.path, projectId: ws.projectId },
+    },
+  ];
+}
+
+/** Writes and denied reads the restricted profile must keep refusing. */
+function refusedCalls(ws: Workspace): ReadCall[] {
+  const sql = (
+    name: string,
+    query: string,
+    params: unknown[] = [],
+    method = "run",
+  ) => ({
+    name,
+    cmd: "db_execute",
+    args: { sql: query, params, method },
+  });
+  return [
+    // closed tables (reads), by the ledger's own names
+    ...NATIVE_CLOSED_TABLES.map((table) =>
+      sql(
+        `closed read ${table}`,
+        `SELECT * FROM "${table}" LIMIT 1`,
+        [],
+        "all",
+      ),
+    ),
+    sql(
+      "closed read mixed with a read-open table",
+      "SELECT c.content FROM chat_messages c JOIN narrative_proposals p ON 1 = 1",
+      [],
+      "all",
+    ),
+    // DML on the read-open class (Negative (18))
+    sql(
+      "chat_sessions insert",
+      "INSERT INTO chat_sessions(id, project_id) VALUES ('x', 'y')",
+    ),
+    sql(
+      "chat_sessions update",
+      "UPDATE chat_sessions SET project_id = 'z' WHERE id = 'own-session'",
+    ),
+    sql(
+      "chat_sessions update node_id",
+      "UPDATE chat_sessions SET node_id = NULL",
+    ),
+    sql(
+      "chat_sessions delete",
+      "DELETE FROM chat_sessions WHERE id = 'own-session'",
+    ),
+    sql(
+      "chat_messages update (reads columns)",
+      "UPDATE chat_messages SET content = content || '!' WHERE id = 'own-m1'",
+    ),
+    sql(
+      "chat_messages update (constants)",
+      "UPDATE chat_messages SET is_starred = 1",
+    ),
+    sql(
+      "chat_messages delete",
+      "DELETE FROM chat_messages WHERE id = 'own-m1'",
+    ),
+    sql(
+      "cte insert into the ledger",
+      "WITH s AS (SELECT 1 AS n) INSERT INTO chat_sessions(id, project_id) SELECT 'x', 'y' FROM s",
+    ),
+    sql(
+      "cte delete from the ledger",
+      "WITH s AS (SELECT id FROM chat_messages) DELETE FROM chat_messages WHERE id IN (SELECT id FROM s)",
+    ),
+    sql(
+      "upsert into the ledger",
+      "INSERT INTO chat_sessions(id, project_id) VALUES ('own-session', 'p') ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id",
+    ),
+    sql("feed table delete", "DELETE FROM change_events"),
+    // RETURNING, and a write dressed as a read to a table outside the ledger
+    sql(
+      "returning",
+      "INSERT INTO app_settings(key, value) VALUES ('k', 'v') RETURNING value",
+      [],
+      "all",
+    ),
+    sql(
+      "cte write elsewhere reading the ledger",
+      "WITH s AS (SELECT content FROM chat_messages) INSERT INTO app_settings(key, value) SELECT 'leak', content FROM s",
+    ),
+    {
+      name: "batch with a ledger write",
+      cmd: "db_execute_batch",
+      args: {
+        statements: [
+          {
+            sql: "SELECT count(*) AS n FROM chat_sessions",
+            params: [],
+            method: "all",
+          },
+          { sql: "DELETE FROM chat_sessions", params: [], method: "run" },
+        ],
+      },
+    },
+    // not in the own-data-read ledger
+    {
+      name: "claim_task",
+      cmd: "narrative_extraction_claim_task",
+      args: { payload: {} },
+    },
+    {
+      name: "pack_context",
+      cmd: "nir1_pack_context",
+      args: { projectId: ws.projectId },
+    },
+  ];
+}
+
+/**
+ * A digest of every table of the workspace database. It is computed in a
+ * separate process: opening the same SQLite file from a second library inside
+ * this process (next to Native's connection) can drop Native's POSIX locks and
+ * crash the worker.
+ */
+const DIGEST_SCRIPT = `
+const { DatabaseSync } = require("node:sqlite");
+const { createHash } = require("node:crypto");
+const db = new DatabaseSync(process.argv[1], { readOnly: true });
+const hash = createHash("sha256");
+const tables = db
+  .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+  .all();
+for (const { name } of tables) {
+  // Native's own ai audit appends are out of scope for "the author's data".
+  if (name === "ai_audit_events") continue;
+  hash.update(name);
+  for (const row of db.prepare('SELECT * FROM "' + name + '"').all()) {
+    hash.update(JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? String(v) : v)));
+  }
+}
+process.stdout.write(hash.digest("hex"));
+db.close();
+`;
+
+function dataDigest(workspacePath: string): string | null {
+  try {
+    return execFileSync(
+      process.execPath,
+      ["--no-warnings", "-e", DIGEST_SCRIPT, path.join(workspacePath, "grimodex.db")],
+      { encoding: "utf8", timeout: 30_000 },
+    );
+  } catch {
+    return null;
+  }
+}
+
+function leavesNoCredential(envelope: Envelope): void {
+  expect(JSON.stringify(envelope)).not.toContain(CREDENTIAL_SENTINEL);
+  expect(JSON.stringify(envelope).toLowerCase()).not.toContain("bearer ");
+}
+
+describe("own-data-read through the real router, gate and Native", () => {
+  it("the test fixture policy is exactly what Native publishes", async () => {
+    const appData = newAppData();
+    const first = new Backend(appData);
+    const status = JSON.parse(await first.initializeProfileEgress!()) as {
+      sqlPolicy: Record<string, unknown>;
+    };
+    expect(status.sqlPolicy).toEqual({
+      version: 2,
+      closedTables: [...NATIVE_CLOSED_TABLES],
+      readOpenTables: [...NATIVE_READ_OPEN_TABLES],
+      readOpenColumns: NATIVE_READ_OPEN_COLUMNS,
+    });
+  });
+
+  it("restricted reads follow the opening; writes, closed tables and credentials never open", async () => {
+    const appData = newAppData();
+    const rig = await startMain(appData);
+    expect(rig.gate.restricted).toBe(false);
+    const ws = await seedWorkspace(rig);
+
+    // The baseline: what an unrestricted profile returns for each read.
+    const baseline = new Map<string, unknown>();
+    for (const call of readCalls(ws)) {
+      const envelope = await rig.route(call.cmd, call.args);
+      baseline.set(call.name, ok(envelope));
+      leavesNoCredential(envelope);
+    }
+    expect(
+      JSON.stringify(baseline.get("chat history")),
+      "the baseline holds the author's own chat",
+    ).toContain("灯台");
+    const digestBefore = dataDigest(ws.path);
+    expect(
+      digestBefore,
+      "the unchanged-data check needs node:sqlite (Node 22.13+)",
+    ).not.toBeNull();
+
+    await rig.gate.activateFirstRestrictedPublication!();
+    expect(rig.gate.restricted).toBe(true);
+    expect(rig.gate.unavailable).toBe(false);
+
+    for (const call of readCalls(ws)) {
+      const envelope = await rig.route(call.cmd, call.args);
+      leavesNoCredential(envelope);
+      if (rig.open) {
+        expect(ok(envelope), call.name).toEqual(baseline.get(call.name));
+      } else {
+        expect(failureOf(envelope), call.name).toContain(MARKER);
+      }
+    }
+
+    for (const call of refusedCalls(ws)) {
+      const envelope = await rig.route(call.cmd, call.args);
+      leavesNoCredential(envelope);
+      expect(failureOf(envelope), call.name).toContain(MARKER);
+    }
+    // Native's DML arm is the authority for ledger writes, independent of Main's
+    // early classification (K3/2 Negative (18)). Called straight into Native
+    // with the Main-issued identity. A form that also reads columns reaches the
+    // DML arm only once the read-open class is open; before that the read arm
+    // rejects it first.
+    const identity = JSON.stringify(rig.gate.issueCallerIdentity(7));
+    for (const [sql, readsColumns] of [
+      ["INSERT INTO chat_sessions(id, project_id) VALUES ('x', 'y')", false],
+      ["UPDATE chat_sessions SET project_id = 'z'", false],
+      ["UPDATE chat_sessions SET node_id = NULL", false],
+      ["DELETE FROM chat_sessions", false],
+      ["UPDATE chat_messages SET is_starred = 1", false],
+      ["UPDATE chat_messages SET content = content || '!' WHERE id = 'own-m1'", true],
+      ["UPDATE chat_sessions SET node_id = node_id WHERE id = 'own-session'", true],
+    ] as const) {
+      const message = await rig
+        .nativeDbExecute(sql, [], "run", identity)
+        .then(
+          () => "",
+          (error: unknown) =>
+            error instanceof Error ? error.message : String(error),
+        );
+      expect(message, sql).toContain(MARKER);
+      if (rig.open || !readsColumns) {
+        expect(message, sql).toContain("protected DML target");
+      }
+    }
+
+    // Nothing the restricted profile did changed the author's data.
+    const digestAfter = dataDigest(ws.path);
+    expect(digestAfter).toBe(digestBefore);
+    const survivors = ok<{ rows: Array<Record<string, unknown>> }>(
+      await rig.route("db_execute", {
+        sql: "SELECT key FROM app_settings WHERE key IN ('leak', 'k')",
+        params: [],
+        method: "all",
+      }),
+    );
+    expect(survivors.rows).toEqual([]);
+  });
+
+  it("ordinary non-ledger work keeps running while restricted (unchanged)", async () => {
+    const appData = newAppData();
+    const rig = await startMain(appData);
+    await seedWorkspace(rig);
+    await rig.gate.activateFirstRestrictedPublication!();
+    ok(
+      await rig.route("db_execute", {
+        sql: "INSERT INTO app_settings(key, value) VALUES (?, ?)",
+        params: ["own-data-read-probe", "v"],
+        method: "run",
+      }),
+    );
+    const read = await rig.route("db_execute", {
+      sql: "SELECT value FROM app_settings WHERE key = ?",
+      params: ["own-data-read-probe"],
+      method: "all",
+    });
+    expect(
+      JSON.stringify(ok(read)),
+      "app_settings is not a ledger table",
+    ).toContain('"v"');
+  });
+
+  it("a process restarted on a restricted profile behaves the same", async () => {
+    const appData = newAppData();
+    const first = await startMain(appData);
+    const ws = await seedWorkspace(first);
+    const baseline = new Map<string, unknown>();
+    for (const call of readCalls(ws)) {
+      baseline.set(call.name, ok(await first.route(call.cmd, call.args)));
+    }
+    await first.gate.activateFirstRestrictedPublication!();
+
+    const restarted = await startMain(appData);
+    expect(restarted.gate.restricted).toBe(true);
+    ok(await restarted.route("open_workspace", { path: ws.path }));
+    for (const call of readCalls(ws)) {
+      const envelope = await restarted.route(call.cmd, call.args);
+      leavesNoCredential(envelope);
+      if (restarted.open) {
+        expect(ok(envelope), call.name).toEqual(baseline.get(call.name));
+      } else {
+        expect(failureOf(envelope), call.name).toContain(MARKER);
+      }
+    }
+    for (const call of refusedCalls(ws)) {
+      expect(
+        failureOf(await restarted.route(call.cmd, call.args)),
+        call.name,
+      ).toContain(MARKER);
+    }
+  });
+
+  it("refuses at invoke while an activation is in flight (Negative (3))", async () => {
+    const appData = newAppData();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const rig = await startMain(appData, { holdActivation: held });
+    const ws = await seedWorkspace(rig);
+    const activation = rig.gate.activateFirstRestrictedPublication!();
+    expect(rig.gate.restricted).toBe(true);
+    for (const call of readCalls(ws)) {
+      expect(
+        failureOf(await rig.route(call.cmd, call.args)),
+        call.name,
+      ).toContain(MARKER);
+    }
+    release();
+    await activation;
+  });
+
+  it("refuses everything own-data-read when the Native gate is unavailable", async () => {
+    const appData = newAppData();
+    const rig = await startMain(appData, { unavailable: true });
+    expect(rig.gate.unavailable).toBe(true);
+    for (const call of readCalls({ path: "/none", projectId: "p" })) {
+      expect(
+        failureOf(await rig.route(call.cmd, call.args)),
+        call.name,
+      ).toContain(MARKER);
+    }
+  });
+
+  it("Native alone rejects a classified write, whatever Main sends (authority)", async () => {
+    const appData = newAppData();
+    const rig = await startMain(appData);
+    await seedWorkspace(rig);
+    await rig.gate.activateFirstRestrictedPublication!();
+    const identity = rig.gate.issueCallerIdentity(7);
+    // Skipping Main's classification path: a statement Main classified
+    // own-data-read is read-only-checked inside Native.
+    await expect(
+      rig.nativeDbExecute(
+        "INSERT INTO app_settings(key, value) VALUES ('direct', 'v')",
+        [],
+        "run",
+        JSON.stringify(identity),
+        true,
+      ),
+    ).rejects.toThrow(/not read-only/);
+  });
+});

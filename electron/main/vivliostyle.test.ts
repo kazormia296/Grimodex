@@ -25,6 +25,7 @@ import {
 } from "./vivliostyle.js";
 import { createProfileEgressGate } from "./profileEgress.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
+import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 
 class FakeRunningProcess implements RunningCliProcess {
   readonly pid = 4242;
@@ -935,11 +936,7 @@ describe("VivliostyleManager preview / lifecycle", () => {
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: {
-        version: 1,
-        protectedTables: ["messages"],
-        protectedColumns: [],
-      },
+      sqlPolicy: nativeSqlPolicyV2(),
     };
     const activateProfileEgress = vi.fn(async () =>
       JSON.stringify({
@@ -982,11 +979,7 @@ describe("VivliostyleManager preview / lifecycle", () => {
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: {
-        version: 1,
-        protectedTables: ["messages"],
-        protectedColumns: [],
-      },
+      sqlPolicy: nativeSqlPolicyV2(),
     };
     const activateProfileEgress = vi.fn(async () =>
       JSON.stringify({

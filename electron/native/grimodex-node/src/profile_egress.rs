@@ -931,15 +931,19 @@ mod tests {
         let status = state.status();
         let policy = grimodex_db::profile_egress_policy::sql_policy_for_status();
         assert_eq!(status.sql_policy.version, policy.version);
-        assert_eq!(status.sql_policy.protected_tables, policy.protected_tables);
+        assert_eq!(status.sql_policy.version, 2);
+        assert_eq!(status.sql_policy.closed_tables, policy.closed_tables);
+        assert_eq!(status.sql_policy.read_open_tables, policy.read_open_tables);
         assert_eq!(
-            status.sql_policy.protected_columns,
-            policy.protected_columns
+            status.sql_policy.read_open_columns,
+            policy.read_open_columns
         );
         let json = serde_json::to_value(status).expect("status JSON");
         assert_eq!(json["sqlPolicy"]["version"], policy.version);
-        assert!(json["sqlPolicy"]["protectedTables"].is_array());
-        assert!(json["sqlPolicy"]["protectedColumns"].is_array());
+        assert!(json["sqlPolicy"]["closedTables"].is_array());
+        assert!(json["sqlPolicy"]["readOpenTables"].is_array());
+        assert!(json["sqlPolicy"]["readOpenColumns"].is_array());
+        assert!(json["sqlPolicy"].get("protectedTables").is_none());
         let _ = fs::remove_file(path);
     }
 

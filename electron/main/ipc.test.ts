@@ -17,6 +17,7 @@ import {
   createProfileEgressGate,
   D2A_EGRESS_DENIED_MARKER,
 } from "./profileEgress.js";
+import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -2923,11 +2924,7 @@ describe("NIR-1 router sender binding", () => {
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: {
-        version: 1,
-        protectedTables: ["narrative_extraction_runs"],
-        protectedColumns: [],
-      },
+      sqlPolicy: nativeSqlPolicyV2(),
     };
     const activatedStatus = {
       ...initialStatus,
@@ -3227,51 +3224,7 @@ describe("NIR-1 router sender binding", () => {
           restricted: true,
           handlesInvalidated: true,
           inFlightStopped: true,
-          sqlPolicy: {
-            version: 1,
-            protectedTables: [
-              "ab_comparison_runs",
-              "ab_comparisons",
-              "ai_audit_events",
-              "chat_message_chunks",
-              "chat_messages_fts",
-              "chat_messages_fts_en",
-              "chat_message_prompts",
-              "chat_messages",
-              "chat_runtime_threads",
-              "chat_sessions",
-              "chat_summaries",
-              "generation_logs",
-              "messages",
-              "narrative_apply_commits",
-              "narrative_apply_operations",
-              "narrative_commit_journals",
-              "narrative_extraction_artifacts",
-              "narrative_extraction_attempts",
-              "narrative_extraction_runs",
-              "narrative_extraction_tasks",
-              "narrative_proposal_decisions",
-              "narrative_proposal_revisions",
-              "narrative_proposal_sets",
-              "narrative_proposals",
-              "post_effect_annotation_relations",
-              "post_effect_annotations",
-              "post_effect_annotations_fts",
-              "post_effect_annotations_fts_en",
-              "post_effect_runs",
-              "impact_review_baselines",
-              "scene_lens_data",
-              "scene_chunks",
-              "codex_chunks",
-              "event_chunks",
-              "undo_journal",
-              "prose_staging",
-            ],
-            protectedColumns: [
-              { table: "change_events", column: "payload" },
-              { table: "state_snapshots", column: "payload" },
-            ],
-          },
+          sqlPolicy: nativeSqlPolicyV2(),
         }),
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
@@ -3420,11 +3373,7 @@ describe("NIR-1 router sender binding", () => {
       restricted: true,
       handlesInvalidated: true,
       inFlightStopped: true,
-      sqlPolicy: {
-        version: 1,
-        protectedTables: ["chat_sessions", "chat_messages"],
-        protectedColumns: [],
-      },
+      sqlPolicy: nativeSqlPolicyV2(),
     };
     const responses: string[] = [];
     const captureCurrentChatInput = vi.fn(async () => responses.shift()!);

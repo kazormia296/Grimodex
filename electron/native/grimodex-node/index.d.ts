@@ -197,15 +197,23 @@ export declare class Backend {
    * は "run" | "get" | "all" | "values"。
    * 返り値: mainが消費する内部種別marker付きのJSON文字列。mainはrendererへ
    * 渡す前に `__grimodexDbResultKind` を除去する。
+   *
+   * `own_data_read` は Electron main だけが付ける分類（K3/2 `own-data-read`）。
+   * true のとき、restricted profile では prepare 後の文が読取専用
+   * （`stmt.readonly()`）でなければ実行前に拒否する。renderer の値は main が
+   * 捨てる。None は分類なし（従来どおり）。unrestricted では使わない。
    */
-  dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null): Promise<string>
+  dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null, ownDataRead?: boolean | undefined | null): Promise<string>
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
    * `statements` は `[{ sql, params, method }, …]`。
    * 返り値: 最終文のrowsと、mainが消費する内部種別markerを載せたJSON文字列。
+   *
+   * `own_data_read` は `db_execute` と同じ分類を文ごとに渡す（長さは
+   * `statements` と一致しなければ拒否する）。
    */
-  dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null): Promise<string>
+  dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null, ownDataRead?: Array<boolean> | undefined | null): Promise<string>
   /** Read Native-owned Narrative runtime policy (Release Gate B Foundation). */
   narrativeRuntimePolicyGet(): Promise<string>
   /** CAS update for Native-owned Narrative runtime policy. */

@@ -20,6 +20,7 @@ import {
 
 import {
   bindCanonicalAuthorityContext,
+  D2A_DB_OWN_DATA_READ,
   dispatchInvoke,
   IPC,
   IPC_BACKEND_UNAVAILABLE_MARKER,
@@ -2165,6 +2166,24 @@ export function registerIpcRouter(
           profileEgress?.assertInvoke(cmd, dispatchArgs);
         } catch (error) {
           return { ok: false, error: toErrorString(error) };
+        }
+        // `own-data-read` (K3/2): Main's own classification of a generic DB
+        // statement travels to Native as a non-enumerable, symbol-keyed
+        // sidecar so Native can require a read-only statement. Any value of
+        // that key a caller supplied is discarded first; it is never used.
+        if (cmd === "db_execute" || cmd === "db_execute_batch") {
+          Reflect.deleteProperty(dispatchArgs, D2A_DB_OWN_DATA_READ);
+          const ownDataRead = profileEgress?.classifyOwnDataRead?.(
+            cmd,
+            dispatchArgs,
+          );
+          if (ownDataRead !== undefined) {
+            Object.defineProperty(dispatchArgs, D2A_DB_OWN_DATA_READ, {
+              value: ownDataRead,
+              enumerable: false,
+              configurable: true,
+            });
+          }
         }
         const dispatch = (): Promise<Envelope> =>
           dispatchInvoke(cmd, dispatchArgs, {
