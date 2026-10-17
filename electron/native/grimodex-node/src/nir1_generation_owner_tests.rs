@@ -575,6 +575,7 @@ impl OwnerFixture {
                     version_id: submission.message_version_id().into(),
                     parent_attempt_id: None,
                 },
+                input_use: grimodex_db::nir1_generation::InputUse::CurrentTurn,
             }],
             qualifications: vec![],
             created_at_ms: now,

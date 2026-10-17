@@ -348,14 +348,136 @@ pub enum InputTarget {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+/// `referenceVersion` of the per-input reference rows (`reference_json` of
+/// `nir1_generation_input_refs` and `nir1_generation_qualification_refs`).
+/// Version 1 rows have no such key and are read for terminalization and
+/// recovery only. This build writes version 2 and rejects every other value.
+const REFERENCE_VERSION: u64 = 2;
+const REFERENCE_VERSION_UNSUPPORTED_ERROR: &str = "NIR1_GENERATION_REFERENCE_VERSION_UNSUPPORTED";
+const REFERENCE_FORMAT_MIXED_ERROR: &str = "NIR1_GENERATION_REFERENCE_FORMAT_MIXED";
+const REFERENCE_INVALID_ERROR: &str = "NIR1_GENERATION_REFERENCE_INVALID";
+/// Domain of the final input digest over version 2 reference rows.
+pub const INPUT_DIGEST_DOMAIN: &str = "nir1-generation-inputs@2";
+/// Domain of the digest over version 1 reference rows (read-only).
+const LEGACY_INPUT_DIGEST_DOMAIN_V1: &str = "nir1-generation-inputs@1";
+/// Domain of the D1 selection digest (`d1_selection_digest`).
+pub const D1_SELECTION_DIGEST_DOMAIN: &str = "nir1-generation-d1-selection@1";
+/// Identity of the D1 qualification reference; its version is the selection
+/// digest.
+pub const D1_SELECTION_IDENTITY: &str = "d1-selection";
+
+/// `referenceVersion` of a version 2 reference row. It serializes as the
+/// integer 2, and every other value fails to deserialize.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ReferenceVersionV2;
+
+impl Serialize for ReferenceVersionV2 {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u64(REFERENCE_VERSION)
+    }
+}
+
+impl<'de> Deserialize<'de> for ReferenceVersionV2 {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        if u64::deserialize(deserializer)? == REFERENCE_VERSION {
+            Ok(Self)
+        } else {
+            Err(serde::de::Error::custom(
+                REFERENCE_VERSION_UNSUPPORTED_ERROR,
+            ))
+        }
+    }
+}
+
+/// How the reference rows of a stored attempt were written.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReferenceFormat {
+    /// Version 2 rows (input-use, typed N/A and Scope roles).
+    V2,
+    /// Version 1 rows: verified against their digest, then not exposed.
+    /// `StoredAttempt.inputs` and `qualifications` stay empty, so claim and
+    /// history cannot use them; a history reader excludes such an attempt.
+    LegacyV1,
+}
+
+/// How an adopted input is used by the request (K4/3 section 5). Native
+/// derives it from the input type, role and position; a renderer never
+/// supplies it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InputUse {
+    /// The current Human message (ordinal 0).
+    CurrentTurn,
+    /// A requalified past Human message or generated output.
+    AdoptedHistory,
+    /// Raw, accepted Revision or Graph-derived material chosen by D1.
+    SelectedMaterial,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InputReference {
     pub role: InputRole,
     pub target: InputTarget,
+    pub input_use: InputUse,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+/// Wire form of [`InputReference`] (version 2).
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InputReferenceWire {
+    reference_version: ReferenceVersionV2,
+    role: InputRole,
+    target: InputTarget,
+    input_use: InputUse,
+}
+
+impl From<InputReferenceWire> for InputReference {
+    fn from(wire: InputReferenceWire) -> Self {
+        Self {
+            role: wire.role,
+            target: wire.target,
+            input_use: wire.input_use,
+        }
+    }
+}
+
+impl From<&InputReference> for InputReferenceWire {
+    fn from(reference: &InputReference) -> Self {
+        Self {
+            reference_version: ReferenceVersionV2,
+            role: reference.role.clone(),
+            target: reference.target.clone(),
+            input_use: reference.input_use,
+        }
+    }
+}
+
+impl Serialize for InputReference {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        InputReferenceWire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for InputReference {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        InputReferenceWire::deserialize(deserializer).map(Self::from)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum QualificationKind {
     Source,
@@ -367,16 +489,1054 @@ pub enum QualificationKind {
     D1,
 }
 
-/// Exact reference/version only. Qualification content is never copied here.
-/// `input_ordinal` identifies the adopted input whose full qualification this
-/// reference belongs to; an accepted Revision is not split into new authorities.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+const ALL_QUALIFICATION_KINDS: [QualificationKind; 7] = [
+    QualificationKind::Source,
+    QualificationKind::Revision,
+    QualificationKind::Decision,
+    QualificationKind::Freshness,
+    QualificationKind::Index,
+    QualificationKind::Scope,
+    QualificationKind::D1,
+];
+
+/// Why a qualification kind does not apply to an input (K4/3 section 3).
+/// The reasons are the closed set of the typed N/A table.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotApplicableReason {
+    NotARevision,
+    HumanAuthored,
+    DerivedFromParents,
+    ManuscriptSource,
+    ImmutableMessageVersion,
+    TargetSceneBodyNotADependency,
+    ExactSourceToken,
+    NotIndexDerived,
+    FixedUserSlot,
+}
+
+/// The role of a present Scope reference (K4/3 sections 2, 3 and 13). Native
+/// writes it from the type of the reference; history never infers it from an
+/// identity string.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScopeRole {
+    ProjectAuthority,
+    QuerySceneScope,
+    QuerySceneSource,
+    QuerySceneIncarnation,
+    RevealState,
+    ScopeAxis,
+    TypedScope,
+    MaterialSceneProof,
+}
+
+impl ScopeRole {
+    /// The roles that occur exactly once for a Revision or Graph-derived input.
+    const REVISION_SINGLETONS: [ScopeRole; 6] = [
+        ScopeRole::ProjectAuthority,
+        ScopeRole::QuerySceneScope,
+        ScopeRole::QuerySceneSource,
+        ScopeRole::QuerySceneIncarnation,
+        ScopeRole::RevealState,
+        ScopeRole::ScopeAxis,
+    ];
+    /// The roles of a Human, generated-output or Raw input.
+    const SCENE_ONLY: [ScopeRole; 2] =
+        [ScopeRole::QuerySceneScope, ScopeRole::QuerySceneIncarnation];
+
+    /// Roles whose first identity component is the attempt's target Scene.
+    fn names_target_scene(self) -> bool {
+        matches!(
+            self,
+            ScopeRole::QuerySceneScope
+                | ScopeRole::QuerySceneSource
+                | ScopeRole::QuerySceneIncarnation
+                | ScopeRole::RevealState
+                | ScopeRole::ScopeAxis
+        )
+    }
+}
+
+/// Exact reference/version only, or a typed N/A. Qualification content is
+/// never copied here. `input_ordinal` identifies the adopted input whose full
+/// qualification this reference belongs to; an accepted Revision is not split
+/// into new authorities.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QualificationReference {
     pub input_ordinal: usize,
     pub kind: QualificationKind,
-    pub identity: String,
-    pub version: String,
+    pub body: QualificationBody,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QualificationBody {
+    Present {
+        identity: String,
+        version: String,
+        /// `Some` exactly for a Scope reference.
+        scope_role: Option<ScopeRole>,
+    },
+    NotApplicable {
+        reason: NotApplicableReason,
+    },
+}
+
+impl QualificationReference {
+    pub fn present(
+        input_ordinal: usize,
+        kind: QualificationKind,
+        identity: impl Into<String>,
+        version: impl Into<String>,
+    ) -> Self {
+        Self {
+            input_ordinal,
+            kind,
+            body: QualificationBody::Present {
+                identity: identity.into(),
+                version: version.into(),
+                scope_role: None,
+            },
+        }
+    }
+
+    pub fn scope(
+        input_ordinal: usize,
+        role: ScopeRole,
+        identity: impl Into<String>,
+        version: impl Into<String>,
+    ) -> Self {
+        Self {
+            input_ordinal,
+            kind: QualificationKind::Scope,
+            body: QualificationBody::Present {
+                identity: identity.into(),
+                version: version.into(),
+                scope_role: Some(role),
+            },
+        }
+    }
+
+    pub fn not_applicable(
+        input_ordinal: usize,
+        kind: QualificationKind,
+        reason: NotApplicableReason,
+    ) -> Self {
+        Self {
+            input_ordinal,
+            kind,
+            body: QualificationBody::NotApplicable { reason },
+        }
+    }
+
+    pub fn identity(&self) -> Option<&str> {
+        match &self.body {
+            QualificationBody::Present { identity, .. } => Some(identity),
+            QualificationBody::NotApplicable { .. } => None,
+        }
+    }
+
+    pub fn version(&self) -> Option<&str> {
+        match &self.body {
+            QualificationBody::Present { version, .. } => Some(version),
+            QualificationBody::NotApplicable { .. } => None,
+        }
+    }
+
+    pub fn scope_role(&self) -> Option<ScopeRole> {
+        match &self.body {
+            QualificationBody::Present { scope_role, .. } => *scope_role,
+            QualificationBody::NotApplicable { .. } => None,
+        }
+    }
+
+    pub fn not_applicable_reason(&self) -> Option<NotApplicableReason> {
+        match &self.body {
+            QualificationBody::NotApplicable { reason } => Some(*reason),
+            QualificationBody::Present { .. } => None,
+        }
+    }
+}
+
+/// Wire form of [`QualificationReference`] (version 2): a present reference
+/// or a typed N/A, selected by `state`.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(
+    tag = "state",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum QualificationWire {
+    Present {
+        reference_version: ReferenceVersionV2,
+        input_ordinal: usize,
+        kind: QualificationKind,
+        identity: String,
+        version: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope_role: Option<ScopeRole>,
+    },
+    NotApplicable {
+        reference_version: ReferenceVersionV2,
+        input_ordinal: usize,
+        kind: QualificationKind,
+        reason: NotApplicableReason,
+    },
+}
+
+impl From<QualificationWire> for QualificationReference {
+    fn from(wire: QualificationWire) -> Self {
+        match wire {
+            QualificationWire::Present {
+                input_ordinal,
+                kind,
+                identity,
+                version,
+                scope_role,
+                ..
+            } => Self {
+                input_ordinal,
+                kind,
+                body: QualificationBody::Present {
+                    identity,
+                    version,
+                    scope_role,
+                },
+            },
+            QualificationWire::NotApplicable {
+                input_ordinal,
+                kind,
+                reason,
+                ..
+            } => Self {
+                input_ordinal,
+                kind,
+                body: QualificationBody::NotApplicable { reason },
+            },
+        }
+    }
+}
+
+impl From<&QualificationReference> for QualificationWire {
+    fn from(reference: &QualificationReference) -> Self {
+        match &reference.body {
+            QualificationBody::Present {
+                identity,
+                version,
+                scope_role,
+            } => Self::Present {
+                reference_version: ReferenceVersionV2,
+                input_ordinal: reference.input_ordinal,
+                kind: reference.kind,
+                identity: identity.clone(),
+                version: version.clone(),
+                scope_role: *scope_role,
+            },
+            QualificationBody::NotApplicable { reason } => Self::NotApplicable {
+                reference_version: ReferenceVersionV2,
+                input_ordinal: reference.input_ordinal,
+                kind: reference.kind,
+                reason: *reason,
+            },
+        }
+    }
+}
+
+impl Serialize for QualificationReference {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        QualificationWire::from(self).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for QualificationReference {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        QualificationWire::deserialize(deserializer).map(Self::from)
+    }
+}
+
+/// Input row format 1: `{role, target}`. Read for the digest check only.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyInputReferenceV1 {
+    role: InputRole,
+    target: InputTarget,
+}
+
+/// Qualification row format 1: `{inputOrdinal, kind, identity, version}`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LegacyQualificationReferenceV1 {
+    input_ordinal: usize,
+    kind: QualificationKind,
+    identity: String,
+    version: String,
+}
+
+/// Reads only `referenceVersion`. Other keys are skipped, and a duplicated
+/// `referenceVersion` key is a parse error.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferenceVersionProbe {
+    #[serde(default)]
+    reference_version: Option<Value>,
+}
+
+enum VersionedReference<C, L> {
+    Legacy(L),
+    Current(C),
+}
+
+/// The single parser of a stored reference row. An explicit `referenceVersion`
+/// selects the struct before the whole value is parsed, and every struct
+/// denies unknown fields. A later version adds an arm here; until then it is
+/// rejected. A row without the key is format 1.
+fn parse_versioned_reference<C, L>(raw: &str) -> Result<VersionedReference<C, L>>
+where
+    C: serde::de::DeserializeOwned,
+    L: serde::de::DeserializeOwned,
+{
+    let probe: ReferenceVersionProbe =
+        serde_json::from_str(raw).context(REFERENCE_INVALID_ERROR)?;
+    match probe.reference_version {
+        None => Ok(VersionedReference::Legacy(
+            serde_json::from_str(raw).context(REFERENCE_INVALID_ERROR)?,
+        )),
+        Some(Value::Number(version)) if version.as_u64() == Some(REFERENCE_VERSION) => {
+            Ok(VersionedReference::Current(
+                serde_json::from_str(raw).context(REFERENCE_INVALID_ERROR)?,
+            ))
+        }
+        Some(_) => anyhow::bail!(REFERENCE_VERSION_UNSUPPORTED_ERROR),
+    }
+}
+
+type StoredInputRow = VersionedReference<InputReference, LegacyInputReferenceV1>;
+type StoredQualificationRow =
+    VersionedReference<QualificationReference, LegacyQualificationReferenceV1>;
+
+/// The reference rows of one stored attempt after the version dispatch.
+struct VersionedReferences {
+    format: ReferenceFormat,
+    inputs: Vec<InputReference>,
+    qualifications: Vec<QualificationReference>,
+    /// The digest this attempt's rows must reproduce.
+    computed_digest: String,
+}
+
+/// Dispatch both reference lists. All rows of an attempt must share one
+/// format. An attempt without any rows is judged by its stored digest domain.
+fn read_versioned_references(
+    inputs: Vec<StoredInputRow>,
+    qualifications: Vec<StoredQualificationRow>,
+    stored_digest: &str,
+) -> Result<VersionedReferences> {
+    let mut current_inputs = Vec::new();
+    let mut legacy_inputs = Vec::new();
+    for row in inputs {
+        match row {
+            VersionedReference::Current(row) => current_inputs.push(row),
+            VersionedReference::Legacy(row) => legacy_inputs.push(row),
+        }
+    }
+    let mut current_qualifications = Vec::new();
+    let mut legacy_qualifications = Vec::new();
+    for row in qualifications {
+        match row {
+            VersionedReference::Current(row) => current_qualifications.push(row),
+            VersionedReference::Legacy(row) => legacy_qualifications.push(row),
+        }
+    }
+    let has_current = !current_inputs.is_empty() || !current_qualifications.is_empty();
+    let has_legacy = !legacy_inputs.is_empty() || !legacy_qualifications.is_empty();
+    ensure!(
+        !(has_current && has_legacy),
+        "{}",
+        REFERENCE_FORMAT_MIXED_ERROR
+    );
+    let current_digest = input_digest(&current_inputs, &current_qualifications)?;
+    let legacy_digest = legacy_input_digest(&legacy_inputs, &legacy_qualifications)?;
+    let legacy = if has_legacy {
+        true
+    } else if has_current {
+        false
+    } else {
+        // No rows at all: the stored digest names the domain it was made with.
+        current_digest != stored_digest && legacy_digest == stored_digest
+    };
+    if legacy {
+        Ok(VersionedReferences {
+            format: ReferenceFormat::LegacyV1,
+            inputs: Vec::new(),
+            qualifications: Vec::new(),
+            computed_digest: legacy_digest,
+        })
+    } else {
+        Ok(VersionedReferences {
+            format: ReferenceFormat::V2,
+            inputs: current_inputs,
+            qualifications: current_qualifications,
+            computed_digest: current_digest,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Typed targets, the typed N/A table and the completeness rule (K4/3 section 3)
+// ---------------------------------------------------------------------------
+
+/// Escape one identity component so that `:` joins components without any
+/// collision. Only `%` and `:` change, so a UUID is unchanged.
+pub fn escape_identity_component(component: &str) -> String {
+    component.replace('%', "%25").replace(':', "%3A")
+}
+
+fn unescape_identity_component(component: &str) -> Option<String> {
+    if component.is_empty() {
+        return None;
+    }
+    let bytes = component.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'%' => {
+                match bytes.get(index + 1..index + 3)? {
+                    b"25" => out.push(b'%'),
+                    b"3A" => out.push(b':'),
+                    _ => return None,
+                }
+                index += 3;
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Build the identity of a present Scope reference from its role and typed
+/// components (K4/3 section 13). The component count is fixed per role: two
+/// for `typed-scope` (revision ID, index) and `material-scene-proof`
+/// (anchor Scene ID, incarnation), otherwise one.
+pub fn scope_identity(role: ScopeRole, components: &[&str]) -> Result<String> {
+    let escaped: Vec<String> = components
+        .iter()
+        .map(|component| escape_identity_component(component))
+        .collect();
+    let identity = match (role, escaped.as_slice()) {
+        (ScopeRole::ProjectAuthority, [a]) => format!("project:scope-authority:{a}"),
+        (ScopeRole::QuerySceneScope, [a]) => format!("scene:{a}"),
+        (ScopeRole::QuerySceneSource, [a]) => format!("scene-source:{a}"),
+        (ScopeRole::QuerySceneIncarnation, [a]) => format!("scene-incarnation:{a}"),
+        (ScopeRole::RevealState, [a]) => format!("reveal-state:{a}"),
+        (ScopeRole::ScopeAxis, [a]) => format!("scope-axis:{a}"),
+        (ScopeRole::TypedScope, [a, b]) => format!("revision:{a}:typed-scope:{b}"),
+        (ScopeRole::MaterialSceneProof, [a, b]) => format!("scene:{a}:{b}"),
+        _ => anyhow::bail!("NIR1_GENERATION_SCOPE_IDENTITY_ARITY"),
+    };
+    Ok(identity)
+}
+
+/// The typed components of a Scope identity built by [`scope_identity`], or
+/// `None` when the identity does not follow the role's grammar.
+pub fn parse_scope_identity(role: ScopeRole, identity: &str) -> Option<Vec<String>> {
+    let segments: Vec<&str> = identity.split(':').collect();
+    let components: Vec<&str> = match (role, segments.as_slice()) {
+        (ScopeRole::ProjectAuthority, ["project", "scope-authority", a]) => vec![a],
+        (ScopeRole::QuerySceneScope, ["scene", a]) => vec![a],
+        (ScopeRole::QuerySceneSource, ["scene-source", a]) => vec![a],
+        (ScopeRole::QuerySceneIncarnation, ["scene-incarnation", a]) => vec![a],
+        (ScopeRole::RevealState, ["reveal-state", a]) => vec![a],
+        (ScopeRole::ScopeAxis, ["scope-axis", a]) => vec![a],
+        (ScopeRole::TypedScope, ["revision", a, "typed-scope", b]) => vec![a, b],
+        (ScopeRole::MaterialSceneProof, ["scene", a, b]) => vec![a, b],
+        _ => return None,
+    };
+    components
+        .into_iter()
+        .map(unescape_identity_component)
+        .collect()
+}
+
+/// The `(kind, target)` of a present reference as a typed tuple. Two
+/// references are the same target when their tuples are equal, whatever their
+/// versions are; the comparison never looks at a joined identity string.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct TypedTarget {
+    pub kind: QualificationKind,
+    pub scope_role: Option<ScopeRole>,
+    pub components: Vec<String>,
+}
+
+/// The typed target of a present reference, `Ok(None)` for a typed N/A, and
+/// `Err(MalformedTarget)` when a Scope identity does not follow its role.
+pub fn typed_target(
+    reference: &QualificationReference,
+) -> std::result::Result<Option<TypedTarget>, CompletenessReason> {
+    let QualificationBody::Present {
+        identity,
+        scope_role,
+        ..
+    } = &reference.body
+    else {
+        return Ok(None);
+    };
+    if identity.is_empty() {
+        return Err(CompletenessReason::MalformedTarget);
+    }
+    let components = match (reference.kind, scope_role) {
+        (QualificationKind::Scope, Some(role)) => {
+            parse_scope_identity(*role, identity).ok_or(CompletenessReason::MalformedTarget)?
+        }
+        (QualificationKind::Scope, None) => return Err(CompletenessReason::ScopeRoleInvalid),
+        (_, Some(_)) => return Err(CompletenessReason::ScopeRoleInvalid),
+        (_, None) => vec![identity.clone()],
+    };
+    Ok(Some(TypedTarget {
+        kind: reference.kind,
+        scope_role: *scope_role,
+        components,
+    }))
+}
+
+/// How a recorded reference is compared on every later turn (K4/3 section 13).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReferenceClass {
+    /// Compared exactly: Source, Revision, Decision, Index and typed scope.
+    Dependency,
+    /// Recorded, not compared; re-judged by the current evaluation.
+    RequestContext,
+    /// Compared as part of the turn's own context (scene, incarnation, axis).
+    TurnContext,
+    /// The D1 selection, recomputed from the stored rows.
+    D1Selection,
+}
+
+/// Classify a present reference by its kind and Scope role only. A Scope
+/// reference without a role has no class.
+pub fn classify_reference(
+    kind: QualificationKind,
+    scope_role: Option<ScopeRole>,
+) -> Option<ReferenceClass> {
+    match kind {
+        QualificationKind::Source
+        | QualificationKind::Revision
+        | QualificationKind::Decision
+        | QualificationKind::Index => Some(ReferenceClass::Dependency),
+        QualificationKind::Freshness => Some(ReferenceClass::RequestContext),
+        QualificationKind::D1 => Some(ReferenceClass::D1Selection),
+        QualificationKind::Scope => match scope_role? {
+            ScopeRole::TypedScope => Some(ReferenceClass::Dependency),
+            ScopeRole::ProjectAuthority
+            | ScopeRole::RevealState
+            | ScopeRole::QuerySceneSource
+            | ScopeRole::MaterialSceneProof => Some(ReferenceClass::RequestContext),
+            ScopeRole::QuerySceneScope
+            | ScopeRole::QuerySceneIncarnation
+            | ScopeRole::ScopeAxis => Some(ReferenceClass::TurnContext),
+        },
+    }
+}
+
+/// The row of the typed N/A table that an input falls in.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputClass {
+    CurrentHuman,
+    HistoryHuman,
+    GeneratedOutput,
+    RawSource,
+    AcceptedRevision,
+    GraphEvidence,
+    Artifact,
+}
+
+fn input_class(input: &InputReference) -> Option<InputClass> {
+    match (&input.target, &input.role, input.input_use) {
+        (InputTarget::Message { .. }, InputRole::User, InputUse::CurrentTurn) => {
+            Some(InputClass::CurrentHuman)
+        }
+        (InputTarget::Message { .. }, InputRole::User, InputUse::AdoptedHistory) => {
+            Some(InputClass::HistoryHuman)
+        }
+        (InputTarget::Message { .. }, InputRole::Assistant, InputUse::AdoptedHistory) => {
+            Some(InputClass::GeneratedOutput)
+        }
+        (InputTarget::RawSource { .. }, InputRole::Context, InputUse::SelectedMaterial) => {
+            Some(InputClass::RawSource)
+        }
+        (InputTarget::AcceptedRevision { .. }, InputRole::Context, InputUse::SelectedMaterial) => {
+            Some(InputClass::AcceptedRevision)
+        }
+        (InputTarget::GraphEvidence { .. }, InputRole::Context, InputUse::SelectedMaterial) => {
+            Some(InputClass::GraphEvidence)
+        }
+        (
+            InputTarget::Artifact { .. },
+            _,
+            InputUse::AdoptedHistory | InputUse::SelectedMaterial,
+        ) => Some(InputClass::Artifact),
+        _ => None,
+    }
+}
+
+/// One cell of the K4/3 section 3 table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TableCell {
+    /// At least one present reference.
+    Required,
+    /// A typed N/A with one of these reasons.
+    NotApplicable(&'static [NotApplicableReason]),
+    /// The input type is unsupported: no kind is evaluated.
+    Unsupported,
+}
+
+const NA_NOT_A_REVISION: &[NotApplicableReason] = &[NotApplicableReason::NotARevision];
+const NA_HUMAN_AUTHORED: &[NotApplicableReason] = &[NotApplicableReason::HumanAuthored];
+const NA_DERIVED_FROM_PARENTS: &[NotApplicableReason] = &[NotApplicableReason::DerivedFromParents];
+const NA_MANUSCRIPT_SOURCE: &[NotApplicableReason] = &[NotApplicableReason::ManuscriptSource];
+const NA_IMMUTABLE_MESSAGE: &[NotApplicableReason] =
+    &[NotApplicableReason::ImmutableMessageVersion];
+const NA_RAW_FRESHNESS: &[NotApplicableReason] = &[
+    NotApplicableReason::TargetSceneBodyNotADependency,
+    NotApplicableReason::ExactSourceToken,
+];
+const NA_NOT_INDEX_DERIVED: &[NotApplicableReason] = &[NotApplicableReason::NotIndexDerived];
+const NA_FIXED_USER_SLOT: &[NotApplicableReason] = &[NotApplicableReason::FixedUserSlot];
+
+fn table_cell(class: InputClass, kind: QualificationKind) -> TableCell {
+    use QualificationKind as K;
+    use TableCell::{NotApplicable as Na, Required};
+    match class {
+        InputClass::CurrentHuman | InputClass::HistoryHuman | InputClass::GeneratedOutput => {
+            match kind {
+                K::Source | K::Scope => Required,
+                K::Revision => Na(NA_NOT_A_REVISION),
+                K::Decision if class == InputClass::GeneratedOutput => Na(NA_DERIVED_FROM_PARENTS),
+                K::Decision => Na(NA_HUMAN_AUTHORED),
+                K::Freshness => Na(NA_IMMUTABLE_MESSAGE),
+                K::Index => Na(NA_NOT_INDEX_DERIVED),
+                K::D1 if class == InputClass::CurrentHuman => Na(NA_FIXED_USER_SLOT),
+                K::D1 => Required,
+            }
+        }
+        InputClass::RawSource => match kind {
+            K::Source | K::Scope | K::D1 => Required,
+            K::Revision => Na(NA_NOT_A_REVISION),
+            K::Decision => Na(NA_MANUSCRIPT_SOURCE),
+            K::Freshness => Na(NA_RAW_FRESHNESS),
+            K::Index => Na(NA_NOT_INDEX_DERIVED),
+        },
+        InputClass::AcceptedRevision => match kind {
+            K::Index => Na(NA_NOT_INDEX_DERIVED),
+            _ => Required,
+        },
+        // Graph-derived input needs an Index reference. Its form is Pending,
+        // so no N/A is allowed for any kind.
+        InputClass::GraphEvidence => Required,
+        InputClass::Artifact => TableCell::Unsupported,
+    }
+}
+
+/// Why an attempt's references do not satisfy the completeness rule.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompletenessReason {
+    /// A qualification row names an input that does not exist.
+    QualificationInputMissing,
+    /// The input-use does not fit the input's role and type.
+    InputUseMismatch,
+    /// The input type (Artifact) is unsupported.
+    UnsupportedInput,
+    /// Neither a reference nor a typed N/A for this kind.
+    MissingKind,
+    /// A reference and a typed N/A for the same kind.
+    ReferenceAndNotApplicable,
+    /// Two typed N/A rows for the same kind.
+    DuplicateNotApplicable,
+    /// A typed N/A in a cell that requires a reference, or with a reason the
+    /// table does not allow.
+    NotApplicableNotInTable,
+    /// The Raw Freshness reason does not follow the source key.
+    NotApplicableReasonMismatch,
+    /// A reference in a cell the table fills with a typed N/A.
+    ReferenceNotInTable,
+    /// Two references with the same `(kind, target)`.
+    DuplicateTarget,
+    /// An empty identity, a Scope identity that does not follow its role, or a
+    /// D1 identity that is not the selection identity.
+    MalformedTarget,
+    /// A Scope role on a non-Scope kind, or a Scope reference without a role.
+    ScopeRoleInvalid,
+    /// A Scope role the input type does not carry.
+    ScopeRoleNotAllowed,
+    /// A required Scope role is absent.
+    ScopeRoleMissing,
+    /// A singleton Scope role occurs more than once.
+    ScopeRoleDuplicated,
+    /// A query-Scene role names a Scene other than the attempt's target.
+    ScopeSceneMismatch,
+    /// A target of the expected set is absent.
+    ExpectedTargetMissing,
+    /// A target outside the expected set.
+    UnexpectedTarget,
+}
+
+/// The first violation of the completeness rule, with the input and kind it
+/// concerns.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CompletenessViolation {
+    pub input_ordinal: Option<usize>,
+    pub kind: Option<QualificationKind>,
+    pub scope_role: Option<ScopeRole>,
+    pub reason: CompletenessReason,
+}
+
+impl fmt::Display for CompletenessViolation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "NIR1_GENERATION_QUALIFICATION_INCOMPLETE: {:?} (input {:?}, kind {:?}, role {:?})",
+            self.reason, self.input_ordinal, self.kind, self.scope_role
+        )
+    }
+}
+
+impl std::error::Error for CompletenessViolation {}
+
+/// What the completeness rule needs beyond the stored rows.
+#[derive(Clone, Copy, Debug)]
+pub struct CompletenessContext<'a> {
+    /// The attempt's target Scene (`AttemptBinding.scene.scene_id`).
+    pub target_scene_id: &'a str,
+    /// Rule 3: the targets that the current state derives for an input, by
+    /// ordinal. When an input has an entry, its present targets must equal it
+    /// exactly; an input without an entry is checked structurally only.
+    pub expected_targets: Option<&'a BTreeMap<usize, std::collections::BTreeSet<TypedTarget>>>,
+}
+
+fn violation(
+    input_ordinal: usize,
+    kind: Option<QualificationKind>,
+    scope_role: Option<ScopeRole>,
+    reason: CompletenessReason,
+) -> CompletenessViolation {
+    CompletenessViolation {
+        input_ordinal: Some(input_ordinal),
+        kind,
+        scope_role,
+        reason,
+    }
+}
+
+/// The completeness rule of K4/3 section 3, a pure function shared by the
+/// D-final finalizer and the history checker. For every input, each of the 7
+/// kinds has one or more references or the typed N/A of the table, never
+/// both; no `(kind, target)` repeats; an N/A outside the table and a
+/// reference where the table puts an N/A are incomplete; an Artifact input is
+/// unsupported. Scope references need their closed roles. The writer does not
+/// enforce this rule; an incomplete attempt is stored and not used as history.
+pub fn check_attempt_completeness(
+    inputs: &[InputReference],
+    qualifications: &[QualificationReference],
+    context: &CompletenessContext<'_>,
+) -> std::result::Result<(), CompletenessViolation> {
+    let mut by_input: Vec<Vec<&QualificationReference>> = vec![Vec::new(); inputs.len()];
+    for reference in qualifications {
+        match by_input.get_mut(reference.input_ordinal) {
+            Some(slot) => slot.push(reference),
+            None => {
+                return Err(violation(
+                    reference.input_ordinal,
+                    Some(reference.kind),
+                    reference.scope_role(),
+                    CompletenessReason::QualificationInputMissing,
+                ))
+            }
+        }
+    }
+    for (ordinal, (input, references)) in inputs.iter().zip(&by_input).enumerate() {
+        check_input_completeness(ordinal, input, references, context)?;
+    }
+    Ok(())
+}
+
+fn check_input_completeness(
+    ordinal: usize,
+    input: &InputReference,
+    references: &[&QualificationReference],
+    context: &CompletenessContext<'_>,
+) -> std::result::Result<(), CompletenessViolation> {
+    let class = input_class(input)
+        .ok_or_else(|| violation(ordinal, None, None, CompletenessReason::InputUseMismatch))?;
+    if class == InputClass::Artifact {
+        return Err(violation(
+            ordinal,
+            None,
+            None,
+            CompletenessReason::UnsupportedInput,
+        ));
+    }
+    let raw_freshness_reason = match &input.target {
+        InputTarget::RawSource { source_key, .. }
+            if *source_key == format!("project:scene:{}", context.target_scene_id) =>
+        {
+            NotApplicableReason::TargetSceneBodyNotADependency
+        }
+        _ => NotApplicableReason::ExactSourceToken,
+    };
+    let mut targets = std::collections::BTreeSet::new();
+    let mut scope_roles = BTreeMap::<ScopeRole, usize>::new();
+    for kind in ALL_QUALIFICATION_KINDS {
+        let mut present = Vec::new();
+        let mut not_applicable = Vec::new();
+        for reference in references.iter().filter(|reference| reference.kind == kind) {
+            match &reference.body {
+                QualificationBody::Present { .. } => present.push(*reference),
+                QualificationBody::NotApplicable { reason } => not_applicable.push(*reason),
+            }
+        }
+        let fail = |reason| Err(violation(ordinal, Some(kind), None, reason));
+        if !present.is_empty() && !not_applicable.is_empty() {
+            return fail(CompletenessReason::ReferenceAndNotApplicable);
+        }
+        if not_applicable.len() > 1 {
+            return fail(CompletenessReason::DuplicateNotApplicable);
+        }
+        match table_cell(class, kind) {
+            TableCell::Unsupported => {
+                return fail(CompletenessReason::UnsupportedInput);
+            }
+            TableCell::Required => {
+                if !not_applicable.is_empty() {
+                    return fail(CompletenessReason::NotApplicableNotInTable);
+                }
+                if present.is_empty() {
+                    return fail(CompletenessReason::MissingKind);
+                }
+            }
+            TableCell::NotApplicable(allowed) => {
+                if !present.is_empty() {
+                    return fail(CompletenessReason::ReferenceNotInTable);
+                }
+                let Some(reason) = not_applicable.first() else {
+                    return fail(CompletenessReason::MissingKind);
+                };
+                if !allowed.contains(reason) {
+                    return fail(CompletenessReason::NotApplicableNotInTable);
+                }
+                if class == InputClass::RawSource
+                    && kind == QualificationKind::Freshness
+                    && *reason != raw_freshness_reason
+                {
+                    return fail(CompletenessReason::NotApplicableReasonMismatch);
+                }
+            }
+        }
+        for reference in present {
+            let role = reference.scope_role();
+            let target = typed_target(reference)
+                .map_err(|reason| violation(ordinal, Some(kind), role, reason))?;
+            let Some(target) = target else { continue };
+            if kind == QualificationKind::D1 && reference.identity() != Some(D1_SELECTION_IDENTITY)
+            {
+                return Err(violation(
+                    ordinal,
+                    Some(kind),
+                    role,
+                    CompletenessReason::MalformedTarget,
+                ));
+            }
+            if let Some(role) = role {
+                let allowed = match class {
+                    InputClass::AcceptedRevision | InputClass::GraphEvidence => true,
+                    _ => ScopeRole::SCENE_ONLY.contains(&role),
+                };
+                if !allowed {
+                    return Err(violation(
+                        ordinal,
+                        Some(kind),
+                        Some(role),
+                        CompletenessReason::ScopeRoleNotAllowed,
+                    ));
+                }
+                if role.names_target_scene()
+                    && target.components.first().map(String::as_str)
+                        != Some(context.target_scene_id)
+                {
+                    return Err(violation(
+                        ordinal,
+                        Some(kind),
+                        Some(role),
+                        CompletenessReason::ScopeSceneMismatch,
+                    ));
+                }
+                *scope_roles.entry(role).or_default() += 1;
+            }
+            if !targets.insert(target) {
+                return Err(violation(
+                    ordinal,
+                    Some(kind),
+                    role,
+                    CompletenessReason::DuplicateTarget,
+                ));
+            }
+        }
+    }
+    let required_roles: &[ScopeRole] = match class {
+        InputClass::AcceptedRevision | InputClass::GraphEvidence => &ScopeRole::REVISION_SINGLETONS,
+        _ => &ScopeRole::SCENE_ONLY,
+    };
+    for role in required_roles {
+        match scope_roles.get(role).copied().unwrap_or(0) {
+            0 => {
+                return Err(violation(
+                    ordinal,
+                    Some(QualificationKind::Scope),
+                    Some(*role),
+                    CompletenessReason::ScopeRoleMissing,
+                ))
+            }
+            1 => {}
+            _ => {
+                return Err(violation(
+                    ordinal,
+                    Some(QualificationKind::Scope),
+                    Some(*role),
+                    CompletenessReason::ScopeRoleDuplicated,
+                ))
+            }
+        }
+    }
+    if let Some(expected) = context
+        .expected_targets
+        .and_then(|expected| expected.get(&ordinal))
+    {
+        if let Some(missing) = expected.difference(&targets).next() {
+            return Err(violation(
+                ordinal,
+                Some(missing.kind),
+                missing.scope_role,
+                CompletenessReason::ExpectedTargetMissing,
+            ));
+        }
+        if let Some(extra) = targets.difference(expected).next() {
+            return Err(violation(
+                ordinal,
+                Some(extra.kind),
+                extra.scope_role,
+                CompletenessReason::UnexpectedTarget,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The shape check of the writer: only rows that fall outside the closed
+/// types are refused (an input-use that does not fit the input, a typed N/A
+/// that is not in the table, a Scope role on a non-Scope kind or a Scope
+/// reference without one). The completeness rule itself is not enforced here.
+fn validate_reference_shapes(
+    inputs: &[InputReference],
+    qualifications: &[QualificationReference],
+) -> Result<()> {
+    let mut classes = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        classes.push(input_class(input).context("NIR1_GENERATION_INPUT_USE_MISMATCH")?);
+    }
+    for reference in qualifications {
+        let class = *classes
+            .get(reference.input_ordinal)
+            .context("NIR1_GENERATION_QUALIFICATION_INPUT_MISSING")?;
+        match &reference.body {
+            QualificationBody::NotApplicable { reason } => {
+                let TableCell::NotApplicable(allowed) = table_cell(class, reference.kind) else {
+                    anyhow::bail!("NIR1_GENERATION_NOT_APPLICABLE_NOT_IN_TABLE");
+                };
+                ensure!(
+                    allowed.contains(reason),
+                    "NIR1_GENERATION_NOT_APPLICABLE_NOT_IN_TABLE"
+                );
+            }
+            QualificationBody::Present { scope_role, .. } => {
+                ensure!(
+                    scope_role.is_some() == (reference.kind == QualificationKind::Scope),
+                    "NIR1_GENERATION_SCOPE_ROLE_MISMATCH"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The parameters of one D1 selection (K4/3 section 2): the estimator, the
+/// selector budget, and the usage that is known after rendering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct D1SelectionParameters {
+    pub estimator_version: String,
+    pub selector_budget_tokens: u64,
+    pub used_tokens: u64,
+    pub remaining_tokens: u64,
+}
+
+/// The D1 selection digest. It covers the estimator version, the selector
+/// budget, the usage and remainder, and the adopted inputs in order (ordinal,
+/// input-use, target), so it is recomputed from the stored input rows and the
+/// context's d1 fields alone. The current Human has a fixed slot and is not
+/// part of the selection.
+pub fn d1_selection_digest(
+    parameters: &D1SelectionParameters,
+    inputs: &[InputReference],
+) -> Result<String> {
+    ensure!(
+        !parameters.estimator_version.is_empty()
+            && parameters.estimator_version.len() <= MAX_SHORT_TEXT_BYTES
+            && parameters
+                .used_tokens
+                .checked_add(parameters.remaining_tokens)
+                == Some(parameters.selector_budget_tokens),
+        "NIR1_GENERATION_D1_SELECTION_INVALID"
+    );
+    let adopted: Vec<Value> = inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, input)| input.input_use != InputUse::CurrentTurn)
+        .map(|(ordinal, input)| {
+            Ok(json!({
+                "ordinal": ordinal,
+                "inputUse": input.input_use,
+                "target": input.target,
+            }))
+        })
+        .collect::<Result<_>>()?;
+    Ok(canonical_json_digest(&json!({
+        "domain": D1_SELECTION_DIGEST_DOMAIN,
+        "estimatorVersion": parameters.estimator_version,
+        "selectorBudgetTokens": parameters.selector_budget_tokens,
+        "usedTokens": parameters.used_tokens,
+        "remainingTokens": parameters.remaining_tokens,
+        "inputs": adopted,
+    }))?)
+}
+
+/// The D1 qualification reference of an adopted input.
+pub fn d1_selection_reference(
+    input_ordinal: usize,
+    selection_digest: &str,
+) -> QualificationReference {
+    QualificationReference::present(
+        input_ordinal,
+        QualificationKind::D1,
+        D1_SELECTION_IDENTITY,
+        selection_digest,
+    )
 }
 
 /// Limits are selected by the owning turn. This storage layer does not invent
@@ -630,8 +1790,11 @@ pub struct StoredAttempt {
     pub binding: AttemptBinding,
     pub payload_digest: String,
     pub input_digest: String,
+    /// Empty when `reference_format` is `LegacyV1`: such rows are verified
+    /// against their digest and then not exposed.
     pub inputs: Vec<InputReference>,
     pub qualifications: Vec<QualificationReference>,
+    pub reference_format: ReferenceFormat,
     pub created_at_ms: i64,
     pub expires_at_ms: i64,
     pub claimed_at_ms: Option<i64>,
@@ -1070,12 +2233,24 @@ fn read_stored_binding(
     Ok(binding)
 }
 
-fn input_digest(
+/// The final input digest over version 2 reference rows (`INPUT_DIGEST_DOMAIN`).
+pub fn input_digest(
     inputs: &[InputReference],
     qualifications: &[QualificationReference],
 ) -> Result<String> {
     Ok(canonical_json_digest(
-        &json!({"domain":"nir1-generation-inputs@1",
+        &json!({"domain":INPUT_DIGEST_DOMAIN,
+        "inputs":inputs,"qualifications":qualifications}),
+    )?)
+}
+
+/// The digest over version 1 reference rows, which this build only verifies.
+fn legacy_input_digest(
+    inputs: &[LegacyInputReferenceV1],
+    qualifications: &[LegacyQualificationReferenceV1],
+) -> Result<String> {
+    Ok(canonical_json_digest(
+        &json!({"domain":LEGACY_INPUT_DIGEST_DOMAIN_V1,
         "inputs":inputs,"qualifications":qualifications}),
     )?)
 }
@@ -1215,6 +2390,7 @@ fn validate_refs(
         .checked_add(qualifications.len())
         .context("NIR1_GENERATION_REF_LIMIT")?;
     ensure!(count <= budget.max_references, "NIR1_GENERATION_REF_LIMIT");
+    validate_reference_shapes(inputs, qualifications)?;
     let mut bytes = 0usize;
     let mut parent_reference_budget = budget;
     let mut parent_receipts = BTreeMap::<String, Option<(bool, Option<MessageVersion>)>>::new();
@@ -1347,8 +2523,15 @@ fn validate_refs(
             reference.input_ordinal < inputs.len(),
             "NIR1_GENERATION_QUALIFICATION_INPUT_MISSING"
         );
-        identity(&reference.identity)?;
-        identity(&reference.version)?;
+        if let QualificationBody::Present {
+            identity: reference_identity,
+            version: reference_version,
+            ..
+        } = &reference.body
+        {
+            identity(reference_identity)?;
+            identity(reference_version)?;
+        }
         bytes = bytes
             .checked_add(serde_json::to_vec(reference)?.len())
             .context("NIR1_GENERATION_REF_LIMIT")?;
@@ -1402,6 +2585,7 @@ fn insert_attempt_in_tx(
     request: &NewAttempt,
 ) -> Result<StoredAttempt> {
     identity(id)?;
+    validate_reference_shapes(&request.inputs, &request.qualifications)?;
     let input_digest = input_digest(&request.inputs, &request.qualifications)?;
     let binding_json = canonical_json_string(&serde_json::to_value(&request.binding)?)?;
     ensure!(
@@ -1450,6 +2634,7 @@ fn insert_attempt_in_tx(
         input_digest,
         inputs: request.inputs.clone(),
         qualifications: request.qualifications.clone(),
+        reference_format: ReferenceFormat::V2,
         created_at_ms: request.created_at_ms,
         expires_at_ms: request.expires_at_ms,
         claimed_at_ms: None,
@@ -1509,12 +2694,13 @@ fn read_ref_locations_in_tx(
     Ok(locations)
 }
 
-fn materialize_refs_in_tx<T: serde::de::DeserializeOwned>(
+fn materialize_refs_in_tx<T>(
     conn: &Connection,
     table: &str,
     id: &str,
     locations: &[(i64, usize)],
     cancellation: Option<&GenerationHistorySnapshotCancellation>,
+    parse: fn(&str) -> Result<T>,
 ) -> Result<Vec<T>> {
     let point_sql =
         format!("SELECT reference_json FROM {table} WHERE attempt_id=?1 AND ordinal=?2");
@@ -1532,7 +2718,7 @@ fn materialize_refs_in_tx<T: serde::de::DeserializeOwned>(
         if let Some(cancellation) = cancellation {
             cancellation.checkpoint()?;
         }
-        let value = serde_json::from_str(&raw)?;
+        let value = parse(&raw)?;
         if let Some(cancellation) = cancellation {
             cancellation.checkpoint()?;
         }
@@ -1731,25 +2917,33 @@ where
         cancellation.checkpoint()?;
     }
     let stored = read_attempt_metadata_in_tx(conn, id)?;
-    let inputs: Vec<InputReference> = materialize_refs_in_tx(
+    let input_rows = materialize_refs_in_tx(
         conn,
         "nir1_generation_input_refs",
         id,
         &input_locations,
         cancellation,
+        parse_versioned_reference::<InputReference, LegacyInputReferenceV1>,
     )?;
-    let qualifications: Vec<QualificationReference> = materialize_refs_in_tx(
+    let qualification_rows = materialize_refs_in_tx(
         conn,
         "nir1_generation_qualification_refs",
         id,
         &qualification_locations,
         cancellation,
+        parse_versioned_reference::<QualificationReference, LegacyQualificationReferenceV1>,
     )?;
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
+    let VersionedReferences {
+        format: reference_format,
+        inputs,
+        qualifications,
+        computed_digest,
+    } = read_versioned_references(input_rows, qualification_rows, &stored.input_digest)?;
     ensure!(
-        input_digest(&inputs, &qualifications)? == stored.input_digest,
+        computed_digest == stored.input_digest,
         "NIR1_GENERATION_INPUT_DIGEST_MISMATCH"
     );
     if let Some(cancellation) = cancellation {
@@ -1770,6 +2964,7 @@ where
         input_digest: stored.input_digest,
         inputs,
         qualifications,
+        reference_format,
         created_at_ms: stored.created_at_ms,
         expires_at_ms: stored.expires_at_ms,
         claimed_at_ms: stored.claimed_at_ms,
@@ -4266,6 +5461,7 @@ pub struct Nir1ExpectedAttempt {
     pub input_digest: String,
     pub inputs: Vec<InputReference>,
     pub qualifications: Vec<QualificationReference>,
+    pub reference_format: ReferenceFormat,
     pub read_budget: ReadBudget,
 }
 
@@ -4278,6 +5474,7 @@ impl Nir1ExpectedAttempt {
             input_digest: attempt.input_digest.clone(),
             inputs: attempt.inputs.clone(),
             qualifications: attempt.qualifications.clone(),
+            reference_format: attempt.reference_format,
             read_budget,
         }
     }
@@ -4290,6 +5487,7 @@ impl Nir1ExpectedAttempt {
             && attempt.input_digest == self.input_digest
             && attempt.inputs == self.inputs
             && attempt.qualifications == self.qualifications
+            && attempt.reference_format == self.reference_format
     }
 }
 

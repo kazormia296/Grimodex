@@ -942,10 +942,14 @@ mod generation_storage_adapter {
                 .qualifications
                 .iter()
                 .filter(|reference| reference.input_ordinal == ordinal)
-                .map(|reference| QualificationReference {
-                    kind: qualification_kind(&reference.kind),
-                    identity: reference.identity.clone(),
-                    version: reference.version.clone(),
+                .filter_map(|reference| {
+                    // Typed N/A and the completeness rule are the checker's
+                    // concern (DFA-3); a N/A row is not a present reference.
+                    Some(QualificationReference {
+                        kind: qualification_kind(&reference.kind),
+                        identity: reference.identity()?.to_owned(),
+                        version: reference.version()?.to_owned(),
+                    })
                 })
                 .collect(),
         }

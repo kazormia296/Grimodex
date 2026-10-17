@@ -1070,7 +1070,7 @@ pub(crate) fn final_input_digest(
     qualifications: &[QualificationReference],
 ) -> Result<String> {
     Ok(canonical_json_digest(&json!({
-        "domain": "nir1-generation-inputs@1",
+        "domain": "nir1-generation-inputs@2",
         "inputs": inputs,
         "qualifications": qualifications,
     }))?)

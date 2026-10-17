@@ -33,8 +33,9 @@ use super::retrieval_admission::{RetrievalSceneSourceBinding, RetrievalSceneSour
 use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
 #[cfg(feature = "native-current-human-capture")]
 use crate::nir1_generation::{
-    read_current_chat_input_capture_in_tx, AcceptedChatInputCapture, InputReference, InputRole,
-    InputTarget, MessageVersion, QualificationKind, QualificationReference,
+    read_current_chat_input_capture_in_tx, scope_identity, AcceptedChatInputCapture,
+    InputReference, InputRole, InputTarget, InputUse, MessageVersion, QualificationBody,
+    QualificationKind, QualificationReference, ScopeRole,
 };
 #[cfg(feature = "native-current-human-capture")]
 use crate::state::ActiveWorkspaceSnapshot;
@@ -903,6 +904,7 @@ fn build_native_nir1_prepared_inputs(
                         source_key: raw_source_binding.binding.source_key.clone(),
                         revision_token: raw_source_binding.binding.revision_token.clone(),
                     },
+                    input_use: InputUse::SelectedMaterial,
                 });
             }
             ContextItemKind::AcceptedIr { .. } => {
@@ -931,6 +933,7 @@ fn build_native_nir1_prepared_inputs(
                             revision_id: revision_id.to_owned(),
                             bundle_digest: binding.bundle_digest().to_owned(),
                         },
+                        input_use: InputUse::SelectedMaterial,
                     });
                 }
             }
@@ -949,6 +952,7 @@ fn build_native_nir1_prepared_inputs(
             version_id: user_message_version.id.clone(),
             parent_attempt_id: None,
         },
+        input_use: InputUse::CurrentTurn,
     });
     input_references.extend(context_references);
 
@@ -982,12 +986,12 @@ fn build_native_nir1_prepared_inputs(
                 .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING"))?,
         );
     }
-    let mut qualifications = vec![QualificationReference {
-        input_ordinal: raw_ordinal.expect("validated above"),
-        kind: QualificationKind::Source,
-        identity: raw_source_binding.binding.source_key.clone(),
-        version: raw_source_binding.binding.revision_token.clone(),
-    }];
+    let mut qualifications = vec![QualificationReference::present(
+        raw_ordinal.expect("validated above"),
+        QualificationKind::Source,
+        raw_source_binding.binding.source_key.clone(),
+        raw_source_binding.binding.revision_token.clone(),
+    )];
     for (revision_id, binding) in selected_revision_ids.iter().zip(&selected_bindings) {
         checkpoint()?;
         let input_ordinal = revision_ordinals[revision_id];
@@ -1025,7 +1029,10 @@ fn add_revision_qualifications(
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<()> {
     let mut seen = HashSet::<(&'static str, String, String)>::new();
-    let mut add = |kind: QualificationKind, identity: String, version: String| {
+    let mut add = |kind: QualificationKind,
+                   scope_role: Option<ScopeRole>,
+                   identity: String,
+                   version: String| {
         let kind_key = match &kind {
             QualificationKind::Source => "source",
             QualificationKind::Revision => "revision",
@@ -1039,23 +1046,29 @@ fn add_revision_qualifications(
             qualifications.push(QualificationReference {
                 input_ordinal,
                 kind,
-                identity,
-                version,
+                body: QualificationBody::Present {
+                    identity,
+                    version,
+                    scope_role,
+                },
             });
         }
     };
     add(
         QualificationKind::Revision,
+        None,
         revision_id.to_owned(),
         binding.bundle_digest().to_owned(),
     );
     add(
         QualificationKind::Decision,
+        None,
         binding.decision().id().to_owned(),
         binding.decision_token().to_owned(),
     );
     add(
         QualificationKind::Freshness,
+        None,
         revision_id.to_owned(),
         binding.freshness_token().to_owned(),
     );
@@ -1063,6 +1076,7 @@ fn add_revision_qualifications(
         checkpoint()?;
         add(
             QualificationKind::Source,
+            None,
             source.source_key.clone(),
             source.revision_token.clone(),
         );
@@ -1071,38 +1085,46 @@ fn add_revision_qualifications(
         checkpoint()?;
         add(
             QualificationKind::Source,
+            None,
             evidence.source_key.clone(),
             evidence.revision_token.clone(),
         );
     }
+    let query_scene_id = binding.scope().query_scene_id();
     add(
         QualificationKind::Scope,
-        format!("project:scope-authority:{project_id}"),
+        Some(ScopeRole::ProjectAuthority),
+        scope_identity(ScopeRole::ProjectAuthority, &[project_id])?,
         binding.scope().scope_authority_revision().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("scene:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::QuerySceneScope),
+        scope_identity(ScopeRole::QuerySceneScope, &[query_scene_id])?,
         binding.scope().query_scene_scope_token().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("scene-source:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::QuerySceneSource),
+        scope_identity(ScopeRole::QuerySceneSource, &[query_scene_id])?,
         binding.scope().query_scene_source_token().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("scene-incarnation:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::QuerySceneIncarnation),
+        scope_identity(ScopeRole::QuerySceneIncarnation, &[query_scene_id])?,
         binding.scope().query_scene_incarnation_id().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("reveal-state:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::RevealState),
+        scope_identity(ScopeRole::RevealState, &[query_scene_id])?,
         binding.scope().reveal_state_token().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("scope-axis:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::ScopeAxis),
+        scope_identity(ScopeRole::ScopeAxis, &[query_scene_id])?,
         canonical_json_digest(&json!({
             "axis": binding.scope().effective_axis(),
             "fallbackReason": binding.scope().axis_fallback_reason(),
@@ -1112,7 +1134,8 @@ fn add_revision_qualifications(
         checkpoint()?;
         add(
             QualificationKind::Scope,
-            format!("revision:{revision_id}:typed-scope:{index}"),
+            Some(ScopeRole::TypedScope),
+            scope_identity(ScopeRole::TypedScope, &[revision_id, &index.to_string()])?,
             canonical_json_digest(&serde_json::to_value(typed_scope)?)?,
         );
     }
@@ -1120,7 +1143,11 @@ fn add_revision_qualifications(
         checkpoint()?;
         add(
             QualificationKind::Scope,
-            format!("scene:{}:{}", proof.scene_id, proof.scene_incarnation_id),
+            Some(ScopeRole::MaterialSceneProof),
+            scope_identity(
+                ScopeRole::MaterialSceneProof,
+                &[&proof.scene_id, &proof.scene_incarnation_id],
+            )?,
             proof.scene_scope_token.clone(),
         );
     }
