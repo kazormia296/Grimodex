@@ -40,6 +40,9 @@ const EXCLUDED_PATH_FRAGMENTS = [
   ".test.tsx",
   ".browser.test.ts",
   ".browser.test.tsx",
+  // Main pipeline tests on the real addon (vitest.electron-native.config.ts,
+  // NIR-1 DA-1 DR-DA1-9). Only this suffix: other `.spec.ts` stay scanned.
+  ".pipeline.spec.ts",
   ".stories.",
   "/browser-mock/",
   "browser-mock.ts",

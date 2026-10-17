@@ -70,9 +70,30 @@ const ADDON = path.join(
   "grimodex-node.node",
 );
 const require = createRequire(import.meta.url);
-const { Backend } = require(ADDON) as {
-  Backend: new (appData: string) => NapiBackendLike & Record<string, any>;
+type NativeBackendInstance = NapiBackendLike & Record<string, any>;
+const { Backend: NativeBackend } = require(ADDON) as {
+  Backend: new (appData: string) => NativeBackendInstance;
 };
+/** Every Backend a test makes, so afterAll can prove Closed before deleting. */
+const backends: NativeBackendInstance[] = [];
+function newBackend(appData: string): NativeBackendInstance {
+  const backend = new NativeBackend(appData);
+  backends.push(backend);
+  return backend;
+}
+
+/**
+ * `open_workspace` spawns the detached workspace maintenance worker (auto
+ * backup: `backups/*.db.gz.sqlite.tmp` -> `*.db.gz`). Deleting the root while
+ * it still writes fails with ENOTEMPTY (seen on hosted CI), so join it through
+ * the Native lifecycle shutdown, the same as the native node tests.
+ */
+async function closeBackends(): Promise<void> {
+  for (const backend of backends) {
+    const wire = await backend.shutdownWorkspaceLifecycle!();
+    expect(JSON.parse(wire).status).toBe("closed");
+  }
+}
 
 const GUARD_CODE = "PROFILE_DATA_DIR_REJECTED";
 const EXTENSION_CODE = "EXTERNAL_MOUNT_RESTRICTED_EXTENSION";
@@ -81,6 +102,7 @@ const disposers: Array<() => Promise<void>> = [];
 
 afterAll(async () => {
   for (const dispose of disposers) await dispose();
+  await closeBackends();
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
@@ -99,7 +121,7 @@ async function startMain(appData: string): Promise<Rig> {
   mocks.handlers.clear();
   mocks.userData = appData;
 
-  const backend = new Backend(appData);
+  const backend = newBackend(appData);
   const { createProfileEgressGate } = await import("./profileEgress.js");
   const { registerEventBus } = await import("./events.js");
   const { registerIpcRouter } = await import("./ipc.js");
@@ -374,7 +396,7 @@ describe("own-data paths keep working under the SF-1 guard and E-3 (real router 
   it("restricted profile, restarted (re-registration on every start)", async () => {
     const { appData, external } = newProfile("restricted");
     // Process 1 activates the first restricted publication and exits.
-    const first = new Backend(appData);
+    const first = newBackend(appData);
     await first.initializeProfileEgress!();
     const activated = JSON.parse(await first.activateProfileEgress!()) as {
       restricted: boolean;

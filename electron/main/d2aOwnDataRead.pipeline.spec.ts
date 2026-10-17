@@ -66,15 +66,47 @@ const ADDON = path.join(
   "grimodex-node.node",
 );
 const require = createRequire(import.meta.url);
-const { Backend } = require(ADDON) as {
-  Backend: new (appData: string) => NapiBackendLike & Record<string, any>;
+type NativeBackendInstance = NapiBackendLike & Record<string, any>;
+const { Backend: NativeBackend } = require(ADDON) as {
+  Backend: new (appData: string) => NativeBackendInstance;
 };
+/** Every Backend a test makes, so afterAll can prove Closed before deleting. */
+const backends: NativeBackendInstance[] = [];
+/**
+ * Backends standing for a process that has exited: a later Backend in this
+ * test process opened the same workspace. The maintenance path fence is
+ * process-wide and a shut-down Backend keeps its exclusive fence until the
+ * fixture is deleted, so shutting down both would leave the second one waiting
+ * forever (a real Main has one Backend). The later Backend's shutdown fences
+ * the shared path and waits for any worker on it, including this one's.
+ */
+const exited = new Set<NativeBackendInstance>();
+function newBackend(appData: string): NativeBackendInstance {
+  const backend = new NativeBackend(appData);
+  backends.push(backend);
+  return backend;
+}
+
+/**
+ * `open_workspace` spawns the detached workspace maintenance worker (auto
+ * backup: `backups/*.db.gz.sqlite.tmp` -> `*.db.gz`). Deleting the root while
+ * it still writes fails with ENOTEMPTY (seen on hosted CI), so join it through
+ * the Native lifecycle shutdown, the same as the native node tests.
+ */
+async function closeBackends(): Promise<void> {
+  for (const backend of backends) {
+    if (exited.has(backend)) continue;
+    const wire = await backend.shutdownWorkspaceLifecycle!();
+    expect(JSON.parse(wire).status).toBe("closed");
+  }
+}
 
 const MARKER = "D2A_EGRESS_DENIED:";
 /** A credential that exists in the profile; no read may return it. */
 const CREDENTIAL_SENTINEL = "sk-d2a-own-data-read-CREDENTIAL-SENTINEL";
 const roots: string[] = [];
-afterAll(() => {
+afterAll(async () => {
+  await closeBackends();
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
@@ -91,6 +123,8 @@ interface Rig {
   nativeDbExecute: NapiBackendLike["dbExecute"];
   /** Straight into Native, for reading back what a route wrote. */
   nativeForeshadowAnchors: (sceneId: string) => Promise<string>;
+  /** This process exits; a later start on the same workspace replaces it. */
+  exit: () => void;
 }
 
 /** A fresh module graph + router on `appData`, as a Main process would start. */
@@ -105,7 +139,7 @@ async function startMain(
 ): Promise<Rig> {
   vi.resetModules();
   mocks.handlers.clear();
-  const backend = new Backend(appData);
+  const backend = newBackend(appData);
   const proxied = new Proxy(backend, {
     get(target, property) {
       if (options.unavailable && property === "initializeProfileEgress") {
@@ -156,6 +190,9 @@ async function startMain(
     nativeDbExecute: backend.dbExecute.bind(backend),
     nativeForeshadowAnchors: (sceneId) =>
       backend.foreshadowLoadAnchorsForScene(sceneId) as Promise<string>,
+    exit: () => {
+      exited.add(backend);
+    },
   };
 }
 
@@ -520,7 +557,7 @@ function leavesNoCredential(envelope: Envelope): void {
 describe("own-data-read through the real router, gate and Native", () => {
   it("the test fixture policy is exactly what Native publishes", async () => {
     const appData = newAppData();
-    const first = new Backend(appData);
+    const first = newBackend(appData);
     const status = JSON.parse(await first.initializeProfileEgress!()) as {
       sqlPolicy: Record<string, unknown>;
     };
@@ -651,6 +688,7 @@ describe("own-data-read through the real router, gate and Native", () => {
       baseline.set(call.name, ok(await first.route(call.cmd, call.args)));
     }
     await first.gate.activateFirstRestrictedPublication!();
+    first.exit();
 
     const restarted = await startMain(appData);
     expect(restarted.gate.restricted).toBe(true);
