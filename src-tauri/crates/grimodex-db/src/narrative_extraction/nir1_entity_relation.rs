@@ -2815,6 +2815,9 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
         check_active_work(conn)?;
         // The Entity's Scope token is the projection of its own anchor Scene,
         // not the project's token (which is the request's context below).
+        // A2 (`validate_live_sources`) already compares every Entity's token with
+        // the same `LiveScope` snapshot and answers `source-revision-changed`
+        // first, so this branch is a second, defensive gate (DR-X1-3-4).
         let anchor_matches = projection::anchor_scene_id(&entity.scope.reading)
             .and_then(|anchor| scope.projection_token(project_id, anchor).ok())
             .is_some_and(|token| token == entity.scope.authority_revision);
