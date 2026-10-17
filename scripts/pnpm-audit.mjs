@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // The unpatched advisory is currently reachable only as a dev-tool dependency with got's HTTP cache disabled.
-// Revisit this exception by the end of 2026-10-17 in Asia/Tokyo.
-if (Date.now() >= Date.parse("2026-10-18T00:00:00+09:00")) {
+// Revisit this exception by the end of 2026-11-17 in Asia/Tokyo; no patched http-cache-semantics exists as of 2026-10-17.
+if (Date.now() >= Date.parse("2026-11-18T00:00:00+09:00")) {
   throw new Error("GHSA-ch52-4w7c-c8xp audit exception expired");
 }
 
