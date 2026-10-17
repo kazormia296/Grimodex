@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { DPH_CASE_IDS } from "./contract.mjs";
 import {
+  canonicalJson,
   escapeReservedPromptTags,
   estimateTokens,
   loadFixedTemplate,
+  payloadDigest,
 } from "./payload.mjs";
 import { SAME_INPUT_FIELDS } from "./receipt.mjs";
 import {
@@ -23,9 +25,11 @@ import {
 } from "./scorer.mjs";
 import {
   CANARIES,
+  SYNTHETIC_ROUTE,
   addSyntheticDiagnostic,
   buildSyntheticP12,
   buildSyntheticWorld,
+  renderSynthetic,
   repayload,
   requestOf,
   setupOf,
@@ -426,6 +430,7 @@ test("scorer-skips-non-ok-and-digest-mismatch", () => {
       expectation: p12.expectation,
       template,
       fixtureRoute: p12.route,
+      fixture: p12.fixture,
     });
     assert.equal(scored.status, "failed");
     assert.ok(scored.failures.some((f) => f.code === "dfinal-not-ok"));
@@ -581,6 +586,7 @@ test("same-input-check-rejects-*: each P-12 arm input field is checked on its ow
       expectation: p12.expectation,
       template,
       fixtureRoute: p12.route,
+      fixture: p12.fixture,
     });
     assert.equal(scored.status, "failed", field);
     assert.ok(
@@ -611,6 +617,7 @@ test("slot-derivation: the slot is counted from the payload, not from a counter"
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(honest.status, "passed", JSON.stringify(honest.failures));
   assert.equal(honest.candidateSlot, 1);
@@ -622,6 +629,7 @@ test("slot-derivation: the slot is counted from the payload, not from a counter"
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(forged.status, "failed");
   assert.ok(forged.failures.some((f) => f.code === "slot-counter-mismatch"));
@@ -636,6 +644,7 @@ test("slot-derivation: the entry count must match the render correspondence", ()
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(scored.status, "failed");
   assert.ok(scored.failures.some((f) => f.code === "entry-count-mismatch"));
@@ -649,6 +658,7 @@ test("slot-derivation: an item text with the separator fails", () => {
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.ok(scored.failures.some((f) => f.code === "separator-in-text"));
 });
@@ -666,6 +676,7 @@ test("slot-derivation: a malformed system message fails", () => {
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(scored.status, "failed");
   assert.ok(
@@ -863,6 +874,7 @@ test("slot-derivation: closed markers of another group are not counted for this 
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(scored.baselineSlot, 0);
   assert.deepEqual(scored.baselineGroups[0].counted, false);
@@ -881,6 +893,7 @@ test("atomic-group-partial-fails: the candidate arm renders all parts of a group
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.ok(!scored.failures.some((f) => f.code === "atomic-group-partial"));
 });
@@ -903,6 +916,7 @@ test("p12-identical-payload-not-pass", () => {
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(scored.status, "failed");
   assert.ok(scored.failures.some((f) => f.code === "p12-identical-payload"));
@@ -916,6 +930,7 @@ test("p12: the 0-to-1 target is fixed, an unrenderable baseline cannot pass, and
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(ok.status, "passed");
 
@@ -924,6 +939,7 @@ test("p12: the 0-to-1 target is fixed, an unrenderable baseline cannot pass, and
     expectation: { ...p12.expectation, candidateTarget: 2 },
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.ok(
     loosened.failures.some((f) => f.code === "p12-expectation-changed"),
@@ -941,6 +957,7 @@ test("p12: the 0-to-1 target is fixed, an unrenderable baseline cannot pass, and
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(fail.status, "failed");
   assert.ok(fail.failures.some((f) => f.code === "p12-baseline-unrenderable"));
@@ -953,6 +970,7 @@ test("p12: the 0-to-1 target is fixed, an unrenderable baseline cannot pass, and
       expectation: p12.expectation,
       template,
       fixtureRoute: p12.route,
+      fixture: p12.fixture,
     }).failures.some((f) => f.code === "p12-baseline-missing"),
   );
 });
@@ -974,6 +992,7 @@ test("p12: a candidate that does not improve over the baseline fails", () => {
     expectation: both.expectation,
     template,
     fixtureRoute: both.route,
+    fixture: both.fixture,
   });
   assert.ok(scored.failures.some((f) => f.code === "p12-slot-mismatch"));
   assert.equal(p12.expectation.baselineTarget, 0);
@@ -1619,6 +1638,7 @@ test("p12: the baseline arm's input and qualification refs must be the captured 
       expectation: p12.expectation,
       template,
       fixtureRoute: p12.route,
+      fixture: p12.fixture,
     });
   };
   const ok = run(() => {});
@@ -1723,6 +1743,7 @@ test("entries are matched after the renderer's reserved-tag escape", () => {
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(scored.status, "passed", JSON.stringify(scored.failures));
 });
@@ -1791,6 +1812,7 @@ test("baseline_payload_not_persisted: a baseline arm that added persisted rows f
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(scored.status, "failed");
   assert.ok(scored.failures.some((f) => f.code === "baseline-persisted"));
@@ -1838,6 +1860,7 @@ test("a P-12 request with a history input fails", () => {
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.ok(scored.failures.some((f) => f.code === "history-input-present"));
 });
@@ -2154,6 +2177,7 @@ test("positive-attempt-present: the P-12 pair's candidate also may not add an at
       expectation: p12.expectation,
       template,
       fixtureRoute: p12.route,
+      fixture: p12.fixture,
     }).status,
     "passed",
   );
@@ -2164,6 +2188,7 @@ test("positive-attempt-present: the P-12 pair's candidate also may not add an at
     expectation: p12.expectation,
     template,
     fixtureRoute: p12.route,
+    fixture: p12.fixture,
   });
   assert.equal(scored.status, "failed");
   assert.ok(scored.failures.some((f) => f.code === "positive-attempt-present"));
@@ -2515,7 +2540,8 @@ test("template-source-order: a resolved value is bounded ASCII", () => {
     ["too long token", "t".repeat(81), "token"],
     ["escape character", 'a"b', "token"],
     ["too long id", "i".repeat(37), "proposalId"],
-    ["space", "a b", "decisionId"],
+    ["newline", "a\nb", "decisionId"],
+    ["tab", "a\tb", "decisionId"],
   ]) {
     const w = world();
     const t = templatize(w, "P-01");
@@ -2586,4 +2612,310 @@ test("template-forbidden: a forbidden template no earlier stage can resolve is s
   const entry = result(score(w), "P-10", positiveId("P-10"), 2);
   assert.equal(entry.status, "invalid");
   assert.ok(codes(entry).includes("setup-invalid:placeholder-unresolved"));
+});
+
+// ----------------------------------------- P-12 pair: shared request checks
+
+function scoreP12(p12, overrides = {}) {
+  return scoreP12Pair({
+    request: p12.request,
+    expectation: p12.expectation,
+    template,
+    fixtureRoute: p12.route,
+    fixture: p12.fixture,
+    otherMarkers: ["MARKER-P-01-raw"],
+    otherIds: ["rt:rev-P-01-a"],
+    ...overrides,
+  });
+}
+
+/** Rewrites the baseline arm's payload and re-derives its digest. */
+function repayloadBaseline(request, mutate) {
+  const parsed = JSON.parse(request.baseline.payload);
+  mutate(parsed);
+  request.baseline.payload = canonicalJson(parsed);
+  request.baseline.payloadDigest = payloadDigest(parsed);
+}
+
+test("p12-shared-checks: the honest pair passes with the shared checks on", () => {
+  const scored = scoreP12(buildSyntheticP12({ template }));
+  assert.equal(scored.status, "passed", JSON.stringify(scored.failures));
+});
+
+test("p12-shared-checks: a baseline that drops or replaces Raw fails (Raw is required in both arms)", () => {
+  for (const raw of ["x", "診断"]) {
+    const p12 = buildSyntheticP12({ template });
+    repayloadBaseline(p12.request, (payload) => {
+      payload.messages[0].content = payload.messages[0].content.replace(
+        "診断用の本文。MARKER-DIAG-raw",
+        raw,
+      );
+    });
+    const scored = scoreP12(p12);
+    assert.equal(scored.status, "failed", raw);
+    assert.ok(
+      scored.failures.some(
+        (f) => f.code === "raw-mismatch" && f.message.startsWith("baseline"),
+      ),
+      raw,
+    );
+  }
+});
+
+test("p12-shared-checks: a candidate whose Raw carries a canary fails, even with every digest realigned", () => {
+  const p12 = buildSyntheticP12({ template });
+  const poisoned = `診断用の本文。MARKER-DIAG-raw ${CANARIES[0].text}`;
+  repayload(p12.request, (payload) => {
+    payload.messages[0].content = payload.messages[0].content.replace(
+      "診断用の本文。MARKER-DIAG-raw",
+      poisoned,
+    );
+  });
+  p12.request.capture.candidateSet.items[0].text = poisoned;
+  const scored = scoreP12(p12);
+  assert.equal(scored.status, "failed");
+  assert.ok(scored.failures.some((f) => f.code === "canary-in-payload"));
+  // The frozen Raw text is the diagnostic's, not what the capture says.
+  assert.ok(scored.failures.some((f) => f.code === "raw-mismatch"));
+});
+
+test("p12-shared-checks: another case's marker or id in either arm fails", () => {
+  for (const arm of ["candidate", "baseline"]) {
+    const p12 = buildSyntheticP12({ template });
+    const mutate = (payload) => {
+      payload.messages[1].content += " MARKER-P-01-raw rt:rev-P-01-a";
+    };
+    if (arm === "candidate") repayload(p12.request, mutate);
+    else repayloadBaseline(p12.request, mutate);
+    const scored = scoreP12(p12);
+    assert.equal(scored.status, "failed", arm);
+    assert.ok(
+      scored.failures.some(
+        (f) => f.code === "other-case-material" && f.message.startsWith(arm),
+      ),
+      arm,
+    );
+  }
+});
+
+test("p12-shared-checks: the capture must hold the diagnostic's user message, estimator and template", () => {
+  const userMessage = buildSyntheticP12({ template });
+  userMessage.expectation.userMessage = "別のメッセージ";
+  const byMessage = scoreP12(userMessage);
+  assert.equal(byMessage.status, "failed");
+  assert.ok(
+    byMessage.failures.some(
+      (f) => f.code === "same-input-check-rejects-userMessage",
+    ),
+  );
+  const estimator = buildSyntheticP12({ template });
+  estimator.request.capture.estimatorVersion = "nir1-context-estimator-v0";
+  estimator.request.baseline.inputs.estimatorVersion =
+    "nir1-context-estimator-v0";
+  assert.ok(
+    scoreP12(estimator).failures.some(
+      (f) => f.code === "same-input-check-rejects-estimatorVersion",
+    ),
+  );
+  const ref = buildSyntheticP12({ template });
+  ref.request.capture.template.ref = "other-template-ref";
+  ref.request.baseline.inputs.template = { ...ref.request.capture.template };
+  assert.ok(
+    scoreP12(ref).failures.some(
+      (f) => f.code === "same-input-check-rejects-template",
+    ),
+  );
+  const route = buildSyntheticP12({ template });
+  route.request.capture.route.model = "another-model";
+  route.request.baseline.inputs.route = { ...route.request.capture.route };
+  assert.ok(
+    scoreP12(route).failures.some(
+      (f) => f.code === "same-input-check-rejects-route",
+    ),
+  );
+});
+
+test("p12-shared-checks: an expectation without Raw, user message or the fixture is not scored as a pass", () => {
+  for (const mutate of [
+    (p12) => delete p12.expectation.rawText,
+    (p12) => delete p12.expectation.userMessage,
+    (p12) => delete p12.expectation.passedRuntimeIds,
+    (p12) => delete p12.fixture,
+  ]) {
+    const p12 = buildSyntheticP12({ template });
+    mutate(p12);
+    const scored = scoreP12(p12, { fixture: p12.fixture });
+    assert.equal(scored.status, "failed");
+    assert.ok(
+      scored.failures.some((f) => f.code === "p12-expectation-incomplete"),
+    );
+  }
+});
+
+test("p12-shared-checks: the scored diagnostic receives the fixture's canaries and every case's material", () => {
+  const w = addSyntheticDiagnostic(world());
+  const request = w.receipt.requests.find((row) => row.caseId === "DIAG-P12");
+  repayloadBaseline(request, (payload) => {
+    payload.messages[1].content += " MARKER-P-01-raw";
+  });
+  const scored = score(w);
+  assert.equal(scored.status, "failed");
+  assert.ok(
+    scored.diagnostics[0].failures.some(
+      (f) => f.code === "other-case-material",
+    ),
+  );
+  const raw = addSyntheticDiagnostic(world());
+  const rawRequest = raw.receipt.requests.find(
+    (row) => row.caseId === "DIAG-P12",
+  );
+  repayloadBaseline(rawRequest, (payload) => {
+    payload.messages[0].content = payload.messages[0].content.replace(
+      "診断用の本文。MARKER-DIAG-raw",
+      "x",
+    );
+  });
+  const rawScored = score(raw);
+  assert.equal(rawScored.diagnostics[0].status, "failed");
+  assert.ok(
+    rawScored.diagnostics[0].failures.some((f) => f.code === "raw-mismatch"),
+  );
+});
+
+// ------------------------------- alignment keeps the candidate set's order
+
+/**
+ * One Revision (`rt:revB`) with two atomic groups: group A (dropped by the
+ * budget) and group B (the only one in the payload). Both share the closed
+ * negation and attribution texts.
+ */
+function twoGroupWorld() {
+  const rendered = renderSynthetic({
+    template,
+    route: SYNTHETIC_ROUTE,
+    userMessage: "続きを書いてください。",
+    rawText: "本文。",
+    revisions: [{ id: "revA", selected: [] }, "revB"],
+    requestToken: "token-two-groups",
+  });
+  const items = rendered.items.map((item) =>
+    item.ownerId === "rt:revA" ? { ...item, ownerId: "rt:revB" } : item,
+  );
+  const capture = { candidateSet: { items } };
+  const view = {
+    payload: rendered.payload,
+    renderCorrespondence: rendered.renderCorrespondence,
+    inputReferences: rendered.inputReferences,
+    qualifications: rendered.qualifications,
+  };
+  const read = readPayload(view, capture, template);
+  return { capture, view, read, items };
+}
+
+test("alignEntries: a later atomic group's closed markers are not paired with an earlier group's items", () => {
+  const { capture, view, read } = twoGroupWorld();
+  assert.deepEqual(read.failures, []);
+  const alignment = alignEntries({ ...read, view, capture });
+  // raw=0, group A=1..5, group B=6..10: the payload holds exactly group B.
+  assert.deepEqual(alignment.matched, [6, 7, 8, 9, 10]);
+  assert.deepEqual(alignment.failures, []);
+  const slots = deriveSlots({
+    improvementGroups: [{ ownerId: "rt:revB", kind: "accepted-ir" }],
+    ...read,
+    view,
+    capture,
+    matched: alignment.matched,
+  });
+  assert.equal(slots.qualifiedEvidence, 1);
+  const judged = slots.groups[0].atomicGroups;
+  assert.equal(judged.length, 2);
+  assert.equal(
+    judged.find((g) => g.atomicGroup === "group:revB").counted,
+    true,
+  );
+  assert.equal(
+    judged.find((g) => g.atomicGroup === "group:revA").counted,
+    false,
+  );
+});
+
+test("alignEntries: entries out of the candidate set's order are a failure", () => {
+  const { capture, view, read } = twoGroupWorld();
+  const reversed = {
+    ...read,
+    cut: { ...read.cut, entries: [...read.cut.entries].reverse() },
+  };
+  const alignment = alignEntries({ ...reversed, view, capture });
+  assert.ok(
+    alignment.failures.some((f) => f.code === "entry-not-in-candidate-set"),
+  );
+});
+
+test("alignEntries: a partial atomic group is still reported once the first group is in order", () => {
+  const { capture, view, read } = twoGroupWorld();
+  const partial = {
+    ...read,
+    cut: { ...read.cut, entries: read.cut.entries.slice(0, 3) },
+    codex: read.codex.slice(0, 3),
+  };
+  const alignment = alignEntries({ ...partial, view, capture });
+  assert.deepEqual(alignment.matched, [6, 7, 8]);
+  assert.ok(alignment.failures.some((f) => f.code === "atomic-group-partial"));
+});
+
+// ---------------------------------------- review follow-ups (P3 items)
+
+test("template-source-order: a legacy Source token with a space resolves and scores", () => {
+  const w = world();
+  const t = templatize(w, "P-01");
+  const legacy = "v3@2026-10-18 07:05:22";
+  t.setup.runtimeValues.at(-1).value = legacy;
+  t.apply({ ...t.values, token: legacy });
+  const entry = result(score(w), "P-01", positiveId("P-01"));
+  assert.equal(entry.status, "passed", JSON.stringify(codes(entry)));
+});
+
+test("setup-verification: a setup event is recorded by a writer of its kind", () => {
+  const cases = [
+    ["prepare", "codex_create"],
+    ["approve", "nir1_entity_relation_revision_prepare"],
+    ["approve", "codex_create"],
+    ["chat-session", "tree_node_create"],
+    ["restricted", "codex_create"],
+    ["tree", "narrative_extraction_append_human_decision"],
+    ["route-settings", "tree_node_create"],
+  ];
+  for (const [kind, writer] of cases) {
+    const w = world();
+    const setup = setupFor(w, "P-01", positiveId("P-01"));
+    setup.events.find((event) => event.kind === kind).writer = writer;
+    setup.writersUsed = [...new Set(setup.events.map((e) => e.writer))];
+    const entry = result(score(w), "P-01", positiveId("P-01"));
+    assert.equal(entry.status, "invalid", `${kind} by ${writer}`);
+    assert.ok(
+      codes(entry).includes("setup-invalid:writer-kind-mismatch"),
+      `${kind} by ${writer}: ${codes(entry)}`,
+    );
+  }
+  // The honest receipt records every event with a writer of its kind.
+  assert.equal(score(world()).status, "passed");
+});
+
+test("template-forbidden: a forbidden template that resolves into an expected entry is a fixture error, not a product failure", () => {
+  const w = world();
+  const t = templatize(w, "P-01");
+  // The same token the expected entry holds, forbidden by a placeholder of
+  // another kind: both resolve to the same bytes.
+  const spec = t.spec;
+  spec.expected.forbidden.texts.push("{{sourceToken:scene-P-01}}");
+  t.setup.runtimeValues.push({
+    ...t.setup.runtimeValues.at(-1),
+    kind: "sourceToken",
+  });
+  const entry = result(score(w), "P-01", positiveId("P-01"));
+  assert.equal(entry.status, "invalid");
+  assert.ok(
+    codes(entry).includes("setup-invalid:forbidden-overlaps-expected"),
+    String(codes(entry)),
+  );
 });

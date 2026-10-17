@@ -759,12 +759,25 @@ export function buildSyntheticP12({ template }) {
       { ownerId: runtimeIdOf("graph-g"), kind: "graph-evidence" },
     ],
     contextBudgetTokens: candidate.budget,
+    rawText,
+    userMessage,
+    passedRuntimeIds: passed,
   };
   return {
     request,
     expectation,
     template,
     route: { ...SYNTHETIC_ROUTE },
+    // The slice of the fixture that `scoreP12Pair` reads.
+    fixture: {
+      estimatorVersion: ESTIMATOR_VERSION,
+      fixedTemplate: {
+        version: FIXED_TEMPLATE_VERSION,
+        ref: FIXED_TEMPLATE_REF,
+      },
+      route: { ...SYNTHETIC_ROUTE },
+      canaries: CANARIES.map((canary) => ({ ...canary })),
+    },
     parts: PARTS,
   };
 }
@@ -781,6 +794,7 @@ export function addSyntheticDiagnostic(world) {
       caseId: "DIAG-P12",
       evidenceUse: "none",
       userMessage: "診断用の続きを書いてください。(DIAG)",
+      rawText: "診断用の本文。MARKER-DIAG-raw",
       materials: [{ logicalId: "ir-x", text: "diagnostic only" }],
       p12: {
         variantId: "DIAG-P12-v1",

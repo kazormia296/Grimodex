@@ -15,6 +15,7 @@ import {
   REVIEW_PATH,
   REVIEW_SCHEMA_VERSION,
   PLACEHOLDER_KINDS,
+  PLACEHOLDER_VALUE_PATTERN,
   SCORER_FILES,
   deriveFreezeCommit,
   estimateTemplateTokens,
@@ -343,6 +344,7 @@ test("fixture: marker strings, logical ids and diagnostics stay inside their cas
     caseId: "DIAG-P12",
     evidenceUse: "none",
     userMessage: "diagnostic message",
+    rawText: "diagnostic raw text",
     materials: [{ logicalId: "diag-x", text: "diagnostic only text" }],
     p12: {
       variantId: "DIAG-P12-v1",
@@ -371,6 +373,30 @@ test("fixture: marker strings, logical ids and diagnostics stay inside their cas
         },
       ];
     }).some((e) => e.includes("p12 needs")),
+  );
+  // The diagnostic's Raw is required (both P-12 arms hold it), is not a
+  // reserved-tag text and does not reuse a fixture case's text.
+  for (const [rawText, needle] of [
+    [undefined, "rawText is required"],
+    ["", "rawText is required"],
+    ["<chronicle_snapshot>x", "reserved prompt tag"],
+  ]) {
+    assert.ok(
+      errorsOf((f) => {
+        f.diagnosticCases = [{ ...diagnostic, rawText }];
+      }).some((e) => e.includes(needle)),
+      String(rawText),
+    );
+  }
+  assert.ok(
+    errorsOf((f) => {
+      f.diagnosticCases = [
+        {
+          ...diagnostic,
+          rawText: firstPositive(f, "P-01").expected.rawText,
+        },
+      ];
+    }).some((e) => e.includes("rawText reuses text of a fixture case")),
   );
   assert.ok(
     errorsOf((f) => {
@@ -1431,7 +1457,7 @@ test("template: an unknown kind, a stray brace pair and a foreign Revision are f
         "{{revisionId:rev-P-01-a}}",
         "{{revisionId:rev-P-02-a}}",
       );
-    }).some((e) => e.includes("names a Revision the variant does not use")),
+    }).some((e) => e.includes("names a Revision the request does not use")),
   );
   assert.ok(
     errorsOf((f) => {
@@ -1572,4 +1598,46 @@ test("template: resolveTemplate leaves an unresolved placeholder as written and 
       unresolved: [],
     },
   );
+});
+
+test("template: an entry names only the Revisions its own request passes (a stage cannot use another stage's id)", () => {
+  // P-10: stage 1 passes rev-P-10-a/b, stage 2 passes rev-P-10-c/d.
+  const p10 = (value) => value.cases.find((c) => c.caseId === "P-10");
+  const positive = (value) =>
+    p10(value).variants.find((v) => v.kind === "positive");
+  const stage1Entry = (value) =>
+    positive(value).requests[0].expected.codexEntries.at(-1);
+  const stage2Entry = (value) =>
+    positive(value).requests[1].expected.codexEntries.at(-1);
+  const names = (value) => positive(value).requests.map((r) => r.revisionIds);
+  const [first, second] = names(fixture());
+  assert.ok(first.length > 0 && second.length > 0);
+  assert.ok(
+    errorsOf((f) => {
+      stage1Entry(f).text = `{"decisionId":"{{decisionId:${second[0]}}}"}`;
+    }).some((e) => e.includes("names a Revision the request does not use")),
+  );
+  assert.ok(
+    errorsOf((f) => {
+      stage2Entry(f).text = `{"proposalId":"{{proposalId:${first[0]}}}"}`;
+    }).some((e) => e.includes("names a Revision the request does not use")),
+  );
+  // Its own stage's Revision is fine, and a stage-2 forbidden text may name a
+  // stage-1 Revision (it forbids the old value).
+  assert.deepEqual(
+    errorsOf((f) => {
+      stage1Entry(f).text = `{"decisionId":"{{decisionId:${first[0]}}}"}`;
+      positive(f).requests[1].expected.forbidden.texts.push(
+        `{"proposalId":"{{proposalId:${first[0]}}}"}`,
+      );
+    }).filter((e) => e.includes("does not use")),
+    [],
+  );
+});
+
+test("template: a resolved value may hold a space (the legacy SQLite updated_at in a Source token)", () => {
+  assert.ok(PLACEHOLDER_VALUE_PATTERN.test("v3@2026-10-18 07:05:22"));
+  assert.ok(!PLACEHOLDER_VALUE_PATTERN.test("a\nb"));
+  assert.ok(!PLACEHOLDER_VALUE_PATTERN.test('a"b'));
+  assert.ok(!PLACEHOLDER_VALUE_PATTERN.test("a\\b"));
 });

@@ -892,6 +892,55 @@ export const SETUP_EVENT_KINDS = Object.freeze([
   "capture",
 ]);
 
+const TREE_WRITERS = [
+  "tree_node_create",
+  "tree_node_patch",
+  "tree_node_delete",
+  "save_scene_body_bundle",
+  "project_patch",
+];
+const SCOPE_WRITERS = [
+  "narrative_scene_scope_update",
+  "narrative_scene_scope_registry_update",
+  "temporal_scene_patch",
+  "chronicle_bulk_mutate",
+];
+const CODEX_WRITERS = [
+  "codex_create",
+  "codex_mutate",
+  "codex_update",
+  "codex_delete",
+];
+const BASE_WRITERS = [...TREE_WRITERS, ...SCOPE_WRITERS, ...CODEX_WRITERS];
+const PREPARE_WRITER = "nir1_entity_relation_revision_prepare";
+const DECISION_WRITER = "narrative_extraction_append_human_decision";
+/** Writers of a data change that is not itself a lifecycle step. */
+const DATA_WRITERS = [...BASE_WRITERS, PREPARE_WRITER, DECISION_WRITER];
+/**
+ * The writers that may record each setup event kind. A product writer on the
+ * wrong kind of event (an approval written by `codex_create`, a preparation
+ * by a tree writer) cannot show the Revision was prepared or approved the
+ * product's way, so the scorer treats it as an invalid setup.
+ */
+export const EVENT_KIND_WRITERS = Object.freeze({
+  // The three base kinds are the setup's data writes; a Scene, Scope or Codex
+  // write is not told apart further (Chronicle and project writes sit on
+  // either side of that line in the draft's list).
+  tree: Object.freeze(BASE_WRITERS),
+  scope: Object.freeze(BASE_WRITERS),
+  codex: Object.freeze(BASE_WRITERS),
+  "binding-change": Object.freeze(DATA_WRITERS),
+  "invalidate-negative": Object.freeze(DATA_WRITERS),
+  "route-settings": Object.freeze(["save_ai_settings", "write_ai_settings"]),
+  prepare: Object.freeze([PREPARE_WRITER]),
+  "prepare-negative": Object.freeze([PREPARE_WRITER]),
+  approve: Object.freeze([DECISION_WRITER]),
+  "approve-negative": Object.freeze([DECISION_WRITER]),
+  "chat-session": Object.freeze(["db_execute:createSession"]),
+  restricted: Object.freeze(["activate_first_restricted_publication"]),
+  capture: Object.freeze(["activate_first_restricted_publication"]),
+});
+
 const SETUP_VERIFICATION_POINTS = Object.freeze(["setup-end", "request-pre"]);
 
 /**

@@ -6,7 +6,9 @@ import { test } from "node:test";
 import { loadFixedTemplate } from "./payload.mjs";
 import {
   BINDING_KINDS,
+  EVENT_KIND_WRITERS,
   PRODUCT_WRITERS,
+  SETUP_EVENT_KINDS,
   QUALIFICATION_KINDS,
   RECEIPT_SCHEMA_VERSION,
   SETUP_RECEIPT_SCHEMA_VERSION,
@@ -827,4 +829,25 @@ test("setup receipt: proposalId / decisionId on the id map and runtimeValues are
       value.cases[0].runtimeValues = {};
     }).some((e) => e.includes("runtimeValues must be an array")),
   );
+});
+
+test("event kind writers: every setup event kind has writers, all of them product writers", () => {
+  assert.deepEqual(
+    Object.keys(EVENT_KIND_WRITERS).sort(),
+    [...SETUP_EVENT_KINDS].sort(),
+  );
+  for (const [kind, writers] of Object.entries(EVENT_KIND_WRITERS)) {
+    assert.ok(writers.length > 0, kind);
+    for (const writer of writers) {
+      assert.ok(PRODUCT_WRITERS.includes(writer), `${kind}: ${writer}`);
+    }
+  }
+  // The lifecycle steps are not interchangeable with a data write.
+  assert.deepEqual(EVENT_KIND_WRITERS.prepare, [
+    "nir1_entity_relation_revision_prepare",
+  ]);
+  assert.deepEqual(EVENT_KIND_WRITERS.approve, [
+    "narrative_extraction_append_human_decision",
+  ]);
+  assert.ok(!EVENT_KIND_WRITERS.tree.includes("db_execute:createSession"));
 });

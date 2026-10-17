@@ -46,6 +46,7 @@ import {
 } from "./payload.mjs";
 import {
   ATOMIC_PARTS,
+  EVENT_KIND_WRITERS,
   PRODUCT_WRITERS,
   QUALIFICATION_KINDS,
   SAME_INPUT_FIELDS,
@@ -470,22 +471,29 @@ export function readPayload(view, capture, template) {
 }
 
 /**
- * Aligns each payload codex entry with a candidate-set item: the item of the
- * entry's owner (input reference of its correspondence row) whose text, after
- * the renderer's escape, equals the entry. Returns the matched item indexes
- * and the failures (entries not in the candidate set, partial atomic groups).
+ * Aligns each payload codex entry with a candidate-set item, in order: the
+ * item of the entry's owner (input reference of its correspondence row) whose
+ * text, after the renderer's escape, equals the entry, searched only after the
+ * item matched by the previous entry. Both the packer and the baseline keep
+ * the candidate set's order, and a Revision's atomic groups share the closed
+ * negation and attribution texts, so a first-unused match would pair a later
+ * group's marker with an earlier group's item when only the later group
+ * survives. Returns the matched item indexes and the failures (entries not in
+ * the candidate set or out of order, partial atomic groups).
  */
 export function alignEntries({ cut, codex, view, capture }) {
   const failures = [];
   const items = capture.candidateSet.items;
   const used = new Set();
   const matched = [];
+  let previous = -1;
   for (const [index, entry] of cut.entries.entries()) {
     const row = codex[index];
     const reference = row ? view.inputReferences[row.inputOrdinal] : undefined;
     const owner = reference ? targetOwnerId(reference.target) : undefined;
     const found = items.findIndex(
       (item, itemIndex) =>
+        itemIndex > previous &&
         !used.has(itemIndex) &&
         item.kind !== "raw" &&
         item.ownerId === owner &&
@@ -495,7 +503,7 @@ export function alignEntries({ cut, codex, view, capture }) {
       failures.push(
         fail(
           "entry-not-in-candidate-set",
-          `codex entry ${index} matches no unused candidate item of its owner`,
+          `codex entry ${index} matches no unused candidate item of its owner after the item of the previous entry (the packed order follows the candidate set)`,
         ),
       );
       matched.push(-1);
@@ -503,6 +511,7 @@ export function alignEntries({ cut, codex, view, capture }) {
     }
     used.add(found);
     matched.push(found);
+    previous = found;
   }
   const groups = new Map();
   for (const [itemIndex, item] of items.entries()) {
@@ -949,6 +958,19 @@ export function checkSetupCase(
         "non-product-writer",
         `setup used ${writer}, which is not a product writer`,
       );
+  }
+  for (const event of setupCase.events) {
+    const allowed = EVENT_KIND_WRITERS[event.kind];
+    if (
+      allowed &&
+      PRODUCT_WRITERS.includes(event.writer) &&
+      !allowed.includes(event.writer)
+    ) {
+      bad(
+        "writer-kind-mismatch",
+        `seq ${event.seq}: a ${event.kind} event is written by ${event.writer}, not one of ${allowed.join(", ")}`,
+      );
+    }
   }
   const events = setupCase.events;
   if (
@@ -1512,6 +1534,138 @@ function selectionFailures({ capture, matched, label }) {
     : [];
 }
 
+/**
+ * The same-input checks of a scored request against the frozen fixture: the
+ * capture's figures (turn-independent ones: estimator, template, user message
+ * digest, context budget, measure, passed Revision ids) against what the
+ * fixture fixed, the route, the user message text and its digest. Shared by
+ * the positive request and the P-12 pair so that neither can score a capture
+ * that is not the frozen input.
+ */
+function frozenInputFailures({
+  request,
+  capture,
+  fixture,
+  userMessage,
+  contextBudgetTokens,
+  passedRuntimeIds,
+}) {
+  const failures = [];
+  const frozenInputs = {
+    estimatorVersion: fixture.estimatorVersion,
+    template: {
+      version: fixture.fixedTemplate.version,
+      ref: fixture.fixedTemplate.ref,
+    },
+    userMessageDigestSha256: userDigest(userMessage),
+    contextBudgetTokens,
+    measure: MEASURE,
+    passedRevisionIds: passedRuntimeIds,
+  };
+  failures.push(
+    ...checkSameInput(inputsOfCapture(capture), frozenInputs, {
+      label: "capture vs fixture",
+    }),
+  );
+  for (const key of ["model", "contextWindowTokens", "outputTokens"]) {
+    if (capture.route[key] !== fixture.route[key]) {
+      failures.push(
+        fail(
+          "same-input-check-rejects-route",
+          `capture route ${key} differs from the fixture route`,
+        ),
+      );
+    }
+  }
+  if (!sameJson(request.passedRevisionIds, capture.passedRevisionIds)) {
+    failures.push(
+      fail(
+        "same-input-check-rejects-passedRevisionIds",
+        "the receipt's passed Revision ids differ from the captured ones",
+      ),
+    );
+  }
+  if (capture.userMessage.text !== userMessage) {
+    failures.push(
+      fail(
+        "same-input-check-rejects-userMessage",
+        "the captured user message differs from the fixture's",
+      ),
+    );
+  }
+  if (
+    userDigest(capture.userMessage.text) !== capture.userMessage.digestSha256
+  ) {
+    failures.push(
+      fail(
+        "same-input-check-rejects-userMessageDigestSha256",
+        "the captured user message digest does not match its text",
+      ),
+    );
+  }
+  if (capture.estimatorVersion !== ESTIMATOR_VERSION) {
+    failures.push(
+      fail(
+        "same-input-check-rejects-estimatorVersion",
+        "the capture's estimator version is not nir1-context-estimator-v1",
+      ),
+    );
+  }
+  return failures;
+}
+
+/**
+ * What one arm's payload must hold regardless of the case: the user message
+ * the capture names, and the frozen Raw text in the current-scene block (Raw
+ * is required in both arms of P-12), which also equals the captured Raw item
+ * and corresponds to the Raw source input. `prefix` labels a non-candidate arm.
+ */
+function armContentFailures({ read, view, capture, rawText, prefix }) {
+  const failures = [];
+  const { parsed, cut } = read;
+  if (parsed.user !== capture.userMessage.text) {
+    failures.push(
+      fail(
+        "same-input-check-rejects-userMessage",
+        `${prefix}the payload user message differs from the captured user message`,
+      ),
+    );
+  }
+  const rawItem = capture.candidateSet.items.find(
+    (item) => item.kind === "raw",
+  );
+  const expectedRaw = escapeReservedPromptTags(rawText);
+  if (cut.raw !== expectedRaw) {
+    failures.push(
+      fail(
+        "raw-mismatch",
+        `${prefix}the current-scene block is not the frozen Raw text`,
+      ),
+    );
+  }
+  if (rawItem && escapeReservedPromptTags(rawItem.text) !== cut.raw) {
+    failures.push(
+      fail(
+        "raw-mismatch",
+        `${prefix}the current-scene block differs from the captured Raw item`,
+      ),
+    );
+  }
+  const rawRows = read.scene;
+  const rawReference = rawRows[0]
+    ? view.inputReferences[rawRows[0].inputOrdinal]
+    : undefined;
+  if (rawRows.length === 1 && rawReference?.target.kind !== "raw-source") {
+    failures.push(
+      fail(
+        "raw-mismatch",
+        `${prefix}the current-scene block does not correspond to the Raw source input`,
+      ),
+    );
+  }
+  return failures;
+}
+
 /** Scores one positive request. Returns `{ failures, invalid }`. */
 export function scorePositiveRequest({
   request,
@@ -1557,6 +1711,31 @@ export function scorePositiveRequest({
           `the setup receipt does not fix ${[
             ...new Set([...unresolvedPlaceholders, ...malformedPlaceholders]),
           ].join(", ")}; an expectation is never resolved from the payload`,
+        ),
+      ],
+      scored: false,
+    };
+  }
+  // A forbidden text that, once resolved, sits inside a resolved expected
+  // entry would fail a correct payload: a fixture error, not a product failure.
+  const resolvedEntries = entryTexts.flatMap((row) => row.texts);
+  const overlapping = forbiddenTexts
+    .flatMap((row) => row.texts)
+    .filter(
+      (text) =>
+        text.length > 0 &&
+        (resolvedEntries.some((entry) => entry.includes(text)) ||
+          expected.rawText.includes(text)),
+    );
+  if (overlapping.length > 0) {
+    return {
+      failures,
+      invalid: [
+        fail(
+          "setup-invalid:forbidden-overlaps-expected",
+          `a forbidden text resolves to a value that the expected entries or Raw also hold (${overlapping
+            .map((text) => JSON.stringify(text))
+            .join(", ")}); the fixture's template cannot tell the stages apart`,
         ),
       ],
       scored: false,
@@ -1620,108 +1799,23 @@ export function scorePositiveRequest({
   const { parsed, cut, codex } = read;
 
   const idMap = idMapOf(setupCase);
-  // Same input: the captured figures against the frozen fixture and the receipt.
-  const frozenInputs = {
-    estimatorVersion: fixture.estimatorVersion,
-    template: {
-      version: fixture.fixedTemplate.version,
-      ref: fixture.fixedTemplate.ref,
-    },
-    userMessageDigestSha256: userDigest(testCase.userMessage),
-    contextBudgetTokens: expected.contextBudgetTokens,
-    measure: MEASURE,
-    passedRevisionIds: expected.passedRuntimeIds,
-  };
-  const captured = inputsOfCapture(capture);
   failures.push(
-    ...checkSameInput(captured, frozenInputs, { label: "capture vs fixture" }),
+    ...frozenInputFailures({
+      request,
+      capture,
+      fixture,
+      userMessage: testCase.userMessage,
+      contextBudgetTokens: expected.contextBudgetTokens,
+      passedRuntimeIds: expected.passedRuntimeIds,
+    }),
+    ...armContentFailures({
+      read,
+      view,
+      capture,
+      rawText: expected.rawText,
+      prefix: "",
+    }),
   );
-  for (const key of ["model", "contextWindowTokens", "outputTokens"]) {
-    if (capture.route[key] !== fixture.route[key]) {
-      failures.push(
-        fail(
-          "same-input-check-rejects-route",
-          `capture route ${key} differs from the fixture route`,
-        ),
-      );
-    }
-  }
-  if (!sameJson(request.passedRevisionIds, capture.passedRevisionIds)) {
-    failures.push(
-      fail(
-        "same-input-check-rejects-passedRevisionIds",
-        "the receipt's passed Revision ids differ from the captured ones",
-      ),
-    );
-  }
-  if (capture.userMessage.text !== testCase.userMessage) {
-    failures.push(
-      fail(
-        "same-input-check-rejects-userMessage",
-        "the captured user message differs from the fixture's",
-      ),
-    );
-  }
-  if (
-    userDigest(capture.userMessage.text) !== capture.userMessage.digestSha256
-  ) {
-    failures.push(
-      fail(
-        "same-input-check-rejects-userMessageDigestSha256",
-        "the captured user message digest does not match its text",
-      ),
-    );
-  }
-  if (parsed.user !== capture.userMessage.text) {
-    failures.push(
-      fail(
-        "same-input-check-rejects-userMessage",
-        "the payload user message differs from the captured user message",
-      ),
-    );
-  }
-  if (capture.estimatorVersion !== ESTIMATOR_VERSION) {
-    failures.push(
-      fail(
-        "same-input-check-rejects-estimatorVersion",
-        "the capture's estimator version is not nir1-context-estimator-v1",
-      ),
-    );
-  }
-
-  // Raw retention.
-  const rawItem = capture.candidateSet.items.find(
-    (item) => item.kind === "raw",
-  );
-  const expectedRaw = escapeReservedPromptTags(expected.rawText);
-  if (cut.raw !== expectedRaw) {
-    failures.push(
-      fail(
-        "raw-mismatch",
-        "the current-scene block is not the frozen Raw text",
-      ),
-    );
-  }
-  if (rawItem && escapeReservedPromptTags(rawItem.text) !== cut.raw) {
-    failures.push(
-      fail(
-        "raw-mismatch",
-        "the current-scene block differs from the captured Raw item",
-      ),
-    );
-  }
-  const rawRows = read.scene;
-  const rawReference = rawRows[0]
-    ? view.inputReferences[rawRows[0].inputOrdinal]
-    : undefined;
-  if (rawRows.length === 1 && rawReference?.target.kind !== "raw-source") {
-    failures.push(
-      fail(
-        "raw-mismatch",
-        "the current-scene block does not correspond to the Raw source input",
-      ),
-    );
-  }
 
   // Retention, prose order and exact quotes of the IR entries.
   const expectedEntries = entryTexts.map((row) => row.texts[0]);
@@ -1871,9 +1965,41 @@ export function scoreRejectRequest({ request, expected }) {
  * `{ slot, baselineTarget, candidateTarget, improvementGroups: [{ ownerId,
  * kind }], contextBudgetTokens? }`.
  */
-export function scoreP12Pair({ request, expectation, template, fixtureRoute }) {
+export function scoreP12Pair({
+  request,
+  expectation,
+  template,
+  fixtureRoute,
+  fixture,
+  otherMarkers = [],
+  otherIds = [],
+}) {
   const failures = [];
   const invalid = [];
+  // Raw, the user message and the frozen input are checked on both arms the
+  // way a positive request checks them, so the expectation must carry them.
+  if (
+    !fixture ||
+    typeof expectation.rawText !== "string" ||
+    expectation.rawText.length === 0 ||
+    typeof expectation.userMessage !== "string" ||
+    expectation.userMessage.length === 0 ||
+    !Array.isArray(expectation.passedRuntimeIds)
+  ) {
+    failures.push(
+      fail(
+        "p12-expectation-incomplete",
+        "P-12 needs the frozen Raw text, user message, passed Revision ids and the fixture",
+      ),
+    );
+    return {
+      status: "failed",
+      failures,
+      invalid,
+      candidateSlot: null,
+      baselineSlot: null,
+    };
+  }
   if (
     expectation.slot !== "qualifiedEvidence" ||
     expectation.baselineTarget !== 0 ||
@@ -2010,16 +2136,46 @@ export function scoreP12Pair({ request, expectation, template, fixtureRoute }) {
       baselineSlot: null,
     };
   }
-  if (
-    candidateRead.parsed.user !== capture.userMessage.text ||
-    baselineRead.parsed.user !== capture.userMessage.text
-  ) {
-    failures.push(
-      fail(
-        "same-input-check-rejects-userMessage",
-        "an arm's payload user message differs from the captured user message",
-      ),
-    );
+  failures.push(
+    ...frozenInputFailures({
+      request,
+      capture,
+      fixture,
+      userMessage: expectation.userMessage,
+      contextBudgetTokens: expectation.contextBudgetTokens,
+      passedRuntimeIds: expectation.passedRuntimeIds,
+    }),
+    ...armContentFailures({
+      read: candidateRead,
+      view: candidateView,
+      capture,
+      rawText: expectation.rawText,
+      prefix: "candidate: ",
+    }),
+    ...armContentFailures({
+      read: baselineRead,
+      view: baselineView,
+      capture,
+      rawText: expectation.rawText,
+      prefix: "baseline: ",
+    }),
+  );
+  for (const [name, arm, parsedArm] of [
+    ["candidate", request.candidate, candidateRead.parsed],
+    ["baseline", request.baseline, baselineRead.parsed],
+  ]) {
+    for (const failure of scanForbidden({
+      payload: arm.payload,
+      system: parsedArm.system,
+      user: parsedArm.user,
+      canaries: fixture.canaries,
+      forbiddenTexts: [],
+      forbiddenIds: [],
+      otherMarkers,
+      otherIds,
+    })) {
+      failures.push({ ...failure, message: `${name}: ${failure.message}` });
+    }
   }
   if (
     request.candidate.payload === request.baseline.payload ||
@@ -2398,6 +2554,14 @@ export function scoreFinalRequestReceipt({
     return ids;
   };
 
+  // The diagnostic case is not a fixture case, so every fixture case's
+  // material and ids are "other" to it.
+  const allMarkers = fixture.cases.flatMap(
+    (testCase) => markersByCase.get(testCase.caseId) ?? [],
+  );
+  const allCaseIds = fixture.cases.flatMap((testCase) =>
+    allIds(testCase.caseId),
+  );
   for (const testCase of fixture.cases) {
     const otherMarkers = fixture.cases
       .filter((other) => other.caseId !== testCase.caseId)
@@ -2646,9 +2810,15 @@ export function scoreFinalRequestReceipt({
         candidateTarget: 1,
         improvementGroups: groups,
         contextBudgetTokens: diagnostic.p12.contextBudgetTokens,
+        rawText: diagnostic.rawText,
+        userMessage: diagnostic.userMessage,
+        passedRuntimeIds: passed,
       },
       template,
       fixtureRoute: fixture.route,
+      fixture,
+      otherMarkers: allMarkers,
+      otherIds: allCaseIds,
     });
     outcome.status = scored.status;
     outcome.failures.push(...scored.failures);

@@ -49,7 +49,8 @@
 //     binding with no variant is listed in excludedNegatives (caseId P-10,
 //     negative = the binding kind) with a reason.
 //   diagnosticCases (optional harness checks, never P evidence): { caseId: DIAG-..,
-//     evidenceUse: "none", userMessage, materials [{ logicalId, text }],
+//     evidenceUse: "none", userMessage, rawText (pre-escape; Raw is required in
+//     both P-12 arms), materials [{ logicalId, text }],
 //     p12 { variantId, revisionIds, improvementGroups [{ logicalId, kind }],
 //     contextBudgetTokens } }.
 // Freeze record (`nir1-final-request-freeze/1`): status pending-review | frozen,
@@ -216,8 +217,12 @@ export const REVISION_PLACEHOLDER_KINDS = Object.freeze([
   "proposalId",
   "decisionId",
 ]);
-/** A value a placeholder resolves to: ASCII with no JSON escape. */
-export const PLACEHOLDER_VALUE_PATTERN = /^[A-Za-z0-9_.:@+\-\/=]+$/;
+/**
+ * A value a placeholder resolves to: ASCII with no JSON escape. A space is
+ * allowed because the product still accepts the legacy SQLite `updated_at`
+ * (`2026-10-18 07:05:22`) inside a Source token.
+ */
+export const PLACEHOLDER_VALUE_PATTERN = /^[A-Za-z0-9_.:@+\-\/= ]+$/;
 
 const PLACEHOLDER_SOURCE = "\\{\\{([A-Za-z]+):([A-Za-z0-9._-]+)\\}\\}";
 const SKELETON_MARK = "\u0000";
@@ -243,7 +248,11 @@ export function templateSkeleton(text) {
  * given, a Revision-kind placeholder naming a Revision the variant does not
  * use.
  */
-export function templateErrors(text, label, { revisionIds = null } = {}) {
+export function templateErrors(
+  text,
+  label,
+  { revisionIds = null, scope = "variant" } = {},
+) {
   const errors = [];
   if (typeof text !== "string") return errors;
   for (const placeholder of templatePlaceholders(text)) {
@@ -257,7 +266,7 @@ export function templateErrors(text, label, { revisionIds = null } = {}) {
       !revisionIds.has(placeholder.logicalId)
     ) {
       errors.push(
-        `${label} has ${placeholder.token}, which names a Revision the variant does not use`,
+        `${label} has ${placeholder.token}, which names a Revision the ${scope} does not use`,
       );
     }
   }
@@ -414,8 +423,11 @@ function validateExpectedPositive(expected, label, errors, ctx) {
       errors.push(`${entryLabel}.text must not contain the entry separator`);
     }
     errors.push(
+      // An entry holds the values its own request's Revisions fixed: a
+      // Revision of another stage is settled after (or before) this request.
       ...templateErrors(entry.text, `${entryLabel}.text`, {
-        revisionIds: ctx.revisionIds,
+        revisionIds: ctx.requestRevisionIds ?? ctx.revisionIds,
+        scope: ctx.requestRevisionIds ? "request" : "variant",
       }),
     );
     selectedTokens += estimateTemplateTokens(entry.text);
@@ -656,6 +668,9 @@ function validateCase(testCase, index, ctx, errors) {
             ...ctx,
             userMessage: testCase.userMessage,
             revisionIds: variantRevisionIds,
+            requestRevisionIds: new Set(
+              Array.isArray(request.revisionIds) ? request.revisionIds : [],
+            ),
           },
         );
         if (
@@ -961,6 +976,27 @@ function validateDiagnosticCases(diagnostics, cases, errors) {
       }
       if (!nonEmpty(diagnostic.userMessage))
         errors.push(`${label}.userMessage is required`);
+      if (!nonEmpty(diagnostic.rawText)) {
+        errors.push(`${label}.rawText is required (Raw is held in both arms)`);
+      } else {
+        if (
+          escapeReservedPromptTags(diagnostic.rawText) !== diagnostic.rawText
+        ) {
+          errors.push(
+            `${label}.rawText must not contain a reserved prompt tag (it would be escaped)`,
+          );
+        }
+        if (
+          caseTexts.some(
+            (text) =>
+              text.length > 0 &&
+              (text.includes(diagnostic.rawText) ||
+                diagnostic.rawText.includes(text)),
+          )
+        ) {
+          errors.push(`${label}.rawText reuses text of a fixture case`);
+        }
+      }
     }
     for (const material of diagnostic.materials ?? []) {
       if (caseIds.has(material?.logicalId)) {
