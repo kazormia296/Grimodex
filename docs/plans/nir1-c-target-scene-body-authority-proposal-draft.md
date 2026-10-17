@@ -2,6 +2,8 @@
 
 > **2026-10-12 注記（G0。以下の本文は作成時のまま）:** 本書は superseded である。後継は今後起案する K2（`nir1-c-body-disclosure-proposal/2`）とする。本文は作成時の履歴として保持し、現行の契約・方針・承認の根拠として読まない。2026-09-25/26 の off-master 承認と WIP も採用しない（[作業記録](nir1-continuation-2026-10.md) の U1）。
 
+> **2026-10-17 注記（Session B2。以下の本文は作成時のまま）:** 後継は K2/4（`nir1-c-body-disclosure-proposal/4`。2026-10-17 に `graph-target-scene-body-disclosure` と `scope-storage-authority` の差分として2文とも確認済み。[draft](nir1-c-body-disclosure-proposal-4-draft.md)、確認は[確認台帳](nir1-l6-l9-execution-plan.md)）で、本書は superseded のままである。本書は確認の対象になったことがなく、確認台帳にも記録しない。K2/1（2026-09-25 の draft。off-master の確認の記録は採用しない）、K2/2、K2/3（どちらも未確認）は参照のみ。2026-09-25 の C-body の draft と承認は使わない（[作業記録](nir1-continuation-2026-10.md) の U1）。本文は作成時の履歴として保持し、現行の契約・方針・承認の根拠として読まない。
+
 Status: **threat-model draft; no implementation, activation, or user confirmation requested**
 
 Scope: a body excerpt for a Graph-added target Scene in Related Scenes. This is separate from the query Scene A3 proof and from the confirmed Option B `nir1.entity-relation@1` material contract.

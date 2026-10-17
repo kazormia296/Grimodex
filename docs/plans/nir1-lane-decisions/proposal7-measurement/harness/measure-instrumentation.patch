@@ -1,0 +1,930 @@
+diff --git a/src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs b/src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
+index a7fc8601..a4f6c1bd 100644
+--- a/src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
++++ b/src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
+@@ -174,6 +174,9 @@ fn main() -> std::process::ExitCode {
+ }
+ 
+ fn run(startup_stage: &mut StartupStage) -> Result<()> {
++    if std::env::var_os("VERIFY_Q_TRACE").is_some() {
++        c_query_fixed_allocator::VERIFY_TRACE.store(true, std::sync::atomic::Ordering::Relaxed);
++    }
+     ensure!(
+         c_query_fixed_allocator::install_sqlite(),
+         "worker SQLite allocator must precede init"
+@@ -240,6 +243,13 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
+     }
+     // Registration promotes its Q-owned pending proof only after this actual
+     // zero-live seal has closed S and the final reader lifecycle check succeeds.
++    if c_query_fixed_allocator::VERIFY_TRACE.load(std::sync::atomic::Ordering::Relaxed) {
++        let registration_hw = WORKER_ALLOCATOR.verify_hw_reset();
++        let (allocated, available, fragments, count) = WORKER_ALLOCATOR.verify_q_counters();
++        eprintln!(
++            "VERIFY-Q READY allocated={allocated} available={available} fragments={fragments} count={count} registration_hw={registration_hw}"
++        );
++    }
+     *startup_stage = StartupStage::Ready;
+     let mut output = take_protocol_output()?;
+     output.write_all(b"R")?;
+@@ -325,7 +335,18 @@ fn run(startup_stage: &mut StartupStage) -> Result<()> {
+             27
+         });
+     }
++    let measure_started = std::time::Instant::now();
+     let response = reader.query_for_worker_with_maintenance(&request)?;
++    let measure_inner_ms = measure_started.elapsed().as_secs_f64() * 1e3;
++    if c_query_fixed_allocator::VERIFY_TRACE.load(std::sync::atomic::Ordering::Relaxed) {
++        let (allocated, available, fragments, _) = WORKER_ALLOCATOR.verify_q_counters();
++        eprintln!(
++            "VERIFY-Q QUERY inner_ms={measure_inner_ms:.2} status={} reason={:?} hw={} allocated={allocated} available={available} fragments={fragments}",
++            response.status,
++            response.reason,
++            WORKER_ALLOCATOR.verify_hw()
++        );
++    }
+     #[cfg(feature = "nir1-c-query-test-seam")]
+     if std::env::var_os("NIR1_C_QUERY_TEST_OVERSIZED_FRAME_LENGTH")
+         .is_some_and(|value| value.to_str() == Some("one-over-limit"))
+diff --git a/src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs b/src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs
+index f410fe01..7473e10a 100644
+--- a/src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs
++++ b/src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs
+@@ -15,13 +15,61 @@ use std::{
+ };
+ use talc::{lock_api::RawMutex, source::Manual, TalcLock};
+ 
+-pub const QUERY_BYTES: usize = 4_718_592;
++// MEASURE (scratch, not committed): Q size override at build time.
++const fn measure_parse(text: &str) -> usize {
++    let bytes = text.as_bytes();
++    let mut value = 0usize;
++    let mut index = 0;
++    while index < bytes.len() {
++        value = value * 10 + (bytes[index] - b'0') as usize;
++        index += 1;
++    }
++    value
++}
++pub const QUERY_BYTES: usize = match option_env!("MEASURE_Q_BYTES") {
++    Some(text) => measure_parse(text),
++    None => 4_718_592,
++};
+ pub const SCRATCH_BYTES: usize = 64 * 1024 * 1024;
+ const SCRATCH_OPEN: u8 = 0;
+ const SCRATCH_ACTIVE: u8 = 1;
+ const SCRATCH_SEALING: u8 = 2;
+ const SCRATCH_SEALED: u8 = 3;
+ 
++// VERIFY-R4 (scratch copy only): Q accounting trace, off unless the worker enables it.
++pub static VERIFY_TRACE: AtomicBool = AtomicBool::new(false);
++static VERIFY_HW: AtomicUsize = AtomicUsize::new(0);
++
++fn verify_text(buffer: &mut [u8; 256], at: &mut usize, text: &[u8]) {
++    for byte in text {
++        if *at < buffer.len() {
++            buffer[*at] = *byte;
++            *at += 1;
++        }
++    }
++}
++
++fn verify_number(buffer: &mut [u8; 256], at: &mut usize, mut value: usize) {
++    let mut digits = [0u8; 20];
++    let mut count = 0;
++    if value == 0 {
++        digits[0] = b'0';
++        count = 1;
++    }
++    while value > 0 {
++        digits[count] = b'0' + (value % 10) as u8;
++        value /= 10;
++        count += 1;
++    }
++    while count > 0 {
++        count -= 1;
++        if *at < buffer.len() {
++            buffer[*at] = digits[count];
++            *at += 1;
++        }
++    }
++}
++
+ #[repr(u8)]
+ #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+ pub enum SqliteAllocationKind {
+@@ -198,6 +246,62 @@ impl WorkerAllocator {
+         }
+     }
+ 
++    pub fn verify_q_counters(&self) -> (usize, usize, usize, usize) {
++        let heap = self.query.heap.lock();
++        let counters = heap.counters();
++        (
++            counters.allocated_bytes,
++            counters.available_bytes,
++            counters.fragment_count,
++            counters.allocation_count,
++        )
++    }
++
++    fn verify_after(&self, ok: bool, requested: usize, sqlite: bool) {
++        if !VERIFY_TRACE.load(Ordering::Relaxed) {
++            return;
++        }
++        let (allocated, available, fragments, _) = self.verify_q_counters();
++        if ok {
++            VERIFY_HW.fetch_max(allocated, Ordering::Relaxed);
++            return;
++        }
++        let mut buffer = [0u8; 256];
++        let mut at = 0;
++        verify_text(
++            &mut buffer,
++            &mut at,
++            if sqlite {
++                b"VERIFY-Q FAIL sqlite requested="
++            } else {
++                b"VERIFY-Q FAIL rust requested="
++            },
++        );
++        verify_number(&mut buffer, &mut at, requested);
++        verify_text(&mut buffer, &mut at, b" allocated=");
++        verify_number(&mut buffer, &mut at, allocated);
++        verify_text(&mut buffer, &mut at, b" available=");
++        verify_number(&mut buffer, &mut at, available);
++        verify_text(&mut buffer, &mut at, b" fragments=");
++        verify_number(&mut buffer, &mut at, fragments);
++        verify_text(&mut buffer, &mut at, b" hw=");
++        verify_number(&mut buffer, &mut at, VERIFY_HW.load(Ordering::Relaxed));
++        verify_text(&mut buffer, &mut at, b"\n");
++        // SAFETY: a plain write of a stack buffer to fd 2; no allocation.
++        unsafe {
++            libc::write(2, buffer.as_ptr().cast(), at);
++        }
++    }
++
++    pub fn verify_hw_reset(&self) -> usize {
++        let (allocated, _, _, _) = self.verify_q_counters();
++        VERIFY_HW.swap(allocated, Ordering::Relaxed)
++    }
++
++    pub fn verify_hw(&self) -> usize {
++        VERIFY_HW.load(Ordering::Relaxed)
++    }
++
+     fn init_query(&self) {
+         self.query_once.call_once(|| {
+             if !self.query.claim() {
+@@ -247,6 +351,7 @@ impl WorkerAllocator {
+         self.init_query();
+         // SAFETY: Talc owns the claimed Q region and serializes heap mutation.
+         let allocation = unsafe { self.query.heap.alloc(layout) };
++        self.verify_after(!allocation.is_null(), layout.size(), failure.is_some());
+         #[cfg(feature = "nir1-c-query-test-seam")]
+         if allocation.is_null() && self.sqlite_failure_receipt_enabled() {
+             if let Some(failure) = failure {
+@@ -484,7 +589,11 @@ unsafe impl GlobalAlloc for WorkerAllocator {
+         }
+         // Origin, not the current scope, selects the heap. Talc preserves `ptr`
+         // on failure; neither Q nor S may fall back to the other region.
+-        unsafe { heap.realloc(ptr, old, size) }
++        let new = unsafe { heap.realloc(ptr, old, size) };
++        if !scratch {
++            self.verify_after(!new.is_null(), size, false);
++        }
++        new
+     }
+ }
+ 
+@@ -602,6 +711,7 @@ unsafe fn sqlite_realloc(allocator: &WorkerAllocator, ptr: *mut c_void, n: c_int
+             .heap
+             .realloc(raw, old_layout, new_layout.size())
+     };
++    allocator.verify_after(!new.is_null(), n as usize, true);
+     if new.is_null() {
+         #[cfg(feature = "nir1-c-query-test-seam")]
+         {
+diff --git a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
+index 73febdfe..611e8dd3 100644
+--- a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
++++ b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
+@@ -113,6 +113,12 @@ thread_local! {
+     static LAST_QUERY_ROWS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+ }
+ 
++#[cfg(test)]
++thread_local! {
++    /// P7 MEASURE: (rows, bytes, pages, retained_bytes, peak ledger used) of the latest available query.
++    static LAST_QUERY_USAGE: std::cell::Cell<Option<(usize, usize, usize, usize, usize)>> = const { std::cell::Cell::new(None) };
++}
++
+ #[cfg(feature = "nir1-material-diagnostics")]
+ #[derive(Debug, Default)]
+ pub(crate) struct StageObservation {
+@@ -2179,6 +2185,14 @@ fn query_in_snapshot(
+     }
+     #[cfg(test)]
+     LAST_QUERY_ROWS.set(Some(usage.rows));
++    #[cfg(test)]
++    LAST_QUERY_USAGE.set(Some((
++        usage.rows,
++        usage.bytes,
++        usage.pages,
++        usage.retained_bytes,
++        usage.peak.used(),
++    )));
+     Ok(response)
+ }
+ 
+diff --git a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
+index 911aa7b6..d3aed4c3 100644
+--- a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
++++ b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
+@@ -26,7 +26,19 @@ use super::{
+     Nir1GraphRequest, QUERY_DEADLINE,
+ };
+ 
+-const PARENT_BYTES: usize = 1_572_864;
++const PARENT_BYTES: usize = match option_env!("MEASURE_NATIVE_BYTES") {
++    Some(text) => {
++        let bytes = text.as_bytes();
++        let mut value = 0usize;
++        let mut index = 0;
++        while index < bytes.len() {
++            value = value * 10 + (bytes[index] - b'0') as usize;
++            index += 1;
++        }
++        value
++    }
++    None => 1_572_864,
++};
+ pub const REQUEST_BYTES: usize = 8_192;
+ const REQUEST_CAPACITY_BYTES: usize = REQUEST_BYTES;
+ const START_TIMEOUT: Duration = Duration::from_secs(30);
+diff --git a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests/cq_avail.rs b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests/cq_avail.rs
+index 3a214716..501d25b4 100644
+--- a/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests/cq_avail.rs
++++ b/src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests/cq_avail.rs
+@@ -40,8 +40,16 @@ impl ReviewMode {
+     }
+ }
+ 
++/// P7 MEASURE: (mains, minors) of the cast; the default is the original 5:15.
++fn p7_cast() -> (usize, usize) {
++    let text = std::env::var("P7_CAST").unwrap_or_else(|_| "5:15".to_owned());
++    let (mains, minors) = text.split_once(':').unwrap_or(("5", "15"));
++    (mains.parse().unwrap_or(5), minors.parse().unwrap_or(15))
++}
++
+ /// Characters appearing in Scene `index` (deterministic, protagonist-centric).
+ fn scene_cast(index: usize) -> Vec<String> {
++    let (mains, minors) = p7_cast();
+     let mut cast = Vec::new();
+     if index % 5 != 4 {
+         cast.push("m1".to_owned());
+@@ -58,12 +66,22 @@ fn scene_cast(index: usize) -> Vec<String> {
+     if matches!(index % 10, 4 | 9) {
+         cast.push("m5".to_owned());
+     }
+-    cast.push(format!("c{:02}", index % 15 + 1));
++    for extra in 6..=mains {
++        if (index + extra) % 4 == 0 {
++            cast.push(format!("m{extra}"));
++        }
++    }
++    cast.push(format!("c{:02}", index % minors + 1));
++    if (mains, minors) != (5, 15) {
++        cast.push(format!("c{:02}", (index * 7 + 3) % minors + 1));
++        cast.dedup();
++    }
+     cast
+ }
+ 
+-/// Seven main-main Relations and one main for each of fifteen minor characters.
++/// Seven main-main Relations and one main for each minor character.
+ fn novel_relations() -> Vec<(String, String, String)> {
++    let (mains, minors) = p7_cast();
+     let mut relations = Vec::new();
+     for (from, to) in [
+         ("m1", "m2"),
+@@ -76,8 +94,13 @@ fn novel_relations() -> Vec<(String, String, String)> {
+     ] {
+         relations.push((format!("r-{from}-{to}"), from.to_owned(), to.to_owned()));
+     }
+-    for minor in 1..=15usize {
+-        let main = format!("m{}", (minor - 1) / 3 + 1);
++    for extra in 6..=mains {
++        let from = format!("m{extra}");
++        let to = format!("m{}", extra - 1);
++        relations.push((format!("r-{from}-{to}"), from, to));
++    }
++    for minor in 1..=minors {
++        let main = format!("m{}", (minor - 1) * mains / minors + 1);
+         let minor = format!("c{minor:02}");
+         relations.push((format!("r-{main}-{minor}"), main, minor));
+     }
+@@ -206,25 +229,25 @@ fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Nov
+                 scene_ids.push(scene_id);
+             }
+         }
+-        for main in 1..=5 {
++        for main in 1..=p7_cast().0 {
+             conn.execute(
+                 "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
+                  VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
+                 params![
+                     format!("m{main}"),
+                     format!("主要人物{main}"),
+-                    format!("主要人物{main}の要約。物語の中心にいる。")
++                    p7_summary(&format!("主要人物{main}の要約。物語の中心にいる。"))
+                 ],
+             )?;
+         }
+-        for minor in 1..=15 {
++        for minor in 1..=p7_cast().1 {
+             conn.execute(
+                 "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
+                  VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
+                 params![
+                     format!("c{minor:02}"),
+                     format!("脇役{minor:02}"),
+-                    format!("脇役{minor:02}の要約。")
++                    p7_summary(&format!("脇役{minor:02}の要約。"))
+                 ],
+             )?;
+         }
+@@ -362,6 +385,11 @@ struct Replay {
+     steps: u64,
+     entities: usize,
+     edges: usize,
++    // P7 MEASURE: byte accounting.
++    a2_bytes: usize,
++    a3_bytes: usize,
++    max_revision_bytes: usize,
++    max_payload_bytes: usize,
+ }
+ 
+ impl Replay {
+@@ -429,6 +457,8 @@ fn replay(fixture: &Fixture, seed: &str, query_scene: &str) -> Result<Replay> {
+                         usize::MAX / 4,
+                     )? {
+                         out.a2_rows += a2.rows;
++                        out.a2_bytes += a2.bytes;
++                        out.max_payload_bytes = out.max_payload_bytes.max(a2.payload_bytes);
+                         if shared.is_none() {
+                             let admission = super::super::input::preflight_project_reads(
+                                 &conn,
+@@ -451,6 +481,10 @@ fn replay(fixture: &Fixture, seed: &str, query_scene: &str) -> Result<Replay> {
+                             usize::MAX / 4,
+                         )?;
+                         out.a3_rows += a3.rows;
++                        out.a3_bytes += a3.bytes;
++                        out.max_revision_bytes = out
++                            .max_revision_bytes
++                            .max(a2.bytes + a3.bytes + out.shared_bytes);
+                         match evaluate_nir1_entity_relation_disclosure_for_graph(
+                             &conn,
+                             PROJECT,
+@@ -1790,3 +1824,542 @@ fn native_worker_answers_a_project_reviewed_scene_by_scene() -> Result<()> {
+     );
+     Ok(())
+ }
++
++// =====================================================================
++// P7 MEASURE (scratch, never committed): measurements for proposal/7.
++// =====================================================================
++
++fn p7_summary(base: &str) -> String {
++    match std::env::var("P7_SUMMARY_CHARS")
++        .ok()
++        .and_then(|value| value.parse::<usize>().ok())
++    {
++        Some(chars) if chars > base.chars().count() => {
++            let filler = "彼女は静かに窓の外を見つめ、過去の約束と未来への不安を胸に抱きながら、物語の行方を思い描いていた。";
++            let mut text = base.to_owned();
++            while text.chars().count() < chars {
++                text.push_str(filler);
++            }
++            text.chars().take(chars).collect()
++        }
++        _ => base.to_owned(),
++    }
++}
++
++fn p7_shapes() -> Vec<(usize, ReviewMode)> {
++    std::env::var("P7_SHAPES")
++        .unwrap_or_else(|_| "10:scene,20:scene,30:scene,50:scene,80:scene".to_owned())
++        .split(',')
++        .filter_map(|part| {
++            let (scenes, mode) = part.split_once(':')?;
++            let mode = match mode {
++                "scene" => ReviewMode::Scene,
++                "fixed" => ReviewMode::Fixed,
++                _ => return None,
++            };
++            Some((scenes.parse().ok()?, mode))
++        })
++        .collect()
++}
++
++fn p7_list(name: &str, default: &str) -> Vec<String> {
++    std::env::var(name)
++        .unwrap_or_else(|_| default.to_owned())
++        .split(',')
++        .filter(|item| !item.is_empty())
++        .map(str::to_owned)
++        .collect()
++}
++
++fn p7_usize(name: &str, default: usize) -> usize {
++    std::env::var(name)
++        .ok()
++        .and_then(|value| value.parse().ok())
++        .unwrap_or(default)
++}
++
++const P7_ALL_SEEDS: &str =
++    "m1,m2,m3,m4,m5,c01,c02,c03,c04,c05,c06,c07,c08,c09,c10,c11,c12,c13,c14,c15,x1";
++
++fn p7_stats(times: &[f64]) -> String {
++    let mut sorted = times.to_vec();
++    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
++    if sorted.is_empty() {
++        return "n=0".to_owned();
++    }
++    format!(
++        "n={} min={:.2} p50={:.2} max={:.2}",
++        sorted.len(),
++        sorted[0],
++        sorted[sorted.len() / 2],
++        sorted[sorted.len() - 1]
++    )
++}
++
++fn p7_revision_sizes(scenes: usize, mode: ReviewMode, fixture: &Fixture) -> Result<()> {
++    let rows: Vec<(String, i64, i64, i64)> = fixture.authority.with_read_transaction(|conn| {
++        let mut statement = conn.prepare(
++            "SELECT r.id, COALESCE(octet_length(r.payload_json),0),
++                    COALESCE(octet_length(r.reconciliation_envelope_json),0),
++                    (SELECT COALESCE(SUM(octet_length(d.decision_json)),0)
++                       FROM narrative_proposal_decisions d WHERE d.revision_id=r.id)
++               FROM narrative_proposal_revisions r ORDER BY r.rowid",
++        )?;
++        let rows = statement
++            .query_map([], |row| {
++                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
++            })?
++            .collect::<rusqlite::Result<Vec<_>>>()?;
++        Ok(rows)
++    })?;
++    for (id, payload, envelope, decision) in rows {
++        let admission = fixture.authority.with_conn(|conn| {
++            Ok(super::super::input::preflight_revision(
++                conn,
++                PROJECT,
++                &id,
++                usize::MAX / 4,
++                usize::MAX / 4,
++            )?
++            .map(|a| (a.rows, a.bytes, a.payload_bytes)))
++        })?;
++        eprintln!(
++            "P7REV scenes={scenes} mode={} revision={id} payload={payload} envelope={envelope} decision={decision} a2={admission:?}",
++            mode.label()
++        );
++    }
++    Ok(())
++}
++
++#[test]
++#[ignore = "P7 MEASURE"]
++fn p7_matrix() -> Result<()> {
++    let seeds = if std::env::var("P7_SEEDS").as_deref() == Ok("cast") {
++        let (mains, minors) = p7_cast();
++        (1..=mains)
++            .map(|n| format!("m{n}"))
++            .chain((1..=minors).map(|n| format!("c{n:02}")))
++            .collect()
++    } else {
++        p7_list("P7_SEEDS", P7_ALL_SEEDS)
++    };
++    let reps = p7_usize("P7_REPS", 3);
++    eprintln!(
++        "P7CONST FRAME_BYTES={} MAX_GRAPH_NODES={} MAX_GRAPH_EDGES={} MAX_GRAPH_RECORDS={} MAX_GRAPH_INPUT_BYTES={} QUERY_SQL_STEPS={} QUERY_DEADLINE_MS={}",
++        super::super::worker_frame::FRAME_BYTES,
++        MAX_GRAPH_NODES,
++        MAX_GRAPH_EDGES,
++        MAX_GRAPH_RECORDS,
++        MAX_GRAPH_INPUT_BYTES,
++        QUERY_SQL_STEPS,
++        QUERY_DEADLINE.as_millis()
++    );
++    for (scenes, mode) in p7_shapes() {
++        let started = Instant::now();
++        let Novel {
++            fixture,
++            appearances,
++            ..
++        } = novel_fixture(scenes, 5, mode)?;
++        eprintln!(
++            "P7SHAPE scenes={scenes} mode={} build_s={:.1} summary_chars={:?} appearances={appearances:?}",
++            mode.label(),
++            started.elapsed().as_secs_f64(),
++            std::env::var("P7_SUMMARY_CHARS").ok()
++        );
++        if std::env::var_os("P7_NO_REVSIZES").is_none() {
++            p7_revision_sizes(scenes, mode, &fixture)?;
++        }
++        for seed in &seeds {
++            let replayed = replay(&fixture, seed, "nir1")?;
++            let mut query_ms = Vec::new();
++            let mut reg_ms = Vec::new();
++            let mut last = None;
++            let mut last_usage = None;
++            for _ in 0..reps {
++                fixture.authority.db().with_conn(|conn| {
++                    conn.execute_batch("PRAGMA query_only=OFF")?;
++                    Ok(())
++                })?;
++                let registration = Instant::now();
++                let mut reader = fixture.worker_reader()?;
++                reg_ms.push(registration.elapsed().as_secs_f64() * 1e3);
++                LAST_QUERY_ROWS.take();
++                LAST_QUERY_USAGE.take();
++                LAST_QUERY_SQL_STEPS.take();
++                let started = Instant::now();
++                let response = reader.query_for_worker_with_maintenance_deadline(
++                    &request_for(seed, "nir1"),
++                    DEADLINE,
++                )?;
++                query_ms.push(started.elapsed().as_secs_f64() * 1e3);
++                let rows = LAST_QUERY_ROWS.take();
++                let usage = LAST_QUERY_USAGE.take();
++                let steps = LAST_QUERY_SQL_STEPS.take();
++                let (nodes, edges, bindings) = response.graph.as_ref().map_or((0, 0, 0), |graph| {
++                    (
++                        graph.nodes.len(),
++                        graph.edges.len(),
++                        graph.nodes.iter().map(|n| n.bindings.len()).sum::<usize>(),
++                    )
++                });
++                last_usage = usage;
++                last = Some((
++                    response.status.to_owned(),
++                    response.reason.clone(),
++                    rows,
++                    steps,
++                    nodes,
++                    edges,
++                    bindings,
++                ));
++            }
++            let (status, reason, rows, steps, nodes, edges, bindings) = last.unwrap();
++            let (open_status, open_reason, open_steps) = uncapped_steps(&fixture, seed)?;
++            eprintln!(
++                "P7ROW scenes={scenes} mode={} seed={seed} revisions={} eligible={} candidate_rows={} a2_rows={} shared_rows={} a3_rows={} records={} replay_steps={} entities={} edges={} a2_bytes={} a3_bytes={} shared_bytes={} max_revision_bytes={} max_payload_bytes={} unavailable={:?} | production={status}/{reason:?} charged_rows={rows:?} usage(rows,bytes,pages,retained,peak)={last_usage:?} charged_steps={steps:?} nodes={nodes} out_edges={edges} bindings={bindings} | uncapped_steps={open_steps}/{open_status}/{open_reason:?} | query_ms[{}] reg_ms[{}]",
++                mode.label(),
++                replayed.revisions,
++                replayed.eligible,
++                replayed.candidate_rows,
++                replayed.a2_rows,
++                replayed.shared_rows,
++                replayed.a3_rows,
++                replayed.records(),
++                replayed.steps,
++                replayed.entities,
++                replayed.edges,
++                replayed.a2_bytes,
++                replayed.a3_bytes,
++                replayed.shared_bytes,
++                replayed.max_revision_bytes,
++                replayed.max_payload_bytes,
++                replayed.unavailable,
++                p7_stats(&query_ms),
++                p7_stats(&reg_ms),
++            );
++        }
++    }
++    Ok(())
++}
++
++/// Spawn the real worker binary directly (one process per query), with the Q
++/// accounting trace on. Returns one line of key=value pairs.
++#[cfg(target_os = "linux")]
++fn p7_spawn_worker(directory: &std::path::Path, seed: &str) -> Result<String> {
++    use std::io::{Read as _, Write as _};
++    use std::process::{Command, Stdio};
++    let worker = PathBuf::from(
++        std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
++            .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
++    );
++    let started = Instant::now();
++    let mut child = Command::new(&worker)
++        .arg(directory)
++        .arg(PROJECT)
++        .env("VERIFY_Q_TRACE", "1")
++        .stdin(Stdio::piped())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::piped())
++        .spawn()?;
++    let mut stdout = child.stdout.take().unwrap();
++    let mut stdin = child.stdin.take().unwrap();
++    let mut ready = [0u8; 1];
++    let read = stdout.read(&mut ready).unwrap_or(0);
++    let ready_ok = read == 1 && ready[0] == b'R';
++    let ready_ms = started.elapsed().as_secs_f64() * 1e3;
++    let query_started = Instant::now();
++    if ready_ok {
++        let mut body = Vec::new();
++        for field in [PROJECT, "nir1", seed] {
++            body.extend_from_slice(&(field.len() as u16).to_le_bytes());
++            body.extend_from_slice(field.as_bytes());
++        }
++        let mut message = (body.len() as u16).to_le_bytes().to_vec();
++        message.extend_from_slice(&body);
++        let _ = stdin.write_all(&message);
++    }
++    drop(stdin);
++    let mut frame = Vec::new();
++    let _ = stdout.read_to_end(&mut frame);
++    let status = child.wait()?;
++    let query_ms = query_started.elapsed().as_secs_f64() * 1e3;
++    let mut stderr = String::new();
++    let _ = child.stderr.take().unwrap().read_to_string(&mut stderr);
++    Ok(format!(
++        "ready={ready_ok} ready_ms={ready_ms:.1} query_ms={query_ms:.1} frame_bytes={} exit={:?} stderr=[{}]",
++        frame.len(),
++        status.code(),
++        stderr.trim_end().replace('\n', " | ")
++    ))
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++#[ignore = "P7 MEASURE: needs NIR1_C_QUERY_WORKER_BIN"]
++fn p7_worker() -> Result<()> {
++    let seeds = p7_list("P7_WSEEDS", "m1,m2,m3,m5,c01");
++    let reps = p7_usize("P7_WREPS", 5);
++    let tag = std::env::var("P7_TAG").unwrap_or_default();
++    for (scenes, mode) in p7_shapes() {
++        let Novel { fixture, .. } = novel_fixture(scenes, 5, mode)?;
++        for seed in &seeds {
++            for rep in 0..reps {
++                let outcome = p7_spawn_worker(&fixture._directory.0, seed)?;
++                eprintln!(
++                    "P7WORKER tag={tag} scenes={scenes} mode={} seed={seed} rep={rep} {outcome}",
++                    mode.label()
++                );
++            }
++        }
++    }
++    Ok(())
++}
++
++/// The production parent path (CQueryWorkerOwner): call time, the lease time
++/// the parent saw, and the typed outcome.
++#[test]
++#[ignore = "P7 MEASURE: needs NIR1_C_QUERY_WORKER_BIN"]
++fn p7_native() -> Result<()> {
++    use super::super::c_query_worker::{CQueryRetirement, CQueryWorkerOwner};
++    let seeds = p7_list("P7_WSEEDS", "m1,m2,m3,m5,c01");
++    let reps = p7_usize("P7_WREPS", 10);
++    let tag = std::env::var("P7_TAG").unwrap_or_default();
++    let worker_path = PathBuf::from(
++        std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
++            .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
++    );
++    for (scenes, mode) in p7_shapes() {
++        let novel = novel_fixture(scenes, 5, mode)?;
++        let authority = Arc::clone(&novel.fixture.authority);
++        let native_state = WorkspaceState {
++            inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
++            safe_mode: crate::recovery::SafeModeState::default(),
++            switching: WorkspaceLifecycleCompatibilityView::new(false),
++            open_lock: Mutex::new(Default::default()),
++        };
++        let binding = LiveBinding::new(
++            authority.path().to_string_lossy(),
++            format!("test-workspace:{}", authority.identity()),
++            authority.identity(),
++            0,
++        )
++        .with_main_database_file_identity(authority.main_database_file_identity()?);
++        native_state.switching.core().set_ready(binding)?;
++        for seed in &seeds {
++            let mut calls = Vec::new();
++            let mut leases = Vec::new();
++            let mut last = String::new();
++            for _ in 0..reps {
++                let mut owner = CQueryWorkerOwner::new(
++                    active_workspace_snapshot(&native_state)?,
++                    worker_path.clone(),
++                );
++                owner.prepare(PROJECT)?;
++                let started = Instant::now();
++                let result =
++                    owner.query_projected(&request_for(seed, "nir1"), &AtomicBool::new(false));
++                let call = started.elapsed();
++                let _ = owner.retirement() == CQueryRetirement::Retired;
++                if let Some(claim) = authority.claim_c_query_child() {
++                    claim.release();
++                }
++                drop(owner);
++                calls.push(call.as_secs_f64() * 1e3);
++                match result {
++                    Ok(projection) => {
++                        leases.push(projection.elapsed.as_secs_f64() * 1e3);
++                        last = format!(
++                            "available nodes={} edges={}",
++                            projection.graph.nodes.len(),
++                            projection.graph.edges.len()
++                        );
++                    }
++                    Err(error) => last = format!("refused {error:#}"),
++                }
++            }
++            eprintln!(
++                "P7NATIVE tag={tag} scenes={scenes} mode={} seed={seed} last={last} call_ms[{}] lease_ms[{}]",
++                mode.label(),
++                p7_stats(&calls),
++                p7_stats(&leases)
++            );
++        }
++    }
++    Ok(())
++}
++
++/// Product-shaped Codex review: `entity_count` Entities with Japanese summaries
++/// totalling about `total_summary_bytes`, reviewed once, approved, published.
++fn p7_product_fixture(total_summary_bytes: usize) -> Result<(Fixture, String)> {
++    use crate::narrative_extraction::nir1_entity_relation::prepare_nir1_entity_relation_revision;
++    use crate::narrative_extraction::Nir1EntityRelationRevisionPrepareRequest;
++    let entity_count = 12usize;
++    let per_entity_chars = (total_summary_bytes / entity_count / 3).max(1);
++    let directory = TestDirectory(
++        std::env::temp_dir().join(format!("nir1-p7-product-{}", uuid::Uuid::new_v4())),
++    );
++    std::fs::create_dir_all(&directory.0)?;
++    let db = crate::Database::new(&directory.0.join("grimodex.db"))?;
++    db.migrate()?;
++    seed_run_and_catalog(&db)?;
++    prepare_a3_scope_fixture(&db)?;
++    let revision_count = p7_usize("P7_PRODUCT_REVISIONS", 1);
++    let scene_ids: Vec<String> = (0..revision_count).map(|n| format!("s{n:03}")).collect();
++    db.with_conn(|conn| {
++        conn.execute(
++            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
++             VALUES ('ch00', 'default-project', 'folder', 'ch00', '{}', 'a0c00')",
++            [],
++        )?;
++        for scene_id in &scene_ids {
++            conn.execute(
++                "INSERT INTO tree_nodes
++                    (id, project_id, parent_id, node_type, title, content, sort_order)
++                 VALUES (?1, 'default-project', 'ch00', 'scene', ?1, '{}', ?1)",
++                [scene_id],
++            )?;
++            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
++                conn,
++                PROJECT,
++                scene_id,
++                "2026-09-17T00:00:00.000Z",
++            )?;
++        }
++        let body: String = "物語".repeat(per_entity_chars / 2 + 1);
++        for index in 0..entity_count {
++            conn.execute(
++                "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
++                 VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
++                params![
++                    format!("v{index:02}"),
++                    format!("人物{index:02}"),
++                    format!("{index:02}{body}")
++                ],
++            )?;
++        }
++        for index in 1..entity_count {
++            conn.execute(
++                "INSERT INTO codex_relations
++                    (id, project_id, from_codex_id, to_codex_id, relation_type,
++                     directionality, version, updated_at)
++                 VALUES (?1, 'default-project', 'v00', ?2, 'knows', 'symmetric', 1,
++                         '2026-09-12T00:00:00Z')",
++                params![format!("rv-{index:02}"), format!("v{index:02}")],
++            )?;
++        }
++        Ok(())
++    })?;
++    let approve = std::env::var_os("P7_NO_APPROVE").is_none();
++    let mut revision = String::new();
++    for (ordinal, scene_id) in scene_ids.iter().enumerate() {
++        explicit_scope(&db, scene_id, ordinal)?;
++        drain_freshness(&db)?;
++        let prepared = prepare_nir1_entity_relation_revision(
++            &db,
++            Nir1EntityRelationRevisionPrepareRequest {
++                project_id: PROJECT.into(),
++                scene_id: scene_id.clone(),
++                proposal_key: Some(format!("codex-ui:selection:p7-product-{ordinal}")),
++                entity_ids: (0..entity_count).map(|index| format!("v{index:02}")).collect(),
++                relation_ids: (1..entity_count)
++                    .map(|index| format!("rv-{index:02}"))
++                    .collect(),
++            },
++        )?;
++        let run_id = prepared["runId"].as_str().unwrap().to_owned();
++        let this_revision = prepared["result"]["revisionId"].as_str().unwrap().to_owned();
++        if approve {
++            approve_typed_revision(
++                &db,
++                &run_id,
++                &serde_json::json!({
++                    "proposalId": prepared["result"]["proposalId"],
++                    "revisionId": this_revision,
++                }),
++            )?;
++        }
++        drain_freshness(&db)?;
++        if revision.is_empty() {
++            revision = this_revision;
++        }
++    }
++    let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
++    publish_graph_index(&authority)?;
++    Ok((
++        Fixture {
++            authority,
++            lifecycle: WorkspaceLifecycleCore::new(),
++            revision: revision.clone(),
++            _directory: directory,
++        },
++        revision,
++    ))
++}
++
++#[cfg(target_os = "linux")]
++#[test]
++#[ignore = "P7 MEASURE: needs NIR1_C_QUERY_WORKER_BIN"]
++fn p7_product() -> Result<()> {
++    let cases = p7_list("P7_CASES", "p:300000");
++    let tag = std::env::var("P7_TAG").unwrap_or_default();
++    for case in cases {
++        let (kind, size) = case
++            .split_once(':')
++            .ok_or_else(|| anyhow::anyhow!("bad case {case}"))?;
++        let size: usize = size.parse()?;
++        let (fixture, seed, candidate) = match kind {
++            "d" => {
++                let fixture = Fixture::new()?;
++                let candidate = fixture.add_candidate_revision(1, size)?;
++                fixture.republish_graph_index()?;
++                (fixture, "nir1-alice", candidate)
++            }
++            "e" => {
++                let fixture = Fixture::new()?;
++                let candidate = fixture.add_envelope_padded_candidate(1, size)?;
++                fixture.republish_graph_index()?;
++                (fixture, "nir1-alice", candidate)
++            }
++            "p" => {
++                let (fixture, revision) = p7_product_fixture(size)?;
++                (fixture, "v00", revision)
++            }
++            "w" => {
++                // Payload-side padding through the typed writer (the shape that
++                // CR-2 saw fail in registration): `size` is the writer's counted bytes.
++                let fixture = Fixture::new()?;
++                let db = fixture.authority.db();
++                let template = request(db).bundle;
++                let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
++                let mut payload = request(db);
++                payload.bundle = bounded_writer_bundle(&template, 507, size - base);
++                let created = create_nir1_entity_relation_revision(db, payload)?;
++                approve_typed_revision(db, "nir1-run", &created)?;
++                let candidate = created["revisionId"].as_str().unwrap().to_owned();
++                fixture.republish_graph_index()?;
++                (fixture, "nir1-alice", candidate)
++            }
++            other => anyhow::bail!("unknown case kind {other}"),
++        };
++        let a2 = fixture
++            .a2_admission(&candidate)
++            .map_err(|error| error.to_string());
++        let lengths: (i64, i64, i64) = fixture.authority.with_read_transaction(|conn| {
++            Ok(conn.query_row(
++                "SELECT COALESCE(octet_length(payload_json),0),
++                        COALESCE(octet_length(reconciliation_envelope_json),0),
++                        (SELECT COALESCE(SUM(octet_length(decision_json)),0)
++                           FROM narrative_proposal_decisions d WHERE d.revision_id=r.id)
++                   FROM narrative_proposal_revisions r WHERE r.id=?1",
++                [&candidate],
++                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
++            )?)
++        })?;
++        let outcome = p7_spawn_worker(&fixture._directory.0, seed)?;
++        eprintln!(
++            "P7PROD tag={tag} case={case} a2={a2:?} payload_envelope_decision={lengths:?} {outcome}"
++        );
++    }
++    Ok(())
++}
