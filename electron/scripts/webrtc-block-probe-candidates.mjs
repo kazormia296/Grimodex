@@ -105,6 +105,10 @@ export const CANDIDATES = {
   "z3-min-rules-real": { cm: { dns: true, gvt1: true, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverSwitch: RULES_MIN }, args: [], realNetwork: true, dnsLog: true },
   "z4-rules+policy-only-real": { cm: { dns: true, gvt1: true, policy: POLICY, resolverSwitch: RULES_MIN }, args: [], realNetwork: true, dnsLog: true },
   "z5-rules-only-real": { cm: { dns: true, gvt1: true, resolverSwitch: RULES_MIN }, args: [], realNetwork: true, dnsLog: true },
+  // ── OS 非依存の名前解決の観測（DoH の canary。LD_PRELOAD を使わない）──
+  "o0-doh-baseline": { cm: { dns: true, doh: true }, args: [], realNetwork: true, doh: true },
+  "o1-doh-nc1-al1": { cm: { dns: true, doh: true, gvt1: true, target: "default", policy: POLICY, proxy: FINAL_PROXY }, args: [], realNetwork: true, doh: true },
+  "o2-doh-final": { cm: { dns: true, doh: true, gvt1: true, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverSwitch: RULES_FINAL }, args: [], realNetwork: true, doh: true },
   "d1-dictionary-wild-socks+rules": { cm: { noProbes: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: "<-loopback>;https://*.gvt1.com:443" }, resolverSwitch: RULES_GVT1_ONLY }, args: [], realNetwork: true, dnsLog: true, netLog: true },
   "d2-dictionary-no-allow+rules": { cm: { noProbes: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: NC1_PROXY, resolverSwitch: RULES_NONE }, args: [], realNetwork: true, dnsLog: true, netLog: true },
   "k1-netservice-kill+rules": { cm: { dns: true, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT", proxyBypassRules: AL1_BYPASS }, resolverSwitch: RULES, killNetworkService: true }, args: [], realNetwork: true, dnsLog: true },
@@ -130,6 +134,7 @@ if (import.meta.url === `file://${process.argv[1]}` && argv.length > 0) {
       ...(cand.netLog ? ["--net-log"] : []),
       ...(cand.proxyMode ? ["--proxy-mode", cand.proxyMode] : []),
       ...(cand.realNetwork ? ["--real-network"] : []),
+      ...(cand.doh ? ["--doh"] : []),
       ...(cand.fakeHttpProxy ? ["--fake-http-proxy"] : []),
       ...(cand.dnsLog ? ["--dns-log", process.env.PROBE_DNSLOG_LIB ?? "/dev/shm/dnslog.so"] : []),
       ...Object.entries(cand.env ?? {}).flatMap(([k, v]) => ["--env", `${k}=${v}`]),

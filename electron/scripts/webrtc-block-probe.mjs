@@ -25,6 +25,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import http2 from "node:http2";
+import { execFileSync } from "node:child_process";
 import esbuild from "esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -52,12 +54,52 @@ function parseArgs(argv) {
     else if (a === "--keep") args.keep = true;
     else if (a === "--net-log") args.netLog = true;
     else if (a === "--real-network") args.realNetwork = true;
+    else if (a === "--doh") args.doh = true;
     else if (a === "--fake-http-proxy") args.fakeHttpProxy = true;
     else if (a === "--dns-log") args.dnsLib = argv[++i];
     else if (a === "--env") { const [k, ...v] = argv[++i].split("="); (args.env ??= {})[k] = v.join("="); }
     else throw new Error(`unknown argument: ${a}`);
   }
   return args;
+}
+
+/** DoH の canary（OS 非依存の名前解決の観測）。Chromium の secure DNS をこの server に向け、QNAME を数える */
+async function startDohCanary(work) {
+  const key = path.join(work, "doh.key");
+  const crt = path.join(work, "doh.crt");
+  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt, "-days", "1", "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore" });
+  const queries = [];
+  const parse = (buf) => {
+    let i = 12; const labels = [];
+    while (i < buf.length && buf[i] !== 0) { const l = buf[i]; labels.push(buf.subarray(i + 1, i + 1 + l).toString("latin1")); i += l + 1; }
+    const qtype = buf.readUInt16BE(i + 1);
+    return { name: labels.join("."), qtype, end: i + 5 };
+  };
+  const reply = (buf, end) => {
+    const out = Buffer.from(buf.subarray(0, end));
+    out[2] = 0x81; out[3] = 0x83; // QR, RD, RA, RCODE=3 (NXDOMAIN)
+    out.writeUInt16BE(0, 6); out.writeUInt16BE(0, 8); out.writeUInt16BE(0, 10);
+    return out;
+  };
+  const server = http2.createSecureServer({ key: fs.readFileSync(key), cert: fs.readFileSync(crt), allowHTTP1: true });
+  server.on("request", (req, res) => {
+    const finish = (buf) => {
+      try {
+        const q = parse(buf);
+        queries.push({ at: Date.now(), name: q.name, qtype: q.qtype });
+        res.writeHead(200, { "content-type": "application/dns-message" });
+        res.end(reply(buf, q.end));
+      } catch { res.writeHead(400); res.end(); }
+    };
+    if (req.method === "POST") {
+      const chunks = []; req.on("data", (d) => chunks.push(d)); req.on("end", () => finish(Buffer.concat(chunks)));
+    } else {
+      const dns = new URL(req.url, "https://x").searchParams.get("dns") ?? "";
+      finish(Buffer.from(dns, "base64url"));
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { port: server.address().port, queries, close: () => new Promise((r) => { server.close(() => r()); server.closeAllConnections?.(); }) };
 }
 
 function lanAddress() {
@@ -303,6 +345,7 @@ async function main() {
     ...(lan ? [await startCanary("t-lan", lan)] : []),
   ];
   const proxy = await startProxyListener();
+  const doh = args.doh ? await startDohCanary(work) : null;
   let fakeHttp = null;
   if (args.fakeHttpProxy) {
     // 名前指定の http proxy（OS／環境の proxy が名前の利用者を模す）。CONNECT 行を記録して 502 を返す
@@ -333,7 +376,7 @@ async function main() {
     lan: lan ?? "192.0.2.1",
     ports: {
       p: canaries[0].port, q: canaries[1].port, r: canaries[2].port,
-      s: canaries[3].port, t: canaries[4]?.port ?? 1, proxy: proxyPort, http: httpd.port, fake: fakeHttp?.port ?? 0,
+      s: canaries[3].port, t: canaries[4]?.port ?? 1, proxy: proxyPort, http: httpd.port, doh: doh?.port ?? 0, fake: fakeHttp?.port ?? 0,
     },
   };
   fs.mkdirSync(cfg.userData, { recursive: true });
@@ -377,6 +420,12 @@ async function main() {
           return { at: Number(at), pid, name: name.split(nonce).join("<n>"), rc: Number(rc) };
         })
       : null;
+    if (doh) {
+      for (const row of rows) {
+        const r = all.find((x) => x.id === row.id);
+        row.dohNames = [...new Set(doh.queries.filter((q) => q.at >= r.startedAt - 50 && q.at <= r.endedAt + 50).map((q) => `${q.name.split(nonce).join("<n>")}/${q.qtype}`))];
+      }
+    }
     if (dnsEvents) {
       for (const row of rows) {
         const r = all.find((x) => x.id === row.id);
@@ -402,6 +451,8 @@ async function main() {
       },
       rows,
       webRequestSeen: result.webRequestSeen,
+      dohAll: doh ? [...new Set(doh.queries.map((q) => q.name.split(nonce).join("<n>")))] : null,
+      dohQueryCount: doh ? doh.queries.length : null,
       envProxyConnects: fakeHttp ? fakeHttp.hits : null,
       dictionaries: result.dictionaries ?? [],
       netLog: args.netLog ? netLogAlerts(run.netLog) : null,
@@ -416,6 +467,7 @@ async function main() {
     console.log(`== ${args.label} (electron ${result.electron}) ${result.events.join("; ")}`);
     for (const r of rows) {
       const tag = r.leaked > 0 ? "LEAK " : r.proxied > 0 ? "proxy" : r.httpHits > 0 ? "http " : "none ";
+      if (r.dohNames?.length) console.log(`      doh: ${JSON.stringify(r.dohNames).slice(0, 220)}`);
       if (r.dnsNames?.length) console.log(`      dns: ${JSON.stringify(r.dnsNames).slice(0, 220)}`);
       console.log(
         `${tag} ${r.id.padEnd(34)} ${JSON.stringify(r.leakDetail)}${r.proxied ? ` proxied=${r.proxied} ${JSON.stringify(r.proxyHeads[0] ?? "")}` : ""}${r.httpHits ? ` httpHits=${r.httpHits}` : ""} -> ${r.outcome.slice(0, 60)}`,
@@ -428,7 +480,7 @@ async function main() {
     if (result.webRequestSeen) console.log(`webRequest saw: ${JSON.stringify(result.webRequestSeen)}`);
     if (args.keep) console.log(`work dir kept: ${work}`);
   } finally {
-    await Promise.all([...canaries.map((c) => c.close()), proxy.close(), httpd.close(), ...(fakeHttp ? [fakeHttp.close()] : [])]);
+    await Promise.all([...canaries.map((c) => c.close()), proxy.close(), ...(doh ? [doh.close()] : []), httpd.close(), ...(fakeHttp ? [fakeHttp.close()] : [])]);
     if (!args.keep) fs.rmSync(work, { recursive: true, force: true });
   }
 }

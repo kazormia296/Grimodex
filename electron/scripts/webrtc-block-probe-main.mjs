@@ -39,6 +39,7 @@ app.disableHardwareAcceleration();
 registerAppProtocolScheme();
 // 製品と同じ方法（app ready 前の commandLine.appendSwitch）で resolver rules を当てる試験
 if (cm.resolverSwitch) app.commandLine.appendSwitch("host-resolver-rules", cm.resolverSwitch);
+if (cm.doh) app.commandLine.appendSwitch("ignore-certificate-errors");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const subst = (value) =>
@@ -52,6 +53,10 @@ const subst = (value) =>
 async function main() {
   await app.whenReady();
   const events = [];
+  if (cm.doh) {
+    app.configureHostResolver({ enableBuiltInResolver: true, secureDnsMode: "secure", secureDnsServers: [`https://127.0.0.1:${cfg.ports.doh}/dns-query`] });
+    events.push("secure DNS -> DoH canary");
+  }
 
   const ses =
     cm.target === "partition"
