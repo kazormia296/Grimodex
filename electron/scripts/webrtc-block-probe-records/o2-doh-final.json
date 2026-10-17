@@ -5,6 +5,7 @@
     "dns": true,
     "doh": true,
     "gvt1": true,
+    "localhostRows": true,
     "target": "default",
     "policy": "disable_non_proxied_udp",
     "proxy": {
@@ -12,7 +13,7 @@
       "proxyRules": "socks5://PROXYHOSTPORT",
       "proxyBypassRules": "<-loopback>;https://*.gvt1.com:443"
     },
-    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1"
+    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost"
   },
   "electronArgs": [],
   "proxyMode": "listener",
@@ -27,10 +28,10 @@
   },
   "totals": {
     "leakedProbes": 0,
-    "probes": 113,
+    "probes": 119,
     "canaryHits": 0,
     "unattributed": 0,
-    "proxyHits": 153
+    "proxyHits": 159
   },
   "rows": [
     {
@@ -163,7 +164,9 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.turn-udp.allowed",
@@ -259,7 +262,9 @@
         "..."
       ],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.turns.allowedp",
@@ -272,9 +277,7 @@
         "..."
       ],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.turns-tcp.allowedp",
@@ -356,7 +359,9 @@
         "..."
       ],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.stun.lo4",
@@ -366,9 +371,7 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.stuns.lo4",
@@ -478,7 +481,9 @@
         "..."
       ],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.turns-tcp.lo4b",
@@ -500,9 +505,7 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.stuns.lo6",
@@ -627,6 +630,77 @@
       "dohNames": []
     },
     {
+      "id": "main.stun.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dohNames": []
+    },
+    {
+      "id": "main.stuns.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dohNames": []
+    },
+    {
+      "id": "main.turn-udp.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dohNames": []
+    },
+    {
+      "id": "main.turn-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0,
+      "dohNames": []
+    },
+    {
+      "id": "main.turns.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0,
+      "dohNames": []
+    },
+    {
+      "id": "main.turns-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0,
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
+    },
+    {
       "id": "main.remote-candidate-udp.lo4",
       "outcome": "ice:new",
       "leaked": 0,
@@ -694,9 +768,7 @@
         "..."
       ],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "realm.iframe-html.stun.name",
@@ -942,7 +1014,9 @@
         "..."
       ],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "realm.iframe-notfound.stun.name",
@@ -1045,8 +1119,7 @@
       "proxyHeads": [],
       "httpHits": 0,
       "dohNames": [
-        "gvt1probeturns443-<n>.gvt1.com/1",
-        "www.gstatic.com/1"
+        "gvt1probeturns443-<n>.gvt1.com/1"
       ]
     },
     {

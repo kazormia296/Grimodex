@@ -4,6 +4,7 @@
   "cm": {
     "dns": false,
     "gvt1": true,
+    "localhostRows": true,
     "target": "default",
     "policy": "disable_non_proxied_udp",
     "proxy": {
@@ -11,7 +12,7 @@
       "proxyRules": "socks5://PROXYHOSTPORT",
       "proxyBypassRules": "<-loopback>;https://*.gvt1.com:443"
     },
-    "resolverRules": "MAP *.probe.test 127.0.0.1, MAP *.gvt1.com 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE [::1], EXCLUDE ::1, EXCLUDE LANADDR, EXCLUDE localhost"
+    "resolverSwitch": "MAP *.probe.test 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE ::1, EXCLUDE [::1], EXCLUDE LANADDR, MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost"
   },
   "electronArgs": [],
   "proxyMode": "listener",
@@ -25,10 +26,10 @@
   },
   "totals": {
     "leakedProbes": 0,
-    "probes": 95,
+    "probes": 101,
     "canaryHits": 0,
     "unattributed": 0,
-    "proxyHits": 71
+    "proxyHits": 77
   },
   "rows": [
     {
@@ -551,6 +552,69 @@
       "httpHits": 0
     },
     {
+      "id": "main.stun.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.stuns.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turn-udp.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turn-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turns.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turns-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
       "id": "main.remote-candidate-udp.lo4",
       "outcome": "ice:new",
       "leaked": 0,
@@ -955,7 +1019,7 @@
     },
     {
       "id": "main.net-fetch.window-session",
-      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "outcome": "timeout",
       "leaked": 0,
       "leakDetail": {},
       "proxied": 1,
@@ -1006,8 +1070,12 @@
     }
   ],
   "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
   "envProxyConnects": null,
-  "dictionaries": [],
+  "dictionaries": [
+    "Dictionaries/en-US-10-1.bdic"
+  ],
   "netLog": null,
   "dnsAll": null,
   "dnsRowCount": null,

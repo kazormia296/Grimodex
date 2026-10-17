@@ -4,6 +4,7 @@
   "cm": {
     "dns": true,
     "gvt1": true,
+    "localhostRows": true,
     "target": "default",
     "policy": "disable_non_proxied_udp",
     "proxy": {
@@ -11,7 +12,7 @@
       "proxyRules": "socks5://PROXYHOSTPORT",
       "proxyBypassRules": "<-loopback>;https://*.gvt1.com:443"
     },
-    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1",
+    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost",
     "resolveHostTests": [
       "grimodex-rule-sentinel.invalid",
       "example.org",
@@ -25,15 +26,17 @@
   "proxyMode": "listener",
   "events": [
     "setProxy applied to window",
-    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:43015",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:40929",
     "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
-    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:43015",
-    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:43015",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:40929",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:40929",
+    "updaterSession.resolveProxy(https://github.com/) => DIRECT",
+    "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
     "resolveHost(grimodex-rule-sentinel.invalid) => [\"127.0.0.1\"]",
     "resolveHost(example.org) => error:net::ERR_NAME_NOT_RESOLVED",
-    "resolveHost(redirector.gvt1.com) => [\"172.217.209.101\",\"172.217.209.139\",\"172.217.209.138\",\"172.217.209.113\",\"172.217.209.100\",\"172.217.209.102\",\"2404:6800:400a:1000::8b\",\"2404:6800:400a:1000::71\",\"2404:6800:400a:1000::8a\",\"2404:6800:400a:1000::66\"]",
+    "resolveHost(redirector.gvt1.com) => [\"172.217.209.139\",\"172.217.209.113\",\"172.217.209.138\",\"172.217.209.100\",\"172.217.209.102\",\"172.217.209.101\",\"2404:6800:400a:1000::8a\",\"2404:6800:400a:1000::65\",\"2404:6800:400a:1000::8b\",\"2404:6800:400a:1000::71\"]",
     "resolveHost(github.com) => [\"20.27.177.113\"]",
-    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.109.133\",\"185.199.110.133\",\"185.199.111.133\",\"185.199.108.133\"]",
+    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.109.133\",\"185.199.108.133\",\"185.199.111.133\",\"185.199.110.133\"]",
     "resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED"
   ],
   "webPreferences": {
@@ -43,10 +46,10 @@
   },
   "totals": {
     "leakedProbes": 0,
-    "probes": 113,
+    "probes": 119,
     "canaryHits": 0,
     "unattributed": 0,
-    "proxyHits": 153
+    "proxyHits": 159
   },
   "rows": [
     {
@@ -57,9 +60,7 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dnsNames": [
-        "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]"
-      ]
+      "dnsNames": []
     },
     {
       "id": "control.bundled-worker",
@@ -616,6 +617,75 @@
       "leakDetail": {},
       "proxied": 1,
       "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stun.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stuns.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-udp.localhost",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
         "..."
       ],
       "httpHits": 0,
@@ -1266,7 +1336,7 @@
     },
     {
       "id": "main.net-fetch.window-session",
-      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "outcome": "timeout",
       "leaked": 0,
       "leakDetail": {},
       "proxied": 1,
@@ -1322,6 +1392,8 @@
     }
   ],
   "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
   "envProxyConnects": null,
   "dictionaries": [
     "Dictionaries/en-US-10-1.bdic"
@@ -1336,7 +1408,7 @@
     "gvt1probeturns443-<n>.gvt1.com",
     "data-<n>.gvt1.com"
   ],
-  "dnsRowCount": 4,
+  "dnsRowCount": 3,
   "timedOut": false,
   "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
 }

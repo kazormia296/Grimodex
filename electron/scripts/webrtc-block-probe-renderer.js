@@ -38,6 +38,7 @@
       lo4n: ["127.0.0.1", ports.p],
       allowedp: [`allowed-${id}-${nonce}.probe.test`, ports.p],
       ext: [`ext-${id}-${nonce}.blocked.invalid`, 443],
+      localhost: ["localhost", ports.p],
     })[form];
   const urlsFor = (proto, h, port) =>
     ({
@@ -89,6 +90,7 @@
   const forms = quick
     ? ["name", "lo4"]
     : ["name", "allowed", "allowedp", "ext", "lo4", "lo4b", "lo6", "lan"];
+  if (globalThis.__probe.localhost && !quick) forms.push("localhost");
   for (const form of forms) {
     for (const proto of protos) {
       const id = `main.${proto}.${form}`;

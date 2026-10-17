@@ -1,0 +1,103 @@
+{
+  "label": "x2-prefix-composed",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "resolverSwitch": "MAP *.probe.test 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE ::1, EXCLUDE [::1], EXCLUDE LANADDR, MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost",
+    "resolveHostTests": [
+      "foo.probe.test",
+      "grimodex-rule-sentinel.invalid",
+      "localhost",
+      "github.com",
+      "example.org",
+      "127.0.0.2"
+    ]
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "resolveProxy(https://turn.attacker.invalid:443/) => DIRECT",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
+    "resolveProxy(https://example.invalid:8443/) => DIRECT",
+    "resolveProxy(http://127.0.0.1:1/) => DIRECT",
+    "updaterSession.resolveProxy(https://github.com/) => DIRECT",
+    "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
+    "resolveHost(foo.probe.test) => [\"127.0.0.1\"]",
+    "resolveHost(grimodex-rule-sentinel.invalid) => [\"127.0.0.1\"]",
+    "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]",
+    "resolveHost(github.com) => [\"20.27.177.113\"]",
+    "resolveHost(example.org) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(127.0.0.2) => [\"127.0.0.2\"]"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 5,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 0
+  },
+  "rows": [
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "status:200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [
+    "Dictionaries/en-US-10-1.bdic"
+  ],
+  "netLog": null,
+  "dnsAll": null,
+  "dnsRowCount": null,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

@@ -38,7 +38,7 @@ app.setPath("userData", userData);
 app.disableHardwareAcceleration();
 registerAppProtocolScheme();
 // 製品と同じ方法（app ready 前の commandLine.appendSwitch）で resolver rules を当てる試験
-if (cm.resolverSwitch) app.commandLine.appendSwitch("host-resolver-rules", cm.resolverSwitch);
+if (cm.resolverSwitch) app.commandLine.appendSwitch("host-resolver-rules", cm.resolverSwitch.replaceAll("LANADDR", cfg.lan));
 if (cm.doh) app.commandLine.appendSwitch("ignore-certificate-errors");
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -85,6 +85,9 @@ async function main() {
   if (cm.resolveHostTests) {
     for (const u of ["https://turn.attacker.invalid:443/", "https://redirector.gvt1.com/edgedl/chrome/dict/x", "https://example.invalid:8443/", "http://127.0.0.1:1/"]) {
       try { events.push(`resolveProxy(${u}) => ${await ses.resolveProxy(u)}`); } catch (e) { events.push(`resolveProxy(${u}) error ${e.message}`); }
+    }
+    for (const u of ["https://github.com/", "https://redirector.gvt1.com/edgedl/chrome/dict/x"]) {
+      try { events.push(`updaterSession.resolveProxy(${u}) => ${await session.fromPartition("electron-updater", { cache: false }).resolveProxy(u)}`); } catch (e) { events.push(`updaterSession.resolveProxy(${u}) error ${e.message}`); }
     }
     for (const h of cm.resolveHostTests) {
       let out;
@@ -166,7 +169,7 @@ async function main() {
   const prefs = contents.getLastWebPreferences();
 
   await contents.executeJavaScript(
-    `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1 })}`,
+    `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1, localhost: !!cm.localhostRows })}`,
   );
   const script = fs.readFileSync(env.PROBE_RENDERER_SCRIPT, "utf8");
   let rendererResults;

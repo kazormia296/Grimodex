@@ -56,6 +56,8 @@ function parseArgs(argv) {
     else if (a === "--real-network") args.realNetwork = true;
     else if (a === "--doh") args.doh = true;
     else if (a === "--fake-http-proxy") args.fakeHttpProxy = true;
+    else if (a === "--fake-proxy-form") args.fakeProxyForm = argv[++i];
+    else if (a === "--clear-desktop") args.clearDesktop = true;
     else if (a === "--dns-log") args.dnsLib = argv[++i];
     else if (a === "--env") { const [k, ...v] = argv[++i].split("="); (args.env ??= {})[k] = v.join("="); }
     else throw new Error(`unknown argument: ${a}`);
@@ -261,6 +263,11 @@ function runElectron({ work, bundle, cfg, args }) {
     "http_proxy", "https_proxy", "all_proxy", "no_proxy",
   ]) delete env[key];
   env.ELECTRON_OZONE_PLATFORM_HINT = "x11";
+  // desktop 環境の変数があると Chromium は env の proxy でなく desktop の設定（GNOME の gsettings など）を読む。
+  // env の proxy の影響を見る試験だけ、これらを外す
+  if (args.clearDesktop) {
+    for (const key of ["XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "XDG_SESSION_DESKTOP", "GDMSESSION", "GNOME_DESKTOP_SESSION_ID", "KDE_FULL_SESSION"]) delete env[key];
+  }
   if (args.dnsLib) {
     env.LD_PRELOAD = args.dnsLib;
     env.PROBE_DNSLOG = path.join(work, "dns.log");
@@ -347,16 +354,20 @@ async function main() {
   const proxy = await startProxyListener();
   const doh = args.doh ? await startDohCanary(work) : null;
   let fakeHttp = null;
-  if (args.fakeHttpProxy) {
+  if (args.fakeHttpProxy || args.fakeProxyForm) {
+    // proxy の host の形（localhost／127.0.0.1／LAN の literal／hostname）ごとに、env の proxy を模す listener を立てる
     // 名前指定の http proxy（OS／環境の proxy が名前の利用者を模す）。CONNECT 行を記録して 502 を返す
     const hits = [];
     const server = net.createServer((socket) => {
       socket.once("data", (d) => { hits.push(d.toString("latin1").split("\r\n")[0].slice(0, 120)); socket.end("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"); });
       socket.on("error", () => {});
     });
-    await new Promise((resolve) => server.listen(0, "127.0.1.1", resolve));
+    const form = args.fakeProxyForm ?? "hostname";
+    const bindAddr = form === "lan" ? lan : form === "hostname" ? "127.0.1.1" : "127.0.0.1";
+    await new Promise((resolve) => server.listen(0, bindAddr, resolve));
     fakeHttp = { port: server.address().port, hits, close: () => new Promise((r) => server.close(() => r())) };
-    args.env = { ...(args.env ?? {}), https_proxy: `http://${os.hostname()}:${fakeHttp.port}`, http_proxy: `http://${os.hostname()}:${fakeHttp.port}` };
+    const hostPart = form === "localhost" ? "localhost" : form === "127.0.0.1" ? "127.0.0.1" : form === "lan" ? lan : os.hostname();
+    args.env = { ...(args.env ?? {}), https_proxy: `http://${hostPart}:${fakeHttp.port}`, http_proxy: `http://${hostPart}:${fakeHttp.port}` };
   }
   const httpd = await startHttp(args.cm.pageHeader);
   let proxyPort = proxy.port;
