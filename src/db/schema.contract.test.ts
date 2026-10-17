@@ -72,6 +72,12 @@ const BROWSER_UNAVAILABLE_TABLES = new Set([...RUST_ONLY_TABLES]);
 
 const RUST_ONLY_COLUMNS: Record<string, Set<string>> = {
   projects: new Set(["is_sample"]),
+  // CB-1: Scene 本文の宣言は Native の宣言 writer だけが書く。renderer の
+  // Drizzle には載せず、generic SQL からは table 保護で拒否する。
+  narrative_scene_scope_bindings: new Set([
+    "body_declaration_json",
+    "body_declaration_token",
+  ]),
 };
 
 // browser mock は時刻と一部 UUID を呼び出し側から決定論的に注入する。

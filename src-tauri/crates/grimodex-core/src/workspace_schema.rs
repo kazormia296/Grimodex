@@ -725,9 +725,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// by the protected capture authorizer. Version 42 adds the plain
 /// [`NARRATIVE_DECISION_LOOKUP_INDEXES`] without changing any table, column
 /// or row, so Decision reads for one Revision or Proposal stop scanning the
-/// workspace.
+/// workspace. Version 43 adds the two nullable Scene body declaration columns
+/// ([`SCENE_BODY_DECLARATION_COLUMNS`]) to `narrative_scene_scope_bindings`; it
+/// never promotes or backfills an existing row.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 42
+    Ok(SCHEMA_VERSION == 43
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -769,6 +771,7 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v34_c2a_stage_storage(conn)?
         && has_v35_nir1_index_storage(conn)?
         && has_v36_scene_scope_storage(conn)?
+        && has_v43_scene_body_declaration_columns(conn)?
         && has_v37_generation_storage(conn)?
         && has_v38_current_human_capture_storage(conn)?
         && has_v39_chat_input_submission_key_storage(conn)?
@@ -1177,6 +1180,30 @@ fn has_v39_chat_input_submission_key_storage(conn: &Connection) -> anyhow::Resul
             .as_deref()
             .map(compact_sql)
             == Some(compact_sql(NIR1_CHAT_INPUT_SUBMISSION_KEY_DELETE_TRIGGER_SQL)))
+}
+
+/// SCHEMA 43. The two nullable Scene body declaration columns on
+/// `narrative_scene_scope_bindings`: a declaration JSON and its token. They
+/// are plain `TEXT` with no default and no CHECK; the pair is validated by the
+/// reader, so a half-written row is representable (and read as unavailable).
+pub const SCENE_BODY_DECLARATION_COLUMNS: [(&str, &str); 2] = [
+    ("body_declaration_json", "TEXT"),
+    ("body_declaration_token", "TEXT"),
+];
+
+/// Presence and declared type of the SCHEMA 43 columns only. The row content
+/// of a half-written pair is deliberately not inspected here.
+fn has_v43_scene_body_declaration_columns(conn: &Connection) -> anyhow::Result<bool> {
+    let columns = table_columns(conn, "narrative_scene_scope_bindings")?;
+    Ok(SCENE_BODY_DECLARATION_COLUMNS.iter().all(|(name, kind)| {
+        columns.iter().any(|column| {
+            column.name == *name
+                && column.declared_type == *kind
+                && !column.not_null
+                && column.default.is_none()
+                && column.primary_key == 0
+        })
+    }))
 }
 
 fn has_v36_scene_scope_storage(conn: &Connection) -> anyhow::Result<bool> {

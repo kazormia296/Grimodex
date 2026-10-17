@@ -1,4 +1,4 @@
-import { getTableName } from "drizzle-orm";
+import { getTableColumns, getTableName } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import contractJson from "./generated/schema-contract.json";
 import {
@@ -88,6 +88,32 @@ describe("narrative extraction schema", () => {
     expect(getTableName(narrativeCommitJournals)).toBe(
       "narrative_commit_journals",
     );
+  });
+
+  it("keeps the SCHEMA 43 Scene body declaration columns Rust-only nullable TEXT", () => {
+    // Rust だけが書く列は renderer の Drizzle に載せない（型付き insert／update
+    // から名指しできない）。物理定義は contract にだけ載る。
+    const columns = getTableColumns(narrativeSceneScopeBindings);
+    expect(Object.keys(columns)).not.toContain("bodyDeclarationJson");
+    expect(Object.keys(columns)).not.toContain("bodyDeclarationToken");
+    const physicalColumns = Object.values(columns).map((column) => column.name);
+    expect(physicalColumns).not.toContain("body_declaration_json");
+    expect(physicalColumns).not.toContain("body_declaration_token");
+    const contractColumns = contractJson.tables.narrative_scene_scope_bindings
+      .columns as Record<
+      string,
+      { declaredType: string; notNull: boolean; default: string | null }
+    >;
+    for (const name of ["body_declaration_json", "body_declaration_token"]) {
+      expect(contractColumns[name]).toMatchObject({
+        declaredType: "TEXT",
+        notNull: false,
+        default: null,
+      });
+    }
+    // The v1 definition keeps its own columns: the two new ones only follow it.
+    expect(contractColumns.source_token.notNull).toBe(true);
+    expect(contractColumns.updated_at.notNull).toBe(true);
   });
 
   it("includes narrative extraction tables in the generated schema contract", () => {

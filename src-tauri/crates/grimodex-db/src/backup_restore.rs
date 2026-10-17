@@ -2944,6 +2944,89 @@ mod tests {
     }
 
     #[test]
+    fn restore_of_v42_backup_has_null_declarations_and_valid_v1_tokens() {
+        let (dir, state) = fixture("schema-42-declaration-columns");
+        let backup_name = "grimodex-20200101-000000.db";
+        let backup_path = dir.join("backups").join(backup_name);
+
+        with_db_state(&state, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('restore-v42', 'v42 backup')",
+                    [],
+                )?;
+                for scene in ["restore-v42-a", "restore-v42-b"] {
+                    conn.execute(
+                        "INSERT INTO tree_nodes
+                            (id, project_id, node_type, title, sort_order)
+                         VALUES (?1, 'restore-v42', 'scene', 'Scene', ?1)",
+                        [scene],
+                    )?;
+                    crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                        conn,
+                        "restore-v42",
+                        scene,
+                        "2026-10-17T00:00:00.000Z",
+                    )?;
+                }
+                Ok(())
+            })
+        })
+        .expect("seed current A1 scope bindings");
+        backup_active(&state, &backup_path);
+
+        // Model a v42 backup: the Scene bindings exist, but the v43
+        // declaration columns have not been introduced yet.
+        let candidate = Database::new(&backup_path).expect("open backup candidate");
+        candidate
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "ALTER TABLE narrative_scene_scope_bindings DROP COLUMN body_declaration_json;
+                     ALTER TABLE narrative_scene_scope_bindings DROP COLUMN body_declaration_token;",
+                )?;
+                conn.pragma_update(None, "user_version", 42)?;
+                Ok(())
+            })
+            .expect("stamp v42 candidate");
+        drop(candidate);
+
+        restore_backup_core(&state, backup_name, || {})
+            .expect("a v42 backup must restore through the preflight migration");
+
+        with_db_state(&state, |db| {
+            db.with_read_transaction(|conn| {
+                let version: i32 =
+                    conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+                assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+                let (rows, non_null): (i64, i64) = conn.query_row(
+                    "SELECT COUNT(*),
+                            COALESCE(SUM(body_declaration_json IS NOT NULL
+                                      OR body_declaration_token IS NOT NULL), 0)
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id = 'restore-v42'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                assert_eq!(rows, 2);
+                assert_eq!(non_null, 0, "a v42 backup carries no declaration");
+                for scene in ["restore-v42-a", "restore-v42-b"] {
+                    crate::narrative_extraction::read_narrative_scene_scope(
+                        conn,
+                        "restore-v42",
+                        scene,
+                    )
+                    .expect("the v1 token of a restored v42 binding must stay valid");
+                }
+                Ok(())
+            })
+        })
+        .expect("inspect restored v42 scope");
+
+        assert_no_internal_restore_files(&dir);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn restore_of_current_a1_backup_with_missing_binding_remains_fail_closed() {
         let (dir, state) = fixture("missing-a1-binding");
         let backup_name = "grimodex-20200101-000000.db";
