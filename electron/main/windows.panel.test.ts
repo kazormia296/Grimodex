@@ -119,6 +119,7 @@ vi.mock("electron", () => ({
   app: {
     getPath: () => userDataDir,
     on: vi.fn(),
+    isPackaged: false,
   },
   BrowserWindow: FakeBrowserWindow,
   ipcMain: { on: vi.fn() },

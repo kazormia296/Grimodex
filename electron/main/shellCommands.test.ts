@@ -13,7 +13,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { Envelope } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
@@ -33,11 +33,17 @@ const fromWebContentsMock = vi.fn();
 const gpuFeatureStatusMock = vi.fn<() => Record<string, string>>(() => ({
   webgl2: "enabled",
 }));
+// SF-1: profile data directory（app.getPath("userData")）。保存先の一時 directory とは重ならない。
+const profileDataDir = mkdtempSync(
+  path.join(os.tmpdir(), "grim-shell-profile-"),
+);
 
 vi.mock("electron", () => ({
   app: {
     getVersion: () => "1.0.0-test",
     getGPUFeatureStatus: () => gpuFeatureStatusMock(),
+    getPath: (name: string) =>
+      name === "userData" ? profileDataDir : os.tmpdir(),
   },
   dialog: {
     showOpenDialog: showOpenDialogMock,
@@ -72,6 +78,10 @@ async function invokeBridge(
 
 beforeAll(() => {
   registerShellBridgeHandlers();
+});
+
+afterAll(() => {
+  rmSync(profileDataDir, { recursive: true, force: true });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,6 +153,54 @@ describe("export / logs（Phase 3 main-TS コマンド — commands/export.rs / 
       h.export_save_bytes({ ...filterArgs, contentsBase64: "%%%invalid%%%" }),
     ).rejects.toThrow("invalid base64 export payload");
     expect(showSaveDialogMock).not.toHaveBeenCalled();
+  });
+
+  it("SF-1: suggestedName は単一のファイル名にして dialog の defaultPath に渡す", async () => {
+    const h = buildShellCommandHandlers(null);
+    for (const [suggestedName, expected] of [
+      ["out.txt", "out.txt"],
+      ["日本語の本.txt", "日本語の本.txt"],
+      ["/etc/passwd", "_etc_passwd"],
+      ["..\\..\\x.json", ".._.._x.json"],
+      ["", "export"],
+      ["..", "export"],
+      ["a\0b.txt", "a_b.txt"],
+    ] as const) {
+      showSaveDialogMock.mockReset();
+      showSaveDialogMock.mockResolvedValueOnce({ canceled: true });
+      await h.export_save_text({ ...filterArgs, suggestedName, contents: "x" });
+      const options = showSaveDialogMock.mock.calls[0][0] as {
+        defaultPath: string;
+      };
+      expect(options.defaultPath).toBe(expected);
+    }
+  });
+
+  it("SF-1: dialog が profile data directory の file を返したら、書く前に拒否する", async () => {
+    const state = path.join(profileDataDir, "profile-egress.json");
+    writeFileSync(state, "genuine");
+    showSaveDialogMock.mockResolvedValueOnce({
+      canceled: false,
+      filePath: state,
+    });
+    const h = buildShellCommandHandlers(null);
+    await expect(
+      h.export_save_text({ ...filterArgs, contents: "forged" }),
+    ).rejects.toThrow(/PROFILE_DATA_DIR_REJECTED/);
+    expect(readFileSync(state, "utf8")).toBe("genuine");
+  });
+
+  it("SF-1: 存在しない file でも、profile data directory の中なら拒否する（親 directory の実体で比べる）", async () => {
+    const target = path.join(profileDataDir, "new-file.json");
+    showSaveDialogMock.mockResolvedValueOnce({
+      canceled: false,
+      filePath: target,
+    });
+    const h = buildShellCommandHandlers(null);
+    await expect(
+      h.export_save_bytes({ ...filterArgs, contentsBase64: "aGVsbG8=" }),
+    ).rejects.toThrow(/PROFILE_DATA_DIR_REJECTED/);
+    expect(existsSync(target)).toBe(false);
   });
 
   it("open_log_dir: ログフォルダを作成してファイルマネージャで開く", async () => {
