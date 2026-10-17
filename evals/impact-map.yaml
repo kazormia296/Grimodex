@@ -503,6 +503,7 @@ rules:
       - electron/native/grimodex-node/src/related_scenes/**
       - electron/native/grimodex-node/test/egress-closure.test.mjs
       - electron/native/grimodex-node/test/own-data-read.test.mjs
+      - electron/native/grimodex-node/test/main-pipeline-specs.test.mjs
       - electron/native/grimodex-node/test/nir1-publication.test.mjs
       - electron/native/grimodex-node/test/profile-egress.test.mjs
       - src-tauri/crates/grimodex-db/src/execute.rs
