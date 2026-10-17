@@ -1495,6 +1495,11 @@ struct CanonicalGoldBinding {
 // These fixtures have one Codex source per Entity plus Scope authority, no
 // Relations, POV, phases or foreshadows. Derive tokens from their saved inputs
 // and canonical DB rows, never from the production A3 disclosure result.
+// Since X1-3 two Scope tokens are distinct (scene-scope-projection draft,
+// Delta 2(c) and 7): each Entity's `authorityRevision` is its anchor Scene's
+// projection token, saved in the immutable Revision; the request context (the
+// Graph's Scope revision, the binding's `scopeAuthorityRevision` and the
+// reveal state) stays the live project Scope authority token.
 fn fixture_canonical_gold_binding(
     authority: &crate::state::WorkspaceAuthority,
     project: &str,
@@ -1507,6 +1512,18 @@ fn fixture_canonical_gold_binding(
         .first()
         .ok_or_else(|| anyhow::anyhow!("canonical Gold fixture has no Entities"))?;
     authority.with_read_transaction(|conn| {
+        let project_scope_authority_revision =
+            crate::narrative_extraction::project_scope_authority::load_live_project_scope_authority(
+                conn,
+                project,
+                &format!("project:scope-authority:{project}"),
+            )?
+            .source
+            .revision_token;
+        ensure!(
+            project_scope_authority_revision != entity.scope.authority_revision,
+            "canonical Gold fixture conflates the project and anchor Scope tokens"
+        );
         let mut statement = conn.prepare(
             "SELECT id, decision, decision_json, created_at, created_by,
                     actor_kind, actor_id, authority_scope, override_field_paths_json
@@ -1652,7 +1669,7 @@ fn fixture_canonical_gold_binding(
             "querySceneId": query_scene,
             "phaseResolutionMode": phase_resolution_mode,
             "effectiveAxis": "reading",
-            "scopeAuthorityRevision": entity.scope.authority_revision,
+            "scopeAuthorityRevision": project_scope_authority_revision,
             "queryViewpoint": query_viewpoint,
             "phaseState": phase_state,
             "entities": reveal_entities,
@@ -1665,7 +1682,7 @@ fn fixture_canonical_gold_binding(
             decision_id,
             decision_token,
             freshness_token,
-            scope_authority_revision: entity.scope.authority_revision.clone(),
+            scope_authority_revision: project_scope_authority_revision,
             query_scene_source_token,
             query_scene_scope_token,
             query_scene_incarnation_id,
@@ -1774,6 +1791,7 @@ fn canonical_single_node_gold_frame(
     q2_gold_text(&mut frame, project)?;
     q2_gold_text(&mut frame, query_scene)?;
     // The Scope revision is optional in NQG3: present (1) for a Graph with a node.
+    // It is the request context's project token, not the Entity's anchor token.
     q2_gold_optional_text(&mut frame, Some(&binding.scope_authority_revision))?;
     frame.extend_from_slice(&generation.to_le_bytes());
     q2_gold_text(&mut frame, &entity.entity_id)?;
