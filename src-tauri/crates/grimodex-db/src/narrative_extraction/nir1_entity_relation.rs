@@ -1117,6 +1117,15 @@ fn resolve_typed_source_token(
         return load_live_project_scope_authority(conn, project_id, source_object_identity)
             .map(|authority| Some(authority.source.revision_token));
     }
+    if source_object_identity.starts_with(super::scene_scope_projection::SOURCE_PREFIX) {
+        // A Scene that is missing or no longer live has no projection (`None`,
+        // the same "absent Source" the Codex arms return); a malformed key or
+        // a project mismatch stays an error. The shared-read form that avoids
+        // a second Scope read per anchor is wired by the typed Revision switch.
+        return super::scene_scope_projection::token_or_absent(
+            super::scene_scope_projection::resolve(conn, project_id, source_object_identity),
+        );
+    }
     Ok(None)
 }
 
