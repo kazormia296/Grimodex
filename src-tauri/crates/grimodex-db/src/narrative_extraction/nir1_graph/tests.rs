@@ -3,8 +3,8 @@ use crate::narrative_extraction::incremental_freshness::run_incremental_freshnes
 use crate::narrative_extraction::nir1_entity_relation::{
     create_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
     tests::{
-        approve_typed_revision, bounded_writer_bundle, prepare_a3_scope_fixture, request,
-        seed_run_and_catalog, writer_input_bytes,
+        approve_typed_revision, bounded_writer_bundle, envelope_bundle_of,
+        prepare_a3_scope_fixture, request, seed_run_and_catalog, writer_input_bytes,
     },
     Nir1EntityRelationRevisionRead,
 };
@@ -7266,6 +7266,55 @@ fn b_publishes_a_revision_within_its_component_guard_that_the_c_query_refuses() 
         registration_input_limit(&error),
         Some(PER_REVISION_PREFLIGHT_BYTES),
         "{error:#}"
+    );
+    Ok(())
+}
+
+// proposal/7 RB-1 (G-1): the contract's positive near the upper end. A Revision
+// the writer stores with a reconciliation envelope of exactly 6,291,456 B (the
+// largest the writer now stores; its payload is about half of that for this
+// shape) is read by the A2 reader and published by the B build: B's component
+// guard admits what the writer stores, and the whole set (payload, envelope and
+// the seed Revision together) stays inside 16 MiB.
+#[test]
+fn b_publishes_a_revision_whose_stored_envelope_is_exactly_the_writer_limit() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let db = fixture.authority.db();
+    let mut payload = request(db);
+    seed_scope_edits(&mut payload.bundle);
+    let (run_id, bundle) = envelope_bundle_of(db, &payload.bundle, MAX_GRAPH_INPUT_BYTES)?;
+    payload.proposal_key = "nir1:review:writer-limit".into();
+    payload.run_id = run_id.clone();
+    payload.bundle = bundle;
+    let created = create_nir1_entity_relation_revision(db, payload)?;
+    let revision = created["revisionId"].as_str().unwrap().to_owned();
+    let envelope_bytes: i64 = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT octet_length(reconciliation_envelope_json)
+               FROM narrative_proposal_revisions WHERE id = ?1",
+            [&revision],
+            |row| row.get(0),
+        )?)
+    })?;
+    assert_eq!(envelope_bytes, i64::try_from(MAX_GRAPH_INPUT_BYTES)?);
+    approve_typed_revision(db, &run_id, &created)?;
+    let read = fixture.authority.with_read_transaction(|conn| {
+        read_nir1_entity_relation_revision(conn, PROJECT, &revision)
+    })?;
+    assert!(
+        matches!(read, Nir1EntityRelationRevisionRead::Available(_)),
+        "the Revision must be readable by the A2 reader"
+    );
+    fixture.republish_graph_index()?;
+    let source = fixture
+        .authority
+        .with_read_transaction(|conn| read_eligibility_source(conn, PROJECT))?;
+    assert!(
+        source
+            .roster
+            .iter()
+            .any(|entry| entry.revision_id == revision),
+        "B must publish the Revision's material"
     );
     Ok(())
 }
