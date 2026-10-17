@@ -794,8 +794,9 @@ pub(super) mod scope_journal_support {
     use serde_json::Value;
 
     use crate::agent_writes::{
-        agent_codex_create_impl, agent_undo_journal_impl, AgentCodexCreatePayload,
-        AgentUndoJournalPayload, AuthorshipSpanInput,
+        agent_codex_create_impl, agent_codex_delete_impl, agent_codex_update_impl,
+        agent_undo_journal_impl, AgentCodexCreatePayload, AgentCodexDeletePayload,
+        AgentCodexUpdatePayload, AgentUndoJournalPayload, AuthorshipSpanInput,
     };
     use crate::Database;
 
@@ -843,6 +844,95 @@ pub(super) mod scope_journal_support {
             .as_str()
             .map(str::to_owned)
             .ok_or_else(|| anyhow::anyhow!("create journal id missing"))
+    }
+
+    /// Change an entry's type through the tracked Codex writer; returns the
+    /// undo journal id of the update (its `before` holds the previous type).
+    pub(in crate::narrative_extraction) fn retype_entry(
+        db: &Database,
+        project_id: &str,
+        entry_id: &str,
+        base_version: i64,
+        type_slug: &str,
+    ) -> Result<String> {
+        let updated = agent_codex_update_impl(
+            db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.to_owned(),
+                session_id: "scope-journal-session".to_owned(),
+                surface: None,
+                entry_id: entry_id.to_owned(),
+                base_version,
+                type_slug: Some(type_slug.to_owned()),
+                name: None,
+                summary: None,
+                content: None,
+                timelapse_doc_step_coverage: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+        )?;
+        updated["undoJournalId"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("update journal id missing"))
+    }
+
+    /// Delete an entry through the tracked Codex writer; returns the undo
+    /// journal id of the delete.
+    pub(in crate::narrative_extraction) fn delete_entry(
+        db: &Database,
+        project_id: &str,
+        entry_id: &str,
+        base_version: i64,
+    ) -> Result<String> {
+        let deleted = agent_codex_delete_impl(
+            db,
+            AgentCodexDeletePayload {
+                project_id: project_id.to_owned(),
+                session_id: "scope-journal-session".to_owned(),
+                surface: None,
+                entry_id: entry_id.to_owned(),
+                base_version,
+            },
+        )?;
+        deleted["undoJournalId"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("delete journal id missing"))
+    }
+
+    /// Rewrite a delete journal into the form written before C1 (the root
+    /// entry only, no cascade snapshot).
+    pub(in crate::narrative_extraction) fn rewrite_as_pre_c1_delete_journal(
+        db: &Database,
+        journal_id: &str,
+    ) -> Result<()> {
+        db.with_conn(|conn| {
+            let raw: String = conn.query_row(
+                "SELECT before_json FROM undo_journal WHERE id = ?1",
+                rusqlite::params![journal_id],
+                |row| row.get(0),
+            )?;
+            let snapshot: Value = serde_json::from_str(&raw)?;
+            conn.execute(
+                "UPDATE undo_journal SET before_json = ?1 WHERE id = ?2",
+                rusqlite::params![snapshot["entry"].to_string(), journal_id],
+            )?;
+            Ok(())
+        })
     }
 
     /// Replay one journal row in `direction` (`undo` or `redo`).

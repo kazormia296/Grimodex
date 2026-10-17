@@ -1294,6 +1294,227 @@ fn x13_journal_paths_keep_anchor_revision_ineligible() -> Result<()> {
     Ok(())
 }
 
+fn set_scope_holder(db: &Database, scene: &str, tag: &str, character: &str) -> Result<()> {
+    db.with_conn(|conn| {
+        crate::narrative_extraction::scene_scope::ensure_scene_scope_binding_in_tx(
+            conn,
+            PROJECT,
+            scene,
+            "2026-10-18T16:20:00.000Z",
+        )
+    })?;
+    let current =
+        db.with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, scene))?;
+    update_narrative_scene_scope(
+        db,
+        NarrativeSceneScopeUpdatePayload {
+            project_id: PROJECT.to_owned(),
+            scene_id: scene.to_owned(),
+            request_id: format!("x13-holder-{tag}"),
+            session_id: "x13-session".to_owned(),
+            event_uid: format!("x13-holder-event-{tag}"),
+            base_version: current.binding.version,
+            updated_at: "2026-10-18T16:30:00.000Z".to_owned(),
+            scope: NarrativeSceneScopeUpdateV1 {
+                schema_version: 1,
+                compatibility_marker: current.binding.compatibility_marker,
+                query_identity: current.binding.query_identity.clone(),
+                material_constraint: current.binding.material_constraint.clone(),
+                knowledge_holder: NarrativeScopePrincipalV1::Character {
+                    reference: character.to_owned(),
+                },
+                audience: current.binding.audience.clone(),
+            },
+        },
+    )?;
+    Ok(())
+}
+
+fn force_entry_type(db: &Database, entry: &str, type_slug: &str) -> Result<()> {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE codex_entries SET type = ?1 WHERE id = ?2",
+            rusqlite::params![type_slug, entry],
+        )?;
+        Ok(())
+    })
+}
+
+fn entry_type(db: &Database, entry: &str) -> Result<Option<String>> {
+    db.with_conn(|conn| {
+        Ok(conn
+            .query_row(
+                "SELECT type FROM codex_entries WHERE id = ?1",
+                [entry],
+                |row| row.get(0),
+            )
+            .ok())
+    })
+}
+
+/// Test 9 (journal paths, continued). The two journal routes the creation
+/// test does not reach, against a version 2 anchor Revision whose Scene names
+/// the person as holder:
+/// - a type-change journal: undoing it writes `character` back onto an entry
+///   a stale holder still names, which invalidates that A1 and retires the
+///   anchor's Revision (another Scene's Revision is untouched);
+/// - a delete journal written before C1: its undo re-inserts the person under
+///   a stale holder, which retires the anchor's Revision; the redo then fails
+///   closed (and, once the holder is named again, is refused), and nothing
+///   brings the Revision back without a new approval.
+#[test]
+fn x13_journal_type_change_and_pre_c1_delete_keep_anchor_revision_ineligible() -> Result<()> {
+    use super::codex_operations::scope_journal_support::{
+        create_character, delete_entry, replay_journal, retype_entry,
+        rewrite_as_pre_c1_delete_journal,
+    };
+
+    // (1) Type-change journal undo.
+    {
+        let (db, _first) = approved_fixture()?;
+        create_character(&db, PROJECT, "x13-typed", "Typed")?;
+        let update_journal = retype_entry(&db, PROJECT, "x13-typed", 1, "location")?;
+        assert_eq!(entry_type(&db, "x13-typed")?.as_deref(), Some("location"));
+        // A reference that predates the guard: the entry is a character only
+        // while the holder is written.
+        force_entry_type(&db, "x13-typed", "character")?;
+        set_scope_holder(&db, "a3-source", "typed", "x13-typed")?;
+        drain_freshness(&db)?;
+        let anchor_revision = approve_anchored(&db, &["a3-source"], "nir1:review:x13-typed-a")?;
+        let other_revision = approve_anchored(&db, &["a3-future"], "nir1:review:x13-typed-b")?;
+        assert!(a2_available(&db, &anchor_revision)?);
+        assert!(a2_available(&db, &other_revision)?);
+        let approved = projection(&db, "a3-source")?;
+        let other_projection = projection(&db, "a3-future")?;
+        force_entry_type(&db, "x13-typed", "location")?;
+        // The stale holder fails closed while the entry is not a character.
+        // The undo below makes it a character again, so the Revision would
+        // become readable unless the undo invalidates that A1.
+        assert!(!a2_available(&db, &anchor_revision)?, "stale holder");
+        assert!(a2_available(&db, &other_revision)?);
+
+        replay_journal(&db, PROJECT, &update_journal, "undo")?;
+        assert_eq!(entry_type(&db, "x13-typed")?.as_deref(), Some("character"));
+        let invalidated =
+            db.with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, "a3-source"))?;
+        assert_eq!(
+            invalidated.binding.knowledge_holder,
+            NarrativeScopePrincipalV1::Reader {}
+        );
+        assert_ne!(projection(&db, "a3-source")?, approved);
+        assert!(
+            !a2_available(&db, &anchor_revision)?,
+            "A1 invalidated by the type-change undo"
+        );
+        assert!(a2_available(&db, &other_revision)?);
+        assert_eq!(projection(&db, "a3-future")?, other_projection);
+        drain_freshness(&db)?;
+        assert!(!a2_available(&db, &anchor_revision)?);
+        assert!(a2_available(&db, &other_revision)?);
+
+        // Naming the person again does not bring the old Revision back.
+        set_scope_holder(&db, "a3-source", "typed-again", "x13-typed")?;
+        drain_freshness(&db)?;
+        assert!(!a2_available(&db, &anchor_revision)?, "needs a new approval");
+        assert!(a2_available(&db, &other_revision)?);
+    }
+
+    // (2) A delete journal written before C1.
+    {
+        let (db, _first) = approved_fixture()?;
+        create_character(&db, PROJECT, "x13-legacy", "Legacy")?;
+        set_scope_holder(&db, "a3-source", "legacy", "x13-legacy")?;
+        drain_freshness(&db)?;
+        let anchor_revision = approve_anchored(&db, &["a3-source"], "nir1:review:x13-legacy-a")?;
+        let other_revision = approve_anchored(&db, &["a3-future"], "nir1:review:x13-legacy-b")?;
+        assert!(a2_available(&db, &anchor_revision)?);
+        let approved = projection(&db, "a3-source")?;
+        let other_projection = projection(&db, "a3-future")?;
+
+        // Reproduce a reference that outlived its person: detach the holder,
+        // delete, then put the saved binding row back.
+        let saved = db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT knowledge_holder_json FROM narrative_scene_scope_bindings
+                  WHERE scene_id = 'a3-source'",
+                [],
+                |row| row.get::<_, String>(0),
+            )?)
+        })?;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_scene_scope_bindings
+                    SET knowledge_holder_json = '{\"kind\":\"reader\"}'
+                  WHERE scene_id = 'a3-source'",
+                [],
+            )?;
+            Ok(())
+        })?;
+        let delete_journal = delete_entry(&db, PROJECT, "x13-legacy", 1)?;
+        assert_eq!(entry_type(&db, "x13-legacy")?, None);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_scene_scope_bindings SET knowledge_holder_json = ?1
+                  WHERE scene_id = 'a3-source'",
+                [&saved],
+            )?;
+            Ok(())
+        })?;
+        rewrite_as_pre_c1_delete_journal(&db, &delete_journal)?;
+        // Same shape as above: the holder names a person who no longer exists,
+        // and re-inserting the person would make the Revision readable again
+        // unless the undo invalidates that A1.
+        assert!(!a2_available(&db, &anchor_revision)?, "stale holder");
+        assert!(a2_available(&db, &other_revision)?);
+
+        replay_journal(&db, PROJECT, &delete_journal, "undo")?;
+        assert_eq!(entry_type(&db, "x13-legacy")?.as_deref(), Some("character"));
+        let invalidated =
+            db.with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, "a3-source"))?;
+        assert_eq!(
+            invalidated.binding.knowledge_holder,
+            NarrativeScopePrincipalV1::Reader {}
+        );
+        assert_ne!(projection(&db, "a3-source")?, approved);
+        assert!(
+            !a2_available(&db, &anchor_revision)?,
+            "person re-inserted by the pre-C1 undo"
+        );
+        assert!(a2_available(&db, &other_revision)?);
+        assert_eq!(projection(&db, "a3-future")?, other_projection);
+
+        // The pre-C1 redo has no before/after state to build its Feed event
+        // from, so it fails closed and changes nothing.
+        let after_undo = projection(&db, "a3-source")?;
+        let failed = replay_journal(&db, PROJECT, &delete_journal, "redo")
+            .expect_err("a pre-C1 delete redo fails closed");
+        assert!(
+            failed.to_string().contains("no before or after state"),
+            "{failed:#}"
+        );
+        assert_eq!(entry_type(&db, "x13-legacy")?.as_deref(), Some("character"));
+        assert_eq!(projection(&db, "a3-source")?, after_undo);
+        assert!(!a2_available(&db, &anchor_revision)?);
+
+        // Naming the person again makes the redo a refused route; the old
+        // Revision still needs a new approval.
+        set_scope_holder(&db, "a3-source", "legacy-again", "x13-legacy")?;
+        drain_freshness(&db)?;
+        let refused = replay_journal(&db, PROJECT, &delete_journal, "redo")
+            .expect_err("a holder cannot be removed through the journal");
+        assert!(
+            refused
+                .to_string()
+                .contains("NEX_SCENE_SCOPE_CHARACTER_REFERENCED"),
+            "{refused:#}"
+        );
+        assert_eq!(entry_type(&db, "x13-legacy")?.as_deref(), Some("character"));
+        assert!(!a2_available(&db, &anchor_revision)?, "still retired");
+        assert!(a2_available(&db, &other_revision)?);
+    }
+    Ok(())
+}
+
 /// DR-X1-3-14. Graph's own consumer edges are its roster's Sources
 /// (`codex:`, `codex-relation:`, Evidence keys) and the Graph Source itself;
 /// a Revision's Scene Scope projection is not among them. So the edges the
