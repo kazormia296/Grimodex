@@ -57,6 +57,8 @@ export type AiAuditOwner =
   | "browser-runtime"
   | "native-post-effect"
   | "native-semantic"
+  /** Electron の local 生成 route（Native の専用 append と sweep だけが監査を書く）。 */
+  | "native-nir1-local-generation"
   | "evaluation-harness"
   | "none";
 
@@ -502,6 +504,8 @@ const POST_EFFECT_AUDIT_TEST =
 const SEMANTIC_AUDIT_TEST =
   "src-tauri/crates/grimodex-semantic/src/audit_tests.rs";
 const BROWSER_AUDIT_TEST = "src/lib/browser-mock.ai-audit.test.ts";
+const NIR1_LOCAL_AUDIT_TEST =
+  "src-tauri/crates/grimodex-db/src/nir1_local_audit/tests.rs";
 
 /** 生成経路（LLM を実際に叩く層）。n/a が許されない層。 */
 export const GENERATION_LAYERS: AiPathLayer[] = [
@@ -1481,6 +1485,40 @@ export const AI_PATHS: AiPathEntry[] = [
     verifier: "stub",
     testRef: null,
     note: "Grimodex が供給した CLI prompt/model/options と観測 delta は完全保存する。外部 CLI が内部生成する追加 prompt と provider private reasoning は観測不能のため partial とし、外部バイナリ・認証・PATH 依存の実機 smoke gap も明示する。",
+  },
+
+  // ── ⑤ Electron の local 生成 route（NIR-1。製品入口 PUB-L は閉じている）──────
+  {
+    id: "nir1_local_generation_writing",
+    label: "local 生成: 本文 Writing（Electron）",
+    surface:
+      "electron/native/grimodex-node nir1_local_generation（DT-5／DD-1 が結線）→ grimodex-db nir1_local_audit",
+    layer: "streaming",
+    transport: "nir1_local_generation_start",
+    auditOwner: "native-nir1-local-generation",
+    captureLevel: "full-observable",
+    auditTestRef: NIR1_LOCAL_AUDIT_TEST,
+    auditTestName: "nir1_local_writing_audit_contract",
+    verifier: "contract",
+    testRef: NIR1_LOCAL_AUDIT_TEST,
+    testName: "nir1_local_writing_audit_contract",
+    note: "Electron の local 生成 route（K5/3、DT-4 の登録）。capability decision：restricted、main が発行した登録済みの caller だけ、接続先は IP literal の loopback route、key は持たない、AI 使用ポリシー（Writing は chat と bodyWrite、Review は chat と analysis）が許可したときだけ送る。製品入口（PUB-L）は閉じており、PUB-L の後でないと製品から到達できない（transport と生成の開始 command は DT-5／DD-1 が足す）。監査は Native の専用 append が start の 3 件と終端を attempt の終端と同じ transaction で書き、汎用の ai_audit_append_batch と Main の IPC 検証は予約 namespace を拒否する。Electron の local route は AI_RUNTIME_ROUTES と同意 registry の対象外。",
+  },
+  {
+    id: "nir1_local_generation_review",
+    label: "local 生成: Review（Electron）",
+    surface:
+      "electron/native/grimodex-node nir1_local_generation（DT-5／DD-1 が結線）→ grimodex-db nir1_local_audit",
+    layer: "streaming",
+    transport: "nir1_local_generation_start",
+    auditOwner: "native-nir1-local-generation",
+    captureLevel: "full-observable",
+    auditTestRef: NIR1_LOCAL_AUDIT_TEST,
+    auditTestName: "nir1_local_review_audit_contract",
+    verifier: "contract",
+    testRef: NIR1_LOCAL_AUDIT_TEST,
+    testName: "nir1_local_review_audit_contract",
+    note: "Electron の local 生成 route（K5/3、DT-4 の登録）。capability decision：restricted、main が発行した登録済みの caller だけ、接続先は IP literal の loopback route、key は持たない、AI 使用ポリシー（Writing は chat と bodyWrite、Review は chat と analysis）が許可したときだけ送る。製品入口（PUB-L）は閉じており、PUB-L の後でないと製品から到達できない（transport と生成の開始 command は DT-5／DD-1 が足す）。監査は Native の専用 append が start の 3 件と終端を attempt の終端と同じ transaction で書き、汎用の ai_audit_append_batch と Main の IPC 検証は予約 namespace を拒否する。Electron の local route は AI_RUNTIME_ROUTES と同意 registry の対象外。",
   },
 
   // ── ⑥ 埋め込み / 全文検索（LLM 生成ではない）──────────────────────────────

@@ -245,6 +245,12 @@ Local LLM／BYOK runtime route について通常 contract と consent contract 
 5. `full-observable` の場合は dispatch 前の durable start と全 terminal を実装し、path 固有の
    `auditTestName` を持つ contract test を追加する。監査 start を await せず送信してはならない。
 
+Electron の local 生成 route（`nir1_local_generation_writing`／`nir1_local_generation_review`）は
+`AI_PATHS` にだけ登録し、`AI_RUNTIME_ROUTES` と同意 registry（`GDX-AI-CONSENT-001`）の対象外である。
+これは Web Editor の BYOK route ではなく、Native が AI 使用ポリシーを読んで送る loopback の
+OpenAI 互換 route のため。この route の監査は Native の専用 append が書き、汎用の
+`ai_audit_append_batch` は予約 namespace を拒否する。
+
 Web Editor の実行トランスポートを追加または変更する場合は、上記に加えて
 `AI_RUNTIME_ROUTES` の `transport`、`providerAuthority`、`providers`、`capabilityGate`、通常の
 `testRef/testName`、および `consentTestRef/consentTestName` を同時に更新する。新しい
