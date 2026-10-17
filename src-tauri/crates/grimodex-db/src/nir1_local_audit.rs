@@ -197,9 +197,6 @@ fn ensure_dedicated_shape(event: &AppendAiAuditEvent) -> anyhow::Result<()> {
 /// The only writer of reserved events. Runs inside the caller's open
 /// transaction (bounded budget and commit classification belong to the
 /// caller) and writes nothing unless every event has the derived shape.
-// The bounded start/terminal/sweep writers that call this arrive with the
-// audit-writer subtask; until then only the tests use it.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn append_reserved_events_in_transaction(
     conn: &Connection,
     project_id: &str,
