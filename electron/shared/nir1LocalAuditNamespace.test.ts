@@ -93,6 +93,36 @@ describe("NIR-1 local audit namespace", () => {
     ).toBe(false);
   });
 
+  it("TS は Rust より広く拒否してよい（U+FEFF は TS だけが空白とみなす）", () => {
+    // db の判定が最終。広い側に倒れても、派生 ID と完全一致しない限り先回りには使えない。
+    expect(isNir1LocalAuditReservedId("\uFEFFnir1-local-generation:x")).toBe(
+      true,
+    );
+  });
+
+  it("途中に長い空白列を持つ入力でも線形時間で判定する（O(n^2) の回帰）", () => {
+    const hostile = `x${" ".repeat(200_000)}x`;
+    const started = performance.now();
+    expect(isNir1LocalAuditReservedId(hostile)).toBe(false);
+    expect(isNir1LocalAuditReservedPathId(hostile)).toBe(false);
+    expect(
+      nir1LocalAuditReservedField({
+        eventId: hostile,
+        executionId: hostile,
+        operationId: hostile,
+        parentExecutionId: hostile,
+        pathId: hostile,
+      }),
+    ).toBeNull();
+    // 空白だけの巨大な値、予約の前に巨大な空白があるが接頭辞が続く値も正しく判定する。
+    const blank = " ".repeat(200_000);
+    expect(isNir1LocalAuditReservedId(blank)).toBe(false);
+    expect(
+      isNir1LocalAuditReservedId(`${blank}nir1-local-generation:x${blank}`),
+    ).toBe(true);
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
   it("4種の ID と path ID のどれが予約かを報告する", () => {
     const reserved = `${NIR1_LOCAL_AUDIT_ID_PREFIX}execution:a`;
     expect(

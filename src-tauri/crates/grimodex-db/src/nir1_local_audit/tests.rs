@@ -302,17 +302,27 @@ fn dedicated_append_requires_the_derived_reserved_shape() {
     }
 }
 
+/// The field a typed reserved-namespace rejection names; fails when the
+/// rejection came from some other validator.
+fn rejected_field(error: &anyhow::Error) -> &'static str {
+    error
+        .downcast_ref::<Nir1LocalAuditReservedError>()
+        .unwrap_or_else(|| panic!("expected a reserved-namespace error, got: {error:#}"))
+        .field
+}
+
 #[test]
 fn generic_append_cannot_terminate_or_preempt_a_dedicated_execution() {
     let db = database();
     // Pre-emption: a renderer cannot claim the execution ID before Native.
     let execution = execution_id_for_attempt(ATTEMPT).unwrap();
-    assert!(db
+    let error = db
         .append_ai_audit_events(
             PROJECT,
-            &[generic("pre-1", &execution, "execution.started")]
+            &[generic("pre-1", &execution, "execution.started")],
         )
-        .is_err());
+        .expect_err("pre-emption is rejected");
+    assert_eq!(rejected_field(&error), "executionId");
     assert_eq!(row_count(&db), 0);
     dedicated_start(&db, NIR1_LOCAL_WRITING_PATH_ID, ATTEMPT).unwrap();
     assert_eq!(row_count(&db), 3);
@@ -320,15 +330,26 @@ fn generic_append_cannot_terminate_or_preempt_a_dedicated_execution() {
     // Injection: a generic terminal for the dedicated execution is rejected,
     // whether it reuses the reserved path or presents the execution as a
     // chat.direct one.
-    for path in ["chat.direct", NIR1_LOCAL_WRITING_PATH_ID] {
+    // The reserved path is reported first (pathId); the chat.direct disguise is
+    // still caught through the reserved execution ID.
+    for (path, field) in [
+        ("chat.direct", "executionId"),
+        (NIR1_LOCAL_WRITING_PATH_ID, "pathId"),
+    ] {
         let mut terminal = generic("inj-1", &execution, "execution.failed");
         terminal.operation_id = operation_id_for_attempt(ATTEMPT).unwrap();
         terminal.path_id = path.to_string();
-        assert!(db.append_ai_audit_events(PROJECT, &[terminal]).is_err());
+        let error = db
+            .append_ai_audit_events(PROJECT, &[terminal])
+            .expect_err("injected terminal is rejected");
+        assert_eq!(rejected_field(&error), field, "{path}");
     }
     let mut chained = generic("inj-2", "x-child", "execution.started");
     chained.parent_execution_id = Some(execution);
-    assert!(db.append_ai_audit_events(PROJECT, &[chained]).is_err());
+    let error = db
+        .append_ai_audit_events(PROJECT, &[chained])
+        .expect_err("chained child is rejected");
+    assert_eq!(rejected_field(&error), "parentExecutionId");
     assert_eq!(row_count(&db), 3);
 }
 
@@ -372,6 +393,11 @@ fn cli_claim_is_unchanged_and_cannot_target_reserved_ids() {
         })
         .unwrap()
         .expect_err("path mismatch");
-    let _ = error;
+    assert!(
+        error
+            .to_string()
+            .contains("AI_AUDIT_DISPATCH_PRECONDITION_FAILED: durable execution identity mismatch"),
+        "{error}"
+    );
     assert_eq!(row_count(&db), 3);
 }
