@@ -21,6 +21,7 @@ try {
   assert.deepEqual(JSON.parse(await backend.getNativeBuildCapabilities()), {
     licensing: true,
     legacyKeyringMigration: true,
+    nir1FinalRequestEval: false,
   });
   const license = JSON.parse(await backend.getLicenseState());
   assert.equal(license.licensingEnabled, true);

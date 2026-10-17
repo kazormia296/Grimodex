@@ -25,6 +25,11 @@ legacy-keyring-migration = ["grimodex-ai/keyring"]
 # Isolated Layer-A lifecycle harness. This feature is CI-only and is never
 # enabled by the normal N-API build or release packaging.
 test-lifecycle = []
+# Evaluation-only final-request capture and baseline arm (DP-H, K6/2). It
+# enables only the grimodex-db feature of the same name, is never in `default`,
+# and is never enabled by the normal N-API build or release packaging. The
+# harness is `cargo test`; no bin is added and `crate-type` is unchanged.
+nir1-final-request-eval = ["grimodex-db/nir1-final-request-eval"]
 
 # 空 workspace: src-tauri workspace へ吸収させない (Phase 0 スパイク実証)
 [workspace]
