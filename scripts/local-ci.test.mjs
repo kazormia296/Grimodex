@@ -507,7 +507,7 @@ test("local CI registry accounts for every hosted Full CI job", async () => {
   const q512Test =
     "native_worker_returns_canonical_512_a3_eligible_seed_local_graph";
   const q513Test =
-    "native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge";
+    "native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges";
   // Practical invokes Q512 earlier on a different copy; check DEFAULT ordering.
   const defaultWorkerScriptBody = workerScriptBody.match(
     /^q2_fixture_checksum=[\s\S]*$/m,

@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use grimodex_core::narrative_nir1::MAX_GRAPH_RECORDS;
+use grimodex_core::narrative_nir1::MAX_GRAPH_QUERY_RECORDS;
 
 use super::super::nir1_entity_relation::{
     NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
@@ -321,7 +321,7 @@ fn admit_rows(
         .ok_or_else(|| anyhow::anyhow!(DISCLOSURE_ROW_LIMIT))?;
     *total = total
         .checked_add(additional)
-        .filter(|value| *value <= remaining.min(MAX_GRAPH_RECORDS))
+        .filter(|value| *value <= remaining.min(MAX_GRAPH_QUERY_RECORDS))
         .ok_or_else(|| anyhow::anyhow!(DISCLOSURE_ROW_LIMIT))?;
     Ok(())
 }
@@ -1571,7 +1571,7 @@ mod disclosure_tests {
             "project",
             "r",
             "scene",
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
         )
         .unwrap();
@@ -1581,7 +1581,7 @@ mod disclosure_tests {
             &conn,
             "project",
             "scene",
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
             Some(&mut observation),
         )
@@ -1592,7 +1592,7 @@ mod disclosure_tests {
             "r",
             payload_bytes,
             shared.bytes,
-            MAX_GRAPH_RECORDS - shared.rows,
+            MAX_GRAPH_QUERY_RECORDS - shared.rows,
             INPUT_BYTES - shared.bytes,
             Some(&mut observation),
         )
@@ -1618,7 +1618,7 @@ mod disclosure_tests {
             &conn,
             "project",
             "scene",
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
             Some(&mut failed),
         )
@@ -1644,7 +1644,7 @@ mod disclosure_tests {
             "project",
             "r",
             "scene",
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
         )
         .unwrap();
@@ -1665,7 +1665,7 @@ mod disclosure_tests {
         // The two parts a query charges, shared once and own per Revision,
         // add up to the Revision alone.
         let shared =
-            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_RECORDS, INPUT_BYTES)
+            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_QUERY_RECORDS, INPUT_BYTES)
                 .unwrap();
         let own = preflight_disclosure_revision(
             &conn,
@@ -1673,7 +1673,7 @@ mod disclosure_tests {
             "r",
             payload_bytes,
             shared.bytes,
-            MAX_GRAPH_RECORDS - shared.rows,
+            MAX_GRAPH_QUERY_RECORDS - shared.rows,
             INPUT_BYTES - shared.bytes,
         )
         .unwrap();
@@ -1691,7 +1691,7 @@ mod disclosure_tests {
                 "r",
                 INPUT_BYTES + 1,
                 shared.bytes,
-                MAX_GRAPH_RECORDS,
+                MAX_GRAPH_QUERY_RECORDS,
                 INPUT_BYTES,
             )
             .unwrap_err()
@@ -1721,7 +1721,7 @@ mod disclosure_tests {
                     "project",
                     "r",
                     "scene",
-                    MAX_GRAPH_RECORDS,
+                    MAX_GRAPH_QUERY_RECORDS,
                     usize::MAX,
                 )
                 .unwrap_err()
@@ -1744,7 +1744,7 @@ mod disclosure_tests {
             "r",
             0,
             0,
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
         )
         .unwrap()
@@ -1758,7 +1758,7 @@ mod disclosure_tests {
             "r",
             0,
             shared_at_the_cap,
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
         )
         .unwrap();
@@ -1771,7 +1771,7 @@ mod disclosure_tests {
                 "r",
                 0,
                 shared_at_the_cap + 1,
-                MAX_GRAPH_RECORDS,
+                MAX_GRAPH_QUERY_RECORDS,
                 INPUT_BYTES,
             )
             .unwrap_err()
@@ -1785,7 +1785,7 @@ mod disclosure_tests {
             "r",
             0,
             0,
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             own - 1,
         )
         .is_err());
@@ -1796,7 +1796,7 @@ mod disclosure_tests {
             "r",
             0,
             INPUT_BYTES + 1,
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
         )
         .is_err());
@@ -1808,7 +1808,7 @@ mod disclosure_tests {
     fn shared_and_revision_parts_read_disjoint_statements() {
         let conn = fixture();
         let shared =
-            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_RECORDS, INPUT_BYTES)
+            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_QUERY_RECORDS, INPUT_BYTES)
                 .unwrap();
         let own = preflight_disclosure_revision(
             &conn,
@@ -1816,7 +1816,7 @@ mod disclosure_tests {
             "r",
             0,
             0,
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
         )
         .unwrap();
@@ -1828,7 +1828,7 @@ mod disclosure_tests {
         )
         .unwrap();
         assert_eq!(
-            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_RECORDS, INPUT_BYTES)
+            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_QUERY_RECORDS, INPUT_BYTES)
                 .unwrap(),
             shared
         );
@@ -1840,7 +1840,7 @@ mod disclosure_tests {
                 "r",
                 0,
                 0,
-                MAX_GRAPH_RECORDS,
+                MAX_GRAPH_QUERY_RECORDS,
                 INPUT_BYTES,
             )
             .unwrap()
@@ -1856,7 +1856,7 @@ mod disclosure_tests {
         }
         assert_eq!(revision_part(&conn), before);
         assert_ne!(
-            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_RECORDS, INPUT_BYTES)
+            preflight_project_reads(&conn, "project", "scene", MAX_GRAPH_QUERY_RECORDS, INPUT_BYTES)
                 .unwrap(),
             shared
         );
@@ -1865,7 +1865,7 @@ mod disclosure_tests {
     #[test]
     fn disclosure_rejects_auxiliary_row_cardinality_before_materialization() {
         let conn = fixture();
-        for index in 0..256 {
+        for index in 0..MAX_GRAPH_QUERY_RECORDS / 2 {
             conn.execute(
                 "INSERT INTO tree_nodes (id, project_id, node_type) VALUES (?1, 'project', 'note')",
                 [format!("node-{index}")],
@@ -1878,7 +1878,7 @@ mod disclosure_tests {
                 "project",
                 "r",
                 "scene",
-                MAX_GRAPH_RECORDS,
+                MAX_GRAPH_QUERY_RECORDS,
                 INPUT_BYTES,
             )
             .unwrap_err()
@@ -1905,7 +1905,7 @@ mod disclosure_tests {
             "project",
             "r",
             "scene",
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             INPUT_BYTES,
         )
         .unwrap();
@@ -1923,7 +1923,7 @@ mod disclosure_tests {
     #[test]
     fn disclosure_rejects_unbounded_material_phase_rows() {
         let conn = fixture();
-        for index in 0..512 {
+        for index in 0..MAX_GRAPH_QUERY_RECORDS {
             conn.execute(
                 "INSERT INTO codex_entry_phases (id, entry_id, label) VALUES (?1, 'entity', 'label')",
                 [format!("phase-{index}")],
@@ -1936,7 +1936,7 @@ mod disclosure_tests {
                 "project",
                 "r",
                 "scene",
-                MAX_GRAPH_RECORDS,
+                MAX_GRAPH_QUERY_RECORDS,
                 INPUT_BYTES,
             )
             .unwrap_err()

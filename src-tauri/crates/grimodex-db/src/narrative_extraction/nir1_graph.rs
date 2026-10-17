@@ -39,7 +39,7 @@ use std::time::{Duration, Instant};
 use anyhow::{ensure, Result};
 use grimodex_core::narrative_nir1::{
     EntityInput, GraphEdgeInput, ScopeBinding, ScopeValue, MAX_GRAPH_EDGES, MAX_GRAPH_HOPS,
-    MAX_GRAPH_INPUT_BYTES, MAX_GRAPH_NODES, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
+    MAX_GRAPH_INPUT_BYTES, MAX_GRAPH_NODES, MAX_GRAPH_QUERY_RECORDS, MAX_GRAPH_SCENES,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -75,9 +75,9 @@ use self::worker_frame::{
     MAX_SCENE_SECTION_BYTES, SCENE_SECTION_HEADER_BYTES,
 };
 
-pub(crate) const QUERY_SQL_STEPS: u64 = 100_000;
+pub(crate) const QUERY_SQL_STEPS: u64 = 600_000;
 pub(crate) const QUERY_DEADLINE: Duration = Duration::from_millis(100);
-const QUERY_MAX_PAGES: usize = 32;
+const QUERY_MAX_PAGES: usize = 128;
 // JSON/A2/A3 parsing allocates typed values and fixed per-record metadata
 // before the qualified material can be moved into the shared cache.  Reserve
 // a deliberately conservative amount before entering that Rust phase.  This
@@ -106,11 +106,19 @@ thread_local! {
 #[cfg(test)]
 thread_local! {
     /// Records the latest query on this thread admitted for an available
-    /// Graph (`QueryUsage::rows`, the quantity capped by `MAX_GRAPH_RECORDS`).
+    /// Graph (`QueryUsage::rows`, the quantity capped by `MAX_GRAPH_QUERY_RECORDS`).
     /// Test-only: the query's own count, so tests compare it with the stored
     /// rows instead of re-deriving it. A query that does not reach an
     /// available Graph leaves the previous value.
     static LAST_QUERY_ROWS: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Pages (`QueryUsage::pages`, the quantity capped by `QUERY_MAX_PAGES`)
+    /// the latest query on this thread read for an available Graph. Test-only,
+    /// like `LAST_QUERY_ROWS`.
+    static LAST_QUERY_PAGES: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(feature = "nir1-material-diagnostics")]
@@ -1553,7 +1561,7 @@ impl QueryUsage {
             .checked_add(bytes)
             .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_INPUT_LIMIT"))?;
         ensure!(
-            self.rows <= MAX_GRAPH_RECORDS && self.bytes <= MAX_GRAPH_INPUT_BYTES,
+            self.rows <= MAX_GRAPH_QUERY_RECORDS && self.bytes <= MAX_GRAPH_INPUT_BYTES,
             "NIR1_GRAPH_QUERY_RESOURCE_LIMIT"
         );
         Ok(())
@@ -1744,7 +1752,7 @@ fn query_in_snapshot(
     if !exists {
         return Ok(unavailable(request, UnavailableReason::SeedNotFound));
     }
-    let revision_capacity = MAX_GRAPH_RECORDS;
+    let revision_capacity = MAX_GRAPH_QUERY_RECORDS;
     let frontier_capacity = MAX_GRAPH_NODES;
     usage.admit_retained(
         std::mem::size_of::<HashMap<String, Option<Arc<QualifiedGraphMaterial>>>>()
@@ -1788,12 +1796,12 @@ fn query_in_snapshot(
             // SQLite parameter so a large frontier ID cannot bypass the
             // shared query byte budget.
             usage.admit(0, candidates::source_input_bytes(&entity_id)?)?;
-            if usage.rows == MAX_GRAPH_RECORDS || usage.pages == QUERY_MAX_PAGES {
+            if usage.rows == MAX_GRAPH_QUERY_RECORDS || usage.pages == QUERY_MAX_PAGES {
                 let more: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM narrative_dependency_edges INDEXED BY idx_narrative_dependency_edges_source WHERE project_id=?1 AND source_object_identity=?2 AND rowid>?3)", params![request.project_id,format!("codex:{entity_id}"),cursor], |r|r.get(0))?;
                 ensure!(!more, "NIR1_GRAPH_CANDIDATE_LIMIT");
                 break;
             }
-            let page_limit = (MAX_GRAPH_RECORDS - usage.rows).min(16);
+            let page_limit = (MAX_GRAPH_QUERY_RECORDS - usage.rows).min(16);
             usage.admit_retained(candidates::candidate_page_scratch_bytes(page_limit)?)?;
             #[cfg(feature = "nir1-material-diagnostics")]
             let candidate_page_started = _observation.as_ref().map(|_| Instant::now());
@@ -1802,7 +1810,7 @@ fn query_in_snapshot(
                 &request.project_id,
                 &entity_id,
                 cursor,
-                MAX_GRAPH_RECORDS - usage.rows,
+                MAX_GRAPH_QUERY_RECORDS - usage.rows,
                 MAX_GRAPH_INPUT_BYTES - usage.bytes,
                 |rows, bytes| usage.admit(rows, bytes),
             );
@@ -1855,7 +1863,7 @@ fn query_in_snapshot(
                     conn,
                     &request.project_id,
                     &revision_id,
-                    MAX_GRAPH_RECORDS - usage.rows,
+                    MAX_GRAPH_QUERY_RECORDS - usage.rows,
                     MAX_GRAPH_INPUT_BYTES - usage.bytes,
                     _observation.as_deref_mut().map(|value| &mut value.a2_sql),
                 );
@@ -1864,7 +1872,7 @@ fn query_in_snapshot(
                     conn,
                     &request.project_id,
                     &revision_id,
-                    MAX_GRAPH_RECORDS - usage.rows,
+                    MAX_GRAPH_QUERY_RECORDS - usage.rows,
                     MAX_GRAPH_INPUT_BYTES - usage.bytes,
                 );
                 #[cfg(feature = "nir1-material-diagnostics")]
@@ -1886,7 +1894,7 @@ fn query_in_snapshot(
                             conn,
                             &request.project_id,
                             &request.query_scene_id,
-                            MAX_GRAPH_RECORDS - usage.rows,
+                            MAX_GRAPH_QUERY_RECORDS - usage.rows,
                             MAX_GRAPH_INPUT_BYTES - usage.bytes,
                             _observation.as_deref_mut().map(|value| &mut value.a3_sql),
                         );
@@ -1895,7 +1903,7 @@ fn query_in_snapshot(
                             conn,
                             &request.project_id,
                             &request.query_scene_id,
-                            MAX_GRAPH_RECORDS - usage.rows,
+                            MAX_GRAPH_QUERY_RECORDS - usage.rows,
                             MAX_GRAPH_INPUT_BYTES - usage.bytes,
                         );
                         let shared_admission = shared_preflight?;
@@ -1914,7 +1922,7 @@ fn query_in_snapshot(
                         &revision_id,
                         revision_admission.payload_bytes,
                         project_read_bytes,
-                        MAX_GRAPH_RECORDS - usage.rows,
+                        MAX_GRAPH_QUERY_RECORDS - usage.rows,
                         MAX_GRAPH_INPUT_BYTES - usage.bytes,
                         _observation.as_deref_mut().map(|value| &mut value.a3_sql),
                     );
@@ -1925,7 +1933,7 @@ fn query_in_snapshot(
                         &revision_id,
                         revision_admission.payload_bytes,
                         project_read_bytes,
-                        MAX_GRAPH_RECORDS - usage.rows,
+                        MAX_GRAPH_QUERY_RECORDS - usage.rows,
                         MAX_GRAPH_INPUT_BYTES - usage.bytes,
                     );
                     #[cfg(feature = "nir1-material-diagnostics")]
@@ -2178,7 +2186,10 @@ fn query_in_snapshot(
         control.check(GraphWorkStage::Serialization)?;
     }
     #[cfg(test)]
-    LAST_QUERY_ROWS.set(Some(usage.rows));
+    {
+        LAST_QUERY_ROWS.set(Some(usage.rows));
+        LAST_QUERY_PAGES.set(Some(usage.pages));
+    }
     Ok(response)
 }
 
@@ -2355,7 +2366,7 @@ fn join_scene_pins(
     // One cumulative instance for the whole Graph, limited to the shared
     // remainder; never one budget per Entity or Scene.
     let mut budget = SceneJoinBudget::new(
-        MAX_GRAPH_RECORDS.saturating_sub(usage.rows),
+        MAX_GRAPH_QUERY_RECORDS.saturating_sub(usage.rows),
         MAX_GRAPH_INPUT_BYTES.saturating_sub(usage.bytes),
     );
     usage.admit_retained(std::mem::size_of::<BTreeMap<String, FirstPin>>())?;
@@ -2368,7 +2379,7 @@ fn join_scene_pins(
             let key_bytes = entity.entity_id.len();
             budget.admit(0, key_bytes)?;
             usage.admit(0, key_bytes)?;
-            if usage.rows == MAX_GRAPH_RECORDS || usage.pages == QUERY_MAX_PAGES {
+            if usage.rows == MAX_GRAPH_QUERY_RECORDS || usage.pages == QUERY_MAX_PAGES {
                 let mut check = || control.check(GraphWorkStage::Page);
                 let more = scenes::scene_pins_remain(
                     conn,
@@ -2380,7 +2391,7 @@ fn join_scene_pins(
                 ensure!(!more, "NIR1_GRAPH_SCENE_PIN_LIMIT");
                 break;
             }
-            let page_limit = (MAX_GRAPH_RECORDS - usage.rows).min(scenes::PIN_PAGE_ROWS);
+            let page_limit = (MAX_GRAPH_QUERY_RECORDS - usage.rows).min(scenes::PIN_PAGE_ROWS);
             usage.admit_retained(scenes::pin_page_scratch_bytes(page_limit)?)?;
             let page = {
                 let mut check = || control.check(GraphWorkStage::Row);
@@ -2546,7 +2557,7 @@ fn add_node(
             // Every node owns two bounded Vecs, one binding and one Scope per
             // Revision. Their complete possible capacity was reserved (and
             // charged) with the node, so these pushes cannot trigger an
-            // uncharged Vec growth and do not pay MAX_GRAPH_RECORDS again for
+            // uncharged Vec growth and do not pay MAX_GRAPH_QUERY_RECORDS again for
             // every edge. What each push adds is the Scope it keeps.
             usage.admit_retained(binding_scope_retained_bytes(&entity.scope)?)?;
             node.bindings.push(binding);
@@ -2557,9 +2568,9 @@ fn add_node(
             retained_string(&entity.entity_id)
                 + std::mem::size_of::<Nir1GraphNode>()
                 + std::mem::size_of::<Vec<Arc<Nir1GraphMaterialBinding>>>()
-                + MAX_GRAPH_RECORDS * std::mem::size_of::<Arc<Nir1GraphMaterialBinding>>()
+                + MAX_GRAPH_QUERY_RECORDS * std::mem::size_of::<Arc<Nir1GraphMaterialBinding>>()
                 + std::mem::size_of::<Vec<Arc<ScopeBinding>>>()
-                + MAX_GRAPH_RECORDS * std::mem::size_of::<Arc<ScopeBinding>>()
+                + MAX_GRAPH_QUERY_RECORDS * std::mem::size_of::<Arc<ScopeBinding>>()
                 + binding_scope_retained_bytes(&entity.scope)?
                 + 8 * std::mem::size_of::<usize>(),
         )?;
@@ -2570,12 +2581,12 @@ fn add_node(
                 entity,
                 hop,
                 bindings: {
-                    let mut bindings = Vec::with_capacity(MAX_GRAPH_RECORDS);
+                    let mut bindings = Vec::with_capacity(MAX_GRAPH_QUERY_RECORDS);
                     bindings.push(binding);
                     bindings
                 },
                 binding_scopes: {
-                    let mut scopes = Vec::with_capacity(MAX_GRAPH_RECORDS);
+                    let mut scopes = Vec::with_capacity(MAX_GRAPH_QUERY_RECORDS);
                     scopes.push(scope);
                     scopes
                 },

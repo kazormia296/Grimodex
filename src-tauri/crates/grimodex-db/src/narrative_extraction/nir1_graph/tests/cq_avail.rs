@@ -21,6 +21,9 @@ const UNCAPPED_SQL_STEPS: u64 = 100_000_000;
 /// Generous on purpose: the shapes must not depend on the 100 ms production
 /// lease, which is tested on its own.
 const DEADLINE: Duration = Duration::from_secs(30);
+/// The number of shapes in `cq_opt::shapes()`. Fixed so that dropping one fails
+/// the comparison test instead of shrinking it.
+const SHAPES_COUNT: usize = 15;
 
 /// How the review Scene of each approved Codex review is chosen.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1244,6 +1247,17 @@ fn run_measured(
 fn shared_reads_return_the_response_of_reading_per_revision_on_every_shape() -> Result<()> {
     use super::cq_opt::{request_variants, shapes};
     let mut compared = 0;
+    // A shape dropped from shapes() must not shrink the comparison unnoticed:
+    // the derived count below follows shapes(), so the count of shapes is fixed
+    // here as well.
+    assert_eq!(shapes().len(), SHAPES_COUNT, "the shape list changed");
+    // Every shape on both lanes: the plain seed query, and every request
+    // variant for the shapes that fix those too.
+    let expected: usize = shapes()
+        .iter()
+        .map(|shape| if shape.all_requests { request_variants().len() } else { 1 })
+        .sum::<usize>()
+        * 2;
     for shape in shapes() {
         let fixture = (shape.build)()?;
         for lane in [Lane::Reader, Lane::Worker] {
@@ -1260,7 +1274,7 @@ fn shared_reads_return_the_response_of_reading_per_revision_on_every_shape() -> 
             }
         }
     }
-    assert_eq!(compared, 44);
+    assert_eq!(compared, expected);
     Ok(())
 }
 
@@ -1494,51 +1508,66 @@ fn rows_charged_by_the_seed_query(fixture: &Fixture) -> Result<(usize, usize)> {
     })
 }
 
-// The record budget is read/admission 512, counted over everything the query
-// reads: the rows of the candidates it pages through, of each Revision, and
-// the project-level rows of the Revisions once. Exactly 512 is admitted and
-// 513 refuses the whole Graph, wherever the extra row comes from.
+// The record budget is read/admission 2,048 (proposal/7; one Revision's own 512
+// is the writer's and A2's bound, not this one), counted over everything the
+// query reads: the rows of the candidates it pages through, of each Revision,
+// and the project-level rows of the Revisions once. Exactly 2,048 is admitted
+// and 2,049 refuses the whole Graph, wherever the extra row comes from. The
+// two are separate tests: the limit's refusal does not stand in for its
+// admission.
+//
+// The worker's reader only: it is the production configuration, whose fixed
+// arena replaces the ordinary reader's transient reserve (8 x the raw bytes +
+// 4 KiB per row), and that estimate alone is over the 6,291,456 B ledger before
+// 2,048 rows, so the ordinary reader refuses for it first. The ordinary reader
+// is not a product path.
+const BUDGET_REVISIONS: usize = 10;
+
+fn record_budget_query(decoys_over: usize) -> Result<(usize, Nir1GraphResponse)> {
+    let (base, shared) = rows_charged_by_the_seed_query(&budget_fixture(BUDGET_REVISIONS, 0)?)?;
+    assert!(base + 300 < MAX_GRAPH_QUERY_RECORDS, "{base} rows to start from");
+    let decoys = MAX_GRAPH_QUERY_RECORDS - base + decoys_over;
+    let fixture = budget_fixture(BUDGET_REVISIONS, decoys)?;
+    let (rows, shared_rows) = rows_charged_by_the_seed_query(&fixture)?;
+    assert_eq!(
+        rows,
+        MAX_GRAPH_QUERY_RECORDS + decoys_over,
+        "the fixture is at the boundary"
+    );
+    assert_eq!(shared_rows, shared);
+    let response = run_query(&fixture, Lane::Worker, &request_for("nir1-alice", "nir1"))?;
+    Ok((rows, response))
+}
+
 #[test]
-fn the_record_budget_admits_512_and_refuses_513_with_the_shared_rows_counted_once() -> Result<()> {
-    const REVISIONS: usize = 10;
-    let (base, shared) = rows_charged_by_the_seed_query(&budget_fixture(REVISIONS, 0)?)?;
-    assert!(base + 300 < MAX_GRAPH_RECORDS, "{base} rows to start from");
-    let request = request_for("nir1-alice", "nir1");
-    for (decoys_over, expected) in [(0usize, "available"), (1, "unavailable")] {
-        for lane in [Lane::Reader, Lane::Worker] {
-            let decoys = MAX_GRAPH_RECORDS - base + decoys_over;
-            let fixture = budget_fixture(REVISIONS, decoys)?;
-            let (rows, shared_rows) = rows_charged_by_the_seed_query(&fixture)?;
-            assert_eq!(
-                rows,
-                MAX_GRAPH_RECORDS + decoys_over,
-                "the fixture is at the boundary"
-            );
-            assert_eq!(shared_rows, shared);
-            let response = run_query(&fixture, lane, &request)?;
-            assert_eq!(
-                response.status, expected,
-                "{lane:?}: {rows} rows: {:?}",
-                response.reason
-            );
-            if expected == "unavailable" {
-                assert!(response.graph.is_none());
-                if lane == Lane::Worker {
-                    assert!(
-                        response.reason.as_deref().is_some_and(|reason| {
-                            reason.starts_with("query-worker-work-")
-                                && reason.contains("record-limit")
-                        }),
-                        "{:?}",
-                        response.reason
-                    );
-                }
-            } else {
-                let graph = response.graph.as_ref().expect("an available Graph");
-                assert_eq!((graph.nodes.len(), graph.edges.len()), (2, REVISIONS));
-            }
-        }
-    }
+fn query_records_at_2048_is_available() -> Result<()> {
+    let (rows, response) = record_budget_query(0)?;
+    assert_eq!(
+        response.status, "available",
+        "{rows} rows: {:?}",
+        response.reason
+    );
+    let graph = response.graph.as_ref().expect("an available Graph");
+    assert_eq!((graph.nodes.len(), graph.edges.len()), (2, BUDGET_REVISIONS));
+    Ok(())
+}
+
+#[test]
+fn query_records_at_2049_refuses_the_whole_graph() -> Result<()> {
+    let (rows, response) = record_budget_query(1)?;
+    assert_eq!(
+        response.status, "unavailable",
+        "{rows} rows: {:?}",
+        response.reason
+    );
+    assert!(response.graph.is_none());
+    assert!(
+        response.reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("query-worker-work-") && reason.contains("record-limit")
+        }),
+        "{:?}",
+        response.reason
+    );
     Ok(())
 }
 
@@ -1790,5 +1819,57 @@ fn native_worker_answers_a_project_reviewed_scene_by_scene() -> Result<()> {
             .workspace_participant_count()?,
         0
     );
+    Ok(())
+}
+
+// A node reserves both of its binding Vecs at the query's record limit when it
+// is created, so that no later push can grow them. With the limit at 2,048 and
+// 50 nodes that is 2,048 x 16 B x 50 = 1,638,400 B up front, 26% of the
+// 6,291,456 B ledger, which is unchanged. A node past what the ledger holds is
+// refused with the retained-limit marker, not allowed to push the peak over.
+#[test]
+fn query_retained_reservation_at_2048_stays_within_the_peak_ledger() -> Result<()> {
+    let per_node = MAX_GRAPH_QUERY_RECORDS
+        * (std::mem::size_of::<Arc<Nir1GraphMaterialBinding>>()
+            + std::mem::size_of::<Arc<ScopeBinding>>());
+    assert_eq!(per_node, 32_768);
+    let worst = MAX_GRAPH_NODES * per_node;
+    assert_eq!(worst, 1_638_400);
+    assert_eq!(MAX_GRAPH_INPUT_BYTES, 6_291_456);
+    assert!(worst * 100 / MAX_GRAPH_INPUT_BYTES <= 26);
+
+    // Fifty nodes, each created with its reservation, fit the ledger.
+    let mut nodes = BTreeMap::new();
+    let mut usage = QueryUsage::default();
+    for index in 0..MAX_GRAPH_NODES {
+        add_node(
+            &mut nodes,
+            &mut usage,
+            Arc::new(node_entity(&format!("entity-{index:02}"))),
+            1,
+            node_binding("r1"),
+        )?;
+    }
+    assert_eq!(nodes.len(), MAX_GRAPH_NODES);
+    assert!(usage.retained_bytes >= worst, "{}", usage.retained_bytes);
+    assert!(usage.retained_bytes <= MAX_GRAPH_INPUT_BYTES);
+
+    // One byte short of the ledger for the next node: refused, nothing added.
+    let mut nodes = BTreeMap::new();
+    let mut usage = QueryUsage::default();
+    usage.admit_retained(MAX_GRAPH_INPUT_BYTES - per_node)?;
+    let error = add_node(
+        &mut nodes,
+        &mut usage,
+        Arc::new(node_entity("entity-over")),
+        1,
+        node_binding("r1"),
+    )
+    .expect_err("the reservation does not fit the ledger");
+    assert!(
+        error.to_string().contains("NIR1_GRAPH_RETAINED_LIMIT"),
+        "{error:#}"
+    );
+    assert!(nodes.is_empty());
     Ok(())
 }

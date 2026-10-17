@@ -268,6 +268,23 @@ fn relations_fixture(total: usize) -> Result<Fixture> {
     Fixture::with_plan(&parallel_plan(total - 1))
 }
 
+/// `total` distinct edges from alice to bob. One Revision holds at most 507
+/// Relations (512 records less alice, bob, their Evidence and itself); each
+/// further approved Revision of the seed Entities adds its own `nir1-edge`, and
+/// edges are distinct per (Revision, edge).
+fn edges_fixture(total: usize) -> Result<Fixture> {
+    const SEED_REVISION_RELATIONS: usize = 507;
+    let in_seed = total.min(SEED_REVISION_RELATIONS);
+    let fixture = Fixture::with_plan(&parallel_plan(in_seed - 1))?;
+    for serial in 1..=(total - in_seed) {
+        fixture.add_candidate(serial, Some("approved"))?;
+    }
+    if total > in_seed {
+        fixture.republish()?;
+    }
+    Ok(fixture)
+}
+
 /// The seed Revision with Scene pins, so the response carries Scenes.
 fn pinned_scenes_fixture() -> Result<Fixture> {
     let scenes = ["pinned-b", "pinned-a", "seed-pin"].map(String::from);
@@ -314,7 +331,8 @@ pub(super) fn shapes() -> Vec<Shape> {
         scenes: 0,
     };
     // The worker names the semantic limit it met (CQ-AVAIL typed them; they
-    // used to be `other`).
+    // used to be `other`). The edge limit is probed in tests.rs, where the
+    // Revisions it needs are built.
     let edge_limit = Expect::Limit {
         worker_reason: "query-worker-work-edge-limit-pre-cleanup-work-failed-edge-limit",
     };
@@ -380,20 +398,43 @@ pub(super) fn shapes() -> Vec<Shape> {
             },
             all_requests: false,
         },
-        // One past the edge and Entity limits: refused whatever the step
-        // budget. (Ten approved Revisions of the same Entities used to be past
-        // the record limit too, and are an available Graph now: the
-        // project-level reads are admitted once, so a Revision costs its own
-        // rows.)
+        // Past the former limits (145 edges, 13 Entities), which proposal/7
+        // raised to 512 and 50: an available Graph now.
         Shape {
             label: "relations-145",
             build: || relations_fixture(145),
-            expect: edge_limit,
+            expect: graph(2, 145),
             all_requests: false,
         },
         Shape {
             label: "star-11",
             build: || Fixture::with_plan(&star_plan(11)),
+            expect: graph(13, 12),
+            all_requests: false,
+        },
+        // One past the edge limit and exactly at, and one past, the Entity
+        // limit: refused whatever the step budget. (The ordinary reader's own
+        // transient reserve refuses the 513-edge shape before the edge limit,
+        // so only the worker names it; 512 edges are an available Graph on the
+        // worker alone: see `graph_edges_at_512_is_available`. Ten approved Revisions of the same
+        // Entities used to be past the record limit too, and are an available
+        // Graph now: the project-level reads are admitted once, so a Revision
+        // costs its own rows.)
+        Shape {
+            label: "edges-513",
+            build: || edges_fixture(513),
+            expect: edge_limit,
+            all_requests: false,
+        },
+        Shape {
+            label: "star-48",
+            build: || Fixture::with_plan(&star_plan(48)),
+            expect: graph(50, 49),
+            all_requests: false,
+        },
+        Shape {
+            label: "star-49",
+            build: || Fixture::with_plan(&star_plan(49)),
             expect: node_limit,
             all_requests: false,
         },
@@ -683,13 +724,14 @@ fn the_legacy_lane_puts_back_j_as_well_as_t() -> Result<()> {
     Ok(())
 }
 
-// The 100,000-step budget is unchanged. The query now spends a small fraction
+// The production step budget (600,000 since proposal/7) is far above what
+// these shapes spend. The query spends a small fraction
 // of it, and what it spends follows the Revisions and the Relations it
 // evaluates one for one: no table-presence walk per Revision, no product of the
 // project's and the Revision's Relation counts.
 #[test]
 fn query_steps_stay_far_below_the_budget_and_grow_linearly() -> Result<()> {
-    assert_eq!(QUERY_SQL_STEPS, 100_000);
+    assert_eq!(QUERY_SQL_STEPS, 600_000);
     let request = graph_request(SEED);
     let mut steps = std::collections::BTreeMap::new();
     for shape in shapes() {

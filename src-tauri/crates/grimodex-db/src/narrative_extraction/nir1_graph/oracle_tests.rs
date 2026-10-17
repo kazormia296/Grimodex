@@ -20,8 +20,10 @@ const PROJECT: &str = "default-project";
 const UNRELATED_ENTITY: &str = "oracle-unrelated";
 const TWO_HOP_ENTITY: &str = "oracle-third";
 const SEED_KEYSET_DECOYS: usize = 31;
-const UNRELATED_REVERSE_INDEX_DECOYS: usize = 513;
-const STALE_SEED_REVERSE_INDEX_DECOYS: usize = 512;
+// One over the query record limit, and exactly it: the unrelated decoys must not
+// spend the seed's budget, the same-source stale rows must.
+const UNRELATED_REVERSE_INDEX_DECOYS: usize = MAX_GRAPH_QUERY_RECORDS + 1;
+const STALE_SEED_REVERSE_INDEX_DECOYS: usize = MAX_GRAPH_QUERY_RECORDS;
 const SCENE_SEED_ONLY: &str = "oracle-scene-a";
 const SCENE_BOB_ONLY: &str = "oracle-scene-b1";
 const SCENE_SHARED: &str = "oracle-scene-s";
@@ -679,7 +681,7 @@ fn seed_local_query_matches_explicit_roster_with_keyset_decoys() -> Result<()> {
     let response = reader.query_with_deadline(
         &graph_request("nir1-alice"),
         Duration::from_secs(2),
-        100_000,
+        QUERY_SQL_STEPS,
     )?;
     ensure!(
         response.status == "available",
@@ -698,7 +700,7 @@ fn seed_local_two_hop_query_matches_independent_canonical_projection() -> Result
     let response = reader.query_with_deadline(
         &graph_request("nir1-alice"),
         Duration::from_secs(2),
-        100_000,
+        QUERY_SQL_STEPS,
     )?;
     ensure!(
         response.status == "available",
@@ -738,7 +740,7 @@ fn seed_local_two_hop_scene_associations_match_independent_projection() -> Resul
     let response = reader.query_with_deadline(
         &graph_request("nir1-alice"),
         Duration::from_secs(2),
-        100_000,
+        QUERY_SQL_STEPS,
     )?;
     ensure!(
         response.status == "available",
@@ -800,7 +802,7 @@ fn ineligible_intermediate_bridges_do_not_reach_an_otherwise_qualified_entity() 
         let response = reader.query_with_deadline(
             &graph_request("nir1-alice"),
             Duration::from_secs(2),
-            100_000,
+            QUERY_SQL_STEPS,
         )?;
         assert_eq!(serde_json::to_value(&response)?, expected, "{bridge:?}");
     }
@@ -815,7 +817,7 @@ fn same_source_stale_reverse_rows_are_budgeted_without_partial_graph() -> Result
     let response = reader.query_with_deadline(
         &graph_request("nir1-alice"),
         Duration::from_secs(2),
-        100_000,
+        QUERY_SQL_STEPS,
     )?;
     assert_eq!(response.status, "unavailable");
     assert_eq!(
@@ -842,7 +844,7 @@ fn sealed_semantic_index_rejects_missing_or_wrong_family_seed_reverse_row() -> R
         let response = reader.query_with_deadline(
             &graph_request("nir1-alice"),
             Duration::from_secs(2),
-            100_000,
+            QUERY_SQL_STEPS,
         )?;
         assert_eq!(response.status, "unavailable");
         assert_eq!(response.reason.as_deref(), Some("registration-required"));

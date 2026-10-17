@@ -27,10 +27,21 @@ pub const ENTITY_RELATION_ASSERTION_SCHEMA_VERSION: &str = "1";
 pub const ENTITY_RELATION_MATERIAL_CONTRACT_ID: &str = "nir1.entity-relation.material";
 
 pub const MAX_GRAPH_HOPS: u8 = 2;
-pub const MAX_GRAPH_NODES: usize = 12;
-pub const MAX_GRAPH_EDGES: usize = 144;
+/// Entities one Graph query may reach (proposal/7: 12 -> 50). The hop (2) and
+/// Scene (8) bounds are unchanged.
+pub const MAX_GRAPH_NODES: usize = 50;
+/// Distinct edges one Graph query may expand (proposal/7: 144 -> 512).
+pub const MAX_GRAPH_EDGES: usize = 512;
 pub const MAX_GRAPH_SCENES: usize = 8;
+/// Records one stored *Revision* may carry (its object, relation, revision
+/// and Evidence rows). This is the writer, bundle and per-Revision admission
+/// bound and stays 512; what one *query* may read across Revisions is
+/// `MAX_GRAPH_QUERY_RECORDS`.
 pub const MAX_GRAPH_RECORDS: usize = 512;
+/// Records one Graph query may read in total across every Revision, Scope and
+/// Scene row it admits (proposal/7: 512 -> 2,048). Distinct from the
+/// per-Revision `MAX_GRAPH_RECORDS`.
+pub const MAX_GRAPH_QUERY_RECORDS: usize = 2_048;
 pub const MAX_GRAPH_INPUT_BYTES: usize = 6_291_456;
 pub const MAX_PACKING_ITEMS: usize = 512;
 pub const MAX_PACKING_INPUT_BYTES: usize = 2 * 1024 * 1024;

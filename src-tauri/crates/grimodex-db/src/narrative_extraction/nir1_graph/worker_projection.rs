@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{anyhow, ensure, Result};
 use grimodex_core::narrative_nir1::{
     EntityInput, EvidenceInput, GraphEdgeInput, ScopeBinding, ScopeValue, MAX_GRAPH_EDGES,
-    MAX_GRAPH_NODES, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
+    MAX_GRAPH_NODES, MAX_GRAPH_QUERY_RECORDS, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
 };
 
 use super::worker_frame::{
@@ -49,7 +49,7 @@ impl Nir1GraphProjection {
         for node in graph.nodes() {
             let node = node?;
             ensure!(
-                node.binding_count() <= MAX_GRAPH_RECORDS
+                node.binding_count() <= MAX_GRAPH_QUERY_RECORDS
                     && node.entity.evidence_count() <= MAX_GRAPH_RECORDS,
                 "NIR1_GRAPH_PROJECTION_COUNT"
             );
