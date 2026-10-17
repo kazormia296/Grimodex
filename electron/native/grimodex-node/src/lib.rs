@@ -9129,6 +9129,11 @@ impl Backend {
     /// は "run" | "get" | "all" | "values"。
     /// 返り値: mainが消費する内部種別marker付きのJSON文字列。mainはrendererへ
     /// 渡す前に `__grimodexDbResultKind` を除去する。
+    ///
+    /// `own_data_read` は Electron main だけが付ける分類（K3/2 `own-data-read`）。
+    /// true のとき、restricted profile では prepare 後の文が読取専用
+    /// （`stmt.readonly()`）でなければ実行前に拒否する。renderer の値は main が
+    /// 捨てる。None は分類なし（従来どおり）。unrestricted では使わない。
     #[napi]
     pub async fn db_execute(
         &self,
@@ -9136,6 +9141,7 @@ impl Backend {
         params: serde_json::Value,
         method: String,
         caller_identity: Option<String>,
+        own_data_read: Option<bool>,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         let caller_identity = caller_identity_from_wire(caller_identity)?;
@@ -9158,10 +9164,21 @@ impl Backend {
                 &workspace,
             )?;
             let execution = if restricted {
-                workspace
-                    .authority
-                    .db()
-                    .execute_renderer_profile_egress_with_result(&sql, &params, &method)?
+                match own_data_read {
+                    Some(read_only_required) => workspace
+                        .authority
+                        .db()
+                        .execute_renderer_profile_egress_classified_with_result(
+                            &sql,
+                            &params,
+                            &method,
+                            read_only_required,
+                        )?,
+                    None => workspace
+                        .authority
+                        .db()
+                        .execute_renderer_profile_egress_with_result(&sql, &params, &method)?,
+                }
             } else {
                 // Keep direct standalone Backend use compatible before the
                 // explicit first-restricted-publication transition.
@@ -9189,11 +9206,15 @@ impl Backend {
     /// ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
     /// `statements` は `[{ sql, params, method }, …]`。
     /// 返り値: 最終文のrowsと、mainが消費する内部種別markerを載せたJSON文字列。
+    ///
+    /// `own_data_read` は `db_execute` と同じ分類を文ごとに渡す（長さは
+    /// `statements` と一致しなければ拒否する）。
     #[napi]
     pub async fn db_execute_batch(
         &self,
         statements: serde_json::Value,
         caller_identity: Option<String>,
+        own_data_read: Option<Vec<bool>>,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         let caller_identity = caller_identity_from_wire(caller_identity)?;
@@ -9216,10 +9237,19 @@ impl Backend {
                 &workspace,
             )?;
             let execution = if restricted {
-                workspace
-                    .authority
-                    .db()
-                    .execute_batch_tx_renderer_profile_egress_with_result(&statements)?
+                match own_data_read.as_deref() {
+                    Some(read_only_required) => workspace
+                        .authority
+                        .db()
+                        .execute_batch_tx_renderer_profile_egress_classified_with_result(
+                            &statements,
+                            read_only_required,
+                        )?,
+                    None => workspace
+                        .authority
+                        .db()
+                        .execute_batch_tx_renderer_profile_egress_with_result(&statements)?,
+                }
             } else {
                 // Keep direct standalone Backend use compatible before the
                 // explicit first-restricted-publication transition.

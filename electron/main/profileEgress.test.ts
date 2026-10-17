@@ -6,6 +6,7 @@ import {
   D2A_TYPED_RESULT_POLICY,
   d2aRouteLedgersForTest,
 } from "./profileEgress.js";
+import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { NAPI_COMMANDS, type NapiBackendLike } from "../shared/ipcContract.js";
 
@@ -26,52 +27,7 @@ function backend(status: Record<string, unknown> = {}) {
         restricted: true,
         handlesInvalidated: true,
         inFlightStopped: true,
-        sqlPolicy: {
-          version: 1,
-          protectedTables: [
-            "ab_comparison_runs",
-            "ab_comparisons",
-            "ai_audit_events",
-            "chat_message_chunks",
-            "chat_messages_fts",
-            "chat_messages_fts_en",
-            "chat_message_prompts",
-            "chat_messages",
-            "chat_runtime_threads",
-            "chat_sessions",
-            "chat_summaries",
-            "generation_logs",
-            "idempotency_requests",
-            "messages",
-            "narrative_apply_commits",
-            "narrative_apply_operations",
-            "narrative_commit_journals",
-            "narrative_extraction_artifacts",
-            "narrative_extraction_attempts",
-            "narrative_extraction_runs",
-            "narrative_extraction_tasks",
-            "narrative_proposal_decisions",
-            "narrative_proposal_revisions",
-            "narrative_proposal_sets",
-            "narrative_proposals",
-            "post_effect_annotation_relations",
-            "post_effect_annotations",
-            "post_effect_annotations_fts",
-            "post_effect_annotations_fts_en",
-            "post_effect_runs",
-            "impact_review_baselines",
-            "scene_lens_data",
-            "scene_chunks",
-            "codex_chunks",
-            "event_chunks",
-            "undo_journal",
-            "prose_staging",
-          ],
-          protectedColumns: [
-            { table: "change_events", column: "payload" },
-            { table: "state_snapshots", column: "payload" },
-          ],
-        },
+        sqlPolicy: nativeSqlPolicyV2(),
         ...status,
       }),
     registerProfileEgressCaller: () => undefined,
@@ -1222,19 +1178,77 @@ describe("D2a profile egress gate", () => {
 
   it.each([
     [
-      { sqlPolicy: { version: 2, protectedTables: [], protectedColumns: [] } },
+      { sqlPolicy: nativeSqlPolicyV2({ version: 3 }) },
       "unknown policy version",
+    ],
+    [
+      { sqlPolicy: nativeSqlPolicyV2({ version: 1 }) },
+      "the previous policy version",
     ],
     [{ sqlPolicy: undefined }, "missing table inventory"],
     [
+      { sqlPolicy: nativeSqlPolicyV2({ extraSet: ["chat_messages"] }) },
+      "unknown policy key",
+    ],
+    [
       {
-        sqlPolicy: {
-          version: 1,
-          protectedTables: ["chat_messages", "chat_messages"],
-          protectedColumns: [],
-        },
+        sqlPolicy: nativeSqlPolicyV2({
+          protectedTables: ["chat_messages"],
+        }),
       },
-      "duplicate table inventory",
+      "the version 1 table key",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          closedTables: ["messages", "messages"],
+        }),
+      },
+      "duplicate closed table",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          readOpenTables: ["chat_messages", "chat_messages"],
+        }),
+      },
+      "duplicate read-open table",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          closedTables: ["messages", "chat_messages"],
+          readOpenTables: ["chat_messages"],
+        }),
+      },
+      "a table declared in both classes",
+    ],
+    [
+      { sqlPolicy: nativeSqlPolicyV2({ closedTables: [] }) },
+      "an empty closed class",
+    ],
+    [
+      { sqlPolicy: nativeSqlPolicyV2({ readOpenTables: [] }) },
+      "an empty read-open class",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          readOpenColumns: [{ table: "change_events" }],
+        }),
+      },
+      "a malformed read-open column",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          readOpenColumns: [
+            { table: "change_events", column: "payload" },
+            { table: "CHANGE_EVENTS", column: "Payload" },
+          ],
+        }),
+      },
+      "a duplicate read-open column",
     ],
   ])("fails closed for %s", async (status, _description) => {
     const gate = await createProfileEgressGate(backend(status));

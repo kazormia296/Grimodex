@@ -494,8 +494,19 @@ export interface NapiBackendLike {
     params: unknown,
     method: string,
     callerIdentity?: string,
+    /**
+     * Main-only `own-data-read` classification of this statement (K3/2). Native
+     * then requires the prepared statement to be read-only. Never taken from
+     * the renderer.
+     */
+    ownDataRead?: boolean,
   ): Promise<string>;
-  dbExecuteBatch(statements: unknown, callerIdentity?: string): Promise<string>;
+  dbExecuteBatch(
+    statements: unknown,
+    callerIdentity?: string,
+    /** One Main-only `own-data-read` flag per statement. */
+    ownDataRead?: boolean[],
+  ): Promise<string>;
   captureCurrentChatInput?(
     submission: CaptureCurrentChatInputSubmission,
     callerIdentity: string,
@@ -6884,6 +6895,41 @@ function requireSceneScopeMutationRequest(
   };
 }
 
+/**
+ * Key under which Electron main attaches its `own-data-read` classification of
+ * a generic DB command to the dispatch args (a `boolean` for `db_execute`, a
+ * `boolean[]` per statement for `db_execute_batch`). A symbol, defined
+ * non-enumerable by the router after the profile gate: structured-cloned
+ * renderer input cannot carry a symbol key, so a renderer cannot supply or
+ * forge it.
+ */
+export const D2A_DB_OWN_DATA_READ = Symbol("grimodex.d2a.dbOwnDataRead");
+
+function ownDataReadWire(
+  args: CommandArgs,
+  command: "db_execute",
+): boolean | undefined;
+function ownDataReadWire(
+  args: CommandArgs,
+  command: "db_execute_batch",
+): boolean[] | undefined;
+function ownDataReadWire(
+  args: CommandArgs,
+  command: "db_execute" | "db_execute_batch",
+): boolean | boolean[] | undefined {
+  const value = (args as Record<symbol, unknown>)[D2A_DB_OWN_DATA_READ];
+  if (value === undefined) return undefined;
+  if (command === "db_execute" && typeof value === "boolean") return value;
+  if (
+    command === "db_execute_batch" &&
+    Array.isArray(value) &&
+    value.every((flag) => typeof flag === "boolean")
+  ) {
+    return [...value] as boolean[];
+  }
+  throw new Error(`invalid own-data-read classification for ${command}`);
+}
+
 function callerIdentityWire(args: CommandArgs): string | undefined {
   if (args.callerIdentity === undefined) return undefined;
   try {
@@ -7092,10 +7138,19 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       const params = requirePresent(a, "params", "db_execute");
       const method = requireString(a, "method", "db_execute");
       const callerIdentity = callerIdentityWire(a);
+      const ownDataRead = ownDataReadWire(a, "db_execute");
       const raw =
         callerIdentity === undefined
           ? await b.dbExecute(sql, params, method)
-          : await b.dbExecute(sql, params, method, callerIdentity);
+          : ownDataRead === undefined
+            ? await b.dbExecute(sql, params, method, callerIdentity)
+            : await b.dbExecute(
+                sql,
+                params,
+                method,
+                callerIdentity,
+                ownDataRead,
+              );
       return parseWire(raw);
     },
   },
@@ -7103,10 +7158,13 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) => {
       const statements = requirePresent(a, "statements", "db_execute_batch");
       const callerIdentity = callerIdentityWire(a);
+      const ownDataRead = ownDataReadWire(a, "db_execute_batch");
       const raw =
         callerIdentity === undefined
           ? await b.dbExecuteBatch(statements)
-          : await b.dbExecuteBatch(statements, callerIdentity);
+          : ownDataRead === undefined
+            ? await b.dbExecuteBatch(statements, callerIdentity)
+            : await b.dbExecuteBatch(statements, callerIdentity, ownDataRead);
       return parseWire(raw);
     },
   },

@@ -5889,6 +5889,7 @@ mod tests {
                 json!([SESSION_ID]),
                 "all".into(),
                 Some(caller_identity_wire(&fixture.caller)),
+                None,
             ))
             .expect_err("restricted generic SQL must not publish chat sessions");
         assert!(publication_error.reason.contains("D2A_EGRESS_DENIED"));
@@ -6572,6 +6573,7 @@ mod tests {
             json!([SESSION_ID]),
             "all".into(),
             Some(caller_identity_wire(&caller)),
+            None,
         ))?;
         let ordinary_sql: Value = serde_json::from_str(&ordinary_sql)?;
         assert_eq!(ordinary_sql["rows"][0]["id"], SESSION_ID);
