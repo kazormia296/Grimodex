@@ -1157,6 +1157,7 @@ fn prepared_projection_uses_captured_human_current_raw_and_typed_approved_revisi
         add_prepared_human_message(&snapshot, "Captured human request for the current scene.")?;
     let projection = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
+        PackingPurpose::Writing,
         "nir1-prepared-db-session",
         &message_version_id,
         RAW_SOURCE_SCENE,
@@ -1268,6 +1269,7 @@ fn prepared_projection_revalidates_large_captured_human_after_single_charge() ->
     let capture = add_prepared_human_message(&snapshot, &human_message)?;
     let projection = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
+        PackingPurpose::Writing,
         "nir1-prepared-db-session",
         &capture,
         RAW_SOURCE_SCENE,
@@ -1323,6 +1325,7 @@ fn prepared_projection_rejects_human_over_one_copy_input_byte_limit() -> Result<
     let capture = add_prepared_human_message(&snapshot, &"x".repeat(MAX_PACKING_INPUT_BYTES))?;
     let error = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
+        PackingPurpose::Writing,
         "nir1-prepared-db-session",
         &capture,
         RAW_SOURCE_SCENE,
@@ -1354,6 +1357,7 @@ fn prepared_projection_rejects_empty_context_budget_before_selecting_material() 
         add_prepared_human_message(&snapshot, "Captured human request for the current scene.")?;
     let error = read_and_pack_native_nir1_prepared_inputs(
         &snapshot,
+        PackingPurpose::Writing,
         "nir1-prepared-db-session",
         &message_version_id,
         RAW_SOURCE_SCENE,
@@ -1408,6 +1412,7 @@ impl DfFinalFixture {
     fn project(&self) -> Result<NativeNir1PreparedInputs> {
         crate::narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &self.snapshot,
+            PackingPurpose::Writing,
             "nir1-prepared-db-session",
             &self.capture,
             RAW_SOURCE_SCENE,

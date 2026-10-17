@@ -4,16 +4,16 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::net::IpAddr;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Context, Result};
 use grimodex_ai::{AiProvider, AiSettings, ResolvedToolProtocol};
-use grimodex_core::narrative_nir1::{estimate_nir1_context_tokens, MAX_PACKING_ITEMS};
+use grimodex_core::narrative_nir1::{
+    estimate_nir1_context_tokens, PackingPurpose, MAX_PACKING_ITEMS,
+};
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
     read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
@@ -58,6 +58,9 @@ pub(crate) struct SupportedLocalChatRoute {
     pub(crate) api_variant: Option<String>,
     pub(crate) endpoint_id: String,
     pub(crate) endpoint_base_url: String,
+    /// Digest of the route identity only (kind, IP literal, port, path, wire).
+    /// It carries no raw URL, endpoint id, label, or credential.
+    pub(crate) endpoint_identity_digest: String,
     pub(crate) route_revision: String,
     pub(crate) context_window_tokens: usize,
     pub(crate) output_tokens: usize,
@@ -77,6 +80,74 @@ pub(crate) struct PreparedBudgetUsage {
     pub(crate) context_window_tokens: usize,
     pub(crate) packing_context_budget_tokens: usize,
 }
+
+/// Main's key-store verdict for the active endpoint, decided when the
+/// generation starts. Value-only: it is checked before preparation and is
+/// never stored or re-evaluated at send time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MainKeyVerdict {
+    Absent,
+    Present,
+    CheckFailed,
+}
+
+/// Typed intent that Main validated for one generation start. It is built
+/// only inside Native (`pub(crate)`); no IPC or N-API entry accepts it, and
+/// no renderer string selects the purpose.
+pub(crate) struct LocalGenerationIntent {
+    purpose: GenerationPurpose,
+    key_verdict: MainKeyVerdict,
+    endpoint_id: String,
+}
+
+impl LocalGenerationIntent {
+    pub(crate) fn new(
+        purpose: GenerationPurpose,
+        key_verdict: MainKeyVerdict,
+        endpoint_id: String,
+    ) -> Self {
+        Self {
+            purpose,
+            key_verdict,
+            endpoint_id,
+        }
+    }
+
+    #[cfg(test)]
+    fn writing_for_test() -> Self {
+        Self::new(
+            GenerationPurpose::Writing,
+            MainKeyVerdict::Absent,
+            TEST_ENDPOINT_ID.to_owned(),
+        )
+    }
+
+    fn ensure_no_key(&self) -> Result<()> {
+        match self.key_verdict {
+            MainKeyVerdict::Absent => Ok(()),
+            MainKeyVerdict::Present => anyhow::bail!("NIR1_PREPARED_KEY_PRESENT"),
+            MainKeyVerdict::CheckFailed => anyhow::bail!("NIR1_PREPARED_KEY_CHECK_FAILED"),
+        }
+    }
+
+    fn ensure_endpoint_matches(&self, route: &SupportedLocalChatRoute) -> Result<()> {
+        ensure!(
+            self.endpoint_id == route.endpoint_id,
+            "NIR1_PREPARED_ENDPOINT_ID_MISMATCH"
+        );
+        Ok(())
+    }
+}
+
+fn packing_purpose(purpose: &GenerationPurpose) -> PackingPurpose {
+    match purpose {
+        GenerationPurpose::Writing => PackingPurpose::Writing,
+        GenerationPurpose::Review => PackingPurpose::Review,
+    }
+}
+
+#[cfg(test)]
+const TEST_ENDPOINT_ID: &str = "fixture-local";
 
 /// Presence-only declaration for channels this slice cannot prepare. The
 /// private entry requires callers to state these inputs explicitly.
@@ -384,7 +455,12 @@ pub(crate) fn prepare_local_chat_request(
     message_version_id: &NativeAcceptedChatSubmission,
     revision_ids: &[String],
     unsupported_inputs: UnsupportedInputIntent,
+    generation: LocalGenerationIntent,
 ) -> Result<NativePreparedRequest> {
+    // Unsupported channels and Main's key verdict are rejected before any
+    // workspace read or storage access.
+    unsupported_inputs.validate()?;
+    generation.ensure_no_key()?;
     let sql_budget = participant_sql_budget_for(Arc::clone(&message_version_id.stop));
     #[cfg(test)]
     {
@@ -394,7 +470,7 @@ pub(crate) fn prepare_local_chat_request(
             query_scene_id,
             message_version_id,
             revision_ids,
-            unsupported_inputs,
+            generation,
             sql_budget,
             || Ok(()),
             || Ok(()),
@@ -409,7 +485,7 @@ pub(crate) fn prepare_local_chat_request(
             query_scene_id,
             message_version_id,
             revision_ids,
-            unsupported_inputs,
+            generation,
             sql_budget,
         )
     }
@@ -456,7 +532,7 @@ fn prepare_local_chat_request_with_test_budget(
         query_scene_id,
         message_version_id,
         revision_ids,
-        UnsupportedInputIntent::empty(),
+        LocalGenerationIntent::writing_for_test(),
         sql_budget,
         before_initial_read,
         after_initial_read_before_render,
@@ -471,13 +547,12 @@ fn prepare_local_chat_request_inner(
     query_scene_id: &str,
     message_version_id: &NativeAcceptedChatSubmission,
     revision_ids: &[String],
-    intent: UnsupportedInputIntent,
+    generation: LocalGenerationIntent,
     sql_budget: ParticipantSqlOperationBudget,
     #[cfg(test)] before_initial_read: impl FnOnce() -> Result<()>,
     #[cfg(test)] after_initial_read_before_render: impl FnOnce() -> Result<()>,
     #[cfg(test)] after_render_before_revalidation: impl FnOnce() -> Result<()>,
 ) -> Result<NativePreparedRequest> {
-    intent.validate()?;
     ensure!(
         !state
             .workspace_shutdown_requested
@@ -498,10 +573,9 @@ fn prepare_local_chat_request_inner(
         state
             .profile_egress
             .with_authorized_preparation(&caller, &live_binding.locator, || {
-                Ok((
-                    resolve_supported_local_route(&state.ai_settings_path)?,
-                    state.profile_egress.revocation_generation(),
-                ))
+                let route = resolve_supported_local_route(&state.ai_settings_path)?;
+                generation.ensure_endpoint_matches(&route)?;
+                Ok((route, state.profile_egress.revocation_generation()))
             })?;
     ensure!(
         route_revocation_generation == message_version_id.owner.revocation_generation(),
@@ -520,6 +594,7 @@ fn prepare_local_chat_request_inner(
     let mut packing_context_budget_tokens = None;
     let projection = read_and_pack_native_nir1_prepared_inputs(
         &workspace,
+        packing_purpose(&generation.purpose),
         message_version_id.capture.chat_session_id(),
         &message_version_id.capture,
         query_scene_id,
@@ -597,7 +672,7 @@ fn prepare_local_chat_request_inner(
                     bound_source: projection.raw_source_binding().clone(),
                     authority_bindings: projection.authority_bindings().to_vec(),
                     excluded_revisions: projection.excluded_revisions().to_vec(),
-                    purpose: GenerationPurpose::Writing,
+                    purpose: generation.purpose,
                     route,
                     budget,
                     request_metadata: PreparedRequestMetadata {
@@ -919,7 +994,7 @@ fn resolve_supported_local_route(path: &Path) -> Result<SupportedLocalChatRoute>
     settings.normalize_openai_compatible();
     let model = settings.model.trim();
     ensure!(
-        !model.is_empty() && model == settings.model,
+        model == settings.model && model_name_is_valid(model),
         "NIR1_PREPARED_MODEL_INVALID"
     );
     ensure!(
@@ -945,7 +1020,7 @@ fn resolve_supported_local_route(path: &Path) -> Result<SupportedLocalChatRoute>
             && grimodex_ai::resolve_api_variant(None, &settings, model).is_none(),
         "NIR1_PREPARED_API_VARIANT_UNSUPPORTED"
     );
-    validate_loopback_chat_completions_url(&endpoint.base_url)?;
+    let loopback = parse_loopback_chat_completions_endpoint(&endpoint.base_url)?;
     let context_window_tokens = usize::try_from(
         endpoint
             .custom_max_context
@@ -970,6 +1045,7 @@ fn resolve_supported_local_route(path: &Path) -> Result<SupportedLocalChatRoute>
         api_variant: endpoint.api_variant.clone(),
         endpoint_id: endpoint.id.clone(),
         endpoint_base_url: endpoint.base_url.clone(),
+        endpoint_identity_digest: loopback.identity_digest()?,
         route_revision,
         context_window_tokens,
         output_tokens,
@@ -984,48 +1060,92 @@ fn ensure_route_unchanged(
     Ok(())
 }
 
-fn validate_loopback_chat_completions_url(base_url: &str) -> Result<()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LoopbackHost {
+    V4,
+    V6,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LoopbackChatEndpoint {
+    host: LoopbackHost,
+    port: u16,
+}
+
+impl LoopbackChatEndpoint {
+    /// The route identity: kind, IP literal, port, path, and wire only. The
+    /// raw URL (including a trailing slash), endpoint id, label, and any
+    /// credential are not inputs.
+    fn identity_digest(&self) -> Result<String> {
+        Ok(canonical_json_digest(&json!({
+            "domain": "nir1-local-endpoint-identity@1",
+            "routeKind": "nir1-local-product-send",
+            "host": match self.host {
+                LoopbackHost::V4 => "127.0.0.1",
+                LoopbackHost::V6 => "::1",
+            },
+            "port": self.port,
+            "path": "/v1/chat/completions",
+            "wire": "sse",
+        }))?)
+    }
+}
+
+/// Accepts exactly `http://127.0.0.1:<port>/v1` or `http://[::1]:<port>/v1`
+/// (one trailing `/` allowed). The host is compared as a string: no
+/// `localhost`, other 127/8 address, alternate spelling, zone, or host name.
+fn parse_loopback_chat_completions_endpoint(base_url: &str) -> Result<LoopbackChatEndpoint> {
     let rest = base_url
         .strip_prefix("http://")
         .context("NIR1_PREPARED_ENDPOINT_NOT_LOCAL_HTTP")?;
-    ensure!(
-        !rest.contains(['?', '#', '@']),
-        "NIR1_PREPARED_ENDPOINT_URL_INVALID"
-    );
-    let (authority, path) = rest
+    let (host, rest) = if let Some(rest) = rest.strip_prefix("127.0.0.1:") {
+        (LoopbackHost::V4, rest)
+    } else if let Some(rest) = rest.strip_prefix("[::1]:") {
+        (LoopbackHost::V6, rest)
+    } else {
+        anyhow::bail!("NIR1_PREPARED_ENDPOINT_NOT_LOOPBACK");
+    };
+    let (port, path) = rest
         .split_once('/')
         .context("NIR1_PREPARED_ENDPOINT_URL_INVALID")?;
     ensure!(
-        !authority.is_empty() && (path == "v1" || path == "v1/") && !authority.contains('%'),
+        path == "v1" || path == "v1/",
         "NIR1_PREPARED_ENDPOINT_URL_INVALID"
     );
-    let (host, port) = if let Some(bracketed) = authority.strip_prefix('[') {
-        let (host, tail) = bracketed
-            .split_once(']')
-            .context("NIR1_PREPARED_ENDPOINT_URL_INVALID")?;
-        let port = tail
-            .strip_prefix(':')
-            .context("NIR1_PREPARED_ENDPOINT_URL_INVALID")?;
-        (host, port)
-    } else {
-        let (host, port) = authority
-            .split_once(':')
-            .context("NIR1_PREPARED_ENDPOINT_URL_INVALID")?;
-        ensure!(
-            !host.contains(':') && !port.contains(':'),
-            "NIR1_PREPARED_ENDPOINT_URL_INVALID"
-        );
-        (host, port)
-    };
+    ensure!(
+        (1..=5).contains(&port.len())
+            && port.bytes().all(|byte| byte.is_ascii_digit())
+            && !port.starts_with('0'),
+        "NIR1_PREPARED_ENDPOINT_URL_INVALID"
+    );
     let port = port
         .parse::<u16>()
-        .ok()
-        .filter(|port| *port > 0)
         .context("NIR1_PREPARED_ENDPOINT_URL_INVALID")?;
-    let loopback = host.eq_ignore_ascii_case("localhost")
-        || IpAddr::from_str(host).is_ok_and(|address| address.is_loopback());
-    ensure!(loopback && port > 0, "NIR1_PREPARED_ENDPOINT_NOT_LOOPBACK");
-    Ok(())
+    Ok(LoopbackChatEndpoint { host, port })
+}
+
+const MAX_MODEL_NAME_BYTES: usize = 256;
+
+/// The model-name rule of the route table: 1..=256 bytes, no control,
+/// line/paragraph separator, or bidi control character, and no leading or
+/// trailing whitespace. Inner whitespace, quotes, `\`, and non-ASCII are
+/// allowed; the value is never normalized.
+fn model_name_is_valid(model: &str) -> bool {
+    (1..=MAX_MODEL_NAME_BYTES).contains(&model.len())
+        && model == model.trim()
+        && !model.chars().any(|ch| {
+            ch.is_control()
+                || matches!(
+                    ch,
+                    '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{061C}'
+                        | '\u{200E}'
+                        | '\u{200F}'
+                        | '\u{202A}'..='\u{202E}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+        })
 }
 
 fn fixed_system_prompt() -> String {
@@ -1224,6 +1344,7 @@ fn render_plain_chat_payload_from_material(
             {"role": "user", "content": user_message},
         ],
         "max_tokens": route.output_tokens,
+        "stream": true,
     });
     checkpoint()?;
     let messages = payload["messages"]
@@ -1367,10 +1488,12 @@ mod tests {
     use super::{
         canonical_json_string, context_budget_for_user, ensure_route_unchanged,
         escape_reserved_prompt_tags, final_plain_chat_request_tokens, fixed_system_prompt,
-        non_context_budget_for_user, plain_chat_message_envelope_tokens,
-        prepare_local_chat_request, prepare_local_chat_request_with_test_hook,
-        validate_loopback_chat_completions_url, NativeAcceptedChatSubmission,
-        PreparedPayloadPosition, CHAT_SYSTEM_BASE, DATA_BOUNDARY_REMINDER,
+        model_name_is_valid, non_context_budget_for_user, parse_loopback_chat_completions_endpoint,
+        plain_chat_message_envelope_tokens,
+        prepare_local_chat_request as prepare_local_chat_request_with_intent,
+        prepare_local_chat_request_with_test_hook, LocalGenerationIntent, MainKeyVerdict,
+        NativeAcceptedChatSubmission, PreparedPayloadPosition, CHAT_SYSTEM_BASE,
+        DATA_BOUNDARY_REMINDER, TEST_ENDPOINT_ID,
     };
     use crate::profile_egress::CallerIdentity;
     use crate::state::AppState;
@@ -1409,6 +1532,28 @@ mod tests {
     const DECISION_CANARY: &str = "PREPARED_PRIVATE_DECISION_NOTE_MUST_NOT_ESCAPE";
     const NO_UNSUPPORTED_INPUTS: super::UnsupportedInputIntent =
         super::UnsupportedInputIntent::empty();
+
+    /// Writing with no key and the fixture endpoint id: the pre-DF+-b shape of
+    /// every existing test. Purpose, key, and endpoint tests call
+    /// `prepare_local_chat_request_with_intent` directly.
+    fn prepare_local_chat_request(
+        state: Arc<AppState>,
+        caller: CallerIdentity,
+        query_scene_id: &str,
+        message_version_id: &NativeAcceptedChatSubmission,
+        revision_ids: &[String],
+        unsupported_inputs: super::UnsupportedInputIntent,
+    ) -> anyhow::Result<super::NativePreparedRequest> {
+        prepare_local_chat_request_with_intent(
+            state,
+            caller,
+            query_scene_id,
+            message_version_id,
+            revision_ids,
+            unsupported_inputs,
+            LocalGenerationIntent::writing_for_test(),
+        )
+    }
 
     struct Fixture {
         root: std::path::PathBuf,
@@ -2149,8 +2294,9 @@ mod tests {
             assert_eq!(payload["model"], route.model);
             assert_eq!(
                 payload.as_object().context("payload object missing")?.len(),
-                3
+                4
             );
+            assert_eq!(payload["stream"], true);
             assert!(payload.get("tools").is_none());
             assert_eq!(payload["max_tokens"].as_u64(), Some(output_tokens as u64));
 
@@ -3321,6 +3467,7 @@ mod tests {
         assert_eq!(owner_error.to_string(), "NIR1_CHAT_CAPTURE_OWNER_MISMATCH");
         let session_error = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &workspace,
+            grimodex_core::narrative_nir1::PackingPurpose::Writing,
             "not-the-chat-session",
             &fixture.message_version_id,
             SCENE_ID,
@@ -3592,6 +3739,7 @@ mod tests {
         let snapshot = active_workspace_snapshot(&fixture.state.ws)?;
         let full_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
+            grimodex_core::narrative_nir1::PackingPurpose::Writing,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -3950,6 +4098,7 @@ mod tests {
 
         let bounded_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
+            grimodex_core::narrative_nir1::PackingPurpose::Writing,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -4603,6 +4752,7 @@ mod tests {
             let snapshot = active_workspace_snapshot(&fixture.state.ws)?;
             let full_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
                 &snapshot,
+                grimodex_core::narrative_nir1::PackingPurpose::Writing,
                 SESSION_ID,
                 &message_version_id,
                 SCENE_ID,
@@ -4839,6 +4989,7 @@ mod tests {
                 {"role": "user", "content": user},
             ],
             "max_tokens": 1024,
+            "stream": true,
         }))?;
         assert_eq!(
             prepared.canonical_payload().as_bytes(),
@@ -4849,6 +5000,7 @@ mod tests {
         let route = super::resolve_supported_local_route(&fixture.state.ai_settings_path)?;
         let projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
+            grimodex_core::narrative_nir1::PackingPurpose::Writing,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -4948,6 +5100,7 @@ mod tests {
         let snapshot = active_workspace_snapshot(&fixture.state.ws)?;
         let full_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
+            grimodex_core::narrative_nir1::PackingPurpose::Writing,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -4998,6 +5151,7 @@ mod tests {
             .context("minimum context token count overflow")?;
         let minimum_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
+            grimodex_core::narrative_nir1::PackingPurpose::Writing,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -5175,6 +5329,7 @@ mod tests {
         let snapshot = active_workspace_snapshot(&fixture.state.ws)?;
         let full_projection = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
+            grimodex_core::narrative_nir1::PackingPurpose::Writing,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -5292,8 +5447,9 @@ mod tests {
         );
         assert_eq!(
             payload.as_object().context("payload object missing")?.len(),
-            3
+            4
         );
+        assert_eq!(payload["stream"], true);
         for canary in [RAW_CANARY, CREDENTIAL_CANARY, DECISION_CANARY] {
             assert!(!prepared.canonical_payload().contains(canary));
         }
@@ -5329,6 +5485,35 @@ mod tests {
         .context("remote route unexpectedly accepted")?;
         assert_eq!(error.to_string(), "NIR1_PREPARED_ENDPOINT_NOT_LOOPBACK");
         assert_eq!(fixture.attempt_count()?, before_attempts);
+
+        // A-1: `localhost`, other 127/8 addresses, and alternate IPv6
+        // spellings used to be accepted or ambiguous; none creates storage.
+        let before = fixture.generation_storage_counts()?;
+        for rejected in [
+            "http://localhost:12345/v1",
+            "http://127.0.0.2:12345/v1",
+            "http://[::ffff:127.0.0.1]:12345/v1",
+            "http://[0:0:0:0:0:0:0:1]:12345/v1",
+            "http://0.0.0.0:12345/v1",
+        ] {
+            write_local_route(&fixture.state, rejected, 16_384, 1024)?;
+            let error = prepare_local_chat_request(
+                Arc::clone(&fixture.state),
+                fixture.caller.clone(),
+                SCENE_ID,
+                &fixture.message_version_id,
+                std::slice::from_ref(&fixture.revision_id),
+                NO_UNSUPPORTED_INPUTS,
+            )
+            .err()
+            .with_context(|| format!("{rejected} unexpectedly accepted"))?;
+            assert_eq!(
+                error.to_string(),
+                "NIR1_PREPARED_ENDPOINT_NOT_LOOPBACK",
+                "{rejected}"
+            );
+            assert_eq!(fixture.generation_storage_counts()?, before);
+        }
         Ok(())
     }
 
@@ -6172,23 +6357,352 @@ mod tests {
     }
 
     #[test]
-    fn only_loopback_chat_completions_endpoints_are_supported() {
+    fn only_ip_literal_loopback_chat_completions_endpoints_are_supported() {
         for allowed in [
-            "http://localhost:1234/v1",
+            "http://127.0.0.1:1234/v1",
             "http://127.0.0.1:1234/v1/",
             "http://[::1]:1234/v1",
+            "http://[::1]:65535/v1/",
+            "http://127.0.0.1:1/v1",
         ] {
-            validate_loopback_chat_completions_url(allowed).unwrap();
+            parse_loopback_chat_completions_endpoint(allowed)
+                .unwrap_or_else(|error| panic!("{allowed}: {error:#}"));
         }
         for rejected in [
-            "https://localhost:1234/v1",
+            "http://localhost:1234/v1",
+            "http://LOCALHOST:1234/v1",
             "http://example.com:1234/v1",
-            "http://127.0.0.1/v1",
+            "http://127.0.0.2:1234/v1",
+            "http://127.1:1234/v1",
+            "http://2130706433:1234/v1",
+            "http://[::ffff:127.0.0.1]:1234/v1",
+            "http://[0:0:0:0:0:0:0:1]:1234/v1",
+            "http://[::1%25lo]:1234/v1",
+            "http://[::1%lo]:1234/v1",
+            "http://0.0.0.0:1234/v1",
+            "http://192.168.1.25:1234/v1",
+            "https://127.0.0.1:1234/v1",
+            "HTTP://127.0.0.1:1234/v1",
+            "http://user@127.0.0.1:1234/v1",
+            "http://user:pass@127.0.0.1:1234/v1",
+            "http://127.0.0.1:1234/v1?x=1",
+            "http://127.0.0.1:1234/v1#fragment",
+            "http://127.0.0.1:1234/v1//",
             "http://127.0.0.1:1234/v1/chat/completions",
-            "http://user@localhost:1234/v1",
-            "http://localhost:0/v1",
+            "http://127.0.0.1:1234/v2",
+            "http://127.0.0.1:1234",
+            "http://127.0.0.1/v1",
+            "http://127.0.0.1:/v1",
+            "http://127.0.0.1:+1234/v1",
+            "http://127.0.0.1:-1234/v1",
+            "http://127.0.0.1:01234/v1",
+            "http://127.0.0.1:0/v1",
+            "http://127.0.0.1:00/v1",
+            "http://127.0.0.1:65536/v1",
+            "http://127.0.0.1:123456/v1",
+            "http://127.0.0.1:12 34/v1",
+            "http://127.0.0.1:1234/v1 ",
+            " http://127.0.0.1:1234/v1",
+            "http://[::1]/v1",
+            "http://[::1]:1234:5/v1",
         ] {
-            assert!(validate_loopback_chat_completions_url(rejected).is_err());
+            assert!(
+                parse_loopback_chat_completions_endpoint(rejected).is_err(),
+                "{rejected:?} was accepted"
+            );
         }
+        // The localhost spelling never counts as a local route name only.
+        assert_eq!(
+            parse_loopback_chat_completions_endpoint("http://localhost:1234/v1")
+                .unwrap_err()
+                .to_string(),
+            "NIR1_PREPARED_ENDPOINT_NOT_LOOPBACK"
+        );
+    }
+
+    #[test]
+    fn payload_requests_streaming_and_digest_follows() -> anyhow::Result<()> {
+        let fixture = Fixture::new()?;
+        let route = super::resolve_supported_local_route(&fixture.state.ai_settings_path)?;
+        let body = super::render_plain_chat_payload_from_material(
+            &route,
+            "raw scene",
+            &["codex entry".to_owned()],
+            "user turn",
+            &mut || Ok(()),
+        )?;
+        let payload: Value = serde_json::from_str(&body.canonical_payload)?;
+        let mut keys = payload
+            .as_object()
+            .context("payload object missing")?
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(keys, ["max_tokens", "messages", "model", "stream"]);
+        assert_eq!(payload["stream"], Value::Bool(true));
+        assert_eq!(
+            body.payload_digest,
+            crate::nir1_generation::final_payload_digest(&payload)?
+        );
+        // The digest covers the streaming flag: removing it changes the digest.
+        let mut without_stream = payload.clone();
+        without_stream
+            .as_object_mut()
+            .context("payload object missing")?
+            .remove("stream");
+        assert_ne!(
+            body.payload_digest,
+            crate::nir1_generation::final_payload_digest(&without_stream)?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn review_purpose_is_taken_from_typed_intent() -> anyhow::Result<()> {
+        let fixture = Fixture::new()?;
+        let prepare = |purpose: GenerationPurpose| {
+            prepare_local_chat_request_with_intent(
+                Arc::clone(&fixture.state),
+                fixture.caller.clone(),
+                SCENE_ID,
+                &fixture.message_version_id,
+                std::slice::from_ref(&fixture.revision_id),
+                NO_UNSUPPORTED_INPUTS,
+                LocalGenerationIntent::new(
+                    purpose,
+                    MainKeyVerdict::Absent,
+                    TEST_ENDPOINT_ID.to_owned(),
+                ),
+            )
+        };
+        let before = fixture.generation_storage_counts()?;
+        let review = prepare(GenerationPurpose::Review)?;
+        assert_eq!(review.purpose, GenerationPurpose::Review);
+        let review_handoff = review.into_d_transport_handoff();
+        assert_eq!(review_handoff.purpose(), &GenerationPurpose::Review);
+        let writing = prepare(GenerationPurpose::Writing)?;
+        assert_eq!(writing.purpose, GenerationPurpose::Writing);
+        // No fixed Review prompt: both purposes use the same fixed template.
+        assert_eq!(
+            review_handoff.request_metadata().fixed_template_ref,
+            writing.request_metadata.fixed_template_ref
+        );
+        assert_eq!(
+            review_handoff.request_metadata().fixed_template_version,
+            writing.request_metadata.fixed_template_version
+        );
+        // A-1: preparing for either purpose creates nothing.
+        assert_eq!(fixture.generation_storage_counts()?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn key_presence_and_endpoint_id_checked_before_attempt() -> anyhow::Result<()> {
+        let fixture = Fixture::new()?;
+        let before = fixture.generation_storage_counts()?;
+        let prepare = |verdict: MainKeyVerdict, endpoint_id: &str| {
+            prepare_local_chat_request_with_intent(
+                Arc::clone(&fixture.state),
+                fixture.caller.clone(),
+                SCENE_ID,
+                &fixture.message_version_id,
+                std::slice::from_ref(&fixture.revision_id),
+                NO_UNSUPPORTED_INPUTS,
+                LocalGenerationIntent::new(
+                    GenerationPurpose::Writing,
+                    verdict,
+                    endpoint_id.to_owned(),
+                ),
+            )
+            .err()
+            .map(|error| error.to_string())
+        };
+        // Main found a key (an endpoint-specific account, or the legacy
+        // account for an endpoint whose id is `default`): the verdict is the
+        // same typed value, and no attempt is made.
+        assert_eq!(
+            prepare(MainKeyVerdict::Present, TEST_ENDPOINT_ID).as_deref(),
+            Some("NIR1_PREPARED_KEY_PRESENT")
+        );
+        assert_eq!(
+            prepare(MainKeyVerdict::CheckFailed, TEST_ENDPOINT_ID).as_deref(),
+            Some("NIR1_PREPARED_KEY_CHECK_FAILED")
+        );
+        assert_eq!(
+            prepare(MainKeyVerdict::Absent, "another-endpoint").as_deref(),
+            Some("NIR1_PREPARED_ENDPOINT_ID_MISMATCH")
+        );
+        assert_eq!(
+            prepare(MainKeyVerdict::Absent, "").as_deref(),
+            Some("NIR1_PREPARED_ENDPOINT_ID_MISMATCH")
+        );
+        // A key verdict wins over a mismatching endpoint id.
+        assert_eq!(
+            prepare(MainKeyVerdict::Present, "another-endpoint").as_deref(),
+            Some("NIR1_PREPARED_KEY_PRESENT")
+        );
+        assert_eq!(fixture.generation_storage_counts()?, before);
+        assert_eq!(prepare(MainKeyVerdict::Absent, TEST_ENDPOINT_ID), None);
+        // The verdict is a value only: it is in neither the payload nor the
+        // stored counts.
+        assert_eq!(fixture.generation_storage_counts()?, before);
+        Ok(())
+    }
+
+    #[test]
+    fn endpoint_identity_digest_from_route_identity() -> anyhow::Result<()> {
+        let digest_of = |url: &str| -> anyhow::Result<String> {
+            parse_loopback_chat_completions_endpoint(url)?.identity_digest()
+        };
+        let v4 = digest_of("http://127.0.0.1:1234/v1")?;
+        // A trailing slash is not part of the route identity.
+        assert_eq!(v4, digest_of("http://127.0.0.1:1234/v1/")?);
+        // Host kind and port are.
+        assert_ne!(v4, digest_of("http://[::1]:1234/v1")?);
+        assert_ne!(v4, digest_of("http://127.0.0.1:1235/v1")?);
+        assert_ne!(
+            digest_of("http://[::1]:1234/v1")?,
+            digest_of("http://[::1]:1235/v1")?
+        );
+        // The digest is the canonical digest of exactly the route identity.
+        assert_eq!(
+            v4,
+            grimodex_core::canonical_json_digest(&json!({
+                "domain": "nir1-local-endpoint-identity@1",
+                "routeKind": "nir1-local-product-send",
+                "host": "127.0.0.1",
+                "port": 1234,
+                "path": "/v1/chat/completions",
+                "wire": "sse",
+            }))?
+        );
+        // The resolved route carries it; endpoint id, label, and the raw URL
+        // do not move it.
+        let fixture = Fixture::new()?;
+        let route = super::resolve_supported_local_route(&fixture.state.ai_settings_path)?;
+        assert_eq!(
+            route.endpoint_identity_digest,
+            digest_of("http://127.0.0.1:12345/v1")?
+        );
+        let mut renamed =
+            local_route_settings("http://127.0.0.1:12345/v1/", Some(16_384), Some(1024));
+        renamed.openai_compatible_endpoints[0].id = "renamed".into();
+        renamed.openai_compatible_endpoints[0].label = "other label".into();
+        renamed.active_openai_compatible_endpoint_id = Some("renamed".into());
+        grimodex_ai::write_ai_settings(&fixture.state.ai_settings_path, &renamed)?;
+        let renamed_route = super::resolve_supported_local_route(&fixture.state.ai_settings_path)?;
+        assert_eq!(
+            renamed_route.endpoint_identity_digest,
+            route.endpoint_identity_digest
+        );
+        assert_ne!(renamed_route.route_revision, route.route_revision);
+        // A route change moves the digest.
+        write_local_route(&fixture.state, "http://127.0.0.1:12346/v1", 16_384, 1024)?;
+        let changed = super::resolve_supported_local_route(&fixture.state.ai_settings_path)?;
+        assert_ne!(
+            changed.endpoint_identity_digest,
+            route.endpoint_identity_digest
+        );
+        // The value is a bare sha256 digest, not URL or credential text.
+        let hex = route
+            .endpoint_identity_digest
+            .strip_prefix("sha256:")
+            .context("digest prefix missing")?;
+        assert_eq!(hex.len(), 64);
+        assert!(hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        Ok(())
+    }
+
+    #[test]
+    fn model_name_rule() -> anyhow::Result<()> {
+        let exact_256 = "m".repeat(256);
+        for accepted in [
+            "m",
+            "fixture-local-model",
+            "qwen 2.5 \"coder\" \\ 7b",
+            "モデル名 日本語",
+            "emoji \u{1F600} model",
+            "a\u{00A0}b",
+            exact_256.as_str(),
+        ] {
+            assert!(model_name_is_valid(accepted), "{accepted:?} was rejected");
+        }
+        let too_long = "m".repeat(257);
+        // 128 two-byte characters are exactly 256 bytes; one more is 258.
+        let two_byte_256 = "é".repeat(128);
+        let two_byte_258 = "é".repeat(129);
+        assert!(model_name_is_valid(&two_byte_256));
+        for rejected in [
+            "",
+            too_long.as_str(),
+            two_byte_258.as_str(),
+            "a\nb",
+            "a\rb",
+            "a\tb",
+            "a\u{0000}b",
+            "a\u{001B}b",
+            "a\u{007F}b",
+            "a\u{0085}b",
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{061C}b",
+            "a\u{200E}b",
+            "a\u{200F}b",
+            "a\u{202A}b",
+            "a\u{202B}b",
+            "a\u{202C}b",
+            "a\u{202D}b",
+            "a\u{202E}b",
+            "a\u{2066}b",
+            "a\u{2067}b",
+            "a\u{2068}b",
+            "a\u{2069}b",
+            " leading",
+            "trailing ",
+            "\u{00A0}nbsp-leading",
+        ] {
+            assert!(!model_name_is_valid(rejected), "{rejected:?} was accepted");
+        }
+
+        // Through the route: a rejected name is unavailable and a valid name
+        // is carried unchanged into the route and the payload.
+        let fixture = Fixture::new()?;
+        let mut settings =
+            local_route_settings("http://127.0.0.1:12345/v1", Some(16_384), Some(1024));
+        let before = fixture.generation_storage_counts()?;
+        for rejected in ["a\nb", "a\u{202E}b", "trailing "] {
+            settings.model = rejected.into();
+            grimodex_ai::write_ai_settings(&fixture.state.ai_settings_path, &settings)?;
+            let error = super::resolve_supported_local_route(&fixture.state.ai_settings_path)
+                .err()
+                .with_context(|| format!("{rejected:?} resolved"))?;
+            assert!(error.to_string().contains("NIR1_PREPARED_MODEL_INVALID"));
+            let prepared = prepare_local_chat_request(
+                Arc::clone(&fixture.state),
+                fixture.caller.clone(),
+                SCENE_ID,
+                &fixture.message_version_id,
+                std::slice::from_ref(&fixture.revision_id),
+                NO_UNSUPPORTED_INPUTS,
+            );
+            assert!(prepared.is_err(), "{rejected:?} prepared");
+            assert_eq!(fixture.generation_storage_counts()?, before);
+        }
+        let accepted = "My \"model\" \\ モデル 7b";
+        settings.model = accepted.into();
+        grimodex_ai::write_ai_settings(&fixture.state.ai_settings_path, &settings)?;
+        let route = super::resolve_supported_local_route(&fixture.state.ai_settings_path)?;
+        assert_eq!(route.model, accepted);
+        let body = super::render_plain_chat_payload_from_material(
+            &route,
+            "raw",
+            &["ir".to_owned()],
+            "user",
+            &mut || Ok(()),
+        )?;
+        let payload: Value = serde_json::from_str(&body.canonical_payload)?;
+        assert_eq!(payload["model"], accepted);
+        Ok(())
     }
 }

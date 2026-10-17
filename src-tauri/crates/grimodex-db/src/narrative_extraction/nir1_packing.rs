@@ -996,6 +996,7 @@ impl NativeNir1PreparedInputs {
 #[cfg(feature = "native-current-human-capture")]
 pub fn read_and_pack_native_nir1_prepared_inputs(
     workspace: &ActiveWorkspaceSnapshot,
+    purpose: PackingPurpose,
     expected_session_id: &str,
     capture: &AcceptedChatInputCapture,
     query_scene_id: &str,
@@ -1077,7 +1078,7 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
                     revision_ids: &unique_revision_ids,
                     query_scene_id,
                     budget_tokens: context_budget_tokens,
-                    purpose: PackingPurpose::Writing,
+                    purpose,
                 },
                 &mut input_budget,
                 &mut reserve_retained_binding,
