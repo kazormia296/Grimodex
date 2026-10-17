@@ -3316,6 +3316,17 @@ mod capture {
             attempt.id,
             attempt_id_for_capture(&first).expect("deterministic id")
         );
+        // The stored real attempt ID is accepted by the DT-4 ID derivation and
+        // inverts exactly.
+        let execution = crate::nir1_local_audit::execution_id_for_attempt(&attempt.id)
+            .expect("real attempt ID derives an execution ID");
+        assert_eq!(
+            crate::nir1_local_audit::attempt_id_from_execution_id(&execution),
+            Some(attempt.id.as_str())
+        );
+        crate::nir1_local_audit::operation_id_for_attempt(&attempt.id).expect("operation ID");
+        crate::nir1_local_audit::event_id_for_attempt(&attempt.id, "execution.started")
+            .expect("event ID");
         let error = create_for(&snapshot, &first, capture_request(&first)).expect_err("resend");
         assert_eq!(error.failure(), Nir1StoreFailure::AlreadyExists);
         assert_eq!(error.commit(), Nir1CommitState::NotCommitted);

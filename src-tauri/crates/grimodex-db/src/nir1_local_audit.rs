@@ -114,12 +114,20 @@ pub fn reject_reserved_events(
     Ok(())
 }
 
+/// Attempt IDs are `canonical_json_digest` outputs (`sha256:<64 hex>`), so
+/// `:` is allowed between non-empty segments. The derived event ID ends in
+/// `:<eventType>` and an event type never contains `:`, so the split of the
+/// event ID stays unambiguous; execution and operation IDs end with the
+/// attempt ID itself.
 fn valid_attempt_id(attempt_id: &str) -> bool {
     !attempt_id.is_empty()
         && attempt_id.len() <= MAX_ATTEMPT_ID_BYTES
-        && attempt_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        && attempt_id.split(':').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        })
 }
 
 fn derived(kind: &str, attempt_id: &str, suffix: Option<&str>) -> String {

@@ -103,11 +103,84 @@ fn derivation_is_deterministic_and_invertible() {
         attempt_id_from_execution_id(&execution.to_uppercase()),
         None
     );
-    for bad in ["", "a:b", "a b", "a/b"] {
+    for bad in ["", ":", "a:", ":a", "a::b", "a b", "a/b", "a\n"] {
         assert!(execution_id_for_attempt(bad).is_err(), "{bad}");
     }
     assert!(event_id_for_attempt(ATTEMPT, "Bad Type").is_err());
     assert!(is_reserved_id(&execution));
+}
+
+/// The real attempt ID shape (`attempt_id_for_capture`): a canonical digest.
+fn real_attempt_id() -> String {
+    let id = grimodex_core::canonical_json_digest(&json!({
+        "domain": "nir1-generation-attempt-id@1",
+        "captureId": "capture-1",
+        "submissionId": "submission-1",
+        "submissionDigest": "sha256:00",
+    }))
+    .expect("digest");
+    assert!(id.starts_with("sha256:") && id.len() == 71, "{id}");
+    id
+}
+
+#[test]
+fn derivation_accepts_the_real_sha256_attempt_id_shape() {
+    let attempt = real_attempt_id();
+    let execution = execution_id_for_attempt(&attempt).unwrap();
+    assert_eq!(
+        execution,
+        format!("nir1-local-generation:execution:{attempt}")
+    );
+    assert_eq!(
+        attempt_id_from_execution_id(&execution),
+        Some(attempt.as_str())
+    );
+    assert_eq!(
+        operation_id_for_attempt(&attempt).unwrap(),
+        format!("nir1-local-generation:operation:{attempt}")
+    );
+    assert_eq!(
+        event_id_for_attempt(&attempt, "request.prepared").unwrap(),
+        format!("nir1-local-generation:event:{attempt}:request.prepared")
+    );
+    assert!(is_reserved_id(&execution));
+    // A longer or malformed colon form is not an attempt ID.
+    assert_eq!(
+        attempt_id_from_execution_id("nir1-local-generation:execution:sha256:"),
+        None
+    );
+    assert_eq!(
+        attempt_id_from_execution_id("nir1-local-generation:execution::a"),
+        None
+    );
+}
+
+#[test]
+fn real_attempt_id_passes_dedicated_append_and_generic_append_is_rejected() {
+    let db = database();
+    let attempt = real_attempt_id();
+    dedicated_start(&db, NIR1_LOCAL_WRITING_PATH_ID, &attempt).unwrap();
+    assert_eq!(row_count(&db), 3);
+    let execution = execution_id_for_attempt(&attempt).unwrap();
+    let error = db
+        .append_ai_audit_events(
+            PROJECT,
+            &[generic("pre-real", &execution, "execution.finished")],
+        )
+        .expect_err("generic append into a real-shaped execution is rejected");
+    assert_eq!(rejected_field(&error), "executionId");
+    let error = db
+        .append_ai_audit_events(
+            PROJECT,
+            &[generic(
+                &event_id_for_attempt(&attempt, "execution.finished").unwrap(),
+                "x-other",
+                "execution.finished",
+            )],
+        )
+        .expect_err("generic eventId in the namespace is rejected");
+    assert_eq!(rejected_field(&error), "eventId");
+    assert_eq!(row_count(&db), 3);
 }
 
 #[test]
