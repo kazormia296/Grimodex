@@ -111,7 +111,9 @@
     "udpPackets": 0,
     "unattributed": 0,
     "secretsSeen": false,
-    "markers": []
+    "markers": [
+      "turns"
+    ]
   },
   "unattributed": {
     "spellcheckerDictionary": [
@@ -126,7 +128,8 @@
   },
   "title": {
     "lockedStaysProduct": true,
-    "unlockedControlChanged": true
+    "unlockedControlChanged": true,
+    "panelOpenOptionStaysProduct": true
   },
   "navigation": {
     "willNavigateHosts": 1,

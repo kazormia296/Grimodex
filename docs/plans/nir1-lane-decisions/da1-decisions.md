@@ -97,3 +97,18 @@ ST2 以降の行（Native の旧 AI の 8 入口、license の client、NIR の�
 | `--proxy-server=socks5://127.0.0.1:9`（全 Chromium の通信を blackhole の proxy へ） | 塞がる。ただし更新・spellchecker を含む Chromium の通信すべてを止める（unrestricted の挙動を変える） |
 
 **判断**: 委任の範囲で塞げる設定がない。塞ぐ候補（PAC による allowlist の proxy、窓だけの partition など）は unrestricted の更新と spellchecker の通信、または保存済みの renderer のデータを変えうるので、U3 の委任の外（新しい network 設定、再確認）。したがって **ST3 の「`own-data-read` の開放を有効にする」commit は入れない**（TASK §4 の依存と §10）。`rendererIsolationProbeRecord.test.ts` の `OPEN_FINDINGS` が、この finding だけが残っていることを固定する。
+
+## ST1 のレビュー指摘の修正（2026-10-18。上の表と追記の本文は直さない）
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-DA1-11 | 2026-10-18 | DA-1（ST1 の修正） | パネル窓の生成時の title は、renderer が `grim:panel-open` の `opts.title` で渡す値を使わない。`windows.ts` の `resolvePanelWindowTitle(label, locked)` が決める。固定中（restricted／unavailable）は製品名 `Grimodex`。固定でない間は label（`panel-<id>`）の `<id>` の先頭を大文字にした名前（FE の `buildPanelWindowOptions` の title と同じ。label は `^panel-[a-z0-9-]+$` の検証済み）。`productTitles`（`resetWindowTitles()` の戻し先）にも同じ値を入れるので、renderer の値は DA-2 の reset でも戻らない。サイズは従来どおり requested を使う。`windowChrome.ts` の `buildPanelWindowOptions` の `requested.title` の扱いは変えず、`windows.ts` が `requested` から title を外して渡し、結果を上書きする | renderer が決められる文字列を OS の窓の title（タスクバー、alt-tab、作業時間記録 software）に載せない。固定中は label も renderer が選べるので label 由来の名前も使わない。IPC の形（`panel-open` の引数）は変えない | label の allowlist（FE の panel id の複製になり、ずれる）。固定中だけ requested.title を無視する（固定でない間に作った窓の title が reset で残る）。title option を全面的に無視して常に製品名（unrestricted の挙動を変える） | 不要（確認済み draft K3/2 Negative (28) の読みの範囲。title の既存の値を変えない） | 該当なし（新しい IPC、受信先、保存範囲、閾値、認可の削除はない） | 不要（窓の生成時に 1 回決める値。保持するのは既存の `productTitles` の WeakMap） | 実装済み（`windows.test.ts` に固定中、固定でない間、サイズの 3 試験。Y-1 の probe に `panelOpenOptionStaysProduct` を足して再試走した） |
+
+### 追加の記録（指摘 P3 への扱い）
+
+- download の temp への書込みの大きさと同時件数の上限: 入れない（残余）。確認済みの draft に上限の根拠がなく、export の大きい file（backup や長編の書出し）を壊す数値を決める材料がない。K3/2 の SF-1 の目的である「状態ファイルへの到達」には影響しない（temp は OS の temp 直下の新規 directory で、完了、取消、失敗で必ず削除する）。残る害は temp の領域の可用性で、保存 dialog が積まれるのは利用者の目に見える。新しい上限を足す場合は、実測（通常の export の大きさ）と draft の根拠が要るので、別の判断にする。
+- 事後の advisor（DR-DA1-5、DR-DA1-7）: ST1 の builder の spawn では実施していない。継続計画 §3.2 の advisor 列は、integrator が merge の前に read-only advisor（Opus。requested／effective の model と effort、結論）を実施し、この表の advisor 列へ追記する。結論が違えば ST1 を直す。
+- 未確認の 2 項目（File System Access API の `showSaveFilePicker`、`window.print()` の「ファイルへ印刷」）: merge の前の条件として、独立受入れの実機（OS の dialog を操作できる環境）で確かめ、結果を PR 本文に記録する。profile data directory に届く場合は `assertOutside` と同じ規則で閉じる。閉じられない場合は K3/2 に従い **[precheck]** にして merge しない。ST1 の完了時点では経路の 0 件を実測で示していない。
+- Y-1 の `OPEN_FINDINGS`: `rendererIsolationProbeRecord.test.ts` の試験は、`OPEN_FINDINGS` を空にすると `violationsViaWebRtc` が 0 件であることを要求する向きに自動で切り替わる。`own-data-read` の開放を有効にする commit（ST3）の完了条件は「WebRTC の finding を塞ぎ、probe を採り直し、`OPEN_FINDINGS` を空にして試験が通ること」。
+- probe の記録を protocol.ts、windows.ts、security.ts、downloadGuard.ts の hash に束縛する案: 入れない（残余）。K3/2 は Electron の版上げ以外に probe を要求していない。これらの file は probe の本体が束ねて使うので、変更した PR は probe を採り直す責任を負うが、機械で強制はしていない。DA-2 以降で protocol／windows／security を変える PR は、変更の影響を受ける検査の再試走を PR の確認項目に入れる。
+- 再試走の結果（今回の記録）: `panelOpenOptionStaysProduct: true`。WebRTC 以外の外向きの試みは 0 件のまま。canary の `markers` が `turns` を含む試走と含まない試走があった（WebRTC の TURN の観測の揺れで、既知の finding の範囲）。

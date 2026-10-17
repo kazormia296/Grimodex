@@ -46,6 +46,22 @@ const PRODUCT_WINDOW_TITLE = "Grimodex";
 const productTitles = new WeakMap<BrowserWindow, string>();
 
 /**
+ * パネル窓の title。renderer の title option は使わず、label（`panel-<id>`）から
+ * 作る（feature 層の `buildPanelWindowOptions` と同じ「id の先頭を大文字」の名前）。
+ * 固定中は label も renderer が選べる文字列なので製品名にする。
+ */
+export function resolvePanelWindowTitle(
+  label: string,
+  locked: boolean,
+): string {
+  if (locked) return PRODUCT_WINDOW_TITLE;
+  const id = label.startsWith(PANEL_WINDOW_LABEL_PREFIX)
+    ? label.slice(PANEL_WINDOW_LABEL_PREFIX.length)
+    : "";
+  return id ? id.charAt(0).toUpperCase() + id.slice(1) : PRODUCT_WINDOW_TITLE;
+}
+
+/**
  * restricted または unavailable の間に true を返す（呼出しごとに読む）。
  * 供給されるまでは固定する側（fail closed）。
  */
@@ -344,20 +360,22 @@ export function openPanelWindow(
   }
 
   const store = ensureChrome();
+  // K3/2 行 18（窓の title）: renderer が渡す requested.title は信用しない。
+  // 生成時の title も OS（タスクバー、alt-tab、作業時間記録 software）が読む値なので、
+  // Main が label から決める。固定中（restricted／unavailable）は製品名のまま。
   const { options, startMaximized } = buildPanelWindowOptions({
     savedState: store.get(label),
     displayWorkAreas: screen.getAllDisplays().map((d) => d.workArea),
-    requested,
+    requested: { width: requested.width, height: requested.height },
   });
+  const title = resolvePanelWindowTitle(label, isWindowTitleLocked());
+  options.title = title;
 
   const win = new BrowserWindow({
     ...options,
     webPreferences: buildWebPreferences(),
   });
-  productTitles.set(
-    win,
-    typeof options.title === "string" ? options.title : PRODUCT_WINDOW_TITLE,
-  );
+  productTitles.set(win, title);
   track(label, win);
   attachWindowChrome(label, win, store);
   showWhenReady(win, options, startMaximized);
