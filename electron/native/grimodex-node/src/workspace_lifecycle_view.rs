@@ -9,6 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use grimodex_db::nir1_generation::history_context::DurableWorkspaceIdentity;
 use grimodex_db::state::{PinnedWorkspaceDb, WorkspaceState};
 use grimodex_db::workspace_lifecycle::JoinedTransitionOutcome;
 use grimodex_db::AppResult;
@@ -1093,13 +1094,19 @@ fn live_binding(workspace: &WorkspaceState, recovery_generation: u64) -> AppResu
     // The durable workspace and physical database identities stay internal;
     // LiveBinding skips the latter when serialized to preserve its wire shape.
     let database_file_identity = authority.main_database_file_identity()?;
+    // HS-1: the durable workspace identity is derived once, here, from the
+    // verified id and the OS-canonicalized root (never the lossy `locator`).
+    // Unavailable (non-Unicode or unresolvable root) is `None`, not an error.
+    let durable_workspace_identity =
+        DurableWorkspaceIdentity::from_workspace_root(&workspace_id, authority.path());
     Ok(LiveBinding::new(
         locator,
         workspace_id,
         authority.identity(),
         recovery_generation.max(1),
     )
-    .with_main_database_file_identity(database_file_identity))
+    .with_main_database_file_identity(database_file_identity)
+    .with_durable_workspace_identity(durable_workspace_identity))
 }
 
 #[allow(dead_code)]
@@ -1190,6 +1197,149 @@ mod tests {
         assert!(ready.revision > transition.revision);
         drop(workspace);
         std::fs::remove_dir_all(path).expect("remove ready workspace fixture");
+    }
+
+    /// A workspace rooted at `path` whose metadata carries `id` (`None`
+    /// writes an unreadable metadata file).
+    fn identity_workspace(path: &std::path::Path, id: Option<&str>) -> WorkspaceState {
+        std::fs::create_dir_all(path.join(".grimodex")).expect("metadata directory");
+        let metadata = match id {
+            Some(id) => serde_json::json!({ "id": id }).to_string(),
+            None => "not json".to_string(),
+        };
+        std::fs::write(path.join(".grimodex/workspace.json"), metadata).expect("metadata");
+        let authority = grimodex_db::state::WorkspaceAuthority::from_database_for_test(
+            grimodex_db::Database::new(&path.join("grimodex.db")).expect("database"),
+            path.to_path_buf(),
+        )
+        .expect("authority");
+        let mut workspace = empty_workspace();
+        workspace.inner = Mutex::new(Some(grimodex_db::state::ActiveWorkspace::new(authority)));
+        workspace
+    }
+
+    fn identity_root(label: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("grimodex-hs1-{label}-{}", Uuid::new_v4()))
+    }
+
+    fn binding_digest(binding: &LiveBinding) -> String {
+        grimodex_core::canonical_json_digest(&serde_json::to_value(binding).expect("wire"))
+            .expect("digest")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ready_binding_identity_resolves_symlinks_and_copies_differ() {
+        let real = identity_root("ready-real");
+        let link = identity_root("ready-link");
+        let copy = identity_root("ready-copy");
+        let real_workspace = identity_workspace(&real, Some("hs1-workspace"));
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let linked_workspace = {
+            // Open the same workspace through the symlink.
+            let authority = grimodex_db::state::WorkspaceAuthority::from_database_for_test(
+                grimodex_db::Database::new(&link.join("grimodex.db")).expect("database"),
+                link.clone(),
+            )
+            .expect("authority");
+            let mut workspace = empty_workspace();
+            workspace.inner = Mutex::new(Some(grimodex_db::state::ActiveWorkspace::new(authority)));
+            workspace
+        };
+        let copied_workspace = identity_workspace(&copy, Some("hs1-workspace"));
+
+        let via_real = live_binding(&real_workspace, 1).expect("real binding");
+        let via_link = live_binding(&linked_workspace, 1).expect("linked binding");
+        let via_copy = live_binding(&copied_workspace, 1).expect("copied binding");
+        let real_identity = via_real
+            .durable_workspace_identity()
+            .expect("real identity");
+        assert_eq!(via_link.durable_workspace_identity(), Some(real_identity));
+        let copy_identity = via_copy
+            .durable_workspace_identity()
+            .expect("copy identity");
+        assert_eq!(
+            copy_identity.workspace_id_digest,
+            real_identity.workspace_id_digest
+        );
+        assert_ne!(
+            copy_identity.canonical_locator_digest,
+            real_identity.canonical_locator_digest
+        );
+        // `locator` is still the uncanonicalized admission path.
+        assert_eq!(via_link.locator.as_ref(), link.to_string_lossy().as_ref());
+
+        drop((real_workspace, linked_workspace, copied_workspace));
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&real);
+        let _ = std::fs::remove_dir_all(&copy);
+    }
+
+    #[test]
+    fn cold_reopen_keeps_identity_while_authority_instance_changes() {
+        let root = identity_root("reopen");
+        let first_workspace = identity_workspace(&root, Some("hs1-reopen"));
+        let first = live_binding(&first_workspace, 1).expect("first");
+        drop(first_workspace);
+        let second_workspace = identity_workspace(&root, Some("hs1-reopen"));
+        let second = live_binding(&second_workspace, 1).expect("second");
+
+        assert_ne!(first.authority_instance, second.authority_instance);
+        assert_ne!(binding_digest(&first), binding_digest(&second));
+        assert!(first.durable_workspace_identity().is_some());
+        assert_eq!(
+            first.durable_workspace_identity(),
+            second.durable_workspace_identity()
+        );
+        drop(second_workspace);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn live_binding_wire_shape_and_workspace_binding_digest_are_unchanged() {
+        let root = identity_root("wire");
+        let workspace = identity_workspace(&root, Some("hs1-wire"));
+        let binding = live_binding(&workspace, 3).expect("binding");
+        assert!(binding.durable_workspace_identity().is_some());
+
+        let wire = serde_json::to_value(&binding).expect("wire");
+        let mut keys = wire
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "authority_instance",
+                "locator",
+                "recovery_generation",
+                "workspace_id"
+            ]
+        );
+        // The digest equals one over a binding built without any identity.
+        let bare = LiveBinding::new(
+            binding.locator.to_string(),
+            binding.workspace_id.to_string(),
+            binding.authority_instance,
+            binding.recovery_generation,
+        );
+        assert_eq!(binding_digest(&binding), binding_digest(&bare));
+        assert!(!format!("{binding:?}").contains("sha256:"));
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn workspace_without_a_readable_id_has_no_durable_identity() {
+        let root = identity_root("no-id");
+        let workspace = identity_workspace(&root, None);
+        let error = live_binding(&workspace, 1).expect_err("identity must be invalid");
+        assert!(error.to_string().contains("NEX_WORKSPACE_IDENTITY_INVALID"));
+        drop(workspace);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -25,6 +25,7 @@ use grimodex_core::{canonical_json_digest, canonical_json_string};
 use serde::{de, ser, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{json, Map, Value};
 use std::fmt;
+use std::path::Path;
 
 /// The only context contract this build writes.
 pub const HISTORY_TURN_CONTEXT_CONTRACT: &str = "nir1-history-turn-context/1";
@@ -568,6 +569,37 @@ impl DurableWorkspaceIdentity {
             )?,
         })
     }
+}
+
+impl DurableWorkspaceIdentity {
+    /// The identity of the workspace rooted at `root`. This is the single
+    /// computation for the durable workspace identity (K4/3 section 7); CB-4
+    /// (declaration invalidation) shares it through `canonical_locator_digest`.
+    ///
+    /// `None` is "unavailable": an empty workspace id, a root the OS cannot
+    /// canonicalize, or a canonical path that is not valid Unicode. Nothing
+    /// is lossily converted, and the path text is hashed and dropped.
+    pub fn from_workspace_root(workspace_id: &str, root: &Path) -> Option<Self> {
+        if workspace_id.trim().is_empty() {
+            return None;
+        }
+        Some(Self {
+            workspace_id_digest: HistoryDigest::of(HistoryDigestDomain::WorkspaceId, workspace_id)
+                .ok()?,
+            canonical_locator_digest: canonical_locator_digest(root)?,
+        })
+    }
+}
+
+/// The digest of `root` after the OS `canonicalize` (symlinks resolved; the
+/// OS form is used as is, e.g. a Windows verbatim path or a macOS `/private`
+/// path, with no prefix added or removed). `None` when canonicalize fails or
+/// the result is not valid Unicode. The path text is neither stored nor
+/// logged.
+pub fn canonical_locator_digest(root: &Path) -> Option<HistoryDigest> {
+    let canonical = std::fs::canonicalize(root).ok()?;
+    let text = canonical.to_str()?;
+    HistoryDigest::of(HistoryDigestDomain::CanonicalLocator, text).ok()
 }
 
 /// `eligibleUntilMs` of an attempt stored at `created_at_ms`: the row's time
@@ -1178,5 +1210,152 @@ mod tests {
         assert_eq!(a, digest(HistoryDigestDomain::StoryRef, "scene:1"));
         assert!(HistoryDigest::parse(a.as_str()).is_ok());
         assert!(HistoryDigest::parse("sha256:zz").is_err());
+    }
+
+    fn identity_fixture(label: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-hs1-identity-{label}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).expect("fixture root");
+        std::fs::canonicalize(&root).expect("canonical fixture root")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_locator_digest_resolves_symlinks() {
+        let real = identity_fixture("symlink-real");
+        let link = real.with_file_name(format!(
+            "{}-link",
+            real.file_name().and_then(|n| n.to_str()).expect("name")
+        ));
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        let via_real = DurableWorkspaceIdentity::from_workspace_root("ws-1", &real).expect("real");
+        let via_link = DurableWorkspaceIdentity::from_workspace_root("ws-1", &link).expect("link");
+        assert_eq!(via_real, via_link);
+
+        // A copied folder keeps the workspace id and changes the locator.
+        let copy = identity_fixture("symlink-copy");
+        let copied = DurableWorkspaceIdentity::from_workspace_root("ws-1", &copy).expect("copy");
+        assert_eq!(copied.workspace_id_digest, via_real.workspace_id_digest);
+        assert_ne!(
+            copied.canonical_locator_digest,
+            via_real.canonical_locator_digest
+        );
+        for path in [&real, &copy, &link] {
+            let _ = std::fs::remove_dir_all(path);
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_locator_is_unavailable_for_non_unicode_and_failed_canonicalize() {
+        use std::os::unix::ffi::OsStrExt;
+        let base = identity_fixture("non-unicode");
+        let invalid = base.join(std::ffi::OsStr::from_bytes(b"ws-\xff\xfe"));
+        std::fs::create_dir_all(&invalid).expect("non-unicode directory");
+        assert!(invalid.to_str().is_none());
+        assert_eq!(canonical_locator_digest(&invalid), None);
+        assert_eq!(
+            DurableWorkspaceIdentity::from_workspace_root("ws-1", &invalid),
+            None
+        );
+
+        let missing = base.join("does-not-exist");
+        assert_eq!(canonical_locator_digest(&missing), None);
+        assert_eq!(
+            DurableWorkspaceIdentity::from_workspace_root("ws-1", &missing),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn moved_back_workspace_matches_the_recorded_identity() {
+        let root = identity_fixture("moved");
+        let recorded = DurableWorkspaceIdentity::from_workspace_root("ws-1", &root).expect("id");
+        let parked = root.with_file_name(format!(
+            "{}-parked",
+            root.file_name().and_then(|n| n.to_str()).expect("name")
+        ));
+        std::fs::rename(&root, &parked).expect("move away");
+        assert_eq!(
+            DurableWorkspaceIdentity::from_workspace_root("ws-1", &root),
+            None
+        );
+        let while_moved =
+            DurableWorkspaceIdentity::from_workspace_root("ws-1", &parked).expect("moved");
+        assert_ne!(
+            while_moved.canonical_locator_digest,
+            recorded.canonical_locator_digest
+        );
+        std::fs::rename(&parked, &root).expect("move back");
+        assert_eq!(
+            DurableWorkspaceIdentity::from_workspace_root("ws-1", &root),
+            Some(recorded)
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn identity_digests_are_domain_separated_and_hide_paths() {
+        let root = identity_fixture("domains");
+        let path_text = root.to_str().expect("unicode root").to_owned();
+        // The same string as a workspace id and as a locator never collides.
+        let identity =
+            DurableWorkspaceIdentity::from_workspace_root(&path_text, &root).expect("identity");
+        assert_ne!(
+            identity.workspace_id_digest, identity.canonical_locator_digest,
+            "domains must separate the two digests"
+        );
+        // Neither the serialized form nor Debug carries the path text.
+        let json = canonical(&identity);
+        assert!(!json.contains(&path_text));
+        assert!(!format!("{identity:?}").contains(&path_text));
+        assert!(json.len() <= 194);
+        // An empty or blank workspace id is unavailable.
+        assert_eq!(
+            DurableWorkspaceIdentity::from_workspace_root("", &root),
+            None
+        );
+        assert_eq!(
+            DurableWorkspaceIdentity::from_workspace_root("  ", &root),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn canonical_locator_windows_verbatim_and_macos_private_forms() {
+        // macOS: temp dirs live under /var, a symlink to /private/var. The
+        // canonical form must resolve to /private and still hash stably.
+        let raw = std::env::temp_dir().join(format!("grimodex-hs1-mac-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&raw).expect("fixture");
+        let canonical_path = std::fs::canonicalize(&raw).expect("canonicalize");
+        assert!(canonical_path.starts_with("/private"));
+        assert_eq!(
+            canonical_locator_digest(&raw),
+            canonical_locator_digest(&canonical_path)
+        );
+        let _ = std::fs::remove_dir_all(&raw);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn canonical_locator_windows_verbatim_and_macos_private_forms() {
+        // Windows: canonicalize returns the verbatim (`\\?\`) form. It is
+        // used exactly as the OS returned it, with no prefix added or removed.
+        let raw = std::env::temp_dir().join(format!("grimodex-hs1-win-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&raw).expect("fixture");
+        let canonical_path = std::fs::canonicalize(&raw).expect("canonicalize");
+        let text = canonical_path.to_str().expect("unicode");
+        assert!(text.starts_with(r"\\?\"));
+        assert_eq!(
+            canonical_locator_digest(&raw),
+            Some(HistoryDigest::of(HistoryDigestDomain::CanonicalLocator, text).expect("digest"))
+        );
+        let _ = std::fs::remove_dir_all(&raw);
     }
 }

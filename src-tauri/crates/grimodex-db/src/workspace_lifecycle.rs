@@ -5,6 +5,7 @@
 //! workers, while the existing `WorkspaceState::switching` flag is exposed as
 //! a compatibility view over the same core storage.
 
+use crate::nir1_generation::history_context::DurableWorkspaceIdentity;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -96,7 +97,7 @@ pub struct LifecycleDiagnostic {
     pub root_operation_id: Option<OperationId>,
 }
 
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct LiveBinding {
     /// The canonical workspace locator captured at admission time.
     pub locator: Arc<str>,
@@ -110,7 +111,30 @@ pub struct LiveBinding {
     /// Native-only identity of the opened main DB; never part of the wire shape.
     #[serde(skip)]
     database_file_identity: Option<Arc<str>>,
+    /// Native-only durable workspace identity (workspace id digest and
+    /// canonical locator digest), computed once when the workspace becomes
+    /// Ready. `None` means unavailable. Never part of the wire shape, of
+    /// `workspace_binding_digest`, or of binding equality.
+    #[serde(skip)]
+    durable_workspace_identity: Option<Arc<DurableWorkspaceIdentity>>,
 }
+
+/// Equality is the identity the lifecycle has always compared: the wire
+/// fields and the opened main DB file. The durable workspace identity is a
+/// value derived once at Ready from the workspace id and the root, so it is
+/// deliberately not compared (a re-derivation must not change whether two
+/// bindings are "the same binding").
+impl PartialEq for LiveBinding {
+    fn eq(&self, other: &Self) -> bool {
+        self.locator == other.locator
+            && self.workspace_id == other.workspace_id
+            && self.authority_instance == other.authority_instance
+            && self.recovery_generation == other.recovery_generation
+            && self.database_file_identity == other.database_file_identity
+    }
+}
+
+impl Eq for LiveBinding {}
 
 impl fmt::Debug for LiveBinding {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -144,7 +168,25 @@ impl LiveBinding {
             authority_instance,
             recovery_generation,
             database_file_identity: None,
+            durable_workspace_identity: None,
         }
+    }
+
+    /// Attach the Native-only durable workspace identity computed at Ready
+    /// (`DurableWorkspaceIdentity::from_workspace_root`). `None` records that
+    /// it was unavailable. The wire shape is unchanged.
+    #[doc(hidden)]
+    pub fn with_durable_workspace_identity(
+        mut self,
+        identity: Option<DurableWorkspaceIdentity>,
+    ) -> Self {
+        self.durable_workspace_identity = identity.map(Arc::new);
+        self
+    }
+
+    /// The durable workspace identity captured at Ready, if it was available.
+    pub fn durable_workspace_identity(&self) -> Option<&DurableWorkspaceIdentity> {
+        self.durable_workspace_identity.as_deref()
     }
 
     /// Attach Native-only main-DB identity without changing serialized bindings.
@@ -4913,6 +4955,45 @@ mod tests {
     fn binding(instance: u64) -> LiveBinding {
         LiveBinding::new("/tmp/workspace", "workspace-1", instance, 1)
             .with_main_database_file_identity(format!("test-db-{instance}"))
+    }
+
+    #[test]
+    fn live_binding_wire_shape_and_equality_ignore_the_durable_identity() {
+        let plain = binding(7);
+        let identity = DurableWorkspaceIdentity::from_parts("workspace-1", "/canonical/root")
+            .expect("identity");
+        let with_identity = binding(7).with_durable_workspace_identity(Some(identity.clone()));
+        assert_eq!(plain.durable_workspace_identity(), None);
+        assert_eq!(with_identity.durable_workspace_identity(), Some(&identity));
+
+        // The wire shape (and so `workspace_binding_digest`) is unchanged.
+        let wire = serde_json::to_value(&with_identity).expect("wire");
+        assert_eq!(wire, serde_json::to_value(&plain).expect("plain wire"));
+        let mut keys = wire
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "authority_instance",
+                "locator",
+                "recovery_generation",
+                "workspace_id"
+            ]
+        );
+        let text = wire.to_string();
+        assert!(!text.contains("durable") && !text.contains("sha256:"));
+
+        // Equality keeps its meaning, and Debug stays free of the identity.
+        assert_eq!(plain, with_identity);
+        assert_ne!(binding(7), binding(8));
+        assert!(!format!("{with_identity:?}").contains("sha256:"));
+        let round_trip: LiveBinding = serde_json::from_value(wire).expect("round trip");
+        assert_eq!(round_trip.durable_workspace_identity(), None);
     }
 
     fn run_handle(run_id: &str, work_key: &str) -> DurableRunHandle {

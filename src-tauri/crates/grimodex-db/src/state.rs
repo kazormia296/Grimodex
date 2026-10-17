@@ -311,6 +311,17 @@ impl ActiveWorkspaceSnapshot {
     pub fn path(&self) -> &Path {
         self.authority.path()
     }
+
+    /// Durable workspace identity captured once when this workspace became
+    /// Ready. `None` when the snapshot has no Ready binding or the identity
+    /// was unavailable (non-Unicode or unresolvable root, unreadable id).
+    /// Consumed by the HS-1 history context builder (HS1-4).
+    #[allow(dead_code)]
+    pub(crate) fn durable_workspace_identity(
+        &self,
+    ) -> Option<&crate::nir1_generation::history_context::DurableWorkspaceIdentity> {
+        self.binding.as_ref()?.durable_workspace_identity()
+    }
 }
 
 /// Cross-crate test support only: emulate a cleanup-unproved C-query by
@@ -757,6 +768,48 @@ mod tests {
             ))
             .expect("test lifecycle ready");
         state
+    }
+
+    #[test]
+    fn active_snapshot_exposes_the_durable_workspace_identity_of_its_ready_binding() {
+        let state = workspace_state_with_db();
+        // Ready bindings built without an identity expose none.
+        let snapshot = active_workspace_snapshot(&state).expect("snapshot");
+        assert_eq!(snapshot.durable_workspace_identity(), None);
+        drop(snapshot);
+
+        let identity =
+            crate::nir1_generation::history_context::DurableWorkspaceIdentity::from_parts(
+                "ws",
+                "/canonical/root",
+            )
+            .expect("identity");
+        drop(state);
+        let path =
+            std::env::temp_dir().join(format!("grimodex-state-hs1-{}", uuid::Uuid::new_v4()));
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        let authority = WorkspaceAuthority::from_database_for_test(db, path).expect("authority");
+        let state = WorkspaceState {
+            inner: Mutex::new(Some(ActiveWorkspace::new(authority.clone()))),
+            safe_mode: crate::recovery::SafeModeState::default(),
+            switching: WorkspaceLifecycleCompatibilityView::new(false),
+            open_lock: Mutex::new(Default::default()),
+        };
+        state
+            .switching
+            .core()
+            .set_ready(
+                LiveBinding::new(
+                    authority.path().to_string_lossy(),
+                    "ws",
+                    authority.identity(),
+                    0,
+                )
+                .with_durable_workspace_identity(Some(identity.clone())),
+            )
+            .expect("ready");
+        let snapshot = active_workspace_snapshot(&state).expect("snapshot");
+        assert_eq!(snapshot.durable_workspace_identity(), Some(&identity));
     }
 
     #[test]
